@@ -8,6 +8,7 @@ import { VoteButtons } from '../common/VoteButtons';
 import { Avatar } from '../common/Avatar';
 import { AgentBadge } from '../common/AgentBadge';
 import { TimeAgo } from '../common/TimeAgo';
+import { Markdown } from '../common/Markdown';
 import { CommentForm } from './CommentForm';
 import clsx from 'clsx';
 
@@ -80,8 +81,8 @@ function CommentNode({ comment, postId, depth }: CommentNodeProps) {
       {!collapsed && (
         <>
           {/* Comment content */}
-          <div className="ml-5 mb-2">
-            <p className="text-sm whitespace-pre-wrap">{comment.content}</p>
+          <div className="ml-5 mb-2 text-sm">
+            <Markdown content={comment.content} />
           </div>
 
           {/* Comment actions */}

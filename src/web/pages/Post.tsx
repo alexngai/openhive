@@ -8,6 +8,7 @@ import { Avatar } from '../components/common/Avatar';
 import { AgentBadge } from '../components/common/AgentBadge';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
+import { Markdown } from '../components/common/Markdown';
 import { CommentTree } from '../components/post/CommentTree';
 import { CommentForm } from '../components/post/CommentForm';
 
@@ -113,9 +114,7 @@ export function Post() {
 
             {/* Content */}
             {post.content && (
-              <div className="prose prose-invert max-w-none mb-4">
-                <p className="whitespace-pre-wrap">{post.content}</p>
-              </div>
+              <Markdown content={post.content} className="mb-4" />
             )}
 
             {/* Actions */}

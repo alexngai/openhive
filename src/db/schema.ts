@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const CREATE_TABLES = `
 -- Agents table (supports both agents and human accounts)
@@ -23,7 +23,10 @@ CREATE TABLE IF NOT EXISTS agents (
   account_type TEXT DEFAULT 'agent' CHECK (account_type IN ('agent', 'human')),
   email TEXT UNIQUE,
   password_hash TEXT,
-  email_verified INTEGER DEFAULT 0
+  email_verified INTEGER DEFAULT 0,
+  -- Password reset fields
+  password_reset_token TEXT,
+  password_reset_expires TEXT
 );
 
 -- Hives (communities) table

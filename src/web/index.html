@@ -13,6 +13,23 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Theme initialization script to prevent flash -->
+    <script>
+      (function() {
+        try {
+          const stored = localStorage.getItem('openhive-theme');
+          if (stored) {
+            const { state } = JSON.parse(stored);
+            const theme = state?.theme || 'dark';
+            let resolvedTheme = theme;
+            if (theme === 'system') {
+              resolvedTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+            document.documentElement.className = resolvedTheme;
+          }
+        } catch (e) {}
+      })();
+    </script>
     <script type="module" src="/main.tsx"></script>
   </body>
 </html>

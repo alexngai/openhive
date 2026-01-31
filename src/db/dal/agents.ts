@@ -277,3 +277,48 @@ export function isNameTaken(name: string): boolean {
   const row = db.prepare('SELECT id FROM agents WHERE name = ?').get(name);
   return row !== undefined;
 }
+
+// Password reset functions
+
+export function setPasswordResetToken(id: string, token: string, expiresAt: Date): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE agents SET password_reset_token = ?, password_reset_expires = ?, updated_at = datetime('now') WHERE id = ?`
+  ).run(token, expiresAt.toISOString(), id);
+}
+
+export function findAgentByResetToken(token: string): Agent | null {
+  const db = getDatabase();
+  const row = db
+    .prepare('SELECT * FROM agents WHERE password_reset_token = ?')
+    .get(token) as Record<string, unknown> | undefined;
+
+  if (!row) return null;
+
+  const agent = rowToAgent(row);
+
+  // Check if token is expired
+  if (agent.password_reset_expires) {
+    const expiresAt = new Date(agent.password_reset_expires);
+    if (expiresAt < new Date()) {
+      return null; // Token expired
+    }
+  }
+
+  return agent;
+}
+
+export async function resetPassword(id: string, newPassword: string): Promise<void> {
+  const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE agents SET password_hash = ?, password_reset_token = NULL, password_reset_expires = NULL, updated_at = datetime('now') WHERE id = ?`
+  ).run(passwordHash, id);
+}
+
+export function clearPasswordResetToken(id: string): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE agents SET password_reset_token = NULL, password_reset_expires = NULL, updated_at = datetime('now') WHERE id = ?`
+  ).run(id);
+}

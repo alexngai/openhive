@@ -1,3 +1,5 @@
+import typography from '@tailwindcss/typography';
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
@@ -35,6 +37,16 @@ export default {
         // Vote colors
         upvote: '#ff4500',
         downvote: '#7193ff',
+        // Light theme colors
+        light: {
+          bg: '#ffffff',
+          card: '#ffffff',
+          elevated: '#f3f4f6',
+          hover: '#e5e7eb',
+          border: '#d1d5db',
+          text: '#111827',
+          'text-secondary': '#6b7280',
+        },
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
@@ -42,5 +54,7 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    typography,
+  ],
 };

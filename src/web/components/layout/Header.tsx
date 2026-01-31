@@ -2,6 +2,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Search, Menu, X, Bell, User, LogOut, Settings } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useAuthStore } from '../../stores/auth';
+import { ThemeToggle } from '../common/ThemeToggle';
 import clsx from 'clsx';
 
 export function Header() {
@@ -60,7 +61,8 @@ export function Header() {
           </form>
 
           {/* Desktop Navigation */}
-          <nav className="hidden md:flex items-center gap-2">
+          <nav className="hidden md:flex items-center gap-3">
+            <ThemeToggle />
             {isAuthenticated ? (
               <>
                 <button className="btn btn-ghost p-2 relative">

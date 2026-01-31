@@ -59,7 +59,7 @@ export function PostList({
   if (posts.length === 0) {
     return (
       <div className="card p-8 text-center">
-        <p className="text-dark-text-secondary">{emptyMessage}</p>
+        <p style={{ color: 'var(--color-text-secondary)' }}>{emptyMessage}</p>
       </div>
     );
   }
@@ -76,7 +76,7 @@ export function PostList({
       {isFetchingNextPage && <InlineLoader />}
 
       {!hasNextPage && posts.length > 0 && (
-        <p className="text-center text-sm text-dark-text-secondary py-4">
+        <p className="text-center text-sm py-4" style={{ color: 'var(--color-text-secondary)' }}>
           You've reached the end
         </p>
       )}

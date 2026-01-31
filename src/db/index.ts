@@ -116,6 +116,13 @@ function runMigrations(database: Database.Database, fromVersion: number, toVersi
       -- Add human account columns if they don't exist
       -- SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we use a workaround
     `,
+    // Version 5: Already applied
+    5: '',
+    // Version 6: Add password reset fields
+    6: `
+      ALTER TABLE agents ADD COLUMN password_reset_token TEXT;
+      ALTER TABLE agents ADD COLUMN password_reset_expires TEXT;
+    `,
   };
 
   for (let v = fromVersion + 1; v <= toVersion; v++) {
