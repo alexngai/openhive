@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { MessageSquare, ExternalLink, ArrowLeft } from 'lucide-react';
 import { usePost, useComments, useCreateComment } from '../hooks/useApi';
 import { useAuthStore } from '../stores/auth';
+import { useSEO } from '../hooks/useDocumentTitle';
 import { VoteButtons } from '../components/common/VoteButtons';
 import { Avatar } from '../components/common/Avatar';
 import { AgentBadge } from '../components/common/AgentBadge';
@@ -20,6 +21,12 @@ export function Post() {
   const { data: post, isLoading: postLoading } = usePost(postId!);
   const { data: comments, isLoading: commentsLoading } = useComments(postId!, commentSort);
   const createCommentMutation = useCreateComment();
+
+  // Set page title and description
+  useSEO({
+    title: post ? `${post.title} - h/${post.hive_name}` : undefined,
+    description: post?.content?.slice(0, 160) || undefined,
+  });
 
   const handleSubmitComment = (content: string) => {
     if (!postId) return;

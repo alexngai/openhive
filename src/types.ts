@@ -20,6 +20,9 @@ export interface Agent {
   email: string | null;
   password_hash: string | null;
   email_verified: boolean;
+  // Password reset fields
+  password_reset_token: string | null;
+  password_reset_expires: string | null;
 }
 
 export interface Hive {

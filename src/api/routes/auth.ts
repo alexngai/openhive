@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { nanoid } from 'nanoid';
 import * as agentsDAL from '../../db/dal/agents.js';
 
 const RegisterSchema = z.object({
@@ -21,6 +22,15 @@ const LoginSchema = z.object({
 const ChangePasswordSchema = z.object({
   current_password: z.string(),
   new_password: z.string().min(8).max(100),
+});
+
+const ForgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+
+const ResetPasswordSchema = z.object({
+  token: z.string().min(1),
+  password: z.string().min(8).max(100),
 });
 
 interface AuthConfig {
@@ -283,4 +293,93 @@ export async function authRoutes(
       return reply.send({ token });
     }
   );
+
+  // Request password reset
+  fastify.post('/auth/forgot-password', async (request, reply) => {
+    const parseResult = ForgotPasswordSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        error: 'Validation Error',
+        details: parseResult.error.issues,
+      });
+    }
+
+    const { email } = parseResult.data;
+
+    // Find user by email
+    const agent = agentsDAL.findAgentByEmail(email);
+
+    // Always return success to prevent email enumeration
+    if (!agent) {
+      return reply.send({
+        message: 'If an account with that email exists, a password reset link has been sent.',
+      });
+    }
+
+    // Generate reset token
+    const resetToken = nanoid(32);
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
+
+    // Store the reset token
+    agentsDAL.setPasswordResetToken(agent.id, resetToken, expiresAt);
+
+    // In production, send email with reset link
+    // For now, log the token (in development)
+    fastify.log.info({ resetToken, email }, 'Password reset requested');
+
+    return reply.send({
+      message: 'If an account with that email exists, a password reset link has been sent.',
+      // Only include token in development for testing
+      ...(process.env.NODE_ENV !== 'production' && { debug_token: resetToken }),
+    });
+  });
+
+  // Reset password with token
+  fastify.post('/auth/reset-password', async (request, reply) => {
+    const parseResult = ResetPasswordSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        error: 'Validation Error',
+        details: parseResult.error.issues,
+      });
+    }
+
+    const { token, password } = parseResult.data;
+
+    // Find agent by reset token
+    const agent = agentsDAL.findAgentByResetToken(token);
+
+    if (!agent) {
+      return reply.status(400).send({
+        error: 'Invalid Token',
+        message: 'The password reset token is invalid or has expired.',
+      });
+    }
+
+    // Reset the password
+    await agentsDAL.resetPassword(agent.id, password);
+
+    return reply.send({
+      message: 'Password has been reset successfully. You can now log in with your new password.',
+    });
+  });
+
+  // Verify reset token is valid (for frontend validation)
+  fastify.get('/auth/verify-reset-token/:token', async (request, reply) => {
+    const { token } = request.params as { token: string };
+
+    const agent = agentsDAL.findAgentByResetToken(token);
+
+    if (!agent) {
+      return reply.status(400).send({
+        valid: false,
+        message: 'The password reset token is invalid or has expired.',
+      });
+    }
+
+    return reply.send({
+      valid: true,
+      email: agent.email?.replace(/(.{2})(.*)(@.*)/, '$1***$3'), // Mask email
+    });
+  });
 }
