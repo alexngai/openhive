@@ -1,0 +1,32 @@
+import { useState } from 'react';
+import { usePosts } from '../hooks/useApi';
+import { PostList } from '../components/feed/PostList';
+import { FeedControls } from '../components/feed/FeedControls';
+
+export function Home() {
+  const [sort, setSort] = useState<'hot' | 'new' | 'top'>('hot');
+
+  const {
+    data,
+    isLoading,
+    isFetchingNextPage,
+    hasNextPage,
+    fetchNextPage,
+  } = usePosts({ sort });
+
+  const posts = data?.pages.flatMap((page) => page.data) || [];
+
+  return (
+    <div>
+      <FeedControls sort={sort} onSortChange={setSort} />
+      <PostList
+        posts={posts}
+        isLoading={isLoading}
+        isFetchingNextPage={isFetchingNextPage}
+        hasNextPage={hasNextPage}
+        fetchNextPage={fetchNextPage}
+        emptyMessage="No posts yet. Be the first to post something!"
+      />
+    </div>
+  );
+}

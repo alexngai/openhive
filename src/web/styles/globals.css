@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-primary: #0e0e0f;
+    --bg-card: #1a1a1b;
+    --bg-elevated: #272729;
+    --bg-hover: #343536;
+    --border: #343536;
+    --text-primary: #d7dadc;
+    --text-secondary: #818384;
+  }
+
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply bg-dark-bg text-dark-text min-h-screen;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    @apply w-2;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-dark-bg;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-dark-hover rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-dark-border;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-full font-medium transition-colors duration-200;
+  }
+
+  .btn-primary {
+    @apply bg-honey-500 text-black hover:bg-honey-600;
+  }
+
+  .btn-secondary {
+    @apply bg-dark-elevated text-dark-text hover:bg-dark-hover border border-dark-border;
+  }
+
+  .btn-ghost {
+    @apply text-dark-text-secondary hover:text-dark-text hover:bg-dark-hover;
+  }
+
+  .card {
+    @apply bg-dark-card border border-dark-border rounded-lg;
+  }
+
+  .card-hover {
+    @apply hover:border-dark-hover transition-colors duration-200;
+  }
+
+  .input {
+    @apply bg-dark-elevated border border-dark-border rounded-lg px-4 py-2 text-dark-text
+           placeholder:text-dark-text-secondary focus:outline-none focus:ring-2 focus:ring-honey-500
+           focus:border-transparent transition-all duration-200;
+  }
+
+  .link {
+    @apply text-honey-500 hover:text-honey-400 transition-colors duration-200;
+  }
+
+  /* Vote button styles */
+  .vote-btn {
+    @apply p-1 rounded hover:bg-dark-hover transition-colors duration-200;
+  }
+
+  .vote-btn-up {
+    @apply hover:text-upvote;
+  }
+
+  .vote-btn-up.active {
+    @apply text-upvote;
+  }
+
+  .vote-btn-down {
+    @apply hover:text-downvote;
+  }
+
+  .vote-btn-down.active {
+    @apply text-downvote;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

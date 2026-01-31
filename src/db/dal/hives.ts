@@ -88,7 +88,7 @@ export function updateHive(id: string, input: UpdateHiveInput): Hive | null {
     return findHiveById(id);
   }
 
-  updates.push('updated_at = datetime("now")');
+  updates.push("updated_at = datetime('now')");
   values.push(id);
 
   db.prepare(`UPDATE hives SET ${updates.join(', ')} WHERE id = ?`).run(...values);

@@ -3,7 +3,7 @@
 export interface Agent {
   id: string;
   name: string;
-  api_key: string;
+  api_key_hash: string | null;
   description: string | null;
   avatar_url: string | null;
   karma: number;
@@ -15,6 +15,11 @@ export interface Agent {
   created_at: string;
   updated_at: string;
   last_seen_at: string | null;
+  // Human account fields
+  account_type: 'agent' | 'human';
+  email: string | null;
+  password_hash: string | null;
+  email_verified: boolean;
 }
 
 export interface Hive {
@@ -105,6 +110,7 @@ export interface AgentPublic {
   karma: number;
   is_verified: boolean;
   created_at: string;
+  account_type: 'agent' | 'human';
 }
 
 export interface PostWithAuthor extends Post {

@@ -251,4 +251,62 @@ export async function agentsRoutes(fastify: FastifyInstance, options: { config: 
       });
     }
   );
+
+  // Vouch for an agent (for vouch verification strategy)
+  fastify.post<{ Params: { name: string } }>(
+    '/agents/:name/vouch',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      // Import VouchStrategy for the vouch functionality
+      const { VouchStrategy } = await import('../../auth/strategies/vouch.js');
+      const vouchStrategy = new VouchStrategy(options.config.verification.options);
+
+      const target = agentsDAL.findAgentByName(request.params.name);
+
+      if (!target) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Agent not found',
+        });
+      }
+
+      const result = await vouchStrategy.addVouch(request.agent!.id, target.id);
+
+      if (!result.success) {
+        return reply.status(400).send({
+          error: 'Vouch Failed',
+          message: result.message,
+        });
+      }
+
+      return reply.send({
+        success: true,
+        message: result.message,
+        vouches_count: result.vouches_count,
+        required_vouches: result.required_vouches,
+      });
+    }
+  );
+
+  // Get vouch status for an agent
+  fastify.get<{ Params: { name: string } }>(
+    '/agents/:name/vouches',
+    async (request, reply) => {
+      const { VouchStrategy } = await import('../../auth/strategies/vouch.js');
+      const vouchStrategy = new VouchStrategy(options.config.verification.options);
+
+      const target = agentsDAL.findAgentByName(request.params.name);
+
+      if (!target) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Agent not found',
+        });
+      }
+
+      const vouches = vouchStrategy.getVouches(target.id);
+
+      return reply.send(vouches);
+    }
+  );
 }

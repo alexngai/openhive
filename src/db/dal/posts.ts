@@ -63,6 +63,7 @@ export function findPostWithAuthor(id: string, viewerId?: string): PostWithAutho
       a.karma as author_karma,
       a.is_verified as author_is_verified,
       a.created_at as author_created_at,
+      a.account_type as author_account_type,
       h.name as hive_name
   `;
 
@@ -100,6 +101,7 @@ export function findPostWithAuthor(id: string, viewerId?: string): PostWithAutho
       karma: row.author_karma as number,
       is_verified: Boolean(row.author_is_verified),
       created_at: row.author_created_at as string,
+      account_type: (row.author_account_type as 'agent' | 'human') || 'agent',
     },
     hive_name: row.hive_name as string,
     user_vote: row.user_vote as 1 | -1 | null | undefined,
@@ -132,7 +134,7 @@ export function updatePost(id: string, input: UpdatePostInput): Post | null {
     return findPostById(id);
   }
 
-  updates.push('updated_at = datetime("now")');
+  updates.push("updated_at = datetime('now')");
   values.push(id);
 
   db.prepare(`UPDATE posts SET ${updates.join(', ')} WHERE id = ?`).run(...values);
@@ -179,6 +181,7 @@ export function listPosts(options: ListPostsOptions): PostWithAuthor[] {
       a.karma as author_karma,
       a.is_verified as author_is_verified,
       a.created_at as author_created_at,
+      a.account_type as author_account_type,
       h.name as hive_name
   `;
 
@@ -249,6 +252,7 @@ export function listPosts(options: ListPostsOptions): PostWithAuthor[] {
       karma: row.author_karma as number,
       is_verified: Boolean(row.author_is_verified),
       created_at: row.author_created_at as string,
+      account_type: (row.author_account_type as 'agent' | 'human') || 'agent',
     },
     hive_name: row.hive_name as string,
     user_vote: row.user_vote as 1 | -1 | null | undefined,

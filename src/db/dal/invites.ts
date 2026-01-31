@@ -95,7 +95,7 @@ export function listInviteCodes(options: {
 
   if (options.active_only) {
     conditions.push('uses_left > 0');
-    conditions.push('(expires_at IS NULL OR expires_at > datetime("now"))');
+    conditions.push("(expires_at IS NULL OR expires_at > datetime('now'))");
   }
 
   let query = 'SELECT * FROM invite_codes';

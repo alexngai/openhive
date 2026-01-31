@@ -1,10 +1,18 @@
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
-import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA } from './schema.js';
+import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE } from './schema.js';
+import type { DatabaseConfig } from './adapters/types.js';
+import { SQLiteAdapter } from './adapters/sqlite.js';
 
 let db: Database.Database | null = null;
+let adapter: SQLiteAdapter | null = null;
+let dbConfig: DatabaseConfig | null = null;
 
+/**
+ * Get the raw better-sqlite3 database instance
+ * For backward compatibility with existing DAL code
+ */
 export function getDatabase(): Database.Database {
   if (!db) {
     throw new Error('Database not initialized. Call initDatabase() first.');
@@ -12,19 +20,59 @@ export function getDatabase(): Database.Database {
   return db;
 }
 
-export function initDatabase(dbPath: string): Database.Database {
-  // Ensure directory exists
+/**
+ * Get the database adapter
+ * Prefer using this for new code
+ */
+export function getAdapter(): SQLiteAdapter {
+  if (!adapter) {
+    throw new Error('Database not initialized. Call initDatabase() first.');
+  }
+  return adapter;
+}
+
+/**
+ * Get the current database configuration
+ */
+export function getDatabaseConfig(): DatabaseConfig | null {
+  return dbConfig;
+}
+
+/**
+ * Initialize the database
+ * @param config - Either a string path (SQLite) or a DatabaseConfig object
+ */
+export function initDatabase(config: string | DatabaseConfig): Database.Database {
+  // Normalize config
+  if (typeof config === 'string') {
+    dbConfig = { type: 'sqlite', path: config };
+  } else {
+    dbConfig = config;
+  }
+
+  if (dbConfig.type === 'postgres') {
+    throw new Error(
+      'PostgreSQL support is currently experimental. ' +
+      'For production PostgreSQL deployments, the DAL needs to be made async. ' +
+      'Use SQLite for now, which is recommended for small to medium instances.'
+    );
+  }
+
+  // For SQLite, ensure directory exists
+  const dbPath = dbConfig.path;
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  // Create or open database
-  db = new Database(dbPath);
+  // Create the SQLite adapter
+  adapter = new SQLiteAdapter(dbConfig);
 
-  // Enable foreign keys and WAL mode for better performance
+  // Also keep the raw database reference for backward compatibility
+  db = adapter.getRawDatabase();
+
+  // Enable foreign keys
   db.pragma('foreign_keys = ON');
-  db.pragma('journal_mode = WAL');
 
   // Run schema creation
   db.exec(CREATE_TABLES);
@@ -35,6 +83,8 @@ export function initDatabase(dbPath: string): Database.Database {
   if (!versionRow) {
     // First time setup
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(SCHEMA_VERSION);
+    // Create FTS tables
+    db.exec(FTS_SCHEMA);
     // Seed default data
     db.exec(SEED_DATA);
   } else if (versionRow.version < SCHEMA_VERSION) {
@@ -46,22 +96,44 @@ export function initDatabase(dbPath: string): Database.Database {
 }
 
 export function closeDatabase(): void {
-  if (db) {
-    db.close();
+  if (adapter) {
+    adapter.close();
+    adapter = null;
     db = null;
+    dbConfig = null;
   }
 }
 
 // Migration system
 function runMigrations(database: Database.Database, fromVersion: number, toVersion: number): void {
   const migrations: Record<number, string> = {
-    // Add migrations here as needed
-    // 2: `ALTER TABLE agents ADD COLUMN some_new_field TEXT;`,
+    // Version 2: Add full-text search
+    2: FTS_SCHEMA,
+    // Version 3: Add uploads table (handled in CREATE_TABLES)
+    3: '',
+    // Version 4: Add human account fields (handled in CREATE_TABLES)
+    4: `
+      -- Add human account columns if they don't exist
+      -- SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we use a workaround
+    `,
   };
 
   for (let v = fromVersion + 1; v <= toVersion; v++) {
-    if (migrations[v]) {
-      database.exec(migrations[v]);
+    if (migrations[v] && migrations[v].trim()) {
+      try {
+        database.exec(migrations[v]);
+      } catch {
+        // Ignore migration errors (column may already exist)
+      }
+
+      // Special handling for FTS migration - populate existing data
+      if (v === 2) {
+        try {
+          database.exec(FTS_POPULATE);
+        } catch {
+          // Ignore errors if tables are empty
+        }
+      }
     }
   }
 

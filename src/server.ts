@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
+import multipart from '@fastify/multipart';
 import * as path from 'path';
 import * as fs from 'fs';
 import { Config, loadConfig } from './config.js';
@@ -10,6 +11,7 @@ import { initDatabase, closeDatabase } from './db/index.js';
 import { registerRoutes } from './api/index.js';
 import { setupWebSocket, stopHeartbeat } from './realtime/index.js';
 import { generateSkillMd } from './skill.js';
+import { initializeStorage, type StorageConfig } from './storage/index.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -33,6 +35,18 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
   // Initialize database
   initDatabase(config.database);
+
+  // Initialize storage if configured
+  if (config.storage) {
+    initializeStorage(config.storage as StorageConfig);
+    // Ensure local upload directory exists
+    if (config.storage.type === 'local') {
+      const uploadPath = path.resolve(config.storage.path);
+      if (!fs.existsSync(uploadPath)) {
+        fs.mkdirSync(uploadPath, { recursive: true });
+      }
+    }
+  }
 
   // Create Fastify instance
   const fastify = Fastify({
@@ -62,6 +76,14 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
     });
   }
 
+  // Register multipart for file uploads
+  await fastify.register(multipart, {
+    limits: {
+      fileSize: 5 * 1024 * 1024, // 5MB
+      files: 1, // Only one file at a time
+    },
+  });
+
   // Register WebSocket
   await fastify.register(websocket);
 
@@ -77,24 +99,42 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
     return reply.type('text/markdown').send(skillMd);
   });
 
-  // Serve admin panel static files (if they exist)
-  const adminPath = path.join(__dirname, 'admin', 'dist');
-  if (fs.existsSync(adminPath)) {
+  // Serve uploaded files from local storage
+  if (config.storage?.type === 'local') {
+    const uploadPath = path.resolve(config.storage.path);
     await fastify.register(fastifyStatic, {
-      root: adminPath,
-      prefix: '/admin/',
+      root: uploadPath,
+      prefix: config.storage.publicUrl,
+      decorateReply: false,
+    });
+  }
+
+  // Serve web UI static files (if they exist)
+  const webPath = path.join(__dirname, 'web');
+  const webPathAlt = path.join(__dirname, '..', 'dist', 'web');
+  const actualWebPath = fs.existsSync(webPath) ? webPath : fs.existsSync(webPathAlt) ? webPathAlt : null;
+
+  if (actualWebPath) {
+    await fastify.register(fastifyStatic, {
+      root: actualWebPath,
+      prefix: '/',
       decorateReply: false,
     });
 
-    // SPA fallback for admin routes
+    // SPA fallback for all non-API routes
     fastify.setNotFoundHandler((request, reply) => {
-      if (request.url.startsWith('/admin')) {
-        return reply.sendFile('index.html', adminPath);
+      // Don't serve SPA for API routes or skill.md
+      if (request.url.startsWith('/api') || request.url === '/skill.md' || request.url.startsWith('/.well-known')) {
+        return reply.status(404).send({ error: 'Not Found' });
       }
-      return reply.status(404).send({ error: 'Not Found' });
+      // Serve index.html for SPA routes
+      return reply.sendFile('index.html', actualWebPath);
     });
   } else {
-    // Serve inline admin panel if no built files
+    // Serve inline admin panel if no built web UI
+    fastify.get('/', async (_request, reply) => {
+      return reply.type('text/html').send(getWelcomeHtml(config));
+    });
     fastify.get('/admin', async (_request, reply) => {
       return reply.type('text/html').send(getInlineAdminHtml(config));
     });
@@ -105,14 +145,25 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
   // Federation discovery (stub)
   fastify.get('/.well-known/openhive.json', async (_request, reply) => {
+    // Get stats from database
+    const db = require('./db/index.js').getDatabase();
+    const agentCount = db.prepare('SELECT COUNT(*) as count FROM agents').get() as { count: number };
+    const postCount = db.prepare('SELECT COUNT(*) as count FROM posts').get() as { count: number };
+    const hiveCount = db.prepare('SELECT COUNT(*) as count FROM hives').get() as { count: number };
+
     return reply.send({
-      version: '0.1.0',
+      version: '0.2.0',
       name: config.instance.name,
       description: config.instance.description,
       url: config.instance.url,
       federation: {
         enabled: config.federation.enabled,
         protocol_version: '1.0',
+      },
+      stats: {
+        agents: agentCount.count,
+        posts: postCount.count,
+        hives: hiveCount.count,
       },
       endpoints: {
         api: '/api/v1',
@@ -142,6 +193,32 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   };
 
   return server;
+}
+
+function getWelcomeHtml(config: Config): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${config.instance.name}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex items-center justify-center">
+  <div class="text-center p-8">
+    <div class="text-6xl mb-4">🐝</div>
+    <h1 class="text-4xl font-bold text-amber-400 mb-2">${config.instance.name}</h1>
+    <p class="text-gray-400 mb-8">${config.instance.description}</p>
+    <div class="space-y-4">
+      <p class="text-sm text-gray-500">Web UI not built. Run <code class="bg-gray-800 px-2 py-1 rounded">npm run build:web</code> to build it.</p>
+      <div class="flex gap-4 justify-center">
+        <a href="/skill.md" class="bg-amber-500 hover:bg-amber-600 text-black font-bold px-6 py-3 rounded-lg">View API Docs</a>
+        <a href="/admin" class="bg-gray-700 hover:bg-gray-600 text-white font-bold px-6 py-3 rounded-lg">Admin Panel</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
 }
 
 function getInlineAdminHtml(config: Config): string {

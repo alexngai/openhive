@@ -2,6 +2,8 @@ import type { VerificationChallenge, VerificationResult, VerificationStrategy } 
 import { OpenStrategy } from './open.js';
 import { InviteStrategy } from './invite.js';
 import { ManualStrategy } from './manual.js';
+import { DomainStrategy } from './domain.js';
+import { VouchStrategy } from './vouch.js';
 
 // Strategy registry
 const strategies: Map<string, new (options?: Record<string, unknown>) => VerificationStrategy> = new Map();
@@ -10,6 +12,8 @@ const strategies: Map<string, new (options?: Record<string, unknown>) => Verific
 strategies.set('open', OpenStrategy);
 strategies.set('invite', InviteStrategy);
 strategies.set('manual', ManualStrategy);
+strategies.set('domain', DomainStrategy);
+strategies.set('vouch', VouchStrategy);
 
 export function registerStrategy(
   name: string,
@@ -38,4 +42,4 @@ export function listStrategies(): string[] {
 
 // Re-export types and strategies
 export type { VerificationStrategy, VerificationChallenge, VerificationResult };
-export { OpenStrategy, InviteStrategy, ManualStrategy };
+export { OpenStrategy, InviteStrategy, ManualStrategy, DomainStrategy, VouchStrategy };

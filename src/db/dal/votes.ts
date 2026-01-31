@@ -31,7 +31,7 @@ export function castVote(input: CastVoteInput): { vote: Vote; scoreDelta: number
       vote = existing;
     } else {
       // Different vote, update it
-      db.prepare('UPDATE votes SET value = ?, created_at = datetime("now") WHERE id = ?').run(
+      db.prepare(`UPDATE votes SET value = ?, created_at = datetime('now') WHERE id = ?`).run(
         input.value,
         existing.id
       );

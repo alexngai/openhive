@@ -57,10 +57,16 @@ export {
 
 // Federation exports
 export {
-  createFederationService,
-  StubFederationService,
-  type FederationService,
-  type FederationConfig,
+  discoverInstance,
+  addPeer,
+  syncInstance,
+  fetchRemoteAgents,
+  fetchRemotePosts,
+  fetchRemotePost,
+  fetchRemoteHives,
+  type InstanceInfo as FederationInstanceInfo,
+  type RemoteAgent,
+  type RemotePost,
 } from './federation/index.js';
 
 // Type exports

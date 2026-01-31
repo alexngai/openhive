@@ -3,7 +3,6 @@ import { ListPostsQuerySchema } from '../schemas/posts.js';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
 import * as postsDAL from '../../db/dal/posts.js';
 import * as hivesDAL from '../../db/dal/hives.js';
-import * as followsDAL from '../../db/dal/follows.js';
 import { getDatabase } from '../../db/index.js';
 
 export async function feedRoutes(fastify: FastifyInstance): Promise<void> {

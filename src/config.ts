@@ -2,11 +2,59 @@ import { z } from 'zod';
 import * as path from 'path';
 import * as fs from 'fs';
 
+// Storage configuration schema
+const LocalStorageSchema = z.object({
+  type: z.literal('local'),
+  path: z.string().default('./uploads'),
+  publicUrl: z.string().default('/uploads'),
+});
+
+const S3StorageSchema = z.object({
+  type: z.literal('s3'),
+  bucket: z.string(),
+  region: z.string(),
+  accessKeyId: z.string(),
+  secretAccessKey: z.string(),
+  endpoint: z.string().optional(),
+  publicUrl: z.string().optional(),
+});
+
+const StorageSchema = z.discriminatedUnion('type', [
+  LocalStorageSchema,
+  S3StorageSchema,
+]).optional();
+
+// Database configuration schema
+const SQLiteDatabaseSchema = z.object({
+  type: z.literal('sqlite'),
+  path: z.string().default('./data/openhive.db'),
+});
+
+const PostgresDatabaseSchema = z.object({
+  type: z.literal('postgres'),
+  host: z.string(),
+  port: z.number().default(5432),
+  database: z.string(),
+  user: z.string(),
+  password: z.string(),
+  ssl: z.boolean().optional(),
+  pool: z.object({
+    min: z.number().optional(),
+    max: z.number().optional(),
+  }).optional(),
+});
+
+const DatabaseSchema = z.union([
+  z.string(), // Simple path for SQLite (backward compatible)
+  SQLiteDatabaseSchema,
+  PostgresDatabaseSchema,
+]).default('./data/openhive.db');
+
 // Configuration schema
 export const ConfigSchema = z.object({
   port: z.number().default(3000),
   host: z.string().default('0.0.0.0'),
-  database: z.string().default('./data/openhive.db'),
+  database: DatabaseSchema,
 
   instance: z.object({
     name: z.string().default('OpenHive'),
@@ -39,6 +87,13 @@ export const ConfigSchema = z.object({
   cors: z.object({
     enabled: z.boolean().default(true),
     origin: z.union([z.string(), z.array(z.string()), z.boolean()]).default(true),
+  }).default({}),
+
+  storage: StorageSchema,
+
+  jwt: z.object({
+    secret: z.string().optional(),
+    expiresIn: z.string().default('7d'),
   }).default({}),
 });
 
@@ -103,6 +158,15 @@ export function loadConfig(configPath?: string): Config {
   if (process.env.OPENHIVE_VERIFICATION) {
     rawConfig.verification = { ...rawConfig.verification, strategy: process.env.OPENHIVE_VERIFICATION };
   }
+  if (process.env.OPENHIVE_JWT_SECRET) {
+    rawConfig.jwt = { ...rawConfig.jwt, secret: process.env.OPENHIVE_JWT_SECRET };
+  }
+
+  // Generate a default JWT secret if not provided (for development)
+  if (!rawConfig.jwt?.secret) {
+    // Generate a random secret - in production, this should be set explicitly
+    rawConfig.jwt = { ...rawConfig.jwt, secret: require('crypto').randomBytes(32).toString('hex') };
+  }
 
   // Let zod apply defaults and validate
   return ConfigSchema.parse(rawConfig);
@@ -150,6 +214,24 @@ module.exports = {
     enabled: true,
     origin: true, // Allow all origins, or specify: ['https://example.com']
   },
+
+  // Storage configuration for media uploads
+  // Uncomment to enable file uploads
+  // storage: {
+  //   type: 'local',
+  //   path: './uploads',
+  //   publicUrl: '/uploads',
+  // },
+  // Or use S3-compatible storage:
+  // storage: {
+  //   type: 's3',
+  //   bucket: 'your-bucket',
+  //   region: 'us-east-1',
+  //   accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  //   secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  //   // endpoint: 'https://s3.amazonaws.com', // Optional: for MinIO or other S3-compatible services
+  //   // publicUrl: 'https://cdn.example.com', // Optional: custom CDN URL
+  // },
 };
 `;
 }

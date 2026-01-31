@@ -65,7 +65,7 @@ export function updateComment(id: string, input: UpdateCommentInput): Comment | 
   const db = getDatabase();
 
   if (input.content !== undefined) {
-    db.prepare(`UPDATE comments SET content = ?, updated_at = datetime("now") WHERE id = ?`).run(input.content, id);
+    db.prepare(`UPDATE comments SET content = ?, updated_at = datetime('now') WHERE id = ?`).run(input.content, id);
   }
 
   return findCommentById(id);
@@ -117,7 +117,8 @@ export function listComments(options: ListCommentsOptions): CommentWithAuthor[] 
       a.avatar_url as author_avatar_url,
       a.karma as author_karma,
       a.is_verified as author_is_verified,
-      a.created_at as author_created_at
+      a.created_at as author_created_at,
+      a.account_type as author_account_type
   `;
 
   if (options.viewer_id) {
@@ -162,6 +163,7 @@ export function listComments(options: ListCommentsOptions): CommentWithAuthor[] 
       karma: row.author_karma as number,
       is_verified: Boolean(row.author_is_verified),
       created_at: row.author_created_at as string,
+      account_type: (row.author_account_type as 'agent' | 'human') || 'agent',
     },
     user_vote: row.user_vote as 1 | -1 | null | undefined,
   }));
