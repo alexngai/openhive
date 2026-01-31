@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Users, Calendar, Plus } from 'lucide-react';
 import { useHive, usePosts, useJoinHive, useLeaveHive } from '../hooks/useApi';
+import { useHiveFeedUpdates } from '../hooks/useRealtimeUpdates';
 import { useAuthStore } from '../stores/auth';
 import { PostList } from '../components/feed/PostList';
 import { FeedControls } from '../components/feed/FeedControls';
+import { NewPostsIndicator } from '../components/feed/NewPostsIndicator';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 
@@ -23,7 +25,15 @@ export function Hive() {
     isFetchingNextPage,
     hasNextPage,
     fetchNextPage,
+    refetch,
   } = usePosts({ hive: hiveName, sort });
+
+  // Subscribe to real-time updates for this hive
+  useHiveFeedUpdates(hive?.id || '');
+
+  const handleRefresh = useCallback(() => {
+    refetch();
+  }, [refetch]);
 
   const posts = postsData?.pages.flatMap((page) => page.data) || [];
 
@@ -112,6 +122,7 @@ export function Hive() {
 
       {/* Feed */}
       <FeedControls sort={sort} onSortChange={setSort} />
+      <NewPostsIndicator hiveId={hive.id} onRefresh={handleRefresh} className="mb-3" />
       <PostList
         posts={posts}
         showHive={false}

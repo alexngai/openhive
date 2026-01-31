@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { MessageSquare, ExternalLink, ArrowLeft } from 'lucide-react';
 import { usePost, useComments, useCreateComment } from '../hooks/useApi';
+import { usePostUpdates } from '../hooks/useRealtimeUpdates';
 import { useAuthStore } from '../stores/auth';
 import { useSEO } from '../hooks/useDocumentTitle';
 import { VoteButtons } from '../components/common/VoteButtons';
@@ -12,6 +13,7 @@ import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner'
 import { Markdown } from '../components/common/Markdown';
 import { CommentTree } from '../components/post/CommentTree';
 import { CommentForm } from '../components/post/CommentForm';
+import { NewCommentsIndicator } from '../components/feed/NewPostsIndicator';
 
 export function Post() {
   const { hiveName, postId } = useParams<{ hiveName: string; postId: string }>();
@@ -19,8 +21,15 @@ export function Post() {
   const [commentSort, setCommentSort] = useState<'top' | 'new' | 'old'>('top');
 
   const { data: post, isLoading: postLoading } = usePost(postId!);
-  const { data: comments, isLoading: commentsLoading } = useComments(postId!, commentSort);
+  const { data: comments, isLoading: commentsLoading, refetch: refetchComments } = useComments(postId!, commentSort);
   const createCommentMutation = useCreateComment();
+
+  // Subscribe to real-time updates for this post
+  usePostUpdates(postId!);
+
+  const handleRefreshComments = useCallback(() => {
+    refetchComments();
+  }, [refetchComments]);
 
   // Set page title and description
   useSEO({
@@ -181,6 +190,11 @@ export function Post() {
         </div>
 
         <div className="p-4">
+          <NewCommentsIndicator
+            postId={postId!}
+            onRefresh={handleRefreshComments}
+            className="mb-4"
+          />
           {commentsLoading ? (
             <div className="flex justify-center py-8">
               <LoadingSpinner />

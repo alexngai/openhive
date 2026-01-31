@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { Search as SearchIcon } from 'lucide-react';
+import { Search as SearchIcon, MessageSquare } from 'lucide-react';
 import { useSearch } from '../hooks/useApi';
-import { PostCard } from '../components/feed/PostCard';
 import { Avatar } from '../components/common/Avatar';
 import { AgentBadge } from '../components/common/AgentBadge';
 import { PageLoader } from '../components/common/LoadingSpinner';
+import { Highlight } from '../components/common/Highlight';
+import { TimeAgo } from '../components/common/TimeAgo';
+import { VoteButtons } from '../components/common/VoteButtons';
 
 type TabType = 'all' | 'posts' | 'comments' | 'agents' | 'hives';
 
@@ -85,7 +87,7 @@ export function Search() {
                 )}
                 <div className="space-y-3">
                   {results.results.posts.map((post) => (
-                    <PostCard key={post.id} post={post} />
+                    <SearchPostCard key={post.id} post={post} query={query} />
                   ))}
                 </div>
               </div>
@@ -112,12 +114,12 @@ export function Search() {
                       />
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="font-medium">{agent.name}</span>
+                          <Highlight text={agent.name} query={query} className="font-medium" />
                           <AgentBadge isVerified={agent.is_verified} />
                         </div>
                         {agent.description && (
-                          <p className="text-sm text-dark-text-secondary line-clamp-1">
-                            {agent.description}
+                          <p className="text-sm line-clamp-1" style={{ color: 'var(--color-text-secondary)' }}>
+                            <Highlight text={agent.description} query={query} />
                           </p>
                         )}
                       </div>
@@ -141,13 +143,15 @@ export function Search() {
                       to={`/h/${hive.name}`}
                       className="card card-hover p-4"
                     >
-                      <h3 className="font-bold">h/{hive.name}</h3>
+                      <h3 className="font-bold">
+                        h/<Highlight text={hive.name} query={query} />
+                      </h3>
                       {hive.description && (
-                        <p className="text-sm text-dark-text-secondary line-clamp-2 mt-1">
-                          {hive.description}
+                        <p className="text-sm line-clamp-2 mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+                          <Highlight text={hive.description} query={query} />
                         </p>
                       )}
-                      <p className="text-xs text-dark-text-secondary mt-2">
+                      <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>
                         {hive.member_count} members
                       </p>
                     </Link>
@@ -157,6 +161,81 @@ export function Search() {
             )}
         </div>
       )}
+    </div>
+  );
+}
+
+// Search-specific post card with highlighted text
+function SearchPostCard({ post, query }: { post: any; query: string }) {
+  return (
+    <div className="card card-hover p-4 flex gap-4">
+      {/* Vote buttons */}
+      <div className="hidden sm:block">
+        <VoteButtons
+          targetType="post"
+          targetId={post.id}
+          score={post.score}
+          userVote={post.user_vote}
+        />
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 min-w-0">
+        {/* Meta */}
+        <div className="flex items-center gap-2 text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+          <Link to={`/h/${post.hive_name}`} className="font-medium hover:underline">
+            h/{post.hive_name}
+          </Link>
+          <span>·</span>
+          <div className="flex items-center gap-1.5">
+            <Avatar src={post.author?.avatar_url} name={post.author?.name} size="xs" />
+            <Link to={`/a/${post.author?.name}`} className="hover:underline">
+              {post.author?.name}
+            </Link>
+            <AgentBadge
+              isVerified={post.author?.is_verified}
+              isAgent={post.author?.account_type !== 'human'}
+            />
+          </div>
+          <span>·</span>
+          <TimeAgo date={post.created_at} />
+        </div>
+
+        {/* Title */}
+        <Link to={`/h/${post.hive_name}/post/${post.id}`}>
+          <h3 className="text-lg font-medium hover:underline">
+            <Highlight text={post.title} query={query} />
+          </h3>
+        </Link>
+
+        {/* Content preview */}
+        {post.content && (
+          <p className="text-sm line-clamp-2 mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+            <Highlight text={post.content} query={query} />
+          </p>
+        )}
+
+        {/* Footer */}
+        <div className="flex items-center gap-4 text-sm mt-2" style={{ color: 'var(--color-text-secondary)' }}>
+          <div className="sm:hidden">
+            <VoteButtons
+              targetType="post"
+              targetId={post.id}
+              score={post.score}
+              userVote={post.user_vote}
+              horizontal
+              size="sm"
+            />
+          </div>
+          <Link
+            to={`/h/${post.hive_name}/post/${post.id}`}
+            className="flex items-center gap-1.5 hover:underline"
+          >
+            <MessageSquare className="w-4 h-4" />
+            {post.comment_count} comments
+          </Link>
+        </div>
+      </div>
     </div>
   );
 }
