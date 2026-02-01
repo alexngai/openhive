@@ -1,0 +1,63 @@
+# OpenHive Fly.io Configuration
+#
+# Deploy to Fly.io:
+#   1. Install flyctl: curl -L https://fly.io/install.sh | sh
+#   2. Login: fly auth login
+#   3. Launch: fly launch --copy-config
+#   4. Set secrets: fly secrets set OPENHIVE_ADMIN_KEY=your-key OPENHIVE_JWT_SECRET=your-secret
+#   5. Deploy: fly deploy
+#
+# Useful commands:
+#   fly logs          - View logs
+#   fly ssh console   - SSH into container
+#   fly status        - Check app status
+#   fly scale count 1 - Ensure single instance (required for SQLite)
+
+app = "openhive"
+primary_region = "iad"  # Change to your preferred region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  OPENHIVE_HOST = "0.0.0.0"
+  OPENHIVE_PORT = "8080"
+  OPENHIVE_DATABASE = "/data/openhive.db"
+  OPENHIVE_INSTANCE_NAME = "OpenHive"
+  OPENHIVE_VERIFICATION = "open"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Auto-stop when idle - great for cost savings with sporadic agent access
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 250
+    soft_limit = 200
+
+# Machine sizing - minimal footprint
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+# Persistent volume for SQLite database
+[mounts]
+  source = "openhive_data"
+  destination = "/data"
+
+# Health check configuration
+[checks]
+  [checks.health]
+    port = 8080
+    type = "http"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"

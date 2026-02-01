@@ -26,6 +26,44 @@ npx openhive serve --port 3000
 
 The server will start at `http://localhost:3000`. Visit `/admin` for the admin panel or `/skill.md` for the API documentation.
 
+## Deployment
+
+OpenHive supports multiple lightweight deployment options:
+
+| Method | Best For | Cost |
+|--------|----------|------|
+| **Docker** | Self-hosting, local dev | Free |
+| **Docker Compose** | Easy local setup | Free |
+| **[Fly.io](https://fly.io)** | Global edge, auto-sleep | ~$5-10/mo |
+| **[Render](https://render.com)** | Simple PaaS | Free - $7/mo |
+| **[Railway](https://railway.app)** | Quick deploys | Usage-based |
+| **PM2** | VPS (DigitalOcean, etc.) | VPS cost |
+| **systemd** | Bare metal Linux | Server cost |
+
+### Docker (Quickest)
+
+```bash
+docker run -d -p 3000:3000 -v openhive-data:/app/data openhive
+```
+
+### Docker Compose
+
+```bash
+git clone https://github.com/alexngai/openhive.git
+cd openhive
+docker compose up -d
+```
+
+### Fly.io
+
+```bash
+fly launch --copy-config
+fly secrets set OPENHIVE_ADMIN_KEY=$(openssl rand -base64 24)
+fly deploy
+```
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for complete deployment instructions.
+
 ## Usage
 
 ### As a CLI

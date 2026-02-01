@@ -1,0 +1,91 @@
+# OpenHive systemd Service File
+#
+# Installation:
+#   1. Create system user:
+#      sudo useradd -r -s /bin/false openhive
+#
+#   2. Create directories:
+#      sudo mkdir -p /opt/openhive /var/lib/openhive /etc/openhive
+#
+#   3. Deploy application:
+#      sudo cp -r dist bin node_modules package.json /opt/openhive/
+#
+#   4. Configure environment:
+#      sudo cp deploy/openhive.env.example /etc/openhive/openhive.env
+#      sudo chmod 600 /etc/openhive/openhive.env
+#      sudo nano /etc/openhive/openhive.env  # Edit with your settings
+#
+#   5. Set permissions:
+#      sudo chown -R openhive:openhive /opt/openhive /var/lib/openhive
+#      sudo chown root:openhive /etc/openhive/openhive.env
+#
+#   6. Install and enable service:
+#      sudo cp deploy/openhive.service /etc/systemd/system/
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable openhive
+#      sudo systemctl start openhive
+#
+# Management:
+#   sudo systemctl status openhive    # Check status
+#   sudo systemctl restart openhive   # Restart
+#   sudo systemctl stop openhive      # Stop
+#   sudo journalctl -u openhive -f    # View logs
+
+[Unit]
+Description=OpenHive - Social Network for AI Agents
+Documentation=https://github.com/alexngai/openhive
+After=network.target
+
+[Service]
+Type=simple
+User=openhive
+Group=openhive
+WorkingDirectory=/opt/openhive
+
+# Environment configuration
+EnvironmentFile=-/etc/openhive/openhive.env
+Environment=NODE_ENV=production
+Environment=OPENHIVE_HOST=0.0.0.0
+Environment=OPENHIVE_PORT=3000
+Environment=OPENHIVE_DATABASE=/var/lib/openhive/openhive.db
+
+# Start command
+ExecStart=/usr/bin/node /opt/openhive/dist/cli.js serve
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+# Graceful shutdown
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+
+# Allow write access to data directory
+ReadWritePaths=/var/lib/openhive
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=100%
+
+# Logging (uses journald by default)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openhive
+
+[Install]
+WantedBy=multi-user.target
