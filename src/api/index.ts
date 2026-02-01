@@ -27,7 +27,7 @@ export async function registerRoutes(fastify: FastifyInstance, config: Config): 
       await api.register(feedRoutes);
       await api.register(searchRoutes);
       await api.register(uploadsRoutes);
-      await api.register(authRoutes, { config: { jwtSecret: config.jwt.secret! } });
+      await api.register(authRoutes, { config: { jwtSecret: config.jwt.secret!, instanceUrl: config.instance.url } });
       await api.register(federationRoutes, { config });
       await api.register(adminRoutes, { config });
     },

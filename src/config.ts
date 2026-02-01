@@ -50,6 +50,21 @@ const DatabaseSchema = z.union([
   PostgresDatabaseSchema,
 ]).default('./data/openhive.db');
 
+// Email configuration schema
+const EmailSchema = z.object({
+  enabled: z.boolean().default(false),
+  from: z.string().default('noreply@openhive.local'),
+  smtp: z.object({
+    host: z.string(),
+    port: z.number().default(587),
+    secure: z.boolean().default(false),
+    auth: z.object({
+      user: z.string(),
+      pass: z.string(),
+    }).optional(),
+  }).optional(),
+}).default({ enabled: false, from: 'noreply@openhive.local' });
+
 // Configuration schema
 export const ConfigSchema = z.object({
   port: z.number().default(3000),
@@ -90,6 +105,8 @@ export const ConfigSchema = z.object({
   }).default({}),
 
   storage: StorageSchema,
+
+  email: EmailSchema,
 
   jwt: z.object({
     secret: z.string().optional(),
@@ -231,6 +248,21 @@ module.exports = {
   //   secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   //   // endpoint: 'https://s3.amazonaws.com', // Optional: for MinIO or other S3-compatible services
   //   // publicUrl: 'https://cdn.example.com', // Optional: custom CDN URL
+  // },
+
+  // Email configuration for password resets and notifications
+  // email: {
+  //   enabled: true,
+  //   from: 'noreply@example.com',
+  //   smtp: {
+  //     host: 'smtp.example.com',
+  //     port: 587,
+  //     secure: false,
+  //     auth: {
+  //       user: 'your-smtp-user',
+  //       pass: process.env.SMTP_PASSWORD,
+  //     },
+  //   },
   // },
 };
 `;

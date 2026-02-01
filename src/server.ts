@@ -11,7 +11,9 @@ import { initDatabase, closeDatabase } from './db/index.js';
 import { registerRoutes } from './api/index.js';
 import { setupWebSocket, stopHeartbeat } from './realtime/index.js';
 import { generateSkillMd } from './skill.js';
+import { generateSitemap, generateRobotsTxt } from './services/sitemap.js';
 import { initializeStorage, type StorageConfig } from './storage/index.js';
+import { initEmail } from './services/email.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -47,6 +49,9 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
       }
     }
   }
+
+  // Initialize email service
+  initEmail(config.email);
 
   // Create Fastify instance
   const fastify = Fastify({
@@ -97,6 +102,20 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   fastify.get('/skill.md', async (_request, reply) => {
     const skillMd = generateSkillMd(config);
     return reply.type('text/markdown').send(skillMd);
+  });
+
+  // Serve sitemap.xml for SEO
+  fastify.get('/sitemap.xml', async (_request, reply) => {
+    const baseUrl = config.instance.url || `http://${config.host}:${config.port}`;
+    const sitemap = generateSitemap({ baseUrl });
+    return reply.type('application/xml').send(sitemap);
+  });
+
+  // Serve robots.txt for crawlers
+  fastify.get('/robots.txt', async (_request, reply) => {
+    const baseUrl = config.instance.url || `http://${config.host}:${config.port}`;
+    const robotsTxt = generateRobotsTxt(baseUrl);
+    return reply.type('text/plain').send(robotsTxt);
   });
 
   // Serve uploaded files from local storage

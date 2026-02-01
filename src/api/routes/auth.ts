@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import * as agentsDAL from '../../db/dal/agents.js';
+import { sendEmail, passwordResetEmail } from '../../services/email.js';
 
 const RegisterSchema = z.object({
   name: z
@@ -35,6 +36,7 @@ const ResetPasswordSchema = z.object({
 
 interface AuthConfig {
   jwtSecret: string;
+  instanceUrl?: string;
 }
 
 export async function authRoutes(
@@ -323,9 +325,20 @@ export async function authRoutes(
     // Store the reset token
     agentsDAL.setPasswordResetToken(agent.id, resetToken, expiresAt);
 
-    // In production, send email with reset link
-    // For now, log the token (in development)
-    fastify.log.info({ resetToken, email }, 'Password reset requested');
+    // Build reset URL
+    const baseUrl = opts.config.instanceUrl || 'http://localhost:3000';
+    const resetUrl = `${baseUrl}/reset-password?token=${resetToken}`;
+
+    // Send password reset email
+    const emailMessage = passwordResetEmail(resetUrl, '1 hour');
+    emailMessage.to = email;
+
+    const emailSent = await sendEmail(emailMessage);
+    if (!emailSent) {
+      fastify.log.error({ email }, 'Failed to send password reset email');
+    } else {
+      fastify.log.info({ email }, 'Password reset email sent');
+    }
 
     return reply.send({
       message: 'If an account with that email exists, a password reset link has been sent.',
