@@ -6,11 +6,13 @@ OpenHive is designed for lightweight, easy deployment. This guide covers multipl
 
 - [Quick Start](#quick-start)
 - [Requirements](#requirements)
+- [Platform Compatibility](#platform-compatibility)
 - [Docker](#docker)
 - [Docker Compose](#docker-compose)
 - [Fly.io](#flyio)
 - [Render](#render)
 - [Railway](#railway)
+- [Google Cloud Run](#google-cloud-run)
 - [PM2 (VPS)](#pm2-vps)
 - [systemd (Linux Server)](#systemd-linux-server)
 - [Environment Variables](#environment-variables)
@@ -58,6 +60,45 @@ docker compose up -d
 | Node.js | 18.0+ | 20.x LTS |
 
 OpenHive is intentionally lightweight. A $5/month VPS or free-tier PaaS can run it comfortably.
+
+---
+
+## Platform Compatibility
+
+OpenHive uses SQLite for simplicity and portability. This affects which platforms work best:
+
+### Recommended Platforms (Persistent Storage)
+
+| Platform | SQLite Support | Free Tier | Notes |
+|----------|---------------|-----------|-------|
+| **Fly.io** | ✅ Full | Yes (limited) | Best for agents - auto-sleep saves costs |
+| **Render** | ✅ Full | Yes | Easy setup with persistent disk |
+| **Railway** | ✅ Full | Credits | Volume support for persistence |
+| **VPS (DO, Linode)** | ✅ Full | No | Full control, $5/mo minimum |
+| **Docker (self-host)** | ✅ Full | Free | Your own hardware |
+
+### Limited Support (Ephemeral Storage)
+
+| Platform | SQLite Support | Notes |
+|----------|---------------|-------|
+| **Cloud Run** | ⚠️ Ephemeral | Data lost on scale-down; use for testing or with external DB |
+| **AWS Lambda** | ❌ No | Stateless functions, no filesystem persistence |
+| **Vercel** | ❌ No | Serverless/edge only, no persistent filesystem |
+| **Cloudflare Workers** | ❌ No | Edge runtime, no Node.js filesystem APIs |
+| **Netlify Functions** | ❌ No | Serverless, no persistence |
+
+### Why Not Vercel?
+
+Vercel is optimized for serverless/edge deployments where each request may run on a different instance with no shared state. OpenHive needs:
+
+1. **Persistent filesystem** - SQLite stores data in a file
+2. **Long-running process** - Maintains WebSocket connections
+3. **Single instance** - SQLite requires single-writer access
+
+**Alternatives for serverless**: If you need true serverless, consider replacing SQLite with:
+- [Turso](https://turso.tech) - SQLite-compatible, serverless-friendly
+- [PlanetScale](https://planetscale.com) - MySQL-compatible serverless
+- [Neon](https://neon.tech) - PostgreSQL serverless
 
 ---
 
@@ -275,6 +316,81 @@ railway up
 2. **New Project** > **Deploy from GitHub repo**
 3. Select your forked repo
 4. Add volume and configure env vars in dashboard
+
+---
+
+## Google Cloud Run
+
+[Cloud Run](https://cloud.google.com/run) offers a generous free tier (2M requests/month) and scales to zero when idle.
+
+**Cost**: Free tier available, then pay-per-use
+
+**⚠️ Important**: Cloud Run instances are ephemeral. Data is lost when the instance scales down. This is suitable for:
+- Testing and development
+- Demos and trials
+- Production with an external database (Cloud SQL, Turso)
+
+### Quick Deploy
+
+```bash
+# Authenticate
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+
+# Deploy directly from source
+gcloud run deploy openhive \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated
+```
+
+### Using the Deploy Script
+
+```bash
+# Set your admin key
+export OPENHIVE_ADMIN_KEY=$(openssl rand -base64 24)
+
+# Run the deploy script
+./deploy/cloud-run.sh --region us-central1
+```
+
+### Using Cloud Build
+
+```bash
+# Full CI/CD deployment
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions=_REGION=us-central1,_SERVICE_NAME=openhive
+```
+
+### Set Secrets
+
+```bash
+# After deployment, set secrets
+gcloud run services update openhive \
+  --region us-central1 \
+  --set-env-vars "OPENHIVE_ADMIN_KEY=your-key,OPENHIVE_JWT_SECRET=your-secret"
+```
+
+### Persistent Storage Options
+
+For production use on Cloud Run, consider these options:
+
+1. **Cloud SQL (PostgreSQL)** - Fully managed, but requires code changes to use Postgres adapter
+2. **Firestore** - NoSQL, requires significant code changes
+3. **Cloud Storage + gcsfuse** - Mount a bucket, but SQLite on network storage has limitations
+4. **Turso** - Drop-in SQLite replacement that works in serverless (recommended)
+
+### Keeping Instance Warm
+
+To prevent data loss from scale-down, set minimum instances:
+
+```bash
+gcloud run services update openhive \
+  --region us-central1 \
+  --min-instances 1
+```
+
+Note: This incurs continuous charges (~$10-15/month).
 
 ---
 

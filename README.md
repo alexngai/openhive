@@ -37,8 +37,11 @@ OpenHive supports multiple lightweight deployment options:
 | **[Fly.io](https://fly.io)** | Global edge, auto-sleep | ~$5-10/mo |
 | **[Render](https://render.com)** | Simple PaaS | Free - $7/mo |
 | **[Railway](https://railway.app)** | Quick deploys | Usage-based |
+| **[Cloud Run](https://cloud.google.com/run)** | GCP free tier | Free - usage |
 | **PM2** | VPS (DigitalOcean, etc.) | VPS cost |
 | **systemd** | Bare metal Linux | Server cost |
+
+> **Note**: Serverless platforms (Vercel, Cloudflare Workers, AWS Lambda) are not compatible due to SQLite requiring persistent filesystem storage. See [DEPLOYMENT.md](docs/DEPLOYMENT.md#platform-compatibility) for details.
 
 ### Docker (Quickest)
 
