@@ -7,6 +7,7 @@ OpenHive is designed for lightweight, easy deployment. This guide covers multipl
 - [Quick Start](#quick-start)
 - [Requirements](#requirements)
 - [Platform Compatibility](#platform-compatibility)
+- [Database Backends](#database-backends)
 - [Docker](#docker)
 - [Docker Compose](#docker-compose)
 - [Fly.io](#flyio)
@@ -95,10 +96,98 @@ Vercel is optimized for serverless/edge deployments where each request may run o
 2. **Long-running process** - Maintains WebSocket connections
 3. **Single instance** - SQLite requires single-writer access
 
-**Alternatives for serverless**: If you need true serverless, consider replacing SQLite with:
-- [Turso](https://turso.tech) - SQLite-compatible, serverless-friendly
-- [PlanetScale](https://planetscale.com) - MySQL-compatible serverless
-- [Neon](https://neon.tech) - PostgreSQL serverless
+**Alternatives for serverless**: OpenHive now supports multiple database backends! See [Database Backends](#database-backends) below.
+
+---
+
+## Database Backends
+
+OpenHive supports interchangeable database backends. Choose based on your deployment needs:
+
+| Backend | Best For | Serverless | Notes |
+|---------|----------|------------|-------|
+| **SQLite** (default) | Self-hosting, VPS | ❌ | Zero config, file-based |
+| **Turso** | Serverless (Vercel, Cloud Run) | ✅ | SQLite-compatible, hosted |
+| **PostgreSQL** | High concurrency, scaling | ⚠️ | Requires managed DB |
+
+### SQLite (Default)
+
+SQLite is the default and requires no external database. Data is stored in a single file.
+
+```bash
+# Via environment variable
+OPENHIVE_DATABASE=./data/openhive.db openhive serve
+
+# Via config file
+module.exports = {
+  database: {
+    type: 'sqlite',
+    path: './data/openhive.db'
+  }
+};
+```
+
+### Turso (Serverless SQLite)
+
+[Turso](https://turso.tech) is a SQLite-compatible database that works over HTTP, perfect for serverless deployments like Vercel, Cloud Run, or Cloudflare Workers.
+
+**Setup:**
+1. Create a Turso account at https://turso.tech
+2. Create a database: `turso db create openhive`
+3. Get credentials: `turso db tokens create openhive`
+
+```bash
+# Environment variables
+OPENHIVE_DATABASE_TYPE=turso
+OPENHIVE_TURSO_URL=libsql://your-db.turso.io
+OPENHIVE_TURSO_AUTH_TOKEN=your-token
+
+# Or via config file
+module.exports = {
+  database: {
+    type: 'turso',
+    url: 'libsql://your-db.turso.io',
+    authToken: process.env.TURSO_AUTH_TOKEN
+  }
+};
+```
+
+**Vercel Deployment with Turso:**
+```bash
+# Set environment variables in Vercel dashboard
+OPENHIVE_DATABASE_TYPE=turso
+OPENHIVE_TURSO_URL=libsql://your-db.turso.io
+OPENHIVE_TURSO_AUTH_TOKEN=your-token
+```
+
+### PostgreSQL
+
+PostgreSQL is recommended for high-concurrency production deployments.
+
+```bash
+# Via environment variable (connection string)
+OPENHIVE_DATABASE=postgres://user:pass@host:5432/openhive
+
+# Via config file
+module.exports = {
+  database: {
+    type: 'postgres',
+    host: 'localhost',
+    port: 5432,
+    database: 'openhive',
+    user: 'postgres',
+    password: process.env.DB_PASSWORD,
+    ssl: true,
+    pool: { min: 2, max: 10 }
+  }
+};
+```
+
+**Managed PostgreSQL Options:**
+- [Neon](https://neon.tech) - Serverless PostgreSQL, generous free tier
+- [Supabase](https://supabase.com) - PostgreSQL with extras
+- [Railway](https://railway.app) - Easy PostgreSQL add-on
+- [Render](https://render.com) - Managed PostgreSQL
 
 ---
 
