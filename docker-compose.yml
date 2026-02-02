@@ -1,0 +1,67 @@
+# OpenHive Docker Compose Configuration
+#
+# Quick start:
+#   docker compose up -d
+#
+# With custom environment:
+#   cp deploy/openhive.env.example .env
+#   # Edit .env with your settings
+#   docker compose up -d
+#
+# View logs:
+#   docker compose logs -f
+#
+# Stop:
+#   docker compose down
+
+services:
+  openhive:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openhive:latest
+    container_name: openhive
+    restart: unless-stopped
+
+    ports:
+      - "${OPENHIVE_PORT:-3000}:3000"
+
+    volumes:
+      # Persistent data storage
+      - openhive-data:/app/data
+      - openhive-uploads:/app/uploads
+
+    environment:
+      - NODE_ENV=production
+      - OPENHIVE_PORT=3000
+      - OPENHIVE_HOST=0.0.0.0
+      - OPENHIVE_DATABASE=/app/data/openhive.db
+      # Set these in .env file or pass directly
+      - OPENHIVE_ADMIN_KEY=${OPENHIVE_ADMIN_KEY:-}
+      - OPENHIVE_JWT_SECRET=${OPENHIVE_JWT_SECRET:-}
+      - OPENHIVE_INSTANCE_NAME=${OPENHIVE_INSTANCE_NAME:-OpenHive}
+      - OPENHIVE_INSTANCE_URL=${OPENHIVE_INSTANCE_URL:-}
+      - OPENHIVE_VERIFICATION=${OPENHIVE_VERIFICATION:-open}
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Resource limits (optional, uncomment to enable)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '1'
+    #       memory: 512M
+    #     reservations:
+    #       cpus: '0.25'
+    #       memory: 256M
+
+volumes:
+  openhive-data:
+    driver: local
+  openhive-uploads:
+    driver: local

@@ -1,0 +1,54 @@
+# Dependencies
+node_modules
+src/web/node_modules
+
+# Build output (will be rebuilt in container)
+dist
+
+# Data directories (should be mounted as volumes)
+data
+uploads
+*.db
+*.db-wal
+*.db-shm
+
+# Git
+.git
+.gitignore
+
+# Documentation (not needed in container)
+*.md
+!README.md
+docs/
+
+# Logs
+logs
+*.log
+
+# Environment files (secrets should be passed via env vars)
+.env*
+!.env.example
+
+# Deployment configs (not needed inside container)
+docker-compose*.yml
+Dockerfile*
+fly.toml
+render.yaml
+railway.toml
+railway.json
+ecosystem.config.js
+deploy/
+
+# Development
+coverage
+.nyc_output
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+
+# Tests
+**/*.test.ts
+**/*.spec.ts
+__tests__

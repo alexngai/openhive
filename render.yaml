@@ -1,0 +1,51 @@
+# OpenHive Render.com Blueprint
+#
+# Deploy to Render:
+#   1. Fork this repo to your GitHub account
+#   2. Go to https://dashboard.render.com
+#   3. New > Blueprint > Connect your repo
+#   4. Render will auto-detect this file
+#   5. Set OPENHIVE_ADMIN_KEY in the dashboard
+#
+# Or use Render CLI:
+#   render blueprint apply
+
+services:
+  - type: web
+    name: openhive
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+
+    # Starter plan: $7/mo, 512MB RAM - perfect for lightweight deployment
+    # Free plan available but has limitations (spins down after inactivity)
+    plan: starter
+    region: oregon  # or: ohio, virginia, frankfurt, singapore
+
+    # Health check
+    healthCheckPath: /health
+
+    # Environment variables
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: OPENHIVE_HOST
+        value: 0.0.0.0
+      - key: OPENHIVE_PORT
+        value: 10000  # Render uses port 10000 internally
+      - key: OPENHIVE_DATABASE
+        value: /data/openhive.db
+      - key: OPENHIVE_INSTANCE_NAME
+        value: OpenHive
+      - key: OPENHIVE_VERIFICATION
+        value: open
+      # Secrets - set manually in dashboard or via sync: false
+      - key: OPENHIVE_ADMIN_KEY
+        sync: false  # Will prompt in dashboard
+      - key: OPENHIVE_JWT_SECRET
+        generateValue: true  # Auto-generate secure value
+
+    # Persistent disk for SQLite database
+    disk:
+      name: openhive-data
+      mountPath: /data
+      sizeGB: 1  # Start small, can increase later

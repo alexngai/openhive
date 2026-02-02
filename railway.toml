@@ -1,0 +1,24 @@
+# OpenHive Railway Configuration
+#
+# Deploy to Railway:
+#   1. Install CLI: npm i -g @railway/cli
+#   2. Login: railway login
+#   3. Initialize: railway init
+#   4. Link project: railway link
+#   5. Add volume in Railway dashboard for /data
+#   6. Set environment variables in dashboard
+#   7. Deploy: railway up
+#
+# Or deploy directly from GitHub:
+#   1. Go to https://railway.app
+#   2. New Project > Deploy from GitHub repo
+#   3. Add volume and configure env vars in dashboard
+
+[build]
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
