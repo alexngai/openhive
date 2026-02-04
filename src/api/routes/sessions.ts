@@ -42,6 +42,15 @@ const UploadSessionSchema = z.object({
   format_id: z.string().optional(), // Auto-detect if not provided
   tags: z.array(z.string().max(50)).max(10).optional(),
   storage_backend: z.enum(['git', 'local', 's3', 'gcs']).default('local'),
+  // Relationship fields
+  parent_session_id: z.string().optional(), // For continuations
+  fork_from: z
+    .object({
+      session_id: z.string(),
+      event_index: z.number().int().min(0),
+      reason: z.string().max(500).optional(),
+    })
+    .optional(),
 });
 
 const CreateCheckpointSchema = z.object({
@@ -162,8 +171,16 @@ export async function sessionsRoutes(
         });
       }
 
-      const { name, description, visibility, format_id, tags, storage_backend } =
-        parseResult.data;
+      const {
+        name,
+        description,
+        visibility,
+        format_id,
+        tags,
+        storage_backend,
+        parent_session_id,
+        fork_from,
+      } = parseResult.data;
 
       // Get content from body
       const content = (request.body as { content?: string }).content;
@@ -172,6 +189,42 @@ export async function sessionsRoutes(
           error: 'Bad Request',
           message: 'Session content is required',
         });
+      }
+
+      // Validate parent session if provided
+      let parentSession: ReturnType<typeof resourcesDAL.findResourceById> | null = null;
+      if (parent_session_id) {
+        parentSession = resourcesDAL.findResourceById(parent_session_id);
+        if (!parentSession || parentSession.resource_type !== 'session') {
+          return reply.status(400).send({
+            error: 'Bad Request',
+            message: 'Parent session not found',
+          });
+        }
+        if (!resourcesDAL.canAccessResource(request.agent!.id, parentSession)) {
+          return reply.status(403).send({
+            error: 'Forbidden',
+            message: 'You do not have access to the parent session',
+          });
+        }
+      }
+
+      // Validate fork source if provided
+      let forkSourceSession: ReturnType<typeof resourcesDAL.findResourceById> | null = null;
+      if (fork_from) {
+        forkSourceSession = resourcesDAL.findResourceById(fork_from.session_id);
+        if (!forkSourceSession || forkSourceSession.resource_type !== 'session') {
+          return reply.status(400).send({
+            error: 'Bad Request',
+            message: 'Fork source session not found',
+          });
+        }
+        if (!resourcesDAL.canAccessResource(request.agent!.id, forkSourceSession)) {
+          return reply.status(403).send({
+            error: 'Forbidden',
+            message: 'You do not have access to the fork source session',
+          });
+        }
       }
 
       // Detect or validate format
@@ -187,7 +240,7 @@ export async function sessionsRoutes(
       const adapter = getAdapter(effectiveFormatId);
       const sessionConfig = adapter?.extractConfig?.(content);
 
-      // Build session metadata
+      // Build session metadata with relationships
       const sessionMetadata: SessionResourceMetadata = {
         format: {
           id: effectiveFormatId,
@@ -202,6 +255,15 @@ export async function sessionsRoutes(
           backend: storage_backend,
           sizeBytes: content.length,
         },
+        // Track relationships
+        relationships:
+          parent_session_id || fork_from
+            ? {
+                parentSessionId: parent_session_id,
+                forkedFromId: fork_from?.session_id,
+                forkPointEventIndex: fork_from?.event_index,
+              }
+            : undefined,
       };
 
       // For non-git storage, we need to store the content
@@ -293,6 +355,23 @@ export async function sessionsRoutes(
           VALUES (?, ?, ?, 'owner')
         `).run(participantId, resource.id, request.agent!.id);
 
+        // Create fork record if this is a forked session
+        let forkId: string | undefined;
+        if (fork_from) {
+          forkId = `fork_${nanoid()}`;
+          db.prepare(`
+            INSERT INTO session_forks
+            (id, parent_session_id, child_session_id, fork_point_event_index, fork_reason)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(
+            forkId,
+            fork_from.session_id,
+            resource.id,
+            fork_from.event_index,
+            fork_from.reason || null
+          );
+        }
+
         const resourceWithMeta = resourcesDAL.getResourceWithMeta(
           resource.id,
           request.agent!.id
@@ -306,6 +385,15 @@ export async function sessionsRoutes(
             detection_confidence: detection.confidence,
             storage_backend,
             storage_location: storageLocation,
+            // Include relationship info in response
+            parent_session_id: parent_session_id || undefined,
+            forked_from: fork_from
+              ? {
+                  session_id: fork_from.session_id,
+                  event_index: fork_from.event_index,
+                  fork_id: forkId,
+                }
+              : undefined,
           },
         });
       } catch (error) {
@@ -765,6 +853,150 @@ export async function sessionsRoutes(
         event_id,
         created_at: new Date().toISOString(),
         created_by_agent_id: request.agent!.id,
+      });
+    }
+  );
+
+  // ============================================================================
+  // Session Forks
+  // ============================================================================
+
+  // List forks of a session
+  fastify.get<{ Params: { id: string } }>(
+    '/sessions/:id/forks',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const resource = resourcesDAL.findResourceById(request.params.id);
+
+      if (!resource || resource.resource_type !== 'session') {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Session not found',
+        });
+      }
+
+      if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          message: 'You do not have access to this session',
+        });
+      }
+
+      const db = getDatabase();
+
+      // Get sessions forked FROM this session
+      const childForks = db
+        .prepare(
+          `
+        SELECT
+          sf.*,
+          r.name as child_name,
+          r.description as child_description,
+          a.name as child_owner_name
+        FROM session_forks sf
+        JOIN syncable_resources r ON sf.child_session_id = r.id
+        JOIN agents a ON r.owner_agent_id = a.id
+        WHERE sf.parent_session_id = ?
+        ORDER BY sf.created_at DESC
+      `
+        )
+        .all(resource.id);
+
+      // Get the session this was forked FROM (if any)
+      const parentFork = db
+        .prepare(
+          `
+        SELECT
+          sf.*,
+          r.name as parent_name,
+          r.description as parent_description,
+          a.name as parent_owner_name
+        FROM session_forks sf
+        JOIN syncable_resources r ON sf.parent_session_id = r.id
+        JOIN agents a ON r.owner_agent_id = a.id
+        WHERE sf.child_session_id = ?
+      `
+        )
+        .get(resource.id);
+
+      return reply.send({
+        forked_from: parentFork || null,
+        forks: childForks,
+      });
+    }
+  );
+
+  // Get session lineage (full ancestry chain)
+  fastify.get<{ Params: { id: string } }>(
+    '/sessions/:id/lineage',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const resource = resourcesDAL.findResourceById(request.params.id);
+
+      if (!resource || resource.resource_type !== 'session') {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Session not found',
+        });
+      }
+
+      if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          message: 'You do not have access to this session',
+        });
+      }
+
+      const db = getDatabase();
+      const lineage: Array<{
+        id: string;
+        name: string;
+        fork_point_event_index: number;
+        depth: number;
+      }> = [];
+
+      // Walk up the ancestry chain
+      let currentId = resource.id;
+      let depth = 0;
+      const maxDepth = 100; // Prevent infinite loops
+
+      while (depth < maxDepth) {
+        const parent = db
+          .prepare(
+            `
+          SELECT
+            sf.parent_session_id,
+            sf.fork_point_event_index,
+            r.name
+          FROM session_forks sf
+          JOIN syncable_resources r ON sf.parent_session_id = r.id
+          WHERE sf.child_session_id = ?
+        `
+          )
+          .get(currentId) as {
+          parent_session_id: string;
+          fork_point_event_index: number;
+          name: string;
+        } | undefined;
+
+        if (!parent) break;
+
+        lineage.push({
+          id: parent.parent_session_id,
+          name: parent.name,
+          fork_point_event_index: parent.fork_point_event_index,
+          depth: depth + 1,
+        });
+
+        currentId = parent.parent_session_id;
+        depth++;
+      }
+
+      return reply.send({
+        session_id: resource.id,
+        session_name: resource.name,
+        ancestors: lineage,
+        depth: lineage.length,
       });
     }
   );
