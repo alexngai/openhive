@@ -8,7 +8,7 @@ import type { SyncableResourceType, ResourceVisibility } from '../../types.js';
 import type { Config } from '../../config.js';
 
 // Valid resource types
-const RESOURCE_TYPES = ['memory_bank', 'task', 'skill'] as const;
+const RESOURCE_TYPES = ['memory_bank', 'task', 'skill', 'session'] as const;
 
 // Validation schemas
 const CreateResourceSchema = z.object({
