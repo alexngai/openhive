@@ -2,7 +2,8 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
 import * as memoryBanksDAL from '../../db/dal/memory-banks.js';
-import { broadcast } from '../../realtime/index.js';
+import { broadcast, broadcastToChannel } from '../../realtime/index.js';
+import { checkRemoteForUpdates, checkRemotesBatch } from '../../utils/git-remote.js';
 import type { MemoryBankVisibility } from '../../types.js';
 import type { Config } from '../../config.js';
 
@@ -624,6 +625,230 @@ export async function memoryBanksRoutes(
         total: result.total,
         limit,
         offset,
+      });
+    }
+  );
+
+  // ============================================================================
+  // Polling-based Sync (webhook-free alternative)
+  // ============================================================================
+
+  // Check a single memory bank for updates
+  fastify.post<{
+    Params: { id: string };
+    Body: { branch?: string };
+  }>(
+    '/memory-banks/:id/check-updates',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const bank = memoryBanksDAL.findMemoryBankById(request.params.id);
+
+      if (!bank) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Memory bank not found',
+        });
+      }
+
+      // Check poll permission (owner or write/admin)
+      if (!memoryBanksDAL.canPollMemoryBank(request.agent!.id, bank)) {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          message: 'You do not have permission to poll this memory bank',
+        });
+      }
+
+      const branch = (request.body as { branch?: string })?.branch || 'main';
+
+      // Check remote for updates
+      const result = await checkRemoteForUpdates(bank.git_remote_url, branch);
+
+      if (!result.success) {
+        return reply.status(502).send({
+          error: 'Upstream Error',
+          message: result.error || 'Failed to check remote for updates',
+          source: result.source,
+        });
+      }
+
+      const remoteCommit = result.ref!.commitHash;
+      const hasUpdates = bank.last_commit_hash !== remoteCommit;
+
+      if (hasUpdates) {
+        // Update sync state
+        memoryBanksDAL.updateMemoryBankSyncState(
+          bank.id,
+          remoteCommit,
+          'poll' // Indicate this was from polling, not webhook
+        );
+
+        // Create sync event
+        const syncEvent = memoryBanksDAL.createSyncEvent({
+          bank_id: bank.id,
+          commit_hash: remoteCommit,
+          commit_message: undefined,
+          pusher: `poll:${request.agent!.name}`,
+        });
+
+        // Broadcast to WebSocket subscribers
+        broadcastToChannel(`memory-bank:${bank.id}`, {
+          type: 'memory_bank_updated',
+          data: {
+            bank_id: bank.id,
+            bank_name: bank.name,
+            commit_hash: remoteCommit,
+            commit_message: null,
+            pusher: `poll:${request.agent!.name}`,
+            source: 'poll',
+            event_id: syncEvent.id,
+          },
+        });
+
+        return reply.send({
+          has_updates: true,
+          previous_commit: bank.last_commit_hash,
+          current_commit: remoteCommit,
+          source: result.source,
+          event_id: syncEvent.id,
+        });
+      }
+
+      return reply.send({
+        has_updates: false,
+        current_commit: remoteCommit,
+        source: result.source,
+      });
+    }
+  );
+
+  // Batch check multiple memory banks for updates
+  const BatchCheckSchema = z.object({
+    bank_ids: z.array(z.string()).max(50).optional(),
+    branch: z.string().default('main'),
+  });
+
+  fastify.post(
+    '/memory-banks/check-updates',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const parseResult = BatchCheckSchema.safeParse(request.body);
+      if (!parseResult.success) {
+        return reply.status(400).send({
+          error: 'Validation Error',
+          details: parseResult.error.issues,
+        });
+      }
+
+      const { bank_ids, branch } = parseResult.data;
+
+      // Get banks to check
+      let banks: ReturnType<typeof memoryBanksDAL.getAgentPollableBanks>;
+
+      if (bank_ids && bank_ids.length > 0) {
+        // Check specific banks
+        banks = memoryBanksDAL.getAgentPollableBanksByIds(request.agent!.id, bank_ids);
+      } else {
+        // Check all pollable banks
+        banks = memoryBanksDAL.getAgentPollableBanks(request.agent!.id);
+      }
+
+      if (banks.length === 0) {
+        return reply.send({
+          checked: 0,
+          updated: [],
+          errors: [],
+        });
+      }
+
+      // Limit batch size
+      const banksToCheck = banks.slice(0, 50);
+
+      // Check remotes in parallel
+      const remotes = banksToCheck.map((b) => ({
+        id: b.id,
+        gitRemoteUrl: b.git_remote_url,
+        branch,
+      }));
+
+      const results = await checkRemotesBatch(remotes, 5);
+
+      const updated: Array<{
+        bank_id: string;
+        bank_name: string;
+        previous_commit: string | null;
+        current_commit: string;
+        event_id: string;
+      }> = [];
+
+      const errors: Array<{
+        bank_id: string;
+        bank_name: string;
+        error: string;
+      }> = [];
+
+      const unchanged: string[] = [];
+
+      for (const bank of banksToCheck) {
+        const result = results.get(bank.id);
+
+        if (!result || !result.success) {
+          errors.push({
+            bank_id: bank.id,
+            bank_name: bank.name,
+            error: result?.error || 'Unknown error',
+          });
+          continue;
+        }
+
+        const remoteCommit = result.ref!.commitHash;
+        const hasUpdates = bank.last_commit_hash !== remoteCommit;
+
+        if (hasUpdates) {
+          // Update sync state
+          memoryBanksDAL.updateMemoryBankSyncState(
+            bank.id,
+            remoteCommit,
+            'poll'
+          );
+
+          // Create sync event
+          const syncEvent = memoryBanksDAL.createSyncEvent({
+            bank_id: bank.id,
+            commit_hash: remoteCommit,
+            pusher: `poll:${request.agent!.name}`,
+          });
+
+          // Broadcast to WebSocket subscribers
+          broadcastToChannel(`memory-bank:${bank.id}`, {
+            type: 'memory_bank_updated',
+            data: {
+              bank_id: bank.id,
+              bank_name: bank.name,
+              commit_hash: remoteCommit,
+              commit_message: null,
+              pusher: `poll:${request.agent!.name}`,
+              source: 'poll',
+              event_id: syncEvent.id,
+            },
+          });
+
+          updated.push({
+            bank_id: bank.id,
+            bank_name: bank.name,
+            previous_commit: bank.last_commit_hash,
+            current_commit: remoteCommit,
+            event_id: syncEvent.id,
+          });
+        } else {
+          unchanged.push(bank.id);
+        }
+      }
+
+      return reply.send({
+        checked: banksToCheck.length,
+        updated,
+        unchanged,
+        errors,
       });
     }
   );

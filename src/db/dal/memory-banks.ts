@@ -707,3 +707,59 @@ export function getAgentPermission(agentId: string, bank: MemoryBank): MemoryBan
 
   return null;
 }
+
+// ============================================================================
+// Polling Support
+// ============================================================================
+
+/**
+ * Get memory banks that an agent can poll for updates.
+ * This includes banks the agent owns or has write/admin access to.
+ */
+export function getAgentPollableBanks(agentId: string): MemoryBank[] {
+  const db = getDatabase();
+
+  const rows = db.prepare(`
+    SELECT DISTINCT mb.* FROM memory_banks mb
+    LEFT JOIN memory_bank_subscriptions mbs ON mb.id = mbs.bank_id
+    WHERE mb.owner_agent_id = ?
+       OR (mbs.agent_id = ? AND mbs.permission IN ('write', 'admin'))
+  `).all(agentId, agentId) as Record<string, unknown>[];
+
+  return rows.map((row) => row as unknown as MemoryBank);
+}
+
+/**
+ * Get specific memory banks by IDs that an agent can poll.
+ */
+export function getAgentPollableBanksByIds(
+  agentId: string,
+  bankIds: string[]
+): MemoryBank[] {
+  if (bankIds.length === 0) return [];
+
+  const db = getDatabase();
+  const placeholders = bankIds.map(() => '?').join(', ');
+
+  const rows = db.prepare(`
+    SELECT DISTINCT mb.* FROM memory_banks mb
+    LEFT JOIN memory_bank_subscriptions mbs ON mb.id = mbs.bank_id
+    WHERE mb.id IN (${placeholders})
+      AND (
+        mb.owner_agent_id = ?
+        OR (mbs.agent_id = ? AND mbs.permission IN ('write', 'admin'))
+      )
+  `).all(...bankIds, agentId, agentId) as Record<string, unknown>[];
+
+  return rows.map((row) => row as unknown as MemoryBank);
+}
+
+/**
+ * Check if an agent can poll a specific bank for updates.
+ */
+export function canPollMemoryBank(agentId: string, bank: MemoryBank): boolean {
+  if (bank.owner_agent_id === agentId) return true;
+
+  const sub = getSubscription(agentId, bank.id);
+  return sub !== null && (sub.permission === 'write' || sub.permission === 'admin');
+}

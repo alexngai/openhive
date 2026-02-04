@@ -70,6 +70,15 @@ export {
   type RemotePost,
 } from './federation/index.js';
 
+// Git remote utilities (for memory bank sync)
+export {
+  checkRemoteForUpdates,
+  checkRemotesBatch,
+  parseGitUrl,
+  type RemoteRefInfo,
+  type CheckRemoteResult,
+} from './utils/git-remote.js';
+
 // Type exports
 export type {
   Agent,

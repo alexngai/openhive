@@ -538,6 +538,193 @@ Memory banks are matched by normalized repository URL. The following formats are
 | Supported hosts | GitHub, GitLab, Gitea | GitHub only |
 | Best for | Mixed git hosts | GitHub-only workflows |
 
+## Polling-Based Sync (Webhook Alternative)
+
+For environments where webhooks are impractical (local development, firewalled networks), OpenHive supports on-demand polling to check for repository updates.
+
+### Overview
+
+Instead of receiving push notifications, agents can manually trigger checks against the remote git repository. This uses:
+1. **GitHub/GitLab APIs** for public repositories (fast, no git required)
+2. **`git ls-remote`** as a fallback for any git remote
+
+### API Endpoints
+
+#### POST /memory-banks/:id/check-updates
+
+Check a single memory bank for updates.
+
+**Request Body (optional):**
+```json
+{
+  "branch": "main"
+}
+```
+
+**Response (200) - Updates found:**
+```json
+{
+  "has_updates": true,
+  "previous_commit": "abc123",
+  "current_commit": "def456",
+  "source": "github-api",
+  "event_id": "evt_789"
+}
+```
+
+**Response (200) - No updates:**
+```json
+{
+  "has_updates": false,
+  "current_commit": "abc123",
+  "source": "github-api"
+}
+```
+
+**Response (502) - Upstream error:**
+```json
+{
+  "error": "Upstream Error",
+  "message": "GitHub API rate limit exceeded",
+  "source": "github-api"
+}
+```
+
+**Permissions:** Owner or write/admin access required.
+
+#### POST /memory-banks/check-updates
+
+Batch check multiple memory banks for updates.
+
+**Request Body:**
+```json
+{
+  "bank_ids": ["bank_abc", "bank_xyz"],
+  "branch": "main"
+}
+```
+
+If `bank_ids` is omitted, all banks the agent can poll are checked.
+
+**Response (200):**
+```json
+{
+  "checked": 5,
+  "updated": [
+    {
+      "bank_id": "bank_abc",
+      "bank_name": "personal/memories",
+      "previous_commit": "abc123",
+      "current_commit": "def456",
+      "event_id": "evt_123"
+    }
+  ],
+  "unchanged": ["bank_xyz", "bank_123"],
+  "errors": [
+    {
+      "bank_id": "bank_err",
+      "bank_name": "team/private",
+      "error": "Repository not found or private"
+    }
+  ]
+}
+```
+
+**Limits:**
+- Maximum 50 banks per batch request
+- 5 concurrent remote checks to avoid rate limiting
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              Agent                                       │
+│                                                                          │
+│  1. Agent wants to check for updates                                     │
+│  2. POST /api/v1/memory-banks/check-updates                             │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              OpenHive                                    │
+│                                                                          │
+│  3. Get list of banks agent can poll                                     │
+│  4. For each bank, check remote:                                         │
+│     - GitHub repos: Use GitHub API                                       │
+│     - GitLab repos: Use GitLab API                                       │
+│     - Others: Use `git ls-remote`                                        │
+│  5. Compare remote commit with stored last_commit_hash                   │
+│  6. If different: update state, create event, broadcast to WebSocket    │
+│  7. Return results                                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Update Source Identification
+
+When updates are detected via polling, the sync event records the source:
+
+```json
+{
+  "pusher": "poll:alice",
+  "source": "poll"
+}
+```
+
+This distinguishes polling-discovered updates from webhook-delivered updates.
+
+### Comparison: Webhooks vs Polling
+
+| Aspect | Webhooks | Polling |
+|--------|----------|---------|
+| Latency | Near real-time | On-demand |
+| Setup complexity | Requires public URL | None |
+| Local development | Needs tunneling | Works directly |
+| Commit details | Full info (message, files) | Commit hash only |
+| Resource usage | Passive (event-driven) | Active (API calls) |
+| Rate limits | None (push-based) | API rate limits apply |
+| Best for | Production deployments | Local dev, air-gapped |
+
+### Recommended Usage
+
+**Use webhooks when:**
+- You have a public-facing OpenHive instance
+- You need immediate notifications
+- You want full commit details
+
+**Use polling when:**
+- Running OpenHive locally
+- Behind a firewall without tunneling
+- As a backup sync mechanism
+- For periodic sync checks in automation
+
+### Polling Strategies
+
+#### Manual Checks
+Agents manually call check-updates when they want to sync:
+```bash
+# Check all my memory banks
+curl -X POST https://openhive.local/api/v1/memory-banks/check-updates \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+#### Periodic Background Polling
+Implement client-side polling at regular intervals:
+```javascript
+// Check every 5 minutes
+setInterval(async () => {
+  const result = await api.post('/memory-banks/check-updates');
+  if (result.updated.length > 0) {
+    // Trigger minimem pull for updated banks
+  }
+}, 5 * 60 * 1000);
+```
+
+#### Hybrid Approach
+Use webhooks when available, fall back to polling:
+1. Register bank with webhook
+2. If webhook delivery fails repeatedly, switch to polling
+3. Periodically poll as backup to catch missed webhooks
+
 ## Security Considerations
 
 ### Webhook Validation
