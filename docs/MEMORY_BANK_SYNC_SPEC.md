@@ -443,6 +443,101 @@ Agents subscribe to memory bank channels to receive updates:
 }
 ```
 
+## GitHub App Integration
+
+For easier setup, OpenHive supports a GitHub App that automatically receives webhook events for all installed repositories, eliminating the need to configure webhooks on each repo manually.
+
+### Setup
+
+1. **Create a GitHub App** at https://github.com/settings/apps/new with:
+   - Webhook URL: `https://your-openhive.com/api/v1/webhooks/github-app`
+   - Webhook secret: Generate a secure random string
+   - Permissions: Repository contents (read)
+   - Events: Push
+
+2. **Configure OpenHive** with the app credentials:
+   ```javascript
+   // openhive.config.js
+   module.exports = {
+     githubApp: {
+       enabled: true,
+       appId: process.env.GITHUB_APP_ID,
+       webhookSecret: process.env.GITHUB_APP_WEBHOOK_SECRET,
+       privateKey: process.env.GITHUB_APP_PRIVATE_KEY,
+       clientId: process.env.GITHUB_APP_CLIENT_ID,
+       clientSecret: process.env.GITHUB_APP_CLIENT_SECRET,
+     },
+   };
+   ```
+
+3. **Users install the app** on their repositories via the app's installation page.
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              GitHub                                      │
+│                                                                          │
+│  1. User installs "OpenHive Sync" GitHub App on repo                    │
+│  2. User pushes to repo                                                  │
+│  3. GitHub sends webhook to OpenHive (single endpoint for all repos)    │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ POST /api/v1/webhooks/github-app
+                                    │ Body: { repository: { full_name }, ... }
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              OpenHive                                    │
+│                                                                          │
+│  4. Verify signature using app's webhook_secret                         │
+│  5. Extract repository full_name (e.g., "user/memories")                │
+│  6. Find memory banks matching "github.com/user/memories"               │
+│  7. Notify all matching banks (same as per-bank webhook)                │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### API Endpoint
+
+#### POST /webhooks/github-app
+
+Receives all webhook events from the GitHub App.
+
+**Handled Events:**
+- `push` - Notifies matching memory banks
+- `installation` - Logs app installation/uninstallation
+- `installation_repositories` - Logs repo additions/removals
+
+**Response (push event):**
+```json
+{
+  "ok": true,
+  "repository": "user/memories",
+  "banks_notified": 2,
+  "results": [
+    { "bank_id": "bank_abc", "event_id": "evt_123" },
+    { "bank_id": "bank_xyz", "event_id": "evt_456" }
+  ]
+}
+```
+
+### URL Matching
+
+Memory banks are matched by normalized repository URL. The following formats are equivalent:
+- `git@github.com:user/repo.git`
+- `https://github.com/user/repo.git`
+- `https://github.com/user/repo`
+- `github.com/user/repo`
+
+### Comparison: Per-Repo Webhooks vs GitHub App
+
+| Aspect | Per-Repo Webhooks | GitHub App |
+|--------|-------------------|------------|
+| Setup | Configure each repo | Install app once |
+| Webhook URL | Unique per bank | Single endpoint |
+| Secret | Per-bank secret | App-wide secret |
+| Supported hosts | GitHub, GitLab, Gitea | GitHub only |
+| Best for | Mixed git hosts | GitHub-only workflows |
+
 ## Security Considerations
 
 ### Webhook Validation

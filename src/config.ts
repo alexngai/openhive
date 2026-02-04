@@ -112,6 +112,16 @@ export const ConfigSchema = z.object({
     secret: z.string().optional(),
     expiresIn: z.string().default('7d'),
   }).default({}),
+
+  // GitHub App configuration for automatic webhook handling
+  githubApp: z.object({
+    enabled: z.boolean().default(false),
+    appId: z.string().optional(),
+    webhookSecret: z.string().optional(),
+    privateKey: z.string().optional(), // PEM format or path to file
+    clientId: z.string().optional(),
+    clientSecret: z.string().optional(),
+  }).default({ enabled: false }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -177,6 +187,19 @@ export function loadConfig(configPath?: string): Config {
   }
   if (process.env.OPENHIVE_JWT_SECRET) {
     rawConfig.jwt = { ...rawConfig.jwt, secret: process.env.OPENHIVE_JWT_SECRET };
+  }
+
+  // GitHub App configuration from environment
+  if (process.env.GITHUB_APP_ID || process.env.GITHUB_APP_WEBHOOK_SECRET) {
+    rawConfig.githubApp = {
+      ...rawConfig.githubApp,
+      enabled: true,
+      appId: process.env.GITHUB_APP_ID,
+      webhookSecret: process.env.GITHUB_APP_WEBHOOK_SECRET,
+      privateKey: process.env.GITHUB_APP_PRIVATE_KEY,
+      clientId: process.env.GITHUB_APP_CLIENT_ID,
+      clientSecret: process.env.GITHUB_APP_CLIENT_SECRET,
+    };
   }
 
   // Generate a default JWT secret if not provided (for development)
@@ -263,6 +286,17 @@ module.exports = {
   //       pass: process.env.SMTP_PASSWORD,
   //     },
   //   },
+  // },
+
+  // GitHub App for automatic memory bank webhook handling
+  // Create a GitHub App at: https://github.com/settings/apps/new
+  // githubApp: {
+  //   enabled: true,
+  //   appId: process.env.GITHUB_APP_ID,
+  //   webhookSecret: process.env.GITHUB_APP_WEBHOOK_SECRET,
+  //   privateKey: process.env.GITHUB_APP_PRIVATE_KEY, // PEM format
+  //   clientId: process.env.GITHUB_APP_CLIENT_ID,
+  //   clientSecret: process.env.GITHUB_APP_CLIENT_SECRET,
   // },
 };
 `;

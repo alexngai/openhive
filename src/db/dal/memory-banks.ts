@@ -74,6 +74,67 @@ export function findMemoryBankByWebhookSecret(secret: string): MemoryBank | null
   return row as unknown as MemoryBank;
 }
 
+/**
+ * Normalize a git remote URL to a canonical form for matching.
+ * Handles various formats:
+ * - git@github.com:user/repo.git
+ * - https://github.com/user/repo.git
+ * - https://github.com/user/repo
+ * - github.com/user/repo
+ *
+ * Returns: "github.com/user/repo" (lowercase, no protocol, no .git)
+ */
+export function normalizeGitUrl(url: string): string {
+  let normalized = url.toLowerCase().trim();
+
+  // Remove protocol
+  normalized = normalized.replace(/^(https?:\/\/|git:\/\/|ssh:\/\/)/i, '');
+
+  // Handle SSH format: git@github.com:user/repo -> github.com/user/repo
+  normalized = normalized.replace(/^git@([^:]+):/, '$1/');
+
+  // Remove .git suffix
+  normalized = normalized.replace(/\.git$/, '');
+
+  // Remove trailing slashes
+  normalized = normalized.replace(/\/+$/, '');
+
+  // Remove any auth info (user:pass@)
+  normalized = normalized.replace(/^[^@]+@/, '');
+
+  return normalized;
+}
+
+/**
+ * Find memory banks that match a repository URL.
+ * Uses normalized URL matching to handle different URL formats.
+ */
+export function findMemoryBanksByRepoUrl(repoUrl: string): MemoryBank[] {
+  const db = getDatabase();
+  const normalizedInput = normalizeGitUrl(repoUrl);
+
+  // Get all memory banks and filter by normalized URL
+  // This is not the most efficient but allows flexible matching
+  const rows = db.prepare('SELECT * FROM memory_banks').all() as Record<string, unknown>[];
+
+  return rows
+    .filter((row) => normalizeGitUrl(row.git_remote_url as string) === normalizedInput)
+    .map((row) => row as unknown as MemoryBank);
+}
+
+/**
+ * Find a single memory bank by repository full name (e.g., "user/repo")
+ * and optional host (defaults to github.com)
+ */
+export function findMemoryBankByRepoName(
+  fullName: string,
+  host: string = 'github.com'
+): MemoryBank | null {
+  const normalizedInput = `${host.toLowerCase()}/${fullName.toLowerCase()}`;
+  const banks = findMemoryBanksByRepoUrl(normalizedInput);
+  return banks.length > 0 ? banks[0] : null;
+}
+
 export interface UpdateMemoryBankInput {
   name?: string;
   description?: string;

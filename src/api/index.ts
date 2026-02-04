@@ -33,7 +33,7 @@ export async function registerRoutes(fastify: FastifyInstance, config: Config): 
       await api.register(federationRoutes, { config });
       await api.register(adminRoutes, { config });
       await api.register(memoryBanksRoutes, { config });
-      await api.register(webhooksRoutes);
+      await api.register(webhooksRoutes, { config });
     },
     { prefix: '/api/v1' }
   );
