@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 export const CREATE_TABLES = `
 -- Agents table (supports both agents and human accounts)
@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 -- Syncable resources registry (git repos backing various resource types)
 CREATE TABLE IF NOT EXISTS syncable_resources (
   id TEXT PRIMARY KEY,
-  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill')),
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session')),
   name TEXT NOT NULL,
   description TEXT,
   git_remote_url TEXT NOT NULL,
@@ -206,6 +206,80 @@ CREATE TABLE IF NOT EXISTS resource_sync_events (
   files_removed INTEGER DEFAULT 0,
   timestamp TEXT DEFAULT (datetime('now'))
 );
+
+-- ============================================================================
+-- Session-specific tables (for 'session' resource type)
+-- ============================================================================
+
+-- Session format registry (for format detection and conversion)
+CREATE TABLE IF NOT EXISTS session_format_registry (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  vendor TEXT,
+  version TEXT,
+  detection_patterns TEXT,       -- JSON array of detection patterns
+  json_schema TEXT,              -- JSON Schema for validation
+  adapter_type TEXT NOT NULL DEFAULT 'none'
+    CHECK (adapter_type IN ('builtin', 'wasm', 'url', 'none')),
+  adapter_config TEXT,           -- JSON adapter configuration
+  is_acp_native INTEGER DEFAULT 0,
+  acp_version_target TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Pre-populate with known formats
+INSERT OR IGNORE INTO session_format_registry (id, name, vendor, version, is_acp_native, adapter_type) VALUES
+  ('acp_v1', 'Agent Client Protocol', 'acp', '1.0', 1, 'none'),
+  ('claude_jsonl_v1', 'Claude Code Session', 'anthropic', '1.0', 0, 'builtin'),
+  ('codex_jsonl_v1', 'Codex CLI Session', 'openai', '1.0', 0, 'builtin'),
+  ('gemini_chat_v1', 'Gemini CLI Chat', 'google', '1.0', 0, 'builtin'),
+  ('raw', 'Raw/Unknown Format', NULL, NULL, 0, 'none');
+
+-- Session participants (for multi-agent session collaboration)
+CREATE TABLE IF NOT EXISTS session_participants (
+  id TEXT PRIMARY KEY,
+  session_resource_id TEXT NOT NULL REFERENCES syncable_resources(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'observer'
+    CHECK (role IN ('owner', 'collaborator', 'observer')),
+  cursor_event_index INTEGER,
+  cursor_event_id TEXT,
+  joined_at TEXT DEFAULT (datetime('now')),
+  last_active_at TEXT,
+  UNIQUE(session_resource_id, agent_id)
+);
+
+-- Session checkpoints (for resumption points)
+CREATE TABLE IF NOT EXISTS session_checkpoints (
+  id TEXT PRIMARY KEY,
+  session_resource_id TEXT NOT NULL REFERENCES syncable_resources(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  event_index INTEGER NOT NULL,
+  event_id TEXT,
+  state_snapshot TEXT,           -- JSON state at checkpoint
+  created_at TEXT DEFAULT (datetime('now')),
+  created_by_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL
+);
+
+-- Session forks (for branching sessions)
+CREATE TABLE IF NOT EXISTS session_forks (
+  id TEXT PRIMARY KEY,
+  parent_session_id TEXT NOT NULL REFERENCES syncable_resources(id) ON DELETE CASCADE,
+  child_session_id TEXT NOT NULL REFERENCES syncable_resources(id) ON DELETE CASCADE,
+  fork_point_event_index INTEGER NOT NULL,
+  fork_reason TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(parent_session_id, child_session_id)
+);
+
+-- Session indexes for fast queries
+CREATE INDEX IF NOT EXISTS idx_session_participants_session ON session_participants(session_resource_id);
+CREATE INDEX IF NOT EXISTS idx_session_participants_agent ON session_participants(agent_id);
+CREATE INDEX IF NOT EXISTS idx_session_checkpoints_session ON session_checkpoints(session_resource_id);
+CREATE INDEX IF NOT EXISTS idx_session_forks_parent ON session_forks(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_session_forks_child ON session_forks(child_session_id);
 
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_posts_hive_id ON posts(hive_id);

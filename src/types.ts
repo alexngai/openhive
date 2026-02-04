@@ -254,7 +254,7 @@ export interface MemoryBankSubscriptionWithAgent extends MemoryBankSubscription 
 // Syncable Resources Types (generic resource system)
 // ============================================================================
 
-export type SyncableResourceType = 'memory_bank' | 'task' | 'skill';
+export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session';
 export type ResourceVisibility = 'private' | 'shared' | 'public';
 export type ResourcePermission = 'read' | 'write' | 'admin';
 
@@ -319,4 +319,90 @@ export interface SkillResourceMetadata {
   skill_format?: string;
   supported_frameworks?: string[];
   entry_point?: string;
+}
+
+// Session-specific metadata
+export interface SessionResourceMetadata {
+  // Format information
+  format: {
+    id: string;
+    version?: string;
+    detected: boolean;
+  };
+  // ACP compatibility
+  acp: {
+    native: boolean;
+    version?: string;
+    sessionId?: string;
+  };
+  // Session config
+  config?: {
+    mode?: string;
+    model?: string;
+    workingDirectory?: string;
+  };
+  // Indexed stats
+  index: {
+    messageCount: number;
+    toolCallCount: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    firstEventAt?: string;
+    lastEventAt?: string;
+  };
+  // Storage info
+  storage?: {
+    backend: 'git' | 'local' | 's3' | 'gcs';
+    location?: string;
+    sizeBytes?: number;
+  };
+  // Relationships
+  relationships?: {
+    parentSessionId?: string;
+    forkedFromId?: string;
+    forkPointEventIndex?: number;
+  };
+}
+
+export type SessionState = 'active' | 'paused' | 'completed' | 'archived';
+
+// Session participant for multi-agent sessions
+export interface SessionParticipant {
+  id: string;
+  session_resource_id: string;
+  agent_id: string;
+  role: 'owner' | 'collaborator' | 'observer';
+  cursor_event_index?: number;
+  cursor_event_id?: string;
+  joined_at: string;
+  last_active_at?: string;
+}
+
+// Session checkpoint for resumption points
+export interface SessionCheckpoint {
+  id: string;
+  session_resource_id: string;
+  name: string;
+  description?: string;
+  event_index: number;
+  event_id?: string;
+  state_snapshot?: Record<string, unknown>;
+  created_at: string;
+  created_by_agent_id: string;
+}
+
+// Session format registry entry
+export interface SessionFormatEntry {
+  id: string;
+  name: string;
+  vendor?: string;
+  version?: string;
+  detection_patterns?: string; // JSON
+  json_schema?: string; // JSON
+  adapter_type: 'builtin' | 'wasm' | 'url' | 'none';
+  adapter_config?: string; // JSON
+  is_acp_native: boolean;
+  acp_version_target?: string;
+  created_at: string;
+  updated_at: string;
 }
