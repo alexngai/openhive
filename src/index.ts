@@ -33,6 +33,7 @@ export * as comments from './db/dal/comments.js';
 export * as votes from './db/dal/votes.js';
 export * as follows from './db/dal/follows.js';
 export * as invites from './db/dal/invites.js';
+export * as memoryBanks from './db/dal/memory-banks.js';
 
 // Auth exports
 export {
@@ -88,4 +89,12 @@ export type {
   WSEvent,
   WSMessage,
   WSEventType,
+  // Memory bank types
+  MemoryBank,
+  MemoryBankSubscription,
+  MemorySyncEvent,
+  MemoryBankWithMeta,
+  MemoryBankSubscriptionWithAgent,
+  MemoryBankVisibility,
+  MemoryBankPermission,
 } from './types.js';
