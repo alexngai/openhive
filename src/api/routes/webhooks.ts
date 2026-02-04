@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createHmac, timingSafeEqual } from 'crypto';
 import * as memoryBanksDAL from '../../db/dal/memory-banks.js';
+import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import type { Config } from '../../config.js';
 
@@ -312,6 +313,129 @@ export async function webhooksRoutes(
   );
 
   // ============================================================================
+  // Generic Resource Webhook Endpoint
+  // Supports all syncable resource types (tasks, skills, etc.)
+  // ============================================================================
+
+  fastify.post<{
+    Params: { resourceId: string };
+  }>(
+    '/webhooks/resource/:resourceId',
+    async (request: FastifyRequest<{ Params: { resourceId: string } }>, reply: FastifyReply) => {
+      const { resourceId } = request.params;
+
+      // Find the resource
+      const resource = resourcesDAL.findResourceById(resourceId);
+      if (!resource) {
+        return reply.status(404).send({ error: 'Resource not found' });
+      }
+
+      if (!resource.webhook_secret) {
+        return reply.status(400).send({ error: 'Webhook secret not configured' });
+      }
+
+      // Get raw body for signature verification
+      const rawBody = JSON.stringify(request.body);
+      const headers = request.headers as Record<string, unknown>;
+
+      // Detect git host and verify signature
+      const gitHost = detectGitHost(headers);
+      let isValid = false;
+
+      switch (gitHost) {
+        case 'github':
+          isValid = verifyGitHubSignature(
+            rawBody,
+            headers['x-hub-signature-256'] as string | undefined,
+            resource.webhook_secret
+          );
+          break;
+        case 'gitlab':
+          isValid = verifyGitLabToken(
+            headers['x-gitlab-token'] as string | undefined,
+            resource.webhook_secret
+          );
+          break;
+        case 'gitea':
+          isValid = verifyGiteaSignature(
+            rawBody,
+            headers['x-gitea-signature'] as string | undefined,
+            resource.webhook_secret
+          );
+          break;
+        default:
+          // Unknown host - try all methods
+          isValid =
+            verifyGitHubSignature(rawBody, headers['x-hub-signature-256'] as string | undefined, resource.webhook_secret) ||
+            verifyGitLabToken(headers['x-gitlab-token'] as string | undefined, resource.webhook_secret) ||
+            verifyGiteaSignature(rawBody, headers['x-gitea-signature'] as string | undefined, resource.webhook_secret);
+      }
+
+      if (!isValid) {
+        return reply.status(401).send({ error: 'Invalid webhook signature' });
+      }
+
+      // Check if this is a push event
+      const eventType =
+        headers['x-github-event'] ||
+        headers['x-gitlab-event'] ||
+        headers['x-gitea-event'];
+
+      // Only process push events
+      if (eventType !== 'push' && eventType !== 'Push Hook') {
+        return reply.status(200).send({ ok: true, skipped: true, reason: 'Not a push event' });
+      }
+
+      const payload = request.body as WebhookPayload;
+
+      // Extract push information
+      const pushInfo = extractPushInfo(payload, gitHost);
+
+      // Update resource sync state
+      resourcesDAL.updateResourceSyncState(
+        resourceId,
+        pushInfo.commitHash,
+        pushInfo.pusher
+      );
+
+      // Create sync event
+      const syncEvent = resourcesDAL.createSyncEvent({
+        resource_id: resourceId,
+        commit_hash: pushInfo.commitHash,
+        commit_message: pushInfo.commitMessage || undefined,
+        pusher: pushInfo.pusher || undefined,
+        files_added: pushInfo.filesAdded,
+        files_modified: pushInfo.filesModified,
+        files_removed: pushInfo.filesRemoved,
+      });
+
+      // Broadcast to WebSocket subscribers using resource-specific channel
+      const channel = resourcesDAL.getResourceChannel(resource);
+      broadcastToChannel(channel, {
+        type: 'resource_updated',
+        data: {
+          resource_id: resourceId,
+          resource_type: resource.resource_type,
+          resource_name: resource.name,
+          commit_hash: pushInfo.commitHash,
+          commit_message: pushInfo.commitMessage,
+          pusher: pushInfo.pusher,
+          files_added: pushInfo.filesAdded,
+          files_modified: pushInfo.filesModified,
+          files_removed: pushInfo.filesRemoved,
+          event_id: syncEvent.id,
+        },
+      });
+
+      return reply.status(200).send({
+        ok: true,
+        resource_type: resource.resource_type,
+        event_id: syncEvent.id,
+      });
+    }
+  );
+
+  // ============================================================================
   // GitHub App Webhook Endpoint
   // Receives events for ALL repositories where the app is installed
   // ============================================================================
@@ -357,26 +481,32 @@ export async function webhooksRoutes(
           return reply.status(400).send({ error: 'Missing repository in payload' });
         }
 
-        // Find memory banks matching this repository
         const repoFullName = payload.repository.full_name;
+        const pushInfo = extractPushInfo(payload, 'github');
+
+        // Find memory banks matching this repository (legacy support)
         const matchingBanks = memoryBanksDAL.findMemoryBanksByRepoUrl(
           `github.com/${repoFullName}`
         );
 
-        if (matchingBanks.length === 0) {
-          // No registered memory banks for this repo - that's okay
+        // Find generic resources matching this repository
+        const matchingResources = resourcesDAL.findResourcesByRepoUrl(
+          `github.com/${repoFullName}`
+        );
+
+        if (matchingBanks.length === 0 && matchingResources.length === 0) {
+          // No registered resources for this repo - that's okay
           return reply.status(200).send({
             ok: true,
             skipped: true,
-            reason: `No memory banks registered for ${repoFullName}`,
+            reason: `No resources registered for ${repoFullName}`,
           });
         }
 
-        // Extract push info
-        const pushInfo = extractPushInfo(payload, 'github');
+        const bankResults = [];
+        const resourceResults = [];
 
-        // Process each matching memory bank
-        const results = [];
+        // Process each matching memory bank (legacy)
         for (const bank of matchingBanks) {
           // Update memory bank sync state
           memoryBanksDAL.updateMemoryBankSyncState(
@@ -412,14 +542,61 @@ export async function webhooksRoutes(
             },
           });
 
-          results.push({ bank_id: bank.id, event_id: syncEvent.id });
+          bankResults.push({ bank_id: bank.id, event_id: syncEvent.id });
+        }
+
+        // Process each matching generic resource
+        for (const resource of matchingResources) {
+          // Update resource sync state
+          resourcesDAL.updateResourceSyncState(
+            resource.id,
+            pushInfo.commitHash,
+            pushInfo.pusher
+          );
+
+          // Create sync event
+          const syncEvent = resourcesDAL.createSyncEvent({
+            resource_id: resource.id,
+            commit_hash: pushInfo.commitHash,
+            commit_message: pushInfo.commitMessage || undefined,
+            pusher: pushInfo.pusher || undefined,
+            files_added: pushInfo.filesAdded,
+            files_modified: pushInfo.filesModified,
+            files_removed: pushInfo.filesRemoved,
+          });
+
+          // Broadcast to WebSocket subscribers
+          const channel = resourcesDAL.getResourceChannel(resource);
+          broadcastToChannel(channel, {
+            type: 'resource_updated',
+            data: {
+              resource_id: resource.id,
+              resource_type: resource.resource_type,
+              resource_name: resource.name,
+              commit_hash: pushInfo.commitHash,
+              commit_message: pushInfo.commitMessage,
+              pusher: pushInfo.pusher,
+              files_added: pushInfo.filesAdded,
+              files_modified: pushInfo.filesModified,
+              files_removed: pushInfo.filesRemoved,
+              event_id: syncEvent.id,
+            },
+          });
+
+          resourceResults.push({
+            resource_id: resource.id,
+            resource_type: resource.resource_type,
+            event_id: syncEvent.id,
+          });
         }
 
         return reply.status(200).send({
           ok: true,
           repository: repoFullName,
-          banks_notified: results.length,
-          results,
+          banks_notified: bankResults.length,
+          resources_notified: resourceResults.length,
+          bank_results: bankResults,
+          resource_results: resourceResults,
         });
       }
 

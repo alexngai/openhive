@@ -138,7 +138,9 @@ export type WSEventType =
   | 'post_deleted'
   | 'comment_deleted'
   | 'memory_bank_updated'
-  | 'memory_bank_created';
+  | 'memory_bank_created'
+  | 'resource_updated'
+  | 'resource_created';
 
 export interface WSEvent {
   type: WSEventType;
@@ -246,4 +248,75 @@ export interface MemoryBankWithMeta extends MemoryBank {
 
 export interface MemoryBankSubscriptionWithAgent extends MemoryBankSubscription {
   agent: AgentPublic;
+}
+
+// ============================================================================
+// Syncable Resources Types (generic resource system)
+// ============================================================================
+
+export type SyncableResourceType = 'memory_bank' | 'task' | 'skill';
+export type ResourceVisibility = 'private' | 'shared' | 'public';
+export type ResourcePermission = 'read' | 'write' | 'admin';
+
+export interface SyncableResource {
+  id: string;
+  resource_type: SyncableResourceType;
+  name: string;
+  description: string | null;
+  git_remote_url: string;
+  webhook_secret: string | null;
+  visibility: ResourceVisibility;
+  last_commit_hash: string | null;
+  last_push_by: string | null;
+  last_push_at: string | null;
+  owner_agent_id: string;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResourceSubscription {
+  id: string;
+  agent_id: string;
+  resource_id: string;
+  permission: ResourcePermission;
+  subscribed_at: string;
+}
+
+export interface ResourceSyncEvent {
+  id: string;
+  resource_id: string;
+  commit_hash: string | null;
+  commit_message: string | null;
+  pusher: string | null;
+  files_added: number;
+  files_modified: number;
+  files_removed: number;
+  timestamp: string;
+}
+
+// Resource API response types
+export interface SyncableResourceWithMeta extends SyncableResource {
+  owner: AgentPublic;
+  tags: string[];
+  subscriber_count: number;
+  is_subscribed?: boolean;
+  my_permission?: ResourcePermission | null;
+}
+
+export interface ResourceSubscriptionWithAgent extends ResourceSubscription {
+  agent: AgentPublic;
+}
+
+// Resource-specific metadata types
+export interface TaskResourceMetadata {
+  task_schema_version?: string;
+  default_priority?: 'low' | 'medium' | 'high';
+  categories?: string[];
+}
+
+export interface SkillResourceMetadata {
+  skill_format?: string;
+  supported_frameworks?: string[];
+  entry_point?: string;
 }
