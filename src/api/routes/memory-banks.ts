@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
 import * as memoryBanksDAL from '../../db/dal/memory-banks.js';
+import { broadcast } from '../../realtime/index.js';
 import type { MemoryBankVisibility } from '../../types.js';
 import type { Config } from '../../config.js';
 
@@ -148,6 +149,20 @@ export async function memoryBanksRoutes(
 
       // Build webhook URL
       const webhookUrl = `${config.instance.url}/api/v1/webhooks/git/${bank.id}`;
+
+      // Broadcast memory_bank_created event for public/shared banks
+      if (visibility !== 'private') {
+        broadcast({
+          type: 'memory_bank_created',
+          data: {
+            bank_id: bank.id,
+            bank_name: name,
+            visibility,
+            owner: bankWithMeta?.owner,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
 
       return reply.status(201).send({
         ...bankWithMeta,
