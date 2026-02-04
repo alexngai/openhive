@@ -546,8 +546,8 @@ export async function sessionsRoutes(
       const { events } = toAcpEvents(content as string, formatId);
 
       // Apply pagination
-      const limit = Math.min(request.query.limit || 100, 500);
-      const offset = request.query.offset || 0;
+      const limit = Math.min(Number(request.query.limit) || 100, 500);
+      const offset = Number(request.query.offset) || 0;
       const paginatedEvents = events.slice(offset, offset + limit);
 
       return reply.send({

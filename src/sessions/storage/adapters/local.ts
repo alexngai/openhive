@@ -190,6 +190,8 @@ export class LocalSessionStorageAdapter implements SessionStorageAdapter {
     const sessionPath = this.getSessionPath(options);
 
     try {
+      // Check if session exists first
+      await access(sessionPath);
       await rm(sessionPath, { recursive: true, force: true });
       return true;
     } catch (error) {

@@ -11,13 +11,19 @@ import type {
   GCSStorageConfig,
 } from './types.js';
 import { LocalSessionStorageAdapter } from './adapters/local.js';
-import { S3SessionStorageAdapter } from './adapters/s3.js';
-import { GCSSessionStorageAdapter } from './adapters/gcs.js';
 
 export * from './types.js';
 export { LocalSessionStorageAdapter } from './adapters/local.js';
-export { S3SessionStorageAdapter } from './adapters/s3.js';
-export { GCSSessionStorageAdapter } from './adapters/gcs.js';
+
+// Re-export cloud adapters lazily loaded functions
+// This avoids requiring @aws-sdk/client-s3 and @google-cloud/storage at import time
+export async function loadS3Adapter(): Promise<typeof import('./adapters/s3.js')> {
+  return import('./adapters/s3.js');
+}
+
+export async function loadGCSAdapter(): Promise<typeof import('./adapters/gcs.js')> {
+  return import('./adapters/gcs.js');
+}
 
 // ============================================================================
 // Storage Factory
@@ -25,17 +31,22 @@ export { GCSSessionStorageAdapter } from './adapters/gcs.js';
 
 /**
  * Create a session storage adapter from configuration
+ * Note: Cloud adapters (S3, GCS) require their dependencies to be installed
  */
-export function createSessionStorage(
+export async function createSessionStorage(
   config: SessionStorageConfig
-): SessionStorageAdapter {
+): Promise<SessionStorageAdapter> {
   switch (config.type) {
     case 'local':
       return new LocalSessionStorageAdapter(config as LocalStorageConfig);
-    case 's3':
+    case 's3': {
+      const { S3SessionStorageAdapter } = await loadS3Adapter();
       return new S3SessionStorageAdapter(config as S3StorageConfig);
-    case 'gcs':
+    }
+    case 'gcs': {
+      const { GCSSessionStorageAdapter } = await loadGCSAdapter();
       return new GCSSessionStorageAdapter(config as GCSStorageConfig);
+    }
     default:
       throw new Error(`Unknown storage type: ${(config as SessionStorageConfig).type}`);
   }
@@ -51,10 +62,20 @@ const storageInstances: Map<string, SessionStorageAdapter> = new Map();
 /**
  * Initialize the default session storage
  */
-export function initializeSessionStorage(
+export async function initializeSessionStorage(
   config: SessionStorageConfig
+): Promise<SessionStorageAdapter> {
+  defaultStorageInstance = await createSessionStorage(config);
+  return defaultStorageInstance;
+}
+
+/**
+ * Initialize local session storage synchronously (no external dependencies)
+ */
+export function initializeLocalSessionStorage(
+  config: LocalStorageConfig
 ): SessionStorageAdapter {
-  defaultStorageInstance = createSessionStorage(config);
+  defaultStorageInstance = new LocalSessionStorageAdapter(config);
   return defaultStorageInstance;
 }
 
@@ -80,11 +101,11 @@ export function isSessionStorageInitialized(): boolean {
 /**
  * Register a named storage backend (for multi-backend support)
  */
-export function registerSessionStorage(
+export async function registerSessionStorage(
   name: string,
   config: SessionStorageConfig
-): SessionStorageAdapter {
-  const adapter = createSessionStorage(config);
+): Promise<SessionStorageAdapter> {
+  const adapter = await createSessionStorage(config);
   storageInstances.set(name, adapter);
   return adapter;
 }
