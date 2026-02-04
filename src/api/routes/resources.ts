@@ -1,23 +1,18 @@
-/**
- * Memory Banks API Routes
- *
- * This module provides backward-compatible /memory-banks endpoints that
- * delegate to the generic syncable resources system with resource_type='memory_bank'.
- *
- * New integrations should prefer using the /resources API directly.
- */
-
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { broadcast, broadcastToChannel } from '../../realtime/index.js';
 import { checkRemoteForUpdates, checkRemotesBatch } from '../../utils/git-remote.js';
-import type { ResourceVisibility } from '../../types.js';
+import type { SyncableResourceType, ResourceVisibility } from '../../types.js';
 import type { Config } from '../../config.js';
 
+// Valid resource types
+const RESOURCE_TYPES = ['memory_bank', 'task', 'skill'] as const;
+
 // Validation schemas
-const CreateMemoryBankSchema = z.object({
+const CreateResourceSchema = z.object({
+  resource_type: z.enum(RESOURCE_TYPES),
   name: z
     .string()
     .min(1)
@@ -27,9 +22,10 @@ const CreateMemoryBankSchema = z.object({
   git_remote_url: z.string().min(1).max(500),
   visibility: z.enum(['private', 'shared', 'public']).default('private'),
   tags: z.array(z.string().max(50)).max(10).optional(),
+  metadata: z.record(z.unknown()).optional(),
 });
 
-const UpdateMemoryBankSchema = z.object({
+const UpdateResourceSchema = z.object({
   name: z
     .string()
     .min(1)
@@ -39,6 +35,7 @@ const UpdateMemoryBankSchema = z.object({
   description: z.string().max(500).optional().nullable(),
   git_remote_url: z.string().min(1).max(500).optional(),
   visibility: z.enum(['private', 'shared', 'public']).optional(),
+  metadata: z.record(z.unknown()).optional(),
 });
 
 const GrantAccessSchema = z.object({
@@ -50,56 +47,39 @@ const SetTagsSchema = z.object({
   tags: z.array(z.string().max(50)).max(10),
 });
 
-// Helper to transform resource to memory bank format for backward compatibility
-function toMemoryBankFormat(resource: ReturnType<typeof resourcesDAL.getResourceWithMeta>) {
-  if (!resource) return null;
-  return {
-    id: resource.id,
-    name: resource.name,
-    description: resource.description,
-    git_remote_url: resource.git_remote_url,
-    webhook_secret: resource.webhook_secret,
-    visibility: resource.visibility,
-    last_commit_hash: resource.last_commit_hash,
-    last_push_by: resource.last_push_by,
-    last_push_at: resource.last_push_at,
-    owner_agent_id: resource.owner_agent_id,
-    created_at: resource.created_at,
-    updated_at: resource.updated_at,
-    owner: resource.owner,
-    tags: resource.tags,
-    subscriber_count: resource.subscriber_count,
-    is_subscribed: resource.is_subscribed,
-    my_permission: resource.my_permission,
-  };
-}
+const BatchCheckSchema = z.object({
+  resource_ids: z.array(z.string()).max(50).optional(),
+  resource_type: z.enum(RESOURCE_TYPES).optional(),
+  branch: z.string().default('main'),
+});
 
-export async function memoryBanksRoutes(
+export async function resourcesRoutes(
   fastify: FastifyInstance,
   options: { config: Config }
 ): Promise<void> {
   const { config } = options;
 
   // ============================================================================
-  // Memory Bank CRUD
+  // Resource CRUD
   // ============================================================================
 
-  // List accessible memory banks
+  // List accessible resources
   fastify.get<{
     Querystring: {
+      type?: SyncableResourceType;
       owned?: string;
       visibility?: ResourceVisibility;
       limit?: number;
       offset?: number;
     };
-  }>('/memory-banks', { preHandler: authMiddleware }, async (request, reply) => {
+  }>('/resources', { preHandler: authMiddleware }, async (request, reply) => {
     const limit = Math.min(request.query.limit || 50, 100);
     const offset = request.query.offset || 0;
     const owned = request.query.owned === 'true';
 
     const result = resourcesDAL.listAccessibleResources({
       agentId: request.agent!.id,
-      resourceType: 'memory_bank',
+      resourceType: request.query.type,
       owned,
       visibility: request.query.visibility,
       limit,
@@ -108,12 +88,11 @@ export async function memoryBanksRoutes(
 
     // Filter out sensitive fields for non-admin users
     const data = result.data.map((resource) => {
-      const bank = toMemoryBankFormat(resource);
       const canSeeDetails = resourcesDAL.canAccessResource(request.agent!.id, resource);
       return {
-        ...bank,
-        webhook_secret: canSeeDetails && resource.my_permission === 'admin' ? bank?.webhook_secret : undefined,
-        git_remote_url: canSeeDetails ? bank?.git_remote_url : undefined,
+        ...resource,
+        webhook_secret: canSeeDetails && resource.my_permission === 'admin' ? resource.webhook_secret : undefined,
+        git_remote_url: canSeeDetails ? resource.git_remote_url : undefined,
       };
     });
 
@@ -125,21 +104,22 @@ export async function memoryBanksRoutes(
     });
   });
 
-  // Discover public memory banks
+  // Discover public resources
   fastify.get<{
     Querystring: {
+      type?: SyncableResourceType;
       q?: string;
       tags?: string;
       limit?: number;
       offset?: number;
     };
-  }>('/memory-banks/discover', { preHandler: optionalAuthMiddleware }, async (request, reply) => {
+  }>('/resources/discover', { preHandler: optionalAuthMiddleware }, async (request, reply) => {
     const limit = Math.min(request.query.limit || 50, 100);
     const offset = request.query.offset || 0;
     const tags = request.query.tags?.split(',').map((t) => t.trim()).filter(Boolean);
 
     const result = resourcesDAL.discoverPublicResources({
-      resourceType: 'memory_bank',
+      resourceType: request.query.type,
       query: request.query.q,
       tags,
       limit,
@@ -147,16 +127,16 @@ export async function memoryBanksRoutes(
     });
 
     return reply.send({
-      data: result.data.map(toMemoryBankFormat),
+      data: result.data,
       total: result.total,
       limit,
       offset,
     });
   });
 
-  // Create a new memory bank
-  fastify.post('/memory-banks', { preHandler: authMiddleware }, async (request, reply) => {
-    const parseResult = CreateMemoryBankSchema.safeParse(request.body);
+  // Create a new resource
+  fastify.post('/resources', { preHandler: authMiddleware }, async (request, reply) => {
+    const parseResult = CreateResourceSchema.safeParse(request.body);
     if (!parseResult.success) {
       return reply.status(400).send({
         error: 'Validation Error',
@@ -164,16 +144,17 @@ export async function memoryBanksRoutes(
       });
     }
 
-    const { name, description, git_remote_url, visibility, tags } = parseResult.data;
+    const { resource_type, name, description, git_remote_url, visibility, tags, metadata } = parseResult.data;
 
     try {
       const resource = resourcesDAL.createResource({
-        resource_type: 'memory_bank',
+        resource_type,
         name,
         description,
         git_remote_url,
         visibility,
         owner_agent_id: request.agent!.id,
+        metadata,
       });
 
       // Set tags if provided
@@ -183,18 +164,18 @@ export async function memoryBanksRoutes(
 
       // Get full resource with metadata
       const resourceWithMeta = resourcesDAL.getResourceWithMeta(resource.id, request.agent!.id);
-      const bankWithMeta = toMemoryBankFormat(resourceWithMeta);
 
       // Build webhook URL
       const webhookUrl = `${config.instance.url}/api/v1/webhooks/resource/${resource.id}`;
 
-      // Broadcast memory_bank_created event for public/shared banks
+      // Broadcast resource_created event for public/shared resources
       if (visibility !== 'private') {
         broadcast({
-          type: 'memory_bank_created',
+          type: 'resource_created',
           data: {
-            bank_id: resource.id,
-            bank_name: name,
+            resource_id: resource.id,
+            resource_type,
+            resource_name: name,
             visibility,
             owner: resourceWithMeta?.owner,
           },
@@ -203,7 +184,7 @@ export async function memoryBanksRoutes(
       }
 
       return reply.status(201).send({
-        ...bankWithMeta,
+        ...resourceWithMeta,
         webhook_url: webhookUrl,
       });
     } catch (error) {
@@ -211,24 +192,24 @@ export async function memoryBanksRoutes(
       if ((error as Error).message?.includes('UNIQUE constraint failed')) {
         return reply.status(409).send({
           error: 'Conflict',
-          message: 'A memory bank with this name already exists for your account',
+          message: `A ${resource_type} resource with this name already exists for your account`,
         });
       }
       throw error;
     }
   });
 
-  // Get memory bank by ID
+  // Get resource by ID
   fastify.get<{ Params: { id: string } }>(
-    '/memory-banks/:id',
+    '/resources/:id',
     { preHandler: optionalAuthMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
 
-      if (!resource || resource.resource_type !== 'memory_bank') {
+      if (!resource) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
 
@@ -237,14 +218,14 @@ export async function memoryBanksRoutes(
         if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, resource)) {
           return reply.status(404).send({
             error: 'Not Found',
-            message: 'Memory bank not found',
+            message: 'Resource not found',
           });
         }
       } else if (resource.visibility === 'shared') {
         if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, resource)) {
           return reply.status(403).send({
             error: 'Forbidden',
-            message: 'You do not have access to this memory bank',
+            message: 'You do not have access to this resource',
           });
         }
       }
@@ -257,36 +238,34 @@ export async function memoryBanksRoutes(
       if (!resourceWithMeta) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
-
-      const bankWithMeta = toMemoryBankFormat(resourceWithMeta);
 
       // Filter sensitive fields based on permission
       const canSeeAdmin = request.agent && resourceWithMeta.my_permission === 'admin';
 
       return reply.send({
-        ...bankWithMeta,
-        webhook_secret: canSeeAdmin ? bankWithMeta?.webhook_secret : undefined,
+        ...resourceWithMeta,
+        webhook_secret: canSeeAdmin ? resourceWithMeta.webhook_secret : undefined,
         git_remote_url: request.agent && resourcesDAL.canAccessResource(request.agent.id, resource)
-          ? bankWithMeta?.git_remote_url
+          ? resourceWithMeta.git_remote_url
           : undefined,
       });
     }
   );
 
-  // Update memory bank
+  // Update resource
   fastify.patch<{ Params: { id: string } }>(
-    '/memory-banks/:id',
+    '/resources/:id',
     { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
 
-      if (!resource || resource.resource_type !== 'memory_bank') {
+      if (!resource) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
 
@@ -294,11 +273,11 @@ export async function memoryBanksRoutes(
       if (!resourcesDAL.canModifyResource(request.agent!.id, resource)) {
         return reply.status(403).send({
           error: 'Forbidden',
-          message: 'You do not have permission to modify this memory bank',
+          message: 'You do not have permission to modify this resource',
         });
       }
 
-      const parseResult = UpdateMemoryBankSchema.safeParse(request.body);
+      const parseResult = UpdateResourceSchema.safeParse(request.body);
       if (!parseResult.success) {
         return reply.status(400).send({
           error: 'Validation Error',
@@ -314,21 +293,21 @@ export async function memoryBanksRoutes(
       resourcesDAL.updateResource(resource.id, updateData);
       const resourceWithMeta = resourcesDAL.getResourceWithMeta(resource.id, request.agent!.id);
 
-      return reply.send(toMemoryBankFormat(resourceWithMeta));
+      return reply.send(resourceWithMeta);
     }
   );
 
-  // Delete memory bank
+  // Delete resource
   fastify.delete<{ Params: { id: string } }>(
-    '/memory-banks/:id',
+    '/resources/:id',
     { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
 
-      if (!resource || resource.resource_type !== 'memory_bank') {
+      if (!resource) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
 
@@ -336,7 +315,7 @@ export async function memoryBanksRoutes(
       if (resource.owner_agent_id !== request.agent!.id) {
         return reply.status(403).send({
           error: 'Forbidden',
-          message: 'Only the owner can delete a memory bank',
+          message: 'Only the owner can delete a resource',
         });
       }
 
@@ -348,15 +327,15 @@ export async function memoryBanksRoutes(
 
   // Regenerate webhook secret
   fastify.post<{ Params: { id: string } }>(
-    '/memory-banks/:id/regenerate-secret',
+    '/resources/:id/regenerate-secret',
     { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
 
-      if (!resource || resource.resource_type !== 'memory_bank') {
+      if (!resource) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
 
@@ -382,17 +361,17 @@ export async function memoryBanksRoutes(
   // Subscriptions
   // ============================================================================
 
-  // Subscribe to a memory bank
+  // Subscribe to a resource
   fastify.post<{ Params: { id: string } }>(
-    '/memory-banks/:id/subscribe',
+    '/resources/:id/subscribe',
     { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
 
-      if (!resource || resource.resource_type !== 'memory_bank') {
+      if (!resource) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
 
@@ -400,22 +379,22 @@ export async function memoryBanksRoutes(
       if (resource.visibility === 'private') {
         return reply.status(403).send({
           error: 'Forbidden',
-          message: 'Cannot subscribe to a private memory bank',
+          message: 'Cannot subscribe to a private resource',
         });
       }
 
       if (resource.visibility === 'shared') {
-        // For shared banks, need explicit access grant first
+        // For shared resources, need explicit access grant first
         const existingSub = resourcesDAL.getSubscription(request.agent!.id, resource.id);
         if (!existingSub) {
           return reply.status(403).send({
             error: 'Forbidden',
-            message: 'You need to be granted access to subscribe to this memory bank',
+            message: 'You need to be granted access to subscribe to this resource',
           });
         }
       }
 
-      // Public banks: anyone can subscribe with read permission
+      // Public resources: anyone can subscribe with read permission
       const subscription = resourcesDAL.subscribeToResource(
         request.agent!.id,
         resource.id,
@@ -426,17 +405,17 @@ export async function memoryBanksRoutes(
     }
   );
 
-  // Unsubscribe from a memory bank
+  // Unsubscribe from a resource
   fastify.delete<{ Params: { id: string } }>(
-    '/memory-banks/:id/subscribe',
+    '/resources/:id/subscribe',
     { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
 
-      if (!resource || resource.resource_type !== 'memory_bank') {
+      if (!resource) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
 
@@ -455,15 +434,15 @@ export async function memoryBanksRoutes(
 
   // Grant access to another agent
   fastify.post<{ Params: { id: string } }>(
-    '/memory-banks/:id/access',
+    '/resources/:id/access',
     { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
 
-      if (!resource || resource.resource_type !== 'memory_bank') {
+      if (!resource) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
 
@@ -501,15 +480,15 @@ export async function memoryBanksRoutes(
 
   // Revoke access from an agent
   fastify.delete<{ Params: { id: string; agentId: string } }>(
-    '/memory-banks/:id/access/:agentId',
+    '/resources/:id/access/:agentId',
     { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
 
-      if (!resource || resource.resource_type !== 'memory_bank') {
+      if (!resource) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
 
@@ -536,7 +515,7 @@ export async function memoryBanksRoutes(
       if (!success) {
         return reply.status(400).send({
           error: 'Bad Request',
-          message: 'Agent is not subscribed to this memory bank',
+          message: 'Agent is not subscribed to this resource',
         });
       }
 
@@ -549,15 +528,15 @@ export async function memoryBanksRoutes(
     Params: { id: string };
     Querystring: { limit?: number; offset?: number };
   }>(
-    '/memory-banks/:id/subscribers',
+    '/resources/:id/subscribers',
     { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
 
-      if (!resource || resource.resource_type !== 'memory_bank') {
+      if (!resource) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
 
@@ -589,15 +568,15 @@ export async function memoryBanksRoutes(
 
   // Set tags
   fastify.put<{ Params: { id: string } }>(
-    '/memory-banks/:id/tags',
+    '/resources/:id/tags',
     { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
 
-      if (!resource || resource.resource_type !== 'memory_bank') {
+      if (!resource) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
 
@@ -634,15 +613,15 @@ export async function memoryBanksRoutes(
     Params: { id: string };
     Querystring: { limit?: number; offset?: number };
   }>(
-    '/memory-banks/:id/events',
+    '/resources/:id/events',
     { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
 
-      if (!resource || resource.resource_type !== 'memory_bank') {
+      if (!resource) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
 
@@ -650,7 +629,7 @@ export async function memoryBanksRoutes(
       if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
         return reply.status(403).send({
           error: 'Forbidden',
-          message: 'You do not have access to this memory bank',
+          message: 'You do not have access to this resource',
         });
       }
 
@@ -659,21 +638,8 @@ export async function memoryBanksRoutes(
 
       const result = resourcesDAL.getSyncEvents(resource.id, limit, offset);
 
-      // Transform to legacy format (bank_id instead of resource_id)
-      const data = result.data.map((event) => ({
-        id: event.id,
-        bank_id: event.resource_id,
-        commit_hash: event.commit_hash,
-        commit_message: event.commit_message,
-        pusher: event.pusher,
-        files_added: event.files_added,
-        files_modified: event.files_modified,
-        files_removed: event.files_removed,
-        timestamp: event.timestamp,
-      }));
-
       return reply.send({
-        data,
+        data: result.data,
         total: result.total,
         limit,
         offset,
@@ -685,20 +651,20 @@ export async function memoryBanksRoutes(
   // Polling-based Sync (webhook-free alternative)
   // ============================================================================
 
-  // Check a single memory bank for updates
+  // Check a single resource for updates
   fastify.post<{
     Params: { id: string };
     Body: { branch?: string };
   }>(
-    '/memory-banks/:id/check-updates',
+    '/resources/:id/check-updates',
     { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
 
-      if (!resource || resource.resource_type !== 'memory_bank') {
+      if (!resource) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: 'Memory bank not found',
+          message: 'Resource not found',
         });
       }
 
@@ -706,7 +672,7 @@ export async function memoryBanksRoutes(
       if (!resourcesDAL.canPollResource(request.agent!.id, resource)) {
         return reply.status(403).send({
           error: 'Forbidden',
-          message: 'You do not have permission to poll this memory bank',
+          message: 'You do not have permission to poll this resource',
         });
       }
 
@@ -743,11 +709,13 @@ export async function memoryBanksRoutes(
         });
 
         // Broadcast to WebSocket subscribers
-        broadcastToChannel(`memory-bank:${resource.id}`, {
-          type: 'memory_bank_updated',
+        const channel = resourcesDAL.getResourceChannel(resource);
+        broadcastToChannel(channel, {
+          type: 'resource_updated',
           data: {
-            bank_id: resource.id,
-            bank_name: resource.name,
+            resource_id: resource.id,
+            resource_type: resource.resource_type,
+            resource_name: resource.name,
             commit_hash: remoteCommit,
             commit_message: null,
             pusher: `poll:${request.agent!.name}`,
@@ -773,14 +741,9 @@ export async function memoryBanksRoutes(
     }
   );
 
-  // Batch check multiple memory banks for updates
-  const BatchCheckSchema = z.object({
-    bank_ids: z.array(z.string()).max(50).optional(),
-    branch: z.string().default('main'),
-  });
-
+  // Batch check multiple resources for updates
   fastify.post(
-    '/memory-banks/check-updates',
+    '/resources/check-updates',
     { preHandler: authMiddleware },
     async (request, reply) => {
       const parseResult = BatchCheckSchema.safeParse(request.body);
@@ -791,27 +754,28 @@ export async function memoryBanksRoutes(
         });
       }
 
-      const { bank_ids, branch } = parseResult.data;
+      const { resource_ids, resource_type, branch } = parseResult.data;
 
-      // Get resources to check (only memory_bank type)
+      // Get resources to check
       let resources: ReturnType<typeof resourcesDAL.getAgentPollableResources>;
 
-      if (bank_ids && bank_ids.length > 0) {
+      if (resource_ids && resource_ids.length > 0) {
         // Check specific resources
         resources = resourcesDAL.getAgentPollableResourcesByIds(
           request.agent!.id,
-          bank_ids,
-          'memory_bank'
+          resource_ids,
+          resource_type
         );
       } else {
-        // Check all pollable memory banks
-        resources = resourcesDAL.getAgentPollableResources(request.agent!.id, 'memory_bank');
+        // Check all pollable resources
+        resources = resourcesDAL.getAgentPollableResources(request.agent!.id, resource_type);
       }
 
       if (resources.length === 0) {
         return reply.send({
           checked: 0,
           updated: [],
+          unchanged: [],
           errors: [],
         });
       }
@@ -829,16 +793,17 @@ export async function memoryBanksRoutes(
       const results = await checkRemotesBatch(remotes, 5);
 
       const updated: Array<{
-        bank_id: string;
-        bank_name: string;
+        resource_id: string;
+        resource_type: SyncableResourceType;
+        resource_name: string;
         previous_commit: string | null;
         current_commit: string;
         event_id: string;
       }> = [];
 
       const errors: Array<{
-        bank_id: string;
-        bank_name: string;
+        resource_id: string;
+        resource_name: string;
         error: string;
       }> = [];
 
@@ -849,8 +814,8 @@ export async function memoryBanksRoutes(
 
         if (!result || !result.success) {
           errors.push({
-            bank_id: resource.id,
-            bank_name: resource.name,
+            resource_id: resource.id,
+            resource_name: resource.name,
             error: result?.error || 'Unknown error',
           });
           continue;
@@ -875,11 +840,13 @@ export async function memoryBanksRoutes(
           });
 
           // Broadcast to WebSocket subscribers
-          broadcastToChannel(`memory-bank:${resource.id}`, {
-            type: 'memory_bank_updated',
+          const channel = resourcesDAL.getResourceChannel(resource);
+          broadcastToChannel(channel, {
+            type: 'resource_updated',
             data: {
-              bank_id: resource.id,
-              bank_name: resource.name,
+              resource_id: resource.id,
+              resource_type: resource.resource_type,
+              resource_name: resource.name,
               commit_hash: remoteCommit,
               commit_message: null,
               pusher: `poll:${request.agent!.name}`,
@@ -889,8 +856,9 @@ export async function memoryBanksRoutes(
           });
 
           updated.push({
-            bank_id: resource.id,
-            bank_name: resource.name,
+            resource_id: resource.id,
+            resource_type: resource.resource_type,
+            resource_name: resource.name,
             previous_commit: resource.last_commit_hash,
             current_commit: remoteCommit,
             event_id: syncEvent.id,
@@ -908,4 +876,82 @@ export async function memoryBanksRoutes(
       });
     }
   );
+
+  // ============================================================================
+  // Resource Type Specific Endpoints
+  // ============================================================================
+
+  // List resources by type (convenience endpoints)
+  for (const resourceType of RESOURCE_TYPES) {
+    const pluralType = resourceType === 'skill' ? 'skills' : `${resourceType}s`;
+
+    // List resources of a specific type
+    fastify.get<{
+      Querystring: {
+        owned?: string;
+        visibility?: ResourceVisibility;
+        limit?: number;
+        offset?: number;
+      };
+    }>(`/${pluralType}`, { preHandler: authMiddleware }, async (request, reply) => {
+      const limit = Math.min(request.query.limit || 50, 100);
+      const offset = request.query.offset || 0;
+      const owned = request.query.owned === 'true';
+
+      const result = resourcesDAL.listAccessibleResources({
+        agentId: request.agent!.id,
+        resourceType: resourceType,
+        owned,
+        visibility: request.query.visibility,
+        limit,
+        offset,
+      });
+
+      // Filter out sensitive fields
+      const data = result.data.map((resource) => {
+        const canSeeDetails = resourcesDAL.canAccessResource(request.agent!.id, resource);
+        return {
+          ...resource,
+          webhook_secret: canSeeDetails && resource.my_permission === 'admin' ? resource.webhook_secret : undefined,
+          git_remote_url: canSeeDetails ? resource.git_remote_url : undefined,
+        };
+      });
+
+      return reply.send({
+        data,
+        total: result.total,
+        limit,
+        offset,
+      });
+    });
+
+    // Discover public resources of a specific type
+    fastify.get<{
+      Querystring: {
+        q?: string;
+        tags?: string;
+        limit?: number;
+        offset?: number;
+      };
+    }>(`/${pluralType}/discover`, { preHandler: optionalAuthMiddleware }, async (request, reply) => {
+      const limit = Math.min(request.query.limit || 50, 100);
+      const offset = request.query.offset || 0;
+      const tags = request.query.tags?.split(',').map((t) => t.trim()).filter(Boolean);
+
+      const result = resourcesDAL.discoverPublicResources({
+        resourceType: resourceType,
+        query: request.query.q,
+        tags,
+        limit,
+        offset,
+      });
+
+      return reply.send({
+        data: result.data,
+        total: result.total,
+        limit,
+        offset,
+      });
+    });
+  }
 }

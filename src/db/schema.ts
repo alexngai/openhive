@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 9;
 
 export const CREATE_TABLES = `
 -- Agents table (supports both agents and human accounts)
@@ -150,9 +150,15 @@ CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER PRIMARY KEY
 );
 
--- Memory banks registry (git repos containing minimem memories)
-CREATE TABLE IF NOT EXISTS memory_banks (
+-- ============================================================================
+-- Syncable Resources (memory banks, tasks, skills, and future resource types)
+-- Note: Legacy memory_banks tables have been consolidated into syncable_resources
+-- ============================================================================
+
+-- Syncable resources registry (git repos backing various resource types)
+CREATE TABLE IF NOT EXISTS syncable_resources (
   id TEXT PRIMARY KEY,
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill')),
   name TEXT NOT NULL,
   description TEXT,
   git_remote_url TEXT NOT NULL,
@@ -163,33 +169,35 @@ CREATE TABLE IF NOT EXISTS memory_banks (
   last_push_by TEXT,
   last_push_at TEXT,
   owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  -- Resource-specific metadata stored as JSON
+  metadata TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(owner_agent_id, name)
+  UNIQUE(owner_agent_id, resource_type, name)
 );
 
--- Agent subscriptions to memory banks
-CREATE TABLE IF NOT EXISTS memory_bank_subscriptions (
+-- Agent subscriptions to syncable resources
+CREATE TABLE IF NOT EXISTS resource_subscriptions (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  bank_id TEXT NOT NULL REFERENCES memory_banks(id) ON DELETE CASCADE,
+  resource_id TEXT NOT NULL REFERENCES syncable_resources(id) ON DELETE CASCADE,
   permission TEXT DEFAULT 'read'
     CHECK (permission IN ('read', 'write', 'admin')),
   subscribed_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(agent_id, bank_id)
+  UNIQUE(agent_id, resource_id)
 );
 
--- Tags for memory bank discoverability
-CREATE TABLE IF NOT EXISTS memory_bank_tags (
-  bank_id TEXT NOT NULL REFERENCES memory_banks(id) ON DELETE CASCADE,
+-- Tags for resource discoverability
+CREATE TABLE IF NOT EXISTS resource_tags (
+  resource_id TEXT NOT NULL REFERENCES syncable_resources(id) ON DELETE CASCADE,
   tag TEXT NOT NULL,
-  PRIMARY KEY(bank_id, tag)
+  PRIMARY KEY(resource_id, tag)
 );
 
--- Sync event log (webhook events from git hosts)
-CREATE TABLE IF NOT EXISTS memory_sync_events (
+-- Sync event log for resources (webhook/polling events)
+CREATE TABLE IF NOT EXISTS resource_sync_events (
   id TEXT PRIMARY KEY,
-  bank_id TEXT NOT NULL REFERENCES memory_banks(id) ON DELETE CASCADE,
+  resource_id TEXT NOT NULL REFERENCES syncable_resources(id) ON DELETE CASCADE,
   commit_hash TEXT,
   commit_message TEXT,
   pusher TEXT,
@@ -217,14 +225,16 @@ CREATE INDEX IF NOT EXISTS idx_uploads_agent ON uploads(agent_id);
 CREATE INDEX IF NOT EXISTS idx_uploads_purpose ON uploads(purpose);
 CREATE INDEX IF NOT EXISTS idx_federated_instances_status ON federated_instances(status);
 
--- Memory bank indexes
-CREATE INDEX IF NOT EXISTS idx_memory_banks_owner ON memory_banks(owner_agent_id);
-CREATE INDEX IF NOT EXISTS idx_memory_banks_visibility ON memory_banks(visibility);
-CREATE INDEX IF NOT EXISTS idx_memory_bank_subs_agent ON memory_bank_subscriptions(agent_id);
-CREATE INDEX IF NOT EXISTS idx_memory_bank_subs_bank ON memory_bank_subscriptions(bank_id);
-CREATE INDEX IF NOT EXISTS idx_memory_bank_tags_tag ON memory_bank_tags(tag);
-CREATE INDEX IF NOT EXISTS idx_memory_sync_events_bank ON memory_sync_events(bank_id);
-CREATE INDEX IF NOT EXISTS idx_memory_sync_events_time ON memory_sync_events(timestamp);
+-- Syncable resources indexes
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_owner ON syncable_resources(owner_agent_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type ON syncable_resources(resource_type);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_visibility ON syncable_resources(visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_resources(resource_type, visibility);
+CREATE INDEX IF NOT EXISTS idx_resource_subs_agent ON resource_subscriptions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_resource_subs_resource ON resource_subscriptions(resource_id);
+CREATE INDEX IF NOT EXISTS idx_resource_tags_tag ON resource_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_resource_sync_events_resource ON resource_sync_events(resource_id);
+CREATE INDEX IF NOT EXISTS idx_resource_sync_events_time ON resource_sync_events(timestamp);
 `;
 
 export const SEED_DATA = `
