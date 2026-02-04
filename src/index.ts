@@ -33,7 +33,7 @@ export * as comments from './db/dal/comments.js';
 export * as votes from './db/dal/votes.js';
 export * as follows from './db/dal/follows.js';
 export * as invites from './db/dal/invites.js';
-export * as memoryBanks from './db/dal/memory-banks.js';
+export * as resources from './db/dal/syncable-resources.js';
 
 // Auth exports
 export {
@@ -98,7 +98,7 @@ export type {
   WSEvent,
   WSMessage,
   WSEventType,
-  // Memory bank types
+  // Memory bank types (legacy, for backward compatibility)
   MemoryBank,
   MemoryBankSubscription,
   MemorySyncEvent,
@@ -106,4 +106,15 @@ export type {
   MemoryBankSubscriptionWithAgent,
   MemoryBankVisibility,
   MemoryBankPermission,
+  // Syncable resource types (generic resource system)
+  SyncableResource,
+  SyncableResourceType,
+  SyncableResourceWithMeta,
+  ResourceSubscription,
+  ResourceSubscriptionWithAgent,
+  ResourceSyncEvent,
+  ResourceVisibility,
+  ResourcePermission,
+  TaskResourceMetadata,
+  SkillResourceMetadata,
 } from './types.js';
