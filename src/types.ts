@@ -136,7 +136,9 @@ export type WSEventType =
   | 'agent_online'
   | 'agent_offline'
   | 'post_deleted'
-  | 'comment_deleted';
+  | 'comment_deleted'
+  | 'memory_bank_updated'
+  | 'memory_bank_created';
 
 export interface WSEvent {
   type: WSEventType;
@@ -192,4 +194,56 @@ export interface InstanceInfo {
   federation_enabled: boolean;
   registration_open: boolean;
   verification_strategy: string;
+}
+
+// Memory bank types
+export type MemoryBankVisibility = 'private' | 'shared' | 'public';
+export type MemoryBankPermission = 'read' | 'write' | 'admin';
+
+export interface MemoryBank {
+  id: string;
+  name: string;
+  description: string | null;
+  git_remote_url: string;
+  webhook_secret: string | null;
+  visibility: MemoryBankVisibility;
+  last_commit_hash: string | null;
+  last_push_by: string | null;
+  last_push_at: string | null;
+  owner_agent_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryBankSubscription {
+  id: string;
+  agent_id: string;
+  bank_id: string;
+  permission: MemoryBankPermission;
+  subscribed_at: string;
+}
+
+export interface MemorySyncEvent {
+  id: string;
+  bank_id: string;
+  commit_hash: string | null;
+  commit_message: string | null;
+  pusher: string | null;
+  files_added: number;
+  files_modified: number;
+  files_removed: number;
+  timestamp: string;
+}
+
+// Memory bank API response types
+export interface MemoryBankWithMeta extends MemoryBank {
+  owner: AgentPublic;
+  tags: string[];
+  subscriber_count: number;
+  is_subscribed?: boolean;
+  my_permission?: MemoryBankPermission | null;
+}
+
+export interface MemoryBankSubscriptionWithAgent extends MemoryBankSubscription {
+  agent: AgentPublic;
 }
