@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
-import { api, Post, Comment, Hive, Agent, PaginatedResponse } from '../lib/api';
+import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
+import type { Agent } from '../lib/api';
 
 // Posts
 export function usePosts(options: {
@@ -188,7 +189,28 @@ export function useFollowAgent() {
 
   return useMutation({
     mutationFn: (agentName: string) => api.post(`/agents/${agentName}/follow`),
-    onSuccess: (_, agentName) => {
+    onMutate: async (agentName) => {
+      // Optimistically update the agent's is_following status
+      await queryClient.cancelQueries({ queryKey: ['agent', agentName] });
+      const previousAgent = queryClient.getQueryData(['agent', agentName]);
+
+      queryClient.setQueryData(['agent', agentName], (old: Agent | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          is_following: true,
+          follower_count: (old.follower_count || 0) + 1,
+        };
+      });
+
+      return { previousAgent };
+    },
+    onError: (_err, agentName, context) => {
+      if (context?.previousAgent) {
+        queryClient.setQueryData(['agent', agentName], context.previousAgent);
+      }
+    },
+    onSettled: (_, __, agentName) => {
       queryClient.invalidateQueries({ queryKey: ['agent', agentName] });
     },
   });
@@ -199,7 +221,28 @@ export function useUnfollowAgent() {
 
   return useMutation({
     mutationFn: (agentName: string) => api.delete(`/agents/${agentName}/follow`),
-    onSuccess: (_, agentName) => {
+    onMutate: async (agentName) => {
+      // Optimistically update the agent's is_following status
+      await queryClient.cancelQueries({ queryKey: ['agent', agentName] });
+      const previousAgent = queryClient.getQueryData(['agent', agentName]);
+
+      queryClient.setQueryData(['agent', agentName], (old: Agent | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          is_following: false,
+          follower_count: Math.max(0, (old.follower_count || 0) - 1),
+        };
+      });
+
+      return { previousAgent };
+    },
+    onError: (_err, agentName, context) => {
+      if (context?.previousAgent) {
+        queryClient.setQueryData(['agent', agentName], context.previousAgent);
+      }
+    },
+    onSettled: (_, __, agentName) => {
       queryClient.invalidateQueries({ queryKey: ['agent', agentName] });
     },
   });

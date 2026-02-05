@@ -5,6 +5,121 @@
 
 import * as instancesDAL from '../db/dal/instances.js';
 
+// ============================================================================
+// Error Types and Logging
+// ============================================================================
+
+/**
+ * Federation error categories for better debugging
+ */
+export enum FederationErrorType {
+  NETWORK_ERROR = 'NETWORK_ERROR',
+  TIMEOUT = 'TIMEOUT',
+  INVALID_RESPONSE = 'INVALID_RESPONSE',
+  NOT_FOUND = 'NOT_FOUND',
+  PARSE_ERROR = 'PARSE_ERROR',
+  VALIDATION_ERROR = 'VALIDATION_ERROR',
+  UNKNOWN = 'UNKNOWN',
+}
+
+export interface FederationError {
+  type: FederationErrorType;
+  message: string;
+  instanceUrl?: string;
+  statusCode?: number;
+  originalError?: string;
+}
+
+/**
+ * Simple logger for federation operations
+ * In production, this would integrate with a proper logging service
+ */
+const federationLogger = {
+  error: (message: string, context: Record<string, unknown>) => {
+    console.error(`[Federation Error] ${message}`, JSON.stringify(context, null, 2));
+  },
+  warn: (message: string, context: Record<string, unknown>) => {
+    console.warn(`[Federation Warn] ${message}`, JSON.stringify(context, null, 2));
+  },
+  info: (message: string, context: Record<string, unknown>) => {
+    console.info(`[Federation Info] ${message}`, JSON.stringify(context, null, 2));
+  },
+};
+
+/**
+ * Categorize an error into a FederationErrorType
+ */
+function categorizeError(error: unknown, statusCode?: number): FederationError {
+  if (error instanceof Error) {
+    // Timeout errors
+    if (error.name === 'AbortError' || error.message.includes('timeout')) {
+      return {
+        type: FederationErrorType.TIMEOUT,
+        message: 'Request timed out',
+        originalError: error.message,
+      };
+    }
+
+    // Network errors
+    if (
+      error.message.includes('ECONNREFUSED') ||
+      error.message.includes('ENOTFOUND') ||
+      error.message.includes('fetch failed') ||
+      error.message.includes('network')
+    ) {
+      return {
+        type: FederationErrorType.NETWORK_ERROR,
+        message: 'Network connection failed',
+        originalError: error.message,
+      };
+    }
+
+    // Parse errors
+    if (error instanceof SyntaxError || error.message.includes('JSON')) {
+      return {
+        type: FederationErrorType.PARSE_ERROR,
+        message: 'Failed to parse response',
+        originalError: error.message,
+      };
+    }
+  }
+
+  // HTTP status-based categorization
+  if (statusCode) {
+    if (statusCode === 404) {
+      return {
+        type: FederationErrorType.NOT_FOUND,
+        message: 'Resource not found',
+        statusCode,
+      };
+    }
+    if (statusCode >= 400 && statusCode < 500) {
+      return {
+        type: FederationErrorType.VALIDATION_ERROR,
+        message: `Client error: HTTP ${statusCode}`,
+        statusCode,
+      };
+    }
+    if (statusCode >= 500) {
+      return {
+        type: FederationErrorType.NETWORK_ERROR,
+        message: `Server error: HTTP ${statusCode}`,
+        statusCode,
+      };
+    }
+  }
+
+  return {
+    type: FederationErrorType.UNKNOWN,
+    message: error instanceof Error ? error.message : 'Unknown error',
+    originalError: error instanceof Error ? error.message : String(error),
+  };
+}
+
+// ============================================================================
+// Types
+// ============================================================================
+
 export interface InstanceInfo {
   version: string;
   protocol_version: string;
@@ -54,14 +169,30 @@ export interface RemotePost {
 }
 
 /**
+ * Result type for discovery operations
+ */
+export interface DiscoveryResult {
+  success: boolean;
+  data?: InstanceInfo;
+  error?: FederationError;
+}
+
+/**
  * Discover an instance by fetching its .well-known/openhive.json
  */
 export async function discoverInstance(url: string): Promise<InstanceInfo | null> {
-  try {
-    // Normalize URL
-    const normalizedUrl = url.replace(/\/$/, '');
-    const discoveryUrl = `${normalizedUrl}/.well-known/openhive.json`;
+  const result = await discoverInstanceWithError(url);
+  return result.success ? result.data! : null;
+}
 
+/**
+ * Discover an instance with detailed error information
+ */
+export async function discoverInstanceWithError(url: string): Promise<DiscoveryResult> {
+  const normalizedUrl = url.replace(/\/$/, '');
+  const discoveryUrl = `${normalizedUrl}/.well-known/openhive.json`;
+
+  try {
     const response = await fetch(discoveryUrl, {
       headers: {
         Accept: 'application/json',
@@ -71,19 +202,56 @@ export async function discoverInstance(url: string): Promise<InstanceInfo | null
     });
 
     if (!response.ok) {
-      return null;
+      const error = categorizeError(null, response.status);
+      error.instanceUrl = normalizedUrl;
+
+      federationLogger.warn('Instance discovery failed', {
+        url: discoveryUrl,
+        statusCode: response.status,
+        errorType: error.type,
+      });
+
+      return { success: false, error };
     }
 
     const info = (await response.json()) as InstanceInfo;
 
     // Validate required fields
     if (!info.name || !info.federation) {
-      return null;
+      const error: FederationError = {
+        type: FederationErrorType.VALIDATION_ERROR,
+        message: 'Invalid instance info: missing required fields (name or federation)',
+        instanceUrl: normalizedUrl,
+      };
+
+      federationLogger.warn('Instance discovery validation failed', {
+        url: discoveryUrl,
+        hasName: !!info.name,
+        hasFederation: !!info.federation,
+      });
+
+      return { success: false, error };
     }
 
-    return info;
-  } catch {
-    return null;
+    federationLogger.info('Instance discovered successfully', {
+      url: normalizedUrl,
+      name: info.name,
+      federationEnabled: info.federation.enabled,
+    });
+
+    return { success: true, data: info };
+  } catch (error) {
+    const fedError = categorizeError(error);
+    fedError.instanceUrl = normalizedUrl;
+
+    federationLogger.error('Instance discovery error', {
+      url: discoveryUrl,
+      errorType: fedError.type,
+      message: fedError.message,
+      originalError: fedError.originalError,
+    });
+
+    return { success: false, error: fedError };
   }
 }
 
@@ -170,19 +338,41 @@ export async function syncInstance(id: string): Promise<{
 }
 
 /**
+ * Result type for remote fetch operations
+ */
+export interface FetchResult<T> {
+  success: boolean;
+  data: T[];
+  error?: FederationError;
+}
+
+/**
  * Fetch agents from a remote instance
  */
 export async function fetchRemoteAgents(
   instanceUrl: string,
   options: { limit?: number; offset?: number } = {}
 ): Promise<RemoteAgent[]> {
-  try {
-    const normalizedUrl = instanceUrl.replace(/\/$/, '');
-    const params = new URLSearchParams();
-    if (options.limit) params.set('limit', String(options.limit));
-    if (options.offset) params.set('offset', String(options.offset));
+  const result = await fetchRemoteAgentsWithError(instanceUrl, options);
+  return result.data;
+}
 
-    const response = await fetch(`${normalizedUrl}/api/v1/agents?${params}`, {
+/**
+ * Fetch agents from a remote instance with detailed error information
+ */
+export async function fetchRemoteAgentsWithError(
+  instanceUrl: string,
+  options: { limit?: number; offset?: number } = {}
+): Promise<FetchResult<RemoteAgent>> {
+  const normalizedUrl = instanceUrl.replace(/\/$/, '');
+  const params = new URLSearchParams();
+  if (options.limit) params.set('limit', String(options.limit));
+  if (options.offset) params.set('offset', String(options.offset));
+
+  const fetchUrl = `${normalizedUrl}/api/v1/agents?${params}`;
+
+  try {
+    const response = await fetch(fetchUrl, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'OpenHive/0.2.0 Federation',
@@ -191,18 +381,44 @@ export async function fetchRemoteAgents(
     });
 
     if (!response.ok) {
-      return [];
+      const error = categorizeError(null, response.status);
+      error.instanceUrl = normalizedUrl;
+
+      federationLogger.warn('Failed to fetch remote agents', {
+        url: fetchUrl,
+        statusCode: response.status,
+        errorType: error.type,
+      });
+
+      return { success: false, data: [], error };
     }
 
     const data = (await response.json()) as { data?: unknown[] };
     const agents = data.data || [];
 
-    return agents.map((agent) => ({
+    const remoteAgents = agents.map((agent) => ({
       ...(agent as Record<string, unknown>),
       instance_url: normalizedUrl,
     })) as RemoteAgent[];
-  } catch {
-    return [];
+
+    federationLogger.info('Fetched remote agents successfully', {
+      url: normalizedUrl,
+      count: remoteAgents.length,
+    });
+
+    return { success: true, data: remoteAgents };
+  } catch (error) {
+    const fedError = categorizeError(error);
+    fedError.instanceUrl = normalizedUrl;
+
+    federationLogger.error('Error fetching remote agents', {
+      url: fetchUrl,
+      errorType: fedError.type,
+      message: fedError.message,
+      originalError: fedError.originalError,
+    });
+
+    return { success: false, data: [], error: fedError };
   }
 }
 
@@ -213,14 +429,27 @@ export async function fetchRemotePosts(
   instanceUrl: string,
   options: { hive?: string; limit?: number; offset?: number } = {}
 ): Promise<RemotePost[]> {
-  try {
-    const normalizedUrl = instanceUrl.replace(/\/$/, '');
-    const params = new URLSearchParams();
-    if (options.hive) params.set('hive', options.hive);
-    if (options.limit) params.set('limit', String(options.limit));
-    if (options.offset) params.set('offset', String(options.offset));
+  const result = await fetchRemotePostsWithError(instanceUrl, options);
+  return result.data;
+}
 
-    const response = await fetch(`${normalizedUrl}/api/v1/feed/all?${params}`, {
+/**
+ * Fetch posts from a remote instance with detailed error information
+ */
+export async function fetchRemotePostsWithError(
+  instanceUrl: string,
+  options: { hive?: string; limit?: number; offset?: number } = {}
+): Promise<FetchResult<RemotePost>> {
+  const normalizedUrl = instanceUrl.replace(/\/$/, '');
+  const params = new URLSearchParams();
+  if (options.hive) params.set('hive', options.hive);
+  if (options.limit) params.set('limit', String(options.limit));
+  if (options.offset) params.set('offset', String(options.offset));
+
+  const fetchUrl = `${normalizedUrl}/api/v1/feed/all?${params}`;
+
+  try {
+    const response = await fetch(fetchUrl, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'OpenHive/0.2.0 Federation',
@@ -229,19 +458,55 @@ export async function fetchRemotePosts(
     });
 
     if (!response.ok) {
-      return [];
+      const error = categorizeError(null, response.status);
+      error.instanceUrl = normalizedUrl;
+
+      federationLogger.warn('Failed to fetch remote posts', {
+        url: fetchUrl,
+        statusCode: response.status,
+        errorType: error.type,
+      });
+
+      return { success: false, data: [], error };
     }
 
     const data = (await response.json()) as { data?: unknown[] };
     const posts = data.data || [];
 
-    return posts.map((post) => ({
+    const remotePosts = posts.map((post) => ({
       ...(post as Record<string, unknown>),
       instance_url: normalizedUrl,
     })) as RemotePost[];
-  } catch {
-    return [];
+
+    federationLogger.info('Fetched remote posts successfully', {
+      url: normalizedUrl,
+      count: remotePosts.length,
+      hive: options.hive,
+    });
+
+    return { success: true, data: remotePosts };
+  } catch (error) {
+    const fedError = categorizeError(error);
+    fedError.instanceUrl = normalizedUrl;
+
+    federationLogger.error('Error fetching remote posts', {
+      url: fetchUrl,
+      errorType: fedError.type,
+      message: fedError.message,
+      originalError: fedError.originalError,
+    });
+
+    return { success: false, data: [], error: fedError };
   }
+}
+
+/**
+ * Result type for single item fetch operations
+ */
+export interface FetchSingleResult<T> {
+  success: boolean;
+  data?: T;
+  error?: FederationError;
 }
 
 /**
@@ -251,10 +516,22 @@ export async function fetchRemotePost(
   instanceUrl: string,
   postId: string
 ): Promise<RemotePost | null> {
-  try {
-    const normalizedUrl = instanceUrl.replace(/\/$/, '');
+  const result = await fetchRemotePostWithError(instanceUrl, postId);
+  return result.success ? result.data! : null;
+}
 
-    const response = await fetch(`${normalizedUrl}/api/v1/posts/${postId}`, {
+/**
+ * Fetch a specific post from a remote instance with detailed error information
+ */
+export async function fetchRemotePostWithError(
+  instanceUrl: string,
+  postId: string
+): Promise<FetchSingleResult<RemotePost>> {
+  const normalizedUrl = instanceUrl.replace(/\/$/, '');
+  const fetchUrl = `${normalizedUrl}/api/v1/posts/${postId}`;
+
+  try {
+    const response = await fetch(fetchUrl, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'OpenHive/0.2.0 Federation',
@@ -263,17 +540,59 @@ export async function fetchRemotePost(
     });
 
     if (!response.ok) {
-      return null;
+      const error = categorizeError(null, response.status);
+      error.instanceUrl = normalizedUrl;
+
+      federationLogger.warn('Failed to fetch remote post', {
+        url: fetchUrl,
+        postId,
+        statusCode: response.status,
+        errorType: error.type,
+      });
+
+      return { success: false, error };
     }
 
     const post = (await response.json()) as Record<string, unknown>;
-    return {
+    const remotePost = {
       ...post,
       instance_url: normalizedUrl,
     } as RemotePost;
-  } catch {
-    return null;
+
+    federationLogger.info('Fetched remote post successfully', {
+      url: normalizedUrl,
+      postId,
+    });
+
+    return { success: true, data: remotePost };
+  } catch (error) {
+    const fedError = categorizeError(error);
+    fedError.instanceUrl = normalizedUrl;
+
+    federationLogger.error('Error fetching remote post', {
+      url: fetchUrl,
+      postId,
+      errorType: fedError.type,
+      message: fedError.message,
+      originalError: fedError.originalError,
+    });
+
+    return { success: false, error: fedError };
   }
+}
+
+/**
+ * Remote hive type
+ */
+export interface RemoteHive {
+  id: string;
+  name: string;
+  description: string | null;
+  is_public: boolean;
+  member_count: number;
+  post_count: number;
+  created_at: string;
+  instance_url: string;
 }
 
 /**
@@ -282,14 +601,27 @@ export async function fetchRemotePost(
 export async function fetchRemoteHives(
   instanceUrl: string,
   options: { limit?: number; offset?: number } = {}
-): Promise<unknown[]> {
-  try {
-    const normalizedUrl = instanceUrl.replace(/\/$/, '');
-    const params = new URLSearchParams();
-    if (options.limit) params.set('limit', String(options.limit));
-    if (options.offset) params.set('offset', String(options.offset));
+): Promise<RemoteHive[]> {
+  const result = await fetchRemoteHivesWithError(instanceUrl, options);
+  return result.data;
+}
 
-    const response = await fetch(`${normalizedUrl}/api/v1/hives?${params}`, {
+/**
+ * Fetch hives from a remote instance with detailed error information
+ */
+export async function fetchRemoteHivesWithError(
+  instanceUrl: string,
+  options: { limit?: number; offset?: number } = {}
+): Promise<FetchResult<RemoteHive>> {
+  const normalizedUrl = instanceUrl.replace(/\/$/, '');
+  const params = new URLSearchParams();
+  if (options.limit) params.set('limit', String(options.limit));
+  if (options.offset) params.set('offset', String(options.offset));
+
+  const fetchUrl = `${normalizedUrl}/api/v1/hives?${params}`;
+
+  try {
+    const response = await fetch(fetchUrl, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'OpenHive/0.2.0 Federation',
@@ -298,17 +630,43 @@ export async function fetchRemoteHives(
     });
 
     if (!response.ok) {
-      return [];
+      const error = categorizeError(null, response.status);
+      error.instanceUrl = normalizedUrl;
+
+      federationLogger.warn('Failed to fetch remote hives', {
+        url: fetchUrl,
+        statusCode: response.status,
+        errorType: error.type,
+      });
+
+      return { success: false, data: [], error };
     }
 
     const data = (await response.json()) as { data?: unknown[] };
     const hives = data.data || [];
 
-    return hives.map((hive) => ({
+    const remoteHives = hives.map((hive) => ({
       ...(hive as Record<string, unknown>),
       instance_url: normalizedUrl,
-    }));
-  } catch {
-    return [];
+    })) as RemoteHive[];
+
+    federationLogger.info('Fetched remote hives successfully', {
+      url: normalizedUrl,
+      count: remoteHives.length,
+    });
+
+    return { success: true, data: remoteHives };
+  } catch (error) {
+    const fedError = categorizeError(error);
+    fedError.instanceUrl = normalizedUrl;
+
+    federationLogger.error('Error fetching remote hives', {
+      url: fetchUrl,
+      errorType: fedError.type,
+      message: fedError.message,
+      originalError: fedError.originalError,
+    });
+
+    return { success: false, data: [], error: fedError };
   }
 }
