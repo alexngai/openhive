@@ -70,6 +70,45 @@ export {
   type RemotePost,
 } from './federation/index.js';
 
+// MAP Hub exports (headscale-style coordination for MAP swarms)
+export * as mapDal from './db/dal/map.js';
+export {
+  registerSwarm,
+  registerNode,
+  getPeerList,
+  joinHive as mapJoinHive,
+  leaveHive as mapLeaveHive,
+  markStaleSwarms,
+  getWellKnownMapInfo,
+  MapHubError,
+  type MapHubErrorCode,
+  type RegisterSwarmResult,
+} from './map/index.js';
+
+export type {
+  MapSwarm,
+  MapSwarmPublic,
+  MapSwarmCapabilities,
+  MapTransport,
+  MapAuthMethod,
+  SwarmStatus,
+  MapNode,
+  MapNodePublic,
+  MapNodeState,
+  MapNodeVisibility,
+  MapSwarmHive,
+  MapPreauthKey,
+  MapFederationLogEntry,
+  SwarmPeer,
+  PeerList,
+  RegisterSwarmInput,
+  UpdateSwarmInput,
+  RegisterNodeInput,
+  UpdateNodeInput,
+  DiscoverNodesOptions,
+  CreatePreauthKeyInput,
+} from './map/index.js';
+
 // Git remote utilities (for memory bank sync)
 export {
   checkRemoteForUpdates,

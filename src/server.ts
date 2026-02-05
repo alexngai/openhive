@@ -170,7 +170,8 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
     const postCount = db.prepare('SELECT COUNT(*) as count FROM posts').get() as { count: number };
     const hiveCount = db.prepare('SELECT COUNT(*) as count FROM hives').get() as { count: number };
 
-    return reply.send({
+    // Build response
+    const wellKnown: Record<string, unknown> = {
       version: '0.2.0',
       name: config.instance.name,
       description: config.instance.description,
@@ -189,7 +190,19 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         websocket: '/ws',
         skill: '/skill.md',
       },
-    });
+    };
+
+    // Add MAP Hub info if enabled
+    if (config.mapHub.enabled) {
+      try {
+        const { getWellKnownMapInfo } = require('./map/service.js');
+        Object.assign(wellKnown, getWellKnownMapInfo());
+      } catch {
+        // MAP module not available, skip
+      }
+    }
+
+    return reply.send(wellKnown);
   });
 
   const server: HiveServer = {

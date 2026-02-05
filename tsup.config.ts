@@ -12,5 +12,5 @@ export default defineConfig({
   clean: true,
   target: 'node18',
   outDir: 'dist',
-  external: ['better-sqlite3'],
+  external: ['better-sqlite3', '@google-cloud/storage'],
 });

@@ -113,6 +113,13 @@ export const ConfigSchema = z.object({
     expiresIn: z.string().default('7d'),
   }).default({}),
 
+  // MAP Hub configuration (headscale-style coordination for MAP swarms)
+  mapHub: z.object({
+    enabled: z.boolean().default(true),
+    // Minutes before an unresponsive swarm is marked offline
+    staleThresholdMinutes: z.number().default(5),
+  }).default({}),
+
   // GitHub App configuration for automatic webhook handling
   githubApp: z.object({
     enabled: z.boolean().default(false),
