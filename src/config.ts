@@ -129,6 +129,23 @@ export const ConfigSchema = z.object({
     clientId: z.string().optional(),
     clientSecret: z.string().optional(),
   }).default({ enabled: false }),
+
+  // Headscale sidecar configuration (L3/L4 mesh networking for swarm hosts)
+  headscale: z.object({
+    enabled: z.boolean().default(false),
+    /** Path to the headscale binary. Defaults to 'headscale' (must be in PATH) */
+    binaryPath: z.string().default('headscale'),
+    /** Directory for headscale data (db, keys, config). Defaults to ./data/headscale */
+    dataDir: z.string().default('./data/headscale'),
+    /** URL that tailscale clients connect to (must be reachable by all swarm hosts) */
+    serverUrl: z.string().url().optional(),
+    /** HTTP listen address for headscale REST API */
+    listenAddr: z.string().default('127.0.0.1:8085'),
+    /** MagicDNS base domain */
+    baseDomain: z.string().default('hive.internal'),
+    /** Enable embedded DERP relay server (helps with NAT traversal) */
+    embeddedDerp: z.boolean().default(false),
+  }).default({ enabled: false }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

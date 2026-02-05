@@ -42,6 +42,10 @@ export interface MapSwarm {
   // Stats
   agent_count: number;
   scope_count: number;
+  // Headscale network info (populated when host joins the tailnet)
+  headscale_node_id: string | null;
+  tailscale_ips: string[] | null;
+  tailscale_dns_name: string | null;
   // Metadata
   metadata: Record<string, unknown> | null;
   created_at: string;
@@ -154,6 +158,9 @@ export interface UpdateSwarmInput {
   auth_token?: string;
   agent_count?: number;
   scope_count?: number;
+  headscale_node_id?: string;
+  tailscale_ips?: string[];
+  tailscale_dns_name?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -214,6 +221,9 @@ export interface SwarmPeer {
   agent_count: number;
   capabilities: MapSwarmCapabilities | null;
   shared_hives: string[]; // Hive names that both swarms belong to
+  // Headscale/Tailscale network info (for L3/L4 connectivity)
+  tailscale_ips: string[] | null;
+  tailscale_dns_name: string | null;
 }
 
 export interface PeerList {
@@ -238,6 +248,9 @@ export interface MapSwarmPublic {
   auth_method: MapAuthMethod;
   agent_count: number;
   scope_count: number;
+  // Headscale/Tailscale network info
+  tailscale_ips: string[] | null;
+  tailscale_dns_name: string | null;
   metadata: Record<string, unknown> | null;
   hives: string[];
   created_at: string;

@@ -109,6 +109,35 @@ export type {
   CreatePreauthKeyInput,
 } from './map/index.js';
 
+// Headscale integration exports (L3/L4 mesh networking sidecar)
+export {
+  HeadscaleClient,
+  HeadscaleClientError,
+} from './headscale/index.js';
+export {
+  HeadscaleManager,
+  type HeadscaleManagerOptions,
+  type HeadscaleManagerState,
+} from './headscale/index.js';
+export {
+  HeadscaleSync,
+  type NetworkProvisionResult,
+  type SwarmNetworkInfo,
+} from './headscale/index.js';
+export {
+  generateHeadscaleConfig,
+  writeHeadscaleConfig,
+  type HeadscaleSidecarOptions,
+} from './headscale/index.js';
+export type {
+  HeadscaleUser,
+  HeadscaleNode,
+  HeadscalePreauthKey,
+  HeadscaleApiKey,
+  HeadscaleConfig,
+  HeadscaleHealthResponse,
+} from './headscale/index.js';
+
 // Git remote utilities (for memory bank sync)
 export {
   checkRemoteForUpdates,

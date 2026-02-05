@@ -530,4 +530,94 @@ export async function mapRoutes(
     const stats = mapDal.getMapStats();
     return reply.send(stats);
   });
+
+  // ==========================================================================
+  // Headscale Network Routes
+  // ==========================================================================
+
+  // POST /map/swarms/:id/network -- Provision tailscale network access for a swarm joining a hive
+  fastify.post('/map/swarms/:id/network', {
+    preHandler: [authMiddleware],
+  }, async (request: FastifyRequest<{
+    Params: { id: string };
+    Body: { hive_name: string; reusable?: boolean; ephemeral?: boolean; expiration_hours?: number };
+  }>, reply: FastifyReply) => {
+    try {
+      if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
+        throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
+      }
+
+      // Check if headscale sync is available
+      const headscaleSync = (request.server as unknown as { headscaleSync?: unknown }).headscaleSync;
+      if (!headscaleSync) {
+        return reply.status(503).send({
+          error: 'HEADSCALE_NOT_AVAILABLE',
+          message: 'Headscale sidecar is not enabled. Set headscale.enabled=true in config.',
+        });
+      }
+
+      const { HeadscaleSync } = await import('../../headscale/sync.js');
+      const sync = headscaleSync as InstanceType<typeof HeadscaleSync>;
+      const body = request.body as { hive_name: string; reusable?: boolean; ephemeral?: boolean; expiration_hours?: number };
+
+      const result = await sync.provisionSwarmAccess(
+        body.hive_name,
+        mapDal.findSwarmById(request.params.id)?.name || request.params.id,
+        {
+          reusable: body.reusable,
+          ephemeral: body.ephemeral,
+          expirationHours: body.expiration_hours,
+        }
+      );
+
+      return reply.status(201).send(result);
+    } catch (error) {
+      return handleMapError(error, reply);
+    }
+  });
+
+  // GET /map/swarms/:id/network -- Get tailscale network info for a swarm
+  fastify.get('/map/swarms/:id/network', {
+    preHandler: [authMiddleware],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    try {
+      const swarm = mapDal.findSwarmById(request.params.id);
+      if (!swarm) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Swarm not found' });
+      }
+
+      // Check if headscale sync is available
+      const headscaleSync = (request.server as unknown as { headscaleSync?: unknown }).headscaleSync;
+      if (!headscaleSync) {
+        // Return whatever we have stored
+        return reply.send({
+          headscale_enabled: false,
+          headscale_node_id: swarm.headscale_node_id,
+          tailscale_ips: swarm.tailscale_ips,
+          tailscale_dns_name: swarm.tailscale_dns_name,
+        });
+      }
+
+      const { HeadscaleSync } = await import('../../headscale/sync.js');
+      const sync = headscaleSync as InstanceType<typeof HeadscaleSync>;
+      const hives = mapDal.getSwarmHiveNames(request.params.id);
+      const networkInfo = await sync.getSwarmNetworkInfo(swarm.name, hives[0]);
+
+      // Update stored network info if we got data from headscale
+      if (networkInfo.headscale_node_id) {
+        mapDal.updateSwarm(request.params.id, {
+          headscale_node_id: networkInfo.headscale_node_id,
+          tailscale_ips: networkInfo.tailscale_ips,
+          tailscale_dns_name: networkInfo.dns_name || undefined,
+        });
+      }
+
+      return reply.send({
+        headscale_enabled: true,
+        ...networkInfo,
+      });
+    } catch (error) {
+      return handleMapError(error, reply);
+    }
+  });
 }

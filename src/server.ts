@@ -14,6 +14,8 @@ import { generateSkillMd } from './skill.js';
 import { generateSitemap, generateRobotsTxt } from './services/sitemap.js';
 import { initializeStorage, type StorageConfig } from './storage/index.js';
 import { initEmail } from './services/email.js';
+import { HeadscaleManager } from './headscale/manager.js';
+import { HeadscaleSync } from './headscale/sync.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -205,11 +207,43 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
     return reply.send(wellKnown);
   });
 
+  // Initialize headscale sidecar if enabled
+  let headscaleManager: HeadscaleManager | null = null;
+
+  if (config.headscale.enabled) {
+    const serverUrl = config.headscale.serverUrl ||
+      config.instance.url ||
+      `http://${config.host}:${config.headscale.listenAddr.split(':')[1] || '8085'}`;
+
+    headscaleManager = new HeadscaleManager({
+      dataDir: config.headscale.dataDir,
+      serverUrl,
+      listenAddr: config.headscale.listenAddr,
+      binaryPath: config.headscale.binaryPath,
+      baseDomain: config.headscale.baseDomain,
+      embeddedDerp: config.headscale.embeddedDerp,
+    });
+  }
+
   const server: HiveServer = {
     fastify,
     config,
 
     async start() {
+      // Start headscale sidecar before listening
+      if (headscaleManager) {
+        try {
+          const client = await headscaleManager.start();
+          const sync = new HeadscaleSync(client, config.headscale.baseDomain);
+          // Attach to fastify instance so routes can access it
+          (fastify as unknown as { headscaleSync: HeadscaleSync }).headscaleSync = sync;
+          console.log('[openhive] Headscale sidecar started');
+        } catch (err) {
+          console.warn(`[openhive] Headscale sidecar failed to start: ${(err as Error).message}`);
+          console.warn('[openhive] MAP hub will work without L3/L4 mesh networking.');
+        }
+      }
+
       const address = await fastify.listen({
         port: config.port,
         host: config.host,
@@ -219,6 +253,10 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
     async stop() {
       stopHeartbeat();
+      // Stop headscale sidecar
+      if (headscaleManager) {
+        await headscaleManager.stop();
+      }
       await fastify.close();
       closeDatabase();
     },

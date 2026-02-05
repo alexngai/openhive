@@ -58,6 +58,9 @@ function rowToSwarm(row: Record<string, unknown>): MapSwarm {
     auth_token_hash: row.auth_token_hash as string | null,
     agent_count: row.agent_count as number,
     scope_count: row.scope_count as number,
+    headscale_node_id: row.headscale_node_id as string | null,
+    tailscale_ips: parseJsonField(row.tailscale_ips),
+    tailscale_dns_name: row.tailscale_dns_name as string | null,
     metadata: parseJsonField(row.metadata),
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
@@ -141,6 +144,9 @@ export function updateSwarm(id: string, input: UpdateSwarmInput): MapSwarm | nul
   if (input.auth_token !== undefined) { sets.push('auth_token_hash = ?'); values.push(hashToken(input.auth_token)); }
   if (input.agent_count !== undefined) { sets.push('agent_count = ?'); values.push(input.agent_count); }
   if (input.scope_count !== undefined) { sets.push('scope_count = ?'); values.push(input.scope_count); }
+  if (input.headscale_node_id !== undefined) { sets.push('headscale_node_id = ?'); values.push(input.headscale_node_id); }
+  if (input.tailscale_ips !== undefined) { sets.push('tailscale_ips = ?'); values.push(JSON.stringify(input.tailscale_ips)); }
+  if (input.tailscale_dns_name !== undefined) { sets.push('tailscale_dns_name = ?'); values.push(input.tailscale_dns_name); }
   if (input.metadata !== undefined) { sets.push('metadata = ?'); values.push(JSON.stringify(input.metadata)); }
 
   values.push(id);
@@ -222,6 +228,8 @@ export function getSwarmPublic(id: string): MapSwarmPublic | null {
     auth_method: swarm.auth_method,
     agent_count: swarm.agent_count,
     scope_count: swarm.scope_count,
+    tailscale_ips: swarm.tailscale_ips,
+    tailscale_dns_name: swarm.tailscale_dns_name,
     metadata: swarm.metadata,
     hives,
     created_at: swarm.created_at,
@@ -489,6 +497,8 @@ export function getPeerList(swarmId: string): SwarmPeer[] {
       agent_count: row.agent_count as number,
       capabilities: parseJsonField(row.capabilities),
       shared_hives: sharedHives.map((h) => h.name),
+      tailscale_ips: parseJsonField(row.tailscale_ips),
+      tailscale_dns_name: row.tailscale_dns_name as string | null,
     };
   });
 }

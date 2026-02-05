@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS map_swarms (
   -- Stats
   agent_count INTEGER DEFAULT 0,
   scope_count INTEGER DEFAULT 0,
+  -- Headscale/Tailscale network info (populated after host joins tailnet)
+  headscale_node_id TEXT,
+  tailscale_ips TEXT,            -- JSON array of assigned Tailscale IPs
+  tailscale_dns_name TEXT,       -- MagicDNS hostname
   -- Metadata (JSON)
   metadata TEXT,
   created_at TEXT DEFAULT (datetime('now')),
