@@ -6,6 +6,8 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.{test,spec}.{js,ts}'],
     exclude: ['**/node_modules/**', '**/dist/**'],
+    // Run test files sequentially to avoid database singleton conflicts
+    fileParallelism: false,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
