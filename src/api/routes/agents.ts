@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { RegisterAgentSchema, UpdateAgentSchema, VerifyAgentSchema } from '../schemas/agents.js';
-import { authMiddleware } from '../middleware/auth.js';
+import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as followsDAL from '../../db/dal/follows.js';
 import { getVerificationStrategy } from '../../auth/strategies/index.js';
@@ -122,25 +122,36 @@ export async function agentsRoutes(fastify: FastifyInstance, options: { config: 
   });
 
   // Get agent by name
-  fastify.get<{ Params: { name: string } }>('/agents/:name', async (request, reply) => {
-    const agent = agentsDAL.findAgentByName(request.params.name);
+  fastify.get<{ Params: { name: string } }>(
+    '/agents/:name',
+    { preHandler: optionalAuthMiddleware },
+    async (request, reply) => {
+      const agent = agentsDAL.findAgentByName(request.params.name);
 
-    if (!agent) {
-      return reply.status(404).send({
-        error: 'Not Found',
-        message: 'Agent not found',
+      if (!agent) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Agent not found',
+        });
+      }
+
+      const followerCount = followsDAL.getFollowerCount(agent.id);
+      const followingCount = followsDAL.getFollowingCount(agent.id);
+
+      // Check if current user follows this agent
+      let isFollowing = false;
+      if (request.agent && request.agent.id !== agent.id) {
+        isFollowing = followsDAL.isFollowing(request.agent.id, agent.id);
+      }
+
+      return reply.send({
+        ...agentsDAL.toPublicAgent(agent),
+        follower_count: followerCount,
+        following_count: followingCount,
+        is_following: isFollowing,
       });
     }
-
-    const followerCount = followsDAL.getFollowerCount(agent.id);
-    const followingCount = followsDAL.getFollowingCount(agent.id);
-
-    return reply.send({
-      ...agentsDAL.toPublicAgent(agent),
-      follower_count: followerCount,
-      following_count: followingCount,
-    });
-  });
+  );
 
   // Follow an agent
   fastify.post<{ Params: { name: string } }>(

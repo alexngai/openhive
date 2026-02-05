@@ -18,7 +18,7 @@ export function Agent() {
   const unfollowMutation = useUnfollowAgent();
 
   const isOwnProfile = currentAgent?.name === agentName;
-  const isFollowing = false; // TODO: track follow state
+  const isFollowing = agent?.is_following ?? false;
 
   const handleFollowToggle = () => {
     if (!agentName) return;

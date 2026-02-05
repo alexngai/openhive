@@ -1,13 +1,16 @@
 /**
  * Memory Banks API Routes
  *
+ * @deprecated This module is deprecated. Use /api/v1/resources with resource_type='memory_bank' instead.
+ * Sunset date: 2026-05-01
+ *
  * This module provides backward-compatible /memory-banks endpoints that
  * delegate to the generic syncable resources system with resource_type='memory_bank'.
  *
  * New integrations should prefer using the /resources API directly.
  */
 
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
@@ -15,6 +18,34 @@ import { broadcast, broadcastToChannel } from '../../realtime/index.js';
 import { checkRemoteForUpdates, checkRemotesBatch } from '../../utils/git-remote.js';
 import type { ResourceVisibility } from '../../types.js';
 import type { Config } from '../../config.js';
+
+// Deprecation constants
+const DEPRECATION_SUNSET_DATE = 'Wed, 01 May 2026 00:00:00 GMT';
+const DEPRECATION_MESSAGE = 'This endpoint is deprecated. Use /api/v1/resources with resource_type=memory_bank instead.';
+const SUCCESSOR_URL = '/api/v1/resources';
+
+/**
+ * Add deprecation headers to a response following RFC 8594
+ */
+function addDeprecationHeaders(reply: FastifyReply): void {
+  reply.header('Deprecation', 'true');
+  reply.header('Sunset', DEPRECATION_SUNSET_DATE);
+  reply.header('Link', `<${SUCCESSOR_URL}>; rel="successor-version"`);
+}
+
+/**
+ * Create deprecation metadata to include in responses
+ */
+function getDeprecationNotice() {
+  return {
+    _deprecated: {
+      message: DEPRECATION_MESSAGE,
+      sunset: '2026-05-01',
+      successor: SUCCESSOR_URL,
+      documentation: '/api/v1/resources?resource_type=memory_bank',
+    },
+  };
+}
 
 // Validation schemas
 const CreateMemoryBankSchema = z.object({
@@ -80,6 +111,24 @@ export async function memoryBanksRoutes(
 ): Promise<void> {
   const { config } = options;
 
+  // Add deprecation headers and logging to all routes in this module
+  fastify.addHook('onRequest', async (request, reply) => {
+    // Only apply to /memory-banks routes
+    if (request.url.startsWith('/api/v1/memory-banks')) {
+      addDeprecationHeaders(reply);
+
+      // Log deprecation usage for monitoring
+      fastify.log.warn({
+        msg: 'Deprecated endpoint accessed',
+        endpoint: request.url,
+        method: request.method,
+        agent: request.agent?.name || 'anonymous',
+        deprecated_api: 'memory-banks',
+        successor_api: 'resources',
+      });
+    }
+  });
+
   // ============================================================================
   // Memory Bank CRUD
   // ============================================================================
@@ -122,6 +171,7 @@ export async function memoryBanksRoutes(
       total: result.total,
       limit,
       offset,
+      ...getDeprecationNotice(),
     });
   });
 
@@ -151,6 +201,7 @@ export async function memoryBanksRoutes(
       total: result.total,
       limit,
       offset,
+      ...getDeprecationNotice(),
     });
   });
 
@@ -205,6 +256,7 @@ export async function memoryBanksRoutes(
       return reply.status(201).send({
         ...bankWithMeta,
         webhook_url: webhookUrl,
+        ...getDeprecationNotice(),
       });
     } catch (error) {
       // Unique constraint violation
@@ -742,8 +794,8 @@ export async function memoryBanksRoutes(
           pusher: `poll:${request.agent!.name}`,
         });
 
-        // Broadcast to WebSocket subscribers
-        broadcastToChannel(`memory-bank:${resource.id}`, {
+        // Broadcast to WebSocket subscribers using standardized channel pattern
+        const eventPayload = {
           type: 'memory_bank_updated',
           data: {
             bank_id: resource.id,
@@ -754,7 +806,11 @@ export async function memoryBanksRoutes(
             source: 'poll',
             event_id: syncEvent.id,
           },
-        });
+        };
+        // New standardized channel pattern
+        broadcastToChannel(`resource:memory_bank:${resource.id}`, eventPayload);
+        // Legacy channel pattern (for backward compatibility, remove after 2026-05-01)
+        broadcastToChannel(`memory-bank:${resource.id}`, eventPayload);
 
         return reply.send({
           has_updates: true,
@@ -874,8 +930,8 @@ export async function memoryBanksRoutes(
             pusher: `poll:${request.agent!.name}`,
           });
 
-          // Broadcast to WebSocket subscribers
-          broadcastToChannel(`memory-bank:${resource.id}`, {
+          // Broadcast to WebSocket subscribers using standardized channel pattern
+          const batchEventPayload = {
             type: 'memory_bank_updated',
             data: {
               bank_id: resource.id,
@@ -886,7 +942,11 @@ export async function memoryBanksRoutes(
               source: 'poll',
               event_id: syncEvent.id,
             },
-          });
+          };
+          // New standardized channel pattern
+          broadcastToChannel(`resource:memory_bank:${resource.id}`, batchEventPayload);
+          // Legacy channel pattern (for backward compatibility, remove after 2026-05-01)
+          broadcastToChannel(`memory-bank:${resource.id}`, batchEventPayload);
 
           updated.push({
             bank_id: resource.id,
