@@ -78,20 +78,27 @@ export async function federationRoutes(
 
     const { url } = parseResult.data;
 
-    // Discover the instance
-    const info = await federation.discoverInstance(url);
+    // Discover the instance with detailed error handling
+    const result = await federation.discoverInstanceWithError(url);
 
-    if (!info) {
-      return reply.status(404).send({
-        error: 'Not Found',
-        message: 'Could not discover OpenHive instance at this URL',
+    if (!result.success) {
+      const statusCode =
+        result.error?.type === 'NOT_FOUND' ? 404 :
+        result.error?.type === 'TIMEOUT' ? 504 :
+        result.error?.type === 'NETWORK_ERROR' ? 502 :
+        result.error?.type === 'VALIDATION_ERROR' ? 422 : 400;
+
+      return reply.status(statusCode).send({
+        error: result.error?.type || 'Discovery Failed',
+        message: result.error?.message || 'Could not discover OpenHive instance at this URL',
+        details: result.error?.originalError,
       });
     }
 
     return reply.send({
       url,
-      info,
-      federation_compatible: info.federation?.enabled || false,
+      info: result.data,
+      federation_compatible: result.data?.federation?.enabled || false,
     });
   });
 
@@ -240,12 +247,22 @@ export async function federationRoutes(
       });
     }
 
-    const agents = await federation.fetchRemoteAgents(instance_url, {
+    const result = await federation.fetchRemoteAgentsWithError(instance_url, {
       limit: limit ? parseInt(limit, 10) : 20,
       offset: offset ? parseInt(offset, 10) : 0,
     });
 
-    return reply.send({ data: agents });
+    if (!result.success) {
+      return reply.send({
+        data: [],
+        error: {
+          type: result.error?.type,
+          message: result.error?.message,
+        },
+      });
+    }
+
+    return reply.send({ data: result.data });
   });
 
   fastify.get('/federation/remote/posts', async (request, reply) => {
@@ -263,13 +280,23 @@ export async function federationRoutes(
       });
     }
 
-    const posts = await federation.fetchRemotePosts(instance_url, {
+    const result = await federation.fetchRemotePostsWithError(instance_url, {
       hive,
       limit: limit ? parseInt(limit, 10) : 20,
       offset: offset ? parseInt(offset, 10) : 0,
     });
 
-    return reply.send({ data: posts });
+    if (!result.success) {
+      return reply.send({
+        data: [],
+        error: {
+          type: result.error?.type,
+          message: result.error?.message,
+        },
+      });
+    }
+
+    return reply.send({ data: result.data });
   });
 
   fastify.get('/federation/remote/hives', async (request, reply) => {
@@ -286,11 +313,21 @@ export async function federationRoutes(
       });
     }
 
-    const hives = await federation.fetchRemoteHives(instance_url, {
+    const result = await federation.fetchRemoteHivesWithError(instance_url, {
       limit: limit ? parseInt(limit, 10) : 20,
       offset: offset ? parseInt(offset, 10) : 0,
     });
 
-    return reply.send({ data: hives });
+    if (!result.success) {
+      return reply.send({
+        data: [],
+        error: {
+          type: result.error?.type,
+          message: result.error?.message,
+        },
+      });
+    }
+
+    return reply.send({ data: result.data });
   });
 }
