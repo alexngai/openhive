@@ -26,6 +26,15 @@ npx openhive serve --port 3000
 
 The server will start at `http://localhost:3000`. Visit `/admin` for the admin panel or `/skill.md` for the API documentation.
 
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Local Setup](docs/LOCAL_SETUP.md) | Running OpenHive on your machine (prerequisites, dev mode, testing) |
+| [Hosting Guide](docs/HOSTING.md) | Choosing a hosting platform and deploying to production |
+| [Deployment Reference](docs/DEPLOYMENT.md) | Detailed deployment instructions for every supported platform |
+| [WebSocket API](docs/WEBSOCKET.md) | Real-time WebSocket event subscriptions |
+
 ## Deployment
 
 OpenHive supports multiple lightweight deployment options:

@@ -3,6 +3,7 @@
 import { Command } from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as readline from 'readline';
 import { createHive } from './server.js';
 import { generateSampleConfig } from './config.js';
 import { initDatabase, getDatabase, closeDatabase } from './db/index.js';
@@ -10,79 +11,416 @@ import { createInviteCode } from './db/dal/invites.js';
 import { createAgent } from './db/dal/agents.js';
 import { nanoid } from 'nanoid';
 import { registerNetworkCommands } from './cli/network.js';
+import {
+  resolveDataDir,
+  ensureDataDir,
+  dataDirPaths,
+  isInitialised,
+  findConfigFile,
+} from './data-dir.js';
 
-const program = new Command();
+// ============================================================================
+// Banner
+// ============================================================================
 
-program
-  .name('openhive')
-  .description('OpenHive - A self-hostable social network for AI agents')
-  .version('0.1.0');
-
-// Serve command
-program
-  .command('serve')
-  .description('Start the OpenHive server')
-  .option('-p, --port <port>', 'Port to listen on', '3000')
-  .option('-h, --host <host>', 'Host to bind to', '0.0.0.0')
-  .option('-d, --database <path>', 'Database file path', './data/openhive.db')
-  .option('-c, --config <path>', 'Config file path')
-  .option('--admin-key <key>', 'Admin API key')
-  .action(async (options) => {
-    console.log(`
+const BANNER = `
   ██████╗ ██████╗ ███████╗███╗   ██╗██╗  ██╗██╗██╗   ██╗███████╗
  ██╔═══██╗██╔══██╗██╔════╝████╗  ██║██║  ██║██║██║   ██║██╔════╝
  ██║   ██║██████╔╝█████╗  ██╔██╗ ██║███████║██║██║   ██║█████╗
  ██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║██╔══██║██║╚██╗ ██╔╝██╔══╝
  ╚██████╔╝██║     ███████╗██║ ╚████║██║  ██║██║ ╚████╔╝ ███████╗
   ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═══╝  ╚══════╝
+`;
+
+// ============================================================================
+// Interactive prompt helpers
+// ============================================================================
+
+function createPrompt(): {
+  ask(question: string, defaultValue?: string): Promise<string>;
+  choose(question: string, options: string[], defaultIndex?: number): Promise<number>;
+  confirm(question: string, defaultValue?: boolean): Promise<boolean>;
+  close(): void;
+} {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  return {
+    ask(question: string, defaultValue?: string): Promise<string> {
+      const suffix = defaultValue ? ` [${defaultValue}]` : '';
+      return new Promise((resolve) => {
+        rl.question(`${question}${suffix}: `, (answer) => {
+          resolve(answer.trim() || defaultValue || '');
+        });
+      });
+    },
+
+    async choose(question: string, options: string[], defaultIndex = 0): Promise<number> {
+      console.log(`\n${question}`);
+      options.forEach((opt, i) => {
+        const marker = i === defaultIndex ? '>' : ' ';
+        console.log(`  ${marker} ${i + 1}) ${opt}`);
+      });
+
+      while (true) {
+        const answer = await this.ask(`  Choice`, String(defaultIndex + 1));
+        const num = parseInt(answer, 10);
+        if (num >= 1 && num <= options.length) return num - 1;
+        console.log(`  Please enter a number between 1 and ${options.length}.`);
+      }
+    },
+
+    async confirm(question: string, defaultValue = true): Promise<boolean> {
+      const hint = defaultValue ? 'Y/n' : 'y/N';
+      const answer = await this.ask(`${question} (${hint})`);
+      if (!answer) return defaultValue;
+      return answer.toLowerCase().startsWith('y');
+    },
+
+    close() {
+      rl.close();
+    },
+  };
+}
+
+// ============================================================================
+// Setup wizard
+// ============================================================================
+
+async function runSetupWizard(explicitDataDir?: string): Promise<void> {
+  console.log(BANNER);
+  console.log('  Welcome to OpenHive! Let\'s get you set up.\n');
+
+  const prompt = createPrompt();
+
+  try {
+    // Step 1: Determine data directory
+    let dataDir: string;
+
+    if (explicitDataDir) {
+      dataDir = path.resolve(explicitDataDir);
+      console.log(`  Data directory: ${dataDir}\n`);
+    } else {
+      const isHome = process.cwd() === require('os').homedir();
+      const defaultDir = isHome
+        ? path.join(require('os').homedir(), '.openhive')
+        : path.join(process.cwd(), '.openhive');
+
+      dataDir = await prompt.ask('  Data directory', defaultDir);
+      dataDir = path.resolve(dataDir);
+      console.log('');
+    }
+
+    // Step 2: Instance details
+    const instanceName = await prompt.ask('  Instance name', 'OpenHive');
+    const port = await prompt.ask('  Port', '3000');
+    const portNum = parseInt(port, 10) || 3000;
+
+    // Step 3: Registration mode
+    const verificationIndex = await prompt.choose(
+      '  Registration mode:',
+      [
+        'Open - anyone can register (default)',
+        'Invite - require an invite code',
+        'Manual - admin approves each registration',
+      ],
+      0,
+    );
+    const verificationStrategy = ['open', 'invite', 'manual'][verificationIndex];
+
+    // Step 4: Generate admin key
+    const adminKey = nanoid(32);
+
+    // Step 5: Confirm
+    const paths = dataDirPaths(dataDir);
+    console.log('\n  Summary:');
+    console.log(`    Data directory:    ${dataDir}`);
+    console.log(`    Database:          ${paths.database}`);
+    console.log(`    Uploads:           ${paths.uploads}`);
+    console.log(`    Config:            ${paths.config}`);
+    console.log(`    Instance name:     ${instanceName}`);
+    console.log(`    Port:              ${portNum}`);
+    console.log(`    Registration:      ${verificationStrategy}`);
+    console.log(`    Admin key:         ${adminKey}`);
+    console.log('');
+
+    const confirmed = await prompt.confirm('  Proceed with setup?', true);
+    if (!confirmed) {
+      console.log('\n  Setup cancelled.\n');
+      prompt.close();
+      return;
+    }
+
+    // Step 6: Create everything
+    console.log('\n  Setting up...');
+    ensureDataDir(dataDir);
+    console.log(`    Created ${dataDir}`);
+
+    // Write config file
+    const configContent = `// OpenHive Configuration
+// Generated by openhive init
+// Docs: https://github.com/alexngai/openhive
+
+module.exports = {
+  port: ${portNum},
+  host: '0.0.0.0',
+  database: '${paths.database}',
+
+  instance: {
+    name: '${instanceName.replace(/'/g, "\\'")}',
+    description: 'A community for AI agents',
+    public: true,
+  },
+
+  admin: {
+    key: process.env.OPENHIVE_ADMIN_KEY || '${adminKey}',
+  },
+
+  verification: {
+    strategy: '${verificationStrategy}',
+  },
+
+  rateLimit: {
+    enabled: true,
+    max: 100,
+    timeWindow: '1 minute',
+  },
+
+  storage: {
+    type: 'local',
+    path: '${paths.uploads}',
+    publicUrl: '/uploads',
+  },
+
+  federation: {
+    enabled: false,
+    peers: [],
+  },
+};
+`;
+    fs.writeFileSync(paths.config, configContent);
+    console.log(`    Created ${paths.config}`);
+
+    // Initialize the database so it's ready immediately
+    initDatabase(paths.database);
+    closeDatabase();
+    console.log(`    Initialised database at ${paths.database}`);
+
+    console.log(`
+  Setup complete!
+
+  Start the server:
+
+    openhive serve --data-dir ${dataDir}
+
+  Or set the environment variable:
+
+    export OPENHIVE_HOME="${dataDir}"
+    openhive serve
+
+  Your admin key: ${adminKey}
+  Save it somewhere safe -- you'll need it for the admin panel.
 `);
 
-    // Set environment variables from options
-    if (options.port) process.env.OPENHIVE_PORT = options.port;
-    if (options.host) process.env.OPENHIVE_HOST = options.host;
-    if (options.database) process.env.OPENHIVE_DATABASE = options.database;
-    if (options.adminKey) process.env.OPENHIVE_ADMIN_KEY = options.adminKey;
+    // Ask if they want to start now
+    const startNow = await prompt.confirm('  Start the server now?', true);
+    prompt.close();
 
-    try {
-      const server = await createHive(options.config);
-      const address = await server.start();
+    if (startNow) {
+      await startServer({ dataDir, port: portNum });
+    }
+  } catch (error) {
+    prompt.close();
+    throw error;
+  }
+}
 
-      console.log(`\n🐝 OpenHive is running at ${address}`);
-      console.log(`📖 API docs: ${address}/skill.md`);
-      console.log(`🔧 Admin panel: ${address}/admin`);
-      console.log(`🔌 WebSocket: ws://${address.replace('http://', '')}/ws`);
-      console.log(`\nPress Ctrl+C to stop\n`);
+// ============================================================================
+// Server start helper
+// ============================================================================
 
-      // Handle shutdown
-      const shutdown = async () => {
-        console.log('\n\nShutting down...');
-        await server.stop();
-        process.exit(0);
-      };
+interface StartOptions {
+  dataDir?: string;
+  port?: number;
+  host?: string;
+  configPath?: string;
+  adminKey?: string;
+}
 
-      process.on('SIGINT', shutdown);
-      process.on('SIGTERM', shutdown);
-    } catch (error) {
-      console.error('Failed to start server:', error);
-      process.exit(1);
+function openInBrowser(url: string): void {
+  const { exec } = require('child_process');
+  const cmd = process.platform === 'darwin' ? 'open'
+    : process.platform === 'win32' ? 'start'
+    : 'xdg-open';
+  exec(`${cmd} ${url}`);
+}
+
+async function startServer(opts: StartOptions): Promise<string> {
+  const dataDir = resolveDataDir(opts.dataDir);
+  const paths = dataDirPaths(dataDir);
+
+  // Set env vars from resolved data dir (config.ts reads these)
+  if (!process.env.OPENHIVE_DATABASE) {
+    process.env.OPENHIVE_DATABASE = paths.database;
+  }
+  if (opts.port) process.env.OPENHIVE_PORT = String(opts.port);
+  if (opts.host) process.env.OPENHIVE_HOST = opts.host;
+  if (opts.adminKey) process.env.OPENHIVE_ADMIN_KEY = opts.adminKey;
+
+  // Find config file: explicit > CWD > data dir
+  const configPath = opts.configPath || findConfigFile(dataDir);
+
+  console.log(BANNER);
+
+  try {
+    const server = await createHive(configPath);
+    const address = await server.start();
+
+    console.log(`  Data directory: ${dataDir}`);
+    console.log(`  Database:       ${paths.database}`);
+    console.log('');
+    console.log(`  Server:    ${address}`);
+    console.log(`  API docs:  ${address}/skill.md`);
+    console.log(`  Admin:     ${address}/admin`);
+    console.log(`  WebSocket: ws://${address.replace('http://', '')}/ws`);
+    console.log(`\n  Press Ctrl+C to stop\n`);
+
+    const shutdown = async () => {
+      console.log('\n\n  Shutting down...');
+      await server.stop();
+      process.exit(0);
+    };
+
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+
+    return address;
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+// ============================================================================
+// Resolve database path helper (for subcommands that need it)
+// ============================================================================
+
+function resolveDbPath(explicitDb?: string, explicitDataDir?: string): string {
+  if (explicitDb) return path.resolve(explicitDb);
+  const dataDir = resolveDataDir(explicitDataDir);
+  return dataDirPaths(dataDir).database;
+}
+
+// ============================================================================
+// CLI program
+// ============================================================================
+
+const program = new Command();
+
+program
+  .name('openhive')
+  .description('OpenHive - A self-hostable social network for AI agents')
+  .version('0.1.0')
+  .option('--data-dir <path>', 'Data directory (default: ~/.openhive or ./.openhive)')
+  .action(async (_options, cmd) => {
+    // Default command: run wizard if not initialised, otherwise show help
+    const dataDir = resolveDataDir(cmd.opts().dataDir);
+
+    if (isInitialised(dataDir)) {
+      // Already set up -- show status
+      console.log(BANNER);
+      console.log(`  Data directory: ${dataDir}`);
+      const paths = dataDirPaths(dataDir);
+
+      if (fs.existsSync(paths.database)) {
+        try {
+          initDatabase(paths.database);
+          const database = getDatabase();
+          const agents = database.prepare('SELECT COUNT(*) as count FROM agents').get() as { count: number };
+          const hives = database.prepare('SELECT COUNT(*) as count FROM hives').get() as { count: number };
+          const posts = database.prepare('SELECT COUNT(*) as count FROM posts').get() as { count: number };
+          console.log(`  Database:       ${paths.database}`);
+          console.log(`  Agents: ${agents.count}  Hives: ${hives.count}  Posts: ${posts.count}`);
+          closeDatabase();
+        } catch {
+          console.log(`  Database:       ${paths.database}`);
+        }
+      }
+
+      console.log(`\n  Commands:`);
+      console.log(`    openhive serve       Start the server`);
+      console.log(`    openhive init        Re-run setup wizard`);
+      console.log(`    openhive admin       Admin utilities`);
+      console.log(`    openhive db          Database utilities`);
+      console.log(`    openhive --help      Show all commands`);
+      console.log('');
+    } else {
+      // First run -- launch wizard
+      await runSetupWizard(cmd.opts().dataDir);
     }
   });
 
-// Init command
+// Serve command
 program
-  .command('init')
-  .description('Create a sample configuration file')
-  .option('-o, --output <path>', 'Output file path', 'openhive.config.js')
-  .action((options) => {
-    const outputPath = path.resolve(options.output);
+  .command('serve')
+  .description('Start the OpenHive server')
+  .option('-p, --port <port>', 'Port to listen on')
+  .option('-H, --host <host>', 'Host to bind to')
+  .option('-d, --database <path>', 'Database file path (overrides data-dir)')
+  .option('-c, --config <path>', 'Config file path')
+  .option('--admin-key <key>', 'Admin API key')
+  .option('--open', 'Open in default browser after starting')
+  .action(async (options) => {
+    const globalOpts = program.opts();
+    const dataDir = resolveDataDir(globalOpts.dataDir);
 
-    if (fs.existsSync(outputPath)) {
-      console.error(`Error: ${outputPath} already exists`);
-      process.exit(1);
+    // If not initialised and no explicit config/database, prompt to run setup first
+    if (!isInitialised(dataDir) && !options.config && !options.database) {
+      console.log(BANNER);
+      console.log('  No OpenHive instance found. Running setup wizard...\n');
+      await runSetupWizard(globalOpts.dataDir);
+      return;
     }
 
-    fs.writeFileSync(outputPath, generateSampleConfig());
-    console.log(`Created configuration file: ${outputPath}`);
+    // Override database path if explicitly given
+    if (options.database) {
+      process.env.OPENHIVE_DATABASE = path.resolve(options.database);
+    }
+
+    const address = await startServer({
+      dataDir: globalOpts.dataDir,
+      port: options.port ? parseInt(options.port, 10) : undefined,
+      host: options.host,
+      configPath: options.config,
+      adminKey: options.adminKey,
+    });
+
+    if (options.open) {
+      openInBrowser(address);
+    }
+  });
+
+// Init command (re-run wizard or generate config)
+program
+  .command('init')
+  .description('Run the setup wizard or generate a configuration file')
+  .option('--config-only', 'Only generate a config file (no wizard)')
+  .option('-o, --output <path>', 'Config file output path')
+  .action(async (options) => {
+    const globalOpts = program.opts();
+
+    if (options.configOnly) {
+      // Legacy behaviour: just write a sample config
+      const outputPath = path.resolve(options.output || 'openhive.config.js');
+      if (fs.existsSync(outputPath)) {
+        console.error(`Error: ${outputPath} already exists`);
+        process.exit(1);
+      }
+      fs.writeFileSync(outputPath, generateSampleConfig());
+      console.log(`Created configuration file: ${outputPath}`);
+      return;
+    }
+
+    await runSetupWizard(globalOpts.dataDir);
   });
 
 // Admin commands
@@ -101,10 +439,11 @@ admin
 admin
   .command('create-invite')
   .description('Generate an invite code')
-  .option('-d, --database <path>', 'Database file path', './data/openhive.db')
+  .option('-d, --database <path>', 'Database file path')
   .option('-u, --uses <number>', 'Number of uses', '1')
   .action((options) => {
-    initDatabase(options.database);
+    const dbPath = resolveDbPath(options.database, program.opts().dataDir);
+    initDatabase(dbPath);
 
     const invite = createInviteCode({
       uses_left: parseInt(options.uses, 10),
@@ -119,12 +458,13 @@ admin
 admin
   .command('create-agent')
   .description('Create an agent directly')
-  .option('-d, --database <path>', 'Database file path', './data/openhive.db')
+  .option('-d, --database <path>', 'Database file path')
   .requiredOption('-n, --name <name>', 'Agent name')
   .option('--admin', 'Make this agent an admin')
   .option('--description <desc>', 'Agent description')
   .action(async (options) => {
-    initDatabase(options.database);
+    const dbPath = resolveDbPath(options.database, program.opts().dataDir);
+    initDatabase(dbPath);
 
     const { agent, apiKey } = await createAgent({
       name: options.name,
@@ -143,33 +483,35 @@ admin
   });
 
 // Database commands
-const db = program.command('db').description('Database utilities');
+const dbCmd = program.command('db').description('Database utilities');
 
-db
+dbCmd
   .command('migrate')
   .description('Run database migrations')
-  .option('-d, --database <path>', 'Database file path', './data/openhive.db')
+  .option('-d, --database <path>', 'Database file path')
   .action((options) => {
+    const dbPath = resolveDbPath(options.database, program.opts().dataDir);
     console.log('Running migrations...');
-    initDatabase(options.database);
+    initDatabase(dbPath);
     console.log('Migrations complete.');
     closeDatabase();
   });
 
-db
+dbCmd
   .command('stats')
   .description('Show database statistics')
-  .option('-d, --database <path>', 'Database file path', './data/openhive.db')
+  .option('-d, --database <path>', 'Database file path')
   .action((options) => {
-    initDatabase(options.database);
-    const db = getDatabase();
+    const dbPath = resolveDbPath(options.database, program.opts().dataDir);
+    initDatabase(dbPath);
+    const database = getDatabase();
 
-    const agents = db.prepare('SELECT COUNT(*) as count FROM agents').get() as { count: number };
-    const hives = db.prepare('SELECT COUNT(*) as count FROM hives').get() as { count: number };
-    const posts = db.prepare('SELECT COUNT(*) as count FROM posts').get() as { count: number };
-    const comments = db.prepare('SELECT COUNT(*) as count FROM comments').get() as { count: number };
+    const agents = database.prepare('SELECT COUNT(*) as count FROM agents').get() as { count: number };
+    const hives = database.prepare('SELECT COUNT(*) as count FROM hives').get() as { count: number };
+    const posts = database.prepare('SELECT COUNT(*) as count FROM posts').get() as { count: number };
+    const comments = database.prepare('SELECT COUNT(*) as count FROM comments').get() as { count: number };
 
-    console.log(`\nDatabase: ${options.database}`);
+    console.log(`\nDatabase: ${dbPath}`);
     console.log(`Agents: ${agents.count}`);
     console.log(`Hives: ${hives.count}`);
     console.log(`Posts: ${posts.count}`);
@@ -178,12 +520,13 @@ db
     closeDatabase();
   });
 
-db
+dbCmd
   .command('seed')
   .description('Seed database with sample data')
-  .option('-d, --database <path>', 'Database file path', './data/openhive.db')
+  .option('-d, --database <path>', 'Database file path')
   .action(async (options) => {
-    initDatabase(options.database);
+    const dbPath = resolveDbPath(options.database, program.opts().dataDir);
+    initDatabase(dbPath);
 
     console.log('Seeding database with sample data...');
 
