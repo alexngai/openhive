@@ -178,14 +178,17 @@ async function detectPublicIp(): Promise<string | null> {
 
 /** Check if we're behind CGNAT by comparing local and public IPs */
 function isCgnatIp(publicIp: string): boolean {
+  const parts = publicIp.split('.');
+  if (parts.length !== 4) return false;
+  const nums = parts.map(Number);
+  if (nums.some((n) => !Number.isFinite(n) || n < 0 || n > 255)) return false;
+
   // CGNAT range: 100.64.0.0/10 (100.64.0.0 - 100.127.255.255)
-  // Note: Tailscale also uses this range, but for different purposes
-  const parts = publicIp.split('.').map(Number);
-  if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return true;
-  // Also detect other common "not a real public IP" ranges
-  if (parts[0] === 10) return true;
-  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
-  if (parts[0] === 192 && parts[1] === 168) return true;
+  if (nums[0] === 100 && nums[1] >= 64 && nums[1] <= 127) return true;
+  // Other common "not a real public IP" ranges
+  if (nums[0] === 10) return true;
+  if (nums[0] === 172 && nums[1] >= 16 && nums[1] <= 31) return true;
+  if (nums[0] === 192 && nums[1] === 168) return true;
   return false;
 }
 

@@ -351,11 +351,12 @@ export function discoverNodes(options: DiscoverNodesOptions): {
   }
 
   // Tag-based filtering: match nodes where tags JSON array contains any of the requested tags
+  // Use json_each to avoid LIKE wildcard injection and JSON escaping issues
   if (options.tags && options.tags.length > 0) {
-    const tagConditions = options.tags.map(() => "n.tags LIKE ?");
-    where.push(`(${tagConditions.join(' OR ')})`);
+    const tagPlaceholders = options.tags.map(() => '?').join(', ');
+    where.push(`EXISTS (SELECT 1 FROM json_each(n.tags) AS jt WHERE jt.value IN (${tagPlaceholders}))`);
     for (const tag of options.tags) {
-      params.push(`%"${tag}"%`);
+      params.push(tag);
     }
   }
 

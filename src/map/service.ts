@@ -187,7 +187,21 @@ export function leaveHive(swarmId: string, hiveName: string): boolean {
     throw new MapHubError('HIVE_NOT_FOUND', `Hive "${hiveName}" not found`);
   }
 
-  return mapDal.leaveHive(swarmId, hive.id);
+  const result = mapDal.leaveHive(swarmId, hive.id);
+
+  if (result) {
+    const swarm = mapDal.findSwarmById(swarmId);
+    broadcastToChannel(`map:hive:${hive.id}`, {
+      type: 'swarm_left_hive',
+      data: {
+        swarm_id: swarmId,
+        swarm_name: swarm?.name,
+        hive_name: hiveName,
+      },
+    });
+  }
+
+  return result;
 }
 
 // ============================================================================

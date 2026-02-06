@@ -131,6 +131,20 @@ const NetworkProvisionSchema = z.object({
 });
 
 // ============================================================================
+// Query Param Helpers
+// ============================================================================
+
+const MAX_PAGE_SIZE = 200;
+
+/** Parse a numeric query param with NaN guard and optional clamping */
+function parseIntParam(value: string | undefined, max?: number): number | undefined {
+  if (!value) return undefined;
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n < 0) return undefined;
+  return max ? Math.min(n, max) : n;
+}
+
+// ============================================================================
 // Error Handler
 // ============================================================================
 
@@ -205,8 +219,8 @@ export async function mapRoutes(
     const result = mapDal.listSwarms({
       hive_id,
       status,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
+      limit: parseIntParam(limit, MAX_PAGE_SIZE),
+      offset: parseIntParam(offset),
     });
 
     // Enrich with hive names
@@ -383,8 +397,8 @@ export async function mapRoutes(
       state: state as 'registered' | 'active' | 'busy' | 'idle' | 'suspended' | 'stopped' | 'failed' | undefined,
       tags: tags ? tags.split(',') : undefined,
       visibility: visibility as 'public' | 'hive-only' | 'swarm-only' | undefined,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
+      limit: parseIntParam(limit, MAX_PAGE_SIZE),
+      offset: parseIntParam(offset),
     });
 
     return reply.send(result);
@@ -499,8 +513,8 @@ export async function mapRoutes(
 
     const keys = mapDal.listPreauthKeys({
       hive_id,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
+      limit: parseIntParam(limit, MAX_PAGE_SIZE),
+      offset: parseIntParam(offset),
     });
 
     // Don't return key_hash in the response

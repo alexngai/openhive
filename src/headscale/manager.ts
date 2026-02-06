@@ -57,6 +57,11 @@ export class HeadscaleManager {
    * 5. Return the client
    */
   async start(): Promise<HeadscaleClient> {
+    // Guard against double-start — kill existing process first
+    if (this.process && this.process.exitCode === null) {
+      await this.stop();
+    }
+
     // Ensure data directory exists
     const dataDir = path.resolve(this.opts.dataDir);
     if (!fs.existsSync(dataDir)) {
