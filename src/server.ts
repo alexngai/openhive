@@ -14,8 +14,7 @@ import { generateSkillMd } from './skill.js';
 import { generateSitemap, generateRobotsTxt } from './services/sitemap.js';
 import { initializeStorage, type StorageConfig } from './storage/index.js';
 import { initEmail } from './services/email.js';
-import { HeadscaleManager } from './headscale/manager.js';
-import { HeadscaleSync } from './headscale/sync.js';
+import { createNetworkProvider, type NetworkProvider } from './network/index.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -207,22 +206,32 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
     return reply.send(wellKnown);
   });
 
-  // Initialize headscale sidecar if enabled
-  let headscaleManager: HeadscaleManager | null = null;
+  // Initialize mesh networking provider
+  // Supports: tailscale-cloud, headscale-sidecar, headscale-external, none
+  let networkProvider: NetworkProvider;
 
-  if (config.headscale.enabled) {
+  if (config.network.provider !== 'none') {
+    // Use the new network config
+    networkProvider = createNetworkProvider(config.network);
+  } else if (config.headscale.enabled) {
+    // Backward compat: legacy headscale config maps to headscale-sidecar
     const serverUrl = config.headscale.serverUrl ||
       config.instance.url ||
       `http://${config.host}:${config.headscale.listenAddr.split(':')[1] || '8085'}`;
 
-    headscaleManager = new HeadscaleManager({
-      dataDir: config.headscale.dataDir,
-      serverUrl,
-      listenAddr: config.headscale.listenAddr,
-      binaryPath: config.headscale.binaryPath,
-      baseDomain: config.headscale.baseDomain,
-      embeddedDerp: config.headscale.embeddedDerp,
+    networkProvider = createNetworkProvider({
+      provider: 'headscale-sidecar',
+      headscaleSidecar: {
+        serverUrl,
+        dataDir: config.headscale.dataDir,
+        binaryPath: config.headscale.binaryPath,
+        listenAddr: config.headscale.listenAddr,
+        baseDomain: config.headscale.baseDomain,
+        embeddedDerp: config.headscale.embeddedDerp,
+      },
     });
+  } else {
+    networkProvider = createNetworkProvider({ provider: 'none' });
   }
 
   const server: HiveServer = {
@@ -230,16 +239,15 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
     config,
 
     async start() {
-      // Start headscale sidecar before listening
-      if (headscaleManager) {
+      // Start mesh networking provider before listening
+      if (networkProvider.type !== 'none') {
         try {
-          const client = await headscaleManager.start();
-          const sync = new HeadscaleSync(client, config.headscale.baseDomain);
+          await networkProvider.start();
           // Attach to fastify instance so routes can access it
-          (fastify as unknown as { headscaleSync: HeadscaleSync }).headscaleSync = sync;
-          console.log('[openhive] Headscale sidecar started');
+          (fastify as unknown as { networkProvider: NetworkProvider }).networkProvider = networkProvider;
+          console.log(`[openhive] Network provider started (${networkProvider.type})`);
         } catch (err) {
-          console.warn(`[openhive] Headscale sidecar failed to start: ${(err as Error).message}`);
+          console.warn(`[openhive] Network provider failed to start: ${(err as Error).message}`);
           console.warn('[openhive] MAP hub will work without L3/L4 mesh networking.');
         }
       }
@@ -253,9 +261,9 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
     async stop() {
       stopHeartbeat();
-      // Stop headscale sidecar
-      if (headscaleManager) {
-        await headscaleManager.stop();
+      // Stop mesh networking provider
+      if (networkProvider.type !== 'none') {
+        await networkProvider.stop();
       }
       await fastify.close();
       closeDatabase();

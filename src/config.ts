@@ -130,22 +130,55 @@ export const ConfigSchema = z.object({
     clientSecret: z.string().optional(),
   }).default({ enabled: false }),
 
-  // Headscale sidecar configuration (L3/L4 mesh networking for swarm hosts)
+  // Legacy headscale config (still supported, maps to network.headscaleSidecar)
   headscale: z.object({
     enabled: z.boolean().default(false),
-    /** Path to the headscale binary. Defaults to 'headscale' (must be in PATH) */
     binaryPath: z.string().default('headscale'),
-    /** Directory for headscale data (db, keys, config). Defaults to ./data/headscale */
     dataDir: z.string().default('./data/headscale'),
-    /** URL that tailscale clients connect to (must be reachable by all swarm hosts) */
     serverUrl: z.string().url().optional(),
-    /** HTTP listen address for headscale REST API */
     listenAddr: z.string().default('127.0.0.1:8085'),
-    /** MagicDNS base domain */
     baseDomain: z.string().default('hive.internal'),
-    /** Enable embedded DERP relay server (helps with NAT traversal) */
     embeddedDerp: z.boolean().default(false),
   }).default({ enabled: false }),
+
+  // Mesh networking for MAP swarm hosts (pluggable provider)
+  network: z.object({
+    /** Provider: 'tailscale-cloud' | 'headscale-sidecar' | 'headscale-external' | 'none' */
+    provider: z.enum(['tailscale-cloud', 'headscale-sidecar', 'headscale-external', 'none']).default('none'),
+
+    /** Tailscale Cloud (SaaS) — simplest option, no infra to manage */
+    tailscale: z.object({
+      tailnet: z.string(),
+      apiKey: z.string().optional(),
+      oauthClientId: z.string().optional(),
+      oauthClientSecret: z.string().optional(),
+    }).optional(),
+
+    /** Headscale sidecar — self-hosted, OpenHive manages the binary */
+    headscaleSidecar: z.object({
+      serverUrl: z.string(),
+      baseDomain: z.string().default('hive.internal'),
+      dataDir: z.string().default('./data/headscale'),
+      binaryPath: z.string().default('headscale'),
+      listenAddr: z.string().default('127.0.0.1:8085'),
+      embeddedDerp: z.boolean().default(false),
+      derpPublicIp: z.string().optional(),
+      tls: z.object({
+        mode: z.enum(['none', 'letsencrypt', 'manual', 'reverse-proxy']).default('none'),
+        letsencryptHostname: z.string().optional(),
+        certPath: z.string().optional(),
+        keyPath: z.string().optional(),
+      }).default({ mode: 'none' }),
+    }).optional(),
+
+    /** External headscale — BYO headscale instance */
+    headscaleExternal: z.object({
+      apiUrl: z.string(),
+      apiKey: z.string(),
+      serverUrl: z.string().optional(),
+      baseDomain: z.string().default('hive.internal'),
+    }).optional(),
+  }).default({ provider: 'none' }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -321,6 +354,39 @@ module.exports = {
   //   privateKey: process.env.GITHUB_APP_PRIVATE_KEY, // PEM format
   //   clientId: process.env.GITHUB_APP_CLIENT_ID,
   //   clientSecret: process.env.GITHUB_APP_CLIENT_SECRET,
+  // },
+
+  // Mesh networking for MAP swarm hosts
+  // Choose one provider:
+  //
+  // Option 1: Tailscale Cloud (simplest — no infra to manage)
+  // network: {
+  //   provider: 'tailscale-cloud',
+  //   tailscale: {
+  //     tailnet: 'your-tailnet.ts.net',
+  //     apiKey: process.env.TAILSCALE_API_KEY,
+  //   },
+  // },
+  //
+  // Option 2: Headscale sidecar (self-hosted, OpenHive manages the binary)
+  // network: {
+  //   provider: 'headscale-sidecar',
+  //   headscaleSidecar: {
+  //     serverUrl: 'https://openhive.example.com',
+  //     baseDomain: 'hive.internal',
+  //     embeddedDerp: true,
+  //     tls: { mode: 'letsencrypt', letsencryptHostname: 'openhive.example.com' },
+  //   },
+  // },
+  //
+  // Option 3: External headscale (BYO headscale instance)
+  // network: {
+  //   provider: 'headscale-external',
+  //   headscaleExternal: {
+  //     apiUrl: 'http://localhost:8085',
+  //     apiKey: process.env.HEADSCALE_API_KEY,
+  //     serverUrl: 'https://headscale.example.com',
+  //   },
   // },
 };
 `;

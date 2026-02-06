@@ -109,10 +109,35 @@ export type {
   CreatePreauthKeyInput,
 } from './map/index.js';
 
-// Headscale integration exports (L3/L4 mesh networking sidecar)
+// Mesh networking exports (pluggable provider: Tailscale Cloud, headscale sidecar/external)
 export {
-  HeadscaleClient,
-  HeadscaleClientError,
+  createNetworkProvider,
+  NoopNetworkProvider,
+  TailscaleCloudProvider,
+  TailscaleClient,
+  TailscaleClientError,
+  HeadscaleSidecarProvider,
+  HeadscaleExternalProvider,
+} from './network/index.js';
+export type {
+  NetworkProvider,
+  NetworkProviderType,
+  CreateAuthKeyOptions,
+  AuthKeyResult,
+  DeviceInfo,
+  ConnectivityResult,
+  TailscaleProviderOptions,
+  TailscaleClientOptions,
+  TailscaleAuthKey,
+  TailscaleDevice,
+  HeadscaleSidecarProviderOptions,
+  HeadscaleExternalProviderOptions,
+} from './network/index.js';
+
+// Legacy headscale exports (still available for direct use)
+export {
+  HeadscaleClient as HeadscaleApiClient,
+  HeadscaleClientError as HeadscaleApiClientError,
 } from './headscale/index.js';
 export {
   HeadscaleManager,

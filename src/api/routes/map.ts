@@ -532,10 +532,10 @@ export async function mapRoutes(
   });
 
   // ==========================================================================
-  // Headscale Network Routes
+  // Mesh Network Routes (provider-agnostic)
   // ==========================================================================
 
-  // POST /map/swarms/:id/network -- Provision tailscale network access for a swarm joining a hive
+  // POST /map/swarms/:id/network -- Provision mesh network access for a swarm
   fastify.post('/map/swarms/:id/network', {
     preHandler: [authMiddleware],
   }, async (request: FastifyRequest<{
@@ -547,28 +547,24 @@ export async function mapRoutes(
         throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
       }
 
-      // Check if headscale sync is available
-      const headscaleSync = (request.server as unknown as { headscaleSync?: unknown }).headscaleSync;
-      if (!headscaleSync) {
+      const provider = (request.server as unknown as { networkProvider?: import('../../network/types.js').NetworkProvider }).networkProvider;
+      if (!provider || !provider.isReady()) {
         return reply.status(503).send({
-          error: 'HEADSCALE_NOT_AVAILABLE',
-          message: 'Headscale sidecar is not enabled. Set headscale.enabled=true in config.',
+          error: 'NETWORK_NOT_AVAILABLE',
+          message: 'No mesh network provider configured. Set network.provider in config.',
         });
       }
 
-      const { HeadscaleSync } = await import('../../headscale/sync.js');
-      const sync = headscaleSync as InstanceType<typeof HeadscaleSync>;
       const body = request.body as { hive_name: string; reusable?: boolean; ephemeral?: boolean; expiration_hours?: number };
+      const swarm = mapDal.findSwarmById(request.params.id);
 
-      const result = await sync.provisionSwarmAccess(
-        body.hive_name,
-        mapDal.findSwarmById(request.params.id)?.name || request.params.id,
-        {
-          reusable: body.reusable,
-          ephemeral: body.ephemeral,
-          expirationHours: body.expiration_hours,
-        }
-      );
+      const result = await provider.createAuthKey({
+        hiveName: body.hive_name,
+        swarmName: swarm?.name || request.params.id,
+        reusable: body.reusable,
+        ephemeral: body.ephemeral,
+        expirationHours: body.expiration_hours,
+      });
 
       return reply.status(201).send(result);
     } catch (error) {
@@ -576,7 +572,7 @@ export async function mapRoutes(
     }
   });
 
-  // GET /map/swarms/:id/network -- Get tailscale network info for a swarm
+  // GET /map/swarms/:id/network -- Get mesh network info for a swarm
   fastify.get('/map/swarms/:id/network', {
     preHandler: [authMiddleware],
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
@@ -586,38 +582,57 @@ export async function mapRoutes(
         return reply.status(404).send({ error: 'Not Found', message: 'Swarm not found' });
       }
 
-      // Check if headscale sync is available
-      const headscaleSync = (request.server as unknown as { headscaleSync?: unknown }).headscaleSync;
-      if (!headscaleSync) {
-        // Return whatever we have stored
+      const provider = (request.server as unknown as { networkProvider?: import('../../network/types.js').NetworkProvider }).networkProvider;
+      if (!provider || !provider.isReady()) {
+        // Return whatever we have stored in the DB
         return reply.send({
-          headscale_enabled: false,
+          provider: 'none',
           headscale_node_id: swarm.headscale_node_id,
           tailscale_ips: swarm.tailscale_ips,
           tailscale_dns_name: swarm.tailscale_dns_name,
         });
       }
 
-      const { HeadscaleSync } = await import('../../headscale/sync.js');
-      const sync = headscaleSync as InstanceType<typeof HeadscaleSync>;
       const hives = mapDal.getSwarmHiveNames(request.params.id);
-      const networkInfo = await sync.getSwarmNetworkInfo(swarm.name, hives[0]);
+      const deviceInfo = await provider.getDeviceInfo(swarm.name, hives[0]);
 
-      // Update stored network info if we got data from headscale
-      if (networkInfo.headscale_node_id) {
+      // Update stored network info if we got data from the provider
+      if (deviceInfo.id) {
         mapDal.updateSwarm(request.params.id, {
-          headscale_node_id: networkInfo.headscale_node_id,
-          tailscale_ips: networkInfo.tailscale_ips,
-          tailscale_dns_name: networkInfo.dns_name || undefined,
+          headscale_node_id: deviceInfo.id,
+          tailscale_ips: deviceInfo.ips,
+          tailscale_dns_name: deviceInfo.dnsName || undefined,
         });
       }
 
       return reply.send({
-        headscale_enabled: true,
-        ...networkInfo,
+        provider: provider.type,
+        ...deviceInfo,
       });
     } catch (error) {
       return handleMapError(error, reply);
     }
+  });
+
+  // GET /map/network/status -- Check network provider status and connectivity
+  fastify.get('/map/network/status', async (request: FastifyRequest, reply: FastifyReply) => {
+    const provider = (request.server as unknown as { networkProvider?: import('../../network/types.js').NetworkProvider }).networkProvider;
+
+    if (!provider || provider.type === 'none') {
+      return reply.send({
+        provider: 'none',
+        ready: false,
+        message: 'No mesh network provider configured.',
+      });
+    }
+
+    const connectivity = await provider.checkConnectivity();
+
+    return reply.send({
+      provider: provider.type,
+      ready: provider.isReady(),
+      serverUrl: provider.getServerUrl(),
+      connectivity,
+    });
   });
 }
