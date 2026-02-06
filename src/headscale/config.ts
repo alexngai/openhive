@@ -71,8 +71,9 @@ export function generateHeadscaleConfig(opts: HeadscaleSidecarOptions): Headscal
     region_code: 'openhive',
     region_name: 'OpenHive Embedded DERP',
     stun_listen_addr: '0.0.0.0:3478',
-    ipv4: opts.derpPublicIp,
-    ipv6: opts.derpPublicIp6,
+    // Only include public IPs if explicitly set — undefined produces `null` in YAML
+    ...(opts.derpPublicIp ? { ipv4: opts.derpPublicIp } : {}),
+    ...(opts.derpPublicIp6 ? { ipv6: opts.derpPublicIp6 } : {}),
   };
 
   return {

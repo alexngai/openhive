@@ -535,11 +535,15 @@ export async function mapRoutes(
   fastify.delete('/map/preauth-keys/:id', {
     preHandler: [authMiddleware, requireAdmin],
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-    const deleted = mapDal.deletePreauthKey(request.params.id);
-    if (!deleted) {
-      return reply.status(404).send({ error: 'Not Found', message: 'Pre-auth key not found' });
+    try {
+      const deleted = mapDal.deletePreauthKey(request.params.id);
+      if (!deleted) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Pre-auth key not found' });
+      }
+      return reply.status(204).send();
+    } catch (error) {
+      return handleMapError(error, reply);
     }
-    return reply.status(204).send();
   });
 
   // ==========================================================================
@@ -565,6 +569,11 @@ export async function mapRoutes(
     Params: { id: string };
   }>, reply: FastifyReply) => {
     try {
+      const swarm = mapDal.findSwarmById(request.params.id);
+      if (!swarm) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Swarm not found' });
+      }
+
       if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
         throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
       }
@@ -579,11 +588,9 @@ export async function mapRoutes(
         });
       }
 
-      const swarm = mapDal.findSwarmById(request.params.id);
-
       const result = await provider.createAuthKey({
         hiveName: body.hive_name,
-        swarmName: swarm?.name || request.params.id,
+        swarmName: swarm.name || request.params.id,
         reusable: body.reusable,
         ephemeral: body.ephemeral,
         expirationHours: body.expiration_hours,
@@ -642,7 +649,9 @@ export async function mapRoutes(
   });
 
   // GET /map/network/status -- Check network provider status and connectivity
-  fastify.get('/map/network/status', async (request: FastifyRequest, reply: FastifyReply) => {
+  fastify.get('/map/network/status', {
+    preHandler: [optionalAuthMiddleware],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     const provider = (request.server as unknown as { networkProvider?: import('../../network/types.js').NetworkProvider }).networkProvider;
 
     if (!provider || provider.type === 'none') {
