@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
 import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE } from './schema.js';
+import { MAP_SCHEMA } from '../map/schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
 
@@ -85,6 +86,8 @@ export function initDatabase(config: string | DatabaseConfig): Database.Database
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(SCHEMA_VERSION);
     // Create FTS tables
     db.exec(FTS_SCHEMA);
+    // Create MAP Hub tables
+    db.exec(MAP_SCHEMA);
     // Seed default data
     db.exec(SEED_DATA);
   } else if (versionRow.version < SCHEMA_VERSION) {
@@ -123,6 +126,10 @@ function runMigrations(database: Database.Database, fromVersion: number, toVersi
       ALTER TABLE agents ADD COLUMN password_reset_token TEXT;
       ALTER TABLE agents ADD COLUMN password_reset_expires TEXT;
     `,
+    // Versions 7-10: handled in CREATE_TABLES
+    7: '', 8: '', 9: '', 10: '',
+    // Version 11: MAP Hub tables (headscale-style swarm coordination)
+    11: MAP_SCHEMA,
   };
 
   for (let v = fromVersion + 1; v <= toVersion; v++) {

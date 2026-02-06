@@ -70,6 +70,100 @@ export {
   type RemotePost,
 } from './federation/index.js';
 
+// MAP Hub exports (headscale-style coordination for MAP swarms)
+export * as mapDal from './db/dal/map.js';
+export {
+  registerSwarm,
+  registerNode,
+  getPeerList,
+  joinHive as mapJoinHive,
+  leaveHive as mapLeaveHive,
+  markStaleSwarms,
+  getWellKnownMapInfo,
+  MapHubError,
+  type MapHubErrorCode,
+  type RegisterSwarmResult,
+} from './map/index.js';
+
+export type {
+  MapSwarm,
+  MapSwarmPublic,
+  MapSwarmCapabilities,
+  MapTransport,
+  MapAuthMethod,
+  SwarmStatus,
+  MapNode,
+  MapNodePublic,
+  MapNodeState,
+  MapNodeVisibility,
+  MapSwarmHive,
+  MapPreauthKey,
+  MapFederationLogEntry,
+  SwarmPeer,
+  PeerList,
+  RegisterSwarmInput,
+  UpdateSwarmInput,
+  RegisterNodeInput,
+  UpdateNodeInput,
+  DiscoverNodesOptions,
+  CreatePreauthKeyInput,
+} from './map/index.js';
+
+// Mesh networking exports (pluggable provider: Tailscale Cloud, headscale sidecar/external)
+export {
+  createNetworkProvider,
+  NoopNetworkProvider,
+  TailscaleCloudProvider,
+  TailscaleClient,
+  TailscaleClientError,
+  HeadscaleSidecarProvider,
+  HeadscaleExternalProvider,
+} from './network/index.js';
+export type {
+  NetworkProvider,
+  NetworkProviderType,
+  NetworkConfig,
+  CreateAuthKeyOptions,
+  AuthKeyResult,
+  DeviceInfo,
+  ConnectivityResult,
+  TailscaleProviderOptions,
+  TailscaleClientOptions,
+  TailscaleAuthKey,
+  TailscaleDevice,
+  HeadscaleSidecarProviderOptions,
+  HeadscaleExternalProviderOptions,
+} from './network/index.js';
+
+// Legacy headscale exports (still available for direct use)
+export {
+  HeadscaleClient as HeadscaleApiClient,
+  HeadscaleClientError as HeadscaleApiClientError,
+} from './headscale/index.js';
+export {
+  HeadscaleManager,
+  type HeadscaleManagerOptions,
+  type HeadscaleManagerState,
+} from './headscale/index.js';
+export {
+  HeadscaleSync,
+  type NetworkProvisionResult,
+  type SwarmNetworkInfo,
+} from './headscale/index.js';
+export {
+  generateHeadscaleConfig,
+  writeHeadscaleConfig,
+  type HeadscaleSidecarOptions,
+} from './headscale/index.js';
+export type {
+  HeadscaleUser,
+  HeadscaleNode,
+  HeadscalePreauthKey,
+  HeadscaleApiKey,
+  HeadscaleConfig,
+  HeadscaleHealthResponse,
+} from './headscale/index.js';
+
 // Git remote utilities (for memory bank sync)
 export {
   checkRemoteForUpdates,

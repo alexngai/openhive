@@ -13,6 +13,7 @@ import { memoryBanksRoutes } from './routes/memory-banks.js';
 import { resourcesRoutes } from './routes/resources.js';
 import { webhooksRoutes } from './routes/webhooks.js';
 import { sessionsRoutes } from './routes/sessions.js';
+import { mapRoutes } from './routes/map.js';
 import type { Config } from '../config.js';
 
 export async function registerRoutes(fastify: FastifyInstance, config: Config): Promise<void> {
@@ -38,6 +39,7 @@ export async function registerRoutes(fastify: FastifyInstance, config: Config): 
       await api.register(resourcesRoutes, { config });
       await api.register(webhooksRoutes, { config });
       await api.register(sessionsRoutes, { config });
+      await api.register(mapRoutes, { config });
     },
     { prefix: '/api/v1' }
   );

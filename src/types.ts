@@ -140,7 +140,14 @@ export type WSEventType =
   | 'memory_bank_updated'
   | 'memory_bank_created'
   | 'resource_updated'
-  | 'resource_created';
+  | 'resource_created'
+  // MAP Hub events
+  | 'swarm_registered'
+  | 'swarm_offline'
+  | 'node_registered'
+  | 'node_state_changed'
+  | 'swarm_joined_hive'
+  | 'swarm_left_hive';
 
 export interface WSEvent {
   type: WSEventType;

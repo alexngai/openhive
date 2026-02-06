@@ -9,6 +9,7 @@ import { initDatabase, getDatabase, closeDatabase } from './db/index.js';
 import { createInviteCode } from './db/dal/invites.js';
 import { createAgent } from './db/dal/agents.js';
 import { nanoid } from 'nanoid';
+import { registerNetworkCommands } from './cli/network.js';
 
 const program = new Command();
 
@@ -203,5 +204,8 @@ db
     console.log('Seed complete.');
     closeDatabase();
   });
+
+// Network commands (mesh networking setup)
+registerNetworkCommands(program);
 
 program.parse();
