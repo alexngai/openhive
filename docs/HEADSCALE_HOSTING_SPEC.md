@@ -1,10 +1,27 @@
-# Headscale Hosting & Setup Spec
+# Mesh Networking Setup Spec
 
 ## Problem
 
-OpenHive's MAP hub provides L7 swarm discovery (endpoint URLs, agent capabilities, peer lists). But when swarm hosts are personal PCs and cloud VMs behind NATs, they can't reach each other at L3/L4. Headscale solves this by creating a WireGuard mesh — but setting it up is non-trivial, especially behind a home NAT.
+OpenHive's MAP hub provides L7 swarm discovery (endpoint URLs, agent capabilities, peer lists). But when swarm hosts are personal PCs and cloud VMs behind NATs, they can't reach each other at L3/L4. A WireGuard mesh solves this — but setting it up is non-trivial, especially behind a home NAT.
 
-This spec captures everything needed to host headscale as an OpenHive sidecar, the prerequisites for each deployment scenario, and UX improvements we should build to streamline the setup.
+This spec captures the networking prerequisites, deployment scenarios, and UX for OpenHive's pluggable mesh networking system.
+
+## Implementation Status
+
+The `NetworkProvider` interface (`src/network/types.ts`) abstracts over three backends:
+
+| Provider | Config key | Status |
+|----------|-----------|--------|
+| **Tailscale Cloud** | `network.provider: 'tailscale-cloud'` | Implemented |
+| **Headscale sidecar** | `network.provider: 'headscale-sidecar'` | Implemented |
+| **External headscale** | `network.provider: 'headscale-external'` | Implemented |
+| **None** | `network.provider: 'none'` (default) | Implemented |
+
+CLI wizard: `openhive network setup` walks through provider selection and configuration.
+
+Legacy `headscale.enabled: true` config is still supported (maps to headscale-sidecar).
+
+---
 
 ---
 
