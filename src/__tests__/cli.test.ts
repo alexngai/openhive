@@ -74,6 +74,7 @@ describe('CLI', () => {
       expect(output).toContain('--database');
       expect(output).toContain('--config');
       expect(output).toContain('--admin-key');
+      expect(output).toContain('--open');
     });
 
     it('should show init help', () => {

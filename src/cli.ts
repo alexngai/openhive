@@ -246,7 +246,15 @@ interface StartOptions {
   adminKey?: string;
 }
 
-async function startServer(opts: StartOptions): Promise<void> {
+function openInBrowser(url: string): void {
+  const { exec } = require('child_process');
+  const cmd = process.platform === 'darwin' ? 'open'
+    : process.platform === 'win32' ? 'start'
+    : 'xdg-open';
+  exec(`${cmd} ${url}`);
+}
+
+async function startServer(opts: StartOptions): Promise<string> {
   const dataDir = resolveDataDir(opts.dataDir);
   const paths = dataDirPaths(dataDir);
 
@@ -284,6 +292,8 @@ async function startServer(opts: StartOptions): Promise<void> {
 
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
+
+    return address;
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
@@ -358,6 +368,7 @@ program
   .option('-d, --database <path>', 'Database file path (overrides data-dir)')
   .option('-c, --config <path>', 'Config file path')
   .option('--admin-key <key>', 'Admin API key')
+  .option('--open', 'Open in default browser after starting')
   .action(async (options) => {
     const globalOpts = program.opts();
     const dataDir = resolveDataDir(globalOpts.dataDir);
@@ -375,13 +386,17 @@ program
       process.env.OPENHIVE_DATABASE = path.resolve(options.database);
     }
 
-    await startServer({
+    const address = await startServer({
       dataDir: globalOpts.dataDir,
       port: options.port ? parseInt(options.port, 10) : undefined,
       host: options.host,
       configPath: options.config,
       adminKey: options.adminKey,
     });
+
+    if (options.open) {
+      openInBrowser(address);
+    }
   });
 
 // Init command (re-run wizard or generate config)
