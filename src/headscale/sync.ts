@@ -1,6 +1,11 @@
 /**
  * Headscale Sync Layer
  *
+ * @deprecated Use NetworkProvider (src/network/) instead. This module is kept
+ * for backward compatibility but will be removed in a future release.
+ * The NetworkProvider interface supports headscale-sidecar, headscale-external,
+ * and tailscale-cloud backends with a unified API.
+ *
  * Bridges OpenHive MAP hub entities to headscale:
  *   - Hive → Headscale User (namespace/discoverability boundary)
  *   - Swarm joining hive → Headscale pre-auth key (for the swarm's host to connect)
@@ -50,13 +55,16 @@ export interface SwarmNetworkInfo {
   last_seen: string | null;
 }
 
+/** @deprecated Use NetworkProvider (src/network/) instead. */
 export class HeadscaleSync {
   private client: HeadscaleClient;
   private baseDomain: string;
+  private serverUrl: string;
 
-  constructor(client: HeadscaleClient, baseDomain: string = 'hive.internal') {
+  constructor(client: HeadscaleClient, baseDomain: string = 'hive.internal', serverUrl?: string) {
     this.client = client;
     this.baseDomain = baseDomain;
+    this.serverUrl = serverUrl || '';
   }
 
   // ==========================================================================
@@ -251,14 +259,14 @@ export class HeadscaleSync {
   }
 
   private async getServerUrl(): Promise<string> {
-    // Try to get from health endpoint, fall back to client base URL
+    if (this.serverUrl) return this.serverUrl;
+    // Fallback: try health endpoint to verify connectivity, but we can't
+    // derive the external URL from it. Return empty to signal misconfiguration.
     try {
       await this.client.health();
     } catch {
       // ignore
     }
-    // The server URL is what clients connect to externally
-    // This should be configured in the headscale config
-    return '(your-headscale-server-url)';
+    return this.serverUrl || '(server-url-not-configured)';
   }
 }

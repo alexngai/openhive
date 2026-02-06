@@ -123,6 +123,13 @@ const CreatePreauthKeySchema = z.object({
   expires_in_hours: z.number().min(1).max(8760).optional(), // max 1 year
 });
 
+const NetworkProvisionSchema = z.object({
+  hive_name: z.string().min(1).max(100),
+  reusable: z.boolean().optional(),
+  ephemeral: z.boolean().optional(),
+  expiration_hours: z.number().min(1).max(8760).optional(),
+});
+
 // ============================================================================
 // Error Handler
 // ============================================================================
@@ -161,11 +168,13 @@ export async function mapRoutes(
   fastify: FastifyInstance,
   opts: { config: Config }
 ): Promise<void> {
-  const requireAdmin = (request: FastifyRequest, reply: FastifyReply) => {
+  const requireAdmin = (request: FastifyRequest, reply: FastifyReply, done: () => void) => {
     const adminKey = request.headers['x-admin-key'];
     if (!opts.config.admin.key || adminKey !== opts.config.admin.key) {
       reply.status(403).send({ error: 'Forbidden', message: 'Admin key required' });
+      return;
     }
+    done();
   };
 
   // ==========================================================================
@@ -540,12 +549,13 @@ export async function mapRoutes(
     preHandler: [authMiddleware],
   }, async (request: FastifyRequest<{
     Params: { id: string };
-    Body: { hive_name: string; reusable?: boolean; ephemeral?: boolean; expiration_hours?: number };
   }>, reply: FastifyReply) => {
     try {
       if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
         throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
       }
+
+      const body = NetworkProvisionSchema.parse(request.body);
 
       const provider = (request.server as unknown as { networkProvider?: import('../../network/types.js').NetworkProvider }).networkProvider;
       if (!provider || !provider.isReady()) {
@@ -555,7 +565,6 @@ export async function mapRoutes(
         });
       }
 
-      const body = request.body as { hive_name: string; reusable?: boolean; ephemeral?: boolean; expiration_hours?: number };
       const swarm = mapDal.findSwarmById(request.params.id);
 
       const result = await provider.createAuthKey({
@@ -577,6 +586,10 @@ export async function mapRoutes(
     preHandler: [authMiddleware],
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     try {
+      if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
+        throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
+      }
+
       const swarm = mapDal.findSwarmById(request.params.id);
       if (!swarm) {
         return reply.status(404).send({ error: 'Not Found', message: 'Swarm not found' });

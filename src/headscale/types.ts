@@ -170,6 +170,11 @@ export interface HeadscaleConfig {
   metrics_listen_addr: string;
   grpc_listen_addr: string;
   grpc_allow_insecure: boolean;
+  tls_cert_path?: string;
+  tls_key_path?: string;
+  tls_letsencrypt_hostname?: string;
+  tls_letsencrypt_challenge_type?: string;
+  tls_letsencrypt_listen?: string;
   noise: {
     private_key_path: string;
   };
@@ -185,6 +190,8 @@ export interface HeadscaleConfig {
       region_code?: string;
       region_name?: string;
       stun_listen_addr?: string;
+      ipv4?: string;
+      ipv6?: string;
     };
     urls: string[];
     paths: string[];

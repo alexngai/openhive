@@ -54,7 +54,6 @@ function nodeToDeviceInfo(node: HeadscaleNode, baseDomain: string): DeviceInfo {
 async function createHeadscaleAuthKey(
   client: HeadscaleClient,
   serverUrl: string,
-  _baseDomain: string,
   opts: CreateAuthKeyOptions,
 ): Promise<AuthKeyResult> {
   // Ensure hive has a headscale user
@@ -240,14 +239,20 @@ export class HeadscaleSidecarProvider implements NetworkProvider {
       binaryPath: opts.binaryPath,
       baseDomain: this.baseDomain,
       embeddedDerp: opts.embeddedDerp,
+      derpPublicIp: opts.derpPublicIp,
+      tls: opts.tls,
       healthTimeoutMs: opts.healthTimeoutMs,
     });
   }
 
   async start(): Promise<void> {
-    this.client = await this.manager.start();
-    this.ready = true;
-    console.log(`[headscale-sidecar] Started, server URL: ${this.serverUrl}`);
+    try {
+      this.client = await this.manager.start();
+      this.ready = true;
+      console.log(`[headscale-sidecar] Started, server URL: ${this.serverUrl}`);
+    } catch (err) {
+      throw new Error(`Failed to start headscale sidecar: ${(err as Error).message}`);
+    }
   }
 
   async stop(): Promise<void> {
@@ -266,7 +271,7 @@ export class HeadscaleSidecarProvider implements NetworkProvider {
   }
 
   async createAuthKey(opts: CreateAuthKeyOptions): Promise<AuthKeyResult> {
-    return createHeadscaleAuthKey(this.getClient(), this.serverUrl, this.baseDomain, opts);
+    return createHeadscaleAuthKey(this.getClient(), this.serverUrl, opts);
   }
 
   async revokeAuthKey(keyId: string): Promise<void> {
@@ -386,7 +391,7 @@ export class HeadscaleExternalProvider implements NetworkProvider {
   }
 
   async createAuthKey(opts: CreateAuthKeyOptions): Promise<AuthKeyResult> {
-    return createHeadscaleAuthKey(this.client, this.serverUrl, this.baseDomain, opts);
+    return createHeadscaleAuthKey(this.client, this.serverUrl, opts);
   }
 
   async revokeAuthKey(keyId: string): Promise<void> {

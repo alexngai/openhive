@@ -30,6 +30,17 @@ export interface HeadscaleSidecarOptions {
   derpUrls?: string[];
   /** Enable embedded DERP relay server */
   embeddedDerp?: boolean;
+  /** Public IPv4 for embedded DERP (required behind NAT so clients can reach the relay) */
+  derpPublicIp?: string;
+  /** Public IPv6 for embedded DERP */
+  derpPublicIp6?: string;
+  /** TLS configuration */
+  tls?: {
+    mode: 'none' | 'letsencrypt' | 'manual' | 'reverse-proxy';
+    letsencryptHostname?: string;
+    certPath?: string;
+    keyPath?: string;
+  };
   /** Log level */
   logLevel?: string;
 }
@@ -40,12 +51,37 @@ export interface HeadscaleSidecarOptions {
 export function generateHeadscaleConfig(opts: HeadscaleSidecarOptions): HeadscaleConfig {
   const dataDir = path.resolve(opts.dataDir);
 
+  // TLS configuration
+  const tlsMode = opts.tls?.mode || 'none';
+  const tlsFields: Pick<HeadscaleConfig, 'tls_cert_path' | 'tls_key_path' | 'tls_letsencrypt_hostname' | 'tls_letsencrypt_challenge_type' | 'tls_letsencrypt_listen'> = {};
+  if (tlsMode === 'letsencrypt' && opts.tls?.letsencryptHostname) {
+    tlsFields.tls_letsencrypt_hostname = opts.tls.letsencryptHostname;
+    tlsFields.tls_letsencrypt_challenge_type = 'HTTP-01';
+    tlsFields.tls_letsencrypt_listen = ':http';
+  } else if (tlsMode === 'manual' && opts.tls?.certPath && opts.tls?.keyPath) {
+    tlsFields.tls_cert_path = opts.tls.certPath;
+    tlsFields.tls_key_path = opts.tls.keyPath;
+  }
+  // 'reverse-proxy' and 'none' — headscale listens on plain HTTP, proxy handles TLS
+
+  // Embedded DERP server config
+  const derpServer: HeadscaleConfig['derp']['server'] = {
+    enabled: opts.embeddedDerp || false,
+    region_id: 999,
+    region_code: 'openhive',
+    region_name: 'OpenHive Embedded DERP',
+    stun_listen_addr: '0.0.0.0:3478',
+    ipv4: opts.derpPublicIp,
+    ipv6: opts.derpPublicIp6,
+  };
+
   return {
     server_url: opts.serverUrl,
     listen_addr: opts.listenAddr || '127.0.0.1:8085',
     metrics_listen_addr: opts.metricsListenAddr || '127.0.0.1:9095',
     grpc_listen_addr: opts.grpcListenAddr || '127.0.0.1:50443',
-    grpc_allow_insecure: true, // Local sidecar, no TLS needed
+    grpc_allow_insecure: tlsMode === 'none' || tlsMode === 'reverse-proxy',
+    ...tlsFields,
 
     noise: {
       private_key_path: path.join(dataDir, 'noise_private.key'),
@@ -58,13 +94,7 @@ export function generateHeadscaleConfig(opts: HeadscaleSidecarOptions): Headscal
     },
 
     derp: {
-      server: {
-        enabled: opts.embeddedDerp || false,
-        region_id: 999,
-        region_code: 'openhive',
-        region_name: 'OpenHive Embedded DERP',
-        stun_listen_addr: '0.0.0.0:3478',
-      },
+      server: derpServer,
       urls: opts.derpUrls || ['https://controlplane.tailscale.com/derpmap/default'],
       paths: [],
       auto_update_enabled: true,

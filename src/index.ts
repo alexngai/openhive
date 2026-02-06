@@ -122,6 +122,7 @@ export {
 export type {
   NetworkProvider,
   NetworkProviderType,
+  NetworkConfig,
   CreateAuthKeyOptions,
   AuthKeyResult,
   DeviceInfo,

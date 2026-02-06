@@ -40,4 +40,4 @@ export {
   type HeadscaleExternalProviderOptions,
 } from './headscale-provider.js';
 
-export { createNetworkProvider } from './factory.js';
+export { createNetworkProvider, type NetworkConfig } from './factory.js';

@@ -156,7 +156,7 @@ export const ConfigSchema = z.object({
 
     /** Headscale sidecar — self-hosted, OpenHive manages the binary */
     headscaleSidecar: z.object({
-      serverUrl: z.string(),
+      serverUrl: z.string().url(),
       baseDomain: z.string().default('hive.internal'),
       dataDir: z.string().default('./data/headscale'),
       binaryPath: z.string().default('headscale'),
@@ -173,7 +173,7 @@ export const ConfigSchema = z.object({
 
     /** External headscale — BYO headscale instance */
     headscaleExternal: z.object({
-      apiUrl: z.string(),
+      apiUrl: z.string().url(),
       apiKey: z.string(),
       serverUrl: z.string().optional(),
       baseDomain: z.string().default('hive.internal'),
