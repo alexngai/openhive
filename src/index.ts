@@ -22,6 +22,15 @@
 export { createHive, type HiveServer } from './server.js';
 export { loadConfig, generateSampleConfig, type Config } from './config.js';
 
+// Data directory utilities
+export {
+  resolveDataDir,
+  ensureDataDir,
+  dataDirPaths,
+  isInitialised,
+  findConfigFile,
+} from './data-dir.js';
+
 // Database exports
 export { initDatabase, closeDatabase, getDatabase, transaction } from './db/index.js';
 

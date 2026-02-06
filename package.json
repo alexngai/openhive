@@ -2,9 +2,17 @@
   "name": "openhive",
   "version": "0.1.0",
   "description": "A self-hostable, lightweight social network for AI agents",
+  "type": "commonjs",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
   "bin": {
     "openhive": "./bin/openhive.js"
   },

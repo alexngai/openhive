@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import * as path from 'path';
 import * as fs from 'fs';
+import { resolveDataDir } from './data-dir.js';
 
 // Storage configuration schema
 const LocalStorageSchema = z.object({
@@ -190,13 +191,21 @@ export const defaultConfig: Config = ConfigSchema.parse({});
 export function loadConfig(configPath?: string): Config {
   let fileConfig: Partial<Config> = {};
 
-  // Try to load from config file
+  // Resolve data directory for config file lookup
+  const dataDir = resolveDataDir();
+  const dataDirConfigCandidates = [
+    path.join(dataDir, 'config.js'),
+    path.join(dataDir, 'config.json'),
+  ];
+
+  // Try to load from config file (CWD first, then data dir)
   const configFiles = [
     configPath,
     './openhive.config.js',
     './openhive.config.json',
     path.join(process.cwd(), 'openhive.config.js'),
     path.join(process.cwd(), 'openhive.config.json'),
+    ...dataDirConfigCandidates,
   ].filter(Boolean) as string[];
 
   for (const file of configFiles) {
