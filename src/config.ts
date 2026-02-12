@@ -142,6 +142,29 @@ export const ConfigSchema = z.object({
     embeddedDerp: z.boolean().default(false),
   }).default({ enabled: false }),
 
+  // Hive sync configuration (cross-instance mesh sync)
+  sync: z.object({
+    enabled: z.boolean().default(false),
+    instanceId: z.string().optional(),
+    discovery: z.enum(['hub', 'manual', 'both']).default('both'),
+    peers: z.array(z.object({
+      name: z.string(),
+      sync_endpoint: z.string(),
+      shared_hives: z.array(z.string()),
+    })).default([]),
+    heartbeat_interval: z.number().default(30000),
+    peer_timeout: z.number().default(300000),
+    gossip: z.object({
+      enabled: z.boolean().default(true),
+      default_ttl: z.number().default(2),
+      hub_peer_ttl: z.number().default(1),
+      exchange_interval: z.number().default(60000),
+      max_gossip_peers: z.number().default(50),
+      stale_timeout: z.number().default(300000),
+      max_failures: z.number().default(3),
+    }).default({}),
+  }).default({ enabled: false }),
+
   // Mesh networking for MAP swarm hosts (pluggable provider)
   network: z.object({
     /** Provider: 'tailscale-cloud' | 'headscale-sidecar' | 'headscale-external' | 'none' */

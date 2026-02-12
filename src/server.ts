@@ -15,6 +15,9 @@ import { generateSitemap, generateRobotsTxt } from './services/sitemap.js';
 import { initializeStorage, type StorageConfig } from './storage/index.js';
 import { initEmail } from './services/email.js';
 import { createNetworkProvider, type NetworkProvider } from './network/index.js';
+import { syncProtocolRoutes } from './api/routes/sync-protocol.js';
+import { initSyncService } from './sync/service.js';
+import type { SyncService } from './sync/service.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -98,6 +101,15 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
   // Register API routes
   await registerRoutes(fastify, config);
+
+  // Register sync protocol routes (peer-to-peer, separate from API)
+  await fastify.register(syncProtocolRoutes, { prefix: '/sync/v1' });
+
+  // Initialize sync service
+  let syncService: SyncService | null = null;
+  if (config.sync.enabled) {
+    syncService = initSyncService(config.sync);
+  }
 
   // Serve skill.md
   fastify.get('/skill.md', async (_request, reply) => {
@@ -252,6 +264,12 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         }
       }
 
+      // Start sync service
+      if (syncService) {
+        syncService.start();
+        console.log(`[openhive] Sync service started (instance: ${syncService.getInstanceId()})`);
+      }
+
       const address = await fastify.listen({
         port: config.port,
         host: config.host,
@@ -261,6 +279,10 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
     async stop() {
       stopHeartbeat();
+      // Stop sync service
+      if (syncService) {
+        syncService.stop();
+      }
       // Stop mesh networking provider
       if (networkProvider.type !== 'none') {
         await networkProvider.stop();

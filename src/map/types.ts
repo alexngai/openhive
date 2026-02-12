@@ -58,6 +58,7 @@ export interface MapSwarmCapabilities {
   lifecycle?: boolean;
   scopes?: boolean;
   federation?: boolean;
+  hive_sync?: boolean;
   protocols?: string[]; // e.g. ['acp', 'a2a']
 }
 

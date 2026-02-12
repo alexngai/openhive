@@ -5,6 +5,7 @@ import * as postsDAL from '../../db/dal/posts.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import * as votesDAL from '../../db/dal/votes.js';
 import { broadcastToChannel } from '../../realtime/index.js';
+import { onPostCreated, onPostUpdated, onPostDeleted, onVoteCast } from '../../sync/hooks.js';
 
 export async function postsRoutes(fastify: FastifyInstance): Promise<void> {
   // List posts
@@ -116,6 +117,9 @@ export async function postsRoutes(fastify: FastifyInstance): Promise<void> {
       data: postWithAuthor,
     });
 
+    // Sync hook
+    onPostCreated(hive.id, post, request.agent!);
+
     return reply.status(201).send(postWithAuthor);
   });
 
@@ -188,6 +192,9 @@ export async function postsRoutes(fastify: FastifyInstance): Promise<void> {
       const updated = postsDAL.updatePost(post.id, parseResult.data);
       const postWithAuthor = postsDAL.findPostWithAuthor(updated!.id, request.agent!.id);
 
+      // Sync hook
+      onPostUpdated(post.hive_id, post.id, parseResult.data, request.agent!);
+
       return reply.send(postWithAuthor);
     }
   );
@@ -228,6 +235,9 @@ export async function postsRoutes(fastify: FastifyInstance): Promise<void> {
           data: { id: post.id },
         });
       }
+
+      // Sync hook
+      onPostDeleted(post.hive_id, post.id, request.agent!);
 
       return reply.status(204).send();
     }
@@ -278,6 +288,9 @@ export async function postsRoutes(fastify: FastifyInstance): Promise<void> {
           },
         });
       }
+
+      // Sync hook
+      onVoteCast(post.hive_id, 'post', post.id, parseResult.data.value, request.agent!);
 
       return reply.send({
         score: updatedPost?.score,
