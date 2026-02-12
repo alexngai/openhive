@@ -861,22 +861,27 @@ CREATE TABLE IF NOT EXISTS sync_peer_configs (
   shared_hives TEXT NOT NULL,           -- JSON array of hive names to sync
   signing_key TEXT,                     -- peer's public key (populated after handshake)
   sync_token TEXT,                      -- auth token (populated after handshake)
-  is_manual INTEGER DEFAULT 1,          -- 1 = manually configured, 0 = hub-discovered
+  is_manual INTEGER DEFAULT 1,          -- 1 = manually configured, 0 = auto-discovered
+  source TEXT DEFAULT 'manual'
+    CHECK (source IN ('manual', 'hub', 'gossip')),
   status TEXT DEFAULT 'pending'
     CHECK (status IN ('pending', 'active', 'error', 'unreachable')),
   last_heartbeat_at TEXT,
   last_error TEXT,
+  gossip_ttl INTEGER DEFAULT 0,         -- hops remaining for gossip propagation (0 = don't propagate)
+  discovered_via TEXT,                   -- peer ID that told us about this peer (gossip provenance)
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   UNIQUE(sync_endpoint)
 );
 
 CREATE INDEX IF NOT EXISTS idx_sync_peer_configs_status ON sync_peer_configs(status);
+CREATE INDEX IF NOT EXISTS idx_sync_peer_configs_source ON sync_peer_configs(source);
 ```
 
 #### The PeerResolver abstraction
 
-The sync service doesn't care where peers come from. A `PeerResolver` interface abstracts over both modes:
+The sync service doesn't care where peers come from. A `PeerResolver` interface abstracts over all discovery mechanisms:
 
 ```typescript
 interface SyncPeer {
@@ -887,7 +892,7 @@ interface SyncPeer {
   signing_key: string | null;
   sync_token: string | null;
   status: 'pending' | 'active' | 'error' | 'unreachable';
-  source: 'hub' | 'manual';
+  source: 'hub' | 'manual' | 'gossip';
 }
 
 interface PeerResolver {
@@ -910,11 +915,45 @@ class HubPeerResolver implements PeerResolver { ... }
 /** Uses sync_peer_configs table + direct heartbeats */
 class ManualPeerResolver implements PeerResolver { ... }
 
-/** Merges both: hub-discovered peers + manual overrides */
+/** Merges all sources: hub-discovered + manual + gossip-learned peers */
 class CompositePeerResolver implements PeerResolver { ... }
 ```
 
-The `CompositePeerResolver` is the default. It merges hub-discovered peers with manually configured ones. Manual configs take precedence (so you can override a hub-discovered peer's endpoint if needed). If no hub is configured, it falls back to `ManualPeerResolver` only.
+The `CompositePeerResolver` is the default. It merges peers from all sources with a clear precedence order:
+
+1. **Manual configs** (highest priority) — explicit admin overrides always win
+2. **Hub-discovered peers** — auto-discovered via MAP hub
+3. **Gossip-learned peers** — discovered via peer exchange (see 3.15)
+
+If the hub and gossip both report a peer, the hub info wins. If a manual config exists for a peer also found via hub/gossip, the manual endpoint/settings override.
+
+#### Hub peer caching
+
+The `CompositePeerResolver` automatically caches hub-discovered peers into the `sync_peer_configs` table with `is_manual = 0`. This provides **hub-failure resilience**: if the MAP hub goes down, cached peers remain in the local config and sync continues uninterrupted. When the hub recovers, the resolver refreshes from the hub and updates cached entries.
+
+```typescript
+// Inside CompositePeerResolver
+async function refreshFromHub(): Promise<void> {
+  const hubPeers = await this.hubResolver.getAllPeers();
+
+  for (const peer of hubPeers) {
+    // Cache hub-discovered peer into sync_peer_configs
+    db.prepare(`
+      INSERT INTO sync_peer_configs
+        (id, name, sync_endpoint, shared_hives, is_manual, source, status)
+      VALUES (?, ?, ?, ?, 0, 'hub', 'active')
+      ON CONFLICT(sync_endpoint)
+      DO UPDATE SET
+        name = CASE WHEN is_manual = 1 THEN name ELSE excluded.name END,
+        shared_hives = CASE WHEN is_manual = 1 THEN shared_hives ELSE excluded.shared_hives END,
+        source = CASE WHEN is_manual = 1 THEN source ELSE 'hub' END,
+        updated_at = datetime('now')
+    `).run(peer.id, peer.name, peer.sync_endpoint, JSON.stringify(peer.shared_hives));
+  }
+}
+```
+
+The `ON CONFLICT` clause ensures manual configs are never overwritten by hub data.
 
 #### Hubless peer-to-peer heartbeats
 
@@ -2048,7 +2087,148 @@ Expose sync health via the existing `/federation/status` endpoint:
 
 ---
 
-### 3.14 What This Pattern Does NOT Do
+### 3.14 Peer Gossip
+
+Peer gossip is a lightweight peer discovery mechanism for hubless deployments. Instead of requiring every instance to manually configure every other instance, peers share their peer lists with each other. This means you only need to manually configure one peer — the rest are discovered automatically.
+
+**Inspired by**: Gossip protocols in distributed systems (SWIM, Serf), BitTorrent PEX (Peer Exchange).
+
+#### How it works
+
+Gossip piggybacks on the existing heartbeat mechanism. When two peers exchange heartbeats, they also exchange peer lists:
+
+```
+Instance A                                    Instance B
+    |                                             |
+    |  POST /sync/v1/heartbeat                    |
+    |  {                                          |
+    |    instance_id: "inst_a",                   |
+    |    seq_by_hive: { "engineering": 4828 },    |
+    |    known_peers: [                            |
+    |      {                                       |
+    |        sync_endpoint: "https://10.0.0.5:3000/sync/v1",
+    |        name: "Instance C",                   |
+    |        shared_hives: ["engineering"],         |
+    |        signing_key: "<C's pubkey>",          |
+    |        ttl: 2                                |
+    |      }                                       |
+    |    ]                                         |
+    |  }                                          |
+    |-------------------------------------------->|
+    |                                             |
+    |  200 OK                                     |
+    |  {                                          |
+    |    instance_id: "inst_b",                   |
+    |    seq_by_hive: { "engineering": 4825 },    |
+    |    known_peers: [                            |
+    |      {                                       |
+    |        sync_endpoint: "https://10.0.0.8:3000/sync/v1",
+    |        name: "Instance D",                   |
+    |        shared_hives: ["engineering", "ml"],   |
+    |        signing_key: "<D's pubkey>",          |
+    |        ttl: 1                                |
+    |      }                                       |
+    |    ]                                         |
+    |  }                                          |
+    |<--------------------------------------------|
+    |                                             |
+```
+
+When Instance A receives B's peer list, it discovers Instance D. If A shares a hive with D (`engineering`), A adds D to its `sync_peer_configs` with `source = 'gossip'` and initiates a handshake with D.
+
+#### TTL (Time-To-Live)
+
+Each gossip entry has a TTL that limits propagation depth:
+
+- **TTL = 0**: Don't propagate. This peer is known only to the instance that configured it.
+- **TTL = 1**: Share with direct peers, but those peers don't propagate further.
+- **TTL = 2**: Share with direct peers, who share with their peers (2 hops max).
+- **Default TTL = 2**: Manually configured peers start with TTL = 2 (configurable). Hub-discovered peers start with TTL = 1. Gossip-learned peers decrement TTL by 1 on each hop.
+
+TTL prevents unbounded propagation in large networks. With TTL = 2, a peer can be discovered up to 2 hops away from anyone who knows about it directly.
+
+#### Gossip rules
+
+1. **Only share peers that share hives with the recipient.** Instance A doesn't tell B about Instance C unless C shares at least one hive with B. This prevents leaking topology information to unrelated instances.
+
+2. **Decrement TTL on each hop.** If A received C with TTL = 2, A shares C with others at TTL = 1. If A received C with TTL = 1, A shares C at TTL = 0 (i.e., doesn't share).
+
+3. **Manual always wins.** If an admin manually configured a peer, that config is never overwritten by gossip. Gossip only adds new peers or updates gossip-sourced peers.
+
+4. **Hub always wins over gossip.** If the same peer is known from both the hub and gossip, hub data takes precedence.
+
+5. **Signing key validation.** Before initiating a handshake with a gossip-discovered peer, the instance must verify it can reach the endpoint. The signing key from gossip is treated as a hint — the actual key exchange happens during the handshake.
+
+6. **Stale gossip cleanup.** Gossip-sourced peers that haven't responded to a handshake or heartbeat within `peer_timeout` (default: 5 minutes) are marked as `unreachable`. After 3 consecutive failures, they're removed from the config.
+
+#### Gossip flow example
+
+```
+Initial state:
+  A manually knows B
+  B manually knows C
+  C manually knows D
+  Nobody knows the full topology.
+
+After gossip (TTL = 2):
+  A heartbeats B:
+    A tells B about: (nothing new — A only knows B)
+    B tells A about: C (TTL=2 → A stores with TTL=1)
+
+  A now knows: B (manual), C (gossip, TTL=1)
+  A handshakes with C → sync established
+
+  A heartbeats B again:
+    A tells B about: C (but B already knows C)
+  A heartbeats C:
+    A tells C about: B (TTL=1 → C stores with TTL=0)
+    C tells A about: D (TTL=2 → A stores with TTL=1)
+
+  A now knows: B (manual), C (gossip), D (gossip)
+  A handshakes with D → sync established
+
+  Next round, A shares D with B at TTL=0 (don't propagate further).
+  B handshakes with D → sync established.
+
+Final state: Full mesh A↔B↔C↔D, from only 3 manual configs.
+```
+
+#### Configuration
+
+```typescript
+// openhive.config.js
+{
+  sync: {
+    // ... existing config ...
+
+    gossip: {
+      enabled: true,               // default: true
+      default_ttl: 2,              // how many hops manually added peers propagate
+      hub_peer_ttl: 1,             // how many hops hub-discovered peers propagate
+      exchange_interval: 60000,    // how often to exchange peer lists (ms, default: 60s)
+      max_gossip_peers: 50,        // cap on gossip-discovered peers per hive
+      stale_timeout: 300000,       // remove unresponsive gossip peers after 5 min
+      max_failures: 3,             // remove after 3 consecutive failures
+    }
+  }
+}
+```
+
+#### Why not use gossip as the only discovery mechanism?
+
+Gossip requires at least one manually configured peer or one hub-discovered peer as a seed. It can't bootstrap from zero — you need to know at least one peer to start exchanging. The three discovery mechanisms serve different bootstrapping needs:
+
+| Mechanism | Bootstrap | Maintenance | Best for |
+|-----------|-----------|-------------|----------|
+| **Manual** | Human enters endpoint URL | Human manages | Simple setups, seed peers |
+| **Hub** | Auto-registered via MAP hub | Hub tracks topology | Managed deployments |
+| **Gossip** | Learns from any known peer | Self-healing, auto-expanding | Growing networks, reducing manual config |
+
+In practice, the expected usage is: configure 1-2 manual peers or use a hub, and gossip fills in the rest.
+
+---
+
+### 3.15 What This Pattern Does NOT Do
 
 To keep scope bounded:
 
@@ -2124,18 +2304,30 @@ Start with hubless mode — it's simpler (no MAP dependency) and validates the c
 
 At this point, two instances can sync hives over any HTTPS-reachable network.
 
-### Phase 4: Hub-assisted discovery
+### Phase 4: Hub-assisted discovery + peer caching
 
 Layer hub integration on top of the working hubless protocol:
 
 1. Implement `HubPeerResolver` wrapping MAP hub `getPeerList()`
-2. Implement `CompositePeerResolver` merging hub + manual peers
-3. Hook into `joinHive()` broadcasts for automatic handshake initiation
-4. Hook into `markStaleSwarms()` for reconnect detection
-5. Add `hive_sync` capability to MAP swarm registration
-6. Add mesh-only access middleware option (Tailscale IP ranges)
+2. Implement `CompositePeerResolver` merging hub + manual + gossip peers
+3. Implement auto-caching of hub-discovered peers into `sync_peer_configs` for hub-failure resilience
+4. Hook into `joinHive()` broadcasts for automatic handshake initiation
+5. Hook into `markStaleSwarms()` for reconnect detection
+6. Add `hive_sync` capability to MAP swarm registration
+7. Add mesh-only access middleware option (Tailscale IP ranges)
 
-### Phase 5: Operational hardening
+### Phase 5: Peer gossip
+
+Add automatic peer discovery via gossip exchange:
+
+1. Extend heartbeat request/response to include `known_peers` array
+2. Implement TTL-based propagation rules (decrement on each hop)
+3. Implement gossip filtering (only share peers with overlapping hives)
+4. Auto-handshake with gossip-discovered peers
+5. Stale gossip cleanup (remove unresponsive gossip-sourced peers after timeout)
+6. Gossip configuration options (TTL, interval, max peers, disable flag)
+
+### Phase 6: Operational hardening
 
 1. Event compaction and snapshots
 2. Sync health monitoring endpoint
@@ -2143,7 +2335,6 @@ Layer hub integration on top of the working hubless protocol:
 4. Rate limiting on inbound events
 5. Causal ordering queue with timeout/cleanup
 6. Alerting on sync lag
-7. Auto-cache hub-discovered peers into `sync_peer_configs` for hub-failure resilience
 
 ---
 
@@ -2159,13 +2350,13 @@ Layer hub integration on top of the working hubless protocol:
 
 5. **Event compaction semantics**: When compacting old events into a snapshot, what happens to peers that are behind the compaction point? They'd need to resync from the snapshot rather than incremental backfill.
 
-6. **Hub failure in hub-assisted mode**: If the MAP hub goes down, the `HubPeerResolver` falls back to cached peer lists and `sync_peer_configs`. Instances continue syncing with known peers. When the hub recovers, the resolver refreshes. This fallback should be automatic — but should the system also auto-populate `sync_peer_configs` from hub-discovered peers as a persistent cache?
+6. ~~**Hub failure**~~: **Resolved.** The `CompositePeerResolver` auto-caches hub-discovered peers into `sync_peer_configs` with `is_manual = 0`. If the hub goes down, cached peers remain and sync continues. When the hub recovers, the cache refreshes. See section 3.2.
 
-7. **Mixed-mode peers**: Can some peers be hub-discovered and others manually configured within the same sync group? The `CompositePeerResolver` supports this, but what happens if the hub and manual config disagree about a peer's endpoint? Manual config should win (explicit override), but this needs to be documented clearly.
+7. ~~**Mixed-mode peers**~~: **Resolved.** The `CompositePeerResolver` uses a clear precedence: manual > hub > gossip. If manual config exists for a peer, its endpoint/settings override hub and gossip data. The `ON CONFLICT` clause in the caching logic ensures manual configs are never overwritten. See section 3.2.
 
-8. **Peer gossip (future)**: In hubless mode, could peers share their peer lists with each other? e.g., Instance A knows about B and C; when D handshakes with A, A tells D about B and C. This is a lightweight alternative to a hub for dynamic peer discovery but adds protocol complexity. Worth considering as a future enhancement.
+8. ~~**Peer gossip**~~: **Resolved.** Peer gossip is included as a first-class discovery mechanism. Peers exchange peer lists during heartbeats with TTL-bounded propagation. This enables automatic mesh expansion from a single seed peer. See section 3.14.
 
 ---
 
-*Document Version: 2.0*
+*Document Version: 3.0*
 *Last Updated: 2026-02-12*
