@@ -158,8 +158,8 @@ export async function syncRoutes(fastify: FastifyInstance, opts: { config: Confi
     return reply.send({ data: peers });
   });
 
-  // Add a peer manually
-  fastify.post('/sync/peers', { preHandler: authMiddleware }, async (request, reply) => {
+  // Add a peer manually (admin only)
+  fastify.post('/sync/peers', { preHandler: [authMiddleware, requireAdmin] }, async (request, reply) => {
     const parseResult = CreatePeerConfigSchema.safeParse(request.body);
     if (!parseResult.success) {
       return reply.status(400).send({ error: 'Validation Error', details: parseResult.error.issues });
@@ -174,8 +174,8 @@ export async function syncRoutes(fastify: FastifyInstance, opts: { config: Confi
     return reply.status(201).send(peer);
   });
 
-  // Update peer config
-  fastify.patch<{ Params: { id: string } }>('/sync/peers/:id', { preHandler: authMiddleware }, async (request, reply) => {
+  // Update peer config (admin only)
+  fastify.patch<{ Params: { id: string } }>('/sync/peers/:id', { preHandler: [authMiddleware, requireAdmin] }, async (request, reply) => {
     const existing = syncPeerConfigsDAL.findPeerConfigById(request.params.id);
     if (!existing) {
       return reply.status(404).send({ error: 'Not Found', message: 'Peer not found' });
@@ -190,8 +190,8 @@ export async function syncRoutes(fastify: FastifyInstance, opts: { config: Confi
     return reply.send(updated);
   });
 
-  // Delete a peer
-  fastify.delete<{ Params: { id: string } }>('/sync/peers/:id', { preHandler: authMiddleware }, async (request, reply) => {
+  // Delete a peer (admin only)
+  fastify.delete<{ Params: { id: string } }>('/sync/peers/:id', { preHandler: [authMiddleware, requireAdmin] }, async (request, reply) => {
     const existing = syncPeerConfigsDAL.findPeerConfigById(request.params.id);
     if (!existing) {
       return reply.status(404).send({ error: 'Not Found', message: 'Peer not found' });
@@ -199,5 +199,81 @@ export async function syncRoutes(fastify: FastifyInstance, opts: { config: Confi
 
     syncPeerConfigsDAL.deletePeerConfig(existing.id);
     return reply.status(204).send();
+  });
+
+  // ── Advanced Operations ──────────────────────────────────────
+
+  // Force resync from peers for a sync group (admin only)
+  fastify.post<{ Params: { id: string } }>('/sync/groups/:id/resync', { preHandler: [authMiddleware, requireAdmin] }, async (request, reply) => {
+    const syncService = getSyncService();
+    if (!syncService) {
+      return reply.status(503).send({ error: 'Service Unavailable', message: 'Sync service is not enabled' });
+    }
+
+    const group = syncGroupsDAL.findSyncGroupById(request.params.id);
+    if (!group) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Sync group not found' });
+    }
+
+    const peers = syncPeersDAL.listActivePeers(group.id);
+    const results: Array<{ peer: string; events_pulled: number; error?: string }> = [];
+
+    for (const peer of peers) {
+      try {
+        const count = await syncService.pullFromPeer(group.id, peer.id);
+        results.push({ peer: peer.peer_swarm_id, events_pulled: count });
+      } catch (err) {
+        results.push({ peer: peer.peer_swarm_id, events_pulled: 0, error: (err as Error).message });
+      }
+    }
+
+    return reply.send({ results });
+  });
+
+  // Test connectivity to a peer (admin only)
+  fastify.post<{ Params: { id: string } }>('/sync/peers/:id/test', { preHandler: [authMiddleware, requireAdmin] }, async (request, reply) => {
+    const peerConfig = syncPeerConfigsDAL.findPeerConfigById(request.params.id);
+    if (!peerConfig) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Peer not found' });
+    }
+
+    try {
+      const start = Date.now();
+      const response = await fetch(`${peerConfig.sync_endpoint}/heartbeat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(peerConfig.sync_token ? { 'Authorization': `Bearer ${peerConfig.sync_token}` } : {}),
+        },
+        body: JSON.stringify({
+          instance_id: getSyncService()?.getInstanceId() || 'test',
+          seq_by_hive: {},
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const latencyMs = Date.now() - start;
+
+      if (response.ok) {
+        const data = await response.json();
+        return reply.send({
+          reachable: true,
+          latency_ms: latencyMs,
+          peer_instance_id: (data as Record<string, unknown>).instance_id,
+          status: response.status,
+        });
+      } else {
+        return reply.send({
+          reachable: false,
+          latency_ms: latencyMs,
+          status: response.status,
+          error: response.statusText,
+        });
+      }
+    } catch (err) {
+      return reply.send({
+        reachable: false,
+        error: (err as Error).message,
+      });
+    }
   });
 }

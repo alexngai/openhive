@@ -7,6 +7,7 @@ export interface CreateSyncPeerInput {
   peer_swarm_id: string;
   peer_endpoint: string;
   peer_signing_key?: string | null;
+  sync_token?: string | null;
 }
 
 function rowToSyncPeer(row: Record<string, unknown>): SyncPeerState {
@@ -19,9 +20,9 @@ export function createSyncPeer(input: CreateSyncPeerInput): SyncPeerState {
 
   db.prepare(`
     INSERT INTO hive_sync_peers
-      (id, sync_group_id, peer_swarm_id, peer_endpoint, peer_signing_key)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(id, input.sync_group_id, input.peer_swarm_id, input.peer_endpoint, input.peer_signing_key ?? null);
+      (id, sync_group_id, peer_swarm_id, peer_endpoint, peer_signing_key, sync_token)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, input.sync_group_id, input.peer_swarm_id, input.peer_endpoint, input.peer_signing_key ?? null, input.sync_token ?? null);
 
   return findSyncPeerById(id)!;
 }
@@ -67,6 +68,13 @@ export function updateSyncPeerStatus(peerId: string, status: string, error?: str
   db.prepare(
     "UPDATE hive_sync_peers SET status = ?, last_error = ?, updated_at = datetime('now') WHERE id = ?"
   ).run(status, error ?? null, peerId);
+}
+
+export function updateSyncPeerToken(peerId: string, token: string): void {
+  const db = getDatabase();
+  db.prepare(
+    "UPDATE hive_sync_peers SET sync_token = ?, updated_at = datetime('now') WHERE id = ?"
+  ).run(token, peerId);
 }
 
 export function updateSyncPeerSigningKey(peerId: string, signingKey: string): void {

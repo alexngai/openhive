@@ -134,6 +134,7 @@ export interface SyncPeerState {
   peer_swarm_id: string;
   peer_endpoint: string;
   peer_signing_key: string | null;
+  sync_token: string | null;
   last_seq_sent: number;
   last_seq_received: number;
   last_sync_at: string | null;

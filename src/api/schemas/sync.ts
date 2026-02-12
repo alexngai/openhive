@@ -30,7 +30,7 @@ export const PullEventsQuerySchema = z.object({
 
 export const CreatePeerConfigSchema = z.object({
   name: z.string().min(1),
-  sync_endpoint: z.string().min(1),
+  sync_endpoint: z.string().url(),
   shared_hives: z.array(z.string().min(1)).min(1),
 });
 

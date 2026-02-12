@@ -163,7 +163,23 @@ export function deletePeerConfig(id: string): boolean {
   return result.changes > 0;
 }
 
-/** Remove gossip-sourced peers that are unresponsive */
+/** Increment failure count for a peer config */
+export function incrementFailureCount(id: string): void {
+  const db = getDatabase();
+  db.prepare(
+    "UPDATE sync_peer_configs SET failure_count = failure_count + 1, updated_at = datetime('now') WHERE id = ?"
+  ).run(id);
+}
+
+/** Reset failure count for a peer config (on successful contact) */
+export function resetFailureCount(id: string): void {
+  const db = getDatabase();
+  db.prepare(
+    "UPDATE sync_peer_configs SET failure_count = 0, updated_at = datetime('now') WHERE id = ?"
+  ).run(id);
+}
+
+/** Remove gossip-sourced peers that are unresponsive or have exceeded max failures */
 export function cleanupStaleGossipPeers(staleTimeoutMs: number, maxFailures: number): number {
   const db = getDatabase();
   const cutoff = new Date(Date.now() - staleTimeoutMs).toISOString();
@@ -172,10 +188,13 @@ export function cleanupStaleGossipPeers(staleTimeoutMs: number, maxFailures: num
     DELETE FROM sync_peer_configs
     WHERE source = 'gossip'
     AND (
-      (last_heartbeat_at IS NOT NULL AND last_heartbeat_at < ?)
-      OR (last_heartbeat_at IS NULL AND created_at < ?)
+      (
+        (last_heartbeat_at IS NOT NULL AND last_heartbeat_at < ?)
+        OR (last_heartbeat_at IS NULL AND created_at < ?)
+      )
+      AND status IN ('unreachable', 'error')
     )
-    AND status IN ('unreachable', 'error')
-  `).run(cutoff, cutoff);
+    OR (failure_count >= ?)
+  `).run(cutoff, cutoff, maxFailures);
   return result.changes;
 }

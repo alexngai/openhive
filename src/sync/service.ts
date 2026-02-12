@@ -12,7 +12,7 @@ import * as syncPeersDAL from '../db/dal/sync-peers.js';
 import * as syncPeerConfigsDAL from '../db/dal/sync-peer-configs.js';
 import * as hivesDAL from '../db/dal/hives.js';
 import { signEvent, verifyEventSignature, generateSyncToken } from './crypto.js';
-import { materializeBatch } from './materializer.js';
+import { materializeBatch, processPendingQueue } from './materializer.js';
 import { buildGossipPayload, processGossipPeers, cleanupStaleGossipPeers } from './gossip.js';
 import { CompositePeerResolver, ManualPeerResolver, HubPeerResolver } from './peer-resolver.js';
 import type { Config } from '../config.js';
@@ -44,6 +44,7 @@ export class SyncService {
   private peerResolver: CompositePeerResolver;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private gossipCleanupTimer: NodeJS.Timeout | null = null;
+  private pendingCleanupTimer: NodeJS.Timeout | null = null;
   private config: Config['sync'];
   private instanceId: string;
   private started = false;
@@ -76,6 +77,11 @@ export class SyncService {
     // Seed peers from config
     this.seedPeersFromConfig();
 
+    // Initiate handshakes with pending peers
+    this.initiateHandshakes().catch(err => {
+      syncLogger.error('Initial handshakes failed', { error: (err as Error).message });
+    });
+
     // Start heartbeat loop
     if (this.config.heartbeat_interval > 0) {
       this.heartbeatTimer = setInterval(() => {
@@ -89,6 +95,14 @@ export class SyncService {
         cleanupStaleGossipPeers(this.config.gossip);
       }, this.config.gossip.stale_timeout);
     }
+
+    // Start pending event cleanup (hourly)
+    this.pendingCleanupTimer = setInterval(() => {
+      const cleaned = syncEventsDAL.cleanupStalePendingEvents(24 * 60 * 60 * 1000);
+      if (cleaned > 0) {
+        syncLogger.info('Cleaned up stale pending events', { count: cleaned });
+      }
+    }, 60 * 60 * 1000);
 
     syncLogger.info('Sync service started');
   }
@@ -104,6 +118,10 @@ export class SyncService {
     if (this.gossipCleanupTimer) {
       clearInterval(this.gossipCleanupTimer);
       this.gossipCleanupTimer = null;
+    }
+    if (this.pendingCleanupTimer) {
+      clearInterval(this.pendingCleanupTimer);
+      this.pendingCleanupTimer = null;
     }
 
     syncLogger.info('Sync service stopped');
@@ -168,6 +186,7 @@ export class SyncService {
     if (peer) {
       // Update existing peer
       syncPeersDAL.updateSyncPeerSigningKey(peer.id, input.signing_key);
+      syncPeersDAL.updateSyncPeerToken(peer.id, token);
       syncPeersDAL.updateSyncPeerStatus(peer.id, 'active');
     } else {
       // Create new peer
@@ -176,6 +195,7 @@ export class SyncService {
         peer_swarm_id: input.instance_id,
         peer_endpoint: input.sync_endpoint,
         peer_signing_key: input.signing_key,
+        sync_token: token,
       });
     }
 
@@ -220,9 +240,30 @@ export class SyncService {
       throw new Error(`Hive ${syncGroup.hive_id} not found`);
     }
 
+    // Look up peer signing keys for verification
+    const peers = syncPeersDAL.listActivePeers(syncGroupId);
+    const peerKeyMap = new Map<string, string>();
+    for (const p of peers) {
+      if (p.peer_signing_key) {
+        peerKeyMap.set(p.peer_swarm_id, p.peer_signing_key);
+      }
+    }
+
     const insertedEvents: HiveEvent[] = [];
 
     for (const event of events) {
+      // Verify event signature if we have the origin's public key
+      const originKey = peerKeyMap.get(event.origin_instance_id);
+      if (originKey) {
+        if (!verifyEventSignature(event.payload, event.signature, originKey)) {
+          syncLogger.warn('Invalid signature, rejecting event', {
+            event_id: event.id,
+            origin: event.origin_instance_id,
+          });
+          continue;
+        }
+      }
+
       // Insert remote event (assigns local seq)
       const inserted = syncEventsDAL.insertRemoteEvent({
         sync_group_id: syncGroupId,
@@ -240,10 +281,16 @@ export class SyncService {
     // Materialize all inserted events
     if (insertedEvents.length > 0) {
       materializeBatch(insertedEvents, syncGroup.hive_id, hive.name, this.instanceId);
+
+      // Process any pending events whose dependencies may now be satisfied
+      processPendingQueue(syncGroupId, syncGroup.hive_id, hive.name, this.instanceId);
     }
 
+    // Read current seq after all insertions (not stale snapshot)
+    const currentSeq = syncGroupsDAL.getSeq(syncGroupId);
+
     return {
-      received_seq: syncGroup.seq + insertedEvents.length,
+      received_seq: currentSeq,
     };
   }
 
@@ -370,11 +417,16 @@ export class SyncService {
 
     if (events.length === 0) return;
 
+    if (!peer.sync_token) {
+      syncLogger.warn('No sync token for peer, skipping push', { peer: peer.peer_swarm_id });
+      return;
+    }
+
     const response = await fetch(`${peer.peer_endpoint}/groups/${syncGroupId}/events`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${peer.peer_signing_key}`,
+        'Authorization': `Bearer ${peer.sync_token}`,
       },
       body: JSON.stringify({
         events: events.map(e => ({
@@ -449,6 +501,26 @@ export class SyncService {
                 peer_seq: peerSeq,
                 local_seq: localSeq,
               });
+
+              // Find the sync group for this hive and pull
+              const sg = syncGroups.find(g => {
+                const h = hivesDAL.findHiveById(g.hive_id);
+                return h?.name === hiveName;
+              });
+              if (sg) {
+                const syncPeers = syncPeersDAL.listActivePeers(sg.id);
+                const matchingPeer = syncPeers.find(sp =>
+                  sp.peer_endpoint === peer.sync_endpoint
+                );
+                if (matchingPeer) {
+                  this.pullFromPeer(sg.id, matchingPeer.id).catch(pullErr => {
+                    syncLogger.warn('Pull from peer failed', {
+                      peer: peer.name,
+                      error: (pullErr as Error).message,
+                    });
+                  });
+                }
+              }
             }
           }
         }
@@ -458,6 +530,155 @@ export class SyncService {
           error: (err as Error).message,
         });
       });
+    }
+  }
+
+  /** Pull events from a peer for a sync group, processing in batches until caught up */
+  async pullFromPeer(syncGroupId: string, peerId: string): Promise<number> {
+    const peer = syncPeersDAL.findSyncPeerById(peerId);
+    if (!peer || !peer.sync_token) return 0;
+
+    const syncGroup = syncGroupsDAL.findSyncGroupById(syncGroupId);
+    if (!syncGroup) return 0;
+
+    const hive = hivesDAL.findHiveById(syncGroup.hive_id);
+    if (!hive) return 0;
+
+    let totalPulled = 0;
+    let hasMore = true;
+    let since = peer.last_seq_received;
+
+    while (hasMore) {
+      const response = await fetch(
+        `${peer.peer_endpoint}/groups/${syncGroupId}/events?since=${since}&limit=500`,
+        {
+          headers: { 'Authorization': `Bearer ${peer.sync_token}` },
+          signal: AbortSignal.timeout(30000),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Pull failed: ${response.status} ${response.statusText}`);
+      }
+
+      const data: PullEventsResponse = await response.json();
+
+      if (data.events.length > 0) {
+        // Insert remote events
+        const insertedEvents: HiveEvent[] = [];
+        for (const event of data.events) {
+          const inserted = syncEventsDAL.insertRemoteEvent({
+            sync_group_id: syncGroupId,
+            event_type: event.event_type as HiveEventType,
+            origin_instance_id: event.origin_instance_id,
+            origin_ts: event.origin_ts,
+            payload: event.payload,
+            signature: event.signature,
+            is_local: false,
+          });
+          insertedEvents.push(inserted);
+        }
+
+        // Materialize
+        materializeBatch(insertedEvents, syncGroup.hive_id, hive.name, this.instanceId);
+        processPendingQueue(syncGroupId, syncGroup.hive_id, hive.name, this.instanceId);
+
+        totalPulled += insertedEvents.length;
+        since = data.next_seq;
+
+        // Update last_seq_received
+        syncPeersDAL.updateSyncPeerSeqReceived(peerId, data.next_seq);
+      }
+
+      hasMore = data.has_more;
+    }
+
+    if (totalPulled > 0) {
+      syncLogger.info('Pulled events from peer', {
+        peer: peer.peer_swarm_id,
+        count: totalPulled,
+      });
+    }
+
+    return totalPulled;
+  }
+
+  /** Initiate handshakes with all pending peer configs */
+  private async initiateHandshakes(): Promise<void> {
+    const pendingPeers = syncPeerConfigsDAL.listPeerConfigs({ status: 'pending' });
+    const syncGroups = syncGroupsDAL.listSyncGroups();
+
+    for (const peerConfig of pendingPeers) {
+      for (const sg of syncGroups) {
+        const hive = hivesDAL.findHiveById(sg.hive_id);
+        if (!hive || !peerConfig.shared_hives.includes(hive.name)) continue;
+
+        try {
+          const response = await fetch(`${peerConfig.sync_endpoint}/handshake`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sync_group_name: sg.sync_group_name,
+              instance_id: this.instanceId,
+              signing_key: sg.instance_signing_key,
+              sync_endpoint: this.config.peers.length > 0
+                ? '' // Will be set by the caller in production
+                : '',
+            }),
+            signal: AbortSignal.timeout(10000),
+          });
+
+          if (response.ok) {
+            const data: HandshakeResponse = await response.json();
+
+            // Store the peer's token and signing key
+            syncPeerConfigsDAL.updatePeerConfig(peerConfig.id, {
+              sync_token: data.sync_token,
+              signing_key: data.signing_key,
+            });
+            syncPeerConfigsDAL.updatePeerConfigStatus(peerConfig.id, 'active');
+
+            // Create/update sync peer entry
+            let peer = syncPeersDAL.findSyncPeer(sg.id, data.sync_group_id);
+            if (!peer) {
+              peer = syncPeersDAL.createSyncPeer({
+                sync_group_id: sg.id,
+                peer_swarm_id: data.sync_group_id,
+                peer_endpoint: peerConfig.sync_endpoint,
+                peer_signing_key: data.signing_key,
+                sync_token: data.sync_token,
+              });
+            } else {
+              syncPeersDAL.updateSyncPeerToken(peer.id, data.sync_token);
+              syncPeersDAL.updateSyncPeerSigningKey(peer.id, data.signing_key);
+              syncPeersDAL.updateSyncPeerStatus(peer.id, 'backfilling');
+            }
+
+            // Trigger initial backfill
+            this.pullFromPeer(sg.id, peer.id).catch(err => {
+              syncLogger.error('Initial backfill failed', {
+                peer: peerConfig.name,
+                error: (err as Error).message,
+              });
+            });
+
+            syncLogger.info('Handshake initiated', {
+              peer: peerConfig.name,
+              sync_group: sg.sync_group_name,
+            });
+          } else {
+            syncPeerConfigsDAL.updatePeerConfigStatus(peerConfig.id, 'error',
+              `Handshake failed: ${response.status}`);
+          }
+        } catch (err) {
+          syncLogger.warn('Handshake initiation failed', {
+            peer: peerConfig.name,
+            error: (err as Error).message,
+          });
+          syncPeerConfigsDAL.updatePeerConfigStatus(peerConfig.id, 'error',
+            (err as Error).message);
+        }
+      }
     }
   }
 

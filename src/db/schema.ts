@@ -362,6 +362,7 @@ CREATE TABLE IF NOT EXISTS hive_sync_peers (
   peer_swarm_id TEXT NOT NULL,
   peer_endpoint TEXT NOT NULL,
   peer_signing_key TEXT,
+  sync_token TEXT,
   last_seq_sent INTEGER DEFAULT 0,
   last_seq_received INTEGER DEFAULT 0,
   last_sync_at TEXT,
@@ -394,6 +395,13 @@ CREATE TABLE IF NOT EXISTS hive_events (
 CREATE INDEX IF NOT EXISTS idx_hive_events_group_seq ON hive_events(sync_group_id, seq);
 CREATE INDEX IF NOT EXISTS idx_hive_events_type ON hive_events(sync_group_id, event_type);
 CREATE INDEX IF NOT EXISTS idx_hive_events_origin ON hive_events(origin_instance_id);
+CREATE INDEX IF NOT EXISTS idx_hive_events_origin_ts ON hive_events(origin_ts);
+
+-- Dedup indexes for synced content
+CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_origin
+  ON posts(origin_instance_id, origin_post_id) WHERE origin_instance_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_comments_origin
+  ON comments(origin_instance_id, origin_comment_id) WHERE origin_instance_id IS NOT NULL;
 
 -- Causal ordering queue (events waiting on dependencies)
 CREATE TABLE IF NOT EXISTS hive_events_pending (
@@ -420,6 +428,7 @@ CREATE TABLE IF NOT EXISTS sync_peer_configs (
   last_heartbeat_at TEXT,
   last_error TEXT,
   gossip_ttl INTEGER DEFAULT 0,
+  failure_count INTEGER DEFAULT 0,
   discovered_via TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),

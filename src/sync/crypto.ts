@@ -5,7 +5,7 @@
  * Uses Node.js built-in crypto module — no new dependencies.
  */
 
-import { generateKeyPairSync, sign, verify, createPublicKey, createPrivateKey } from 'crypto';
+import { generateKeyPairSync, sign, verify, createPublicKey, createPrivateKey, randomBytes } from 'crypto';
 
 export interface KeyPair {
   publicKey: string;   // base64-encoded Ed25519 public key
@@ -57,6 +57,5 @@ export function verifyEventSignature(payload: string, signatureBase64: string, p
 
 /** Generate a random sync token for peer authentication */
 export function generateSyncToken(): string {
-  const { randomBytes } = require('crypto');
   return randomBytes(32).toString('hex');
 }

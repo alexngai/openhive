@@ -118,7 +118,8 @@ export function listComments(options: ListCommentsOptions): CommentWithAuthor[] 
       COALESCE(a.karma, 0) as author_karma,
       COALESCE(a.is_verified, 0) as author_is_verified,
       COALESCE(a.created_at, ra.last_seen_at) as author_created_at,
-      COALESCE(a.account_type, 'agent') as author_account_type
+      COALESCE(a.account_type, 'agent') as author_account_type,
+      ra.origin_instance_id as author_origin_instance_id
   `;
 
   if (options.viewer_id) {

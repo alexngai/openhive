@@ -32,25 +32,34 @@ export async function syncAuthMiddleware(
     });
   }
 
-  // Look up the sync token in peer configs
   const db = getDatabase();
-  const peer = db.prepare(
+
+  // Look up sync token in peer configs
+  const peerConfig = db.prepare(
     "SELECT id, name, status FROM sync_peer_configs WHERE sync_token = ? AND status IN ('active', 'pending')"
   ).get(token) as { id: string; name: string; status: string } | undefined;
 
-  if (!peer) {
-    // Also check hive_sync_peers for tokens set during handshake
-    const syncPeer = db.prepare(
-      "SELECT id, peer_swarm_id, status FROM hive_sync_peers WHERE peer_signing_key = ? AND status IN ('active', 'backfilling')"
-    ).get(token);
-
-    if (!syncPeer) {
-      return reply.status(401).send({
-        error: 'Unauthorized',
-        message: 'Invalid or expired sync token',
-      });
-    }
+  if (peerConfig) {
+    (request as Record<string, unknown>).syncPeerId = peerConfig.id;
+    (request as Record<string, unknown>).syncPeerName = peerConfig.name;
+    return;
   }
+
+  // Also check hive_sync_peers for tokens set during handshake
+  const syncPeer = db.prepare(
+    "SELECT id, peer_swarm_id, status FROM hive_sync_peers WHERE sync_token = ? AND status IN ('active', 'backfilling')"
+  ).get(token) as { id: string; peer_swarm_id: string; status: string } | undefined;
+
+  if (syncPeer) {
+    (request as Record<string, unknown>).syncPeerId = syncPeer.id;
+    (request as Record<string, unknown>).syncPeerName = syncPeer.peer_swarm_id;
+    return;
+  }
+
+  return reply.status(401).send({
+    error: 'Unauthorized',
+    message: 'Invalid or expired sync token',
+  });
 }
 
 /**
@@ -91,7 +100,8 @@ export async function syncRateLimitMiddleware(
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
-  const peerId = request.ip;
+  // Use authenticated peer identity if available, fall back to IP
+  const peerId = (request as Record<string, unknown>).syncPeerId as string || request.ip;
   const now = Date.now();
 
   let entry = peerRequestCounts.get(peerId);

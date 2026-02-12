@@ -8,6 +8,7 @@
 import { getDatabase } from '../db/index.js';
 import { nanoid } from 'nanoid';
 import { upsertRemoteAgent } from '../db/dal/remote-agents.js';
+import { insertPendingEvent } from '../db/dal/sync-events.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import type {
   HiveEvent,
@@ -112,11 +113,12 @@ function materializePostCreated(event: HiveEvent, payload: PostCreatedPayload, h
 
   const { authorId, remoteAuthorId } = resolveAuthor(payload.author, isLocal);
   const id = `rp_${nanoid()}`;
+  const createdAt = new Date(event.origin_ts).toISOString();
 
   db.prepare(`
-    INSERT INTO posts (id, hive_id, author_id, title, content, url, sync_event_id, origin_instance_id, origin_post_id, remote_author_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, hiveId, authorId, payload.title, payload.content, payload.url, event.id, event.origin_instance_id, payload.post_id, remoteAuthorId);
+    INSERT INTO posts (id, hive_id, author_id, title, content, url, sync_event_id, origin_instance_id, origin_post_id, remote_author_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, hiveId, authorId, payload.title, payload.content, payload.url, event.id, event.origin_instance_id, payload.post_id, remoteAuthorId, createdAt);
 
   broadcastToChannel(`hive:${hiveName}`, {
     type: 'new_post',
@@ -183,14 +185,21 @@ function materializeCommentCreated(event: HiveEvent, payload: CommentCreatedPayl
   if (existing) return;
 
   // Resolve the post (may be a remote post)
-  let postId = payload.post_id;
   const localPost = db.prepare(
     'SELECT id FROM posts WHERE origin_post_id = ? OR id = ?'
   ).get(payload.post_id, payload.post_id) as { id: string } | undefined;
-  if (localPost) postId = localPost.id;
 
+  if (!localPost) {
+    // Parent post hasn't arrived yet — enqueue for causal ordering
+    insertPendingEvent(event.sync_group_id, JSON.stringify(event), [payload.post_id]);
+    syncLogger.info('Enqueued comment_created pending parent post', { comment_id: payload.comment_id, post_id: payload.post_id });
+    return;
+  }
+
+  const postId = localPost.id;
   const { authorId, remoteAuthorId } = resolveAuthor(payload.author, isLocal);
   const id = `rc_${nanoid()}`;
+  const createdAt = new Date(event.origin_ts).toISOString();
 
   // Compute path/depth
   let depth = 0;
@@ -206,9 +215,9 @@ function materializeCommentCreated(event: HiveEvent, payload: CommentCreatedPayl
   }
 
   db.prepare(`
-    INSERT INTO comments (id, post_id, parent_id, author_id, content, depth, path, sync_event_id, origin_instance_id, origin_comment_id, remote_author_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, postId, payload.parent_comment_id ?? null, authorId, payload.content, depth, path, event.id, event.origin_instance_id, payload.comment_id, remoteAuthorId);
+    INSERT INTO comments (id, post_id, parent_id, author_id, content, depth, path, sync_event_id, origin_instance_id, origin_comment_id, remote_author_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, postId, payload.parent_comment_id ?? null, authorId, payload.content, depth, path, event.id, event.origin_instance_id, payload.comment_id, remoteAuthorId, createdAt);
 
   // Update post comment count
   db.prepare('UPDATE posts SET comment_count = comment_count + 1 WHERE id = ?').run(postId);
