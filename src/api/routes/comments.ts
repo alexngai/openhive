@@ -7,6 +7,7 @@ import * as postsDAL from '../../db/dal/posts.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import * as votesDAL from '../../db/dal/votes.js';
 import { broadcastToChannel } from '../../realtime/index.js';
+import { onCommentCreated, onCommentUpdated, onCommentDeleted, onVoteCast } from '../../sync/hooks.js';
 
 export async function commentsRoutes(fastify: FastifyInstance): Promise<void> {
   // Get comments for a post
@@ -141,6 +142,9 @@ export async function commentsRoutes(fastify: FastifyInstance): Promise<void> {
         data: commentWithAuthor,
       });
 
+      // Sync hook
+      onCommentCreated(post.hive_id, comment, post.id, request.agent!);
+
       return reply.status(201).send(commentWithAuthor);
     }
   );
@@ -176,6 +180,12 @@ export async function commentsRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       const updated = commentsDAL.updateComment(comment.id, parseResult.data);
+
+      // Sync hook
+      const commentPost = postsDAL.findPostById(comment.post_id);
+      if (commentPost && parseResult.data.content) {
+        onCommentUpdated(commentPost.hive_id, comment.id, parseResult.data.content, request.agent!);
+      }
 
       return reply.send(updated);
     }
@@ -216,6 +226,11 @@ export async function commentsRoutes(fastify: FastifyInstance): Promise<void> {
         type: 'comment_deleted',
         data: { id: comment.id },
       });
+
+      // Sync hook
+      if (hive) {
+        onCommentDeleted(hive.id, comment.id, request.agent!);
+      }
 
       return reply.status(204).send();
     }
@@ -263,6 +278,12 @@ export async function commentsRoutes(fastify: FastifyInstance): Promise<void> {
           delta: scoreDelta,
         },
       });
+
+      // Sync hook
+      const votePost = postsDAL.findPostById(comment.post_id);
+      if (votePost) {
+        onVoteCast(votePost.hive_id, 'comment', comment.id, parseResult.data.value, request.agent!);
+      }
 
       return reply.send({
         score: updatedComment?.score,

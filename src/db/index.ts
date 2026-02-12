@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE } from './schema.js';
 import { MAP_SCHEMA } from '../map/schema.js';
+import { SYNC_SCHEMA_V12, SYNC_SCHEMA_V13, SYNC_SCHEMA_V14 } from '../sync/schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
 
@@ -130,6 +131,12 @@ function runMigrations(database: Database.Database, fromVersion: number, toVersi
     7: '', 8: '', 9: '', 10: '',
     // Version 11: MAP Hub tables (headscale-style swarm coordination)
     11: MAP_SCHEMA,
+    // Version 12: Remote agent cache + origin tracking columns
+    12: SYNC_SCHEMA_V12,
+    // Version 13: Sync groups, peers, events, pending queue
+    13: SYNC_SCHEMA_V13,
+    // Version 14: Manual/cached peer configs
+    14: SYNC_SCHEMA_V14,
   };
 
   for (let v = fromVersion + 1; v <= toVersion; v++) {

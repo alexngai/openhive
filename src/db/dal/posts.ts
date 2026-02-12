@@ -57,17 +57,18 @@ export function findPostWithAuthor(id: string, viewerId?: string): PostWithAutho
   let query = `
     SELECT
       p.*,
-      a.name as author_name,
+      COALESCE(a.name, ra.name) as author_name,
       a.description as author_description,
-      a.avatar_url as author_avatar_url,
-      a.karma as author_karma,
-      a.is_verified as author_is_verified,
-      a.created_at as author_created_at,
-      a.account_type as author_account_type,
-      h.name as hive_name
+      COALESCE(a.avatar_url, ra.avatar_url) as author_avatar_url,
+      COALESCE(a.karma, 0) as author_karma,
+      COALESCE(a.is_verified, 0) as author_is_verified,
+      COALESCE(a.created_at, ra.last_seen_at) as author_created_at,
+      COALESCE(a.account_type, 'agent') as author_account_type,
+      h.name as hive_name,
+      ra.origin_instance_id as author_origin_instance_id
   `;
 
-  const values: unknown[] = [id];
+  const values: unknown[] = [];
 
   if (viewerId) {
     query += `, v.value as user_vote`;
@@ -75,7 +76,8 @@ export function findPostWithAuthor(id: string, viewerId?: string): PostWithAutho
 
   query += `
     FROM posts p
-    JOIN agents a ON p.author_id = a.id
+    LEFT JOIN agents a ON p.author_id = a.id
+    LEFT JOIN remote_agents_cache ra ON p.remote_author_id = ra.id
     JOIN hives h ON p.hive_id = h.id
   `;
 
@@ -98,7 +100,7 @@ export function findPostWithAuthor(id: string, viewerId?: string): PostWithAutho
       name: row.author_name as string,
       description: row.author_description as string | null,
       avatar_url: row.author_avatar_url as string | null,
-      karma: row.author_karma as number,
+      karma: (row.author_karma as number) || 0,
       is_verified: Boolean(row.author_is_verified),
       created_at: row.author_created_at as string,
       account_type: (row.author_account_type as 'agent' | 'human') || 'agent',
@@ -175,14 +177,15 @@ export function listPosts(options: ListPostsOptions): PostWithAuthor[] {
   let query = `
     SELECT
       p.*,
-      a.name as author_name,
+      COALESCE(a.name, ra.name) as author_name,
       a.description as author_description,
-      a.avatar_url as author_avatar_url,
-      a.karma as author_karma,
-      a.is_verified as author_is_verified,
-      a.created_at as author_created_at,
-      a.account_type as author_account_type,
-      h.name as hive_name
+      COALESCE(a.avatar_url, ra.avatar_url) as author_avatar_url,
+      COALESCE(a.karma, 0) as author_karma,
+      COALESCE(a.is_verified, 0) as author_is_verified,
+      COALESCE(a.created_at, ra.last_seen_at) as author_created_at,
+      COALESCE(a.account_type, 'agent') as author_account_type,
+      h.name as hive_name,
+      ra.origin_instance_id as author_origin_instance_id
   `;
 
   if (options.viewer_id) {
@@ -191,7 +194,8 @@ export function listPosts(options: ListPostsOptions): PostWithAuthor[] {
 
   query += `
     FROM posts p
-    JOIN agents a ON p.author_id = a.id
+    LEFT JOIN agents a ON p.author_id = a.id
+    LEFT JOIN remote_agents_cache ra ON p.remote_author_id = ra.id
     JOIN hives h ON p.hive_id = h.id
   `;
 
@@ -249,7 +253,7 @@ export function listPosts(options: ListPostsOptions): PostWithAuthor[] {
       name: row.author_name as string,
       description: row.author_description as string | null,
       avatar_url: row.author_avatar_url as string | null,
-      karma: row.author_karma as number,
+      karma: (row.author_karma as number) || 0,
       is_verified: Boolean(row.author_is_verified),
       created_at: row.author_created_at as string,
       account_type: (row.author_account_type as 'agent' | 'human') || 'agent',
