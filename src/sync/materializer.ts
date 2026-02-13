@@ -299,12 +299,23 @@ function materializeVoteCast(event: HiveEvent, payload: VoteCastPayload): void {
 
   // Resolve the target to a local ID
   let targetId = payload.target_id;
+  let targetFound = false;
   if (payload.target_type === 'post') {
     const local = db.prepare('SELECT id FROM posts WHERE origin_post_id = ? OR id = ?').get(payload.target_id, payload.target_id) as { id: string } | undefined;
-    if (local) targetId = local.id;
+    if (local) { targetId = local.id; targetFound = true; }
   } else {
     const local = db.prepare('SELECT id FROM comments WHERE origin_comment_id = ? OR id = ?').get(payload.target_id, payload.target_id) as { id: string } | undefined;
-    if (local) targetId = local.id;
+    if (local) { targetId = local.id; targetFound = true; }
+  }
+
+  // NEW-7: If target doesn't exist locally, enqueue as pending event instead of inserting orphaned vote
+  if (!targetFound) {
+    insertPendingEvent(event.sync_group_id, JSON.stringify(event), [payload.target_id]);
+    syncLogger.info('Enqueued vote_cast pending target arrival', {
+      target_type: payload.target_type,
+      target_id: payload.target_id,
+    });
+    return;
   }
 
   // Build a unique voter ID from instance + agent
