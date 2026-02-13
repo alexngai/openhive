@@ -8,7 +8,7 @@
 import { getDatabase } from '../db/index.js';
 import { nanoid } from 'nanoid';
 import { upsertRemoteAgent } from '../db/dal/remote-agents.js';
-import { insertPendingEvent } from '../db/dal/sync-events.js';
+import { insertPendingEvent, countPendingEvents, trimPendingEvents } from '../db/dal/sync-events.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import type {
   HiveEvent,
@@ -132,11 +132,24 @@ function materializePostUpdated(event: HiveEvent, payload: PostUpdatedPayload): 
   const db = getDatabase();
 
   const post = db.prepare(
-    'SELECT id FROM posts WHERE origin_instance_id = ? AND origin_post_id = ?'
-  ).get(event.origin_instance_id, payload.post_id) as { id: string } | undefined;
+    'SELECT id, updated_at FROM posts WHERE origin_instance_id = ? AND origin_post_id = ?'
+  ).get(event.origin_instance_id, payload.post_id) as { id: string; updated_at: string | null } | undefined;
   if (!post) {
     syncLogger.warn('post_updated for unknown post', { post_id: payload.post_id, origin: event.origin_instance_id });
     return;
+  }
+
+  // GAP-11: Last-writer-wins — only apply if this event is newer than current state
+  if (post.updated_at) {
+    const existingTs = new Date(post.updated_at).getTime();
+    if (event.origin_ts <= existingTs) {
+      syncLogger.info('Skipping stale post_updated (last-writer-wins)', {
+        post_id: post.id,
+        event_ts: event.origin_ts,
+        existing_ts: existingTs,
+      });
+      return;
+    }
   }
 
   const updates: string[] = [];
@@ -148,7 +161,10 @@ function materializePostUpdated(event: HiveEvent, payload: PostUpdatedPayload): 
 
   if (updates.length === 0) return;
 
-  updates.push("updated_at = datetime('now')");
+  // Use event origin_ts as updated_at for consistent last-writer-wins comparison
+  const eventTs = new Date(event.origin_ts).toISOString();
+  updates.push('updated_at = ?');
+  values.push(eventTs);
   values.push(post.id);
 
   db.prepare(`UPDATE posts SET ${updates.join(', ')} WHERE id = ?`).run(...values);
@@ -234,12 +250,26 @@ function materializeCommentUpdated(event: HiveEvent, payload: CommentUpdatedPayl
   const db = getDatabase();
 
   const comment = db.prepare(
-    'SELECT id FROM comments WHERE origin_instance_id = ? AND origin_comment_id = ?'
-  ).get(event.origin_instance_id, payload.comment_id) as { id: string } | undefined;
+    'SELECT id, updated_at FROM comments WHERE origin_instance_id = ? AND origin_comment_id = ?'
+  ).get(event.origin_instance_id, payload.comment_id) as { id: string; updated_at: string | null } | undefined;
   if (!comment) return;
 
-  db.prepare("UPDATE comments SET content = ?, updated_at = datetime('now') WHERE id = ?")
-    .run(payload.content, comment.id);
+  // GAP-11: Last-writer-wins — only apply if this event is newer
+  if (comment.updated_at) {
+    const existingTs = new Date(comment.updated_at).getTime();
+    if (event.origin_ts <= existingTs) {
+      syncLogger.info('Skipping stale comment_updated (last-writer-wins)', {
+        comment_id: comment.id,
+        event_ts: event.origin_ts,
+        existing_ts: existingTs,
+      });
+      return;
+    }
+  }
+
+  const eventTs = new Date(event.origin_ts).toISOString();
+  db.prepare('UPDATE comments SET content = ?, updated_at = ? WHERE id = ?')
+    .run(payload.content, eventTs, comment.id);
 
   syncLogger.info('Materialized comment_updated', { comment_id: comment.id });
 }
@@ -330,9 +360,25 @@ function materializeVoteCast(event: HiveEvent, payload: VoteCastPayload): void {
 
 // ── Pending Queue Processing ────────────────────────────────────
 
-/** Process pending events whose dependencies are now satisfied */
-export function processPendingQueue(syncGroupId: string, hiveId: string, hiveName: string, localInstanceId: string): number {
+/** Process pending events whose dependencies are now satisfied.
+ *  GAP-12: Enforces a per-sync-group cap on pending events (maxPendingEvents).
+ */
+export function processPendingQueue(syncGroupId: string, hiveId: string, hiveName: string, localInstanceId: string, maxPendingEvents: number = 1000): number {
   const db = getDatabase();
+
+  // GAP-12: Enforce pending queue cap before processing
+  const pendingCount = countPendingEvents(syncGroupId);
+  if (pendingCount > maxPendingEvents) {
+    const trimmed = trimPendingEvents(syncGroupId, maxPendingEvents);
+    if (trimmed > 0) {
+      syncLogger.warn('Trimmed pending event queue (GAP-12 cap exceeded)', {
+        sync_group_id: syncGroupId,
+        trimmed,
+        remaining: maxPendingEvents,
+      });
+    }
+  }
+
   const pending = db.prepare(
     'SELECT * FROM hive_events_pending WHERE sync_group_id = ? ORDER BY received_at ASC'
   ).all(syncGroupId) as Array<{ id: string; event_json: string; depends_on: string }>;

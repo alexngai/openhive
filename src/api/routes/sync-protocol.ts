@@ -14,11 +14,24 @@ import * as syncPeersDAL from '../../db/dal/sync-peers.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 
 export async function syncProtocolRoutes(fastify: FastifyInstance): Promise<void> {
-  // POST /sync/v1/handshake — initiate peer connection (unauthenticated — establishes the token)
+  // POST /sync/v1/handshake — initiate peer connection
+  // GAP-2: When handshake_secret is configured, require it via X-Handshake-Secret header
   fastify.post('/handshake', async (request, reply) => {
     const syncService = getSyncService();
     if (!syncService) {
       return reply.status(503).send({ error: 'Service Unavailable', message: 'Sync is not enabled' });
+    }
+
+    // GAP-2: Verify pre-shared key if configured
+    const requiredSecret = syncService.getHandshakeSecret();
+    if (requiredSecret) {
+      const providedSecret = request.headers['x-handshake-secret'] as string | undefined;
+      if (!providedSecret || providedSecret !== requiredSecret) {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          message: 'Invalid or missing handshake secret',
+        });
+      }
     }
 
     const parseResult = HandshakeSchema.safeParse(request.body);

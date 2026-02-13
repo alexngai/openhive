@@ -135,10 +135,13 @@ export interface SyncPeerState {
   peer_endpoint: string;
   peer_signing_key: string | null;
   sync_token: string | null;
+  peer_remote_group_id: string | null;
+  peer_instance_id: string | null;
   last_seq_sent: number;
   last_seq_received: number;
   last_sync_at: string | null;
-  status: 'active' | 'paused' | 'error' | 'backfilling';
+  failure_count: number;
+  status: 'active' | 'paused' | 'error' | 'backfilling' | 'unreachable';
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -156,12 +159,14 @@ export interface SyncPeerConfig {
   shared_hives: string[]; // parsed from JSON
   signing_key: string | null;
   sync_token: string | null;
+  peer_instance_id: string | null;
   is_manual: boolean;
   source: PeerSource;
   status: PeerConfigStatus;
   last_heartbeat_at: string | null;
   last_error: string | null;
   gossip_ttl: number;
+  failure_count: number;
   discovered_via: string | null;
   created_at: string;
   updated_at: string;
@@ -191,6 +196,7 @@ export interface PeerResolver {
 
 export interface HandshakeRequest {
   sync_group_name: string;
+  sync_group_id: string;
   instance_id: string;
   signing_key: string;
   sync_endpoint: string;

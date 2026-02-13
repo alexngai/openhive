@@ -146,6 +146,12 @@ export const ConfigSchema = z.object({
   sync: z.object({
     enabled: z.boolean().default(false),
     instanceId: z.string().optional(),
+    /** This instance's publicly reachable sync endpoint URL (e.g. https://myhive.example.com/sync/v1) */
+    sync_endpoint: z.string().optional(),
+    /** Optional pre-shared key required for handshake authentication (GAP-2) */
+    handshake_secret: z.string().optional(),
+    /** Maximum pending events per sync group before oldest are dropped (GAP-12) */
+    max_pending_events: z.number().default(1000),
     discovery: z.enum(['hub', 'manual', 'both']).default('both'),
     peers: z.array(z.object({
       name: z.string(),

@@ -117,6 +117,38 @@ export function deletePendingEvent(id: string): void {
   db.prepare('DELETE FROM hive_events_pending WHERE id = ?').run(id);
 }
 
+/** Check if an event from a given origin already exists (GAP-9 dedup) */
+export function eventExistsByOrigin(syncGroupId: string, originInstanceId: string, eventId: string): boolean {
+  const db = getDatabase();
+  const row = db.prepare(
+    'SELECT 1 FROM hive_events WHERE sync_group_id = ? AND origin_instance_id = ? AND id = ? LIMIT 1'
+  ).get(syncGroupId, originInstanceId, eventId);
+  return !!row;
+}
+
+/** Count pending events for a sync group (GAP-12 cap enforcement) */
+export function countPendingEvents(syncGroupId: string): number {
+  const db = getDatabase();
+  const row = db.prepare(
+    'SELECT COUNT(*) as count FROM hive_events_pending WHERE sync_group_id = ?'
+  ).get(syncGroupId) as { count: number };
+  return row.count;
+}
+
+/** Drop oldest pending events for a sync group to enforce a cap (GAP-12) */
+export function trimPendingEvents(syncGroupId: string, maxCount: number): number {
+  const db = getDatabase();
+  const result = db.prepare(`
+    DELETE FROM hive_events_pending WHERE id IN (
+      SELECT id FROM hive_events_pending
+      WHERE sync_group_id = ?
+      ORDER BY received_at ASC
+      LIMIT MAX(0, (SELECT COUNT(*) FROM hive_events_pending WHERE sync_group_id = ?) - ?)
+    )
+  `).run(syncGroupId, syncGroupId, maxCount);
+  return result.changes;
+}
+
 /** Clean up pending events older than maxAgeMs. Returns count deleted. */
 export function cleanupStalePendingEvents(maxAgeMs: number): number {
   const db = getDatabase();

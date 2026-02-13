@@ -91,15 +91,35 @@ function isTailscaleIP(ip: string): boolean {
   return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 }
 
-/** Per-peer rate limit state */
+/** Per-peer rate limit state (GAP-7: periodic cleanup to prevent memory leak) */
 const peerRequestCounts = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_WINDOW_MS = 1000; // 1 second
 const RATE_LIMIT_MAX = 100; // 100 events/second per peer
+const RATE_LIMIT_CLEANUP_INTERVAL_MS = 60_000; // Clean up stale entries every 60s
+
+// GAP-7: Periodically remove expired entries to prevent unbounded Map growth
+let rateLimitCleanupTimer: NodeJS.Timeout | null = null;
+
+function ensureRateLimitCleanup(): void {
+  if (rateLimitCleanupTimer) return;
+  rateLimitCleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of peerRequestCounts) {
+      if (now > entry.resetAt) {
+        peerRequestCounts.delete(key);
+      }
+    }
+  }, RATE_LIMIT_CLEANUP_INTERVAL_MS);
+  // Allow the process to exit even if this timer is running
+  rateLimitCleanupTimer.unref();
+}
 
 export async function syncRateLimitMiddleware(
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
+  ensureRateLimitCleanup();
+
   // Use authenticated peer identity if available, fall back to IP
   const peerId = (request as Record<string, unknown>).syncPeerId as string || request.ip;
   const now = Date.now();
