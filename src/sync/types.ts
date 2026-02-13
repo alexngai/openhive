@@ -200,6 +200,8 @@ export interface HandshakeRequest {
   instance_id: string;
   signing_key: string;
   sync_endpoint: string;
+  /** Sync protocol version — used for compatibility checks */
+  protocol_version?: number;
 }
 
 export interface HandshakeResponse {
@@ -207,6 +209,8 @@ export interface HandshakeResponse {
   signing_key: string;
   current_seq: number;
   sync_token: string;
+  /** Sync protocol version — allows requestor to detect incompatibility */
+  protocol_version: number;
 }
 
 export interface PushEventsRequest {
@@ -219,10 +223,13 @@ export interface PushEventsRequest {
     signature: string;
   }>;
   sender_seq: number;
+  /** Correlation ID for end-to-end tracing across instances */
+  trace_id?: string;
 }
 
 export interface PushEventsResponse {
   received_seq: number;
+  trace_id?: string;
 }
 
 export interface PullEventsResponse {
@@ -235,12 +242,15 @@ export interface HeartbeatRequest {
   instance_id: string;
   seq_by_hive: Record<string, number>;
   known_peers?: GossipPeerInfo[];
+  /** Correlation ID for end-to-end tracing across instances */
+  trace_id?: string;
 }
 
 export interface HeartbeatResponse {
   instance_id: string;
   seq_by_hive: Record<string, number>;
   known_peers?: GossipPeerInfo[];
+  trace_id?: string;
 }
 
 export interface GossipPeerInfo {

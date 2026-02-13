@@ -152,6 +152,8 @@ export const ConfigSchema = z.object({
     handshake_secret: z.string().optional(),
     /** Maximum pending events per sync group before oldest are dropped (GAP-12) */
     max_pending_events: z.number().default(1000),
+    /** Maximum concurrent pull/push operations to prevent resource exhaustion on large meshes */
+    max_concurrent_syncs: z.number().default(5),
     discovery: z.enum(['hub', 'manual', 'both']).default('both'),
     peers: z.array(z.object({
       name: z.string(),

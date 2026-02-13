@@ -29,6 +29,9 @@ import type {
   GossipPeerInfo,
 } from './types.js';
 
+/** Current sync protocol version — bump on breaking changes */
+export const SYNC_PROTOCOL_VERSION = 1;
+
 const syncLogger = {
   info: (message: string, ctx?: Record<string, unknown>) => {
     console.info(`[Sync Service] ${message}`, ctx ? JSON.stringify(ctx) : '');
@@ -46,6 +49,11 @@ const MAX_PEER_FAILURES = 5;
 /** GAP-6: Max heartbeat cycles to skip (cap for exponential backoff) */
 const MAX_BACKOFF_CYCLES = 32;
 
+/** Generate a short trace ID for correlating operations across instances */
+function generateTraceId(): string {
+  return `tr_${nanoid(12)}`;
+}
+
 export class SyncService {
   private peerResolver: CompositePeerResolver;
   private heartbeatTimer: NodeJS.Timeout | null = null;
@@ -58,6 +66,8 @@ export class SyncService {
   private heartbeatCycle = 0;
   /** NEW-2: Guard against concurrent heartbeat loops */
   private isHeartbeatRunning = false;
+  /** Track active sync operations (push/pull) for concurrency cap */
+  private activeSyncOps = 0;
 
   constructor(config: Config['sync']) {
     this.config = config;
@@ -193,6 +203,19 @@ export class SyncService {
   // ── Inbound Handlers ──────────────────────────────────────────
 
   handleHandshake(input: HandshakeRequest): HandshakeResponse {
+    // Protocol version compatibility check
+    if (input.protocol_version && input.protocol_version > SYNC_PROTOCOL_VERSION) {
+      throw new Error(
+        `Incompatible sync protocol: peer requires v${input.protocol_version}, ` +
+        `but this instance supports v${SYNC_PROTOCOL_VERSION}. Upgrade this instance to connect.`
+      );
+    }
+    if (input.protocol_version === undefined) {
+      syncLogger.warn('Peer sent handshake without protocol_version — assuming legacy v0', {
+        peer: input.instance_id,
+      });
+    }
+
     // Find the sync group
     const syncGroup = syncGroupsDAL.findSyncGroupByName(input.sync_group_name);
     if (!syncGroup) {
@@ -246,6 +269,7 @@ export class SyncService {
       signing_key: syncGroup.instance_signing_key,
       current_seq: syncGroup.seq,
       sync_token: token,
+      protocol_version: SYNC_PROTOCOL_VERSION,
     };
   }
 
@@ -405,6 +429,7 @@ export class SyncService {
       instance_id: this.instanceId,
       seq_by_hive: seqByHive,
       known_peers: gossipResponse.length > 0 ? gossipResponse : undefined,
+      trace_id: input.trace_id,
     };
   }
 
@@ -442,12 +467,28 @@ export class SyncService {
 
   // ── Internal ──────────────────────────────────────────────────
 
+  /** Acquire a sync slot before running an operation. Waits if at capacity. */
+  private async acquireSyncSlot<T>(fn: () => Promise<T>, maxConcurrent: number): Promise<T> {
+    // Spin-wait with backoff if at capacity
+    while (this.activeSyncOps >= maxConcurrent) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    this.activeSyncOps++;
+    try {
+      return await fn();
+    } finally {
+      this.activeSyncOps--;
+    }
+  }
+
   // GAP-5: Use Promise.allSettled for parallel fan-out instead of sequential iteration
   private async pushToAllPeers(syncGroupId: string): Promise<void> {
     const peers = syncPeersDAL.listActivePeers(syncGroupId);
 
+    // Respect max_concurrent_syncs by batching peer pushes
+    const maxConcurrent = this.config.max_concurrent_syncs;
     const results = await Promise.allSettled(
-      peers.map(peer => this.pushToPeer(syncGroupId, peer.id))
+      peers.map(peer => this.acquireSyncSlot(() => this.pushToPeer(syncGroupId, peer.id), maxConcurrent))
     );
 
     for (let i = 0; i < results.length; i++) {
@@ -493,11 +534,19 @@ export class SyncService {
       return;
     }
 
+    const traceId = generateTraceId();
+    syncLogger.info('Pushing events to peer', {
+      trace_id: traceId,
+      peer: peer.peer_swarm_id,
+      event_count: events.length,
+    });
+
     const response = await fetch(`${peer.peer_endpoint}/groups/${remoteGroupId}/events`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${peer.sync_token}`,
+        'X-Trace-Id': traceId,
       },
       body: JSON.stringify({
         events: events.map(e => ({
@@ -509,6 +558,7 @@ export class SyncService {
           signature: e.signature,
         })),
         sender_seq: nextSeq,
+        trace_id: traceId,
       }),
       signal: AbortSignal.timeout(10000),
     });
@@ -561,10 +611,12 @@ export class SyncService {
         gossipPayload = buildGossipPayload(peer, allPeers, this.config.gossip);
       }
 
+      const traceId = generateTraceId();
       const heartbeat: HeartbeatRequest = {
         instance_id: this.instanceId,
         seq_by_hive: seqByHive,
         known_peers: gossipPayload.length > 0 ? gossipPayload : undefined,
+        trace_id: traceId,
       };
 
       // GAP-4: Include Authorization header with the peer's sync_token
@@ -595,6 +647,7 @@ export class SyncService {
             const localSeq = seqByHive[hiveName] ?? 0;
             if (peerSeq > localSeq) {
               syncLogger.info('Peer is ahead, triggering pull', {
+                trace_id: traceId,
                 peer: peer.name,
                 hive: hiveName,
                 peer_seq: peerSeq,
@@ -612,8 +665,12 @@ export class SyncService {
                   sp.peer_endpoint === peer.sync_endpoint
                 );
                 if (matchingPeer) {
-                  await this.pullFromPeer(sg.id, matchingPeer.id).catch(pullErr => {
+                  await this.acquireSyncSlot(
+                    () => this.pullFromPeer(sg.id, matchingPeer.id),
+                    this.config.max_concurrent_syncs,
+                  ).catch(pullErr => {
                     syncLogger.warn('Pull from peer failed', {
+                      trace_id: traceId,
                       peer: peer.name,
                       error: (pullErr as Error).message,
                     });
@@ -670,6 +727,13 @@ export class SyncService {
       }
     }
 
+    const traceId = generateTraceId();
+    syncLogger.info('Pulling events from peer', {
+      trace_id: traceId,
+      peer: peer.peer_swarm_id,
+      since: peer.last_seq_received,
+    });
+
     let totalPulled = 0;
     let hasMore = true;
     let since = peer.last_seq_received;
@@ -678,7 +742,10 @@ export class SyncService {
       const response = await fetch(
         `${peer.peer_endpoint}/groups/${remoteGroupId}/events?since=${since}&limit=500`,
         {
-          headers: { 'Authorization': `Bearer ${peer.sync_token}` },
+          headers: {
+            'Authorization': `Bearer ${peer.sync_token}`,
+            'X-Trace-Id': traceId,
+          },
           signal: AbortSignal.timeout(30000),
         }
       );
@@ -745,6 +812,7 @@ export class SyncService {
 
     if (totalPulled > 0) {
       syncLogger.info('Pulled events from peer', {
+        trace_id: traceId,
         peer: peer.peer_swarm_id,
         count: totalPulled,
       });
@@ -788,12 +856,22 @@ export class SyncService {
               signing_key: sg.instance_signing_key,
               // GAP-13: Provide this instance's reachable sync endpoint
               sync_endpoint: this.getSyncEndpoint(),
+              protocol_version: SYNC_PROTOCOL_VERSION,
             }),
             signal: AbortSignal.timeout(10000),
           });
 
           if (response.ok) {
             const data: HandshakeResponse = await response.json();
+
+            // Warn if remote is on a newer protocol version
+            if (data.protocol_version && data.protocol_version > SYNC_PROTOCOL_VERSION) {
+              syncLogger.warn('Remote peer is on a newer sync protocol version — some features may not work', {
+                peer: peerConfig.name,
+                remote_version: data.protocol_version,
+                local_version: SYNC_PROTOCOL_VERSION,
+              });
+            }
 
             // Store the peer's token and signing key
             syncPeerConfigsDAL.updatePeerConfig(peerConfig.id, {
