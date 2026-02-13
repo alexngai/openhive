@@ -8,6 +8,7 @@ export interface CreatePeerConfigInput {
   shared_hives: string[];
   signing_key?: string | null;
   sync_token?: string | null;
+  peer_instance_id?: string | null;
   is_manual?: boolean;
   source?: PeerSource;
   gossip_ttl?: number;
@@ -161,6 +162,21 @@ export function deletePeerConfig(id: string): boolean {
   const db = getDatabase();
   const result = db.prepare('DELETE FROM sync_peer_configs WHERE id = ?').run(id);
   return result.changes > 0;
+}
+
+/** Find peer config by its instance_id (GAP-8: reliable heartbeat sender matching) */
+export function findPeerConfigByInstanceId(instanceId: string): SyncPeerConfig | null {
+  const db = getDatabase();
+  const row = db.prepare('SELECT * FROM sync_peer_configs WHERE peer_instance_id = ?').get(instanceId) as Record<string, unknown> | undefined;
+  return row ? rowToPeerConfig(row) : null;
+}
+
+/** Update the peer_instance_id on a peer config (set during handshake) */
+export function updatePeerConfigInstanceId(id: string, instanceId: string): void {
+  const db = getDatabase();
+  db.prepare(
+    "UPDATE sync_peer_configs SET peer_instance_id = ?, updated_at = datetime('now') WHERE id = ?"
+  ).run(instanceId, id);
 }
 
 /** Increment failure count for a peer config */

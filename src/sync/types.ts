@@ -123,6 +123,14 @@ export interface SyncGroup {
   instance_signing_key: string;
   instance_signing_key_private: string;
   seq: number;
+  /** Current key version (incremented on rotation) */
+  key_version: number;
+  /** Previous public key kept for verification during transition */
+  previous_signing_key: string | null;
+  /** Previous private key kept for re-signing during transition */
+  previous_signing_key_private: string | null;
+  /** Timestamp of last key rotation */
+  key_rotated_at: string | null;
   created_at: string;
 }
 
@@ -135,10 +143,15 @@ export interface SyncPeerState {
   peer_endpoint: string;
   peer_signing_key: string | null;
   sync_token: string | null;
+  peer_remote_group_id: string | null;
+  peer_instance_id: string | null;
   last_seq_sent: number;
   last_seq_received: number;
   last_sync_at: string | null;
-  status: 'active' | 'paused' | 'error' | 'backfilling';
+  failure_count: number;
+  /** Key version this peer last acknowledged */
+  peer_key_version: number;
+  status: 'active' | 'paused' | 'error' | 'backfilling' | 'unreachable';
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -156,12 +169,14 @@ export interface SyncPeerConfig {
   shared_hives: string[]; // parsed from JSON
   signing_key: string | null;
   sync_token: string | null;
+  peer_instance_id: string | null;
   is_manual: boolean;
   source: PeerSource;
   status: PeerConfigStatus;
   last_heartbeat_at: string | null;
   last_error: string | null;
   gossip_ttl: number;
+  failure_count: number;
   discovered_via: string | null;
   created_at: string;
   updated_at: string;
@@ -191,9 +206,12 @@ export interface PeerResolver {
 
 export interface HandshakeRequest {
   sync_group_name: string;
+  sync_group_id: string;
   instance_id: string;
   signing_key: string;
   sync_endpoint: string;
+  /** Sync protocol version — used for compatibility checks */
+  protocol_version?: number;
 }
 
 export interface HandshakeResponse {
@@ -201,6 +219,10 @@ export interface HandshakeResponse {
   signing_key: string;
   current_seq: number;
   sync_token: string;
+  /** Sync protocol version — allows requestor to detect incompatibility */
+  protocol_version: number;
+  /** Current key version — used for key rotation awareness */
+  key_version?: number;
 }
 
 export interface PushEventsRequest {
@@ -213,10 +235,13 @@ export interface PushEventsRequest {
     signature: string;
   }>;
   sender_seq: number;
+  /** Correlation ID for end-to-end tracing across instances */
+  trace_id?: string;
 }
 
 export interface PushEventsResponse {
   received_seq: number;
+  trace_id?: string;
 }
 
 export interface PullEventsResponse {
@@ -229,12 +254,15 @@ export interface HeartbeatRequest {
   instance_id: string;
   seq_by_hive: Record<string, number>;
   known_peers?: GossipPeerInfo[];
+  /** Correlation ID for end-to-end tracing across instances */
+  trace_id?: string;
 }
 
 export interface HeartbeatResponse {
   instance_id: string;
   seq_by_hive: Record<string, number>;
   known_peers?: GossipPeerInfo[];
+  trace_id?: string;
 }
 
 export interface GossipPeerInfo {

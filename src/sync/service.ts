@@ -11,7 +11,8 @@ import * as syncEventsDAL from '../db/dal/sync-events.js';
 import * as syncPeersDAL from '../db/dal/sync-peers.js';
 import * as syncPeerConfigsDAL from '../db/dal/sync-peer-configs.js';
 import * as hivesDAL from '../db/dal/hives.js';
-import { signEvent, verifyEventSignature, generateSyncToken } from './crypto.js';
+import { transaction } from '../db/index.js';
+import { signEvent, verifyEventSignature, verifyEventSignatureMultiKey, generateSyncToken } from './crypto.js';
 import { materializeBatch, processPendingQueue } from './materializer.js';
 import { buildGossipPayload, processGossipPeers, cleanupStaleGossipPeers } from './gossip.js';
 import { CompositePeerResolver, ManualPeerResolver, HubPeerResolver } from './peer-resolver.js';
@@ -28,6 +29,9 @@ import type {
   GossipPeerInfo,
 } from './types.js';
 
+/** Current sync protocol version — bump on breaking changes */
+export const SYNC_PROTOCOL_VERSION = 1;
+
 const syncLogger = {
   info: (message: string, ctx?: Record<string, unknown>) => {
     console.info(`[Sync Service] ${message}`, ctx ? JSON.stringify(ctx) : '');
@@ -40,6 +44,16 @@ const syncLogger = {
   },
 };
 
+/** GAP-6: Max consecutive failures before marking peer unreachable */
+const MAX_PEER_FAILURES = 5;
+/** GAP-6: Max heartbeat cycles to skip (cap for exponential backoff) */
+const MAX_BACKOFF_CYCLES = 32;
+
+/** Generate a short trace ID for correlating operations across instances */
+function generateTraceId(): string {
+  return `tr_${nanoid(12)}`;
+}
+
 export class SyncService {
   private peerResolver: CompositePeerResolver;
   private heartbeatTimer: NodeJS.Timeout | null = null;
@@ -48,6 +62,12 @@ export class SyncService {
   private config: Config['sync'];
   private instanceId: string;
   private started = false;
+  /** GAP-6: Track heartbeat cycle count for backoff calculation */
+  private heartbeatCycle = 0;
+  /** NEW-2: Guard against concurrent heartbeat loops */
+  private isHeartbeatRunning = false;
+  /** Track active sync operations (push/pull) for concurrency cap */
+  private activeSyncOps = 0;
 
   constructor(config: Config['sync']) {
     this.config = config;
@@ -64,6 +84,30 @@ export class SyncService {
 
   getPeerResolver(): CompositePeerResolver {
     return this.peerResolver;
+  }
+
+  /** GAP-2: Expose handshake secret for route-level verification */
+  getHandshakeSecret(): string | undefined {
+    return this.config.handshake_secret;
+  }
+
+  /** GAP-13: Get this instance's publicly reachable sync endpoint */
+  getSyncEndpoint(): string {
+    return this.config.sync_endpoint || '';
+  }
+
+  /** NEW-8: Rotate the signing key for a sync group.
+   *  The previous key is retained for signature verification during the transition period. */
+  rotateKey(syncGroupId: string): { key_version: number; signing_key: string } {
+    const updated = syncGroupsDAL.rotateGroupKey(syncGroupId);
+    syncLogger.info('Rotated signing key for sync group', {
+      sync_group_id: syncGroupId,
+      key_version: updated.key_version,
+    });
+    return {
+      key_version: updated.key_version,
+      signing_key: updated.instance_signing_key,
+    };
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────
@@ -173,6 +217,19 @@ export class SyncService {
   // ── Inbound Handlers ──────────────────────────────────────────
 
   handleHandshake(input: HandshakeRequest): HandshakeResponse {
+    // Protocol version compatibility check
+    if (input.protocol_version && input.protocol_version > SYNC_PROTOCOL_VERSION) {
+      throw new Error(
+        `Incompatible sync protocol: peer requires v${input.protocol_version}, ` +
+        `but this instance supports v${SYNC_PROTOCOL_VERSION}. Upgrade this instance to connect.`
+      );
+    }
+    if (input.protocol_version === undefined) {
+      syncLogger.warn('Peer sent handshake without protocol_version — assuming legacy v0', {
+        peer: input.instance_id,
+      });
+    }
+
     // Find the sync group
     const syncGroup = syncGroupsDAL.findSyncGroupByName(input.sync_group_name);
     if (!syncGroup) {
@@ -188,6 +245,9 @@ export class SyncService {
       syncPeersDAL.updateSyncPeerSigningKey(peer.id, input.signing_key);
       syncPeersDAL.updateSyncPeerToken(peer.id, token);
       syncPeersDAL.updateSyncPeerStatus(peer.id, 'active');
+      // GAP-3: Store the remote's sync_group_id so we can target their endpoints
+      syncPeersDAL.updateSyncPeerRemoteGroupId(peer.id, input.sync_group_id);
+      syncPeersDAL.updateSyncPeerInstanceId(peer.id, input.instance_id);
     } else {
       // Create new peer
       peer = syncPeersDAL.createSyncPeer({
@@ -196,10 +256,13 @@ export class SyncService {
         peer_endpoint: input.sync_endpoint,
         peer_signing_key: input.signing_key,
         sync_token: token,
+        // GAP-3: Store their sync_group_id for push/pull URLs
+        peer_remote_group_id: input.sync_group_id,
+        peer_instance_id: input.instance_id,
       });
     }
 
-    // Update peer config with token
+    // Update peer config with token and instance ID (GAP-8)
     const existingConfig = syncPeerConfigsDAL.findPeerConfigByEndpoint(input.sync_endpoint);
     if (existingConfig) {
       syncPeerConfigsDAL.updatePeerConfig(existingConfig.id, {
@@ -207,6 +270,7 @@ export class SyncService {
         signing_key: input.signing_key,
       });
       syncPeerConfigsDAL.updatePeerConfigStatus(existingConfig.id, 'active');
+      syncPeerConfigsDAL.updatePeerConfigInstanceId(existingConfig.id, input.instance_id);
     }
 
     syncLogger.info('Handshake completed', {
@@ -219,6 +283,8 @@ export class SyncService {
       signing_key: syncGroup.instance_signing_key,
       current_seq: syncGroup.seq,
       sync_token: token,
+      protocol_version: SYNC_PROTOCOL_VERSION,
+      key_version: syncGroup.key_version ?? 1,
     };
   }
 
@@ -241,53 +307,85 @@ export class SyncService {
     }
 
     // Look up peer signing keys for verification
+    // NEW-8: Build multi-key candidates per origin (current + previous for rotation)
     const peers = syncPeersDAL.listActivePeers(syncGroupId);
-    const peerKeyMap = new Map<string, string>();
+    const peerKeysMap = new Map<string, Array<{ publicKey: string; keyVersion: number }>>();
     for (const p of peers) {
       if (p.peer_signing_key) {
-        peerKeyMap.set(p.peer_swarm_id, p.peer_signing_key);
+        const ids = [p.peer_swarm_id];
+        if (p.peer_instance_id) ids.push(p.peer_instance_id);
+        for (const id of ids) {
+          const existing = peerKeysMap.get(id) || [];
+          existing.push({ publicKey: p.peer_signing_key, keyVersion: p.peer_key_version ?? 1 });
+          peerKeysMap.set(id, existing);
+        }
       }
     }
+    // Also add the sync group's own key (for events that originated here and were relayed)
+    const groupKeys: Array<{ publicKey: string; keyVersion: number }> = [
+      { publicKey: syncGroup.instance_signing_key, keyVersion: syncGroup.key_version ?? 1 },
+    ];
+    if (syncGroup.previous_signing_key) {
+      groupKeys.push({ publicKey: syncGroup.previous_signing_key, keyVersion: (syncGroup.key_version ?? 1) - 1 });
+    }
 
-    const insertedEvents: HiveEvent[] = [];
+    // NEW-1: Wrap insert + materialize in a transaction so partial failures roll back
+    const currentSeq = transaction(() => {
+      const insertedEvents: HiveEvent[] = [];
 
-    for (const event of events) {
-      // Verify event signature if we have the origin's public key
-      const originKey = peerKeyMap.get(event.origin_instance_id);
-      if (originKey) {
-        if (!verifyEventSignature(event.payload, event.signature, originKey)) {
-          syncLogger.warn('Invalid signature, rejecting event', {
+      for (const event of events) {
+        // GAP-9: Check for duplicate events before processing
+        if (syncEventsDAL.eventExistsByOrigin(syncGroupId, event.origin_instance_id, event.id)) {
+          syncLogger.info('Skipping duplicate event', { event_id: event.id });
+          continue;
+        }
+
+        // GAP-1 + NEW-8: Verify event signature using multi-key verification
+        const originKeys = peerKeysMap.get(event.origin_instance_id);
+        if (!originKeys || originKeys.length === 0) {
+          syncLogger.warn('Rejecting event from unknown origin (no signing key)', {
             event_id: event.id,
             origin: event.origin_instance_id,
           });
           continue;
         }
+
+        // Try all candidate keys (current + previous during rotation)
+        const allCandidates = [...originKeys, ...groupKeys];
+        const { matched } = verifyEventSignatureMultiKey(event.payload, event.signature, allCandidates);
+        if (!matched) {
+          syncLogger.warn('Invalid signature, rejecting event (tried all key versions)', {
+            event_id: event.id,
+            origin: event.origin_instance_id,
+          });
+          continue;
+        }
+
+        // Insert remote event (assigns local seq)
+        const inserted = syncEventsDAL.insertRemoteEvent({
+          sync_group_id: syncGroupId,
+          event_type: event.event_type as HiveEventType,
+          origin_instance_id: event.origin_instance_id,
+          origin_ts: event.origin_ts,
+          payload: event.payload,
+          signature: event.signature,
+          is_local: false,
+        });
+
+        insertedEvents.push(inserted);
       }
 
-      // Insert remote event (assigns local seq)
-      const inserted = syncEventsDAL.insertRemoteEvent({
-        sync_group_id: syncGroupId,
-        event_type: event.event_type as HiveEventType,
-        origin_instance_id: event.origin_instance_id,
-        origin_ts: event.origin_ts,
-        payload: event.payload,
-        signature: event.signature,
-        is_local: false,
-      });
+      // Materialize all inserted events
+      if (insertedEvents.length > 0) {
+        materializeBatch(insertedEvents, syncGroup.hive_id, hive.name, this.instanceId);
 
-      insertedEvents.push(inserted);
-    }
+        // Process any pending events whose dependencies may now be satisfied
+        processPendingQueue(syncGroupId, syncGroup.hive_id, hive.name, this.instanceId, this.config.max_pending_events);
+      }
 
-    // Materialize all inserted events
-    if (insertedEvents.length > 0) {
-      materializeBatch(insertedEvents, syncGroup.hive_id, hive.name, this.instanceId);
-
-      // Process any pending events whose dependencies may now be satisfied
-      processPendingQueue(syncGroupId, syncGroup.hive_id, hive.name, this.instanceId);
-    }
-
-    // Read current seq after all insertions (not stale snapshot)
-    const currentSeq = syncGroupsDAL.getSeq(syncGroupId);
+      // Read current seq after all insertions (not stale snapshot)
+      return syncGroupsDAL.getSeq(syncGroupId);
+    });
 
     return {
       received_seq: currentSeq,
@@ -338,13 +436,20 @@ export class SyncService {
       }
     }
 
-    // Update heartbeat timestamp for the sender
-    const senderConfigs = syncPeerConfigsDAL.listPeerConfigs();
-    for (const sc of senderConfigs) {
-      // Best-effort match by name or instance_id
-      if (sc.name === input.instance_id) {
-        syncPeerConfigsDAL.updatePeerConfigHeartbeat(sc.id);
-        break;
+    // GAP-8: Match sender by peer_instance_id first, then fall back to endpoint-based match
+    const senderByInstanceId = syncPeerConfigsDAL.findPeerConfigByInstanceId(input.instance_id);
+    if (senderByInstanceId) {
+      syncPeerConfigsDAL.updatePeerConfigHeartbeat(senderByInstanceId.id);
+      syncPeerConfigsDAL.resetFailureCount(senderByInstanceId.id);
+    } else {
+      // Fall back to name-based match (legacy behavior)
+      const senderConfigs = syncPeerConfigsDAL.listPeerConfigs();
+      for (const sc of senderConfigs) {
+        if (sc.name === input.instance_id) {
+          syncPeerConfigsDAL.updatePeerConfigHeartbeat(sc.id);
+          syncPeerConfigsDAL.resetFailureCount(sc.id);
+          break;
+        }
       }
     }
 
@@ -352,6 +457,7 @@ export class SyncService {
       instance_id: this.instanceId,
       seq_by_hive: seqByHive,
       known_peers: gossipResponse.length > 0 ? gossipResponse : undefined,
+      trace_id: input.trace_id,
     };
   }
 
@@ -389,18 +495,49 @@ export class SyncService {
 
   // ── Internal ──────────────────────────────────────────────────
 
+  /** Acquire a sync slot before running an operation. Waits if at capacity. */
+  private async acquireSyncSlot<T>(fn: () => Promise<T>, maxConcurrent: number): Promise<T> {
+    // Spin-wait with backoff if at capacity
+    while (this.activeSyncOps >= maxConcurrent) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    this.activeSyncOps++;
+    try {
+      return await fn();
+    } finally {
+      this.activeSyncOps--;
+    }
+  }
+
+  // GAP-5: Use Promise.allSettled for parallel fan-out instead of sequential iteration
   private async pushToAllPeers(syncGroupId: string): Promise<void> {
     const peers = syncPeersDAL.listActivePeers(syncGroupId);
 
-    for (const peer of peers) {
-      try {
-        await this.pushToPeer(syncGroupId, peer.id);
-      } catch (err) {
+    // Respect max_concurrent_syncs by batching peer pushes
+    const maxConcurrent = this.config.max_concurrent_syncs;
+    const results = await Promise.allSettled(
+      peers.map(peer => this.acquireSyncSlot(() => this.pushToPeer(syncGroupId, peer.id), maxConcurrent))
+    );
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      if (result.status === 'rejected') {
+        const peer = peers[i];
         syncLogger.error('Push to peer failed', {
           peer: peer.peer_swarm_id,
-          error: (err as Error).message,
+          error: (result.reason as Error).message,
         });
-        syncPeersDAL.updateSyncPeerStatus(peer.id, 'error', (err as Error).message);
+        // GAP-6: Track failures for backoff
+        syncPeersDAL.incrementPeerFailureCount(peer.id);
+        const updatedPeer = syncPeersDAL.findSyncPeerById(peer.id);
+        if (updatedPeer && updatedPeer.failure_count >= MAX_PEER_FAILURES) {
+          syncPeersDAL.updateSyncPeerStatus(peer.id, 'unreachable', (result.reason as Error).message);
+        } else {
+          syncPeersDAL.updateSyncPeerStatus(peer.id, 'error', (result.reason as Error).message);
+        }
+      } else {
+        // GAP-6: Reset failure count on success
+        syncPeersDAL.resetPeerFailureCount(peers[i].id);
       }
     }
   }
@@ -409,7 +546,10 @@ export class SyncService {
     const peer = syncPeersDAL.findSyncPeerById(peerId);
     if (!peer) return;
 
-    const { events, nextSeq, hasMore } = syncEventsDAL.getEventsSince(
+    // GAP-3: Use the remote peer's sync group ID for the URL, falling back to local
+    const remoteGroupId = peer.peer_remote_group_id || syncGroupId;
+
+    const { events, nextSeq } = syncEventsDAL.getEventsSince(
       syncGroupId,
       peer.last_seq_sent,
       100
@@ -422,11 +562,19 @@ export class SyncService {
       return;
     }
 
-    const response = await fetch(`${peer.peer_endpoint}/groups/${syncGroupId}/events`, {
+    const traceId = generateTraceId();
+    syncLogger.info('Pushing events to peer', {
+      trace_id: traceId,
+      peer: peer.peer_swarm_id,
+      event_count: events.length,
+    });
+
+    const response = await fetch(`${peer.peer_endpoint}/groups/${remoteGroupId}/events`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${peer.sync_token}`,
+        'X-Trace-Id': traceId,
       },
       body: JSON.stringify({
         events: events.map(e => ({
@@ -438,6 +586,7 @@ export class SyncService {
           signature: e.signature,
         })),
         sender_seq: nextSeq,
+        trace_id: traceId,
       }),
       signal: AbortSignal.timeout(10000),
     });
@@ -450,10 +599,30 @@ export class SyncService {
   }
 
   private runHeartbeatLoop(): void {
+    // NEW-2: Skip if previous heartbeat cycle is still in-flight
+    if (this.isHeartbeatRunning) {
+      syncLogger.info('Skipping heartbeat cycle — previous cycle still running');
+      return;
+    }
+    this.isHeartbeatRunning = true;
+
+    this.heartbeatCycle++;
     const peers = this.peerResolver.getAllPeers();
 
+    // NEW-2: Collect all heartbeat promises so we can clear the guard when done
+    const heartbeatPromises: Promise<void>[] = [];
+
     for (const peer of peers) {
-      if (peer.status !== 'active') continue;
+      // GAP-6: Skip unreachable peers; apply exponential backoff for error-state peers
+      if (peer.status === 'unreachable') continue;
+      if (peer.status !== 'active') {
+        // Look up failure count from the config to compute backoff
+        const peerConfig = syncPeerConfigsDAL.findPeerConfigByEndpoint(peer.sync_endpoint);
+        if (peerConfig && peerConfig.failure_count > 0) {
+          const backoffCycles = Math.min(2 ** peerConfig.failure_count, MAX_BACKOFF_CYCLES);
+          if (this.heartbeatCycle % backoffCycles !== 0) continue;
+        }
+      }
 
       // Build heartbeat request
       const syncGroups = syncGroupsDAL.listSyncGroups();
@@ -470,21 +639,31 @@ export class SyncService {
         gossipPayload = buildGossipPayload(peer, allPeers, this.config.gossip);
       }
 
+      const traceId = generateTraceId();
       const heartbeat: HeartbeatRequest = {
         instance_id: this.instanceId,
         seq_by_hive: seqByHive,
         known_peers: gossipPayload.length > 0 ? gossipPayload : undefined,
+        trace_id: traceId,
       };
 
-      fetch(`${peer.sync_endpoint}/heartbeat`, {
+      // GAP-4: Include Authorization header with the peer's sync_token
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (peer.sync_token) {
+        headers['Authorization'] = `Bearer ${peer.sync_token}`;
+      }
+
+      const p = fetch(`${peer.sync_endpoint}/heartbeat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(heartbeat),
         signal: AbortSignal.timeout(5000),
       }).then(async res => {
         if (res.ok) {
           const response: HeartbeatResponse = await res.json();
           syncPeerConfigsDAL.updatePeerConfigHeartbeat(peer.id);
+          // GAP-6: Reset failure count on successful heartbeat
+          syncPeerConfigsDAL.resetFailureCount(peer.id);
 
           // Process gossip from response
           if (response.known_peers && this.config.gossip.enabled) {
@@ -496,6 +675,7 @@ export class SyncService {
             const localSeq = seqByHive[hiveName] ?? 0;
             if (peerSeq > localSeq) {
               syncLogger.info('Peer is ahead, triggering pull', {
+                trace_id: traceId,
                 peer: peer.name,
                 hive: hiveName,
                 peer_seq: peerSeq,
@@ -513,8 +693,12 @@ export class SyncService {
                   sp.peer_endpoint === peer.sync_endpoint
                 );
                 if (matchingPeer) {
-                  this.pullFromPeer(sg.id, matchingPeer.id).catch(pullErr => {
+                  await this.acquireSyncSlot(
+                    () => this.pullFromPeer(sg.id, matchingPeer.id),
+                    this.config.max_concurrent_syncs,
+                  ).catch(pullErr => {
                     syncLogger.warn('Pull from peer failed', {
+                      trace_id: traceId,
                       peer: peer.name,
                       error: (pullErr as Error).message,
                     });
@@ -523,14 +707,26 @@ export class SyncService {
               }
             }
           }
+        } else {
+          // GAP-6: Track heartbeat failures
+          syncPeerConfigsDAL.incrementFailureCount(peer.id);
         }
       }).catch(err => {
         syncLogger.warn('Heartbeat failed', {
           peer: peer.name,
           error: (err as Error).message,
         });
+        // GAP-6: Track heartbeat failures
+        syncPeerConfigsDAL.incrementFailureCount(peer.id);
       });
+
+      heartbeatPromises.push(p);
     }
+
+    // NEW-2: Clear the guard once all heartbeat requests have settled
+    Promise.allSettled(heartbeatPromises).then(() => {
+      this.isHeartbeatRunning = false;
+    });
   }
 
   /** Pull events from a peer for a sync group, processing in batches until caught up */
@@ -544,15 +740,40 @@ export class SyncService {
     const hive = hivesDAL.findHiveById(syncGroup.hive_id);
     if (!hive) return 0;
 
+    // GAP-3: Use the remote peer's sync group ID for pull URLs
+    const remoteGroupId = peer.peer_remote_group_id || syncGroupId;
+
+    // GAP-10: Build peer key map for signature verification (same logic as handleIncomingEvents)
+    const allPeers = syncPeersDAL.listActivePeers(syncGroupId);
+    const peerKeyMap = new Map<string, string>();
+    for (const p of allPeers) {
+      if (p.peer_signing_key) {
+        peerKeyMap.set(p.peer_swarm_id, p.peer_signing_key);
+      }
+      if (p.peer_instance_id && p.peer_signing_key) {
+        peerKeyMap.set(p.peer_instance_id, p.peer_signing_key);
+      }
+    }
+
+    const traceId = generateTraceId();
+    syncLogger.info('Pulling events from peer', {
+      trace_id: traceId,
+      peer: peer.peer_swarm_id,
+      since: peer.last_seq_received,
+    });
+
     let totalPulled = 0;
     let hasMore = true;
     let since = peer.last_seq_received;
 
     while (hasMore) {
       const response = await fetch(
-        `${peer.peer_endpoint}/groups/${syncGroupId}/events?since=${since}&limit=500`,
+        `${peer.peer_endpoint}/groups/${remoteGroupId}/events?since=${since}&limit=500`,
         {
-          headers: { 'Authorization': `Bearer ${peer.sync_token}` },
+          headers: {
+            'Authorization': `Bearer ${peer.sync_token}`,
+            'X-Trace-Id': traceId,
+          },
           signal: AbortSignal.timeout(30000),
         }
       );
@@ -564,30 +785,54 @@ export class SyncService {
       const data: PullEventsResponse = await response.json();
 
       if (data.events.length > 0) {
-        // Insert remote events
-        const insertedEvents: HiveEvent[] = [];
-        for (const event of data.events) {
-          const inserted = syncEventsDAL.insertRemoteEvent({
-            sync_group_id: syncGroupId,
-            event_type: event.event_type as HiveEventType,
-            origin_instance_id: event.origin_instance_id,
-            origin_ts: event.origin_ts,
-            payload: event.payload,
-            signature: event.signature,
-            is_local: false,
-          });
-          insertedEvents.push(inserted);
-        }
+        // NEW-1: Wrap insert + materialize in a transaction so partial failures roll back
+        const batchInserted = transaction(() => {
+          const insertedEvents: HiveEvent[] = [];
+          for (const event of data.events) {
+            // GAP-9: Check for duplicates
+            if (syncEventsDAL.eventExistsByOrigin(syncGroupId, event.origin_instance_id, event.id)) {
+              continue;
+            }
 
-        // Materialize
-        materializeBatch(insertedEvents, syncGroup.hive_id, hive.name, this.instanceId);
-        processPendingQueue(syncGroupId, syncGroup.hive_id, hive.name, this.instanceId);
+            // GAP-10: Verify signatures for pulled events
+            const originKey = peerKeyMap.get(event.origin_instance_id);
+            if (originKey) {
+              if (!verifyEventSignature(event.payload, event.signature, originKey)) {
+                syncLogger.warn('Invalid signature on pulled event, skipping', {
+                  event_id: event.id,
+                  origin: event.origin_instance_id,
+                });
+                continue;
+              }
+            }
+            // Note: For pulled events we are more lenient than pushed events.
+            // We accept events from unknown origins during pull (initial backfill)
+            // because the pull peer has already verified them.
 
-        totalPulled += insertedEvents.length;
+            const inserted = syncEventsDAL.insertRemoteEvent({
+              sync_group_id: syncGroupId,
+              event_type: event.event_type as HiveEventType,
+              origin_instance_id: event.origin_instance_id,
+              origin_ts: event.origin_ts,
+              payload: event.payload,
+              signature: event.signature,
+              is_local: false,
+            });
+            insertedEvents.push(inserted);
+          }
+
+          // Materialize
+          materializeBatch(insertedEvents, syncGroup.hive_id, hive.name, this.instanceId);
+          processPendingQueue(syncGroupId, syncGroup.hive_id, hive.name, this.instanceId, this.config.max_pending_events);
+
+          // Update last_seq_received inside the transaction
+          syncPeersDAL.updateSyncPeerSeqReceived(peerId, data.next_seq);
+
+          return insertedEvents.length;
+        });
+
+        totalPulled += batchInserted;
         since = data.next_seq;
-
-        // Update last_seq_received
-        syncPeersDAL.updateSyncPeerSeqReceived(peerId, data.next_seq);
       }
 
       hasMore = data.has_more;
@@ -595,6 +840,7 @@ export class SyncService {
 
     if (totalPulled > 0) {
       syncLogger.info('Pulled events from peer', {
+        trace_id: traceId,
         peer: peer.peer_swarm_id,
         count: totalPulled,
       });
@@ -605,6 +851,13 @@ export class SyncService {
 
   /** Initiate handshakes with all pending peer configs */
   private async initiateHandshakes(): Promise<void> {
+    // NEW-9: Skip handshake initiation entirely if sync_endpoint is not configured
+    const localEndpoint = this.getSyncEndpoint();
+    if (!localEndpoint) {
+      syncLogger.warn('Skipping handshake initiation — sync_endpoint is not configured. Peers will not be able to push events back to this instance.');
+      return;
+    }
+
     const pendingPeers = syncPeerConfigsDAL.listPeerConfigs({ status: 'pending' });
     const syncGroups = syncGroupsDAL.listSyncGroups();
 
@@ -614,22 +867,39 @@ export class SyncService {
         if (!hive || !peerConfig.shared_hives.includes(hive.name)) continue;
 
         try {
+          // GAP-2: Include handshake secret if configured
+          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+          if (this.config.handshake_secret) {
+            headers['X-Handshake-Secret'] = this.config.handshake_secret;
+          }
+
           const response = await fetch(`${peerConfig.sync_endpoint}/handshake`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
               sync_group_name: sg.sync_group_name,
+              // GAP-3: Include our local sync_group_id so the remote can push back to us
+              sync_group_id: sg.id,
               instance_id: this.instanceId,
               signing_key: sg.instance_signing_key,
-              sync_endpoint: this.config.peers.length > 0
-                ? '' // Will be set by the caller in production
-                : '',
+              // GAP-13: Provide this instance's reachable sync endpoint
+              sync_endpoint: this.getSyncEndpoint(),
+              protocol_version: SYNC_PROTOCOL_VERSION,
             }),
             signal: AbortSignal.timeout(10000),
           });
 
           if (response.ok) {
             const data: HandshakeResponse = await response.json();
+
+            // Warn if remote is on a newer protocol version
+            if (data.protocol_version && data.protocol_version > SYNC_PROTOCOL_VERSION) {
+              syncLogger.warn('Remote peer is on a newer sync protocol version — some features may not work', {
+                peer: peerConfig.name,
+                remote_version: data.protocol_version,
+                local_version: SYNC_PROTOCOL_VERSION,
+              });
+            }
 
             // Store the peer's token and signing key
             syncPeerConfigsDAL.updatePeerConfig(peerConfig.id, {
@@ -647,10 +917,13 @@ export class SyncService {
                 peer_endpoint: peerConfig.sync_endpoint,
                 peer_signing_key: data.signing_key,
                 sync_token: data.sync_token,
+                // GAP-3: Store remote's sync group ID for push/pull URLs
+                peer_remote_group_id: data.sync_group_id,
               });
             } else {
               syncPeersDAL.updateSyncPeerToken(peer.id, data.sync_token);
               syncPeersDAL.updateSyncPeerSigningKey(peer.id, data.signing_key);
+              syncPeersDAL.updateSyncPeerRemoteGroupId(peer.id, data.sync_group_id);
               syncPeersDAL.updateSyncPeerStatus(peer.id, 'backfilling');
             }
 

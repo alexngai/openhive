@@ -6,9 +6,12 @@ export const CreateSyncGroupSchema = z.object({
 
 export const HandshakeSchema = z.object({
   sync_group_name: z.string().min(1),
+  sync_group_id: z.string().min(1),
   instance_id: z.string().min(1),
   signing_key: z.string().min(1),
   sync_endpoint: z.string().min(1),
+  /** Sync protocol version — optional for backward compat with pre-versioned peers */
+  protocol_version: z.number().int().positive().optional(),
 });
 
 export const PushEventsSchema = z.object({

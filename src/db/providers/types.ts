@@ -284,6 +284,169 @@ export interface SearchRepository {
 }
 
 // ============================================================================
+// Sync Repository Interfaces (NEW-11)
+// ============================================================================
+
+export interface SyncGroupInput {
+  hive_id: string;
+  sync_group_name: string;
+  instance_id: string;
+}
+
+export interface SyncGroupRecord {
+  id: string;
+  hive_id: string;
+  sync_group_name: string;
+  created_by_instance_id: string | null;
+  instance_signing_key: string;
+  instance_signing_key_private: string;
+  seq: number;
+  key_version: number;
+  previous_signing_key: string | null;
+  previous_signing_key_private: string | null;
+  key_rotated_at: string | null;
+  created_at: string;
+}
+
+export interface SyncGroupRepository {
+  create(input: SyncGroupInput): Promise<SyncGroupRecord>;
+  findById(id: string): Promise<SyncGroupRecord | null>;
+  findByHive(hiveId: string): Promise<SyncGroupRecord | null>;
+  findByName(name: string): Promise<SyncGroupRecord | null>;
+  list(): Promise<SyncGroupRecord[]>;
+  delete(id: string): Promise<boolean>;
+  incrementSeq(id: string): Promise<number>;
+  getSeq(id: string): Promise<number>;
+  rotateKey(id: string): Promise<SyncGroupRecord>;
+  clearPreviousKey(id: string): Promise<void>;
+}
+
+export interface SyncPeerInput {
+  sync_group_id: string;
+  peer_swarm_id: string;
+  peer_endpoint: string;
+  peer_signing_key?: string;
+  sync_token?: string;
+  peer_remote_group_id?: string;
+  peer_instance_id?: string;
+}
+
+export interface SyncPeerRecord {
+  id: string;
+  sync_group_id: string;
+  peer_swarm_id: string;
+  peer_endpoint: string;
+  peer_signing_key: string | null;
+  sync_token: string | null;
+  peer_remote_group_id: string | null;
+  peer_instance_id: string | null;
+  last_seq_sent: number;
+  last_seq_received: number;
+  last_sync_at: string | null;
+  failure_count: number;
+  peer_key_version: number;
+  status: string;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SyncPeerRepository {
+  create(input: SyncPeerInput): Promise<SyncPeerRecord>;
+  findById(id: string): Promise<SyncPeerRecord | null>;
+  findByGroupAndSwarmId(syncGroupId: string, swarmId: string): Promise<SyncPeerRecord | null>;
+  listByGroup(syncGroupId: string): Promise<SyncPeerRecord[]>;
+  listActive(syncGroupId: string): Promise<SyncPeerRecord[]>;
+  delete(id: string): Promise<boolean>;
+  updateStatus(id: string, status: string, error?: string): Promise<void>;
+  updateSeqSent(id: string, seq: number): Promise<void>;
+  updateSeqReceived(id: string, seq: number): Promise<void>;
+  updateToken(id: string, token: string): Promise<void>;
+  updateSigningKey(id: string, key: string): Promise<void>;
+  incrementFailureCount(id: string): Promise<void>;
+  resetFailureCount(id: string): Promise<void>;
+}
+
+export interface SyncEventInput {
+  sync_group_id: string;
+  event_type: string;
+  origin_instance_id: string;
+  origin_ts: number;
+  payload: string;
+  signature: string;
+  is_local: boolean;
+  key_version?: number;
+}
+
+export interface SyncEventRecord {
+  id: string;
+  sync_group_id: string;
+  seq: number;
+  event_type: string;
+  origin_instance_id: string;
+  origin_ts: number;
+  payload: string;
+  signature: string;
+  received_at: string;
+  is_local: number;
+  key_version: number;
+}
+
+export interface SyncEventRepository {
+  insertLocal(input: SyncEventInput): Promise<SyncEventRecord>;
+  insertRemote(input: SyncEventInput): Promise<SyncEventRecord>;
+  getEventsSince(syncGroupId: string, since: number, limit: number): Promise<{ events: SyncEventRecord[]; nextSeq: number; hasMore: boolean }>;
+  eventExistsByOrigin(syncGroupId: string, originInstanceId: string, eventId: string): Promise<boolean>;
+  countPending(syncGroupId: string): Promise<number>;
+  trimPending(syncGroupId: string, maxCount: number): Promise<number>;
+}
+
+export interface SyncPeerConfigInput {
+  name: string;
+  sync_endpoint: string;
+  shared_hives: string[];
+  signing_key?: string;
+  is_manual: boolean;
+  source: 'manual' | 'hub' | 'gossip';
+  gossip_ttl?: number;
+  discovered_via?: string;
+}
+
+export interface SyncPeerConfigRecord {
+  id: string;
+  name: string;
+  sync_endpoint: string;
+  shared_hives: string[];
+  signing_key: string | null;
+  sync_token: string | null;
+  peer_instance_id: string | null;
+  is_manual: boolean;
+  source: string;
+  status: string;
+  last_heartbeat_at: string | null;
+  last_error: string | null;
+  gossip_ttl: number;
+  failure_count: number;
+  discovered_via: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SyncPeerConfigRepository {
+  create(input: SyncPeerConfigInput): Promise<SyncPeerConfigRecord>;
+  upsert(input: SyncPeerConfigInput): Promise<SyncPeerConfigRecord>;
+  findByEndpoint(endpoint: string): Promise<SyncPeerConfigRecord | null>;
+  findByInstanceId(instanceId: string): Promise<SyncPeerConfigRecord | null>;
+  list(filter?: { status?: string }): Promise<SyncPeerConfigRecord[]>;
+  update(id: string, input: Partial<SyncPeerConfigInput & { sync_token?: string }>): Promise<void>;
+  updateStatus(id: string, status: string, error?: string): Promise<void>;
+  updateHeartbeat(id: string): Promise<void>;
+  incrementFailureCount(id: string): Promise<void>;
+  resetFailureCount(id: string): Promise<void>;
+  delete(id: string): Promise<boolean>;
+}
+
+// ============================================================================
 // Database Provider Interface
 // ============================================================================
 
@@ -301,6 +464,12 @@ export interface DatabaseProvider {
   uploads: UploadRepository;
   instances: InstanceRepository;
   search: SearchRepository;
+
+  // Sync Repositories (NEW-11)
+  syncGroups: SyncGroupRepository;
+  syncPeers: SyncPeerRepository;
+  syncEvents: SyncEventRepository;
+  syncPeerConfigs: SyncPeerConfigRepository;
 
   // Transaction support
   transaction<T>(fn: () => Promise<T>): Promise<T>;

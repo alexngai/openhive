@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 export const CREATE_TABLES = `
 -- Agents table (supports both agents and human accounts)
@@ -363,11 +363,14 @@ CREATE TABLE IF NOT EXISTS hive_sync_peers (
   peer_endpoint TEXT NOT NULL,
   peer_signing_key TEXT,
   sync_token TEXT,
+  peer_remote_group_id TEXT,
+  peer_instance_id TEXT,
   last_seq_sent INTEGER DEFAULT 0,
   last_seq_received INTEGER DEFAULT 0,
   last_sync_at TEXT,
+  failure_count INTEGER DEFAULT 0,
   status TEXT DEFAULT 'active'
-    CHECK (status IN ('active', 'paused', 'error', 'backfilling')),
+    CHECK (status IN ('active', 'paused', 'error', 'backfilling', 'unreachable')),
   last_error TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
@@ -420,6 +423,7 @@ CREATE TABLE IF NOT EXISTS sync_peer_configs (
   shared_hives TEXT NOT NULL,
   signing_key TEXT,
   sync_token TEXT,
+  peer_instance_id TEXT,
   is_manual INTEGER DEFAULT 1,
   source TEXT DEFAULT 'manual'
     CHECK (source IN ('manual', 'hub', 'gossip')),

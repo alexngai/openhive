@@ -93,6 +93,12 @@ export function processGossipPeers(
       // Don't overwrite manual or hub peers
       if (existing.source === 'manual' || existing.source === 'hub') continue;
 
+      // NEW-6: Only update TTL if the new value is lower (monotonic decrease guard)
+      // This prevents gossip loops from re-inflating TTL beyond intended propagation depth
+      const effectiveTtl = (existing.gossip_ttl !== undefined && incoming.ttl > existing.gossip_ttl)
+        ? existing.gossip_ttl
+        : incoming.ttl;
+
       // Update gossip-sourced peer if needed
       peerConfigsDAL.upsertPeerConfig({
         name: incoming.name,
@@ -101,7 +107,7 @@ export function processGossipPeers(
         signing_key: incoming.signing_key,
         is_manual: false,
         source: 'gossip',
-        gossip_ttl: incoming.ttl,
+        gossip_ttl: effectiveTtl,
         discovered_via: fromPeerEndpoint,
       });
     } else {

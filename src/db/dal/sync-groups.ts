@@ -64,3 +64,37 @@ export function getSeq(syncGroupId: string): number {
   const row = db.prepare('SELECT seq FROM hive_sync_groups WHERE id = ?').get(syncGroupId) as { seq: number } | undefined;
   return row?.seq ?? 0;
 }
+
+/** Rotate the signing key for a sync group.
+ *  Moves current key to previous_signing_key and generates a fresh keypair. */
+export function rotateGroupKey(syncGroupId: string): SyncGroup {
+  const db = getDatabase();
+  const group = findSyncGroupById(syncGroupId);
+  if (!group) throw new Error(`Sync group ${syncGroupId} not found`);
+
+  const newKeypair = generateSigningKeyPair();
+
+  db.prepare(`
+    UPDATE hive_sync_groups
+    SET previous_signing_key = instance_signing_key,
+        previous_signing_key_private = instance_signing_key_private,
+        instance_signing_key = ?,
+        instance_signing_key_private = ?,
+        key_version = key_version + 1,
+        key_rotated_at = datetime('now')
+    WHERE id = ?
+  `).run(newKeypair.publicKey, newKeypair.privateKey, syncGroupId);
+
+  return findSyncGroupById(syncGroupId)!;
+}
+
+/** Clear the previous key after all peers have acknowledged the rotation */
+export function clearPreviousKey(syncGroupId: string): void {
+  const db = getDatabase();
+  db.prepare(`
+    UPDATE hive_sync_groups
+    SET previous_signing_key = NULL,
+        previous_signing_key_private = NULL
+    WHERE id = ?
+  `).run(syncGroupId);
+}

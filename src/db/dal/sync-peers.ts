@@ -8,6 +8,8 @@ export interface CreateSyncPeerInput {
   peer_endpoint: string;
   peer_signing_key?: string | null;
   sync_token?: string | null;
+  peer_remote_group_id?: string | null;
+  peer_instance_id?: string | null;
 }
 
 function rowToSyncPeer(row: Record<string, unknown>): SyncPeerState {
@@ -20,9 +22,9 @@ export function createSyncPeer(input: CreateSyncPeerInput): SyncPeerState {
 
   db.prepare(`
     INSERT INTO hive_sync_peers
-      (id, sync_group_id, peer_swarm_id, peer_endpoint, peer_signing_key, sync_token)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(id, input.sync_group_id, input.peer_swarm_id, input.peer_endpoint, input.peer_signing_key ?? null, input.sync_token ?? null);
+      (id, sync_group_id, peer_swarm_id, peer_endpoint, peer_signing_key, sync_token, peer_remote_group_id, peer_instance_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, input.sync_group_id, input.peer_swarm_id, input.peer_endpoint, input.peer_signing_key ?? null, input.sync_token ?? null, input.peer_remote_group_id ?? null, input.peer_instance_id ?? null);
 
   return findSyncPeerById(id)!;
 }
@@ -96,4 +98,48 @@ export function listActivePeers(syncGroupId: string): SyncPeerState[] {
     "SELECT * FROM hive_sync_peers WHERE sync_group_id = ? AND status IN ('active', 'backfilling')"
   ).all(syncGroupId) as Record<string, unknown>[];
   return rows.map(rowToSyncPeer);
+}
+
+export function updateSyncPeerRemoteGroupId(peerId: string, remoteGroupId: string): void {
+  const db = getDatabase();
+  db.prepare(
+    "UPDATE hive_sync_peers SET peer_remote_group_id = ?, updated_at = datetime('now') WHERE id = ?"
+  ).run(remoteGroupId, peerId);
+}
+
+export function updateSyncPeerInstanceId(peerId: string, instanceId: string): void {
+  const db = getDatabase();
+  db.prepare(
+    "UPDATE hive_sync_peers SET peer_instance_id = ?, updated_at = datetime('now') WHERE id = ?"
+  ).run(instanceId, peerId);
+}
+
+export function incrementPeerFailureCount(peerId: string): void {
+  const db = getDatabase();
+  db.prepare(
+    "UPDATE hive_sync_peers SET failure_count = failure_count + 1, updated_at = datetime('now') WHERE id = ?"
+  ).run(peerId);
+}
+
+export function resetPeerFailureCount(peerId: string): void {
+  const db = getDatabase();
+  db.prepare(
+    "UPDATE hive_sync_peers SET failure_count = 0, updated_at = datetime('now') WHERE id = ?"
+  ).run(peerId);
+}
+
+export function findSyncPeerByEndpoint(syncGroupId: string, endpoint: string): SyncPeerState | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    'SELECT * FROM hive_sync_peers WHERE sync_group_id = ? AND peer_endpoint = ?'
+  ).get(syncGroupId, endpoint) as Record<string, unknown> | undefined;
+  return row ? rowToSyncPeer(row) : null;
+}
+
+export function findSyncPeerByInstanceId(syncGroupId: string, instanceId: string): SyncPeerState | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    'SELECT * FROM hive_sync_peers WHERE sync_group_id = ? AND peer_instance_id = ?'
+  ).get(syncGroupId, instanceId) as Record<string, unknown> | undefined;
+  return row ? rowToSyncPeer(row) : null;
 }

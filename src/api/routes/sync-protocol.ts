@@ -14,11 +14,25 @@ import * as syncPeersDAL from '../../db/dal/sync-peers.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 
 export async function syncProtocolRoutes(fastify: FastifyInstance): Promise<void> {
-  // POST /sync/v1/handshake — initiate peer connection (unauthenticated — establishes the token)
-  fastify.post('/handshake', async (request, reply) => {
+  // POST /sync/v1/handshake — initiate peer connection
+  // GAP-2: When handshake_secret is configured, require it via X-Handshake-Secret header
+  // NEW-4: Add rate limiting to prevent brute-force enumeration and resource exhaustion
+  fastify.post('/handshake', { preHandler: [syncRateLimitMiddleware] }, async (request, reply) => {
     const syncService = getSyncService();
     if (!syncService) {
       return reply.status(503).send({ error: 'Service Unavailable', message: 'Sync is not enabled' });
+    }
+
+    // GAP-2: Verify pre-shared key if configured
+    const requiredSecret = syncService.getHandshakeSecret();
+    if (requiredSecret) {
+      const providedSecret = request.headers['x-handshake-secret'] as string | undefined;
+      if (!providedSecret || providedSecret !== requiredSecret) {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          message: 'Invalid or missing handshake secret',
+        });
+      }
     }
 
     const parseResult = HandshakeSchema.safeParse(request.body);
@@ -132,15 +146,19 @@ export async function syncProtocolRoutes(fastify: FastifyInstance): Promise<void
       return reply.status(404).send({ error: 'Not Found', message: 'Sync group not found' });
     }
 
-    // Find the requesting peer by their auth identity
+    // NEW-3: Only allow a peer to remove itself — match authenticated identity
     const peerId = (request as Record<string, unknown>).syncPeerId as string | undefined;
     if (peerId) {
-      // Remove this peer from the sync group
-      const peers = syncPeersDAL.listSyncPeers(syncGroup.id);
-      for (const p of peers) {
-        if (p.id === peerId || p.peer_swarm_id === peerId) {
-          syncPeersDAL.deleteSyncPeer(p.id);
-          break;
+      // Find this peer's own record — must match the authenticated syncPeerId
+      const peer = syncPeersDAL.findSyncPeerById(peerId);
+      if (peer && peer.sync_group_id === syncGroup.id) {
+        syncPeersDAL.deleteSyncPeer(peer.id);
+      } else {
+        // Also check by peer_swarm_id matching against the peer table
+        const peers = syncPeersDAL.listSyncPeers(syncGroup.id);
+        const ownPeer = peers.find(p => p.id === peerId || p.peer_swarm_id === peerId);
+        if (ownPeer) {
+          syncPeersDAL.deleteSyncPeer(ownPeer.id);
         }
       }
     }

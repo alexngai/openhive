@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { WebSocket } from 'ws';
 import { findAgentByApiKey } from '../db/dal/agents.js';
+import { findHiveByName, isHiveMember } from '../db/dal/hives.js';
 import type { Agent, WSMessage, WSEvent } from '../types.js';
 
 interface ClientConnection {
@@ -99,14 +100,33 @@ function handleMessage(ws: WebSocket, client: ClientConnection, message: WSMessa
   switch (message.type) {
     case 'subscribe':
       if (message.channels) {
+        const subscribed: string[] = [];
+        const denied: string[] = [];
+
         for (const channel of message.channels) {
+          // NEW-5: Check hive membership before allowing subscription to hive channels
+          if (channel.startsWith('hive:')) {
+            const hiveName = channel.slice(5); // strip "hive:" prefix
+            const hive = findHiveByName(hiveName);
+            if (hive && !hive.is_public) {
+              // Private hive — require authenticated agent with membership
+              if (!client.agent || !isHiveMember(hive.id, client.agent.id)) {
+                denied.push(channel);
+                continue;
+              }
+            }
+          }
+
           subscribeToChannel(ws, channel);
           client.channels.add(channel);
+          subscribed.push(channel);
         }
+
         sendToClient(ws, {
           type: 'agent_online',
           data: {
-            subscribed: message.channels,
+            subscribed,
+            ...(denied.length > 0 ? { denied } : {}),
             current_channels: Array.from(client.channels),
           },
           timestamp: new Date().toISOString(),

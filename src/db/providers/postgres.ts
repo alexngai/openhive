@@ -228,6 +228,12 @@ export class PostgresProvider implements DatabaseProvider {
   instances: InstanceRepository;
   search: SearchRepository;
 
+  // Sync repositories — stubs until sync layer is migrated to Provider pattern (NEW-11)
+  syncGroups: any = null;
+  syncPeers: any = null;
+  syncEvents: any = null;
+  syncPeerConfigs: any = null;
+
   constructor(private config: PostgresProviderConfig) {
     this.pool = new Pool({
       connectionString: config.connectionString,

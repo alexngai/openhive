@@ -3,13 +3,18 @@
  *
  * Materializes sync events into posts/comments/votes tables.
  * Called after remote events are received and verified.
+ *
+ * NEW-10: Uses MaterializerRepository abstraction instead of direct db.prepare()
+ * calls. The SQLiteMaterializerRepository is the default implementation;
+ * swap via setMaterializerRepo() for Postgres/Turso/testing.
  */
 
 import { getDatabase } from '../db/index.js';
 import { nanoid } from 'nanoid';
 import { upsertRemoteAgent } from '../db/dal/remote-agents.js';
-import { insertPendingEvent } from '../db/dal/sync-events.js';
+import { insertPendingEvent, countPendingEvents, trimPendingEvents } from '../db/dal/sync-events.js';
 import { broadcastToChannel } from '../realtime/index.js';
+import { getMaterializerRepo } from './materializer-repo.js';
 import type {
   HiveEvent,
   PostCreatedPayload,
@@ -66,7 +71,7 @@ export function materializeEvent(event: HiveEvent, hiveId: string, hiveName: str
       materializePostUpdated(event, payload as PostUpdatedPayload);
       break;
     case 'post_deleted':
-      materializePostDeleted(payload as PostDeletedPayload, hiveId, hiveName);
+      materializePostDeleted(payload as PostDeletedPayload, hiveName);
       break;
     case 'comment_created':
       materializeCommentCreated(event, payload as CommentCreatedPayload, hiveId, hiveName, isLocal);
@@ -103,22 +108,22 @@ export function materializeBatch(events: HiveEvent[], hiveId: string, hiveName: 
 // ── Post Materialization ────────────────────────────────────────
 
 function materializePostCreated(event: HiveEvent, payload: PostCreatedPayload, hiveId: string, hiveName: string, isLocal: boolean): void {
-  const db = getDatabase();
+  const repo = getMaterializerRepo();
 
   // Check for duplicate (idempotency)
-  const existing = db.prepare(
-    'SELECT id FROM posts WHERE origin_instance_id = ? AND origin_post_id = ?'
-  ).get(event.origin_instance_id, payload.post_id);
+  const existing = repo.findPostByOrigin(event.origin_instance_id, payload.post_id);
   if (existing) return;
 
   const { authorId, remoteAuthorId } = resolveAuthor(payload.author, isLocal);
   const id = `rp_${nanoid()}`;
   const createdAt = new Date(event.origin_ts).toISOString();
 
-  db.prepare(`
-    INSERT INTO posts (id, hive_id, author_id, title, content, url, sync_event_id, origin_instance_id, origin_post_id, remote_author_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, hiveId, authorId, payload.title, payload.content, payload.url, event.id, event.origin_instance_id, payload.post_id, remoteAuthorId, createdAt);
+  repo.insertPost({
+    id, hive_id: hiveId, author_id: authorId, title: payload.title,
+    content: payload.content ?? null, url: payload.url ?? null,
+    sync_event_id: event.id, origin_instance_id: event.origin_instance_id,
+    origin_post_id: payload.post_id, remote_author_id: remoteAuthorId, created_at: createdAt,
+  });
 
   broadcastToChannel(`hive:${hiveName}`, {
     type: 'new_post',
@@ -129,41 +134,48 @@ function materializePostCreated(event: HiveEvent, payload: PostCreatedPayload, h
 }
 
 function materializePostUpdated(event: HiveEvent, payload: PostUpdatedPayload): void {
-  const db = getDatabase();
+  const repo = getMaterializerRepo();
 
-  const post = db.prepare(
-    'SELECT id FROM posts WHERE origin_instance_id = ? AND origin_post_id = ?'
-  ).get(event.origin_instance_id, payload.post_id) as { id: string } | undefined;
+  const post = repo.findPostByOrigin(event.origin_instance_id, payload.post_id);
   if (!post) {
     syncLogger.warn('post_updated for unknown post', { post_id: payload.post_id, origin: event.origin_instance_id });
     return;
   }
 
-  const updates: string[] = [];
-  const values: unknown[] = [];
+  // GAP-11: Last-writer-wins — only apply if this event is newer than current state
+  if (post.updated_at) {
+    const existingTs = new Date(post.updated_at).getTime();
+    if (event.origin_ts <= existingTs) {
+      syncLogger.info('Skipping stale post_updated (last-writer-wins)', {
+        post_id: post.id,
+        event_ts: event.origin_ts,
+        existing_ts: existingTs,
+      });
+      return;
+    }
+  }
 
-  if (payload.title !== undefined) { updates.push('title = ?'); values.push(payload.title); }
-  if (payload.content !== undefined) { updates.push('content = ?'); values.push(payload.content); }
-  if (payload.url !== undefined) { updates.push('url = ?'); values.push(payload.url); }
+  const eventTs = new Date(event.origin_ts).toISOString();
+  const hasUpdates = payload.title !== undefined || payload.content !== undefined || payload.url !== undefined;
+  if (!hasUpdates) return;
 
-  if (updates.length === 0) return;
-
-  updates.push("updated_at = datetime('now')");
-  values.push(post.id);
-
-  db.prepare(`UPDATE posts SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  repo.updatePost(post.id, {
+    title: payload.title, content: payload.content, url: payload.url, updated_at: eventTs,
+  });
   syncLogger.info('Materialized post_updated', { post_id: post.id });
 }
 
-function materializePostDeleted(payload: PostDeletedPayload, hiveId: string, hiveName: string): void {
-  const db = getDatabase();
+function materializePostDeleted(payload: PostDeletedPayload, hiveName: string): void {
+  const repo = getMaterializerRepo();
 
+  // Search by origin_post_id across all instances
+  const db = getDatabase();
   const post = db.prepare(
-    'SELECT id FROM posts WHERE origin_instance_id IS NOT NULL AND origin_post_id = ?'
-  ).get(payload.post_id) as { id: string } | undefined;
+    'SELECT id FROM posts WHERE origin_post_id = ? OR id = ?'
+  ).get(payload.post_id, payload.post_id) as { id: string } | undefined;
   if (!post) return;
 
-  db.prepare('DELETE FROM posts WHERE id = ?').run(post.id);
+  repo.deletePost(post.id);
 
   broadcastToChannel(`hive:${hiveName}`, {
     type: 'post_deleted',
@@ -175,19 +187,15 @@ function materializePostDeleted(payload: PostDeletedPayload, hiveId: string, hiv
 
 // ── Comment Materialization ─────────────────────────────────────
 
-function materializeCommentCreated(event: HiveEvent, payload: CommentCreatedPayload, hiveId: string, hiveName: string, isLocal: boolean): void {
-  const db = getDatabase();
+function materializeCommentCreated(event: HiveEvent, payload: CommentCreatedPayload, _hiveId: string, _hiveName: string, isLocal: boolean): void {
+  const repo = getMaterializerRepo();
 
   // Idempotency check
-  const existing = db.prepare(
-    'SELECT id FROM comments WHERE origin_instance_id = ? AND origin_comment_id = ?'
-  ).get(event.origin_instance_id, payload.comment_id);
+  const existing = repo.findCommentByOrigin(event.origin_instance_id, payload.comment_id);
   if (existing) return;
 
   // Resolve the post (may be a remote post)
-  const localPost = db.prepare(
-    'SELECT id FROM posts WHERE origin_post_id = ? OR id = ?'
-  ).get(payload.post_id, payload.post_id) as { id: string } | undefined;
+  const localPost = repo.findPostByOriginOrId(payload.post_id);
 
   if (!localPost) {
     // Parent post hasn't arrived yet — enqueue for causal ordering
@@ -205,22 +213,22 @@ function materializeCommentCreated(event: HiveEvent, payload: CommentCreatedPayl
   let depth = 0;
   let path = id;
   if (payload.parent_comment_id) {
-    const parent = db.prepare(
-      'SELECT id, depth, path FROM comments WHERE origin_comment_id = ? OR id = ?'
-    ).get(payload.parent_comment_id, payload.parent_comment_id) as { id: string; depth: number; path: string } | undefined;
+    const parent = repo.findCommentByOriginOrId(payload.parent_comment_id);
     if (parent) {
       depth = parent.depth + 1;
       path = `${parent.path}.${id}`;
     }
   }
 
-  db.prepare(`
-    INSERT INTO comments (id, post_id, parent_id, author_id, content, depth, path, sync_event_id, origin_instance_id, origin_comment_id, remote_author_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, postId, payload.parent_comment_id ?? null, authorId, payload.content, depth, path, event.id, event.origin_instance_id, payload.comment_id, remoteAuthorId, createdAt);
+  repo.insertComment({
+    id, post_id: postId, parent_id: payload.parent_comment_id ?? null,
+    author_id: authorId, content: payload.content, depth, path,
+    sync_event_id: event.id, origin_instance_id: event.origin_instance_id,
+    origin_comment_id: payload.comment_id, remote_author_id: remoteAuthorId, created_at: createdAt,
+  });
 
   // Update post comment count
-  db.prepare('UPDATE posts SET comment_count = comment_count + 1 WHERE id = ?').run(postId);
+  repo.updatePostCommentCount(postId, 1);
 
   broadcastToChannel(`post:${postId}`, {
     type: 'new_comment',
@@ -231,33 +239,38 @@ function materializeCommentCreated(event: HiveEvent, payload: CommentCreatedPayl
 }
 
 function materializeCommentUpdated(event: HiveEvent, payload: CommentUpdatedPayload): void {
-  const db = getDatabase();
+  const repo = getMaterializerRepo();
 
-  const comment = db.prepare(
-    'SELECT id FROM comments WHERE origin_instance_id = ? AND origin_comment_id = ?'
-  ).get(event.origin_instance_id, payload.comment_id) as { id: string } | undefined;
+  const comment = repo.findCommentByOrigin(event.origin_instance_id, payload.comment_id);
   if (!comment) return;
 
-  db.prepare("UPDATE comments SET content = ?, updated_at = datetime('now') WHERE id = ?")
-    .run(payload.content, comment.id);
+  // GAP-11: Last-writer-wins — only apply if this event is newer
+  if (comment.updated_at) {
+    const existingTs = new Date(comment.updated_at).getTime();
+    if (event.origin_ts <= existingTs) {
+      syncLogger.info('Skipping stale comment_updated (last-writer-wins)', {
+        comment_id: comment.id,
+        event_ts: event.origin_ts,
+        existing_ts: existingTs,
+      });
+      return;
+    }
+  }
+
+  const eventTs = new Date(event.origin_ts).toISOString();
+  repo.updateComment(comment.id, payload.content, eventTs);
 
   syncLogger.info('Materialized comment_updated', { comment_id: comment.id });
 }
 
 function materializeCommentDeleted(payload: CommentDeletedPayload): void {
-  const db = getDatabase();
+  const repo = getMaterializerRepo();
 
-  const comment = db.prepare(
-    'SELECT id, post_id, path FROM comments WHERE origin_comment_id = ?'
-  ).get(payload.comment_id) as { id: string; post_id: string; path: string } | undefined;
+  const comment = repo.findCommentForDelete(payload.comment_id);
   if (!comment) return;
 
-  // Count children for comment_count update
-  const countRow = db.prepare('SELECT COUNT(*) as count FROM comments WHERE path LIKE ?')
-    .get(`${comment.path}%`) as { count: number };
-
-  db.prepare('DELETE FROM comments WHERE path LIKE ?').run(`${comment.path}%`);
-  db.prepare('UPDATE posts SET comment_count = comment_count - ? WHERE id = ?').run(countRow.count, comment.post_id);
+  const deletedCount = repo.deleteCommentTree(comment.path);
+  repo.updatePostCommentCount(comment.post_id, -deletedCount);
 
   syncLogger.info('Materialized comment_deleted', { comment_id: comment.id });
 }
@@ -265,63 +278,51 @@ function materializeCommentDeleted(payload: CommentDeletedPayload): void {
 // ── Vote Materialization ────────────────────────────────────────
 
 function materializeVoteCast(event: HiveEvent, payload: VoteCastPayload): void {
-  const db = getDatabase();
+  const repo = getMaterializerRepo();
 
   // Resolve the target to a local ID
-  let targetId = payload.target_id;
-  if (payload.target_type === 'post') {
-    const local = db.prepare('SELECT id FROM posts WHERE origin_post_id = ? OR id = ?').get(payload.target_id, payload.target_id) as { id: string } | undefined;
-    if (local) targetId = local.id;
-  } else {
-    const local = db.prepare('SELECT id FROM comments WHERE origin_comment_id = ? OR id = ?').get(payload.target_id, payload.target_id) as { id: string } | undefined;
-    if (local) targetId = local.id;
+  const target = repo.findVoteTarget(payload.target_type, payload.target_id);
+
+  // NEW-7: If target doesn't exist locally, enqueue as pending event
+  if (!target) {
+    insertPendingEvent(event.sync_group_id, JSON.stringify(event), [payload.target_id]);
+    syncLogger.info('Enqueued vote_cast pending target arrival', {
+      target_type: payload.target_type,
+      target_id: payload.target_id,
+    });
+    return;
   }
+
+  const targetId = target.id;
 
   // Build a unique voter ID from instance + agent
   const voterId = `${payload.voter.instance_id}:${payload.voter.agent_id}`;
 
   if (payload.value === 0) {
     // Remove vote
-    const existing = db.prepare(
-      'SELECT id, value FROM votes WHERE agent_id = ? AND target_type = ? AND target_id = ?'
-    ).get(voterId, payload.target_type, targetId) as { id: string; value: number } | undefined;
-
+    const existing = repo.findVote(voterId, payload.target_type, targetId);
     if (existing) {
-      db.prepare('DELETE FROM votes WHERE id = ?').run(existing.id);
-      if (payload.target_type === 'post') {
-        db.prepare('UPDATE posts SET score = score - ? WHERE id = ?').run(existing.value, targetId);
-      } else {
-        db.prepare('UPDATE comments SET score = score - ? WHERE id = ?').run(existing.value, targetId);
-      }
+      repo.deleteVote(existing.id);
+      repo.updateTargetScore(payload.target_type, targetId, -existing.value);
     }
   } else {
     // Upsert vote
-    const existing = db.prepare(
-      'SELECT id, value FROM votes WHERE agent_id = ? AND target_type = ? AND target_id = ?'
-    ).get(voterId, payload.target_type, targetId) as { id: string; value: number } | undefined;
+    const existing = repo.findVote(voterId, payload.target_type, targetId);
 
     if (existing) {
       const delta = payload.value - existing.value;
-      db.prepare('UPDATE votes SET value = ? WHERE id = ?').run(payload.value, existing.id);
+      repo.updateVoteValue(existing.id, payload.value);
       if (delta !== 0) {
-        if (payload.target_type === 'post') {
-          db.prepare('UPDATE posts SET score = score + ? WHERE id = ?').run(delta, targetId);
-        } else {
-          db.prepare('UPDATE comments SET score = score + ? WHERE id = ?').run(delta, targetId);
-        }
+        repo.updateTargetScore(payload.target_type, targetId, delta);
       }
     } else {
       const id = `rv_${nanoid()}`;
-      db.prepare(`
-        INSERT INTO votes (id, agent_id, target_type, target_id, value, sync_event_id, origin_instance_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(id, voterId, payload.target_type, targetId, payload.value, event.id, event.origin_instance_id);
-
-      if (payload.target_type === 'post') {
-        db.prepare('UPDATE posts SET score = score + ? WHERE id = ?').run(payload.value, targetId);
-      } else {
-        db.prepare('UPDATE comments SET score = score + ? WHERE id = ?').run(payload.value, targetId);
-      }
+      repo.insertVote({
+        id, agent_id: voterId, target_type: payload.target_type,
+        target_id: targetId, value: payload.value,
+        sync_event_id: event.id, origin_instance_id: event.origin_instance_id,
+      });
+      repo.updateTargetScore(payload.target_type, targetId, payload.value);
     }
   }
 
@@ -330,9 +331,26 @@ function materializeVoteCast(event: HiveEvent, payload: VoteCastPayload): void {
 
 // ── Pending Queue Processing ────────────────────────────────────
 
-/** Process pending events whose dependencies are now satisfied */
-export function processPendingQueue(syncGroupId: string, hiveId: string, hiveName: string, localInstanceId: string): number {
+/** Process pending events whose dependencies are now satisfied.
+ *  GAP-12: Enforces a per-sync-group cap on pending events (maxPendingEvents).
+ */
+export function processPendingQueue(syncGroupId: string, hiveId: string, hiveName: string, localInstanceId: string, maxPendingEvents: number = 1000): number {
   const db = getDatabase();
+  const repo = getMaterializerRepo();
+
+  // GAP-12: Enforce pending queue cap before processing
+  const pendingCount = countPendingEvents(syncGroupId);
+  if (pendingCount > maxPendingEvents) {
+    const trimmed = trimPendingEvents(syncGroupId, maxPendingEvents);
+    if (trimmed > 0) {
+      syncLogger.warn('Trimmed pending event queue (GAP-12 cap exceeded)', {
+        sync_group_id: syncGroupId,
+        trimmed,
+        remaining: maxPendingEvents,
+      });
+    }
+  }
+
   const pending = db.prepare(
     'SELECT * FROM hive_events_pending WHERE sync_group_id = ? ORDER BY received_at ASC'
   ).all(syncGroupId) as Array<{ id: string; event_json: string; depends_on: string }>;
@@ -343,8 +361,8 @@ export function processPendingQueue(syncGroupId: string, hiveId: string, hiveNam
     const deps = JSON.parse(p.depends_on) as string[];
     // Check if all dependencies are satisfied (posts/comments exist)
     const allSatisfied = deps.every(dep => {
-      const post = db.prepare('SELECT id FROM posts WHERE origin_post_id = ? OR id = ?').get(dep, dep);
-      const comment = db.prepare('SELECT id FROM comments WHERE origin_comment_id = ? OR id = ?').get(dep, dep);
+      const post = repo.findPostByOriginOrId(dep);
+      const comment = repo.findCommentByOriginOrId(dep);
       return post || comment;
     });
 
