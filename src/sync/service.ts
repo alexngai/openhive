@@ -12,7 +12,7 @@ import * as syncPeersDAL from '../db/dal/sync-peers.js';
 import * as syncPeerConfigsDAL from '../db/dal/sync-peer-configs.js';
 import * as hivesDAL from '../db/dal/hives.js';
 import { transaction } from '../db/index.js';
-import { signEvent, verifyEventSignature, generateSyncToken } from './crypto.js';
+import { signEvent, verifyEventSignature, verifyEventSignatureMultiKey, generateSyncToken } from './crypto.js';
 import { materializeBatch, processPendingQueue } from './materializer.js';
 import { buildGossipPayload, processGossipPeers, cleanupStaleGossipPeers } from './gossip.js';
 import { CompositePeerResolver, ManualPeerResolver, HubPeerResolver } from './peer-resolver.js';
@@ -94,6 +94,20 @@ export class SyncService {
   /** GAP-13: Get this instance's publicly reachable sync endpoint */
   getSyncEndpoint(): string {
     return this.config.sync_endpoint || '';
+  }
+
+  /** NEW-8: Rotate the signing key for a sync group.
+   *  The previous key is retained for signature verification during the transition period. */
+  rotateKey(syncGroupId: string): { key_version: number; signing_key: string } {
+    const updated = syncGroupsDAL.rotateGroupKey(syncGroupId);
+    syncLogger.info('Rotated signing key for sync group', {
+      sync_group_id: syncGroupId,
+      key_version: updated.key_version,
+    });
+    return {
+      key_version: updated.key_version,
+      signing_key: updated.instance_signing_key,
+    };
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────
@@ -270,6 +284,7 @@ export class SyncService {
       current_seq: syncGroup.seq,
       sync_token: token,
       protocol_version: SYNC_PROTOCOL_VERSION,
+      key_version: syncGroup.key_version ?? 1,
     };
   }
 
@@ -292,16 +307,26 @@ export class SyncService {
     }
 
     // Look up peer signing keys for verification
+    // NEW-8: Build multi-key candidates per origin (current + previous for rotation)
     const peers = syncPeersDAL.listActivePeers(syncGroupId);
-    const peerKeyMap = new Map<string, string>();
+    const peerKeysMap = new Map<string, Array<{ publicKey: string; keyVersion: number }>>();
     for (const p of peers) {
       if (p.peer_signing_key) {
-        peerKeyMap.set(p.peer_swarm_id, p.peer_signing_key);
+        const ids = [p.peer_swarm_id];
+        if (p.peer_instance_id) ids.push(p.peer_instance_id);
+        for (const id of ids) {
+          const existing = peerKeysMap.get(id) || [];
+          existing.push({ publicKey: p.peer_signing_key, keyVersion: p.peer_key_version ?? 1 });
+          peerKeysMap.set(id, existing);
+        }
       }
-      // GAP-1: Also index by peer_instance_id for multi-hop verification
-      if (p.peer_instance_id && p.peer_signing_key) {
-        peerKeyMap.set(p.peer_instance_id, p.peer_signing_key);
-      }
+    }
+    // Also add the sync group's own key (for events that originated here and were relayed)
+    const groupKeys: Array<{ publicKey: string; keyVersion: number }> = [
+      { publicKey: syncGroup.instance_signing_key, keyVersion: syncGroup.key_version ?? 1 },
+    ];
+    if (syncGroup.previous_signing_key) {
+      groupKeys.push({ publicKey: syncGroup.previous_signing_key, keyVersion: (syncGroup.key_version ?? 1) - 1 });
     }
 
     // NEW-1: Wrap insert + materialize in a transaction so partial failures roll back
@@ -315,9 +340,9 @@ export class SyncService {
           continue;
         }
 
-        // GAP-1: Verify event signature — reject events from unknown origins
-        const originKey = peerKeyMap.get(event.origin_instance_id);
-        if (!originKey) {
+        // GAP-1 + NEW-8: Verify event signature using multi-key verification
+        const originKeys = peerKeysMap.get(event.origin_instance_id);
+        if (!originKeys || originKeys.length === 0) {
           syncLogger.warn('Rejecting event from unknown origin (no signing key)', {
             event_id: event.id,
             origin: event.origin_instance_id,
@@ -325,8 +350,11 @@ export class SyncService {
           continue;
         }
 
-        if (!verifyEventSignature(event.payload, event.signature, originKey)) {
-          syncLogger.warn('Invalid signature, rejecting event', {
+        // Try all candidate keys (current + previous during rotation)
+        const allCandidates = [...originKeys, ...groupKeys];
+        const { matched } = verifyEventSignatureMultiKey(event.payload, event.signature, allCandidates);
+        if (!matched) {
+          syncLogger.warn('Invalid signature, rejecting event (tried all key versions)', {
             event_id: event.id,
             origin: event.origin_instance_id,
           });

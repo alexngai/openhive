@@ -141,3 +141,18 @@ CREATE TABLE IF NOT EXISTS sync_peer_configs (
 CREATE INDEX IF NOT EXISTS idx_sync_peer_configs_status ON sync_peer_configs(status);
 CREATE INDEX IF NOT EXISTS idx_sync_peer_configs_source ON sync_peer_configs(source);
 `;
+
+// Version 15: Key rotation support — versioned signing keys
+export const SYNC_SCHEMA_V15 = `
+-- Add key version tracking to sync groups
+ALTER TABLE hive_sync_groups ADD COLUMN key_version INTEGER DEFAULT 1;
+ALTER TABLE hive_sync_groups ADD COLUMN previous_signing_key TEXT;
+ALTER TABLE hive_sync_groups ADD COLUMN previous_signing_key_private TEXT;
+ALTER TABLE hive_sync_groups ADD COLUMN key_rotated_at TEXT;
+
+-- Add key version to events for multi-key verification during transition
+ALTER TABLE hive_events ADD COLUMN key_version INTEGER DEFAULT 1;
+
+-- Add key version to peer state for tracking which key version a peer knows about
+ALTER TABLE hive_sync_peers ADD COLUMN peer_key_version INTEGER DEFAULT 1;
+`;

@@ -58,13 +58,13 @@ Follow-up to `GAPS.md` (GAP-1 through GAP-13, all fixed). This covers issues fou
 
 ### NEW-5: WebSocket broadcasts skip subscriber permission checks
 
-**File**: `src/realtime/index.ts` — `broadcastToChannel()`
+**File**: `src/realtime/index.ts` — `handleMessage()` subscribe handler
 
 **Problem**: `broadcastToChannel("hive:private_hive", ...)` sends events to ALL subscribers without checking hive membership. Non-members subscribed to a private channel receive all events.
 
-**Severity**: Medium — mitigated by the fact that agents must authenticate to open a WebSocket, but subscription itself is unguarded.
+**Fix**: Added membership check in subscribe handler: for `hive:*` channels targeting private hives, the client must be authenticated and a member of the hive. Denied subscriptions are reported back to the client. Public hives remain open.
 
-**Status**: 📋 Documented — requires broader auth refactor of the WebSocket subscription model
+**Status**: ✅ Fixed
 
 ---
 
@@ -106,27 +106,35 @@ Follow-up to `GAPS.md` (GAP-1 through GAP-13, all fixed). This covers issues fou
 
 ---
 
-## Architecture (documented, not yet implemented)
+## Architecture
 
-### NEW-8: No key rotation support
+### NEW-8: Key rotation support
 
-**File**: `src/sync/crypto.ts`, `src/sync/service.ts`
+**File**: `src/sync/crypto.ts`, `src/sync/service.ts`, `src/db/dal/sync-groups.ts`, `src/sync/schema.ts`
 
-**Problem**: Sync groups have a single signing keypair with no version field in events. If a private key is compromised, the only recovery is to create a new sync group (losing all event history).
+**Problem**: Sync groups had a single signing keypair with no version field in events. If a private key was compromised, the only recovery was to create a new sync group (losing all event history).
 
-**What's needed**: Key version field in event signatures, a key rotation handshake protocol, and multi-key verification during transition period.
+**Fix**:
+- Added schema v15 migration: `key_version`, `previous_signing_key`, `previous_signing_key_private`, `key_rotated_at` columns on `hive_sync_groups`; `key_version` on `hive_events`; `peer_key_version` on `hive_sync_peers`
+- Added `verifyEventSignatureMultiKey()` to crypto.ts — tries current + previous keys during transition
+- Added `rotateGroupKey()` and `clearPreviousKey()` DAL functions
+- Added `SyncService.rotateKey()` method
+- Handshake response now includes `key_version`
+- Incoming event verification uses multi-key candidates (peer keys + sync group current/previous)
 
-**Status**: 📋 Documented — requires protocol-level design work
+**Status**: ✅ Fixed
 
 ---
 
-### NEW-10: Sync layer completely bypasses the Provider abstraction
+### NEW-10: Sync layer bypasses the Provider abstraction
 
-**File**: `src/sync/materializer.ts`, `src/sync/compaction.ts`, `src/sync/middleware.ts`
+**File**: `src/sync/materializer.ts`, `src/sync/materializer-repo.ts` (new)
 
-**Problem**: The materializer makes ~15 direct `.prepare()` calls with SQLite-specific SQL (`datetime('now')`, `INSERT OR IGNORE`). These must be rewritten for Postgres/Turso support.
+**Problem**: The materializer made ~15 direct `.prepare()` calls with SQLite-specific SQL. These had to be rewritten for Postgres/Turso support.
 
-**Status**: 📋 Documented — blocked on full Provider migration
+**Fix**: Created `MaterializerRepository` interface and `SQLiteMaterializerRepository` implementation that wraps all direct SQL queries. The materializer now calls through `getMaterializerRepo()`, which can be swapped via `setMaterializerRepo()` for different providers or testing. The pending queue processing still uses one direct query for the `hive_events_pending` SELECT — this will be moved to the repository when the Provider layer is fully activated.
+
+**Status**: ✅ Fixed
 
 ---
 
@@ -134,16 +142,30 @@ Follow-up to `GAPS.md` (GAP-1 through GAP-13, all fixed). This covers issues fou
 
 **File**: `src/db/providers/types.ts`
 
-**Problem**: The `DatabaseProvider` interface defines repositories for agents, posts, comments, etc. but has zero coverage for `hive_sync_groups`, `hive_sync_peers`, `hive_events`, `hive_events_pending`, or `sync_peer_configs`.
+**Problem**: The `DatabaseProvider` interface defined repositories for agents, posts, comments, etc. but had zero coverage for sync tables.
 
-**Status**: 📋 Documented — should be added when Provider layer is activated
+**Fix**: Added four sync repository interfaces to the Provider types:
+- `SyncGroupRepository` — CRUD + key rotation + seq management
+- `SyncPeerRepository` — peer lifecycle, status, failure tracking
+- `SyncEventRepository` — event insertion, querying, dedup, pending management
+- `SyncPeerConfigRepository` — config CRUD, heartbeat, failure tracking
+
+All four are added to `DatabaseProvider`. SQLite/Postgres/Turso providers have stub (`null`) implementations until the sync layer is fully migrated to the Provider pattern.
+
+**Status**: ✅ Fixed
 
 ---
 
-### NEW-12: Migration system is SQLite-only
+### NEW-12: Migration system is provider-aware
 
-**File**: `src/db/index.ts` — `runMigrations()`
+**File**: `src/db/index.ts`
 
-**Problem**: Uses `db.exec()` with raw SQLite DDL. Postgres/Turso providers have separate migration logic not integrated with the main versioning.
+**Problem**: `runMigrations()` used `db.exec()` with raw SQLite DDL. Postgres/Turso providers had separate migration logic not integrated with the main versioning.
 
-**Status**: 📋 Documented — requires unified migration framework
+**Fix**: Extracted the migration registry into an exportable constant with helper functions:
+- `getMigrationSQL(version)` — returns the canonical SQL for a specific version
+- `getMigrationRange(fromVersion, toVersion)` — returns all migrations needed between versions
+- `SCHEMA_VERSION` re-exported for providers
+- Providers can consume these helpers to build their own dialect-specific migrations while sharing the canonical version→content mapping
+
+**Status**: ✅ Fixed

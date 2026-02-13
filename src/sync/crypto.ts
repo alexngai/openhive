@@ -59,3 +59,21 @@ export function verifyEventSignature(payload: string, signatureBase64: string, p
 export function generateSyncToken(): string {
   return randomBytes(32).toString('hex');
 }
+
+/**
+ * Verify an event signature against multiple candidate public keys.
+ * Used during key rotation transitions — tries current key first, then previous.
+ * Returns the key version that matched, or null if none match.
+ */
+export function verifyEventSignatureMultiKey(
+  payload: string,
+  signatureBase64: string,
+  keys: Array<{ publicKey: string; keyVersion: number }>
+): { matched: boolean; keyVersion: number | null } {
+  for (const { publicKey, keyVersion } of keys) {
+    if (verifyEventSignature(payload, signatureBase64, publicKey)) {
+      return { matched: true, keyVersion };
+    }
+  }
+  return { matched: false, keyVersion: null };
+}
