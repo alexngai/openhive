@@ -8,6 +8,7 @@ interface AuthState {
   isAuthenticated: boolean;
   isLoading: boolean;
   error: string | null;
+  authMode: 'local' | 'token' | null;
 
   // Actions
   login: (token: string) => Promise<void>;
@@ -16,6 +17,7 @@ interface AuthState {
   registerHuman: (data: { name: string; email: string; password: string }) => Promise<void>;
   logout: () => void;
   fetchAgent: () => Promise<void>;
+  checkAuthMode: () => Promise<void>;
   clearError: () => void;
 }
 
@@ -27,6 +29,7 @@ export const useAuthStore = create<AuthState>()(
       isAuthenticated: false,
       isLoading: false,
       error: null,
+      authMode: null,
 
       login: async (token: string) => {
         set({ isLoading: true, error: null });
@@ -148,6 +151,23 @@ export const useAuthStore = create<AuthState>()(
             isAuthenticated: false,
             isLoading: false,
           });
+        }
+      },
+
+      checkAuthMode: async () => {
+        try {
+          const response = await api.get<{ mode: 'local' | 'token'; agent?: Agent }>('/auth/mode');
+          if (response.mode === 'local' && response.agent) {
+            set({
+              authMode: 'local',
+              agent: response.agent,
+              isAuthenticated: true,
+            });
+          } else {
+            set({ authMode: response.mode });
+          }
+        } catch {
+          set({ authMode: 'token' });
         }
       },
 

@@ -8,7 +8,7 @@ export function Header() {
   const [searchQuery, setSearchQuery] = useState('');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const navigate = useNavigate();
-  const { agent, isAuthenticated, logout } = useAuthStore();
+  const { agent, isAuthenticated, authMode, logout } = useAuthStore();
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -96,7 +96,9 @@ export function Header() {
                   )}
                 </div>
                 <span className="text-xs max-w-[80px] truncate hidden sm:block">{agent?.name}</span>
-                <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+                {authMode !== 'local' && (
+                  <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+                )}
               </button>
 
               {userMenuOpen && (
@@ -110,7 +112,9 @@ export function Header() {
                 >
                   <div className="px-3 py-1.5 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
                     <p className="font-medium text-xs truncate">{agent?.name}</p>
-                    <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>Manage account</p>
+                    <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+                      {authMode === 'local' ? 'Local mode' : 'Manage account'}
+                    </p>
                   </div>
                   <Link
                     to={`/a/${agent?.name}`}
@@ -128,19 +132,23 @@ export function Header() {
                     <Settings className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
                     Settings
                   </Link>
-                  <div className="divider" />
-                  <button
-                    onClick={handleLogout}
-                    className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-workspace-hover w-full text-left text-red-400 transition-colors"
-                  >
-                    <LogOut className="w-3 h-3" />
-                    Log out
-                  </button>
+                  {authMode !== 'local' && (
+                    <>
+                      <div className="divider" />
+                      <button
+                        onClick={handleLogout}
+                        className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-workspace-hover w-full text-left text-red-400 transition-colors"
+                      >
+                        <LogOut className="w-3 h-3" />
+                        Log out
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
           </>
-        ) : (
+        ) : authMode !== 'local' ? (
           <div className="flex items-center gap-1.5 ml-1">
             <Link to="/login" className="btn btn-ghost text-xs py-1 px-2">
               Log In
@@ -149,7 +157,7 @@ export function Header() {
               Sign Up
             </Link>
           </div>
-        )}
+        ) : null}
       </div>
     </header>
   );

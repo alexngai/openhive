@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Home, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X } from 'lucide-react';
+import { Home, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { useAuthStore } from '../../stores/auth';
@@ -26,6 +26,7 @@ export function Sidebar() {
     { to: '/', icon: Home, label: 'Home' },
     { to: '/hives', icon: Compass, label: 'Explore' },
     { to: '/agents', icon: Users, label: 'Agents' },
+    { to: '/swarms', icon: Zap, label: 'Swarms' },
     { to: '/about', icon: Info, label: 'About' },
   ];
 

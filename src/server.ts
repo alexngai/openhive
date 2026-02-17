@@ -20,6 +20,8 @@ import { initSyncService } from './sync/service.js';
 import type { SyncService } from './sync/service.js';
 import { SwarmManager } from './swarm/manager.js';
 import type { SwarmHostingConfig } from './swarm/types.js';
+import { getOrCreateLocalAgent } from './db/dal/agents.js';
+import { setLocalAgent } from './api/middleware/auth.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -43,6 +45,13 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
   // Initialize database
   initDatabase(config.database);
+
+  // Set up local auth mode if configured
+  if (config.auth.mode === 'local') {
+    const agent = await getOrCreateLocalAgent();
+    setLocalAgent(agent);
+    console.log('[openhive] Local auth mode — all requests auto-authenticated as "local"');
+  }
 
   // Initialize storage if configured
   if (config.storage) {
