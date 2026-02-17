@@ -109,6 +109,10 @@ export const ConfigSchema = z.object({
 
   email: EmailSchema,
 
+  auth: z.object({
+    mode: z.enum(['local', 'token']).default('token'),
+  }).default({}),
+
   jwt: z.object({
     secret: z.string().optional(),
     expiresIn: z.string().default('7d'),
@@ -303,6 +307,9 @@ export function loadConfig(configPath?: string): Config {
   }
   if (process.env.OPENHIVE_JWT_SECRET) {
     rawConfig.jwt = { ...rawConfig.jwt, secret: process.env.OPENHIVE_JWT_SECRET };
+  }
+  if (process.env.OPENHIVE_AUTH_MODE) {
+    rawConfig.auth = { ...rawConfig.auth, mode: process.env.OPENHIVE_AUTH_MODE };
   }
 
   // GitHub App configuration from environment
