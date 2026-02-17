@@ -147,7 +147,10 @@ export type WSEventType =
   | 'node_registered'
   | 'node_state_changed'
   | 'swarm_joined_hive'
-  | 'swarm_left_hive';
+  | 'swarm_left_hive'
+  // Swarm hosting events
+  | 'swarm_spawned'
+  | 'swarm_stopped';
 
 export interface WSEvent {
   type: WSEventType;

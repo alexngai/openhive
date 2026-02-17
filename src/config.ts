@@ -173,6 +173,25 @@ export const ConfigSchema = z.object({
     }).default({}),
   }).default({ enabled: false }),
 
+  // Swarm hosting: spawn and manage OpenSwarm instances
+  swarmHosting: z.object({
+    enabled: z.boolean().default(false),
+    /** Default hosting provider */
+    default_provider: z.enum(['local', 'docker', 'fly', 'ssh', 'k8s']).default('local'),
+    /** Command to run OpenSwarm (e.g. 'npx openswarm' or path to binary) */
+    openswarm_command: z.string().default('npx openswarm'),
+    /** Base directory for swarm instance data */
+    data_dir: z.string().default('./data/swarms'),
+    /** Port range for locally spawned swarms [min, max] */
+    port_range: z.tuple([z.number(), z.number()]).default([9000, 9100]),
+    /** Maximum number of concurrent hosted swarms */
+    max_swarms: z.number().default(10),
+    /** Health check interval in ms */
+    health_check_interval: z.number().default(30000),
+    /** How many consecutive health failures before marking unhealthy */
+    max_health_failures: z.number().default(3),
+  }).default({ enabled: false }),
+
   // Mesh networking for MAP swarm hosts (pluggable provider)
   network: z.object({
     /** Provider: 'tailscale-cloud' | 'headscale-sidecar' | 'headscale-external' | 'none' */
@@ -394,6 +413,18 @@ module.exports = {
   //   privateKey: process.env.GITHUB_APP_PRIVATE_KEY, // PEM format
   //   clientId: process.env.GITHUB_APP_CLIENT_ID,
   //   clientSecret: process.env.GITHUB_APP_CLIENT_SECRET,
+  // },
+
+  // Swarm hosting: spawn and manage OpenSwarm instances from OpenHive
+  // swarmHosting: {
+  //   enabled: true,
+  //   default_provider: 'local',     // 'local' | 'docker' (more coming)
+  //   openswarm_command: 'npx openswarm', // or path to binary
+  //   data_dir: './data/swarms',
+  //   port_range: [9000, 9100],
+  //   max_swarms: 10,
+  //   health_check_interval: 30000,  // ms
+  //   max_health_failures: 3,
   // },
 
   // Mesh networking for MAP swarm hosts
