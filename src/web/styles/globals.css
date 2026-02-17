@@ -3,44 +3,63 @@
 @tailwind utilities;
 
 @layer base {
-  /* Theme CSS variables */
+  /* Theme CSS variables - Slack-inspired workspace */
   :root, .dark {
-    --color-bg: #0e0e0f;
-    --color-card: #1a1a1b;
-    --color-elevated: #272729;
-    --color-hover: #343536;
-    --color-border: #343536;
-    --color-text: #d7dadc;
-    --color-text-secondary: #818384;
+    --color-bg: #1a1d21;
+    --color-sidebar: #19171d;
+    --color-surface: #222529;
+    --color-elevated: #2c2d31;
+    --color-hover: #35373b;
+    --color-border: #35373b;
+    --color-border-subtle: #2c2d31;
+    --color-text: #d1d2d3;
+    --color-text-secondary: #ababad;
+    --color-text-muted: #7a7b7e;
+    --color-accent: #f59e0b;
+    --color-accent-hover: #fbbf24;
+    --color-accent-bg: rgba(245, 158, 11, 0.08);
   }
 
   .light {
-    --color-bg: #ffffff;
-    --color-card: #ffffff;
-    --color-elevated: #f3f4f6;
-    --color-hover: #e5e7eb;
-    --color-border: #d1d5db;
-    --color-text: #111827;
-    --color-text-secondary: #6b7280;
+    --color-bg: #f4f4f5;
+    --color-sidebar: #ffffff;
+    --color-surface: #ffffff;
+    --color-elevated: #f0f0f1;
+    --color-hover: #e8e8e9;
+    --color-border: #e0e0e1;
+    --color-border-subtle: #ebebec;
+    --color-text: #1d1c1d;
+    --color-text-secondary: #616061;
+    --color-text-muted: #999a9b;
+    --color-accent: #d97706;
+    --color-accent-hover: #b45309;
+    --color-accent-bg: rgba(217, 119, 6, 0.06);
   }
 
   html {
     @apply antialiased;
+    font-size: 15px;
   }
 
   body {
     background-color: var(--color-bg);
     color: var(--color-text);
-    @apply min-h-screen transition-colors duration-200;
+    @apply min-h-screen;
   }
 
-  /* Custom scrollbar */
+  /* Selection */
+  ::selection {
+    background-color: rgba(245, 158, 11, 0.25);
+    color: #fff;
+  }
+
+  /* Scrollbar - thin, unobtrusive */
   ::-webkit-scrollbar {
-    @apply w-2;
+    @apply w-1.5;
   }
 
   ::-webkit-scrollbar-track {
-    background-color: var(--color-bg);
+    background: transparent;
   }
 
   ::-webkit-scrollbar-thumb {
@@ -49,24 +68,26 @@
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background-color: var(--color-border);
+    background-color: var(--color-text-muted);
   }
 }
 
 @layer components {
+  /* === Buttons - compact Slack-style === */
   .btn {
-    @apply px-4 py-2 rounded-full font-medium transition-colors duration-200;
+    @apply px-3 py-1.5 rounded-md font-medium text-sm cursor-pointer select-none;
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
   }
 
   .btn-primary {
-    @apply bg-honey-500 text-black hover:bg-honey-600;
+    @apply bg-honey-500 text-black hover:bg-honey-400;
   }
 
   .btn-secondary {
     background-color: var(--color-elevated);
     color: var(--color-text);
     border: 1px solid var(--color-border);
-    @apply rounded-full;
+    @apply rounded-md;
   }
 
   .btn-secondary:hover {
@@ -75,7 +96,7 @@
 
   .btn-ghost {
     color: var(--color-text-secondary);
-    @apply rounded-full;
+    @apply rounded-md;
   }
 
   .btn-ghost:hover {
@@ -83,47 +104,54 @@
     background-color: var(--color-hover);
   }
 
+  /* === Surface/Cards - flat, minimal === */
   .card {
-    background-color: var(--color-card);
-    border: 1px solid var(--color-border);
-    @apply rounded-lg transition-colors duration-200;
-  }
-
-  .light .card {
-    @apply shadow-sm;
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    @apply rounded-lg;
   }
 
   .card-hover:hover {
-    border-color: var(--color-hover);
+    background-color: var(--color-elevated);
+    border-color: var(--color-border);
   }
 
-  .light .card-hover:hover {
-    @apply shadow-md;
+  .light .card {
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
   }
 
+  /* === Inputs - compact === */
   .input {
     background-color: var(--color-elevated);
     border: 1px solid var(--color-border);
     color: var(--color-text);
-    @apply rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-honey-500
-           focus:border-transparent transition-all duration-200;
+    @apply rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-honey-500/40
+           focus:border-honey-500/40;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
   }
 
   .input::placeholder {
-    color: var(--color-text-secondary);
+    color: var(--color-text-muted);
   }
 
+  /* === Links === */
   .link {
-    @apply text-honey-500 hover:text-honey-400 transition-colors duration-200;
+    @apply text-honey-500 hover:text-honey-400 underline-offset-2 hover:underline;
+    transition: color 120ms ease;
   }
 
-  /* Vote button styles */
+  /* === Vote buttons === */
   .vote-btn {
-    @apply p-1 rounded transition-colors duration-200;
+    @apply p-1 rounded-md cursor-pointer;
+    transition: background-color 120ms ease, color 120ms ease;
   }
 
   .vote-btn:hover {
     background-color: var(--color-hover);
+  }
+
+  .vote-btn:active {
+    transform: scale(0.92);
   }
 
   .vote-btn-up {
@@ -141,6 +169,40 @@
   .vote-btn-down.active {
     @apply text-downvote;
   }
+
+  /* === Hex avatar (agents) === */
+  .hex-avatar {
+    clip-path: polygon(50% 0%, 93.3% 25%, 93.3% 75%, 50% 100%, 6.7% 75%, 6.7% 25%);
+  }
+
+  /* === Sidebar section header === */
+  .sidebar-section {
+    @apply px-3 py-1.5 text-xs font-medium uppercase tracking-wider;
+    color: var(--color-text-muted);
+  }
+
+  /* === Sidebar item === */
+  .sidebar-item {
+    @apply flex items-center gap-2 px-3 py-1 rounded-md text-sm cursor-pointer mx-2;
+    color: var(--color-text-secondary);
+    transition: background-color 80ms ease, color 80ms ease;
+  }
+
+  .sidebar-item:hover {
+    background-color: var(--color-hover);
+    color: var(--color-text);
+  }
+
+  .sidebar-item.active {
+    background-color: var(--color-accent-bg);
+    color: var(--color-accent);
+  }
+
+  /* === Divider === */
+  .divider {
+    border-color: var(--color-border-subtle);
+    @apply border-t my-2;
+  }
 }
 
 @layer utilities {
@@ -149,10 +211,29 @@
   }
 }
 
-/* Markdown/Prose styles */
+/* === Animations - subtle, fast === */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 150ms ease-out;
+}
+
+.animate-slide-in {
+  animation: slide-in 150ms ease-out;
+}
+
+/* === Markdown/Prose - compact === */
 .markdown-content {
   color: var(--color-text);
-  @apply leading-relaxed;
+  @apply leading-relaxed text-sm;
 }
 
 .markdown-content h1,
@@ -162,45 +243,49 @@
 .markdown-content h5,
 .markdown-content h6 {
   color: var(--color-text);
-  @apply font-bold;
+  @apply font-semibold tracking-tight;
 }
 
-.markdown-content h1 { @apply text-2xl mt-6 mb-4; }
-.markdown-content h2 { @apply text-xl mt-5 mb-3; }
-.markdown-content h3 { @apply text-lg mt-4 mb-2; }
+.markdown-content h1 { @apply text-xl mt-6 mb-3; }
+.markdown-content h2 { @apply text-lg mt-5 mb-2; }
+.markdown-content h3 { @apply text-base mt-4 mb-2; }
 
 .markdown-content p {
-  @apply mb-4 leading-relaxed;
+  @apply mb-3 leading-relaxed;
 }
 
 .markdown-content a {
-  @apply text-honey-500 hover:text-honey-400 underline;
+  @apply text-honey-500 hover:text-honey-400 underline underline-offset-2 decoration-honey-500/30 hover:decoration-honey-500/60;
 }
 
 .markdown-content code {
   background-color: var(--color-elevated);
-  @apply px-1.5 py-0.5 rounded text-sm font-mono text-honey-500;
+  border: 1px solid var(--color-border-subtle);
+  @apply px-1 py-0.5 rounded text-xs font-mono text-honey-400;
 }
 
 .markdown-content pre {
   background-color: var(--color-elevated);
-  @apply p-4 rounded-lg overflow-x-auto mb-4;
+  border: 1px solid var(--color-border-subtle);
+  @apply p-3 rounded-md overflow-x-auto mb-3;
 }
 
 .markdown-content pre code {
   background-color: transparent;
+  border: none;
   color: var(--color-text);
   @apply p-0;
 }
 
 .markdown-content blockquote {
   color: var(--color-text-secondary);
-  @apply border-l-4 border-honey-500 pl-4 italic my-4;
+  border-left: 2px solid var(--color-accent);
+  @apply pl-3 italic my-3;
 }
 
 .markdown-content ul,
 .markdown-content ol {
-  @apply ml-6 mb-4;
+  @apply ml-5 mb-3;
 }
 
 .markdown-content ul {
@@ -212,34 +297,35 @@
 }
 
 .markdown-content li {
-  @apply mb-1;
+  @apply mb-1 leading-relaxed;
 }
 
 .markdown-content hr {
-  border-color: var(--color-border);
-  @apply my-6;
+  border-color: var(--color-border-subtle);
+  @apply my-5;
 }
 
 .markdown-content img {
-  @apply rounded-lg max-w-full my-4;
+  @apply rounded-md max-w-full my-3;
 }
 
 .markdown-content table {
-  @apply w-full border-collapse mb-4;
+  @apply w-full border-collapse mb-3;
 }
 
 .markdown-content th,
 .markdown-content td {
-  border: 1px solid var(--color-border);
-  @apply px-3 py-2 text-left;
+  border: 1px solid var(--color-border-subtle);
+  @apply px-3 py-1.5 text-left text-sm;
 }
 
 .markdown-content th {
   background-color: var(--color-elevated);
-  @apply font-semibold;
+  @apply font-medium;
 }
 
 .markdown-inline code {
   background-color: var(--color-elevated);
-  @apply px-1 py-0.5 rounded text-sm font-mono text-honey-500;
+  border: 1px solid var(--color-border-subtle);
+  @apply px-1 py-0.5 rounded text-xs font-mono text-honey-400;
 }

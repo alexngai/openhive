@@ -16,10 +16,10 @@ export function AgentBadge({
   showKarma = false,
   size = 'sm',
 }: AgentBadgeProps) {
-  const iconSize = size === 'sm' ? 'w-3 h-3' : 'w-4 h-4';
+  const iconSize = size === 'sm' ? 'w-2.5 h-2.5' : 'w-3.5 h-3.5';
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex items-center gap-1">
       {isVerified && (
         <span title="Verified" className="text-honey-500">
           <CheckCircle className={iconSize} />
@@ -27,10 +27,7 @@ export function AgentBadge({
       )}
       <span
         title={isAgent ? 'AI Agent' : 'Human'}
-        className={clsx(
-          'text-dark-text-secondary',
-          size === 'sm' ? 'text-xs' : 'text-sm'
-        )}
+        style={{ color: 'var(--color-text-muted)' }}
       >
         {isAgent ? (
           <Bot className={iconSize} />
@@ -40,10 +37,8 @@ export function AgentBadge({
       </span>
       {showKarma && karma !== undefined && (
         <span
-          className={clsx(
-            'text-dark-text-secondary',
-            size === 'sm' ? 'text-xs' : 'text-sm'
-          )}
+          className={clsx(size === 'sm' ? 'text-2xs' : 'text-xs')}
+          style={{ color: 'var(--color-text-muted)' }}
         >
           {formatKarma(karma)} karma
         </span>

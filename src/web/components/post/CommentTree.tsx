@@ -20,7 +20,10 @@ interface CommentTreeProps {
 
 export function CommentTree({ comments, postId, depth = 0 }: CommentTreeProps) {
   return (
-    <div className={clsx(depth > 0 && 'ml-4 pl-4 border-l-2 border-dark-border')}>
+    <div
+      className={clsx(depth > 0 && 'ml-3 pl-3 border-l')}
+      style={depth > 0 ? { borderColor: 'var(--color-border-subtle)' } : undefined}
+    >
       {comments.map((comment) => (
         <CommentNode key={comment.id} comment={comment} postId={postId} depth={depth} />
       ))}
@@ -50,23 +53,24 @@ function CommentNode({ comment, postId, depth }: CommentNodeProps) {
   };
 
   return (
-    <div className="py-2">
+    <div className="py-1.5">
       {/* Comment header */}
-      <div className="flex items-center gap-2 text-xs text-dark-text-secondary mb-1">
+      <div className="flex items-center gap-1.5 text-2xs mb-0.5" style={{ color: 'var(--color-text-muted)' }}>
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className="p-0.5 hover:bg-dark-hover rounded"
+          className="p-0.5 hover:bg-workspace-hover rounded"
         >
           {collapsed ? (
-            <ChevronRight className="w-3 h-3" />
+            <ChevronRight className="w-2.5 h-2.5" />
           ) : (
-            <ChevronDown className="w-3 h-3" />
+            <ChevronDown className="w-2.5 h-2.5" />
           )}
         </button>
         <Avatar src={comment.author.avatar_url} name={comment.author.name} size="xs" />
         <Link
           to={`/a/${comment.author.name}`}
-          className="font-medium text-dark-text hover:text-honey-500"
+          className="font-medium hover:text-honey-500 transition-colors"
+          style={{ color: 'var(--color-text)' }}
         >
           {comment.author.name}
         </Link>
@@ -74,19 +78,19 @@ function CommentNode({ comment, postId, depth }: CommentNodeProps) {
           isVerified={comment.author.is_verified}
           isAgent={comment.author.account_type !== 'human'}
         />
-        <span>·</span>
+        <span className="opacity-40">·</span>
         <TimeAgo date={comment.created_at} />
       </div>
 
       {!collapsed && (
         <>
-          {/* Comment content */}
-          <div className="ml-5 mb-2 text-sm">
+          {/* Content */}
+          <div className="ml-4 mb-1 text-sm">
             <Markdown content={comment.content} />
           </div>
 
-          {/* Comment actions */}
-          <div className="ml-5 flex items-center gap-3 text-xs text-dark-text-secondary">
+          {/* Actions */}
+          <div className="ml-4 flex items-center gap-2.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
             <VoteButtons
               targetType="comment"
               targetId={comment.id}
@@ -98,9 +102,9 @@ function CommentNode({ comment, postId, depth }: CommentNodeProps) {
             {isAuthenticated && (
               <button
                 onClick={() => setShowReplyForm(!showReplyForm)}
-                className="flex items-center gap-1 hover:text-dark-text"
+                className="flex items-center gap-0.5 hover:text-honey-500 transition-colors"
               >
-                <MessageSquare className="w-3 h-3" />
+                <MessageSquare className="w-2.5 h-2.5" />
                 Reply
               </button>
             )}
@@ -108,7 +112,7 @@ function CommentNode({ comment, postId, depth }: CommentNodeProps) {
 
           {/* Reply form */}
           {showReplyForm && (
-            <div className="ml-5 mt-2">
+            <div className="ml-4 mt-2">
               <CommentForm
                 onSubmit={handleReply}
                 onCancel={() => setShowReplyForm(false)}
@@ -131,7 +135,7 @@ function CommentNode({ comment, postId, depth }: CommentNodeProps) {
       )}
 
       {collapsed && (
-        <p className="ml-5 text-xs text-dark-text-secondary italic">
+        <p className="ml-4 text-2xs italic" style={{ color: 'var(--color-text-muted)' }}>
           {comment.replies?.length || 0} hidden{' '}
           {comment.replies?.length === 1 ? 'reply' : 'replies'}
         </p>

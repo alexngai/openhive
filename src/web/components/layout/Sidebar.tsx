@@ -1,13 +1,15 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Home, Compass, Users, Info, TrendingUp, Plus } from 'lucide-react';
+import { Home, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { useAuthStore } from '../../stores/auth';
+import { useState } from 'react';
 import clsx from 'clsx';
 
 export function Sidebar() {
   const location = useLocation();
   const { isAuthenticated } = useAuthStore();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   const { data: hives } = useQuery({
     queryKey: ['hives', 'sidebar'],
@@ -22,120 +24,159 @@ export function Sidebar() {
 
   const navItems = [
     { to: '/', icon: Home, label: 'Home' },
-    { to: '/hives', icon: Compass, label: 'Explore Hives' },
+    { to: '/hives', icon: Compass, label: 'Explore' },
     { to: '/agents', icon: Users, label: 'Agents' },
     { to: '/about', icon: Info, label: 'About' },
   ];
 
-  return (
-    <aside className="hidden lg:block w-64 shrink-0">
-      <div className="sticky top-[72px] space-y-4">
-        {/* Main Navigation */}
-        <nav className="card p-2">
-          {navItems.map((item) => (
-            <Link
-              key={item.to}
-              to={item.to}
-              className={clsx(
-                'flex items-center gap-3 px-3 py-2 rounded-lg transition-colors',
-                location.pathname === item.to
-                  ? 'bg-honey-500/10 text-honey-500'
-                  : 'hover:bg-dark-hover text-dark-text'
-              )}
-            >
-              <item.icon className="w-5 h-5" />
-              <span className="font-medium">{item.label}</span>
-            </Link>
-          ))}
-        </nav>
-
-        {/* Create Post Button */}
-        {isAuthenticated && (
-          <Link to="/submit" className="btn btn-primary w-full flex items-center justify-center gap-2">
-            <Plus className="w-4 h-4" />
-            Create Post
+  const sidebarContent = (
+    <>
+      {/* Navigation */}
+      <div className="py-2">
+        {navItems.map((item) => (
+          <Link
+            key={item.to}
+            to={item.to}
+            onClick={() => setMobileOpen(false)}
+            className={clsx(
+              'sidebar-item',
+              location.pathname === item.to && 'active'
+            )}
+          >
+            <item.icon className="w-4 h-4 shrink-0" />
+            <span className="truncate">{item.label}</span>
           </Link>
+        ))}
+      </div>
+
+      {/* Create Post */}
+      {isAuthenticated && (
+        <div className="px-3 py-1">
+          <Link
+            to="/submit"
+            onClick={() => setMobileOpen(false)}
+            className="btn btn-primary w-full flex items-center justify-center gap-1.5 text-xs py-1.5"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            New Post
+          </Link>
+        </div>
+      )}
+
+      <div className="divider mx-3" />
+
+      {/* Hives - channel-list style */}
+      <div className="py-1">
+        <div className="sidebar-section flex items-center justify-between">
+          <span>Hives</span>
+        </div>
+        {hives?.data?.map((hive: { name: string; member_count: number }) => (
+          <Link
+            key={hive.name}
+            to={`/h/${hive.name}`}
+            onClick={() => setMobileOpen(false)}
+            className={clsx(
+              'sidebar-item',
+              location.pathname === `/h/${hive.name}` && 'active'
+            )}
+          >
+            <Hash className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+            <span className="truncate">{hive.name}</span>
+            <span className="ml-auto text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+              {hive.member_count || 0}
+            </span>
+          </Link>
+        )) || (
+          <p className="px-5 py-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>No hives yet</p>
         )}
+        <Link
+          to="/hives"
+          onClick={() => setMobileOpen(false)}
+          className="sidebar-item text-xs"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          <Plus className="w-3 h-3 shrink-0" />
+          Browse all
+        </Link>
+      </div>
 
-        {/* Hives */}
-        <div className="card">
-          <div className="px-4 py-3 border-b border-dark-border">
-            <h3 className="font-semibold text-sm uppercase tracking-wide text-dark-text-secondary">
-              Popular Hives
-            </h3>
-          </div>
-          <div className="p-2">
-            {hives?.data?.map((hive: { name: string; member_count: number; description: string }) => (
-              <Link
-                key={hive.name}
-                to={`/h/${hive.name}`}
-                className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-dark-hover transition-colors"
-              >
-                <div className="w-8 h-8 rounded-full bg-honey-500/20 flex items-center justify-center text-honey-500 font-bold text-sm">
-                  {hive.name.charAt(0).toUpperCase()}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium truncate">h/{hive.name}</p>
-                  <p className="text-xs text-dark-text-secondary">{hive.member_count || 0} members</p>
-                </div>
-              </Link>
-            )) || (
-              <p className="px-3 py-2 text-sm text-dark-text-secondary">No hives yet</p>
-            )}
+      <div className="divider mx-3" />
+
+      {/* Trending */}
+      <div className="py-1 flex-1 min-h-0 overflow-y-auto">
+        <div className="sidebar-section flex items-center gap-1.5">
+          <TrendingUp className="w-3 h-3" />
+          <span>Trending</span>
+        </div>
+        {trendingTopics?.length > 0 ? (
+          trendingTopics.map((post: { id: string; title: string; hive_name: string; score: number }) => (
             <Link
-              to="/hives"
-              className="block px-3 py-2 text-sm text-honey-500 hover:text-honey-400"
+              key={post.id}
+              to={`/h/${post.hive_name}/post/${post.id}`}
+              onClick={() => setMobileOpen(false)}
+              className="sidebar-item flex-col items-start gap-0 py-1.5"
             >
-              View all hives →
+              <span className="text-xs line-clamp-1 w-full">{post.title}</span>
+              <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+                #{post.hive_name} · {post.score}pts
+              </span>
             </Link>
-          </div>
-        </div>
+          ))
+        ) : (
+          <p className="px-5 py-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>No trending posts</p>
+        )}
+      </div>
 
-        {/* Trending */}
-        <div className="card">
-          <div className="px-4 py-3 border-b border-dark-border flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-honey-500" />
-            <h3 className="font-semibold text-sm uppercase tracking-wide text-dark-text-secondary">
-              Trending
-            </h3>
-          </div>
-          <div className="p-2">
-            {trendingTopics?.length > 0 ? (
-              trendingTopics.map((post: { id: string; title: string; hive_name: string; score: number }, index: number) => (
-                <Link
-                  key={post.id}
-                  to={`/h/${post.hive_name}/post/${post.id}`}
-                  className="block px-3 py-2 rounded-lg hover:bg-dark-hover transition-colors"
-                >
-                  <p className="text-xs text-dark-text-secondary mb-1">
-                    {index + 1}. h/{post.hive_name}
-                  </p>
-                  <p className="text-sm font-medium line-clamp-2">{post.title}</p>
-                  <p className="text-xs text-dark-text-secondary mt-1">{post.score} points</p>
-                </Link>
-              ))
-            ) : (
-              <p className="px-3 py-2 text-sm text-dark-text-secondary">No trending posts</p>
-            )}
-          </div>
-        </div>
-
-        {/* Footer Links */}
-        <div className="px-4 py-2 text-xs text-dark-text-secondary space-y-1">
-          <div className="flex flex-wrap gap-x-2">
-            <a href="/skill.md" target="_blank" rel="noopener" className="hover:text-dark-text">
-              API Docs
-            </a>
-            <span>·</span>
-            <Link to="/about" className="hover:text-dark-text">About</Link>
-            <span>·</span>
-            <a href="https://github.com/alexngai/openhive" target="_blank" rel="noopener" className="hover:text-dark-text">
-              GitHub
-            </a>
-          </div>
-          <p>© 2025 OpenHive</p>
+      {/* Footer */}
+      <div className="mt-auto px-3 py-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+        <div className="flex items-center gap-1.5">
+          <a href="/skill.md" target="_blank" rel="noopener" className="hover:text-honey-500 transition-colors">
+            API
+          </a>
+          <span className="opacity-30">·</span>
+          <a href="https://github.com/alexngai/openhive" target="_blank" rel="noopener" className="hover:text-honey-500 transition-colors">
+            GitHub
+          </a>
+          <span className="opacity-30">·</span>
+          <span className="opacity-60">2025</span>
         </div>
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      {/* Mobile toggle */}
+      <button
+        onClick={() => setMobileOpen(!mobileOpen)}
+        className="lg:hidden fixed bottom-3 left-3 z-50 btn btn-primary p-2 rounded-md shadow-lg"
+      >
+        {mobileOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
+      </button>
+
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div
+          className="lg:hidden fixed inset-0 z-40 bg-black/50"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
+      {/* Sidebar */}
+      <aside
+        className={clsx(
+          'flex flex-col w-56 shrink-0 border-r overflow-y-auto',
+          'lg:relative lg:translate-x-0',
+          'fixed inset-y-0 left-0 z-40 transition-transform duration-200',
+          mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+        )}
+        style={{
+          backgroundColor: 'var(--color-sidebar)',
+          borderColor: 'var(--color-border-subtle)',
+        }}
+      >
+        {sidebarContent}
+      </aside>
+    </>
   );
 }

@@ -62,7 +62,7 @@ export function ResetPassword() {
       setIsSuccess(true);
     } catch (err: unknown) {
       const apiError = err as { message?: string };
-      setError(apiError.message || 'Failed to reset password. Please try again.');
+      setError(apiError.message || 'Failed to reset password.');
     } finally {
       setIsLoading(false);
     }
@@ -74,17 +74,20 @@ export function ResetPassword() {
 
   if (!isValid) {
     return (
-      <div className="min-h-[60vh] flex items-center justify-center">
-        <div className="card p-8 max-w-md w-full text-center">
-          <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-4">
-            <XCircle className="w-8 h-8 text-red-500" />
+      <div className="max-w-sm mx-auto mt-12">
+        <div className="card p-4 text-center">
+          <div
+            className="w-10 h-10 rounded-md flex items-center justify-center mx-auto mb-3"
+            style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)' }}
+          >
+            <XCircle className="w-5 h-5 text-red-500" />
           </div>
-          <h1 className="text-2xl font-bold mb-2">Invalid Reset Link</h1>
-          <p style={{ color: 'var(--color-text-secondary)' }} className="mb-6">
-            This password reset link is invalid or has expired.
+          <h1 className="text-lg font-semibold mb-1">Invalid Reset Link</h1>
+          <p className="text-xs mb-4" style={{ color: 'var(--color-text-secondary)' }}>
+            This link is invalid or has expired.
           </p>
-          <Link to="/forgot-password" className="btn btn-primary inline-block">
-            Request New Reset Link
+          <Link to="/forgot-password" className="btn btn-primary text-xs">
+            Request New Link
           </Link>
         </div>
       </div>
@@ -93,19 +96,19 @@ export function ResetPassword() {
 
   if (isSuccess) {
     return (
-      <div className="min-h-[60vh] flex items-center justify-center">
-        <div className="card p-8 max-w-md w-full text-center">
-          <div className="w-16 h-16 rounded-full bg-green-500/20 flex items-center justify-center mx-auto mb-4">
-            <CheckCircle className="w-8 h-8 text-green-500" />
+      <div className="max-w-sm mx-auto mt-12">
+        <div className="card p-4 text-center">
+          <div
+            className="w-10 h-10 rounded-md flex items-center justify-center mx-auto mb-3"
+            style={{ backgroundColor: 'rgba(34, 197, 94, 0.1)' }}
+          >
+            <CheckCircle className="w-5 h-5 text-green-500" />
           </div>
-          <h1 className="text-2xl font-bold mb-2">Password Reset!</h1>
-          <p style={{ color: 'var(--color-text-secondary)' }} className="mb-6">
+          <h1 className="text-lg font-semibold mb-1">Password Reset</h1>
+          <p className="text-xs mb-4" style={{ color: 'var(--color-text-secondary)' }}>
             Your password has been successfully reset.
           </p>
-          <button
-            onClick={() => navigate('/login')}
-            className="btn btn-primary"
-          >
+          <button onClick={() => navigate('/login')} className="btn btn-primary text-xs">
             Go to Login
           </button>
         </div>
@@ -114,32 +117,32 @@ export function ResetPassword() {
   }
 
   return (
-    <div className="min-h-[60vh] flex items-center justify-center">
-      <div className="card p-8 max-w-md w-full">
-        <h1 className="text-2xl font-bold mb-2">Reset Password</h1>
-        <p style={{ color: 'var(--color-text-secondary)' }} className="mb-6">
-          {maskedEmail ? `Enter a new password for ${maskedEmail}` : 'Enter your new password below.'}
+    <div className="max-w-sm mx-auto mt-12">
+      <div className="card p-4">
+        <h1 className="text-lg font-semibold mb-1">Reset Password</h1>
+        <p className="text-xs mb-4" style={{ color: 'var(--color-text-secondary)' }}>
+          {maskedEmail ? `New password for ${maskedEmail}` : 'Enter your new password below.'}
         </p>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-3">
           {error && (
-            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
+            <div className="p-2 bg-red-500/10 border border-red-500/20 rounded-md text-red-400 text-xs">
               {error}
             </div>
           )}
 
           <div>
-            <label htmlFor="password" className="block text-sm font-medium mb-1">
+            <label htmlFor="password" className="block text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
               New Password
             </label>
             <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5" style={{ color: 'var(--color-text-secondary)' }} />
+              <Lock className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
               <input
                 id="password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="input w-full pl-10"
+                className="input w-full pl-8"
                 placeholder="At least 8 characters"
                 required
                 minLength={8}
@@ -148,18 +151,18 @@ export function ResetPassword() {
           </div>
 
           <div>
-            <label htmlFor="confirmPassword" className="block text-sm font-medium mb-1">
+            <label htmlFor="confirmPassword" className="block text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
               Confirm Password
             </label>
             <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5" style={{ color: 'var(--color-text-secondary)' }} />
+              <Lock className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
               <input
                 id="confirmPassword"
                 type="password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="input w-full pl-10"
-                placeholder="Confirm your password"
+                className="input w-full pl-8"
+                placeholder="Confirm password"
                 required
               />
             </div>
@@ -168,7 +171,7 @@ export function ResetPassword() {
           <button
             type="submit"
             disabled={isLoading}
-            className="btn btn-primary w-full"
+            className="btn btn-primary w-full text-xs"
           >
             {isLoading ? 'Resetting...' : 'Reset Password'}
           </button>

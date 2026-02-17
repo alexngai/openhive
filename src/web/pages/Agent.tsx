@@ -35,12 +35,12 @@ export function Agent() {
 
   if (!agent) {
     return (
-      <div className="card p-8 text-center">
-        <h2 className="text-xl font-bold mb-2">Agent not found</h2>
-        <p className="text-dark-text-secondary mb-4">
+      <div className="py-8 text-center">
+        <h2 className="text-lg font-semibold mb-1">Agent not found</h2>
+        <p className="text-sm mb-3" style={{ color: 'var(--color-text-secondary)' }}>
           The agent "{agentName}" doesn't exist.
         </p>
-        <Link to="/agents" className="btn btn-primary">
+        <Link to="/agents" className="btn btn-primary text-xs">
           Browse Agents
         </Link>
       </div>
@@ -50,18 +50,18 @@ export function Agent() {
   return (
     <div>
       {/* Profile Header */}
-      <div className="card p-6 mb-4">
-        <div className="flex items-start gap-6">
+      <div className="card px-3 py-3 mb-3">
+        <div className="flex items-start gap-3">
           <Avatar
             src={agent.avatar_url}
             name={agent.name}
-            size="xl"
+            size="lg"
             isAgent={agent.account_type !== 'human'}
           />
-          <div className="flex-1">
-            <div className="flex items-start justify-between gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start justify-between gap-3">
               <div>
-                <h1 className="text-2xl font-bold flex items-center gap-2">
+                <h1 className="text-lg font-semibold flex items-center gap-2">
                   {agent.name}
                   <AgentBadge
                     isVerified={agent.is_verified}
@@ -70,36 +70,32 @@ export function Agent() {
                   />
                 </h1>
                 {agent.description && (
-                  <p className="text-dark-text-secondary mt-2">{agent.description}</p>
+                  <p className="text-xs mt-1 leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
+                    {agent.description}
+                  </p>
                 )}
               </div>
               {isAuthenticated && !isOwnProfile && (
                 <button
                   onClick={handleFollowToggle}
                   disabled={followMutation.isPending || unfollowMutation.isPending}
-                  className={isFollowing ? 'btn btn-secondary' : 'btn btn-primary'}
+                  className={`${isFollowing ? 'btn btn-secondary' : 'btn btn-primary'} text-xs flex items-center gap-1`}
                 >
                   {isFollowing ? (
-                    <>
-                      <UserMinus className="w-4 h-4 mr-2" />
-                      Unfollow
-                    </>
+                    <><UserMinus className="w-3 h-3" /> Unfollow</>
                   ) : (
-                    <>
-                      <UserPlus className="w-4 h-4 mr-2" />
-                      Follow
-                    </>
+                    <><UserPlus className="w-3 h-3" /> Follow</>
                   )}
                 </button>
               )}
             </div>
-            <div className="flex items-center gap-6 mt-4 text-sm text-dark-text-secondary">
+            <div className="flex items-center gap-4 mt-2 text-xs" style={{ color: 'var(--color-text-muted)' }}>
               <span className="flex items-center gap-1">
-                <Award className="w-4 h-4" />
-                {agent.karma} karma
+                <Award className="w-3 h-3 text-honey-500" />
+                <span className="font-semibold" style={{ color: 'var(--color-text)' }}>{agent.karma}</span> karma
               </span>
               <span className="flex items-center gap-1">
-                <Calendar className="w-4 h-4" />
+                <Calendar className="w-3 h-3" />
                 Joined <TimeAgo date={agent.created_at} />
               </span>
             </div>
@@ -108,19 +104,22 @@ export function Agent() {
       </div>
 
       {/* Posts */}
-      <div className="card">
-        <div className="px-4 py-3 border-b border-dark-border">
-          <h3 className="font-medium">Recent Posts</h3>
+      <div className="card overflow-hidden">
+        <div
+          className="px-3 py-2 border-b"
+          style={{ borderColor: 'var(--color-border-subtle)' }}
+        >
+          <h3 className="font-medium text-xs" style={{ color: 'var(--color-text-secondary)' }}>Recent Posts</h3>
         </div>
-        <div className="p-4">
+        <div className="p-2">
           {posts && posts.length > 0 ? (
-            <div className="space-y-3">
+            <div className="space-y-1">
               {posts.map((post) => (
                 <PostCard key={post.id} post={post} />
               ))}
             </div>
           ) : (
-            <p className="text-center text-dark-text-secondary py-8">
+            <p className="text-center text-xs py-6" style={{ color: 'var(--color-text-muted)' }}>
               No posts yet
             </p>
           )}

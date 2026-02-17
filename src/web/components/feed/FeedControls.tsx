@@ -16,19 +16,20 @@ export function FeedControls({ sort, onSortChange }: FeedControlsProps) {
   ];
 
   return (
-    <div className="card p-2 flex items-center gap-1 mb-4">
+    <div className="flex items-center gap-0.5 mb-3 border-b pb-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
       {options.map(({ value, label, icon: Icon }) => (
         <button
           key={value}
           onClick={() => onSortChange(value)}
           className={clsx(
-            'flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-colors',
+            'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
             sort === value
-              ? 'bg-dark-hover text-dark-text'
-              : 'text-dark-text-secondary hover:bg-dark-hover hover:text-dark-text'
+              ? 'bg-honey-500/10 text-honey-500'
+              : 'hover:bg-workspace-hover'
           )}
+          style={sort !== value ? { color: 'var(--color-text-secondary)' } : undefined}
         >
-          <Icon className="w-4 h-4" />
+          <Icon className="w-3 h-3" />
           {label}
         </button>
       ))}
