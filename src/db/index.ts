@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE } from './schema.js';
 import { MAP_SCHEMA } from '../map/schema.js';
 import { SYNC_SCHEMA_V12, SYNC_SCHEMA_V13, SYNC_SCHEMA_V14, SYNC_SCHEMA_V15 } from '../sync/schema.js';
+import { HOSTED_SWARM_SCHEMA } from '../swarm/schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
 
@@ -89,6 +90,8 @@ export function initDatabase(config: string | DatabaseConfig): Database.Database
     db.exec(FTS_SCHEMA);
     // Create MAP Hub tables
     db.exec(MAP_SCHEMA);
+    // Create hosted swarms table
+    db.exec(HOSTED_SWARM_SCHEMA);
     // Seed default data
     db.exec(SEED_DATA);
   } else if (versionRow.version < SCHEMA_VERSION) {
@@ -144,6 +147,8 @@ const MIGRATION_REGISTRY: Record<number, string> = {
   14: SYNC_SCHEMA_V14,
   // Version 15: Key rotation support — versioned signing keys
   15: SYNC_SCHEMA_V15,
+  // Version 16: Hosted swarms — spawn and manage OpenSwarm instances
+  16: HOSTED_SWARM_SCHEMA,
 };
 
 /** Get the SQL for a specific migration version.

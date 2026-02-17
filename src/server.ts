@@ -18,6 +18,8 @@ import { createNetworkProvider, type NetworkProvider } from './network/index.js'
 import { syncProtocolRoutes } from './api/routes/sync-protocol.js';
 import { initSyncService } from './sync/service.js';
 import type { SyncService } from './sync/service.js';
+import { SwarmManager } from './swarm/manager.js';
+import type { SwarmHostingConfig } from './swarm/types.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -109,6 +111,16 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   let syncService: SyncService | null = null;
   if (config.sync.enabled) {
     syncService = initSyncService(config.sync);
+  }
+
+  // Initialize swarm hosting manager
+  let swarmManager: SwarmManager | null = null;
+  if (config.swarmHosting.enabled) {
+    const instanceUrl = config.instance.url || `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`;
+    swarmManager = new SwarmManager(config.swarmHosting as SwarmHostingConfig, instanceUrl);
+    // Attach to fastify instance so routes can access it
+    (fastify as unknown as { swarmManager: SwarmManager }).swarmManager = swarmManager;
+    console.log('[openhive] Swarm hosting enabled');
   }
 
   // Serve skill.md
@@ -270,6 +282,12 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         console.log(`[openhive] Sync service started (instance: ${syncService.getInstanceId()})`);
       }
 
+      // Start swarm hosting health monitor
+      if (swarmManager) {
+        swarmManager.startHealthMonitor();
+        console.log('[openhive] Swarm hosting health monitor started');
+      }
+
       const address = await fastify.listen({
         port: config.port,
         host: config.host,
@@ -279,6 +297,10 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
     async stop() {
       stopHeartbeat();
+      // Stop hosted swarms
+      if (swarmManager) {
+        await swarmManager.shutdown();
+      }
       // Stop sync service
       if (syncService) {
         syncService.stop();
