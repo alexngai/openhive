@@ -8,6 +8,7 @@ import { PageLoader } from '../components/common/LoadingSpinner';
 import { Highlight } from '../components/common/Highlight';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { VoteButtons } from '../components/common/VoteButtons';
+import clsx from 'clsx';
 
 type TabType = 'all' | 'posts' | 'comments' | 'agents' | 'hives';
 
@@ -27,10 +28,10 @@ export function Search() {
 
   if (!query) {
     return (
-      <div className="card p-10 text-center">
-        <SearchIcon className="w-12 h-12 mx-auto mb-4 text-dark-text-secondary" />
-        <h2 className="font-display text-2xl mb-2">Search OpenHive</h2>
-        <p className="text-dark-text-secondary">
+      <div className="py-12 text-center">
+        <SearchIcon className="w-8 h-8 mx-auto mb-3" style={{ color: 'var(--color-text-muted)' }} />
+        <h2 className="text-lg font-semibold mb-1">Search OpenHive</h2>
+        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
           Enter a search term to find posts, agents, and hives
         </p>
       </div>
@@ -49,21 +50,23 @@ export function Search() {
 
   return (
     <div>
-      <h1 className="font-display text-3xl tracking-tight mb-5">
-        Search results for "{query}"
+      <h1 className="text-lg font-semibold mb-3">
+        Results for "{query}"
       </h1>
 
       {/* Tabs */}
-      <div className="card p-1.5 flex items-center gap-1 mb-4 overflow-x-auto">
+      <div className="flex items-center gap-0.5 mb-3 border-b pb-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
         {tabs.map((tab) => (
           <button
             key={tab.value}
             onClick={() => setActiveTab(tab.value)}
-            className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all duration-200 ${
+            className={clsx(
+              'px-2.5 py-1 rounded-md text-xs font-medium whitespace-nowrap transition-colors',
               activeTab === tab.value
                 ? 'bg-honey-500/10 text-honey-500'
-                : 'text-dark-text-secondary hover:bg-dark-hover hover:text-dark-text'
-            }`}
+                : 'hover:bg-workspace-hover'
+            )}
+            style={activeTab !== tab.value ? { color: 'var(--color-text-secondary)' } : undefined}
           >
             {tab.label}
           </button>
@@ -71,8 +74,8 @@ export function Search() {
       </div>
 
       {!hasResults ? (
-        <div className="card p-8 text-center">
-          <p className="text-dark-text-secondary">
+        <div className="py-8 text-center">
+          <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
             No results found for "{query}"
           </p>
         </div>
@@ -83,9 +86,9 @@ export function Search() {
             results?.results.posts?.length > 0 && (
               <div>
                 {activeTab === 'all' && (
-                  <h2 className="text-lg font-bold mb-2">Posts</h2>
+                  <h2 className="text-sm font-semibold mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>Posts</h2>
                 )}
-                <div className="space-y-3">
+                <div className="space-y-1">
                   {results.results.posts.map((post) => (
                     <SearchPostCard key={post.id} post={post} query={query} />
                   ))}
@@ -98,27 +101,23 @@ export function Search() {
             results?.results.agents?.length > 0 && (
               <div>
                 {activeTab === 'all' && (
-                  <h2 className="text-lg font-bold mb-2">Agents</h2>
+                  <h2 className="text-sm font-semibold mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>Agents</h2>
                 )}
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
                   {results.results.agents.map((agent) => (
                     <Link
                       key={agent.id}
                       to={`/a/${agent.name}`}
-                      className="card card-hover p-4 flex items-center gap-3"
+                      className="card card-hover px-3 py-2 flex items-center gap-2.5"
                     >
-                      <Avatar
-                        src={agent.avatar_url}
-                        name={agent.name}
-                        size="md"
-                      />
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <Highlight text={agent.name} query={query} className="font-medium" />
+                      <Avatar src={agent.avatar_url} name={agent.name} size="sm" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <Highlight text={agent.name} query={query} className="font-medium text-sm" />
                           <AgentBadge isVerified={agent.is_verified} />
                         </div>
                         {agent.description && (
-                          <p className="text-sm line-clamp-1" style={{ color: 'var(--color-text-secondary)' }}>
+                          <p className="text-xs line-clamp-1" style={{ color: 'var(--color-text-secondary)' }}>
                             <Highlight text={agent.description} query={query} />
                           </p>
                         )}
@@ -134,24 +133,24 @@ export function Search() {
             results?.results.hives?.length > 0 && (
               <div>
                 {activeTab === 'all' && (
-                  <h2 className="text-lg font-bold mb-2">Hives</h2>
+                  <h2 className="text-sm font-semibold mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>Hives</h2>
                 )}
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
                   {results.results.hives.map((hive) => (
                     <Link
                       key={hive.id}
                       to={`/h/${hive.name}`}
-                      className="card card-hover p-4"
+                      className="card card-hover px-3 py-2"
                     >
-                      <h3 className="font-bold">
-                        h/<Highlight text={hive.name} query={query} />
+                      <h3 className="font-medium text-sm">
+                        #<Highlight text={hive.name} query={query} />
                       </h3>
                       {hive.description && (
-                        <p className="text-sm line-clamp-2 mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+                        <p className="text-xs line-clamp-1 mt-0.5" style={{ color: 'var(--color-text-secondary)' }}>
                           <Highlight text={hive.description} query={query} />
                         </p>
                       )}
-                      <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>
+                      <p className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
                         {hive.member_count} members
                       </p>
                     </Link>
@@ -165,31 +164,28 @@ export function Search() {
   );
 }
 
-// Search-specific post card with highlighted text
 function SearchPostCard({ post, query }: { post: any; query: string }) {
   return (
-    <div className="card card-hover p-4 flex gap-4">
-      {/* Vote buttons */}
-      <div className="hidden sm:block">
+    <div className="card card-hover px-3 py-2.5 flex gap-2.5">
+      <div className="hidden sm:block pt-0.5">
         <VoteButtons
           targetType="post"
           targetId={post.id}
           score={post.score}
           userVote={post.user_vote}
+          size="sm"
         />
       </div>
 
-      {/* Content */}
       <div className="flex-1 min-w-0">
-        {/* Meta */}
-        <div className="flex items-center gap-2 text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-          <Link to={`/h/${post.hive_name}`} className="font-medium hover:underline">
-            h/{post.hive_name}
+        <div className="flex items-center gap-1.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+          <Link to={`/h/${post.hive_name}`} className="font-medium hover:text-honey-500 transition-colors">
+            #{post.hive_name}
           </Link>
-          <span>·</span>
-          <div className="flex items-center gap-1.5">
+          <span className="opacity-40">·</span>
+          <div className="flex items-center gap-1">
             <Avatar src={post.author?.avatar_url} name={post.author?.name} size="xs" />
-            <Link to={`/a/${post.author?.name}`} className="hover:underline">
+            <Link to={`/a/${post.author?.name}`} className="hover:text-honey-500 transition-colors">
               {post.author?.name}
             </Link>
             <AgentBadge
@@ -197,26 +193,23 @@ function SearchPostCard({ post, query }: { post: any; query: string }) {
               isAgent={post.author?.account_type !== 'human'}
             />
           </div>
-          <span>·</span>
+          <span className="opacity-40">·</span>
           <TimeAgo date={post.created_at} />
         </div>
 
-        {/* Title */}
         <Link to={`/h/${post.hive_name}/post/${post.id}`}>
-          <h3 className="text-lg font-medium hover:underline">
+          <h3 className="text-sm font-medium hover:text-honey-500 transition-colors mt-0.5">
             <Highlight text={post.title} query={query} />
           </h3>
         </Link>
 
-        {/* Content preview */}
         {post.content && (
-          <p className="text-sm line-clamp-2 mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+          <p className="text-xs line-clamp-2 mt-0.5" style={{ color: 'var(--color-text-secondary)' }}>
             <Highlight text={post.content} query={query} />
           </p>
         )}
 
-        {/* Footer */}
-        <div className="flex items-center gap-4 text-sm mt-2" style={{ color: 'var(--color-text-secondary)' }}>
+        <div className="flex items-center gap-3 text-2xs mt-1.5" style={{ color: 'var(--color-text-muted)' }}>
           <div className="sm:hidden">
             <VoteButtons
               targetType="post"
@@ -229,10 +222,10 @@ function SearchPostCard({ post, query }: { post: any; query: string }) {
           </div>
           <Link
             to={`/h/${post.hive_name}/post/${post.id}`}
-            className="flex items-center gap-1.5 hover:underline"
+            className="flex items-center gap-1 hover:text-honey-500 transition-colors"
           >
-            <MessageSquare className="w-4 h-4" />
-            {post.comment_count} comments
+            <MessageSquare className="w-3 h-3" />
+            {post.comment_count} replies
           </Link>
         </div>
       </div>

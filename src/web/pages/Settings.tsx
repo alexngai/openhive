@@ -6,6 +6,7 @@ import { toast } from '../stores/toast';
 import { api } from '../lib/api';
 import { useSEO } from '../hooks/useDocumentTitle';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
+import clsx from 'clsx';
 
 export function Settings() {
   const navigate = useNavigate();
@@ -25,24 +26,26 @@ export function Settings() {
   ];
 
   return (
-    <div className="max-w-3xl mx-auto">
-      <h1 className="font-display text-3xl tracking-tight mb-6">Settings</h1>
+    <div className="max-w-2xl">
+      <h1 className="text-lg font-semibold mb-4">Settings</h1>
 
-      <div className="flex gap-6">
-        {/* Sidebar */}
-        <nav className="w-48 flex-shrink-0">
-          <ul className="space-y-1">
+      <div className="flex gap-4">
+        {/* Sidebar tabs */}
+        <nav className="w-36 shrink-0">
+          <ul className="space-y-0.5">
             {tabs.map(({ id, label, icon: Icon }) => (
               <li key={id}>
                 <button
                   onClick={() => setActiveTab(id)}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
+                  className={clsx(
+                    'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors',
                     activeTab === id
                       ? 'bg-honey-500/10 text-honey-500'
-                      : 'text-dark-text-secondary hover:text-dark-text hover:bg-dark-hover'
-                  }`}
+                      : 'hover:bg-workspace-hover'
+                  )}
+                  style={activeTab !== id ? { color: 'var(--color-text-secondary)' } : undefined}
                 >
-                  <Icon className="w-4 h-4" />
+                  <Icon className="w-3.5 h-3.5" />
                   {label}
                 </button>
               </li>
@@ -79,26 +82,30 @@ function ProfileSettings({ agent }: { agent: { name: string; email?: string | nu
   };
 
   return (
-    <div className="card p-8">
-      <h2 className="text-lg font-semibold mb-5">Profile Settings</h2>
+    <div className="card p-4">
+      <h2 className="text-sm font-semibold mb-3">Profile</h2>
 
-      <form onSubmit={handleSave} className="space-y-5">
+      <form onSubmit={handleSave} className="space-y-3">
         <div>
-          <label className="block text-sm font-medium mb-2">Username</label>
+          <label className="block text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+            Username
+          </label>
           <input
             type="text"
             value={agent.name}
             className="input w-full opacity-50 cursor-not-allowed"
             disabled
           />
-          <p className="text-xs text-dark-text-secondary mt-2">
-            Username cannot be changed
+          <p className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+            Cannot be changed
           </p>
         </div>
 
         {agent.email && (
           <div>
-            <label className="block text-sm font-medium mb-2">Email</label>
+            <label className="block text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+              Email
+            </label>
             <input
               type="email"
               value={agent.email}
@@ -109,26 +116,26 @@ function ProfileSettings({ agent }: { agent: { name: string; email?: string | nu
         )}
 
         <div>
-          <label htmlFor="description" className="block text-sm font-medium mb-2">
+          <label htmlFor="description" className="block text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
             Bio
           </label>
           <textarea
             id="description"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="input w-full min-h-[100px] resize-y"
+            className="input w-full min-h-[80px] resize-y"
             placeholder="Tell us about yourself..."
             maxLength={500}
           />
-          <p className="text-xs text-dark-text-secondary mt-2">
-            {description.length}/500 characters
+          <p className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+            {description.length}/500
           </p>
         </div>
 
         <button
           type="submit"
           disabled={isLoading}
-          className="btn btn-primary flex items-center gap-2"
+          className="btn btn-primary flex items-center gap-1.5 text-xs"
         >
           {isLoading && <LoadingSpinner size="sm" />}
           Save Changes
@@ -179,22 +186,22 @@ function SecuritySettings() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="card p-8">
-        <h2 className="text-lg font-semibold mb-5 flex items-center gap-2">
-          <Lock className="w-5 h-5" />
+    <div className="space-y-3">
+      <div className="card p-4">
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
+          <Lock className="w-3.5 h-3.5" />
           Change Password
         </h2>
 
-        <form onSubmit={handleChangePassword} className="space-y-5">
+        <form onSubmit={handleChangePassword} className="space-y-3">
           {error && (
-            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
+            <div className="p-2 bg-red-500/10 border border-red-500/20 rounded-md text-red-400 text-xs">
               {error}
             </div>
           )}
 
           <div>
-            <label htmlFor="currentPassword" className="block text-sm font-medium mb-2">
+            <label htmlFor="currentPassword" className="block text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
               Current Password
             </label>
             <input
@@ -208,7 +215,7 @@ function SecuritySettings() {
           </div>
 
           <div>
-            <label htmlFor="newPassword" className="block text-sm font-medium mb-2">
+            <label htmlFor="newPassword" className="block text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
               New Password
             </label>
             <input
@@ -224,7 +231,7 @@ function SecuritySettings() {
           </div>
 
           <div>
-            <label htmlFor="confirmPassword" className="block text-sm font-medium mb-2">
+            <label htmlFor="confirmPassword" className="block text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
               Confirm New Password
             </label>
             <input
@@ -240,7 +247,7 @@ function SecuritySettings() {
           <button
             type="submit"
             disabled={isLoading}
-            className="btn btn-primary flex items-center gap-2"
+            className="btn btn-primary flex items-center gap-1.5 text-xs"
           >
             {isLoading && <LoadingSpinner size="sm" />}
             Change Password
@@ -248,15 +255,15 @@ function SecuritySettings() {
         </form>
       </div>
 
-      <div className="card p-8">
-        <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 text-red-400">
-          <Trash2 className="w-5 h-5" />
+      <div className="card p-4">
+        <h2 className="text-sm font-semibold mb-2 flex items-center gap-1.5 text-red-400">
+          <Trash2 className="w-3.5 h-3.5" />
           Danger Zone
         </h2>
-        <p className="text-sm text-dark-text-secondary mb-5 leading-relaxed">
-          Once you delete your account, there is no going back. Please be certain.
+        <p className="text-xs mb-3" style={{ color: 'var(--color-text-secondary)' }}>
+          Once you delete your account, there is no going back.
         </p>
-        <button className="btn bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors">
+        <button className="btn text-xs bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors">
           Delete Account
         </button>
       </div>

@@ -3,53 +3,57 @@
 @tailwind utilities;
 
 @layer base {
-  /* Theme CSS variables */
+  /* Theme CSS variables - Slack-inspired workspace */
   :root, .dark {
-    --color-bg: #08080a;
-    --color-card: #111114;
-    --color-elevated: #19191e;
-    --color-hover: #222229;
-    --color-border: #1f1f27;
-    --color-text: #e8e6e3;
-    --color-text-secondary: #6e6a7a;
-    --color-honey-glow: rgba(245, 158, 11, 0.12);
+    --color-bg: #1a1d21;
+    --color-sidebar: #19171d;
+    --color-surface: #222529;
+    --color-elevated: #2c2d31;
+    --color-hover: #35373b;
+    --color-border: #35373b;
+    --color-border-subtle: #2c2d31;
+    --color-text: #d1d2d3;
+    --color-text-secondary: #ababad;
+    --color-text-muted: #7a7b7e;
+    --color-accent: #f59e0b;
+    --color-accent-hover: #fbbf24;
+    --color-accent-bg: rgba(245, 158, 11, 0.08);
   }
 
   .light {
-    --color-bg: #f8f7f4;
-    --color-card: #ffffff;
-    --color-elevated: #f0eeeb;
-    --color-hover: #e4e2de;
-    --color-border: #dbd8d3;
-    --color-text: #1a1815;
-    --color-text-secondary: #7a7670;
-    --color-honey-glow: rgba(217, 119, 6, 0.08);
+    --color-bg: #f4f4f5;
+    --color-sidebar: #ffffff;
+    --color-surface: #ffffff;
+    --color-elevated: #f0f0f1;
+    --color-hover: #e8e8e9;
+    --color-border: #e0e0e1;
+    --color-border-subtle: #ebebec;
+    --color-text: #1d1c1d;
+    --color-text-secondary: #616061;
+    --color-text-muted: #999a9b;
+    --color-accent: #d97706;
+    --color-accent-hover: #b45309;
+    --color-accent-bg: rgba(217, 119, 6, 0.06);
   }
 
   html {
     @apply antialiased;
-    scroll-behavior: smooth;
+    font-size: 15px;
   }
 
   body {
     background-color: var(--color-bg);
     color: var(--color-text);
-    @apply min-h-screen transition-colors duration-300;
+    @apply min-h-screen;
   }
 
-  /* Ambient warm glow at top (dark mode only) */
-  .dark body {
-    background-image:
-      radial-gradient(ellipse 80% 40% at 50% -10%, rgba(245, 158, 11, 0.03), transparent 70%);
-  }
-
-  /* Selection color */
+  /* Selection */
   ::selection {
-    background-color: rgba(245, 158, 11, 0.3);
+    background-color: rgba(245, 158, 11, 0.25);
     color: #fff;
   }
 
-  /* Custom scrollbar */
+  /* Scrollbar - thin, unobtrusive */
   ::-webkit-scrollbar {
     @apply w-1.5;
   }
@@ -64,40 +68,35 @@
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background-color: var(--color-text-secondary);
+    background-color: var(--color-text-muted);
   }
 }
 
 @layer components {
-  /* === Buttons === */
+  /* === Buttons - compact Slack-style === */
   .btn {
-    @apply px-5 py-2.5 rounded-xl font-semibold text-sm tracking-tight transition-all duration-200 cursor-pointer select-none;
+    @apply px-3 py-1.5 rounded-md font-medium text-sm cursor-pointer select-none;
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
   }
 
   .btn-primary {
-    @apply bg-honey-500 text-black hover:bg-honey-400 active:scale-[0.97];
-    box-shadow: 0 0 20px var(--color-honey-glow), 0 1px 2px rgba(0, 0, 0, 0.08);
-  }
-
-  .btn-primary:hover {
-    box-shadow: 0 0 32px rgba(245, 158, 11, 0.2), 0 4px 12px rgba(0, 0, 0, 0.12);
+    @apply bg-honey-500 text-black hover:bg-honey-400;
   }
 
   .btn-secondary {
     background-color: var(--color-elevated);
     color: var(--color-text);
     border: 1px solid var(--color-border);
-    @apply rounded-xl;
+    @apply rounded-md;
   }
 
   .btn-secondary:hover {
     background-color: var(--color-hover);
-    border-color: rgba(245, 158, 11, 0.15);
   }
 
   .btn-ghost {
     color: var(--color-text-secondary);
-    @apply rounded-xl;
+    @apply rounded-md;
   }
 
   .btn-ghost:hover {
@@ -105,62 +104,54 @@
     background-color: var(--color-hover);
   }
 
-  /* === Cards === */
+  /* === Surface/Cards - flat, minimal === */
   .card {
-    background-color: var(--color-card);
-    border: 1px solid var(--color-border);
-    @apply rounded-2xl transition-all duration-300;
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    @apply rounded-lg;
   }
 
   .card-hover:hover {
-    border-color: rgba(245, 158, 11, 0.15);
-    box-shadow:
-      0 0 0 1px rgba(245, 158, 11, 0.04),
-      0 8px 32px -8px rgba(0, 0, 0, 0.3),
-      inset 0 1px 0 rgba(245, 158, 11, 0.03);
-    transform: translateY(-1px);
+    background-color: var(--color-elevated);
+    border-color: var(--color-border);
   }
 
   .light .card {
-    @apply shadow-sm;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
   }
 
-  .light .card-hover:hover {
-    @apply shadow-lg;
-    border-color: rgba(217, 119, 6, 0.2);
-    transform: translateY(-1px);
-  }
-
-  /* === Inputs === */
+  /* === Inputs - compact === */
   .input {
     background-color: var(--color-elevated);
     border: 1px solid var(--color-border);
     color: var(--color-text);
-    @apply rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-honey-500/30
-           focus:border-honey-500/30 transition-all duration-200;
+    @apply rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-honey-500/40
+           focus:border-honey-500/40;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
   }
 
   .input::placeholder {
-    color: var(--color-text-secondary);
+    color: var(--color-text-muted);
   }
 
   /* === Links === */
   .link {
-    @apply text-honey-500 hover:text-honey-400 transition-colors duration-200 underline-offset-4 hover:underline;
+    @apply text-honey-500 hover:text-honey-400 underline-offset-2 hover:underline;
+    transition: color 120ms ease;
   }
 
   /* === Vote buttons === */
   .vote-btn {
-    @apply p-1.5 rounded-lg transition-all duration-200 cursor-pointer;
+    @apply p-1 rounded-md cursor-pointer;
+    transition: background-color 120ms ease, color 120ms ease;
   }
 
   .vote-btn:hover {
     background-color: var(--color-hover);
-    transform: scale(1.15);
   }
 
   .vote-btn:active {
-    transform: scale(0.9);
+    transform: scale(0.92);
   }
 
   .vote-btn-up {
@@ -179,20 +170,38 @@
     @apply text-downvote;
   }
 
-  /* === Hex avatar clip-path (for AI agents) === */
+  /* === Hex avatar (agents) === */
   .hex-avatar {
     clip-path: polygon(50% 0%, 93.3% 25%, 93.3% 75%, 50% 100%, 6.7% 75%, 6.7% 25%);
   }
 
-  /* === Glass effect === */
-  .glass {
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
+  /* === Sidebar section header === */
+  .sidebar-section {
+    @apply px-3 py-1.5 text-xs font-medium uppercase tracking-wider;
+    color: var(--color-text-muted);
   }
 
-  /* === Accent gradient line === */
-  .accent-line {
-    background: linear-gradient(90deg, transparent 0%, #b45309 20%, #f59e0b 40%, #fbbf24 50%, #f59e0b 60%, #b45309 80%, transparent 100%);
+  /* === Sidebar item === */
+  .sidebar-item {
+    @apply flex items-center gap-2 px-3 py-1 rounded-md text-sm cursor-pointer mx-2;
+    color: var(--color-text-secondary);
+    transition: background-color 80ms ease, color 80ms ease;
+  }
+
+  .sidebar-item:hover {
+    background-color: var(--color-hover);
+    color: var(--color-text);
+  }
+
+  .sidebar-item.active {
+    background-color: var(--color-accent-bg);
+    color: var(--color-accent);
+  }
+
+  /* === Divider === */
+  .divider {
+    border-color: var(--color-border-subtle);
+    @apply border-t my-2;
   }
 }
 
@@ -202,21 +211,29 @@
   }
 }
 
-/* === Keyframe animations === */
-@keyframes fade-in-up {
-  from { opacity: 0; transform: translateY(6px); }
+/* === Animations - subtle, fast === */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+.animate-fade-in {
+  animation: fade-in 150ms ease-out;
 }
 
-/* === Markdown/Prose styles === */
+.animate-slide-in {
+  animation: slide-in 150ms ease-out;
+}
+
+/* === Markdown/Prose - compact === */
 .markdown-content {
   color: var(--color-text);
-  @apply leading-relaxed;
+  @apply leading-relaxed text-sm;
 }
 
 .markdown-content h1,
@@ -226,48 +243,49 @@
 .markdown-content h5,
 .markdown-content h6 {
   color: var(--color-text);
-  font-family: 'Instrument Serif', Georgia, serif;
-  @apply font-normal tracking-tight;
+  @apply font-semibold tracking-tight;
 }
 
-.markdown-content h1 { @apply text-3xl mt-8 mb-4; }
-.markdown-content h2 { @apply text-2xl mt-6 mb-3; }
-.markdown-content h3 { @apply text-xl mt-5 mb-2; }
+.markdown-content h1 { @apply text-xl mt-6 mb-3; }
+.markdown-content h2 { @apply text-lg mt-5 mb-2; }
+.markdown-content h3 { @apply text-base mt-4 mb-2; }
 
 .markdown-content p {
-  @apply mb-4 leading-[1.75];
+  @apply mb-3 leading-relaxed;
 }
 
 .markdown-content a {
-  @apply text-honey-500 hover:text-honey-400 underline underline-offset-4 decoration-honey-500/30 hover:decoration-honey-500/60;
+  @apply text-honey-500 hover:text-honey-400 underline underline-offset-2 decoration-honey-500/30 hover:decoration-honey-500/60;
 }
 
 .markdown-content code {
   background-color: var(--color-elevated);
-  @apply px-1.5 py-0.5 rounded-md text-sm font-mono text-honey-400;
+  border: 1px solid var(--color-border-subtle);
+  @apply px-1 py-0.5 rounded text-xs font-mono text-honey-400;
 }
 
 .markdown-content pre {
   background-color: var(--color-elevated);
-  border: 1px solid var(--color-border);
-  @apply p-5 rounded-xl overflow-x-auto mb-4;
+  border: 1px solid var(--color-border-subtle);
+  @apply p-3 rounded-md overflow-x-auto mb-3;
 }
 
 .markdown-content pre code {
   background-color: transparent;
+  border: none;
   color: var(--color-text);
   @apply p-0;
 }
 
 .markdown-content blockquote {
   color: var(--color-text-secondary);
-  border-left: 3px solid #f59e0b;
-  @apply pl-5 italic my-5;
+  border-left: 2px solid var(--color-accent);
+  @apply pl-3 italic my-3;
 }
 
 .markdown-content ul,
 .markdown-content ol {
-  @apply ml-6 mb-4;
+  @apply ml-5 mb-3;
 }
 
 .markdown-content ul {
@@ -279,34 +297,35 @@
 }
 
 .markdown-content li {
-  @apply mb-1.5 leading-relaxed;
+  @apply mb-1 leading-relaxed;
 }
 
 .markdown-content hr {
-  border-color: var(--color-border);
-  @apply my-8;
+  border-color: var(--color-border-subtle);
+  @apply my-5;
 }
 
 .markdown-content img {
-  @apply rounded-xl max-w-full my-4;
+  @apply rounded-md max-w-full my-3;
 }
 
 .markdown-content table {
-  @apply w-full border-collapse mb-4;
+  @apply w-full border-collapse mb-3;
 }
 
 .markdown-content th,
 .markdown-content td {
-  border: 1px solid var(--color-border);
-  @apply px-4 py-2.5 text-left;
+  border: 1px solid var(--color-border-subtle);
+  @apply px-3 py-1.5 text-left text-sm;
 }
 
 .markdown-content th {
   background-color: var(--color-elevated);
-  @apply font-semibold;
+  @apply font-medium;
 }
 
 .markdown-inline code {
   background-color: var(--color-elevated);
-  @apply px-1.5 py-0.5 rounded-md text-sm font-mono text-honey-400;
+  border: 1px solid var(--color-border-subtle);
+  @apply px-1 py-0.5 rounded text-xs font-mono text-honey-400;
 }

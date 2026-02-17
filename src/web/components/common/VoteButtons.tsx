@@ -25,29 +25,27 @@ export function VoteButtons({
 
   const handleVote = (value: 1 | -1) => {
     if (!isAuthenticated) return;
-
-    // Toggle vote if clicking the same button
     const newValue = userVote === value ? 0 : value;
     voteMutation.mutate({ targetType, targetId, value: newValue });
   };
 
   const iconSize = {
-    sm: 'w-4 h-4',
-    md: 'w-5 h-5',
-    lg: 'w-6 h-6',
+    sm: 'w-3.5 h-3.5',
+    md: 'w-4 h-4',
+    lg: 'w-5 h-5',
   }[size];
 
   const textSize = {
-    sm: 'text-xs',
-    md: 'text-sm',
-    lg: 'text-base',
+    sm: 'text-2xs',
+    md: 'text-xs',
+    lg: 'text-sm',
   }[size];
 
   return (
     <div
       className={clsx(
-        'flex items-center gap-1',
-        horizontal ? 'flex-row' : 'flex-col'
+        'flex items-center',
+        horizontal ? 'flex-row gap-0.5' : 'flex-col gap-0'
       )}
     >
       <button
@@ -56,7 +54,7 @@ export function VoteButtons({
         className={clsx(
           'vote-btn vote-btn-up',
           userVote === 1 && 'active',
-          !isAuthenticated && 'opacity-50 cursor-not-allowed'
+          !isAuthenticated && 'opacity-40 cursor-not-allowed'
         )}
         title={isAuthenticated ? 'Upvote' : 'Login to vote'}
       >
@@ -65,12 +63,12 @@ export function VoteButtons({
 
       <span
         className={clsx(
-          'font-bold tabular-nums',
+          'font-bold tabular-nums text-center min-w-[1.5em]',
           textSize,
           userVote === 1 && 'text-upvote',
           userVote === -1 && 'text-downvote',
-          !userVote && 'text-dark-text'
         )}
+        style={!userVote ? { color: 'var(--color-text-secondary)' } : undefined}
       >
         {formatScore(score)}
       </span>
@@ -81,7 +79,7 @@ export function VoteButtons({
         className={clsx(
           'vote-btn vote-btn-down',
           userVote === -1 && 'active',
-          !isAuthenticated && 'opacity-50 cursor-not-allowed'
+          !isAuthenticated && 'opacity-40 cursor-not-allowed'
         )}
         title={isAuthenticated ? 'Downvote' : 'Login to vote'}
       >

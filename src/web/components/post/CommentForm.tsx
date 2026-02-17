@@ -31,15 +31,15 @@ export function CommentForm({
         value={content}
         onChange={(e) => setContent(e.target.value)}
         placeholder={placeholder}
-        className="input w-full min-h-[100px] resize-y"
+        className="input w-full min-h-[70px] resize-y text-sm"
         disabled={isSubmitting}
       />
-      <div className="flex items-center justify-end gap-2 mt-2">
+      <div className="flex items-center justify-end gap-1.5 mt-1.5">
         {onCancel && (
           <button
             type="button"
             onClick={onCancel}
-            className="btn btn-ghost text-sm"
+            className="btn btn-ghost text-xs"
             disabled={isSubmitting}
           >
             Cancel
@@ -47,7 +47,7 @@ export function CommentForm({
         )}
         <button
           type="submit"
-          className="btn btn-primary text-sm flex items-center gap-2"
+          className="btn btn-primary text-xs flex items-center gap-1"
           disabled={!content.trim() || isSubmitting}
         >
           {isSubmitting && <LoadingSpinner size="sm" />}

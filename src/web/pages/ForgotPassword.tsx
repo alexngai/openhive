@@ -26,16 +26,19 @@ export function ForgotPassword() {
 
   if (isSubmitted) {
     return (
-      <div className="min-h-[60vh] flex items-center justify-center">
-        <div className="card p-8 max-w-md w-full text-center">
-          <div className="w-16 h-16 rounded-full bg-green-500/20 flex items-center justify-center mx-auto mb-4">
-            <CheckCircle className="w-8 h-8 text-green-500" />
+      <div className="max-w-sm mx-auto mt-12">
+        <div className="card p-4 text-center">
+          <div
+            className="w-10 h-10 rounded-md flex items-center justify-center mx-auto mb-3"
+            style={{ backgroundColor: 'rgba(34, 197, 94, 0.1)' }}
+          >
+            <CheckCircle className="w-5 h-5 text-green-500" />
           </div>
-          <h1 className="text-2xl font-bold mb-2">Check Your Email</h1>
-          <p style={{ color: 'var(--color-text-secondary)' }} className="mb-6">
-            If an account exists for {email}, we've sent password reset instructions.
+          <h1 className="text-lg font-semibold mb-1">Check Your Email</h1>
+          <p className="text-xs mb-4" style={{ color: 'var(--color-text-secondary)' }}>
+            If an account exists for {email}, we've sent reset instructions.
           </p>
-          <Link to="/login" className="btn btn-primary inline-block">
+          <Link to="/login" className="btn btn-primary text-xs">
             Return to Login
           </Link>
         </div>
@@ -44,41 +47,41 @@ export function ForgotPassword() {
   }
 
   return (
-    <div className="min-h-[60vh] flex items-center justify-center">
-      <div className="card p-8 max-w-md w-full">
+    <div className="max-w-sm mx-auto mt-12">
+      <div className="card p-4">
         <Link
           to="/login"
-          className="inline-flex items-center gap-1 text-sm mb-6 hover:text-honey-500"
-          style={{ color: 'var(--color-text-secondary)' }}
+          className="inline-flex items-center gap-1 text-xs mb-4 hover:text-honey-500 transition-colors"
+          style={{ color: 'var(--color-text-muted)' }}
         >
-          <ArrowLeft className="w-4 h-4" />
+          <ArrowLeft className="w-3 h-3" />
           Back to login
         </Link>
 
-        <h1 className="text-2xl font-bold mb-2">Forgot Password</h1>
-        <p style={{ color: 'var(--color-text-secondary)' }} className="mb-6">
-          Enter your email address and we'll send you a link to reset your password.
+        <h1 className="text-lg font-semibold mb-1">Forgot Password</h1>
+        <p className="text-xs mb-4" style={{ color: 'var(--color-text-secondary)' }}>
+          Enter your email and we'll send a reset link.
         </p>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-3">
           {error && (
-            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
+            <div className="p-2 bg-red-500/10 border border-red-500/20 rounded-md text-red-400 text-xs">
               {error}
             </div>
           )}
 
           <div>
-            <label htmlFor="email" className="block text-sm font-medium mb-1">
+            <label htmlFor="email" className="block text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
               Email
             </label>
             <div className="relative">
-              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5" style={{ color: 'var(--color-text-secondary)' }} />
+              <Mail className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
               <input
                 id="email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="input w-full pl-10"
+                className="input w-full pl-8"
                 placeholder="you@example.com"
                 required
               />
@@ -88,7 +91,7 @@ export function ForgotPassword() {
           <button
             type="submit"
             disabled={isLoading}
-            className="btn btn-primary w-full"
+            className="btn btn-primary w-full text-xs"
           >
             {isLoading ? 'Sending...' : 'Send Reset Link'}
           </button>

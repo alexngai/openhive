@@ -13,7 +13,7 @@ export function ThemeToggle() {
 
   return (
     <div
-      className="flex items-center gap-1 p-1 rounded-lg"
+      className="flex items-center gap-0.5 p-0.5 rounded-md"
       style={{ backgroundColor: 'var(--color-elevated)' }}
     >
       {themes.map(({ value, icon: Icon, label }) => (
@@ -21,17 +21,16 @@ export function ThemeToggle() {
           key={value}
           onClick={() => setTheme(value)}
           className={clsx(
-            'p-1.5 rounded-md transition-colors',
-            theme === value && 'theme-toggle-active'
+            'p-1 rounded transition-colors',
           )}
           style={{
             backgroundColor: theme === value ? 'var(--color-hover)' : 'transparent',
-            color: theme === value ? 'var(--color-text)' : 'var(--color-text-secondary)',
+            color: theme === value ? 'var(--color-text)' : 'var(--color-text-muted)',
           }}
           title={label}
           aria-label={`Switch to ${label} theme`}
         >
-          <Icon className="w-4 h-4" />
+          <Icon className="w-3 h-3" />
         </button>
       ))}
     </div>

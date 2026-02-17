@@ -28,7 +28,6 @@ export function Hive() {
     refetch,
   } = usePosts({ hive: hiveName, sort });
 
-  // Subscribe to real-time updates for this hive
   useHiveFeedUpdates(hive?.id || '');
 
   const handleRefresh = useCallback(() => {
@@ -52,12 +51,12 @@ export function Hive() {
 
   if (!hive) {
     return (
-      <div className="card p-10 text-center">
-        <h2 className="font-display text-2xl mb-2">Hive not found</h2>
-        <p className="text-dark-text-secondary mb-5">
-          The hive "h/{hiveName}" doesn't exist or has been removed.
+      <div className="py-8 text-center">
+        <h2 className="text-lg font-semibold mb-1">Hive not found</h2>
+        <p className="text-sm mb-3" style={{ color: 'var(--color-text-secondary)' }}>
+          #{hiveName} doesn't exist or has been removed.
         </p>
-        <Link to="/hives" className="btn btn-primary">
+        <Link to="/hives" className="btn btn-primary text-xs">
           Browse Hives
         </Link>
       </div>
@@ -67,50 +66,48 @@ export function Hive() {
   return (
     <div>
       {/* Hive Header */}
-      <div className="card mb-4 overflow-hidden">
+      <div className="card mb-3 overflow-hidden">
         {hive.banner_url && (
           <div
-            className="h-36 bg-cover bg-center"
+            className="h-24 bg-cover bg-center"
             style={{ backgroundImage: `url(${hive.banner_url})` }}
           />
         )}
-        <div className="p-5">
-          <div className="flex items-start justify-between gap-4">
+        <div className="px-3 py-3">
+          <div className="flex items-start justify-between gap-3">
             <div>
-              <h1 className="font-display text-3xl tracking-tight">h/{hive.name}</h1>
+              <h1 className="text-lg font-semibold">#{hive.name}</h1>
               {hive.description && (
-                <p className="text-dark-text-secondary mt-2 leading-relaxed">{hive.description}</p>
+                <p className="text-xs mt-1 leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
+                  {hive.description}
+                </p>
               )}
-              <div className="flex items-center gap-5 mt-3 text-sm text-dark-text-secondary">
-                <span className="flex items-center gap-1.5">
-                  <Users className="w-4 h-4" />
+              <div className="flex items-center gap-4 mt-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+                <span className="flex items-center gap-1">
+                  <Users className="w-3 h-3" />
                   {hive.member_count} members
                 </span>
-                <span className="flex items-center gap-1.5">
-                  <Calendar className="w-4 h-4" />
+                <span className="flex items-center gap-1">
+                  <Calendar className="w-3 h-3" />
                   Created <TimeAgo date={hive.created_at} />
                 </span>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 shrink-0">
               {isAuthenticated && (
                 <>
                   <button
                     onClick={handleJoinLeave}
                     disabled={joinMutation.isPending || leaveMutation.isPending}
-                    className={
-                      hive.is_member
-                        ? 'btn btn-secondary'
-                        : 'btn btn-primary'
-                    }
+                    className={`${hive.is_member ? 'btn btn-secondary' : 'btn btn-primary'} text-xs`}
                   >
                     {hive.is_member ? 'Joined' : 'Join'}
                   </button>
                   <Link
                     to={`/h/${hiveName}/submit`}
-                    className="btn btn-primary flex items-center gap-2"
+                    className="btn btn-primary flex items-center gap-1 text-xs"
                   >
-                    <Plus className="w-4 h-4" />
+                    <Plus className="w-3 h-3" />
                     Post
                   </Link>
                 </>
@@ -122,7 +119,7 @@ export function Hive() {
 
       {/* Feed */}
       <FeedControls sort={sort} onSortChange={setSort} />
-      <NewPostsIndicator hiveId={hive.id} onRefresh={handleRefresh} className="mb-3" />
+      <NewPostsIndicator hiveId={hive.id} onRefresh={handleRefresh} className="mb-2" />
       <PostList
         posts={posts}
         showHive={false}
@@ -130,7 +127,7 @@ export function Hive() {
         isFetchingNextPage={isFetchingNextPage}
         hasNextPage={hasNextPage}
         fetchNextPage={fetchNextPage}
-        emptyMessage={`No posts in h/${hiveName} yet. Be the first!`}
+        emptyMessage={`No posts in #${hiveName} yet. Be the first!`}
       />
     </div>
   );

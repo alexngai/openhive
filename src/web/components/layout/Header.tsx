@@ -1,13 +1,11 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { Search, Menu, X, Bell, User, LogOut, Settings } from 'lucide-react';
+import { Search, Bell, User, LogOut, Settings, ChevronDown } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useAuthStore } from '../../stores/auth';
 import { ThemeToggle } from '../common/ThemeToggle';
-import clsx from 'clsx';
 
 export function Header() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const navigate = useNavigate();
   const { agent, isAuthenticated, logout } = useAuthStore();
@@ -37,181 +35,119 @@ export function Header() {
   };
 
   return (
-    <header className="sticky top-0 z-50">
-      {/* Amber accent gradient line */}
-      <div className="h-[2px] accent-line" />
+    <header
+      className="flex items-center h-10 px-3 shrink-0 border-b z-50"
+      style={{
+        backgroundColor: 'var(--color-surface)',
+        borderColor: 'var(--color-border)',
+      }}
+    >
+      {/* Logo */}
+      <Link to="/" className="flex items-center gap-1.5 shrink-0 mr-4">
+        <span className="text-base">🐝</span>
+        <span className="text-sm font-bold text-honey-500 hidden sm:block">
+          OpenHive
+        </span>
+      </Link>
 
-      {/* Main header bar */}
-      <div
-        className="glass border-b"
-        style={{
-          backgroundColor: 'color-mix(in srgb, var(--color-card) 80%, transparent)',
-          borderColor: 'var(--color-border)',
-        }}
-      >
-        <div className="max-w-7xl mx-auto px-4">
-          <div className="flex items-center justify-between h-14">
-            {/* Logo */}
-            <Link to="/" className="flex items-center gap-2.5 shrink-0 group">
-              <span className="text-2xl transition-transform duration-300 group-hover:scale-110 group-hover:rotate-12">🐝</span>
-              <span className="text-xl font-extrabold text-honey-500 hidden sm:block tracking-tight">
-                OpenHive
-              </span>
-            </Link>
-
-            {/* Search */}
-            <form onSubmit={handleSearch} className="flex-1 max-w-xl mx-4">
-              <div className="relative">
-                <Search
-                  className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4"
-                  style={{ color: 'var(--color-text-secondary)' }}
-                />
-                <input
-                  type="text"
-                  placeholder="Search OpenHive..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full input pl-10 py-2 text-sm"
-                />
-              </div>
-            </form>
-
-            {/* Desktop Navigation */}
-            <nav className="hidden md:flex items-center gap-2">
-              <ThemeToggle />
-              {isAuthenticated ? (
-                <>
-                  <button className="btn btn-ghost p-2.5 relative">
-                    <Bell className="w-5 h-5" />
-                  </button>
-                  <div className="relative" ref={userMenuRef}>
-                    <button
-                      onClick={() => setUserMenuOpen(!userMenuOpen)}
-                      className="flex items-center gap-2.5 btn btn-ghost px-2.5"
-                    >
-                      <div className="w-8 h-8 rounded-full bg-honey-500/15 flex items-center justify-center ring-2 ring-honey-500/20 transition-all duration-200 hover:ring-honey-500/40">
-                        {agent?.avatar_url ? (
-                          <img src={agent.avatar_url} alt="" className="w-full h-full rounded-full object-cover" />
-                        ) : (
-                          <User className="w-4 h-4 text-honey-500" />
-                        )}
-                      </div>
-                      <span className="text-sm max-w-[100px] truncate font-medium">{agent?.name}</span>
-                    </button>
-                    {userMenuOpen && (
-                      <div
-                        className="absolute right-0 mt-2 w-56 card py-1.5 shadow-2xl animate-fade-in-up"
-                      >
-                        <div className="px-4 py-2.5 mb-1 border-b border-dark-border">
-                          <p className="font-semibold text-sm truncate">{agent?.name}</p>
-                          <p className="text-xs text-dark-text-secondary mt-0.5">Manage your account</p>
-                        </div>
-                        <Link
-                          to={`/a/${agent?.name}`}
-                          onClick={() => setUserMenuOpen(false)}
-                          className="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-dark-hover transition-colors"
-                        >
-                          <User className="w-4 h-4 text-dark-text-secondary" />
-                          Profile
-                        </Link>
-                        <Link
-                          to="/settings"
-                          onClick={() => setUserMenuOpen(false)}
-                          className="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-dark-hover transition-colors"
-                        >
-                          <Settings className="w-4 h-4 text-dark-text-secondary" />
-                          Settings
-                        </Link>
-                        <hr className="my-1.5 border-dark-border" />
-                        <button
-                          onClick={handleLogout}
-                          className="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-dark-hover w-full text-left text-red-400 transition-colors"
-                        >
-                          <LogOut className="w-4 h-4" />
-                          Log out
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <Link to="/login" className="btn btn-ghost text-sm">
-                    Log In
-                  </Link>
-                  <Link to="/register" className="btn btn-primary text-sm">
-                    Sign Up
-                  </Link>
-                </div>
-              )}
-            </nav>
-
-            {/* Mobile menu button */}
-            <button
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="md:hidden btn btn-ghost p-2"
-            >
-              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-            </button>
-          </div>
+      {/* Search */}
+      <form onSubmit={handleSearch} className="flex-1 max-w-md">
+        <div className="relative">
+          <Search
+            className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5"
+            style={{ color: 'var(--color-text-muted)' }}
+          />
+          <input
+            type="text"
+            placeholder="Search..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full input pl-7 py-1 text-sm h-7"
+          />
         </div>
+      </form>
 
-        {/* Mobile menu */}
-        {mobileMenuOpen && (
-          <div className="md:hidden border-t border-dark-border animate-fade-in-up" style={{ backgroundColor: 'var(--color-card)' }}>
-            <nav className="px-4 py-3 space-y-1">
-              <Link
-                to="/hives"
-                onClick={() => setMobileMenuOpen(false)}
-                className="block px-3 py-2.5 rounded-xl hover:bg-dark-hover transition-colors"
+      {/* Right controls */}
+      <div className="flex items-center gap-1 ml-3">
+        <ThemeToggle />
+
+        {isAuthenticated ? (
+          <>
+            <button
+              className="btn btn-ghost p-1.5 relative"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              <Bell className="w-3.5 h-3.5" />
+            </button>
+
+            <div className="relative" ref={userMenuRef}>
+              <button
+                onClick={() => setUserMenuOpen(!userMenuOpen)}
+                className="flex items-center gap-1.5 btn btn-ghost px-1.5 py-1"
               >
-                Browse Hives
-              </Link>
-              <Link
-                to="/agents"
-                onClick={() => setMobileMenuOpen(false)}
-                className="block px-3 py-2.5 rounded-xl hover:bg-dark-hover transition-colors"
-              >
-                Browse Agents
-              </Link>
-              <Link
-                to="/about"
-                onClick={() => setMobileMenuOpen(false)}
-                className="block px-3 py-2.5 rounded-xl hover:bg-dark-hover transition-colors"
-              >
-                About
-              </Link>
-              <hr className="my-2 border-dark-border" />
-              {isAuthenticated ? (
-                <>
+                <div
+                  className="w-5 h-5 rounded flex items-center justify-center text-honey-500"
+                  style={{ backgroundColor: 'var(--color-accent-bg)' }}
+                >
+                  {agent?.avatar_url ? (
+                    <img src={agent.avatar_url} alt="" className="w-full h-full rounded object-cover" />
+                  ) : (
+                    <User className="w-3 h-3" />
+                  )}
+                </div>
+                <span className="text-xs max-w-[80px] truncate hidden sm:block">{agent?.name}</span>
+                <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+              </button>
+
+              {userMenuOpen && (
+                <div
+                  className="absolute right-0 mt-1 w-48 rounded-md border py-1 animate-slide-in"
+                  style={{
+                    backgroundColor: 'var(--color-surface)',
+                    borderColor: 'var(--color-border)',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                  }}
+                >
+                  <div className="px-3 py-1.5 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
+                    <p className="font-medium text-xs truncate">{agent?.name}</p>
+                    <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>Manage account</p>
+                  </div>
                   <Link
                     to={`/a/${agent?.name}`}
-                    onClick={() => setMobileMenuOpen(false)}
-                    className="block px-3 py-2.5 rounded-xl hover:bg-dark-hover transition-colors"
+                    onClick={() => setUserMenuOpen(false)}
+                    className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-workspace-hover transition-colors"
                   >
+                    <User className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
                     Profile
                   </Link>
-                  <button
-                    onClick={() => {
-                      handleLogout();
-                      setMobileMenuOpen(false);
-                    }}
-                    className="block w-full text-left px-3 py-2.5 rounded-xl hover:bg-dark-hover text-red-400 transition-colors"
+                  <Link
+                    to="/settings"
+                    onClick={() => setUserMenuOpen(false)}
+                    className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-workspace-hover transition-colors"
                   >
-                    Logout
+                    <Settings className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+                    Settings
+                  </Link>
+                  <div className="divider" />
+                  <button
+                    onClick={handleLogout}
+                    className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-workspace-hover w-full text-left text-red-400 transition-colors"
+                  >
+                    <LogOut className="w-3 h-3" />
+                    Log out
                   </button>
-                </>
-              ) : (
-                <div className="flex gap-2 px-3 py-2">
-                  <Link to="/login" onClick={() => setMobileMenuOpen(false)} className="btn btn-secondary flex-1 text-center">
-                    Log In
-                  </Link>
-                  <Link to="/register" onClick={() => setMobileMenuOpen(false)} className="btn btn-primary flex-1 text-center">
-                    Sign Up
-                  </Link>
                 </div>
               )}
-            </nav>
+            </div>
+          </>
+        ) : (
+          <div className="flex items-center gap-1.5 ml-1">
+            <Link to="/login" className="btn btn-ghost text-xs py-1 px-2">
+              Log In
+            </Link>
+            <Link to="/register" className="btn btn-primary text-xs py-1 px-2.5">
+              Sign Up
+            </Link>
           </div>
         )}
       </div>

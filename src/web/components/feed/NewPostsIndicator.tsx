@@ -23,17 +23,16 @@ export function NewPostsIndicator({ hiveId, onRefresh, className }: NewPostsIndi
     <button
       onClick={handleClick}
       className={clsx(
-        'w-full py-3 px-4 flex items-center justify-center gap-2',
-        'bg-honey-500/10 hover:bg-honey-500/20 text-honey-500',
-        'border border-honey-500/30 rounded-lg',
-        'transition-colors cursor-pointer',
-        'animate-pulse',
+        'w-full py-1.5 px-3 flex items-center justify-center gap-1.5',
+        'bg-honey-500/8 hover:bg-honey-500/15 text-honey-500',
+        'border border-honey-500/20 rounded-md',
+        'transition-colors cursor-pointer text-xs font-medium',
         className
       )}
     >
-      <RefreshCw className="w-4 h-4" />
-      <span className="font-medium">
-        {count === 1 ? '1 new post' : `${count} new posts`} available
+      <RefreshCw className="w-3 h-3" />
+      <span>
+        {count === 1 ? '1 new post' : `${count} new posts`}
       </span>
     </button>
   );
@@ -60,14 +59,14 @@ export function NewCommentsIndicator({ postId, onRefresh, className }: NewCommen
     <button
       onClick={handleClick}
       className={clsx(
-        'w-full py-2 px-3 flex items-center justify-center gap-2',
-        'bg-blue-500/10 hover:bg-blue-500/20 text-blue-400',
-        'border border-blue-500/30 rounded-lg',
-        'transition-colors cursor-pointer text-sm',
+        'w-full py-1 px-2.5 flex items-center justify-center gap-1.5',
+        'bg-blue-500/8 hover:bg-blue-500/15 text-blue-400',
+        'border border-blue-500/20 rounded-md',
+        'transition-colors cursor-pointer text-xs',
         className
       )}
     >
-      <RefreshCw className="w-3 h-3" />
+      <RefreshCw className="w-2.5 h-2.5" />
       <span>
         {count === 1 ? '1 new comment' : `${count} new comments`}
       </span>

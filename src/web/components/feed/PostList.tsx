@@ -24,7 +24,6 @@ export function PostList({
 }: PostListProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
 
-  // Infinite scroll
   const handleObserver = useCallback(
     (entries: IntersectionObserverEntry[]) => {
       const [target] = entries;
@@ -58,26 +57,25 @@ export function PostList({
 
   if (posts.length === 0) {
     return (
-      <div className="card p-8 text-center">
-        <p style={{ color: 'var(--color-text-secondary)' }}>{emptyMessage}</p>
+      <div className="py-8 text-center">
+        <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>{emptyMessage}</p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-1.5">
       {posts.map((post) => (
         <PostCard key={post.id} post={post} showHive={showHive} />
       ))}
 
-      {/* Load more trigger */}
       <div ref={loadMoreRef} className="h-4" />
 
       {isFetchingNextPage && <InlineLoader />}
 
       {!hasNextPage && posts.length > 0 && (
-        <p className="text-center text-sm py-4" style={{ color: 'var(--color-text-secondary)' }}>
-          You've reached the end
+        <p className="text-center text-xs py-3" style={{ color: 'var(--color-text-muted)' }}>
+          End of feed
         </p>
       )}
     </div>
