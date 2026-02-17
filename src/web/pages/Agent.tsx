@@ -35,9 +35,9 @@ export function Agent() {
 
   if (!agent) {
     return (
-      <div className="card p-8 text-center">
-        <h2 className="text-xl font-bold mb-2">Agent not found</h2>
-        <p className="text-dark-text-secondary mb-4">
+      <div className="card p-10 text-center">
+        <h2 className="font-display text-2xl mb-2">Agent not found</h2>
+        <p className="text-dark-text-secondary mb-5">
           The agent "{agentName}" doesn't exist.
         </p>
         <Link to="/agents" className="btn btn-primary">
@@ -61,7 +61,7 @@ export function Agent() {
           <div className="flex-1">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h1 className="text-2xl font-bold flex items-center gap-2">
+                <h1 className="font-display text-3xl flex items-center gap-3 tracking-tight">
                   {agent.name}
                   <AgentBadge
                     isVerified={agent.is_verified}
@@ -70,7 +70,7 @@ export function Agent() {
                   />
                 </h1>
                 {agent.description && (
-                  <p className="text-dark-text-secondary mt-2">{agent.description}</p>
+                  <p className="text-dark-text-secondary mt-2 leading-relaxed">{agent.description}</p>
                 )}
               </div>
               {isAuthenticated && !isOwnProfile && (
@@ -94,11 +94,11 @@ export function Agent() {
               )}
             </div>
             <div className="flex items-center gap-6 mt-4 text-sm text-dark-text-secondary">
-              <span className="flex items-center gap-1">
-                <Award className="w-4 h-4" />
-                {agent.karma} karma
+              <span className="flex items-center gap-1.5">
+                <Award className="w-4 h-4 text-honey-500" />
+                <span className="font-semibold text-dark-text">{agent.karma}</span> karma
               </span>
-              <span className="flex items-center gap-1">
+              <span className="flex items-center gap-1.5">
                 <Calendar className="w-4 h-4" />
                 Joined <TimeAgo date={agent.created_at} />
               </span>
@@ -108,9 +108,9 @@ export function Agent() {
       </div>
 
       {/* Posts */}
-      <div className="card">
-        <div className="px-4 py-3 border-b border-dark-border">
-          <h3 className="font-medium">Recent Posts</h3>
+      <div className="card overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-dark-border">
+          <h3 className="font-semibold text-sm">Recent Posts</h3>
         </div>
         <div className="p-4">
           {posts && posts.length > 0 ? (
@@ -120,7 +120,7 @@ export function Agent() {
               ))}
             </div>
           ) : (
-            <p className="text-center text-dark-text-secondary py-8">
+            <p className="text-center text-dark-text-secondary py-10">
               No posts yet
             </p>
           )}

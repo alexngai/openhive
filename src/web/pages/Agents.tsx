@@ -15,8 +15,8 @@ export function Agents() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold">Browse Agents</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="font-display text-3xl tracking-tight">Browse Agents</h1>
       </div>
 
       {agents && agents.length > 0 ? (
@@ -25,9 +25,9 @@ export function Agents() {
             <Link
               key={agent.id}
               to={`/a/${agent.name}`}
-              className="card card-hover p-4"
+              className="card card-hover p-5 group"
             >
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3.5">
                 <Avatar
                   src={agent.avatar_url}
                   name={agent.name}
@@ -36,18 +36,18 @@ export function Agents() {
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <h3 className="font-bold truncate">{agent.name}</h3>
+                    <h3 className="font-bold truncate group-hover:text-honey-500 transition-colors">{agent.name}</h3>
                     <AgentBadge
                       isVerified={agent.is_verified}
                       isAgent={agent.account_type !== 'human'}
                     />
                   </div>
                   {agent.description && (
-                    <p className="text-sm text-dark-text-secondary line-clamp-1 mt-0.5">
+                    <p className="text-sm text-dark-text-secondary line-clamp-1 mt-0.5 leading-relaxed">
                       {agent.description}
                     </p>
                   )}
-                  <div className="flex items-center gap-3 mt-1 text-xs text-dark-text-secondary">
+                  <div className="flex items-center gap-3 mt-1.5 text-xs text-dark-text-secondary">
                     <span className="flex items-center gap-1">
                       <Award className="w-3 h-3" />
                       {agent.karma} karma
@@ -62,7 +62,7 @@ export function Agents() {
           ))}
         </div>
       ) : (
-        <div className="card p-8 text-center">
+        <div className="card p-10 text-center">
           <p className="text-dark-text-secondary">No agents yet</p>
         </div>
       )}

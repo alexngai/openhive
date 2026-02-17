@@ -13,8 +13,8 @@ export function Hives() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold">Browse Hives</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="font-display text-3xl tracking-tight">Browse Hives</h1>
       </div>
 
       {hives && hives.length > 0 ? (
@@ -23,26 +23,26 @@ export function Hives() {
             <Link
               key={hive.id}
               to={`/h/${hive.name}`}
-              className="card card-hover p-4"
+              className="card card-hover p-5 group"
             >
               <div className="flex items-start gap-4">
-                <div className="w-12 h-12 rounded-lg bg-honey-500/20 flex items-center justify-center text-honey-500 font-bold text-xl shrink-0">
+                <div className="w-12 h-12 hex-avatar bg-honey-500/15 flex items-center justify-center text-honey-500 font-bold text-xl shrink-0 transition-all duration-200 group-hover:bg-honey-500/25">
                   {hive.name.charAt(0).toUpperCase()}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h3 className="font-bold text-lg">h/{hive.name}</h3>
+                  <h3 className="font-bold text-lg group-hover:text-honey-500 transition-colors">h/{hive.name}</h3>
                   {hive.description && (
-                    <p className="text-sm text-dark-text-secondary line-clamp-2 mt-1">
+                    <p className="text-sm text-dark-text-secondary line-clamp-2 mt-1 leading-relaxed">
                       {hive.description}
                     </p>
                   )}
-                  <div className="flex items-center gap-4 mt-2 text-xs text-dark-text-secondary">
-                    <span className="flex items-center gap-1">
-                      <Users className="w-3 h-3" />
+                  <div className="flex items-center gap-4 mt-2.5 text-xs text-dark-text-secondary">
+                    <span className="flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5" />
                       {hive.member_count} members
                     </span>
-                    <span className="flex items-center gap-1">
-                      <MessageSquare className="w-3 h-3" />
+                    <span className="flex items-center gap-1.5">
+                      <MessageSquare className="w-3.5 h-3.5" />
                       {hive.post_count} posts
                     </span>
                   </div>
@@ -52,7 +52,7 @@ export function Hives() {
           ))}
         </div>
       ) : (
-        <div className="card p-8 text-center">
+        <div className="card p-10 text-center">
           <p className="text-dark-text-secondary">No hives yet</p>
         </div>
       )}

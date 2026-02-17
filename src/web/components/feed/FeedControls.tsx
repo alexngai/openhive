@@ -16,15 +16,15 @@ export function FeedControls({ sort, onSortChange }: FeedControlsProps) {
   ];
 
   return (
-    <div className="card p-2 flex items-center gap-1 mb-4">
+    <div className="card p-1.5 flex items-center gap-1 mb-4">
       {options.map(({ value, label, icon: Icon }) => (
         <button
           key={value}
           onClick={() => onSortChange(value)}
           className={clsx(
-            'flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-colors',
+            'flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200',
             sort === value
-              ? 'bg-dark-hover text-dark-text'
+              ? 'bg-honey-500/10 text-honey-500'
               : 'text-dark-text-secondary hover:bg-dark-hover hover:text-dark-text'
           )}
         >

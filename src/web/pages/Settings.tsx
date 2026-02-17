@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Lock, Shield, Trash2 } from 'lucide-react';
+import { User, Lock, Trash2 } from 'lucide-react';
 import { useAuthStore } from '../stores/auth';
 import { toast } from '../stores/toast';
 import { api } from '../lib/api';
@@ -26,7 +26,7 @@ export function Settings() {
 
   return (
     <div className="max-w-3xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6">Settings</h1>
+      <h1 className="font-display text-3xl tracking-tight mb-6">Settings</h1>
 
       <div className="flex gap-6">
         {/* Sidebar */}
@@ -36,10 +36,10 @@ export function Settings() {
               <li key={id}>
                 <button
                   onClick={() => setActiveTab(id)}
-                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
                     activeTab === id
                       ? 'bg-honey-500/10 text-honey-500'
-                      : 'hover:bg-[var(--color-hover)]'
+                      : 'text-dark-text-secondary hover:text-dark-text hover:bg-dark-hover'
                   }`}
                 >
                   <Icon className="w-4 h-4" />
@@ -79,37 +79,37 @@ function ProfileSettings({ agent }: { agent: { name: string; email?: string | nu
   };
 
   return (
-    <div className="card p-6">
-      <h2 className="text-lg font-semibold mb-4">Profile Settings</h2>
+    <div className="card p-8">
+      <h2 className="text-lg font-semibold mb-5">Profile Settings</h2>
 
-      <form onSubmit={handleSave} className="space-y-4">
+      <form onSubmit={handleSave} className="space-y-5">
         <div>
-          <label className="block text-sm font-medium mb-1">Username</label>
+          <label className="block text-sm font-medium mb-2">Username</label>
           <input
             type="text"
             value={agent.name}
-            className="input w-full opacity-60 cursor-not-allowed"
+            className="input w-full opacity-50 cursor-not-allowed"
             disabled
           />
-          <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+          <p className="text-xs text-dark-text-secondary mt-2">
             Username cannot be changed
           </p>
         </div>
 
         {agent.email && (
           <div>
-            <label className="block text-sm font-medium mb-1">Email</label>
+            <label className="block text-sm font-medium mb-2">Email</label>
             <input
               type="email"
               value={agent.email}
-              className="input w-full opacity-60 cursor-not-allowed"
+              className="input w-full opacity-50 cursor-not-allowed"
               disabled
             />
           </div>
         )}
 
         <div>
-          <label htmlFor="description" className="block text-sm font-medium mb-1">
+          <label htmlFor="description" className="block text-sm font-medium mb-2">
             Bio
           </label>
           <textarea
@@ -120,7 +120,7 @@ function ProfileSettings({ agent }: { agent: { name: string; email?: string | nu
             placeholder="Tell us about yourself..."
             maxLength={500}
           />
-          <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+          <p className="text-xs text-dark-text-secondary mt-2">
             {description.length}/500 characters
           </p>
         </div>
@@ -180,21 +180,21 @@ function SecuritySettings() {
 
   return (
     <div className="space-y-6">
-      <div className="card p-6">
-        <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+      <div className="card p-8">
+        <h2 className="text-lg font-semibold mb-5 flex items-center gap-2">
           <Lock className="w-5 h-5" />
           Change Password
         </h2>
 
-        <form onSubmit={handleChangePassword} className="space-y-4">
+        <form onSubmit={handleChangePassword} className="space-y-5">
           {error && (
-            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
+            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
               {error}
             </div>
           )}
 
           <div>
-            <label htmlFor="currentPassword" className="block text-sm font-medium mb-1">
+            <label htmlFor="currentPassword" className="block text-sm font-medium mb-2">
               Current Password
             </label>
             <input
@@ -208,7 +208,7 @@ function SecuritySettings() {
           </div>
 
           <div>
-            <label htmlFor="newPassword" className="block text-sm font-medium mb-1">
+            <label htmlFor="newPassword" className="block text-sm font-medium mb-2">
               New Password
             </label>
             <input
@@ -224,7 +224,7 @@ function SecuritySettings() {
           </div>
 
           <div>
-            <label htmlFor="confirmPassword" className="block text-sm font-medium mb-1">
+            <label htmlFor="confirmPassword" className="block text-sm font-medium mb-2">
               Confirm New Password
             </label>
             <input
@@ -248,15 +248,15 @@ function SecuritySettings() {
         </form>
       </div>
 
-      <div className="card p-6">
+      <div className="card p-8">
         <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 text-red-400">
           <Trash2 className="w-5 h-5" />
           Danger Zone
         </h2>
-        <p className="text-sm mb-4" style={{ color: 'var(--color-text-secondary)' }}>
+        <p className="text-sm text-dark-text-secondary mb-5 leading-relaxed">
           Once you delete your account, there is no going back. Please be certain.
         </p>
-        <button className="btn bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20">
+        <button className="btn bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors">
           Delete Account
         </button>
       </div>

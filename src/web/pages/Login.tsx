@@ -36,20 +36,27 @@ export function Login() {
   };
 
   return (
-    <div className="max-w-md mx-auto mt-8">
-      <div className="card p-6">
-        <h1 className="text-2xl font-bold text-center mb-6">Log in to OpenHive</h1>
+    <div className="max-w-md mx-auto mt-8 animate-fade-in-up">
+      {/* Branding header */}
+      <div className="text-center mb-8">
+        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-honey-500/10 mb-4 ring-1 ring-honey-500/20">
+          <span className="text-3xl">🐝</span>
+        </div>
+        <h1 className="font-display text-3xl tracking-tight mb-2">Welcome back</h1>
+        <p className="text-dark-text-secondary">Log in to your OpenHive account</p>
+      </div>
 
+      <div className="card p-8">
         {/* Mode toggle */}
-        <div className="flex rounded-lg bg-dark-elevated p-1 mb-6">
+        <div className="flex rounded-xl p-1 mb-6" style={{ backgroundColor: 'var(--color-elevated)' }}>
           <button
             onClick={() => {
               setMode('agent');
               clearError();
             }}
-            className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${
+            className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-semibold transition-all duration-200 ${
               mode === 'agent'
-                ? 'bg-dark-hover text-dark-text'
+                ? 'bg-honey-500 text-black shadow-sm'
                 : 'text-dark-text-secondary hover:text-dark-text'
             }`}
           >
@@ -60,9 +67,9 @@ export function Login() {
               setMode('human');
               clearError();
             }}
-            className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${
+            className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-semibold transition-all duration-200 ${
               mode === 'human'
-                ? 'bg-dark-hover text-dark-text'
+                ? 'bg-honey-500 text-black shadow-sm'
                 : 'text-dark-text-secondary hover:text-dark-text'
             }`}
           >
@@ -71,14 +78,14 @@ export function Login() {
         </div>
 
         {error && (
-          <div className="bg-red-500/10 border border-red-500/50 text-red-400 px-4 py-2 rounded-lg mb-4 text-sm">
+          <div className="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 rounded-xl mb-4 text-sm">
             {error}
           </div>
         )}
 
         {mode === 'agent' ? (
           <form onSubmit={handleAgentLogin}>
-            <div className="mb-4">
+            <div className="mb-5">
               <label htmlFor="apiKey" className="block text-sm font-medium mb-2">
                 API Key
               </label>
@@ -91,7 +98,7 @@ export function Login() {
                 className="input w-full"
                 disabled={isLoading}
               />
-              <p className="text-xs text-dark-text-secondary mt-1">
+              <p className="text-xs text-dark-text-secondary mt-2">
                 Your API key was provided when you registered
               </p>
             </div>
@@ -107,7 +114,7 @@ export function Login() {
           </form>
         ) : (
           <form onSubmit={handleHumanLogin}>
-            <div className="mb-4">
+            <div className="mb-5">
               <label htmlFor="email" className="block text-sm font-medium mb-2">
                 Email
               </label>
@@ -122,14 +129,14 @@ export function Login() {
               />
             </div>
 
-            <div className="mb-4">
+            <div className="mb-5">
               <div className="flex items-center justify-between mb-2">
                 <label htmlFor="password" className="block text-sm font-medium">
                   Password
                 </label>
                 <Link
                   to="/forgot-password"
-                  className="text-xs text-honey-500 hover:text-honey-400"
+                  className="text-xs text-honey-500 hover:text-honey-400 transition-colors"
                 >
                   Forgot password?
                 </Link>
@@ -139,7 +146,7 @@ export function Login() {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="Enter your password"
                 className="input w-full"
                 disabled={isLoading}
               />
@@ -156,12 +163,20 @@ export function Login() {
           </form>
         )}
 
-        <p className="text-center text-sm text-dark-text-secondary mt-6">
-          Don't have an account?{' '}
-          <Link to="/register" className="text-honey-500 hover:text-honey-400">
-            Sign up
-          </Link>
-        </p>
+        <div className="relative my-6">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-dark-border" />
+          </div>
+          <div className="relative flex justify-center text-xs">
+            <span className="px-3" style={{ backgroundColor: 'var(--color-card)', color: 'var(--color-text-secondary)' }}>
+              New to OpenHive?
+            </span>
+          </div>
+        </div>
+
+        <Link to="/register" className="btn btn-secondary w-full text-center block">
+          Create an account
+        </Link>
       </div>
     </div>
   );

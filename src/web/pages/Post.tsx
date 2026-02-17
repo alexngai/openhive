@@ -48,9 +48,9 @@ export function Post() {
 
   if (!post) {
     return (
-      <div className="card p-8 text-center">
-        <h2 className="text-xl font-bold mb-2">Post not found</h2>
-        <p className="text-dark-text-secondary mb-4">
+      <div className="card p-10 text-center">
+        <h2 className="font-display text-2xl mb-2">Post not found</h2>
+        <p className="text-dark-text-secondary mb-5">
           This post doesn't exist or has been removed.
         </p>
         <Link to={`/h/${hiveName}`} className="btn btn-primary">
@@ -65,14 +65,14 @@ export function Post() {
       {/* Back link */}
       <Link
         to={`/h/${hiveName}`}
-        className="flex items-center gap-2 text-sm text-dark-text-secondary hover:text-dark-text mb-4"
+        className="flex items-center gap-2 text-sm text-dark-text-secondary hover:text-honey-500 mb-4 transition-colors"
       >
         <ArrowLeft className="w-4 h-4" />
         Back to h/{hiveName}
       </Link>
 
       {/* Post */}
-      <article className="card p-4 mb-4">
+      <article className="card p-5 mb-4">
         <div className="flex gap-4">
           {/* Vote buttons */}
           <div className="hidden sm:block">
@@ -87,19 +87,19 @@ export function Post() {
           {/* Content */}
           <div className="flex-1 min-w-0">
             {/* Meta */}
-            <div className="flex items-center gap-2 text-sm text-dark-text-secondary mb-2">
+            <div className="flex items-center gap-2 text-sm text-dark-text-secondary mb-3">
               <Link
                 to={`/h/${post.hive_name}`}
-                className="font-medium hover:text-dark-text"
+                className="font-semibold text-dark-text hover:text-honey-500 transition-colors"
               >
                 h/{post.hive_name}
               </Link>
-              <span>·</span>
+              <span className="opacity-30">·</span>
               <div className="flex items-center gap-1.5">
                 <Avatar src={post.author.avatar_url} name={post.author.name} size="xs" />
                 <Link
                   to={`/a/${post.author.name}`}
-                  className="hover:text-dark-text"
+                  className="hover:text-honey-500 transition-colors"
                 >
                   {post.author.name}
                 </Link>
@@ -108,12 +108,12 @@ export function Post() {
                   isAgent={post.author.account_type !== 'human'}
                 />
               </div>
-              <span>·</span>
+              <span className="opacity-30">·</span>
               <TimeAgo date={post.created_at} />
             </div>
 
             {/* Title */}
-            <h1 className="text-2xl font-bold mb-2">{post.title}</h1>
+            <h1 className="text-2xl font-bold mb-3">{post.title}</h1>
 
             {/* Link */}
             {post.url && (
@@ -121,7 +121,7 @@ export function Post() {
                 href={post.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-2 text-honey-500 hover:text-honey-400 mb-4"
+                className="flex items-center gap-2 text-honey-500 hover:text-honey-400 mb-4 transition-colors"
               >
                 <ExternalLink className="w-4 h-4" />
                 {post.url}
@@ -134,7 +134,7 @@ export function Post() {
             )}
 
             {/* Actions */}
-            <div className="flex items-center gap-4 text-sm text-dark-text-secondary pt-2 border-t border-dark-border">
+            <div className="flex items-center gap-4 text-sm text-dark-text-secondary pt-3 border-t border-dark-border">
               <div className="sm:hidden">
                 <VoteButtons
                   targetType="post"
@@ -156,17 +156,17 @@ export function Post() {
 
       {/* Comment Form */}
       {isAuthenticated ? (
-        <div className="card p-4 mb-4">
-          <h3 className="text-sm font-medium mb-3">Add a comment</h3>
+        <div className="card p-5 mb-4">
+          <h3 className="text-sm font-semibold mb-3">Add a comment</h3>
           <CommentForm
             onSubmit={handleSubmitComment}
             isSubmitting={createCommentMutation.isPending}
           />
         </div>
       ) : (
-        <div className="card p-4 mb-4 text-center">
+        <div className="card p-5 mb-4 text-center">
           <p className="text-dark-text-secondary">
-            <Link to="/login" className="text-honey-500 hover:text-honey-400">
+            <Link to="/login" className="text-honey-500 hover:text-honey-400 transition-colors">
               Log in
             </Link>{' '}
             to join the conversation
@@ -175,13 +175,13 @@ export function Post() {
       )}
 
       {/* Comments */}
-      <div className="card">
-        <div className="px-4 py-3 border-b border-dark-border flex items-center justify-between">
-          <h3 className="font-medium">Comments</h3>
+      <div className="card overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-dark-border flex items-center justify-between">
+          <h3 className="font-semibold text-sm">Comments</h3>
           <select
             value={commentSort}
             onChange={(e) => setCommentSort(e.target.value as 'top' | 'new' | 'old')}
-            className="input text-sm py-1 px-2"
+            className="input text-sm py-1.5 px-3"
           >
             <option value="top">Top</option>
             <option value="new">New</option>
@@ -189,20 +189,20 @@ export function Post() {
           </select>
         </div>
 
-        <div className="p-4">
+        <div className="p-5">
           <NewCommentsIndicator
             postId={postId!}
             onRefresh={handleRefreshComments}
             className="mb-4"
           />
           {commentsLoading ? (
-            <div className="flex justify-center py-8">
+            <div className="flex justify-center py-10">
               <LoadingSpinner />
             </div>
           ) : comments && comments.length > 0 ? (
             <CommentTree comments={comments} postId={postId!} />
           ) : (
-            <p className="text-center text-dark-text-secondary py-8">
+            <p className="text-center text-dark-text-secondary py-10">
               No comments yet. Be the first to comment!
             </p>
           )}

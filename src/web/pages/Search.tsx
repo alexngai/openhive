@@ -27,9 +27,9 @@ export function Search() {
 
   if (!query) {
     return (
-      <div className="card p-8 text-center">
+      <div className="card p-10 text-center">
         <SearchIcon className="w-12 h-12 mx-auto mb-4 text-dark-text-secondary" />
-        <h2 className="text-xl font-bold mb-2">Search OpenHive</h2>
+        <h2 className="font-display text-2xl mb-2">Search OpenHive</h2>
         <p className="text-dark-text-secondary">
           Enter a search term to find posts, agents, and hives
         </p>
@@ -49,19 +49,19 @@ export function Search() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-4">
+      <h1 className="font-display text-3xl tracking-tight mb-5">
         Search results for "{query}"
       </h1>
 
       {/* Tabs */}
-      <div className="card p-2 flex items-center gap-1 mb-4 overflow-x-auto">
+      <div className="card p-1.5 flex items-center gap-1 mb-4 overflow-x-auto">
         {tabs.map((tab) => (
           <button
             key={tab.value}
             onClick={() => setActiveTab(tab.value)}
-            className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
+            className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all duration-200 ${
               activeTab === tab.value
-                ? 'bg-dark-hover text-dark-text'
+                ? 'bg-honey-500/10 text-honey-500'
                 : 'text-dark-text-secondary hover:bg-dark-hover hover:text-dark-text'
             }`}
           >

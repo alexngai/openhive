@@ -5,42 +5,57 @@
 @layer base {
   /* Theme CSS variables */
   :root, .dark {
-    --color-bg: #0e0e0f;
-    --color-card: #1a1a1b;
-    --color-elevated: #272729;
-    --color-hover: #343536;
-    --color-border: #343536;
-    --color-text: #d7dadc;
-    --color-text-secondary: #818384;
+    --color-bg: #08080a;
+    --color-card: #111114;
+    --color-elevated: #19191e;
+    --color-hover: #222229;
+    --color-border: #1f1f27;
+    --color-text: #e8e6e3;
+    --color-text-secondary: #6e6a7a;
+    --color-honey-glow: rgba(245, 158, 11, 0.12);
   }
 
   .light {
-    --color-bg: #ffffff;
+    --color-bg: #f8f7f4;
     --color-card: #ffffff;
-    --color-elevated: #f3f4f6;
-    --color-hover: #e5e7eb;
-    --color-border: #d1d5db;
-    --color-text: #111827;
-    --color-text-secondary: #6b7280;
+    --color-elevated: #f0eeeb;
+    --color-hover: #e4e2de;
+    --color-border: #dbd8d3;
+    --color-text: #1a1815;
+    --color-text-secondary: #7a7670;
+    --color-honey-glow: rgba(217, 119, 6, 0.08);
   }
 
   html {
     @apply antialiased;
+    scroll-behavior: smooth;
   }
 
   body {
     background-color: var(--color-bg);
     color: var(--color-text);
-    @apply min-h-screen transition-colors duration-200;
+    @apply min-h-screen transition-colors duration-300;
+  }
+
+  /* Ambient warm glow at top (dark mode only) */
+  .dark body {
+    background-image:
+      radial-gradient(ellipse 80% 40% at 50% -10%, rgba(245, 158, 11, 0.03), transparent 70%);
+  }
+
+  /* Selection color */
+  ::selection {
+    background-color: rgba(245, 158, 11, 0.3);
+    color: #fff;
   }
 
   /* Custom scrollbar */
   ::-webkit-scrollbar {
-    @apply w-2;
+    @apply w-1.5;
   }
 
   ::-webkit-scrollbar-track {
-    background-color: var(--color-bg);
+    background: transparent;
   }
 
   ::-webkit-scrollbar-thumb {
@@ -49,33 +64,40 @@
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background-color: var(--color-border);
+    background-color: var(--color-text-secondary);
   }
 }
 
 @layer components {
+  /* === Buttons === */
   .btn {
-    @apply px-4 py-2 rounded-full font-medium transition-colors duration-200;
+    @apply px-5 py-2.5 rounded-xl font-semibold text-sm tracking-tight transition-all duration-200 cursor-pointer select-none;
   }
 
   .btn-primary {
-    @apply bg-honey-500 text-black hover:bg-honey-600;
+    @apply bg-honey-500 text-black hover:bg-honey-400 active:scale-[0.97];
+    box-shadow: 0 0 20px var(--color-honey-glow), 0 1px 2px rgba(0, 0, 0, 0.08);
+  }
+
+  .btn-primary:hover {
+    box-shadow: 0 0 32px rgba(245, 158, 11, 0.2), 0 4px 12px rgba(0, 0, 0, 0.12);
   }
 
   .btn-secondary {
     background-color: var(--color-elevated);
     color: var(--color-text);
     border: 1px solid var(--color-border);
-    @apply rounded-full;
+    @apply rounded-xl;
   }
 
   .btn-secondary:hover {
     background-color: var(--color-hover);
+    border-color: rgba(245, 158, 11, 0.15);
   }
 
   .btn-ghost {
     color: var(--color-text-secondary);
-    @apply rounded-full;
+    @apply rounded-xl;
   }
 
   .btn-ghost:hover {
@@ -83,47 +105,62 @@
     background-color: var(--color-hover);
   }
 
+  /* === Cards === */
   .card {
     background-color: var(--color-card);
     border: 1px solid var(--color-border);
-    @apply rounded-lg transition-colors duration-200;
+    @apply rounded-2xl transition-all duration-300;
+  }
+
+  .card-hover:hover {
+    border-color: rgba(245, 158, 11, 0.15);
+    box-shadow:
+      0 0 0 1px rgba(245, 158, 11, 0.04),
+      0 8px 32px -8px rgba(0, 0, 0, 0.3),
+      inset 0 1px 0 rgba(245, 158, 11, 0.03);
+    transform: translateY(-1px);
   }
 
   .light .card {
     @apply shadow-sm;
   }
 
-  .card-hover:hover {
-    border-color: var(--color-hover);
-  }
-
   .light .card-hover:hover {
-    @apply shadow-md;
+    @apply shadow-lg;
+    border-color: rgba(217, 119, 6, 0.2);
+    transform: translateY(-1px);
   }
 
+  /* === Inputs === */
   .input {
     background-color: var(--color-elevated);
     border: 1px solid var(--color-border);
     color: var(--color-text);
-    @apply rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-honey-500
-           focus:border-transparent transition-all duration-200;
+    @apply rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-honey-500/30
+           focus:border-honey-500/30 transition-all duration-200;
   }
 
   .input::placeholder {
     color: var(--color-text-secondary);
   }
 
+  /* === Links === */
   .link {
-    @apply text-honey-500 hover:text-honey-400 transition-colors duration-200;
+    @apply text-honey-500 hover:text-honey-400 transition-colors duration-200 underline-offset-4 hover:underline;
   }
 
-  /* Vote button styles */
+  /* === Vote buttons === */
   .vote-btn {
-    @apply p-1 rounded transition-colors duration-200;
+    @apply p-1.5 rounded-lg transition-all duration-200 cursor-pointer;
   }
 
   .vote-btn:hover {
     background-color: var(--color-hover);
+    transform: scale(1.15);
+  }
+
+  .vote-btn:active {
+    transform: scale(0.9);
   }
 
   .vote-btn-up {
@@ -141,6 +178,22 @@
   .vote-btn-down.active {
     @apply text-downvote;
   }
+
+  /* === Hex avatar clip-path (for AI agents) === */
+  .hex-avatar {
+    clip-path: polygon(50% 0%, 93.3% 25%, 93.3% 75%, 50% 100%, 6.7% 75%, 6.7% 25%);
+  }
+
+  /* === Glass effect === */
+  .glass {
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+  }
+
+  /* === Accent gradient line === */
+  .accent-line {
+    background: linear-gradient(90deg, transparent 0%, #b45309 20%, #f59e0b 40%, #fbbf24 50%, #f59e0b 60%, #b45309 80%, transparent 100%);
+  }
 }
 
 @layer utilities {
@@ -149,7 +202,18 @@
   }
 }
 
-/* Markdown/Prose styles */
+/* === Keyframe animations === */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* === Markdown/Prose styles === */
 .markdown-content {
   color: var(--color-text);
   @apply leading-relaxed;
@@ -162,29 +226,31 @@
 .markdown-content h5,
 .markdown-content h6 {
   color: var(--color-text);
-  @apply font-bold;
+  font-family: 'Instrument Serif', Georgia, serif;
+  @apply font-normal tracking-tight;
 }
 
-.markdown-content h1 { @apply text-2xl mt-6 mb-4; }
-.markdown-content h2 { @apply text-xl mt-5 mb-3; }
-.markdown-content h3 { @apply text-lg mt-4 mb-2; }
+.markdown-content h1 { @apply text-3xl mt-8 mb-4; }
+.markdown-content h2 { @apply text-2xl mt-6 mb-3; }
+.markdown-content h3 { @apply text-xl mt-5 mb-2; }
 
 .markdown-content p {
-  @apply mb-4 leading-relaxed;
+  @apply mb-4 leading-[1.75];
 }
 
 .markdown-content a {
-  @apply text-honey-500 hover:text-honey-400 underline;
+  @apply text-honey-500 hover:text-honey-400 underline underline-offset-4 decoration-honey-500/30 hover:decoration-honey-500/60;
 }
 
 .markdown-content code {
   background-color: var(--color-elevated);
-  @apply px-1.5 py-0.5 rounded text-sm font-mono text-honey-500;
+  @apply px-1.5 py-0.5 rounded-md text-sm font-mono text-honey-400;
 }
 
 .markdown-content pre {
   background-color: var(--color-elevated);
-  @apply p-4 rounded-lg overflow-x-auto mb-4;
+  border: 1px solid var(--color-border);
+  @apply p-5 rounded-xl overflow-x-auto mb-4;
 }
 
 .markdown-content pre code {
@@ -195,7 +261,8 @@
 
 .markdown-content blockquote {
   color: var(--color-text-secondary);
-  @apply border-l-4 border-honey-500 pl-4 italic my-4;
+  border-left: 3px solid #f59e0b;
+  @apply pl-5 italic my-5;
 }
 
 .markdown-content ul,
@@ -212,16 +279,16 @@
 }
 
 .markdown-content li {
-  @apply mb-1;
+  @apply mb-1.5 leading-relaxed;
 }
 
 .markdown-content hr {
   border-color: var(--color-border);
-  @apply my-6;
+  @apply my-8;
 }
 
 .markdown-content img {
-  @apply rounded-lg max-w-full my-4;
+  @apply rounded-xl max-w-full my-4;
 }
 
 .markdown-content table {
@@ -231,7 +298,7 @@
 .markdown-content th,
 .markdown-content td {
   border: 1px solid var(--color-border);
-  @apply px-3 py-2 text-left;
+  @apply px-4 py-2.5 text-left;
 }
 
 .markdown-content th {
@@ -241,5 +308,5 @@
 
 .markdown-inline code {
   background-color: var(--color-elevated);
-  @apply px-1 py-0.5 rounded text-sm font-mono text-honey-500;
+  @apply px-1.5 py-0.5 rounded-md text-sm font-mono text-honey-400;
 }

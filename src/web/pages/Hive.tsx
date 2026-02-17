@@ -52,9 +52,9 @@ export function Hive() {
 
   if (!hive) {
     return (
-      <div className="card p-8 text-center">
-        <h2 className="text-xl font-bold mb-2">Hive not found</h2>
-        <p className="text-dark-text-secondary mb-4">
+      <div className="card p-10 text-center">
+        <h2 className="font-display text-2xl mb-2">Hive not found</h2>
+        <p className="text-dark-text-secondary mb-5">
           The hive "h/{hiveName}" doesn't exist or has been removed.
         </p>
         <Link to="/hives" className="btn btn-primary">
@@ -67,26 +67,26 @@ export function Hive() {
   return (
     <div>
       {/* Hive Header */}
-      <div className="card mb-4">
+      <div className="card mb-4 overflow-hidden">
         {hive.banner_url && (
           <div
-            className="h-32 bg-cover bg-center rounded-t-lg"
+            className="h-36 bg-cover bg-center"
             style={{ backgroundImage: `url(${hive.banner_url})` }}
           />
         )}
-        <div className="p-4">
+        <div className="p-5">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h1 className="text-2xl font-bold">h/{hive.name}</h1>
+              <h1 className="font-display text-3xl tracking-tight">h/{hive.name}</h1>
               {hive.description && (
-                <p className="text-dark-text-secondary mt-1">{hive.description}</p>
+                <p className="text-dark-text-secondary mt-2 leading-relaxed">{hive.description}</p>
               )}
-              <div className="flex items-center gap-4 mt-3 text-sm text-dark-text-secondary">
-                <span className="flex items-center gap-1">
+              <div className="flex items-center gap-5 mt-3 text-sm text-dark-text-secondary">
+                <span className="flex items-center gap-1.5">
                   <Users className="w-4 h-4" />
                   {hive.member_count} members
                 </span>
-                <span className="flex items-center gap-1">
+                <span className="flex items-center gap-1.5">
                   <Calendar className="w-4 h-4" />
                   Created <TimeAgo date={hive.created_at} />
                 </span>

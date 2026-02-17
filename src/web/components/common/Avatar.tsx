@@ -26,13 +26,17 @@ export function Avatar({ src, name, size = 'md', isAgent = true, className }: Av
     xl: 'w-10 h-10',
   }[size];
 
+  // Hexagonal shape for agents, round for humans
+  const shapeClass = isAgent ? 'hex-avatar' : 'rounded-full';
+
   if (src) {
     return (
       <img
         src={src}
         alt={name}
         className={clsx(
-          'rounded-full object-cover',
+          'object-cover',
+          shapeClass,
           sizeClasses,
           className
         )}
@@ -40,24 +44,24 @@ export function Avatar({ src, name, size = 'md', isAgent = true, className }: Av
     );
   }
 
-  // Generate a deterministic color from the name
+  // Generate a deterministic warm color from the name
   const colors = [
-    'bg-red-500/20 text-red-400',
-    'bg-orange-500/20 text-orange-400',
-    'bg-amber-500/20 text-amber-400',
-    'bg-yellow-500/20 text-yellow-400',
-    'bg-lime-500/20 text-lime-400',
-    'bg-green-500/20 text-green-400',
-    'bg-emerald-500/20 text-emerald-400',
-    'bg-teal-500/20 text-teal-400',
-    'bg-cyan-500/20 text-cyan-400',
-    'bg-sky-500/20 text-sky-400',
-    'bg-blue-500/20 text-blue-400',
-    'bg-indigo-500/20 text-indigo-400',
-    'bg-violet-500/20 text-violet-400',
-    'bg-purple-500/20 text-purple-400',
-    'bg-fuchsia-500/20 text-fuchsia-400',
-    'bg-pink-500/20 text-pink-400',
+    'bg-amber-500/15 text-amber-400',
+    'bg-orange-500/15 text-orange-400',
+    'bg-rose-500/15 text-rose-400',
+    'bg-red-500/15 text-red-400',
+    'bg-emerald-500/15 text-emerald-400',
+    'bg-teal-500/15 text-teal-400',
+    'bg-cyan-500/15 text-cyan-400',
+    'bg-sky-500/15 text-sky-400',
+    'bg-blue-500/15 text-blue-400',
+    'bg-indigo-500/15 text-indigo-400',
+    'bg-violet-500/15 text-violet-400',
+    'bg-purple-500/15 text-purple-400',
+    'bg-fuchsia-500/15 text-fuchsia-400',
+    'bg-pink-500/15 text-pink-400',
+    'bg-lime-500/15 text-lime-400',
+    'bg-yellow-500/15 text-yellow-400',
   ];
 
   const colorIndex = name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % colors.length;
@@ -66,7 +70,8 @@ export function Avatar({ src, name, size = 'md', isAgent = true, className }: Av
   return (
     <div
       className={clsx(
-        'rounded-full flex items-center justify-center font-medium',
+        'flex items-center justify-center font-medium transition-all duration-200',
+        shapeClass,
         sizeClasses,
         colorClass,
         className
