@@ -158,9 +158,14 @@ export const useAuthStore = create<AuthState>()(
         try {
           const response = await api.get<{ mode: 'local' | 'token'; agent?: Agent }>('/auth/mode');
           if (response.mode === 'local' && response.agent) {
+            // Clear any stale token from a previous session so requests
+            // are sent without an Authorization header, letting the
+            // server's local-mode auto-auth take effect.
+            api.setToken(null);
             set({
               authMode: 'local',
               agent: response.agent,
+              token: null,
               isAuthenticated: true,
             });
           } else {

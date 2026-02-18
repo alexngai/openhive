@@ -331,11 +331,13 @@ export function useSwarmLogs(id: string | null) {
   return useQuery({
     queryKey: ['swarm-logs', id],
     queryFn: async () => {
-      const res = await fetch(`/api/v1/map/hosted/${id}/logs`, {
-        headers: {
-          'Authorization': `Bearer ${api.getToken()}`,
-        },
-      });
+      const url = `/api/v1/map/hosted/${id}/logs`;
+      const headers: HeadersInit = {};
+      const token = api.getToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const res = await fetch(url, { headers });
       if (!res.ok) throw new Error('Failed to fetch logs');
       return res.text();
     },

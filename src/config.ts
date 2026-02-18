@@ -179,7 +179,7 @@ export const ConfigSchema = z.object({
 
   // Swarm hosting: spawn and manage OpenSwarm instances
   swarmHosting: z.object({
-    enabled: z.boolean().default(false),
+    enabled: z.boolean().default(true),
     /** Default hosting provider */
     default_provider: z.enum(['local', 'docker', 'fly', 'ssh', 'k8s']).default('local'),
     /** Command to run OpenSwarm (e.g. 'npx openswarm' or path to binary) */
@@ -198,7 +198,7 @@ export const ConfigSchema = z.object({
     auto_restart: z.boolean().default(true),
     /** Maximum number of restart attempts before giving up (0 = unlimited) */
     max_restart_attempts: z.number().default(3),
-  }).default({ enabled: false }),
+  }).default({}),
 
   // Mesh networking for MAP swarm hosts (pluggable provider)
   network: z.object({
