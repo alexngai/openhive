@@ -196,4 +196,8 @@ export interface SwarmHostingConfig {
   health_check_interval: number;
   /** How many consecutive health failures before marking unhealthy */
   max_health_failures: number;
+  /** Automatically restart crashed swarms */
+  auto_restart: boolean;
+  /** Maximum number of restart attempts before giving up (0 = unlimited) */
+  max_restart_attempts: number;
 }

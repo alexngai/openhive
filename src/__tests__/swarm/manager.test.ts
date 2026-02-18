@@ -32,6 +32,8 @@ function createTestConfig(overrides?: Partial<SwarmHostingConfig>): SwarmHosting
     max_swarms: 3,
     health_check_interval: 60000, // long interval so it doesn't interfere with tests
     max_health_failures: 3,
+    auto_restart: false,
+    max_restart_attempts: 3,
     ...overrides,
   };
 }

@@ -27,13 +27,21 @@ export class SwarmManager {
   private providers = new Map<string, HostingProvider>();
   private healthInterval: ReturnType<typeof setInterval> | null = null;
   private usedPorts = new Set<number>();
+  /** Maps provider instance IDs → hosted swarm DB IDs for exit handler lookup */
+  private instanceToHostedId = new Map<string, string>();
+  /** Track which instances are being intentionally stopped (to avoid auto-restart) */
+  private stoppingInstances = new Set<string>();
 
   constructor(config: SwarmHostingConfig, instanceUrl: string) {
     this.config = config;
     this.instanceUrl = instanceUrl;
 
-    // Initialize local provider
-    this.providers.set('local', new LocalProvider(config.openswarm_command));
+    // Initialize local provider with exit handler
+    const localProvider = new LocalProvider(config.openswarm_command);
+    localProvider.onProcessExit = (instanceId, code, signal) => {
+      this.handleProcessExit(instanceId, code, signal);
+    };
+    this.providers.set('local', localProvider);
   }
 
   // ==========================================================================
@@ -141,6 +149,9 @@ export class SwarmManager {
       // Provision via the hosting provider
       dal.updateHostedSwarm(hosted.id, { state: 'starting' });
       const result = await provider.provision(provisionConfig);
+
+      // Track instance → hosted swarm mapping for exit handler
+      this.instanceToHostedId.set(result.instance_id, hosted.id);
 
       // Update with provider-specific info
       dal.updateHostedSwarm(hosted.id, {
@@ -251,11 +262,17 @@ export class SwarmManager {
     // For local provider, it's derived from the port
     const instanceId = this.getInstanceId(hosted);
 
+    // Mark as intentionally stopping so exit handler doesn't auto-restart
+    this.stoppingInstances.add(instanceId);
+
     try {
       await provider.deprovision(instanceId);
     } catch (err) {
       console.warn(`[swarm-manager] Error stopping instance ${instanceId}: ${(err as Error).message}`);
     }
+
+    this.stoppingInstances.delete(instanceId);
+    this.instanceToHostedId.delete(instanceId);
 
     // Release port
     if (hosted.assigned_port) {
@@ -452,6 +469,156 @@ export class SwarmManager {
     }
 
     console.log('[swarm-manager] Shutdown complete');
+  }
+
+  // ==========================================================================
+  // Process Exit Handler (Immediate Crash Detection)
+  // ==========================================================================
+
+  /**
+   * Called immediately by LocalProvider when a child process exits.
+   * This provides instant crash detection instead of waiting for the
+   * next 30s health check interval.
+   */
+  private handleProcessExit(instanceId: string, code: number | null, signal: string | null): void {
+    // If this was an intentional stop, don't do anything
+    if (this.stoppingInstances.has(instanceId)) return;
+
+    const hostedId = this.instanceToHostedId.get(instanceId);
+    if (!hostedId) return;
+
+    const hosted = dal.findHostedSwarmById(hostedId);
+    if (!hosted) return;
+
+    // Already in a terminal state
+    if (hosted.state === 'stopped' || hosted.state === 'failed') return;
+
+    const isGraceful = code === 0;
+    const eventType = isGraceful ? 'swarm_shutdown' : 'swarm_crashed';
+    const errorMsg = isGraceful
+      ? 'Process exited gracefully'
+      : `Process crashed (code=${code}, signal=${signal})`;
+
+    console.warn(`[swarm-manager] ${eventType}: ${hosted.id} — ${errorMsg}`);
+
+    // Update DB state
+    dal.updateHostedSwarm(hostedId, {
+      state: isGraceful ? 'stopped' : 'failed',
+      error: isGraceful ? null : errorMsg,
+    });
+
+    // Release port
+    if (hosted.assigned_port) {
+      this.releasePort(hosted.assigned_port);
+    }
+
+    // Broadcast crash/shutdown event to connected clients
+    broadcastToChannel('map:discovery', {
+      type: eventType,
+      data: {
+        hosted_swarm_id: hostedId,
+        name: hosted.config?.name,
+        code,
+        signal,
+        error: errorMsg,
+      },
+    });
+
+    // Auto-restart if configured and this was a crash (not graceful shutdown)
+    if (!isGraceful && this.config.auto_restart && hosted.config) {
+      const localProvider = this.providers.get('local');
+      const restartCount = (localProvider instanceof LocalProvider)
+        ? localProvider.getRestartCount(instanceId)
+        : 0;
+
+      const maxAttempts = this.config.max_restart_attempts;
+      if (maxAttempts > 0 && restartCount >= maxAttempts) {
+        console.warn(
+          `[swarm-manager] Swarm ${hostedId} exceeded max restart attempts (${maxAttempts}), not restarting`,
+        );
+        dal.updateHostedSwarm(hostedId, {
+          error: `${errorMsg} — exceeded max restart attempts (${maxAttempts})`,
+        });
+        return;
+      }
+
+      console.log(`[swarm-manager] Auto-restarting swarm ${hostedId} (attempt ${restartCount + 1})`);
+
+      // Clean up old mapping
+      this.instanceToHostedId.delete(instanceId);
+
+      // Re-provision asynchronously
+      this.autoRestart(hostedId, hosted).catch((err) => {
+        console.error(`[swarm-manager] Auto-restart failed for ${hostedId}: ${(err as Error).message}`);
+        dal.updateHostedSwarm(hostedId, {
+          state: 'failed',
+          error: `Auto-restart failed: ${(err as Error).message}`,
+        });
+      });
+    }
+  }
+
+  /**
+   * Re-provision a crashed swarm using its saved config.
+   */
+  private async autoRestart(hostedId: string, hosted: HostedSwarm): Promise<void> {
+    const provider = this.providers.get(hosted.provider);
+    if (!provider || !hosted.config) {
+      throw new Error('Cannot auto-restart: provider or config not available');
+    }
+
+    dal.updateHostedSwarm(hostedId, { state: 'starting', error: null });
+
+    // Re-allocate a port (the old one was released)
+    const port = this.allocatePort();
+    if (!port) {
+      throw new Error('No ports available for restart');
+    }
+
+    const config = { ...hosted.config, assigned_port: port };
+    const result = await provider.provision(config);
+
+    // Track new instance mapping
+    this.instanceToHostedId.set(result.instance_id, hostedId);
+
+    // Increment restart count
+    if (provider instanceof LocalProvider) {
+      provider.incrementRestartCount(result.instance_id);
+    }
+
+    dal.updateHostedSwarm(hostedId, {
+      pid: result.pid ?? null,
+      assigned_port: port,
+      endpoint: result.endpoint ?? null,
+    });
+
+    // Wait for health
+    const healthy = await this.waitForHealth(port, 30000);
+    if (!healthy) {
+      dal.updateHostedSwarm(hostedId, {
+        state: 'unhealthy',
+        error: 'Health check timed out after restart',
+      });
+      return;
+    }
+
+    dal.updateHostedSwarm(hostedId, { state: 'running', error: null });
+
+    // Send heartbeat if registered in MAP hub
+    if (hosted.swarm_id) {
+      try {
+        mapDal.heartbeatSwarm(hosted.swarm_id);
+      } catch { /* swarm may not exist */ }
+    }
+
+    broadcastToChannel('map:discovery', {
+      type: 'swarm_restarted',
+      data: {
+        hosted_swarm_id: hostedId,
+        name: hosted.config?.name,
+        new_port: port,
+      },
+    });
   }
 
   // ==========================================================================

@@ -23,7 +23,15 @@ interface ManagedProcess {
   startedAt: number;
   logBuffer: string[];
   healthFailures: number;
+  restartCount: number;
 }
+
+/** Callback fired when a child process exits unexpectedly */
+export type ProcessExitHandler = (
+  instanceId: string,
+  code: number | null,
+  signal: string | null,
+) => void;
 
 const MAX_LOG_LINES = 1000;
 
@@ -32,6 +40,9 @@ export class LocalProvider implements HostingProvider {
 
   private processes = new Map<string, ManagedProcess>();
   private openswarmCommand: string;
+
+  /** Called when a managed process exits (for immediate crash detection) */
+  onProcessExit: ProcessExitHandler | null = null;
 
   constructor(openswarmCommand: string) {
     this.openswarmCommand = openswarmCommand;
@@ -54,7 +65,6 @@ export class LocalProvider implements HostingProvider {
     // Build args for OpenSwarm's hosting server
     const args = [
       ...baseArgs,
-      'serve',
       '--port', String(config.assigned_port),
       '--host', '127.0.0.1',
     ];
@@ -83,6 +93,7 @@ export class LocalProvider implements HostingProvider {
       startedAt: Date.now(),
       logBuffer: [],
       healthFailures: 0,
+      restartCount: 0,
     };
 
     // Capture stdout/stderr into ring buffer
@@ -103,6 +114,9 @@ export class LocalProvider implements HostingProvider {
     child.on('exit', (code, signal) => {
       const entry = `[${new Date().toISOString()}] [system] Process exited (code=${code}, signal=${signal})`;
       managed.logBuffer.push(entry);
+
+      // Notify the manager immediately about the exit
+      this.onProcessExit?.(instanceId, code, signal);
     });
 
     child.on('error', (err) => {
@@ -238,6 +252,19 @@ export class LocalProvider implements HostingProvider {
     if (managed) {
       managed.healthFailures = 0;
     }
+  }
+
+  /** Get the restart count for an instance */
+  getRestartCount(instanceId: string): number {
+    return this.processes.get(instanceId)?.restartCount ?? 0;
+  }
+
+  /** Increment the restart count for an instance */
+  incrementRestartCount(instanceId: string): number {
+    const managed = this.processes.get(instanceId);
+    if (!managed) return 0;
+    managed.restartCount++;
+    return managed.restartCount;
   }
 
   /** Stop all managed processes (for server shutdown) */

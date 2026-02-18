@@ -194,6 +194,10 @@ export const ConfigSchema = z.object({
     health_check_interval: z.number().default(30000),
     /** How many consecutive health failures before marking unhealthy */
     max_health_failures: z.number().default(3),
+    /** Automatically restart crashed swarms */
+    auto_restart: z.boolean().default(true),
+    /** Maximum number of restart attempts before giving up (0 = unlimited) */
+    max_restart_attempts: z.number().default(3),
   }).default({ enabled: false }),
 
   // Mesh networking for MAP swarm hosts (pluggable provider)
