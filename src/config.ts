@@ -200,6 +200,15 @@ export const ConfigSchema = z.object({
     max_restart_attempts: z.number().default(3),
   }).default({}),
 
+  // SwarmCraft: MAP client for monitoring and steering coding agents
+  swarmcraft: z.object({
+    enabled: z.boolean().default(false),
+    prefix: z.string().default('/api/swarmcraft'),
+    wsPath: z.string().default('/ws/swarmcraft'),
+    terminalWsPath: z.string().default('/ws/swarmcraft/terminal'),
+    logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  }).default({ enabled: false }),
+
   // Mesh networking for MAP swarm hosts (pluggable provider)
   network: z.object({
     /** Provider: 'tailscale-cloud' | 'headscale-sidecar' | 'headscale-external' | 'none' */
@@ -436,6 +445,15 @@ module.exports = {
   //   max_swarms: 10,
   //   health_check_interval: 30000,  // ms
   //   max_health_failures: 3,
+  // },
+
+  // SwarmCraft: MAP client for agent monitoring and orchestration
+  // swarmcraft: {
+  //   enabled: true,
+  //   prefix: '/api/swarmcraft',
+  //   wsPath: '/ws/swarmcraft',
+  //   terminalWsPath: '/ws/swarmcraft/terminal',
+  //   logLevel: 'info',
   // },
 
   // Mesh networking for MAP swarm hosts

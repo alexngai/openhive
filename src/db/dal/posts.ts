@@ -228,7 +228,7 @@ export function listPosts(options: ListPostsOptions): PostWithAuthor[] {
       break;
     case 'hot':
       // Simple "hot" algorithm: score / age in hours
-      query += ' ORDER BY (p.score + 1) / (1 + (julianday("now") - julianday(p.created_at)) * 24) DESC';
+      query += " ORDER BY (p.score + 1) / (1 + (julianday('now') - julianday(p.created_at)) * 24) DESC";
       break;
     case 'new':
     default:

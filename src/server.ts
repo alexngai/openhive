@@ -75,6 +75,13 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
     },
   });
 
+  // Cross-Origin Isolation headers (required for SharedArrayBuffer / KuzuDB WASM)
+  fastify.addHook('onSend', (_request, reply, payload, done) => {
+    reply.header('Cross-Origin-Opener-Policy', 'same-origin');
+    reply.header('Cross-Origin-Embedder-Policy', 'credentialless');
+    done(null, payload);
+  });
+
   // Register CORS
   if (config.cors.enabled) {
     await fastify.register(cors, {
@@ -120,6 +127,59 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   let syncService: SyncService | null = null;
   if (config.sync.enabled) {
     syncService = initSyncService(config.sync);
+  }
+
+  // Initialize SwarmCraft plugin (MAP client for agent monitoring)
+  if (config.swarmcraft.enabled) {
+    try {
+      const { getDatabaseConfig } = await import('./db/index.js');
+      const dbConf = getDatabaseConfig();
+      const dbPath = (dbConf && dbConf.type === 'sqlite') ? dbConf.path : './data/openhive.db';
+
+      const scPrefix = config.swarmcraft.prefix || '/api/swarmcraft';
+      const scWsPath = config.swarmcraft.wsPath || '/ws/swarmcraft';
+      const scTerminalWsPath = config.swarmcraft.terminalWsPath || '/ws/swarmcraft/terminal';
+
+      const { swarmcraftPlugin } = await import('swarmcraft/plugin');
+      await fastify.register(swarmcraftPlugin, {
+        database: { type: 'sqlite', path: dbPath, tablePrefix: 'sc_' },
+        prefix: scPrefix,
+        wsPath: scWsPath,
+        terminalWsPath: scTerminalWsPath,
+        logLevel: config.swarmcraft.logLevel || 'info',
+        corsOrigin: typeof config.cors.origin === 'string' ? config.cors.origin : undefined,
+      });
+      console.log(`[openhive] SwarmCraft plugin registered at ${scPrefix}`);
+
+      // Bridge: auto-connect SwarmCraft MAP client when swarms register with the Hub
+      const mcm = (fastify as any).swarmcraft.mapClientManager;
+      const connectSwarm = async (id: string, name: string, endpoint: string, authMethod?: string) => {
+        try {
+          await mcm.connect({
+            id, name, url: endpoint,
+            auth: authMethod === 'none' || !authMethod
+              ? { method: 'none' as const }
+              : { method: authMethod as 'bearer' | 'api-key', token: undefined },
+          });
+          console.log(`[openhive] SwarmCraft bridge: connected to ${name}`);
+        } catch (err) {
+          console.warn(`[openhive] SwarmCraft bridge: failed to connect to ${name}: ${(err as Error).message}`);
+        }
+      };
+
+      // Connect to existing online swarms at startup
+      const { listSwarms } = await import('./db/dal/map.js');
+      const { data: online } = listSwarms({ status: 'online', limit: 500 });
+      for (const s of online) await connectSwarm(s.id, s.name, s.map_endpoint, s.auth_method);
+
+      // Subscribe to new registrations
+      const { mapHubEvents } = await import('./map/service.js');
+      mapHubEvents.on('swarm_registered', (e: { swarm_id: string; name: string; map_endpoint: string; auth_method?: string }) => {
+        connectSwarm(e.swarm_id, e.name, e.map_endpoint, e.auth_method);
+      });
+    } catch (err) {
+      console.warn(`[openhive] Failed to register SwarmCraft plugin: ${(err as Error).message}`);
+    }
   }
 
   // Initialize swarm hosting manager

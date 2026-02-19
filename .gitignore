@@ -10,3 +10,4 @@ logs/
 .env.local
 .env.*.local
 .openhive/
+src/web/public/wasm/

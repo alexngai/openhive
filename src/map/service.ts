@@ -6,10 +6,14 @@
  * peer list generation, and swarm health monitoring.
  */
 
+import { EventEmitter } from 'events';
 import * as mapDal from '../db/dal/map.js';
 import { findHiveByName } from '../db/dal/hives.js';
 import { getDatabase } from '../db/index.js';
 import { broadcastToChannel } from '../realtime/index.js';
+
+/** Event bus for MAP Hub lifecycle events (used by SwarmCraft bridge) */
+export const mapHubEvents = new EventEmitter();
 import type {
   RegisterSwarmInput,
   RegisterNodeInput,
@@ -71,6 +75,14 @@ export function registerSwarm(
       name: swarm.name,
       map_endpoint: swarm.map_endpoint,
     },
+  });
+
+  // Emit for SwarmCraft bridge (auto-connect MAP client)
+  mapHubEvents.emit('swarm_registered', {
+    swarm_id: swarm.id,
+    name: swarm.name,
+    map_endpoint: swarm.map_endpoint,
+    auth_method: swarm.auth_method,
   });
 
   return { swarm, auto_joined_hive: autoJoinedHive };

@@ -21,6 +21,7 @@ const ForgotPassword = lazy(() => import('./pages/ForgotPassword').then(m => ({ 
 const ResetPassword = lazy(() => import('./pages/ResetPassword').then(m => ({ default: m.ResetPassword })));
 const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })));
 const Swarms = lazy(() => import('./pages/Swarms').then(m => ({ default: m.Swarms })));
+const SwarmCraft = lazy(() => import('./pages/SwarmCraft').then(m => ({ default: m.SwarmCraft })));
 
 export default function App() {
   // Initialize WebSocket connection
@@ -51,6 +52,7 @@ export default function App() {
             <Route path="reset-password/:token" element={<ResetPassword />} />
             <Route path="settings" element={<Settings />} />
             <Route path="swarms" element={<Swarms />} />
+            <Route path="swarmcraft" element={<SwarmCraft />} />
           </Route>
         </Routes>
       </Suspense>
