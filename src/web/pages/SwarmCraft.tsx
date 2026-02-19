@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
-import { SwarmCraftApp } from 'swarmcraft-ui/embed';
-import 'swarmcraft-ui/embed.css';
+import { SwarmCraftApp } from 'swarmcraft/ui/embed';
+import 'swarmcraft/ui/embed.css';
 
 // Derive API/WS URLs relative to current host (works in dev proxy and production)
 function useSwarmCraftConfig() {

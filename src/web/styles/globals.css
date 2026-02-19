@@ -1,7 +1,176 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
+/* ═══════════════════════════════════════════════════════════════
+   TAILWIND V4 THEME
+═══════════════════════════════════════════════════════════════ */
+@theme {
+  /* OpenHive brand accent */
+  --color-honey-50: #fffbeb;
+  --color-honey-100: #fef3c7;
+  --color-honey-200: #fde68a;
+  --color-honey-300: #fcd34d;
+  --color-honey-400: #fbbf24;
+  --color-honey-500: #f59e0b;
+  --color-honey-600: #d97706;
+  --color-honey-700: #b45309;
+  --color-honey-800: #92400e;
+  --color-honey-900: #78350f;
+  --color-honey-950: #451a03;
+
+  /* Slack-inspired workspace palette */
+  --color-workspace-bg: #1a1d21;
+  --color-workspace-sidebar: #19171d;
+  --color-workspace-surface: #222529;
+  --color-workspace-elevated: #2c2d31;
+  --color-workspace-hover: #35373b;
+  --color-workspace-active: #1164a3;
+  --color-workspace-border: #35373b;
+  --color-workspace-border-subtle: #2c2d31;
+  --color-workspace-text: #d1d2d3;
+  --color-workspace-text-secondary: #ababad;
+  --color-workspace-text-muted: #7a7b7e;
+
+  /* Vote colors */
+  --color-upvote: #ff4500;
+  --color-downvote: #7193ff;
+
+  /* Dark theme */
+  --color-dark-bg: #08080a;
+  --color-dark-card: #111114;
+  --color-dark-elevated: #19191e;
+  --color-dark-hover: #222229;
+  --color-dark-border: #1f1f27;
+  --color-dark-text: #e8e6e3;
+  --color-dark-text-secondary: #6e6a7a;
+
+  /* Light theme */
+  --color-light-bg: #f8f7f4;
+  --color-light-card: #ffffff;
+  --color-light-elevated: #f0eeeb;
+  --color-light-hover: #e4e2de;
+  --color-light-border: #dbd8d3;
+  --color-light-text: #1a1815;
+  --color-light-text-secondary: #7a7670;
+
+  /* SwarmCraft visualization tokens */
+  --color-void: #06060a;
+  --color-deep: #0a0a10;
+  --color-surface: #101018;
+  --color-elevated: #16161f;
+  --color-hover: #1c1c28;
+  --color-border-subtle: #1e1e2a;
+  --color-border-default: #2a2a3a;
+  --color-text-primary: #e4e4ed;
+  --color-text-secondary: #8888a0;
+  --color-text-muted: #5a5a70;
+  --color-accent: #7c3aed;
+  --color-accent-dim: #5b21b6;
+  --color-node-file: #3b82f6;
+  --color-node-folder: #6366f1;
+  --color-node-class: #f59e0b;
+  --color-node-function: #10b981;
+  --color-node-interface: #ec4899;
+  --color-node-import: #6b7280;
+  --color-node-method: #14b8a6;
+
+  /* Fonts */
+  --font-sans: 'DM Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'DM Mono', monospace;
+  --font-display: 'DM Sans', system-ui, sans-serif;
+  --font-sc-sans: 'Outfit', system-ui, sans-serif;
+  --font-sc-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Font sizes */
+  --text-2xs: 0.75rem;
+  --text-2xs--line-height: 1.125rem;
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: 1.25rem;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.375rem;
+  --text-base: 0.9375rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.0625rem;
+  --text-lg--line-height: 1.625rem;
+  --text-xl: 1.1875rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.375rem;
+  --text-2xl--line-height: 1.875rem;
+  --text-3xl: 1.625rem;
+  --text-3xl--line-height: 2.125rem;
+
+  /* Spacing */
+  --spacing-4_5: 1.125rem;
+
+  /* Border radius */
+  --radius-2xl: 1rem;
+  --radius-3xl: 1.25rem;
+
+  /* Animations */
+  --animate-fade-in-up: fade-in-up 0.3s ease-out;
+  --animate-glow-breathe: glow-breathe 3s ease-in-out infinite;
+  --animate-breathe: breathe 3s ease-in-out infinite;
+  --animate-pulse-glow: pulse-glow 2s ease-in-out infinite;
+  --animate-sc-slide-in: sc-slide-in 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --animate-sc-slide-up: sc-slide-up 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --animate-sc-fade-in: sc-fade-in 0.3s ease-out;
+
+  /* Box shadows */
+  --shadow-glow: 0 0 20px rgba(124, 58, 237, 0.4);
+  --shadow-glow-soft: 0 0 40px rgba(124, 58, 237, 0.15);
+}
+
+/* Keyframes */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes glow-breathe {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@keyframes breathe {
+  0%, 100% {
+    border-color: #2a2a3a;
+    box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.3);
+  }
+  50% {
+    border-color: #7c3aed;
+    box-shadow: 0 0 40px 10px rgba(124, 58, 237, 0.3);
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 40px rgba(124, 58, 237, 0.4);
+  }
+  50% {
+    transform: scale(1.1);
+    box-shadow: 0 0 80px rgba(124, 58, 237, 0.6);
+  }
+}
+
+@keyframes sc-slide-in {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes sc-slide-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes sc-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   BASE STYLES
+═══════════════════════════════════════════════════════════════ */
 @layer base {
   /* Theme CSS variables - Slack-inspired workspace */
   :root, .dark {
@@ -72,6 +241,9 @@
   }
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   COMPONENT CLASSES
+═══════════════════════════════════════════════════════════════ */
 @layer components {
   /* === Buttons - compact Slack-style === */
   .btn {
