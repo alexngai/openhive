@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { ConfigSchema } from '../../config.js';
 
 describe('swarmHosting config', () => {
-  it('should be disabled by default', () => {
+  it('should be enabled by default', () => {
     const config = ConfigSchema.parse({});
-    expect(config.swarmHosting.enabled).toBe(false);
+    expect(config.swarmHosting.enabled).toBe(true);
   });
 
   it('should have sensible defaults when enabled', () => {
