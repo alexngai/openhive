@@ -75,13 +75,6 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
     },
   });
 
-  // Cross-Origin Isolation headers (required for SharedArrayBuffer / KuzuDB WASM)
-  fastify.addHook('onSend', (_request, reply, payload, done) => {
-    reply.header('Cross-Origin-Opener-Policy', 'same-origin');
-    reply.header('Cross-Origin-Embedder-Policy', 'credentialless');
-    done(null, payload);
-  });
-
   // Register CORS
   if (config.cors.enabled) {
     await fastify.register(cors, {
