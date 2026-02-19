@@ -327,6 +327,17 @@ export function useRestartSwarm() {
   });
 }
 
+export function useRemoveSwarm() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/map/hosted/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['hosted-swarms'] });
+    },
+  });
+}
+
 export function useSwarmLogs(id: string | null) {
   return useQuery({
     queryKey: ['swarm-logs', id],

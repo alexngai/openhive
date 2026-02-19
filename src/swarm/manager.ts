@@ -6,7 +6,9 @@
  */
 
 import { createHash } from 'crypto';
+import * as fs from 'fs';
 import * as path from 'path';
+import { createRequire } from 'module';
 import { broadcastToChannel } from '../realtime/index.js';
 import { registerSwarm } from '../map/service.js';
 import * as mapDal from '../db/dal/map.js';
@@ -31,17 +33,59 @@ export class SwarmManager {
   private instanceToHostedId = new Map<string, string>();
   /** Track which instances are being intentionally stopped (to avoid auto-restart) */
   private stoppingInstances = new Set<string>();
+  /** Track restart attempts per hosted swarm ID (survives instance ID changes) */
+  private restartCounts = new Map<string, number>();
 
   constructor(config: SwarmHostingConfig, instanceUrl: string) {
     this.config = config;
     this.instanceUrl = instanceUrl;
 
     // Initialize local provider with exit handler
-    const localProvider = new LocalProvider(config.openswarm_command);
+    const command = this.resolveOpenswarmCommand(config.openswarm_command);
+    const localProvider = new LocalProvider(command);
     localProvider.onProcessExit = (instanceId, code, signal) => {
       this.handleProcessExit(instanceId, code, signal);
     };
     this.providers.set('local', localProvider);
+  }
+
+  /**
+   * Resolve the openswarm command to an executable form.
+   *
+   * The default 'npx openswarm' won't work because the openswarm bin shim
+   * uses #!/usr/bin/env node which can't import TypeScript source directly.
+   * We resolve the hosting entrypoint from the installed package and run it
+   * with tsx (already a devDependency of openhive).
+   */
+  private resolveOpenswarmCommand(configured: string): string {
+    if (configured !== 'npx openswarm') {
+      return configured;
+    }
+
+    try {
+      const require_ = createRequire(import.meta.url);
+      const pkgPath = require_.resolve('openswarm/package.json');
+      const pkgDir = path.dirname(pkgPath);
+      const hostingEntry = path.join(pkgDir, 'src', 'hosting', 'index.ts');
+
+      if (!fs.existsSync(hostingEntry)) {
+        console.warn('[swarm-manager] openswarm package found but hosting entrypoint missing, falling back to: ' + configured);
+        return configured;
+      }
+
+      const tsxBin = path.join(pkgDir, '..', '.bin', 'tsx');
+      if (!fs.existsSync(tsxBin)) {
+        console.warn('[swarm-manager] tsx not found in node_modules, falling back to: ' + configured);
+        return configured;
+      }
+
+      const resolved = `${tsxBin} ${hostingEntry}`;
+      console.log(`[swarm-manager] Resolved openswarm command: ${resolved}`);
+      return resolved;
+    } catch {
+      console.warn('[swarm-manager] Could not resolve openswarm package, using: ' + configured);
+      return configured;
+    }
   }
 
   // ==========================================================================
@@ -287,6 +331,7 @@ export class SwarmManager {
     }
 
     dal.updateHostedSwarm(hostedSwarmId, { state: 'stopped', error: null });
+    this.restartCounts.delete(hostedSwarmId);
 
     broadcastToChannel('map:discovery', {
       type: 'swarm_stopped',
@@ -501,6 +546,18 @@ export class SwarmManager {
 
     console.warn(`[swarm-manager] ${eventType}: ${hosted.id} — ${errorMsg}`);
 
+    // Log recent process output to help debug crashes
+    if (!isGraceful) {
+      const provider = this.providers.get(hosted.provider);
+      if (provider) {
+        provider.getLogs(instanceId, { lines: 15 }).then((recentLogs) => {
+          if (recentLogs && recentLogs !== '(no logs — instance not found)') {
+            console.warn(`[swarm-manager] Recent output from ${hosted.id}:\n${recentLogs}`);
+          }
+        }).catch(() => { /* ignore log retrieval errors */ });
+      }
+    }
+
     // Update DB state
     dal.updateHostedSwarm(hostedId, {
       state: isGraceful ? 'stopped' : 'failed',
@@ -526,10 +583,7 @@ export class SwarmManager {
 
     // Auto-restart if configured and this was a crash (not graceful shutdown)
     if (!isGraceful && this.config.auto_restart && hosted.config) {
-      const localProvider = this.providers.get('local');
-      const restartCount = (localProvider instanceof LocalProvider)
-        ? localProvider.getRestartCount(instanceId)
-        : 0;
+      const restartCount = this.restartCounts.get(hostedId) ?? 0;
 
       const maxAttempts = this.config.max_restart_attempts;
       if (maxAttempts > 0 && restartCount >= maxAttempts) {
@@ -539,9 +593,11 @@ export class SwarmManager {
         dal.updateHostedSwarm(hostedId, {
           error: `${errorMsg} — exceeded max restart attempts (${maxAttempts})`,
         });
+        this.restartCounts.delete(hostedId);
         return;
       }
 
+      this.restartCounts.set(hostedId, restartCount + 1);
       console.log(`[swarm-manager] Auto-restarting swarm ${hostedId} (attempt ${restartCount + 1})`);
 
       // Clean up old mapping
@@ -581,11 +637,6 @@ export class SwarmManager {
     // Track new instance mapping
     this.instanceToHostedId.set(result.instance_id, hostedId);
 
-    // Increment restart count
-    if (provider instanceof LocalProvider) {
-      provider.incrementRestartCount(result.instance_id);
-    }
-
     dal.updateHostedSwarm(hostedId, {
       pid: result.pid ?? null,
       assigned_port: port,
@@ -603,6 +654,7 @@ export class SwarmManager {
     }
 
     dal.updateHostedSwarm(hostedId, { state: 'running', error: null });
+    this.restartCounts.delete(hostedId);
 
     // Send heartbeat if registered in MAP hub
     if (hosted.swarm_id) {

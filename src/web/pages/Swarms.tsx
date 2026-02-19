@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import {
   Zap, Square, RotateCw, Terminal, ChevronDown, ChevronUp, Plus, X, Cpu,
-  Link2, Globe, Wifi, WifiOff, Settings2,
+  Link2, Globe, Wifi, WifiOff, Settings2, Trash2,
 } from 'lucide-react';
 import { toast } from '../stores/toast';
 import {
-  useHostedSwarms, useSpawnSwarm, useStopSwarm, useRestartSwarm, useSwarmLogs,
+  useHostedSwarms, useSpawnSwarm, useStopSwarm, useRestartSwarm, useRemoveSwarm, useSwarmLogs,
   useMapSwarms, useConnectSwarm, useHives,
 } from '../hooks/useApi';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
@@ -463,11 +463,13 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
   const [showLogs, setShowLogs] = useState(false);
   const stopMutation = useStopSwarm();
   const restartMutation = useRestartSwarm();
+  const removeMutation = useRemoveSwarm();
   const { data: logs } = useSwarmLogs(showLogs ? swarm.id : null);
 
   const canStop = swarm.state === 'running' || swarm.state === 'unhealthy' || swarm.state === 'starting';
   const canRestart = swarm.state === 'stopped' || swarm.state === 'failed';
-  const isTransitioning = stopMutation.isPending || restartMutation.isPending;
+  const canRemove = swarm.state === 'stopped' || swarm.state === 'failed';
+  const isTransitioning = stopMutation.isPending || restartMutation.isPending || removeMutation.isPending;
 
   const handleStop = async () => {
     try {
@@ -484,6 +486,15 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
       toast.success('Swarm restarted', `"${swarm.id}" is restarting.`);
     } catch (err) {
       toast.error('Restart failed', (err as Error).message);
+    }
+  };
+
+  const handleRemove = async () => {
+    try {
+      await removeMutation.mutateAsync(swarm.id);
+      toast.success('Swarm removed', `"${swarm.id}" has been removed.`);
+    } catch (err) {
+      toast.error('Remove failed', (err as Error).message);
     }
   };
 
@@ -538,6 +549,16 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
               title="Restart"
             >
               {restartMutation.isPending ? <LoadingSpinner size="sm" /> : <RotateCw className="w-3 h-3" />}
+            </button>
+          )}
+          {canRemove && (
+            <button
+              onClick={handleRemove}
+              disabled={isTransitioning}
+              className="btn btn-ghost p-1.5 text-red-400 hover:bg-red-500/10"
+              title="Remove"
+            >
+              {removeMutation.isPending ? <LoadingSpinner size="sm" /> : <Trash2 className="w-3 h-3" />}
             </button>
           )}
           <button

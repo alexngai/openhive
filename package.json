@@ -78,6 +78,7 @@
     "react-router-dom": "^6.30.3",
     "sharp": "^0.34.5",
     "zod": "^3.24.1",
+    "openswarm": "file:./references/openswarm",
     "swarmcraft": "file:./references/swarmcraft",
     "zustand": "^4.5.7"
   },

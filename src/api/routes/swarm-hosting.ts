@@ -10,6 +10,7 @@
  *   GET    /map/hosted/:id           - Get hosted swarm details
  *   POST   /map/hosted/:id/stop      - Stop a hosted swarm
  *   POST   /map/hosted/:id/restart   - Restart a hosted swarm
+ *   DELETE /map/hosted/:id           - Remove a stopped/failed hosted swarm
  *   GET    /map/hosted/:id/logs      - Get logs from a hosted swarm
  */
 
@@ -211,6 +212,28 @@ export async function swarmHostingRoutes(
     } catch (error) {
       return handleSwarmError(error, reply);
     }
+  });
+
+  // DELETE /map/hosted/:id — Remove a stopped/failed hosted swarm record
+  fastify.delete('/map/hosted/:id', {
+    preHandler: [authMiddleware],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    const hosted = dal.findHostedSwarmById(request.params.id);
+    if (!hosted) {
+      return reply.status(404).send({ error: 'NOT_FOUND', message: 'Hosted swarm not found' });
+    }
+    if (hosted.spawned_by !== request.agent!.id) {
+      return reply.status(403).send({ error: 'NOT_OWNER', message: 'You did not spawn this swarm' });
+    }
+    if (hosted.state !== 'stopped' && hosted.state !== 'failed') {
+      return reply.status(409).send({
+        error: 'INVALID_STATE',
+        message: `Cannot remove a swarm in "${hosted.state}" state. Stop it first.`,
+      });
+    }
+
+    dal.deleteHostedSwarm(hosted.id);
+    return reply.status(204).send();
   });
 
   // GET /map/hosted/:id/logs — Get logs from a hosted swarm
