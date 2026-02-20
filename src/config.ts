@@ -183,7 +183,7 @@ export const ConfigSchema = z.object({
     /** Default hosting provider */
     default_provider: z.enum(['local', 'docker', 'fly', 'ssh', 'k8s']).default('local'),
     /** Command to run OpenSwarm (e.g. 'npx openswarm' or path to binary) */
-    openswarm_command: z.string().default('npx openswarm'),
+    openswarm_command: z.string().default('npx openswarm serve'),
     /** Base directory for swarm instance data */
     data_dir: z.string().default('./data/swarms'),
     /** Port range for locally spawned swarms [min, max] */
@@ -439,7 +439,7 @@ module.exports = {
   // swarmHosting: {
   //   enabled: true,
   //   default_provider: 'local',     // 'local' | 'docker' (more coming)
-  //   openswarm_command: 'npx openswarm', // or path to binary
+  //   openswarm_command: 'npx openswarm serve', // or path to binary
   //   data_dir: './data/swarms',
   //   port_range: [9000, 9100],
   //   max_swarms: 10,

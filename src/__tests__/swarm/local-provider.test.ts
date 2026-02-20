@@ -20,6 +20,7 @@ describe('LocalProvider', () => {
   afterEach(async () => {
     if (provider) {
       await provider.stopAll();
+      provider.removeExitHandler();
     }
     cleanupTestData();
   });

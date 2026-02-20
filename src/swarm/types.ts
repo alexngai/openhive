@@ -55,8 +55,8 @@ export interface BootstrapToken {
 
 /** What the caller provides when requesting a swarm spawn */
 export interface SpawnSwarmInput {
-  /** Human-readable name for the swarm */
-  name: string;
+  /** Human-readable name for the swarm (auto-generated if omitted) */
+  name?: string;
   /** Optional description */
   description?: string;
   /** OpenSwarm adapter to use */

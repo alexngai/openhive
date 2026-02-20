@@ -9,6 +9,7 @@ import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createRequire } from 'module';
+import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-generator';
 import { broadcastToChannel } from '../realtime/index.js';
 import { registerSwarm } from '../map/service.js';
 import * as mapDal from '../db/dal/map.js';
@@ -35,6 +36,8 @@ export class SwarmManager {
   private stoppingInstances = new Set<string>();
   /** Track restart attempts per hosted swarm ID (survives instance ID changes) */
   private restartCounts = new Map<string, number>();
+  /** Reverse mapping: hosted swarm DB ID → provider instance ID */
+  private hostedToInstanceId = new Map<string, string>();
 
   constructor(config: SwarmHostingConfig, instanceUrl: string) {
     this.config = config;
@@ -52,13 +55,17 @@ export class SwarmManager {
   /**
    * Resolve the openswarm command to an executable form.
    *
-   * The default 'npx openswarm' won't work because the openswarm bin shim
-   * uses #!/usr/bin/env node which can't import TypeScript source directly.
-   * We resolve the hosting entrypoint from the installed package and run it
-   * with tsx (already a devDependency of openhive).
+   * We resolve the openswarm bin entry directly to avoid the npx indirection,
+   * which can cause pid tracking issues (npx spawns a child node process,
+   * then exits, making us think the server stopped).
+   *
+   * Resolution order:
+   * 1. dist/server.mjs exists → run bin directly with node (production)
+   * 2. src/hosting/index.ts exists → run with tsx (development)
+   * 3. Fall back to configured command as-is
    */
   private resolveOpenswarmCommand(configured: string): string {
-    if (configured !== 'npx openswarm') {
+    if (configured !== 'npx openswarm serve') {
       return configured;
     }
 
@@ -66,22 +73,27 @@ export class SwarmManager {
       const require_ = createRequire(import.meta.url);
       const pkgPath = require_.resolve('openswarm/package.json');
       const pkgDir = path.dirname(pkgPath);
+      const binEntry = path.join(pkgDir, 'bin', 'openswarm.mjs');
+
+      // Production: dist/server.mjs exists, run the bin entry directly with node
+      const serverBundle = path.join(pkgDir, 'dist', 'server.mjs');
+      if (fs.existsSync(serverBundle) && fs.existsSync(binEntry)) {
+        const resolved = `node ${binEntry} serve`;
+        console.log(`[swarm-manager] Resolved openswarm command: ${resolved}`);
+        return resolved;
+      }
+
+      // Development: no bundle, run TypeScript source via tsx
       const hostingEntry = path.join(pkgDir, 'src', 'hosting', 'index.ts');
-
-      if (!fs.existsSync(hostingEntry)) {
-        console.warn('[swarm-manager] openswarm package found but hosting entrypoint missing, falling back to: ' + configured);
-        return configured;
-      }
-
       const tsxBin = path.join(pkgDir, '..', '.bin', 'tsx');
-      if (!fs.existsSync(tsxBin)) {
-        console.warn('[swarm-manager] tsx not found in node_modules, falling back to: ' + configured);
-        return configured;
+      if (fs.existsSync(hostingEntry) && fs.existsSync(tsxBin)) {
+        const resolved = `${tsxBin} ${hostingEntry}`;
+        console.log(`[swarm-manager] Server bundle not found, using tsx: ${resolved}`);
+        return resolved;
       }
 
-      const resolved = `${tsxBin} ${hostingEntry}`;
-      console.log(`[swarm-manager] Resolved openswarm command: ${resolved}`);
-      return resolved;
+      console.warn('[swarm-manager] Could not resolve openswarm package');
+      return configured;
     } catch {
       console.warn('[swarm-manager] Could not resolve openswarm package, using: ' + configured);
       return configured;
@@ -105,6 +117,13 @@ export class SwarmManager {
    * 7. Update the DB record with the swarm_id
    */
   async spawn(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
+    // Generate a name if none provided
+    const name = input.name ?? uniqueNamesGenerator({
+      dictionaries: [adjectives, colors, animals],
+      separator: '-',
+      length: 3,
+    });
+
     // Check limits
     const activeCount = dal.countActiveHostedSwarms();
     if (activeCount >= this.config.max_swarms) {
@@ -160,7 +179,7 @@ export class SwarmManager {
       version: 1,
       openhive_url: this.instanceUrl,
       preauth_key: preauthKeyPlaintext ?? '',
-      swarm_name: input.name,
+      swarm_name: name,
       adapter,
       adapter_config: input.adapter_config,
       metadata: input.metadata,
@@ -172,7 +191,7 @@ export class SwarmManager {
     const tokenHash = createHash('sha256').update(tokenString).digest('hex');
 
     const provisionConfig: SwarmProvisionConfig = {
-      name: input.name,
+      name,
       adapter,
       adapter_config: input.adapter_config,
       bootstrap_token: tokenString,
@@ -194,8 +213,9 @@ export class SwarmManager {
       dal.updateHostedSwarm(hosted.id, { state: 'starting' });
       const result = await provider.provision(provisionConfig);
 
-      // Track instance → hosted swarm mapping for exit handler
+      // Track instance ↔ hosted swarm mapping
       this.instanceToHostedId.set(result.instance_id, hosted.id);
+      this.hostedToInstanceId.set(hosted.id, result.instance_id);
 
       // Update with provider-specific info
       dal.updateHostedSwarm(hosted.id, {
@@ -219,10 +239,15 @@ export class SwarmManager {
         return dal.findHostedSwarmById(hosted.id)!;
       }
 
-      // Register in MAP hub
+      // Register in MAP hub (clear stale entry at same endpoint first)
       try {
+        const staleSwarm = mapDal.findSwarmByEndpoint(endpoint);
+        if (staleSwarm) {
+          mapDal.deleteSwarm(staleSwarm.id);
+        }
+
         const mapResult = registerSwarm(agentId, {
-          name: input.name,
+          name,
           description: input.description,
           map_endpoint: endpoint,
           map_transport: 'websocket',
@@ -261,7 +286,7 @@ export class SwarmManager {
         type: 'swarm_spawned',
         data: {
           hosted_swarm_id: hosted.id,
-          name: input.name,
+          name,
           provider: providerType,
           endpoint,
         },
@@ -303,8 +328,13 @@ export class SwarmManager {
     dal.updateHostedSwarm(hostedSwarmId, { state: 'stopping' });
 
     // Find the instance ID in the provider
-    // For local provider, it's derived from the port
     const instanceId = this.getInstanceId(hosted);
+    if (!instanceId) {
+      // No tracked instance — just mark as stopped
+      dal.updateHostedSwarm(hostedSwarmId, { state: 'stopped', error: null });
+      this.restartCounts.delete(hostedSwarmId);
+      return dal.findHostedSwarmById(hostedSwarmId)!;
+    }
 
     // Mark as intentionally stopping so exit handler doesn't auto-restart
     this.stoppingInstances.add(instanceId);
@@ -317,6 +347,7 @@ export class SwarmManager {
 
     this.stoppingInstances.delete(instanceId);
     this.instanceToHostedId.delete(instanceId);
+    this.hostedToInstanceId.delete(hostedSwarmId);
 
     // Release port
     if (hosted.assigned_port) {
@@ -362,6 +393,9 @@ export class SwarmManager {
     dal.updateHostedSwarm(hostedSwarmId, { state: 'starting', error: null });
 
     const instanceId = this.getInstanceId(hosted);
+    if (!instanceId) {
+      throw new SwarmHostingError('RESTART_FAILED', 'No tracked instance to restart');
+    }
 
     try {
       const result = await provider.restart(instanceId);
@@ -407,6 +441,7 @@ export class SwarmManager {
     if (!provider) return '(provider not available)';
 
     const instanceId = this.getInstanceId(hosted);
+    if (!instanceId) return '(no tracked instance)';
     return provider.getLogs(instanceId, { lines: opts?.lines ?? 100 });
   }
 
@@ -443,6 +478,9 @@ export class SwarmManager {
       if (!provider) continue;
 
       const instanceId = this.getInstanceId(hosted);
+
+      // No tracked instance — skip (process may have been managed before a server restart)
+      if (!instanceId) continue;
 
       try {
         const status = await provider.getStatus(instanceId);
@@ -501,15 +539,22 @@ export class SwarmManager {
   async shutdown(): Promise<void> {
     this.stopHealthMonitor();
 
-    // Stop all local processes
+    // Disable exit handler before stopping — otherwise handleProcessExit
+    // sees SIGTERM exits as crashes and tries to auto-restart, spawning
+    // new child processes that prevent the Node process from exiting.
     const localProvider = this.providers.get('local');
     if (localProvider instanceof LocalProvider) {
+      localProvider.onProcessExit = null;
       await localProvider.stopAll();
+      localProvider.removeExitHandler();
     }
 
-    // Mark all active hosted swarms as stopped
+    // Mark all active hosted swarms as stopped and clean up MAP registrations
     const active = dal.getActiveHostedSwarms();
     for (const hosted of active) {
+      if (hosted.swarm_id) {
+        try { mapDal.deleteSwarm(hosted.swarm_id); } catch { /* may already be deleted */ }
+      }
       dal.updateHostedSwarm(hosted.id, { state: 'stopped' });
     }
 
@@ -602,6 +647,7 @@ export class SwarmManager {
 
       // Clean up old mapping
       this.instanceToHostedId.delete(instanceId);
+      this.hostedToInstanceId.delete(hostedId);
 
       // Re-provision asynchronously
       this.autoRestart(hostedId, hosted).catch((err) => {
@@ -636,6 +682,7 @@ export class SwarmManager {
 
     // Track new instance mapping
     this.instanceToHostedId.set(result.instance_id, hostedId);
+    this.hostedToInstanceId.set(hostedId, result.instance_id);
 
     dal.updateHostedSwarm(hostedId, {
       pid: result.pid ?? null,
@@ -692,9 +739,10 @@ export class SwarmManager {
     this.usedPorts.delete(port);
   }
 
-  private getInstanceId(hosted: HostedSwarm): string {
-    // For local provider, reconstruct the instance ID from the port
-    return `local_${new Date(hosted.created_at).getTime()}_${hosted.assigned_port}`;
+  private getInstanceId(hosted: HostedSwarm): string | null {
+    // Use the tracked mapping instead of reconstructing from timestamps
+    // (SQLite datetime truncates milliseconds, causing ID mismatches)
+    return this.hostedToInstanceId.get(hosted.id) ?? null;
   }
 
   private async waitForHealth(port: number, timeoutMs: number): Promise<boolean> {

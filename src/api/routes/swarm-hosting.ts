@@ -27,7 +27,7 @@ import type { Config } from '../../config.js';
 // ============================================================================
 
 const SpawnSwarmSchema = z.object({
-  name: z.string().min(1).max(100),
+  name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
   adapter: z.string().max(100).optional(),
   adapter_config: z.record(z.unknown()).optional(),

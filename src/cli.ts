@@ -300,8 +300,19 @@ async function startServer(opts: StartOptions): Promise<string> {
     console.log(`  WebSocket: ws://${address.replace('http://', '')}/ws`);
     console.log(`\n  Press Ctrl+C to stop\n`);
 
+    let shuttingDown = false;
     const shutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       console.log('\n\n  Shutting down...');
+
+      // Force exit after 10s if graceful shutdown hangs
+      const forceExit = setTimeout(() => {
+        console.warn('  Shutdown timed out, forcing exit');
+        process.exit(1);
+      }, 10_000);
+      forceExit.unref();
+
       await server.stop();
       process.exit(0);
     };

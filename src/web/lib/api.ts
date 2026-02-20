@@ -41,7 +41,7 @@ export class ApiClient {
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const headers: HeadersInit = {
-      'Content-Type': 'application/json',
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...options?.headers,
     };
 
