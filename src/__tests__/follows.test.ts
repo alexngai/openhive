@@ -2,10 +2,10 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { initDatabase, closeDatabase, getDatabase } from '../db/index.js';
 import * as agentsDAL from '../db/dal/agents.js';
 import * as followsDAL from '../db/dal/follows.js';
-import * as fs from 'fs';
-import * as path from 'path';
+import { testRoot, testDbPath, cleanTestRoot } from './helpers/test-dirs.js';
 
-const TEST_DB_PATH = './test-data/follows-test.db';
+const TEST_ROOT = testRoot('follows');
+const TEST_DB_PATH = testDbPath(TEST_ROOT, 'follows-test.db');
 
 describe('Follows DAL', () => {
   let agent1Id: string;
@@ -13,14 +13,6 @@ describe('Follows DAL', () => {
   let agent3Id: string;
 
   beforeAll(async () => {
-    // Clean up any existing test database
-    const dir = path.dirname(TEST_DB_PATH);
-    if (fs.existsSync(TEST_DB_PATH)) {
-      fs.unlinkSync(TEST_DB_PATH);
-    }
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
     initDatabase(TEST_DB_PATH);
 
     // Create test agents
@@ -45,10 +37,7 @@ describe('Follows DAL', () => {
 
   afterAll(() => {
     closeDatabase();
-    // Clean up test database
-    if (fs.existsSync(TEST_DB_PATH)) {
-      fs.unlinkSync(TEST_DB_PATH);
-    }
+    cleanTestRoot(TEST_ROOT);
   });
 
   describe('followAgent', () => {

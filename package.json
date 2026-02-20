@@ -10,6 +10,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./map": {
+      "types": "./dist/map.d.ts",
+      "import": "./dist/map.mjs",
+      "require": "./dist/map.js"
     }
   },
   "bin": {
@@ -50,14 +55,16 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "openhive-types": "^0.1.0",
     "@aws-sdk/client-s3": "^3.980.0",
-    "@libsql/client": "^0.14.0",
     "@fastify/cors": "^9.0.1",
     "@fastify/jwt": "^8.0.0",
     "@fastify/multipart": "^8.3.1",
     "@fastify/rate-limit": "^9.1.0",
     "@fastify/static": "^7.0.4",
     "@fastify/websocket": "^10.0.1",
+    "@libsql/client": "^0.14.0",
+    "@tailwindcss/postcss": "^4.1.18",
     "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-query": "^5.90.20",
     "bcrypt": "^5.1.1",
@@ -71,11 +78,14 @@
     "mime-types": "^3.0.2",
     "nanoid": "^5.0.9",
     "nodemailer": "^7.0.13",
+    "openswarm": "file:../openswarm-1",
     "pg": "^8.18.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.30.3",
     "sharp": "^0.34.5",
+    "swarmcraft": "file:./references/swarmcraft",
+    "unique-names-generator": "^4.7.1",
     "zod": "^3.24.1",
     "zustand": "^4.5.7"
   },
@@ -90,9 +100,7 @@
     "@types/react-dom": "^18.3.7",
     "@types/ws": "^8.5.14",
     "@vitejs/plugin-react": "^4.7.0",
-    "autoprefixer": "^10.4.24",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^3.4.19",
+    "tailwindcss": "^4.1.18",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",

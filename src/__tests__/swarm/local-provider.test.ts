@@ -2,17 +2,13 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { LocalProvider } from '../../swarm/providers/local.js';
+import { testRoot, cleanTestRoot } from '../helpers/test-dirs.js';
 
-const TEST_DATA_DIR = './test-data/swarm-provider-test';
+const TEST_ROOT = testRoot('swarm-provider');
+const TEST_DATA_DIR = path.join(TEST_ROOT, 'data');
 const FIXTURES_DIR = path.resolve(__dirname, 'fixtures');
 const SLEEP_SCRIPT = path.join(FIXTURES_DIR, 'sleep-server.js');
 const FAIL_SCRIPT = path.join(FIXTURES_DIR, 'exit-immediately.js');
-
-function cleanupTestData() {
-  if (fs.existsSync(TEST_DATA_DIR)) {
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
-  }
-}
 
 describe('LocalProvider', () => {
   let provider: LocalProvider;
@@ -20,8 +16,9 @@ describe('LocalProvider', () => {
   afterEach(async () => {
     if (provider) {
       await provider.stopAll();
+      provider.removeExitHandler();
     }
-    cleanupTestData();
+    cleanTestRoot(TEST_ROOT);
   });
 
   describe('constructor', () => {

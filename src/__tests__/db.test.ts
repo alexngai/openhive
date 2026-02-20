@@ -4,30 +4,19 @@ import * as agentsDAL from '../db/dal/agents.js';
 import * as postsDAL from '../db/dal/posts.js';
 import * as hivesDAL from '../db/dal/hives.js';
 import * as votesDAL from '../db/dal/votes.js';
-import * as fs from 'fs';
-import * as path from 'path';
+import { testRoot, testDbPath, cleanTestRoot } from './helpers/test-dirs.js';
 
-const TEST_DB_PATH = './test-data/test.db';
+const TEST_ROOT = testRoot('db');
+const TEST_DB_PATH = testDbPath(TEST_ROOT, 'test.db');
 
 describe('Database', () => {
   beforeAll(() => {
-    // Clean up any existing test database
-    const dir = path.dirname(TEST_DB_PATH);
-    if (fs.existsSync(TEST_DB_PATH)) {
-      fs.unlinkSync(TEST_DB_PATH);
-    }
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
     initDatabase(TEST_DB_PATH);
   });
 
   afterAll(() => {
     closeDatabase();
-    // Clean up test database
-    if (fs.existsSync(TEST_DB_PATH)) {
-      fs.unlinkSync(TEST_DB_PATH);
-    }
+    cleanTestRoot(TEST_ROOT);
   });
 
   describe('Agents', () => {

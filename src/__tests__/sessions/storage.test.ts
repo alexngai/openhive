@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import * as fs from 'fs';
 import * as path from 'path';
 import {
   LocalSessionStorageAdapter,
@@ -11,17 +10,13 @@ import {
   calculateChecksum,
 } from '../../sessions/storage/index.js';
 import type { LocalStorageConfig, SessionFile } from '../../sessions/storage/types.js';
+import { testRoot, cleanTestRoot } from '../helpers/test-dirs.js';
 
-const TEST_STORAGE_PATH = './test-data/sessions';
+const TEST_ROOT = testRoot('sessions-storage');
+const TEST_STORAGE_PATH = path.join(TEST_ROOT, 'sessions');
 
-// ============================================================================
-// Test Utilities
-// ============================================================================
-
-function cleanupTestStorage() {
-  if (fs.existsSync(TEST_STORAGE_PATH)) {
-    fs.rmSync(TEST_STORAGE_PATH, { recursive: true, force: true });
-  }
+function cleanTestStorage() {
+  cleanTestRoot(TEST_ROOT);
 }
 
 // ============================================================================
@@ -36,7 +31,7 @@ describe('LocalSessionStorageAdapter', () => {
   };
 
   beforeAll(() => {
-    cleanupTestStorage();
+    cleanTestStorage();
     const config: LocalStorageConfig = {
       type: 'local',
       basePath: TEST_STORAGE_PATH,
@@ -46,7 +41,7 @@ describe('LocalSessionStorageAdapter', () => {
   });
 
   afterAll(() => {
-    cleanupTestStorage();
+    cleanTestStorage();
   });
 
   beforeEach(async () => {
@@ -316,8 +311,7 @@ describe('LocalSessionStorageAdapter', () => {
     it('should return file path', () => {
       const url = adapter.getUrl(testSessionOptions, 'session.jsonl');
 
-      // Path may be normalized (removing leading ./)
-      expect(url).toContain('test-data/sessions');
+      expect(url).toContain('sessions');
       expect(url).toContain(testSessionOptions.sessionId);
       expect(url).toContain('session.jsonl');
     });
@@ -355,11 +349,11 @@ describe('LocalSessionStorageAdapter', () => {
 
 describe('Storage Factory', () => {
   beforeAll(() => {
-    cleanupTestStorage();
+    cleanTestStorage();
   });
 
   afterAll(() => {
-    cleanupTestStorage();
+    cleanTestStorage();
   });
 
   describe('createSessionStorage', () => {
@@ -495,7 +489,7 @@ describe('Storage Integration', () => {
   };
 
   beforeAll(() => {
-    cleanupTestStorage();
+    cleanTestStorage();
     adapter = new LocalSessionStorageAdapter({
       type: 'local',
       basePath: TEST_STORAGE_PATH,
@@ -503,7 +497,7 @@ describe('Storage Integration', () => {
   });
 
   afterAll(() => {
-    cleanupTestStorage();
+    cleanTestStorage();
   });
 
   it('should handle full session lifecycle', async () => {

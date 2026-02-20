@@ -81,6 +81,22 @@ export async function createAgent(input: CreateAgentInput): Promise<{ agent: Age
   return { agent, apiKey };
 }
 
+/**
+ * Get or create the built-in "local" agent used in local auth mode.
+ * Returns the existing agent if found, or creates a new admin agent.
+ */
+export async function getOrCreateLocalAgent(): Promise<Agent> {
+  const existing = findAgentByName('local');
+  if (existing) return existing;
+
+  const { agent } = await createAgent({
+    name: 'local',
+    description: 'Local auto-authenticated user',
+    is_admin: true,
+  });
+  return agent;
+}
+
 export function findAgentById(id: string): Agent | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as Record<string, unknown> | undefined;

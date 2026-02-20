@@ -9,6 +9,13 @@ declare module 'fastify' {
   }
 }
 
+// Local auth mode: when set, requests without auth headers are auto-authenticated
+let localAgent: Agent | null = null;
+
+export function setLocalAgent(agent: Agent | null): void {
+  localAgent = agent;
+}
+
 /**
  * Try to authenticate using JWT token
  * Returns the agent if successful, null otherwise
@@ -41,6 +48,13 @@ export async function authMiddleware(
   const authHeader = request.headers.authorization;
 
   if (!authHeader) {
+    // In local mode, auto-authenticate with the local agent
+    if (localAgent) {
+      updateAgentLastSeen(localAgent.id);
+      request.agent = localAgent;
+      return;
+    }
+
     return reply.status(401).send({
       error: 'Unauthorized',
       message: 'Missing Authorization header',
@@ -85,6 +99,11 @@ export async function optionalAuthMiddleware(
   const authHeader = request.headers.authorization;
 
   if (!authHeader) {
+    // In local mode, auto-authenticate with the local agent
+    if (localAgent) {
+      updateAgentLastSeen(localAgent.id);
+      request.agent = localAgent;
+    }
     return;
   }
 

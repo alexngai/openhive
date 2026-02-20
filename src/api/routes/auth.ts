@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import * as agentsDAL from '../../db/dal/agents.js';
+import { toPublicAgent } from '../../db/dal/agents.js';
 import { sendEmail, passwordResetEmail } from '../../services/email.js';
 
 const RegisterSchema = z.object({
@@ -37,6 +38,7 @@ const ResetPasswordSchema = z.object({
 interface AuthConfig {
   jwtSecret: string;
   instanceUrl?: string;
+  authMode?: 'local' | 'token';
 }
 
 export async function authRoutes(
@@ -375,6 +377,16 @@ export async function authRoutes(
     return reply.send({
       message: 'Password has been reset successfully. You can now log in with your new password.',
     });
+  });
+
+  // Get auth mode (public, no auth required)
+  fastify.get('/auth/mode', async (_request, reply) => {
+    const mode = opts.config.authMode || 'token';
+    if (mode === 'local') {
+      const agent = agentsDAL.findAgentByName('local');
+      return reply.send({ mode: 'local', agent: agent ? toPublicAgent(agent) : null });
+    }
+    return reply.send({ mode: 'token' });
   });
 
   // Verify reset token is valid (for frontend validation)

@@ -116,7 +116,13 @@ export type {
   UpdateNodeInput,
   DiscoverNodesOptions,
   CreatePreauthKeyInput,
+  // Sync messages (JSON-RPC 2.0)
+  MapSyncMessage,
+  MapSyncMethod,
+  MapSyncParams,
 } from './map/index.js';
+
+export { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE, createSyncNotification } from './map/index.js';
 
 // Mesh networking exports (pluggable provider: Tailscale Cloud, headscale sidecar/external)
 export {

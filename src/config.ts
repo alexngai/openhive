@@ -109,6 +109,10 @@ export const ConfigSchema = z.object({
 
   email: EmailSchema,
 
+  auth: z.object({
+    mode: z.enum(['local', 'token']).default('token'),
+  }).default({}),
+
   jwt: z.object({
     secret: z.string().optional(),
     expiresIn: z.string().default('7d'),
@@ -175,11 +179,11 @@ export const ConfigSchema = z.object({
 
   // Swarm hosting: spawn and manage OpenSwarm instances
   swarmHosting: z.object({
-    enabled: z.boolean().default(false),
+    enabled: z.boolean().default(true),
     /** Default hosting provider */
     default_provider: z.enum(['local', 'docker', 'fly', 'ssh', 'k8s']).default('local'),
     /** Command to run OpenSwarm (e.g. 'npx openswarm' or path to binary) */
-    openswarm_command: z.string().default('npx openswarm'),
+    openswarm_command: z.string().default('npx openswarm serve'),
     /** Base directory for swarm instance data */
     data_dir: z.string().default('./data/swarms'),
     /** Port range for locally spawned swarms [min, max] */
@@ -190,7 +194,20 @@ export const ConfigSchema = z.object({
     health_check_interval: z.number().default(30000),
     /** How many consecutive health failures before marking unhealthy */
     max_health_failures: z.number().default(3),
-  }).default({ enabled: false }),
+    /** Automatically restart crashed swarms */
+    auto_restart: z.boolean().default(true),
+    /** Maximum number of restart attempts before giving up (0 = unlimited) */
+    max_restart_attempts: z.number().default(3),
+  }).default({}),
+
+  // SwarmCraft: MAP client for monitoring and steering coding agents
+  swarmcraft: z.object({
+    enabled: z.boolean().default(true),
+    prefix: z.string().default('/api/swarmcraft'),
+    wsPath: z.string().default('/ws/swarmcraft'),
+    terminalWsPath: z.string().default('/ws/swarmcraft/terminal'),
+    logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  }).default({}),
 
   // Mesh networking for MAP swarm hosts (pluggable provider)
   network: z.object({
@@ -303,6 +320,9 @@ export function loadConfig(configPath?: string): Config {
   }
   if (process.env.OPENHIVE_JWT_SECRET) {
     rawConfig.jwt = { ...rawConfig.jwt, secret: process.env.OPENHIVE_JWT_SECRET };
+  }
+  if (process.env.OPENHIVE_AUTH_MODE) {
+    rawConfig.auth = { ...rawConfig.auth, mode: process.env.OPENHIVE_AUTH_MODE };
   }
 
   // GitHub App configuration from environment
@@ -419,12 +439,21 @@ module.exports = {
   // swarmHosting: {
   //   enabled: true,
   //   default_provider: 'local',     // 'local' | 'docker' (more coming)
-  //   openswarm_command: 'npx openswarm', // or path to binary
+  //   openswarm_command: 'npx openswarm serve', // or path to binary
   //   data_dir: './data/swarms',
   //   port_range: [9000, 9100],
   //   max_swarms: 10,
   //   health_check_interval: 30000,  // ms
   //   max_health_failures: 3,
+  // },
+
+  // SwarmCraft: MAP client for agent monitoring and orchestration
+  // swarmcraft: {
+  //   enabled: true,
+  //   prefix: '/api/swarmcraft',
+  //   wsPath: '/ws/swarmcraft',
+  //   terminalWsPath: '/ws/swarmcraft/terminal',
+  //   logLevel: 'info',
   // },
 
   // Mesh networking for MAP swarm hosts

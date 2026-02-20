@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
-import type { Agent } from '../lib/api';
+import type { Agent, HostedSwarm, MapSwarm } from '../lib/api';
 
 // Posts
 export function usePosts(options: {
@@ -266,5 +266,123 @@ export function useSearch(query: string, type?: string) {
       }>(`/search?${params}`);
     },
     enabled: query.length >= 2,
+  });
+}
+
+// Hosted Swarms
+export function useHostedSwarms(options?: { state?: string; mine?: boolean }) {
+  const { state, mine } = options || {};
+
+  return useQuery({
+    queryKey: ['hosted-swarms', { state, mine }],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (state) params.set('state', state);
+      if (mine) params.set('mine', 'true');
+      return api.get<{ data: HostedSwarm[]; total: number }>(`/map/hosted?${params}`);
+    },
+    select: (data) => data.data,
+    refetchInterval: 10000, // Poll every 10s for status updates
+  });
+}
+
+export function useSpawnSwarm() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: {
+      name: string;
+      description?: string;
+      adapter?: string;
+      adapter_config?: Record<string, unknown>;
+      hive?: string;
+      provider?: string;
+      metadata?: Record<string, unknown>;
+    }) => api.post<HostedSwarm>('/map/hosted/spawn', data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['hosted-swarms'] });
+    },
+  });
+}
+
+export function useStopSwarm() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) => api.post(`/map/hosted/${id}/stop`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['hosted-swarms'] });
+    },
+  });
+}
+
+export function useRestartSwarm() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) => api.post(`/map/hosted/${id}/restart`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['hosted-swarms'] });
+    },
+  });
+}
+
+export function useRemoveSwarm() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/map/hosted/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['hosted-swarms'] });
+    },
+  });
+}
+
+export function useSwarmLogs(id: string | null) {
+  return useQuery({
+    queryKey: ['swarm-logs', id],
+    queryFn: async () => {
+      const url = `/api/v1/map/hosted/${id}/logs`;
+      const headers: HeadersInit = {};
+      const token = api.getToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const res = await fetch(url, { headers });
+      if (!res.ok) throw new Error('Failed to fetch logs');
+      return res.text();
+    },
+    enabled: !!id,
+    refetchInterval: 5000, // Poll logs every 5s when viewing
+  });
+}
+
+// MAP-registered Swarms (includes both hosted and externally connected)
+export function useMapSwarms() {
+  return useQuery({
+    queryKey: ['map-swarms'],
+    queryFn: () => api.get<{ data: MapSwarm[]; total: number }>('/map/swarms'),
+    select: (data) => data.data,
+    refetchInterval: 15000,
+  });
+}
+
+export function useConnectSwarm() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: {
+      name: string;
+      description?: string;
+      map_endpoint: string;
+      map_transport?: 'websocket' | 'http-sse' | 'ndjson';
+      capabilities?: { observation?: boolean; messaging?: boolean; lifecycle?: boolean };
+      auth_method?: 'bearer' | 'api-key' | 'mtls' | 'none';
+      auth_token?: string;
+      metadata?: Record<string, unknown>;
+    }) => api.post<{ swarm: MapSwarm }>('/map/swarms', data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
+    },
   });
 }

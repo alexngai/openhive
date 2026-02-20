@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -9,20 +9,13 @@ import {
   isInitialised,
   findConfigFile,
 } from '../data-dir.js';
+import { testRoot, mkTestDir, cleanTestRoot } from './helpers/test-dirs.js';
 
 // Use a unique temp directory for each test run to avoid collisions
-const TEST_ROOT = path.join(os.tmpdir(), `openhive-test-datadir-${process.pid}`);
+const TEST_ROOT = testRoot('datadir');
 
 function mkTemp(name: string): string {
-  const dir = path.join(TEST_ROOT, name);
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-function cleanDir(dir: string): void {
-  if (fs.existsSync(dir)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  return mkTestDir(TEST_ROOT, name);
 }
 
 describe('data-dir', () => {
@@ -32,7 +25,7 @@ describe('data-dir', () => {
   });
 
   afterAll(() => {
-    cleanDir(TEST_ROOT);
+    cleanTestRoot(TEST_ROOT);
     delete process.env.OPENHIVE_HOME;
   });
 
@@ -67,57 +60,51 @@ describe('data-dir', () => {
     });
 
     it('should detect .openhive/ in CWD when marker exists', () => {
-      const localDir = path.join(process.cwd(), '.openhive');
+      // Use a temp directory as fake CWD to avoid touching the real project root
+      const fakeCwd = mkTemp('cwd-marker');
+      const localDir = path.join(fakeCwd, '.openhive');
       const markerPath = path.join(localDir, '.openhive-root');
 
-      // Create the marker temporarily
       fs.mkdirSync(localDir, { recursive: true });
       fs.writeFileSync(markerPath, 'test');
 
+      vi.spyOn(process, 'cwd').mockReturnValue(fakeCwd);
       try {
         const result = resolveDataDir();
         expect(result).toBe(localDir);
       } finally {
-        // Clean up
-        cleanDir(localDir);
+        vi.restoreAllMocks();
       }
     });
 
     it('should fall back to ~/.openhive/ when nothing else matches', () => {
-      // Ensure no local .openhive marker exists
-      const localMarker = path.join(process.cwd(), '.openhive', '.openhive-root');
-      const localExists = fs.existsSync(localMarker);
+      // Use a temp directory with no .openhive marker as fake CWD
+      const fakeCwd = mkTemp('cwd-fallback');
+      vi.spyOn(process, 'cwd').mockReturnValue(fakeCwd);
 
-      if (!localExists) {
+      try {
         const result = resolveDataDir();
         expect(result).toBe(path.join(os.homedir(), '.openhive'));
+      } finally {
+        vi.restoreAllMocks();
       }
     });
 
     it('should not detect .openhive/ in CWD without marker file', () => {
-      const localDir = path.join(process.cwd(), '.openhive');
-      const markerPath = path.join(localDir, '.openhive-root');
+      // Use a temp directory as fake CWD
+      const fakeCwd = mkTemp('cwd-no-marker');
+      const localDir = path.join(fakeCwd, '.openhive');
 
       // Create directory but no marker
-      if (!fs.existsSync(localDir)) {
-        fs.mkdirSync(localDir, { recursive: true });
-      }
-      // Remove marker if it exists
-      if (fs.existsSync(markerPath)) {
-        fs.unlinkSync(markerPath);
-      }
+      fs.mkdirSync(localDir, { recursive: true });
 
+      vi.spyOn(process, 'cwd').mockReturnValue(fakeCwd);
       try {
         const result = resolveDataDir();
         // Should NOT return the local dir without marker
         expect(result).toBe(path.join(os.homedir(), '.openhive'));
       } finally {
-        // Only clean up if we created it and it's empty
-        try {
-          fs.rmdirSync(localDir);
-        } catch {
-          // may not be empty, that's fine
-        }
+        vi.restoreAllMocks();
       }
     });
   });
@@ -129,7 +116,7 @@ describe('data-dir', () => {
   describe('ensureDataDir', () => {
     it('should create the directory structure', () => {
       const dir = path.join(TEST_ROOT, 'ensure-test');
-      cleanDir(dir);
+      cleanTestRoot(dir);
 
       ensureDataDir(dir);
 
@@ -140,7 +127,7 @@ describe('data-dir', () => {
 
     it('should write a marker file', () => {
       const dir = path.join(TEST_ROOT, 'ensure-marker');
-      cleanDir(dir);
+      cleanTestRoot(dir);
 
       ensureDataDir(dir);
 
@@ -153,7 +140,7 @@ describe('data-dir', () => {
 
     it('should not overwrite an existing marker file', () => {
       const dir = path.join(TEST_ROOT, 'ensure-no-overwrite');
-      cleanDir(dir);
+      cleanTestRoot(dir);
       fs.mkdirSync(dir, { recursive: true });
 
       const markerPath = path.join(dir, '.openhive-root');
@@ -167,7 +154,7 @@ describe('data-dir', () => {
 
     it('should be idempotent (safe to call multiple times)', () => {
       const dir = path.join(TEST_ROOT, 'ensure-idempotent');
-      cleanDir(dir);
+      cleanTestRoot(dir);
 
       ensureDataDir(dir);
       ensureDataDir(dir);
@@ -226,7 +213,7 @@ describe('data-dir', () => {
 
     it('should return true after ensureDataDir is called', () => {
       const dir = path.join(TEST_ROOT, 'init-after-ensure');
-      cleanDir(dir);
+      cleanTestRoot(dir);
 
       expect(isInitialised(dir)).toBe(false);
       ensureDataDir(dir);
@@ -241,12 +228,16 @@ describe('data-dir', () => {
   describe('findConfigFile', () => {
     it('should return undefined when no config files exist', () => {
       const dir = mkTemp('find-none');
-      const result = findConfigFile(dir);
 
-      // Only undefined if CWD also has no config files
-      if (!fs.existsSync(path.join(process.cwd(), 'openhive.config.js')) &&
-          !fs.existsSync(path.join(process.cwd(), 'openhive.config.json'))) {
+      // Mock CWD so findConfigFile doesn't find real project config files
+      const fakeCwd = mkTemp('find-none-cwd');
+      vi.spyOn(process, 'cwd').mockReturnValue(fakeCwd);
+
+      try {
+        const result = findConfigFile(dir);
         expect(result).toBeUndefined();
+      } finally {
+        vi.restoreAllMocks();
       }
     });
 
@@ -255,12 +246,14 @@ describe('data-dir', () => {
       const configPath = path.join(dir, 'config.js');
       fs.writeFileSync(configPath, 'module.exports = {}');
 
-      const result = findConfigFile(dir);
+      const fakeCwd = mkTemp('find-configjs-cwd');
+      vi.spyOn(process, 'cwd').mockReturnValue(fakeCwd);
 
-      // If no CWD config exists, it should find the data dir one
-      if (!fs.existsSync(path.join(process.cwd(), 'openhive.config.js')) &&
-          !fs.existsSync(path.join(process.cwd(), 'openhive.config.json'))) {
+      try {
+        const result = findConfigFile(dir);
         expect(result).toBe(configPath);
+      } finally {
+        vi.restoreAllMocks();
       }
     });
 
@@ -269,11 +262,14 @@ describe('data-dir', () => {
       const configPath = path.join(dir, 'config.json');
       fs.writeFileSync(configPath, '{}');
 
-      const result = findConfigFile(dir);
+      const fakeCwd = mkTemp('find-configjson-cwd');
+      vi.spyOn(process, 'cwd').mockReturnValue(fakeCwd);
 
-      if (!fs.existsSync(path.join(process.cwd(), 'openhive.config.js')) &&
-          !fs.existsSync(path.join(process.cwd(), 'openhive.config.json'))) {
+      try {
+        const result = findConfigFile(dir);
         expect(result).toBe(configPath);
+      } finally {
+        vi.restoreAllMocks();
       }
     });
 
@@ -284,11 +280,14 @@ describe('data-dir', () => {
       fs.writeFileSync(jsPath, 'module.exports = {}');
       fs.writeFileSync(jsonPath, '{}');
 
-      const result = findConfigFile(dir);
+      const fakeCwd = mkTemp('find-prefer-js-cwd');
+      vi.spyOn(process, 'cwd').mockReturnValue(fakeCwd);
 
-      if (!fs.existsSync(path.join(process.cwd(), 'openhive.config.js')) &&
-          !fs.existsSync(path.join(process.cwd(), 'openhive.config.json'))) {
+      try {
+        const result = findConfigFile(dir);
         expect(result).toBe(jsPath);
+      } finally {
+        vi.restoreAllMocks();
       }
     });
   });
@@ -300,7 +299,7 @@ describe('data-dir', () => {
   describe('integration', () => {
     it('should resolve, initialise, and then detect a data dir', () => {
       const dir = path.join(TEST_ROOT, 'integration-full');
-      cleanDir(dir);
+      cleanTestRoot(dir);
 
       // Initially not initialised
       expect(isInitialised(dir)).toBe(false);
@@ -320,7 +319,7 @@ describe('data-dir', () => {
 
     it('should resolve via OPENHIVE_HOME after ensureDataDir', () => {
       const dir = path.join(TEST_ROOT, 'integration-env');
-      cleanDir(dir);
+      cleanTestRoot(dir);
 
       ensureDataDir(dir);
       process.env.OPENHIVE_HOME = dir;

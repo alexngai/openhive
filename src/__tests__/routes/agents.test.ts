@@ -1,25 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
-import * as fs from 'fs';
-import * as path from 'path';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as followsDAL from '../../db/dal/follows.js';
 import { agentsRoutes } from '../../api/routes/agents.js';
 import { authMiddleware, optionalAuthMiddleware } from '../../api/middleware/auth.js';
 import type { Config } from '../../config.js';
+import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-const TEST_DB_PATH = './test-data/agents-routes-test.db';
-
-// ============================================================================
-// Test Utilities
-// ============================================================================
-
-function cleanupTestData() {
-  if (fs.existsSync(TEST_DB_PATH)) {
-    fs.unlinkSync(TEST_DB_PATH);
-  }
-}
+const TEST_ROOT = testRoot('agents-routes');
+const TEST_DB_PATH = testDbPath(TEST_ROOT, 'agents-routes-test.db');
 
 function createTestConfig(): Config {
   return {
@@ -69,13 +59,6 @@ describe('Agents API Routes', () => {
   let otherAgent: { id: string; apiKey: string; name: string };
 
   beforeAll(async () => {
-    cleanupTestData();
-
-    const dir = path.dirname(TEST_DB_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
     initDatabase(TEST_DB_PATH);
     config = createTestConfig();
     app = await createTestApp(config);
@@ -84,7 +67,7 @@ describe('Agents API Routes', () => {
   afterAll(async () => {
     await app.close();
     closeDatabase();
-    cleanupTestData();
+    cleanTestRoot(TEST_ROOT);
   });
 
   describe('POST /agents/register', () => {

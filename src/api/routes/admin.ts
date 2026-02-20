@@ -32,6 +32,8 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
       hive_count: hivesDAL.countHives(),
       post_count: postsDAL.countPosts(),
       federation_enabled: options.config.federation.enabled,
+      swarm_hosting_enabled: options.config.swarmHosting.enabled,
+      swarmcraft_enabled: options.config.swarmcraft.enabled,
       registration_open: true,
       verification_strategy: options.config.verification.strategy,
     };

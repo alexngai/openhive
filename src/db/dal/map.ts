@@ -732,3 +732,19 @@ export function isSwarmOwner(swarmId: string, agentId: string): boolean {
   const swarm = findSwarmById(swarmId);
   return swarm !== null && swarm.owner_agent_id === agentId;
 }
+
+/**
+ * Find online swarms owned by any of the given agent IDs.
+ * Used by the sync relay to map resource subscribers → swarm endpoints.
+ */
+export function findSwarmsByOwnerAgentIds(agentIds: string[]): MapSwarm[] {
+  if (agentIds.length === 0) return [];
+  const db = getDatabase();
+  const placeholders = agentIds.map(() => '?').join(', ');
+  const rows = db.prepare(`
+    SELECT * FROM map_swarms
+    WHERE owner_agent_id IN (${placeholders})
+      AND status = 'online'
+  `).all(...agentIds) as Record<string, unknown>[];
+  return rows.map(rowToSwarm);
+}

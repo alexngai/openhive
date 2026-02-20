@@ -20,6 +20,9 @@ import { initSyncService } from './sync/service.js';
 import type { SyncService } from './sync/service.js';
 import { SwarmManager } from './swarm/manager.js';
 import type { SwarmHostingConfig } from './swarm/types.js';
+import { getOrCreateLocalAgent } from './db/dal/agents.js';
+import { setLocalAgent } from './api/middleware/auth.js';
+import { initMapSyncListener, stopMapSyncListener } from './map/sync-listener.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -43,6 +46,13 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
   // Initialize database
   initDatabase(config.database);
+
+  // Set up local auth mode if configured
+  if (config.auth.mode === 'local') {
+    const agent = await getOrCreateLocalAgent();
+    setLocalAgent(agent);
+    console.log('[openhive] Local auth mode — all requests auto-authenticated as "local"');
+  }
 
   // Initialize storage if configured
   if (config.storage) {
@@ -111,6 +121,59 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   let syncService: SyncService | null = null;
   if (config.sync.enabled) {
     syncService = initSyncService(config.sync);
+  }
+
+  // Initialize SwarmCraft plugin (MAP client for agent monitoring)
+  if (config.swarmcraft.enabled) {
+    try {
+      const { getDatabaseConfig } = await import('./db/index.js');
+      const dbConf = getDatabaseConfig();
+      const dbPath = (dbConf && dbConf.type === 'sqlite') ? dbConf.path : './data/openhive.db';
+
+      const scPrefix = config.swarmcraft.prefix || '/api/swarmcraft';
+      const scWsPath = config.swarmcraft.wsPath || '/ws/swarmcraft';
+      const scTerminalWsPath = config.swarmcraft.terminalWsPath || '/ws/swarmcraft/terminal';
+
+      const { swarmcraftPlugin } = await import('swarmcraft/plugin');
+      await fastify.register(swarmcraftPlugin, {
+        database: { type: 'sqlite', path: dbPath, tablePrefix: 'sc_' },
+        prefix: scPrefix,
+        wsPath: scWsPath,
+        terminalWsPath: scTerminalWsPath,
+        logLevel: config.swarmcraft.logLevel || 'info',
+        corsOrigin: typeof config.cors.origin === 'string' ? config.cors.origin : undefined,
+      });
+      console.log(`[openhive] SwarmCraft plugin registered at ${scPrefix}`);
+
+      // Bridge: auto-connect SwarmCraft MAP client when swarms register with the Hub
+      const mcm = (fastify as any).swarmcraft.mapClientManager;
+      const connectSwarm = async (id: string, name: string, endpoint: string, authMethod?: string) => {
+        try {
+          await mcm.connect({
+            id, name, url: endpoint,
+            auth: authMethod === 'none' || !authMethod
+              ? { method: 'none' as const }
+              : { method: authMethod as 'bearer' | 'api-key', token: undefined },
+          });
+          console.log(`[openhive] SwarmCraft bridge: connected to ${name}`);
+        } catch (err) {
+          console.warn(`[openhive] SwarmCraft bridge: failed to connect to ${name}: ${(err as Error).message}`);
+        }
+      };
+
+      // Connect to existing online swarms at startup
+      const { listSwarms } = await import('./db/dal/map.js');
+      const { data: online } = listSwarms({ status: 'online', limit: 500 });
+      for (const s of online) await connectSwarm(s.id, s.name, s.map_endpoint, s.auth_method);
+
+      // Subscribe to new registrations
+      const { mapHubEvents } = await import('./map/service.js');
+      mapHubEvents.on('swarm_registered', (e: { swarm_id: string; name: string; map_endpoint: string; auth_method?: string }) => {
+        connectSwarm(e.swarm_id, e.name, e.map_endpoint, e.auth_method);
+      });
+    } catch (err) {
+      console.warn(`[openhive] Failed to register SwarmCraft plugin: ${(err as Error).message}`);
+    }
   }
 
   // Initialize swarm hosting manager
@@ -220,6 +283,10 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         posts: postCount.count,
         hives: hiveCount.count,
       },
+      features: {
+        swarm_hosting: config.swarmHosting.enabled,
+        swarmcraft: config.swarmcraft.enabled,
+      },
       endpoints: {
         api: '/api/v1',
         websocket: '/ws',
@@ -292,6 +359,11 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         console.log(`[openhive] Sync service started (instance: ${syncService.getInstanceId()})`);
       }
 
+      // Start MAP sync listener (subscribe to swarm MAP endpoints for sync messages)
+      if (config.mapHub.enabled) {
+        initMapSyncListener();
+      }
+
       // Start swarm hosting health monitor
       if (swarmManager) {
         swarmManager.startHealthMonitor();
@@ -311,6 +383,8 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
       if (swarmManager) {
         await swarmManager.shutdown();
       }
+      // Stop MAP sync listener
+      stopMapSyncListener();
       // Stop sync service
       if (syncService) {
         syncService.stop();

@@ -5,8 +5,6 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import * as fs from 'fs';
-import * as path from 'path';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
@@ -24,14 +22,10 @@ import { ManualPeerResolver, HubPeerResolver, CompositePeerResolver } from '../.
 import { buildGossipPayload, processGossipPeers } from '../../sync/gossip.js';
 import { compactEvents, createSnapshot } from '../../sync/compaction.js';
 import type { HiveEvent, GossipConfig, SyncPeer } from '../../sync/types.js';
+import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-const TEST_DB_PATH = './test-data/sync-test.db';
-
-function cleanupTestData() {
-  if (fs.existsSync(TEST_DB_PATH)) {
-    fs.unlinkSync(TEST_DB_PATH);
-  }
-}
+const TEST_ROOT = testRoot('sync');
+const TEST_DB_PATH = testDbPath(TEST_ROOT, 'sync-test.db');
 
 describe('Hive Sync System', () => {
   let testAgentId: string;
@@ -39,11 +33,6 @@ describe('Hive Sync System', () => {
   let testHiveName: string;
 
   beforeAll(async () => {
-    cleanupTestData();
-    const dir = path.dirname(TEST_DB_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
     initDatabase(TEST_DB_PATH);
 
     // Create test agent and hive
@@ -64,7 +53,7 @@ describe('Hive Sync System', () => {
 
   afterAll(() => {
     closeDatabase();
-    cleanupTestData();
+    cleanTestRoot(TEST_ROOT);
   });
 
   // ═══════════════════════════════════════════════════════════════

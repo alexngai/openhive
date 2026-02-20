@@ -23,9 +23,41 @@ interface ManagedProcess {
   startedAt: number;
   logBuffer: string[];
   healthFailures: number;
+  restartCount: number;
 }
 
+/** Callback fired when a child process exits unexpectedly */
+export type ProcessExitHandler = (
+  instanceId: string,
+  code: number | null,
+  signal: string | null,
+) => void;
+
 const MAX_LOG_LINES = 1000;
+
+/**
+ * Kill a process and its entire process tree.
+ * Uses negative PID to send signal to the process group (works because
+ * children are spawned with detached: true, making them group leaders).
+ */
+function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): boolean {
+  const pid = child.pid;
+  if (!pid) return false;
+
+  try {
+    // Kill the entire process group (negative PID)
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    // Process group may already be dead; try direct kill as fallback
+    try {
+      child.kill(signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
 
 export class LocalProvider implements HostingProvider {
   readonly type = 'local' as const;
@@ -33,8 +65,29 @@ export class LocalProvider implements HostingProvider {
   private processes = new Map<string, ManagedProcess>();
   private openswarmCommand: string;
 
+  /** Called when a managed process exits (for immediate crash detection) */
+  onProcessExit: ProcessExitHandler | null = null;
+
+  private exitHandler: () => void;
+
   constructor(openswarmCommand: string) {
     this.openswarmCommand = openswarmCommand;
+
+    // Safety net: synchronously kill all child process trees if the parent
+    // exits before async shutdown completes (e.g. tsx force-kill, double Ctrl+C)
+    this.exitHandler = () => {
+      for (const [, managed] of this.processes) {
+        if (managed.process.exitCode === null) {
+          killProcessGroup(managed.process, 'SIGKILL');
+        }
+      }
+    };
+    process.on('exit', this.exitHandler);
+  }
+
+  /** Remove the process exit handler (call after stopAll to avoid listener leaks) */
+  removeExitHandler(): void {
+    process.removeListener('exit', this.exitHandler);
   }
 
   async provision(config: SwarmProvisionConfig): Promise<ProvisionResult> {
@@ -54,7 +107,6 @@ export class LocalProvider implements HostingProvider {
     // Build args for OpenSwarm's hosting server
     const args = [
       ...baseArgs,
-      'serve',
       '--port', String(config.assigned_port),
       '--host', '127.0.0.1',
     ];
@@ -70,11 +122,13 @@ export class LocalProvider implements HostingProvider {
       OPENSWARM_DATA_DIR: dataDir,
     };
 
-    // Spawn the process
+    // Spawn as a new process group leader (detached: true) so we can
+    // kill the entire tree (openswarm + its subprocesses) via -pid.
     const child = spawn(bin, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env,
       cwd: dataDir,
+      detached: true,
     });
 
     const managed: ManagedProcess = {
@@ -83,6 +137,7 @@ export class LocalProvider implements HostingProvider {
       startedAt: Date.now(),
       logBuffer: [],
       healthFailures: 0,
+      restartCount: 0,
     };
 
     // Capture stdout/stderr into ring buffer
@@ -103,6 +158,9 @@ export class LocalProvider implements HostingProvider {
     child.on('exit', (code, signal) => {
       const entry = `[${new Date().toISOString()}] [system] Process exited (code=${code}, signal=${signal})`;
       managed.logBuffer.push(entry);
+
+      // Notify the manager immediately about the exit
+      this.onProcessExit?.(instanceId, code, signal);
     });
 
     child.on('error', (err) => {
@@ -142,14 +200,15 @@ export class LocalProvider implements HostingProvider {
     const child = managed.process;
 
     if (child.exitCode === null) {
-      // Send SIGTERM for graceful shutdown
-      child.kill('SIGTERM');
+      // Send SIGTERM to the entire process group for graceful shutdown
+      killProcessGroup(child, 'SIGTERM');
 
       // Wait up to 5s for graceful exit
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(() => {
           if (child.exitCode === null) {
-            child.kill('SIGKILL');
+            // Force-kill the entire process group
+            killProcessGroup(child, 'SIGKILL');
           }
           resolve();
         }, 5000);
@@ -238,6 +297,19 @@ export class LocalProvider implements HostingProvider {
     if (managed) {
       managed.healthFailures = 0;
     }
+  }
+
+  /** Get the restart count for an instance */
+  getRestartCount(instanceId: string): number {
+    return this.processes.get(instanceId)?.restartCount ?? 0;
+  }
+
+  /** Increment the restart count for an instance */
+  incrementRestartCount(instanceId: string): number {
+    const managed = this.processes.get(instanceId);
+    if (!managed) return 0;
+    managed.restartCount++;
+    return managed.restartCount;
   }
 
   /** Stop all managed processes (for server shutdown) */

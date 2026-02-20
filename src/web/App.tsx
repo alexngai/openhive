@@ -1,9 +1,10 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import { Layout } from './components/layout/Layout';
 import { PageLoader } from './components/common/LoadingSpinner';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { useWebSocket } from './hooks/useWebSocket';
+import { useAuthStore } from './stores/auth';
 
 // Lazy load page components for code splitting
 const Home = lazy(() => import('./pages/Home').then(m => ({ default: m.Home })));
@@ -19,10 +20,18 @@ const Register = lazy(() => import('./pages/Register').then(m => ({ default: m.R
 const ForgotPassword = lazy(() => import('./pages/ForgotPassword').then(m => ({ default: m.ForgotPassword })));
 const ResetPassword = lazy(() => import('./pages/ResetPassword').then(m => ({ default: m.ResetPassword })));
 const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })));
+const Swarms = lazy(() => import('./pages/Swarms').then(m => ({ default: m.Swarms })));
+const SwarmCraft = lazy(() => import('./pages/SwarmCraft').then(m => ({ default: m.SwarmCraft })));
 
 export default function App() {
   // Initialize WebSocket connection
   useWebSocket();
+
+  // Check auth mode on startup (local mode auto-authenticates)
+  const checkAuthMode = useAuthStore((s) => s.checkAuthMode);
+  useEffect(() => {
+    checkAuthMode();
+  }, [checkAuthMode]);
 
   return (
     <ErrorBoundary>
@@ -42,6 +51,8 @@ export default function App() {
             <Route path="forgot-password" element={<ForgotPassword />} />
             <Route path="reset-password/:token" element={<ResetPassword />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="swarms" element={<Swarms />} />
+            <Route path="swarmcraft" element={<SwarmCraft />} />
           </Route>
         </Routes>
       </Suspense>

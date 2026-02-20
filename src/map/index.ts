@@ -21,6 +21,22 @@ export {
 
 export { MAP_SCHEMA } from './schema.js';
 
+export {
+  initMapSyncListener,
+  stopMapSyncListener,
+  handleSyncMessage,
+  getSyncListenerStatus,
+} from './sync-listener.js';
+
+export {
+  MapSyncClient,
+  type MapSyncClientConfig,
+  type SyncResource,
+  type SyncMessageHandler,
+  type PollChecker,
+  type PollCheckResult,
+} from './sync-client.js';
+
 export type {
   // Swarm types
   MapSwarm,
@@ -51,4 +67,10 @@ export type {
   // Peer list
   SwarmPeer,
   PeerList,
+  // Sync messages (JSON-RPC 2.0)
+  MapSyncMessage,
+  MapSyncMethod,
+  MapSyncParams,
 } from './types.js';
+
+export { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE, createSyncNotification } from './types.js';

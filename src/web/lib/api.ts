@@ -41,7 +41,7 @@ export class ApiClient {
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const headers: HeadersInit = {
-      'Content-Type': 'application/json',
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...options?.headers,
     };
 
@@ -178,4 +178,35 @@ export interface PaginatedResponse<T> {
   limit: number;
   offset: number;
   total?: number;
+}
+
+export interface HostedSwarm {
+  id: string;
+  swarm_id: string | null;
+  provider: string;
+  state: 'provisioning' | 'starting' | 'running' | 'unhealthy' | 'stopping' | 'stopped' | 'failed';
+  pid: number | null;
+  assigned_port: number | null;
+  endpoint: string | null;
+  error: string | null;
+  spawned_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MapSwarm {
+  id: string;
+  name: string;
+  description: string | null;
+  map_endpoint: string;
+  map_transport: string;
+  status: 'online' | 'offline' | 'unreachable';
+  last_seen_at: string | null;
+  capabilities: Record<string, unknown> | null;
+  auth_method: string | null;
+  agent_count: number;
+  scope_count: number;
+  metadata: Record<string, unknown> | null;
+  hives: string[];
+  created_at: string;
 }

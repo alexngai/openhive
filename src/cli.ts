@@ -127,10 +127,21 @@ async function runSetupWizard(explicitDataDir?: string): Promise<void> {
     );
     const verificationStrategy = ['open', 'invite', 'manual'][verificationIndex];
 
-    // Step 4: Generate admin key
+    // Step 4: Auth mode
+    const authIndex = await prompt.choose(
+      '  Auth mode:',
+      [
+        'Local - no login required, single-user (default)',
+        'Token - email/password registration and API keys',
+      ],
+      0,
+    );
+    const authMode = ['local', 'token'][authIndex];
+
+    // Step 5: Generate admin key
     const adminKey = nanoid(32);
 
-    // Step 5: Confirm
+    // Step 6: Confirm
     const paths = dataDirPaths(dataDir);
     console.log('\n  Summary:');
     console.log(`    Data directory:    ${dataDir}`);
@@ -139,6 +150,7 @@ async function runSetupWizard(explicitDataDir?: string): Promise<void> {
     console.log(`    Config:            ${paths.config}`);
     console.log(`    Instance name:     ${instanceName}`);
     console.log(`    Port:              ${portNum}`);
+    console.log(`    Auth mode:         ${authMode}`);
     console.log(`    Registration:      ${verificationStrategy}`);
     console.log(`    Admin key:         ${adminKey}`);
     console.log('');
@@ -150,7 +162,7 @@ async function runSetupWizard(explicitDataDir?: string): Promise<void> {
       return;
     }
 
-    // Step 6: Create everything
+    // Step 7: Create everything
     console.log('\n  Setting up...');
     ensureDataDir(dataDir);
     console.log(`    Created ${dataDir}`);
@@ -173,6 +185,10 @@ module.exports = {
 
   admin: {
     key: process.env.OPENHIVE_ADMIN_KEY || '${adminKey}',
+  },
+
+  auth: {
+    mode: '${authMode}',
   },
 
   verification: {
@@ -284,8 +300,19 @@ async function startServer(opts: StartOptions): Promise<string> {
     console.log(`  WebSocket: ws://${address.replace('http://', '')}/ws`);
     console.log(`\n  Press Ctrl+C to stop\n`);
 
+    let shuttingDown = false;
     const shutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       console.log('\n\n  Shutting down...');
+
+      // Force exit after 10s if graceful shutdown hangs
+      const forceExit = setTimeout(() => {
+        console.warn('  Shutdown timed out, forcing exit');
+        process.exit(1);
+      }, 10_000);
+      forceExit.unref();
+
       await server.stop();
       process.exit(0);
     };

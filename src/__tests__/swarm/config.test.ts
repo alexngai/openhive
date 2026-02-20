@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { ConfigSchema } from '../../config.js';
 
 describe('swarmHosting config', () => {
-  it('should be disabled by default', () => {
+  it('should be enabled by default', () => {
     const config = ConfigSchema.parse({});
-    expect(config.swarmHosting.enabled).toBe(false);
+    expect(config.swarmHosting.enabled).toBe(true);
   });
 
   it('should have sensible defaults when enabled', () => {
@@ -14,7 +14,7 @@ describe('swarmHosting config', () => {
 
     expect(config.swarmHosting.enabled).toBe(true);
     expect(config.swarmHosting.default_provider).toBe('local');
-    expect(config.swarmHosting.openswarm_command).toBe('npx openswarm');
+    expect(config.swarmHosting.openswarm_command).toBe('npx openswarm serve');
     expect(config.swarmHosting.data_dir).toBe('./data/swarms');
     expect(config.swarmHosting.port_range).toEqual([9000, 9100]);
     expect(config.swarmHosting.max_swarms).toBe(10);

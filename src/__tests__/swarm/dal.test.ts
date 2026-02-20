@@ -1,29 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import * as fs from 'fs';
-import * as path from 'path';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import * as dal from '../../swarm/dal.js';
+import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-const TEST_DB_PATH = './test-data/swarm-dal-test.db';
-
-function cleanupTestData() {
-  if (fs.existsSync(TEST_DB_PATH)) {
-    fs.unlinkSync(TEST_DB_PATH);
-  }
-}
+const TEST_ROOT = testRoot('swarm-dal');
+const TEST_DB_PATH = testDbPath(TEST_ROOT, 'swarm-dal-test.db');
 
 describe('Swarm DAL', () => {
   let testAgentId: string;
   let testAgentApiKey: string;
 
   beforeAll(async () => {
-    cleanupTestData();
-    const dir = path.dirname(TEST_DB_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
     initDatabase(TEST_DB_PATH);
 
     // Create a test agent
@@ -37,7 +26,7 @@ describe('Swarm DAL', () => {
 
   afterAll(() => {
     closeDatabase();
-    cleanupTestData();
+    cleanTestRoot(TEST_ROOT);
   });
 
   describe('createHostedSwarm', () => {
