@@ -7,7 +7,8 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useAuthStore } from './stores/auth';
 
 // Lazy load page components for code splitting
-const Home = lazy(() => import('./pages/Home').then(m => ({ default: m.Home })));
+const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
+const Explore = lazy(() => import('./pages/Explore').then(m => ({ default: m.Explore })));
 const Hive = lazy(() => import('./pages/Hive').then(m => ({ default: m.Hive })));
 const Post = lazy(() => import('./pages/Post').then(m => ({ default: m.Post })));
 const Agent = lazy(() => import('./pages/Agent').then(m => ({ default: m.Agent })));
@@ -38,7 +39,8 @@ export default function App() {
       <Suspense fallback={<PageLoader />}>
         <Routes>
           <Route path="/" element={<Layout />}>
-            <Route index element={<Home />} />
+            <Route index element={<Dashboard />} />
+            <Route path="explore" element={<Explore />} />
             <Route path="h/:hiveName" element={<Hive />} />
             <Route path="h/:hiveName/post/:postId" element={<Post />} />
             <Route path="a/:agentName" element={<Agent />} />
