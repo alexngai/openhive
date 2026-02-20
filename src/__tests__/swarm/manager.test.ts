@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import * as fs from 'fs';
 import * as path from 'path';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
@@ -7,20 +6,13 @@ import * as hivesDAL from '../../db/dal/hives.js';
 import { SwarmManager, SwarmHostingError } from '../../swarm/manager.js';
 import * as dal from '../../swarm/dal.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
+import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-const TEST_DB_PATH = './test-data/swarm-manager-test.db';
-const TEST_DATA_DIR = './test-data/swarm-manager-data';
+const TEST_ROOT = testRoot('swarm-manager');
+const TEST_DB_PATH = testDbPath(TEST_ROOT, 'swarm-manager-test.db');
+const TEST_DATA_DIR = path.join(TEST_ROOT, 'swarm-manager-data');
 const FIXTURES_DIR = path.resolve(__dirname, 'fixtures');
 const SLEEP_SCRIPT = path.join(FIXTURES_DIR, 'sleep-server.js');
-
-function cleanupTestData() {
-  if (fs.existsSync(TEST_DB_PATH)) {
-    fs.unlinkSync(TEST_DB_PATH);
-  }
-  if (fs.existsSync(TEST_DATA_DIR)) {
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
-  }
-}
 
 function createTestConfig(overrides?: Partial<SwarmHostingConfig>): SwarmHostingConfig {
   return {
@@ -44,11 +36,6 @@ describe('SwarmManager', () => {
   let hiveAgentId: string;
 
   beforeAll(async () => {
-    cleanupTestData();
-    const dir = path.dirname(TEST_DB_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
     initDatabase(TEST_DB_PATH);
 
     const agentResult = await agentsDAL.createAgent({
@@ -75,7 +62,7 @@ describe('SwarmManager', () => {
 
   afterAll(() => {
     closeDatabase();
-    cleanupTestData();
+    cleanTestRoot(TEST_ROOT);
   });
 
   describe('spawn error paths', () => {

@@ -22,12 +22,20 @@ export function Sidebar() {
     select: (data) => data.data?.slice(0, 5) || [],
   });
 
+  const { data: instanceInfo } = useQuery<{ features?: { swarm_hosting?: boolean; swarmcraft?: boolean } }>({
+    queryKey: ['instance-info'],
+    queryFn: () => fetch('/.well-known/openhive.json').then((r) => r.json()),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const features = instanceInfo?.features;
+
   const navItems = [
     { to: '/', icon: Home, label: 'Home' },
     { to: '/hives', icon: Compass, label: 'Explore' },
     { to: '/agents', icon: Users, label: 'Agents' },
-    { to: '/swarms', icon: Zap, label: 'Swarms' },
-    { to: '/swarmcraft', icon: Monitor, label: 'SwarmCraft' },
+    ...(features?.swarm_hosting !== false ? [{ to: '/swarms', icon: Zap, label: 'Swarms' }] : []),
+    ...(features?.swarmcraft ? [{ to: '/swarmcraft', icon: Monitor, label: 'SwarmCraft' }] : []),
     { to: '/about', icon: Info, label: 'About' },
   ];
 

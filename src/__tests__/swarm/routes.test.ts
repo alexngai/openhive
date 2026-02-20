@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
-import * as fs from 'fs';
 import * as path from 'path';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
@@ -10,20 +9,13 @@ import { SwarmManager } from '../../swarm/manager.js';
 import * as dal from '../../swarm/dal.js';
 import type { Config } from '../../config.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
+import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-const TEST_DB_PATH = './test-data/swarm-routes-test.db';
-const TEST_DATA_DIR = './test-data/swarm-routes-data';
+const TEST_ROOT = testRoot('swarm-routes');
+const TEST_DB_PATH = testDbPath(TEST_ROOT, 'swarm-routes-test.db');
+const TEST_DATA_DIR = path.join(TEST_ROOT, 'swarm-routes-data');
 const FIXTURES_DIR = path.resolve(__dirname, 'fixtures');
 const SLEEP_SCRIPT = path.join(FIXTURES_DIR, 'sleep-server.js');
-
-function cleanupTestData() {
-  if (fs.existsSync(TEST_DB_PATH)) {
-    fs.unlinkSync(TEST_DB_PATH);
-  }
-  if (fs.existsSync(TEST_DATA_DIR)) {
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
-  }
-}
 
 function createTestConfig(): Config {
   return {
@@ -81,12 +73,7 @@ describe('Swarm Hosting API Routes', () => {
   const agentsByKey = new Map<string, { id: string; name: string }>();
 
   beforeAll(async () => {
-    cleanupTestData();
-    const dir = path.dirname(TEST_DB_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
+    cleanTestRoot(TEST_ROOT);
     initDatabase(TEST_DB_PATH);
     config = createTestConfig();
 
@@ -151,7 +138,7 @@ describe('Swarm Hosting API Routes', () => {
     await swarmManager.shutdown();
     await app.close();
     closeDatabase();
-    cleanupTestData();
+    cleanTestRoot(TEST_ROOT);
   });
 
   describe('GET /api/v1/map/hosted', () => {

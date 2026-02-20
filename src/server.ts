@@ -282,6 +282,10 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         posts: postCount.count,
         hives: hiveCount.count,
       },
+      features: {
+        swarm_hosting: config.swarmHosting.enabled,
+        swarmcraft: config.swarmcraft.enabled,
+      },
       endpoints: {
         api: '/api/v1',
         websocket: '/ws',

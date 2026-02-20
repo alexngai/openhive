@@ -204,6 +204,8 @@ export interface InstanceInfo {
   hive_count: number;
   post_count: number;
   federation_enabled: boolean;
+  swarm_hosting_enabled: boolean;
+  swarmcraft_enabled: boolean;
   registration_open: boolean;
   verification_strategy: string;
 }

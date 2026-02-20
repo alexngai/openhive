@@ -1,27 +1,19 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
-import * as fs from 'fs';
 import * as path from 'path';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import { sessionsRoutes } from '../../api/routes/sessions.js';
 import { initializeLocalSessionStorage } from '../../sessions/storage/index.js';
 import type { Config } from '../../config.js';
+import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-const TEST_DB_PATH = './test-data/sessions-routes-test.db';
-const TEST_STORAGE_PATH = './test-data/sessions-storage';
+const TEST_ROOT = testRoot('sessions-routes');
+const TEST_DB_PATH = testDbPath(TEST_ROOT, 'sessions-routes-test.db');
+const TEST_STORAGE_PATH = path.join(TEST_ROOT, 'sessions-storage');
 
-// ============================================================================
-// Test Utilities
-// ============================================================================
-
-function cleanupTestData() {
-  if (fs.existsSync(TEST_DB_PATH)) {
-    fs.unlinkSync(TEST_DB_PATH);
-  }
-  if (fs.existsSync(TEST_STORAGE_PATH)) {
-    fs.rmSync(TEST_STORAGE_PATH, { recursive: true, force: true });
-  }
+function cleanTestData() {
+  cleanTestRoot(TEST_ROOT);
 }
 
 function createTestConfig(): Config {
@@ -83,13 +75,7 @@ describe('Session Routes', () => {
   let observerAgent: { id: string; apiKey: string };
 
   beforeAll(async () => {
-    cleanupTestData();
-
-    const dir = path.dirname(TEST_DB_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
+    cleanTestData();
     initDatabase(TEST_DB_PATH);
 
     // Initialize session storage
@@ -124,7 +110,7 @@ describe('Session Routes', () => {
   afterAll(async () => {
     await app.close();
     closeDatabase();
-    cleanupTestData();
+    cleanTestData();
   });
 
   // ============================================================================

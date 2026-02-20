@@ -202,12 +202,12 @@ export const ConfigSchema = z.object({
 
   // SwarmCraft: MAP client for monitoring and steering coding agents
   swarmcraft: z.object({
-    enabled: z.boolean().default(false),
+    enabled: z.boolean().default(true),
     prefix: z.string().default('/api/swarmcraft'),
     wsPath: z.string().default('/ws/swarmcraft'),
     terminalWsPath: z.string().default('/ws/swarmcraft/terminal'),
     logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-  }).default({ enabled: false }),
+  }).default({}),
 
   // Mesh networking for MAP swarm hosts (pluggable provider)
   network: z.object({

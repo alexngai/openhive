@@ -3,6 +3,7 @@ import {
   Zap, Square, RotateCw, Terminal, ChevronDown, ChevronUp, Plus, X, Cpu,
   Link2, Globe, Wifi, WifiOff, Settings2, Trash2,
 } from 'lucide-react';
+import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-generator';
 import { toast } from '../stores/toast';
 import {
   useHostedSwarms, useSpawnSwarm, useStopSwarm, useRestartSwarm, useRemoveSwarm, useSwarmLogs,
@@ -91,7 +92,9 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 // =============================================================================
 
 function SpawnForm({ onClose }: { onClose: () => void }) {
-  const [name, setName] = useState('');
+  const [name, setName] = useState(() =>
+    uniqueNamesGenerator({ dictionaries: [adjectives, colors, animals], separator: '-', length: 3 })
+  );
   const [description, setDescription] = useState('');
   const [adapter, setAdapter] = useState('');
   const [hive, setHive] = useState('');

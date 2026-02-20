@@ -3,28 +3,19 @@ import { initDatabase, closeDatabase } from '../db/index.js';
 import * as agentsDAL from '../db/dal/agents.js';
 import { DomainStrategy } from '../auth/strategies/domain.js';
 import { VouchStrategy } from '../auth/strategies/vouch.js';
-import * as fs from 'fs';
-import * as path from 'path';
+import { testRoot, testDbPath, cleanTestRoot } from './helpers/test-dirs.js';
 
-const TEST_DB_PATH = './test-data/auth-test.db';
+const TEST_ROOT = testRoot('auth');
+const TEST_DB_PATH = testDbPath(TEST_ROOT, 'auth-test.db');
 
 describe('Authentication & Verification', () => {
   beforeAll(() => {
-    const dir = path.dirname(TEST_DB_PATH);
-    if (fs.existsSync(TEST_DB_PATH)) {
-      fs.unlinkSync(TEST_DB_PATH);
-    }
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
     initDatabase(TEST_DB_PATH);
   });
 
   afterAll(() => {
     closeDatabase();
-    if (fs.existsSync(TEST_DB_PATH)) {
-      fs.unlinkSync(TEST_DB_PATH);
-    }
+    cleanTestRoot(TEST_ROOT);
   });
 
   describe('API Key Authentication', () => {
