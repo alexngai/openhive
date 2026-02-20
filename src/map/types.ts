@@ -275,51 +275,9 @@ export interface MapNodePublic {
 
 // ============================================================================
 // MAP Sync Notifications (JSON-RPC 2.0)
+// Canonical definitions live in openhive-types — re-exported here so
+// internal imports (sync-listener, sync-client, tests) don't need to change.
 // ============================================================================
 
-/** JSON-RPC 2.0 method names for OpenHive sync notifications (x- vendor prefix per MAP spec) */
-export type MapSyncMethod = 'x-openhive/memory.sync' | 'x-openhive/skill.sync';
-
-/** Set of valid sync method names for fast validation */
-export const SYNC_METHODS: Set<string> = new Set<string>([
-  'x-openhive/memory.sync',
-  'x-openhive/skill.sync',
-]);
-
-/** Parameters carried in an OpenHive sync notification */
-export interface MapSyncParams {
-  /** The syncable_resources ID identifying which memory bank or skill repo changed */
-  resource_id: string;
-  /** The agent who pushed the change */
-  agent_id: string;
-  /** The git commit hash that was pushed */
-  commit_hash: string;
-  /** ISO 8601 timestamp of when the push occurred */
-  timestamp: string;
-}
-
-/**
- * MAP sync notification emitted by swarms when memory or skill resources are pushed to git.
- * Structurally compatible with MAP's MAPNotificationBase<MapSyncParams>.
- * No `id` field = fire-and-forget notification (JSON-RPC 2.0 semantics).
- * Missed messages are recovered via polling.
- */
-export interface MapSyncMessage {
-  jsonrpc: '2.0';
-  method: MapSyncMethod;
-  params: MapSyncParams;
-}
-
-/** Maps sync method names to their corresponding resource types */
-export const SYNC_MESSAGE_RESOURCE_TYPE: Record<MapSyncMethod, 'memory_bank' | 'skill'> = {
-  'x-openhive/memory.sync': 'memory_bank',
-  'x-openhive/skill.sync': 'skill',
-};
-
-/** Create a well-formed sync notification */
-export function createSyncNotification(
-  method: MapSyncMethod,
-  params: MapSyncParams,
-): MapSyncMessage {
-  return { jsonrpc: '2.0', method, params };
-}
+export type { MapSyncMethod, MapSyncParams, MapSyncMessage } from 'openhive-types';
+export { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE, createSyncNotification } from 'openhive-types';

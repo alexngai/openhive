@@ -1,6 +1,10 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  resolve: {
+    // Resolve file: linked packages (e.g., @openhive/types) through symlinks
+    preserveSymlinks: false,
+  },
   test: {
     globals: true,
     environment: "node",
