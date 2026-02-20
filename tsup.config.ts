@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     cli: 'src/cli.ts',
+    map: 'src/map/client-entry.ts',
   },
   format: ['cjs', 'esm'],
   dts: true,

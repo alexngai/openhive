@@ -198,7 +198,7 @@ describe('Swarm Hosting API Routes', () => {
           'content-type': 'application/json',
         },
         payload: {
-          // missing required 'name'
+          name: '', // empty string fails min(1) validation
         },
       });
 

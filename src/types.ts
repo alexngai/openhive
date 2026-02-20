@@ -150,7 +150,10 @@ export type WSEventType =
   | 'swarm_left_hive'
   // Swarm hosting events
   | 'swarm_spawned'
-  | 'swarm_stopped';
+  | 'swarm_stopped'
+  // MAP sync events (relayed from swarms)
+  | 'memory:sync'
+  | 'skill:sync';
 
 export interface WSEvent {
   type: WSEventType;

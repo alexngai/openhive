@@ -22,6 +22,7 @@ import { SwarmManager } from './swarm/manager.js';
 import type { SwarmHostingConfig } from './swarm/types.js';
 import { getOrCreateLocalAgent } from './db/dal/agents.js';
 import { setLocalAgent } from './api/middleware/auth.js';
+import { initMapSyncListener, stopMapSyncListener } from './map/sync-listener.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -358,6 +359,11 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         console.log(`[openhive] Sync service started (instance: ${syncService.getInstanceId()})`);
       }
 
+      // Start MAP sync listener (subscribe to swarm MAP endpoints for sync messages)
+      if (config.mapHub.enabled) {
+        initMapSyncListener();
+      }
+
       // Start swarm hosting health monitor
       if (swarmManager) {
         swarmManager.startHealthMonitor();
@@ -377,6 +383,8 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
       if (swarmManager) {
         await swarmManager.shutdown();
       }
+      // Stop MAP sync listener
+      stopMapSyncListener();
       // Stop sync service
       if (syncService) {
         syncService.stop();
