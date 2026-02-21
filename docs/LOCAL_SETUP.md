@@ -262,6 +262,38 @@ module.exports = {
 };
 ```
 
+### Swarm Credentials
+
+When OpenHive spawns OpenSwarm instances, they need runtime credentials (LLM API keys, etc.). By default, locally spawned swarms inherit your shell environment, so if you have `ANTHROPIC_API_KEY` exported, swarms get it automatically.
+
+For more control, configure credential sets in `openhive.config.js`:
+
+```javascript
+swarmHosting: {
+  credentials: {
+    inherit_env: true,  // default — swarms get your full shell env
+    sets: {
+      'llm': {
+        source: 'env',  // declares which env vars to forward (not the values themselves)
+        vars: {
+          ANTHROPIC_API_KEY: 'ANTHROPIC_API_KEY',
+          OPENAI_API_KEY: 'OPENAI_API_KEY',
+        },
+      },
+    },
+    default_set: 'llm',
+    hive_overrides: {
+      // Use separate LLM keys for cognitive-ops swarms
+      'cogops': { credential_set: 'cogops-keys' },
+      // Add a repo-specific token for a particular hive
+      'my-repo': { extra_vars: { GITHUB_TOKEN: process.env.MY_REPO_TOKEN } },
+    },
+  },
+}
+```
+
+With `source: 'env'`, the config file contains only env var **names** — actual secrets stay in your shell environment or `.env` file, never in the config. See the [bootstrap token spec](openswarm-bootstrap-token-spec.md#credential-propagation) for full details.
+
 ---
 
 ## Database Options

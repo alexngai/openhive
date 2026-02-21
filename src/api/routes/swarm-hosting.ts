@@ -34,6 +34,7 @@ const SpawnSwarmSchema = z.object({
   hive: z.string().max(100).optional(),
   provider: z.enum(['local', 'docker', 'fly', 'ssh', 'k8s']).optional(),
   metadata: z.record(z.unknown()).optional(),
+  credential_overrides: z.record(z.string(), z.string()).optional(),
 });
 
 // ============================================================================
