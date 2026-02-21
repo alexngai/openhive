@@ -209,6 +209,14 @@ export const ConfigSchema = z.object({
     logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   }).default({}),
 
+  // Channel Bridge: external platform integration (Slack, Discord, Telegram, etc.)
+  bridge: z.object({
+    enabled: z.boolean().default(false),
+    maxBridges: z.number().default(10),
+    credentialEncryptionKey: z.string().optional(),
+    webhookBaseUrl: z.string().optional(),
+  }).default({ enabled: false }),
+
   // Mesh networking for MAP swarm hosts (pluggable provider)
   network: z.object({
     /** Provider: 'tailscale-cloud' | 'headscale-sidecar' | 'headscale-external' | 'none' */

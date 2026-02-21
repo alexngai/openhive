@@ -23,6 +23,7 @@ import type { SwarmHostingConfig } from './swarm/types.js';
 import { getOrCreateLocalAgent } from './db/dal/agents.js';
 import { setLocalAgent } from './api/middleware/auth.js';
 import { initMapSyncListener, stopMapSyncListener } from './map/sync-listener.js';
+import { BridgeManager } from './bridge/manager.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -111,8 +112,19 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   // Setup WebSocket handlers
   setupWebSocket(fastify);
 
+  // Initialize BridgeManager if bridge feature is enabled
+  let bridgeManager: BridgeManager | undefined;
+  if (config.bridge.enabled) {
+    bridgeManager = new BridgeManager({
+      maxBridges: config.bridge.maxBridges,
+      credentialEncryptionKey: config.bridge.credentialEncryptionKey,
+      webhookBaseUrl: config.bridge.webhookBaseUrl,
+    });
+    console.log('[openhive] Bridge feature enabled');
+  }
+
   // Register API routes
-  await registerRoutes(fastify, config);
+  await registerRoutes(fastify, config, bridgeManager);
 
   // Register sync protocol routes (peer-to-peer, separate from API)
   await fastify.register(syncProtocolRoutes, { prefix: '/sync/v1' });
@@ -370,6 +382,14 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         console.log('[openhive] Swarm hosting health monitor started');
       }
 
+      // Start active bridges
+      if (bridgeManager) {
+        await bridgeManager.startAll();
+        if (bridgeManager.runningCount > 0) {
+          console.log(`[openhive] Started ${bridgeManager.runningCount} active bridge(s)`);
+        }
+      }
+
       const address = await fastify.listen({
         port: config.port,
         host: config.host,
@@ -379,6 +399,10 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
     async stop() {
       stopHeartbeat();
+      // Stop all bridges
+      if (bridgeManager) {
+        await bridgeManager.stopAll();
+      }
       // Stop hosted swarms
       if (swarmManager) {
         await swarmManager.shutdown();
