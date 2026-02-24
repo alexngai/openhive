@@ -160,8 +160,81 @@ OpenHive                          OpenSwarm (local sidecar)
    │                                    │
 ```
 
+## Credential Propagation
+
+The bootstrap token carries **coordination data only** (OpenHive URL, pre-auth key, adapter config) — never secrets like API keys. Runtime credentials (LLM keys, git tokens, tool API keys) are injected separately through the hosting provider's native mechanism.
+
+### How It Works
+
+Credentials are configured in `openhive.config.js` under `swarmHosting.credentials` and resolved at spawn time:
+
+```javascript
+swarmHosting: {
+  credentials: {
+    // Inherit operator's process.env into swarms (default: true for local provider)
+    inherit_env: true,
+
+    // Named credential sets — declare which env vars to forward
+    sets: {
+      'llm-default': {
+        source: 'env',  // read from process.env at spawn time
+        vars: {
+          ANTHROPIC_API_KEY: 'ANTHROPIC_API_KEY',
+          OPENAI_API_KEY: 'OPENAI_API_KEY',
+        },
+      },
+      'cogops': {
+        source: 'env',
+        vars: { ANTHROPIC_API_KEY: 'COGOPS_ANTHROPIC_KEY' },
+      },
+    },
+
+    // Default set applied to all swarms
+    default_set: 'llm-default',
+
+    // Per-hive overrides for credential isolation
+    hive_overrides: {
+      'cogops': { credential_set: 'cogops' },
+      'my-repo': { extra_vars: { GITHUB_TOKEN: process.env.MY_REPO_TOKEN } },
+    },
+  },
+}
+```
+
+### Resolution Order
+
+Credentials are layered (later wins):
+
+1. `process.env` (if `inherit_env: true` — provider handles this)
+2. `default_set` credential set
+3. Hive-specific override (`credential_set` swap and/or `extra_vars`)
+4. Per-spawn `credential_overrides` (passed via API)
+
+### Injection by Provider
+
+| Provider | Mechanism |
+|----------|-----------|
+| Local | `env` object on `child_process.spawn()` |
+| Docker | `--env-file` or `-e` flags |
+| Fly/K8s | Platform-native secrets |
+
+### Credential Source Modes
+
+| Mode | Behavior |
+|------|----------|
+| `static` | Literal values in config (evaluated at config load time) |
+| `env` | Values are env var names — read from `process.env` at spawn time |
+| `env-fallback` | Use static value if non-empty, otherwise fall back to same-named env var |
+
+The `env` source is recommended — it keeps secrets out of config files entirely. The config declares *which* env vars to forward, actual values come from the operator's environment (shell, `.env` file, CI secrets, etc.).
+
+### DB Safety
+
+Resolved credential values are **never persisted** to the database. Only resolution metadata (which set, which hive) is stored, so credentials can be re-resolved fresh on auto-restart.
+
 ## Related
 
 - OpenHive swarm hosting: `src/swarm/` module
+- Credential resolver: `src/swarm/credentials.ts`
 - MAP hub: `src/map/` module
 - HeadscaleManager (pattern reference): `src/headscale/manager.ts`

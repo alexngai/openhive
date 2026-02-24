@@ -5,6 +5,7 @@ import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE } fr
 import { MAP_SCHEMA } from '../map/schema.js';
 import { SYNC_SCHEMA_V12, SYNC_SCHEMA_V13, SYNC_SCHEMA_V14, SYNC_SCHEMA_V15 } from '../sync/schema.js';
 import { HOSTED_SWARM_SCHEMA } from '../swarm/schema.js';
+import { BRIDGE_SCHEMA } from '../bridge/schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
 
@@ -91,6 +92,8 @@ export function initDatabase(config: string | DatabaseConfig): Database.Database
     db.exec(MAP_SCHEMA);
     // Create hosted swarms table
     db.exec(HOSTED_SWARM_SCHEMA);
+    // Create bridge tables
+    db.exec(BRIDGE_SCHEMA);
     // Seed default data
     db.exec(SEED_DATA);
   } else if (versionRow.version < SCHEMA_VERSION) {
@@ -148,6 +151,8 @@ const MIGRATION_REGISTRY: Record<number, string> = {
   15: SYNC_SCHEMA_V15,
   // Version 16: Hosted swarms — spawn and manage OpenSwarm instances
   16: HOSTED_SWARM_SCHEMA,
+  // Version 17: Channel Bridge — external platform integration
+  17: BRIDGE_SCHEMA,
 };
 
 /** Get the SQL for a specific migration version.

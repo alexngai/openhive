@@ -28,6 +28,12 @@ function parseRow(row: Record<string, unknown>): HostedSwarm {
   } as HostedSwarm;
 }
 
+/** Strip resolved_credentials from config before DB persistence (secrets never hit disk) */
+function serializeConfig(config: SwarmProvisionConfig): string {
+  const { resolved_credentials, ...safe } = config;
+  return JSON.stringify(safe);
+}
+
 // ============================================================================
 // Create
 // ============================================================================
@@ -52,7 +58,7 @@ export function createHostedSwarm(input: CreateHostedSwarmInput): HostedSwarm {
     input.provider,
     input.assigned_port ?? null,
     input.bootstrap_token_hash ?? null,
-    input.config ? JSON.stringify(input.config) : null,
+    input.config ? serializeConfig(input.config) : null,
     input.spawned_by,
   );
 

@@ -15,6 +15,7 @@ import { registerSwarm } from '../map/service.js';
 import * as mapDal from '../db/dal/map.js';
 import * as dal from './dal.js';
 import { LocalProvider } from './providers/local.js';
+import { resolveCredentialOverlay } from './credentials.js';
 import type {
   SpawnSwarmInput,
   SwarmProvisionConfig,
@@ -190,6 +191,14 @@ export class SwarmManager {
     const tokenString = Buffer.from(JSON.stringify(bootstrapToken)).toString('base64');
     const tokenHash = createHash('sha256').update(tokenString).digest('hex');
 
+    // Resolve credentials for this swarm
+    const inheritEnv = this.config.credentials?.inherit_env !== false;
+    const credentialOverlay = resolveCredentialOverlay(
+      this.config.credentials,
+      input.hive,
+      input.credential_overrides,
+    );
+
     const provisionConfig: SwarmProvisionConfig = {
       name,
       adapter,
@@ -197,6 +206,13 @@ export class SwarmManager {
       bootstrap_token: tokenString,
       assigned_port: port,
       data_dir: dataDir,
+      resolved_credentials: Object.keys(credentialOverlay).length > 0 ? credentialOverlay : undefined,
+      inherit_env: inheritEnv,
+      credential_resolution: {
+        credential_set: this.config.credentials?.default_set,
+        hive: input.hive,
+        inherit_env: inheritEnv,
+      },
     };
 
     // Create DB record
@@ -677,7 +693,19 @@ export class SwarmManager {
       throw new Error('No ports available for restart');
     }
 
-    const config = { ...hosted.config, assigned_port: port };
+    // Re-resolve credentials from live config (not from DB — secrets are never persisted)
+    const credRes = hosted.config.credential_resolution;
+    const freshOverlay = resolveCredentialOverlay(
+      this.config.credentials,
+      credRes?.hive,
+    );
+
+    const config: SwarmProvisionConfig = {
+      ...hosted.config,
+      assigned_port: port,
+      resolved_credentials: Object.keys(freshOverlay).length > 0 ? freshOverlay : undefined,
+      inherit_env: credRes?.inherit_env ?? (this.config.credentials?.inherit_env !== false),
+    };
     const result = await provider.provision(config);
 
     // Track new instance mapping

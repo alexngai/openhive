@@ -115,12 +115,16 @@ export class LocalProvider implements HostingProvider {
       args.push('--adapter', config.adapter);
     }
 
-    // Pass bootstrap token as env var
-    const env: Record<string, string> = {
-      ...process.env as Record<string, string>,
-      OPENSWARM_BOOTSTRAP_TOKEN: config.bootstrap_token,
-      OPENSWARM_DATA_DIR: dataDir,
-    };
+    // Build environment for child process
+    const env: Record<string, string> = {};
+    if (config.inherit_env !== false) {
+      Object.assign(env, process.env as Record<string, string>);
+    }
+    if (config.resolved_credentials) {
+      Object.assign(env, config.resolved_credentials);
+    }
+    env.OPENSWARM_BOOTSTRAP_TOKEN = config.bootstrap_token;
+    env.OPENSWARM_DATA_DIR = dataDir;
 
     // Spawn as a new process group leader (detached: true) so we can
     // kill the entire tree (openswarm + its subprocesses) via -pid.
