@@ -44,8 +44,16 @@ WORKDIR /app
 # libvips is needed for sharp image processing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libvips42 \
+    ca-certificates \
+    wget \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
+
+# Install Litestream for SQLite WAL replication to S3/GCS
+ARG TARGETARCH
+RUN wget -q "https://github.com/benbjohnson/litestream/releases/download/v0.3.13/litestream-v0.3.13-linux-${TARGETARCH:-amd64}.deb" -O /tmp/litestream.deb \
+    && dpkg -i /tmp/litestream.deb \
+    && rm /tmp/litestream.deb
 
 # Create non-root user for security
 RUN groupadd -r openhive && useradd -r -g openhive openhive
@@ -56,8 +64,12 @@ COPY --from=builder /app/bin ./bin
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 
+# Copy entrypoint script (handles Litestream restore + replicate)
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+
 # Create data directories with correct ownership
-RUN mkdir -p /app/data /app/uploads && \
+RUN chmod +x /app/docker-entrypoint.sh && \
+    mkdir -p /app/data /app/uploads && \
     chown -R openhive:openhive /app
 
 # Switch to non-root user
@@ -76,5 +88,5 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD node -e "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
-# Start the server
-CMD ["node", "dist/cli.js", "serve"]
+# Start via entrypoint (handles Litestream if configured, else starts normally)
+CMD ["/app/docker-entrypoint.sh"]

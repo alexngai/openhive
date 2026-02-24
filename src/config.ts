@@ -33,11 +33,12 @@ const SQLiteDatabaseSchema = z.object({
 
 const PostgresDatabaseSchema = z.object({
   type: z.literal('postgres'),
-  host: z.string(),
+  connectionString: z.string().optional(),
+  host: z.string().optional(),
   port: z.number().default(5432),
-  database: z.string(),
-  user: z.string(),
-  password: z.string(),
+  database: z.string().optional(),
+  user: z.string().optional(),
+  password: z.string().optional(),
   ssl: z.boolean().optional(),
   pool: z.object({
     min: z.number().optional(),

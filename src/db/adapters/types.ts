@@ -49,11 +49,12 @@ export interface SQLiteConfig {
 
 export interface PostgresConfig {
   type: 'postgres';
-  host: string;
+  connectionString?: string;
+  host?: string;
   port: number;
-  database: string;
-  user: string;
-  password: string;
+  database?: string;
+  user?: string;
+  password?: string;
   ssl?: boolean | object;
   pool?: {
     min?: number;

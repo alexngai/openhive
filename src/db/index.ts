@@ -55,9 +55,8 @@ export function initDatabase(config: string | DatabaseConfig): Database.Database
 
   if (dbConfig.type === 'postgres') {
     throw new Error(
-      'PostgreSQL support is currently experimental. ' +
-      'For production PostgreSQL deployments, the DAL needs to be made async. ' +
-      'Use SQLite for now, which is recommended for small to medium instances.'
+      'PostgreSQL is not supported via initDatabase(). ' +
+      'Use the async provider system in db/providers/ instead.'
     );
   }
 
