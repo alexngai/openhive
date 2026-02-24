@@ -447,7 +447,7 @@ export async function sessionsRoutes(
         const storage = getSessionStorage();
 
         // Extract session ID from resource - try git_remote_url or metadata
-        const sessionIdMatch = resource.git_remote_url.match(/ses_[a-zA-Z0-9]+/);
+        const sessionIdMatch = resource.git_remote_url.match(/ses_[a-zA-Z0-9_-]+/);
         if (!sessionIdMatch) {
           return reply.status(500).send({
             error: 'Internal Error',
@@ -521,7 +521,7 @@ export async function sessionsRoutes(
       }
 
       const storage = getSessionStorage();
-      const sessionIdMatch = resource.git_remote_url.match(/ses_[a-zA-Z0-9]+/);
+      const sessionIdMatch = resource.git_remote_url.match(/ses_[a-zA-Z0-9_-]+/);
       if (!sessionIdMatch) {
         return reply.status(500).send({
           error: 'Internal Error',

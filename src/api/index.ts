@@ -16,9 +16,11 @@ import { sessionsRoutes } from './routes/sessions.js';
 import { mapRoutes } from './routes/map.js';
 import { swarmHostingRoutes } from './routes/swarm-hosting.js';
 import { syncRoutes } from './routes/sync.js';
+import { bridgesRoutes } from './routes/bridges.js';
 import type { Config } from '../config.js';
+import type { BridgeManager } from '../bridge/manager.js';
 
-export async function registerRoutes(fastify: FastifyInstance, config: Config): Promise<void> {
+export async function registerRoutes(fastify: FastifyInstance, config: Config, bridgeManager?: BridgeManager): Promise<void> {
   // Health check
   fastify.get('/health', async () => {
     return { status: 'ok', timestamp: new Date().toISOString() };
@@ -44,6 +46,7 @@ export async function registerRoutes(fastify: FastifyInstance, config: Config): 
       await api.register(mapRoutes, { config });
       await api.register(swarmHostingRoutes, { config });
       await api.register(syncRoutes, { config });
+      await api.register(bridgesRoutes, { config, bridgeManager });
     },
     { prefix: '/api/v1' }
   );

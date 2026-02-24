@@ -210,3 +210,35 @@ export interface MapSwarm {
   hives: string[];
   created_at: string;
 }
+
+export interface MapStats {
+  swarms: { total: number; online: number; offline: number };
+  nodes: { total: number; active: number };
+  hive_memberships: number;
+  preauth_keys: { total: number; active: number };
+}
+
+export interface SyncableResource {
+  id: string;
+  resource_type: 'memory_bank' | 'task' | 'skill' | 'session';
+  name: string;
+  description: string | null;
+  visibility: 'private' | 'shared' | 'public';
+  last_commit_hash: string | null;
+  last_push_at: string | null;
+  last_push_by: string | null;
+  subscriber_count: number;
+  owner_agent_id: string;
+}
+
+export interface SyncStatusResponse {
+  enabled: boolean;
+  instance_id?: string;
+  groups: Array<{
+    sync_group_id: string;
+    hive_name: string;
+    seq: number;
+    peer_count: number;
+    connected_peers: number;
+  }>;
+}

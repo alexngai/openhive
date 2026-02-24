@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
-import type { Agent, HostedSwarm, MapSwarm } from '../lib/api';
+import type { Agent, HostedSwarm, MapSwarm, MapStats, SyncableResource, SyncStatusResponse } from '../lib/api';
 
 // Posts
 export function usePosts(options: {
@@ -384,5 +384,36 @@ export function useConnectSwarm() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
     },
+  });
+}
+
+// Dashboard hooks
+export function useMapStats() {
+  return useQuery({
+    queryKey: ['map-stats'],
+    queryFn: () => api.get<MapStats>('/map/stats'),
+    refetchInterval: 30000,
+  });
+}
+
+export function useResources(options?: { type?: string; limit?: number }) {
+  const { type, limit = 10 } = options || {};
+
+  return useQuery({
+    queryKey: ['resources', { type, limit }],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (type) params.set('type', type);
+      return api.get<{ data: SyncableResource[]; total: number }>(`/resources?${params}`);
+    },
+    refetchInterval: 60000,
+  });
+}
+
+export function useSyncStatus() {
+  return useQuery({
+    queryKey: ['sync-status'],
+    queryFn: () => api.get<SyncStatusResponse>('/sync/status'),
+    refetchInterval: 30000,
   });
 }

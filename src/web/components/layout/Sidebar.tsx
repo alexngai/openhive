@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Home, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor } from 'lucide-react';
+import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { useAuthStore } from '../../stores/auth';
@@ -31,10 +31,11 @@ export function Sidebar() {
   const features = instanceInfo?.features;
 
   const navItems = [
-    { to: '/', icon: Home, label: 'Home' },
-    { to: '/hives', icon: Compass, label: 'Explore' },
+    { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
+    { to: '/swarms', icon: Zap, label: 'Swarms' },
+    { to: '/explore', icon: Compass, label: 'Explore' },
+    { to: '/hives', icon: Hash, label: 'Channels' },
     { to: '/agents', icon: Users, label: 'Agents' },
-    ...(features?.swarm_hosting !== false ? [{ to: '/swarms', icon: Zap, label: 'Swarms' }] : []),
     ...(features?.swarmcraft ? [{ to: '/swarmcraft', icon: Monitor, label: 'SwarmCraft' }] : []),
     { to: '/about', icon: Info, label: 'About' },
   ];
@@ -75,10 +76,10 @@ export function Sidebar() {
 
       <div className="divider mx-3" />
 
-      {/* Hives - channel-list style */}
+      {/* Channels (hives) */}
       <div className="py-1">
         <div className="sidebar-section flex items-center justify-between">
-          <span>Hives</span>
+          <span>Channels</span>
         </div>
         {hives?.data?.map((hive: { name: string; member_count: number }) => (
           <Link

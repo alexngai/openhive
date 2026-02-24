@@ -69,6 +69,8 @@ export interface SpawnSwarmInput {
   provider?: HostingProviderType;
   /** Extra metadata */
   metadata?: Record<string, unknown>;
+  /** Per-spawn credential overrides (highest priority layer) */
+  credential_overrides?: Record<string, string>;
 }
 
 /** Internal config passed to the hosting provider */
@@ -82,6 +84,12 @@ export interface SwarmProvisionConfig {
   assigned_port: number;
   /** Data directory for this swarm instance */
   data_dir: string;
+  /** Resolved credentials to inject into the swarm process (NOT persisted to DB) */
+  resolved_credentials?: ResolvedCredentials;
+  /** Whether to inherit operator's process.env as a base */
+  inherit_env?: boolean;
+  /** Metadata for re-resolving credentials on auto-restart (persisted to DB) */
+  credential_resolution?: CredentialResolutionMeta;
 }
 
 // ============================================================================
@@ -200,4 +208,54 @@ export interface SwarmHostingConfig {
   auto_restart: boolean;
   /** Maximum number of restart attempts before giving up (0 = unlimited) */
   max_restart_attempts: number;
+  /** Credential configuration for swarm processes */
+  credentials?: SwarmCredentialConfig;
+}
+
+// ============================================================================
+// Credential Configuration
+// ============================================================================
+
+/** Resolved credentials ready for injection into a swarm process */
+export type ResolvedCredentials = Record<string, string>;
+
+/** Metadata stored in DB for re-resolving credentials on auto-restart */
+export interface CredentialResolutionMeta {
+  credential_set?: string;
+  hive?: string;
+  inherit_env: boolean;
+}
+
+/**
+ * A named set of credentials (env var name → value).
+ * Injected into swarm processes via the hosting provider's native mechanism.
+ */
+export interface CredentialSetConfig {
+  /**
+   * Where credential values come from:
+   * - 'static': literal values in `vars`
+   * - 'env': `vars` values are env var names to read from process.env at spawn time
+   * - 'env-fallback': use static values from `vars`, fall back to same-named env var if empty
+   */
+  source?: 'static' | 'env' | 'env-fallback';
+  /** Key = env var name in the swarm process, Value = literal or env var name to read */
+  vars: Record<string, string>;
+}
+
+export interface HiveCredentialOverride {
+  /** Credential set to use for swarms in this hive (replaces default_set) */
+  credential_set?: string;
+  /** Additional vars to overlay on top of the resolved credential set */
+  extra_vars?: Record<string, string>;
+}
+
+export interface SwarmCredentialConfig {
+  /** Inherit operator's process.env into spawned swarms (default: true) */
+  inherit_env?: boolean;
+  /** Named credential sets */
+  sets?: Record<string, CredentialSetConfig>;
+  /** Default credential set applied to all swarms unless overridden */
+  default_set?: string;
+  /** Per-hive credential overrides */
+  hive_overrides?: Record<string, HiveCredentialOverride>;
 }

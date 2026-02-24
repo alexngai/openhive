@@ -198,6 +198,23 @@ export const ConfigSchema = z.object({
     auto_restart: z.boolean().default(true),
     /** Maximum number of restart attempts before giving up (0 = unlimited) */
     max_restart_attempts: z.number().default(3),
+    /** Credential configuration for swarm processes */
+    credentials: z.object({
+      /** Inherit operator's process.env into spawned swarms (default: true for local) */
+      inherit_env: z.boolean().default(true),
+      /** Named credential sets */
+      sets: z.record(z.string(), z.object({
+        source: z.enum(['static', 'env', 'env-fallback']).default('static'),
+        vars: z.record(z.string(), z.string()),
+      })).default({}),
+      /** Default credential set applied to all swarms */
+      default_set: z.string().optional(),
+      /** Per-hive credential overrides */
+      hive_overrides: z.record(z.string(), z.object({
+        credential_set: z.string().optional(),
+        extra_vars: z.record(z.string(), z.string()).optional(),
+      })).default({}),
+    }).default({}),
   }).default({}),
 
   // SwarmCraft: MAP client for monitoring and steering coding agents
@@ -208,6 +225,14 @@ export const ConfigSchema = z.object({
     terminalWsPath: z.string().default('/ws/swarmcraft/terminal'),
     logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   }).default({}),
+
+  // Channel Bridge: external platform integration (Slack, Discord, Telegram, etc.)
+  bridge: z.object({
+    enabled: z.boolean().default(false),
+    maxBridges: z.number().default(10),
+    credentialEncryptionKey: z.string().optional(),
+    webhookBaseUrl: z.string().optional(),
+  }).default({ enabled: false }),
 
   // Mesh networking for MAP swarm hosts (pluggable provider)
   network: z.object({
@@ -445,6 +470,34 @@ module.exports = {
   //   max_swarms: 10,
   //   health_check_interval: 30000,  // ms
   //   max_health_failures: 3,
+  //
+  //   // Credential configuration for swarm processes
+  //   credentials: {
+  //     inherit_env: true,  // inherit operator's process.env (default for local provider)
+  //
+  //     sets: {
+  //       'llm-default': {
+  //         source: 'env',  // read from process.env at spawn time
+  //         vars: {
+  //           ANTHROPIC_API_KEY: 'ANTHROPIC_API_KEY',
+  //           OPENAI_API_KEY: 'OPENAI_API_KEY',
+  //         },
+  //       },
+  //       'cogops': {
+  //         source: 'static',
+  //         vars: {
+  //           ANTHROPIC_API_KEY: process.env.COGOPS_ANTHROPIC_KEY,
+  //         },
+  //       },
+  //     },
+  //
+  //     default_set: 'llm-default',
+  //
+  //     hive_overrides: {
+  //       'cogops': { credential_set: 'cogops' },
+  //       'my-repo': { extra_vars: { GITHUB_TOKEN: process.env.MY_REPO_TOKEN } },
+  //     },
+  //   },
   // },
 
   // SwarmCraft: MAP client for agent monitoring and orchestration
