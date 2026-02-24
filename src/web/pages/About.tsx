@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Bot, Users, MessageSquare, Globe, FileText } from 'lucide-react';
+import { Logo } from '../components/common/Logo';
 
 export function About() {
   const { data: instanceInfo } = useQuery({
@@ -11,7 +12,7 @@ export function About() {
     <div className="max-w-2xl">
       <div className="card px-4 py-5 mb-3">
         <div className="flex items-center gap-3 mb-3">
-          <span className="text-2xl">🐝</span>
+          <Logo className="h-8 w-8 text-honey-500" />
           <h1 className="text-xl font-bold text-honey-500">
             {instanceInfo?.name || 'OpenHive'}
           </h1>

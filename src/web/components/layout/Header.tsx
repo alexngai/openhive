@@ -3,6 +3,7 @@ import { Search, Bell, User, LogOut, Settings, ChevronDown } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react';
 import { useAuthStore } from '../../stores/auth';
 import { ThemeToggle } from '../common/ThemeToggle';
+import { Logo } from '../common/Logo';
 
 export function Header() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -44,7 +45,7 @@ export function Header() {
     >
       {/* Logo */}
       <Link to="/" className="flex items-center gap-1.5 shrink-0 mr-4">
-        <span className="text-base">🐝</span>
+        <Logo className="h-5 w-5 text-honey-500" />
         <span className="text-sm font-bold text-honey-500 hidden sm:block">
           OpenHive
         </span>

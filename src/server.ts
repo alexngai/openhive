@@ -447,7 +447,7 @@ function getWelcomeHtml(config: Config): string {
   <div class="flex-1 flex items-center justify-center relative z-10">
     <div class="text-center p-8 max-w-lg">
       <div class="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-amber-500/10 mb-6 ring-1 ring-amber-500/20">
-        <span class="text-5xl">🐝</span>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" class="w-12 h-12" style="color: #f59e0b"><path fill-rule="evenodd" fill="currentColor" d="M110,30 L178,69.3 L178,150.7 L110,190 L42,150.7 L42,69.3 Z M110,49 L159,77.3 L159,142.7 L110,171 L61,142.7 L61,77.3 Z"/><circle cx="110" cy="110" r="28" fill="currentColor"/></svg>
       </div>
       <h1 class="text-4xl font-extrabold text-amber-400 mb-3 tracking-tight">${config.instance.name}</h1>
       <p class="text-zinc-400 mb-10 text-lg leading-relaxed">${config.instance.description}</p>
@@ -569,7 +569,7 @@ function getInlineAdminHtml(config: Config): string {
               <div className="bg-[#111114] border border-[#1f1f27] p-10 rounded-2xl shadow-2xl max-w-md w-full animate-in">
                 <div className="text-center mb-8">
                   <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-amber-500/10 mb-4 ring-1 ring-amber-500/20">
-                    <span className="text-3xl">🐝</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" className="w-8 h-8" style={{ color: '#f59e0b' }}><path fillRule="evenodd" fill="currentColor" d="M110,30 L178,69.3 L178,150.7 L110,190 L42,150.7 L42,69.3 Z M110,49 L159,77.3 L159,142.7 L110,171 L61,142.7 L61,77.3 Z"/><circle cx="110" cy="110" r="28" fill="currentColor"/></svg>
                   </div>
                   <h1 className="font-display text-3xl mb-1">${config.instance.name}</h1>
                   <p className="text-[#6e6a7a] text-sm">Admin Dashboard</p>
@@ -614,7 +614,7 @@ function getInlineAdminHtml(config: Config): string {
           <header className="border-b border-[#1f1f27] bg-[#111114]/80" style={{ backdropFilter: 'blur(20px)' }}>
             <div className="max-w-7xl mx-auto px-6 flex items-center justify-between h-16">
               <div className="flex items-center gap-3">
-                <span className="text-xl">🐝</span>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" className="w-6 h-6" style={{ color: '#f59e0b' }}><path fillRule="evenodd" fill="currentColor" d="M110,30 L178,69.3 L178,150.7 L110,190 L42,150.7 L42,69.3 Z M110,49 L159,77.3 L159,142.7 L110,171 L61,142.7 L61,77.3 Z"/><circle cx="110" cy="110" r="28" fill="currentColor"/></svg>
                 <span className="font-extrabold text-amber-500 tracking-tight text-lg">${config.instance.name}</span>
                 <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 border border-amber-500/20">Admin</span>
               </div>
@@ -669,7 +669,7 @@ function getInlineAdminHtml(config: Config): string {
                   <div className="stat-card bg-[#111114] border border-[#1f1f27] p-6 rounded-2xl">
                     <div className="flex items-center justify-between mb-4">
                       <span className="text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Hives</span>
-                      <span className="text-2xl">🐝</span>
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" className="w-7 h-7" style={{ color: '#f59e0b' }}><path fillRule="evenodd" fill="currentColor" d="M110,30 L178,69.3 L178,150.7 L110,190 L42,150.7 L42,69.3 Z M110,49 L159,77.3 L159,142.7 L110,171 L61,142.7 L61,77.3 Z"/><circle cx="110" cy="110" r="28" fill="currentColor"/></svg>
                     </div>
                     <div className="text-4xl font-extrabold text-emerald-400 tracking-tight">{stats.hives?.total || 0}</div>
                   </div>
