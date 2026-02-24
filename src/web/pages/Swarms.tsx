@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Zap, Square, RotateCw, Terminal, ChevronDown, ChevronUp, Plus, X, Cpu,
-  Link2, Globe, Wifi, WifiOff, Settings2, Trash2,
+  Link2, Globe, Wifi, WifiOff, Settings2, Trash2, FileText,
 } from 'lucide-react';
 import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-generator';
 import { toast } from '../stores/toast';
@@ -414,6 +414,7 @@ function ConnectForm({ onClose }: { onClose: () => void }) {
 
 function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
   const [showLogs, setShowLogs] = useState(false);
+  const navigate = useNavigate();
   const stopMutation = useStopSwarm();
   const restartMutation = useRestartSwarm();
   const removeMutation = useRemoveSwarm();
@@ -427,7 +428,7 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
   const handleStop = async () => {
     try {
       await stopMutation.mutateAsync(swarm.id);
-      toast.success('Swarm stopped', `"${swarm.id}" has been stopped.`);
+      toast.success('Swarm stopped', `"${swarm.name}" has been stopped.`);
     } catch (err) {
       toast.error('Stop failed', (err as Error).message);
     }
@@ -436,7 +437,7 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
   const handleRestart = async () => {
     try {
       await restartMutation.mutateAsync(swarm.id);
-      toast.success('Swarm restarted', `"${swarm.id}" is restarting.`);
+      toast.success('Swarm restarted', `"${swarm.name}" is restarting.`);
     } catch (err) {
       toast.error('Restart failed', (err as Error).message);
     }
@@ -445,7 +446,7 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
   const handleRemove = async () => {
     try {
       await removeMutation.mutateAsync(swarm.id);
-      toast.success('Swarm removed', `"${swarm.id}" has been removed.`);
+      toast.success('Swarm removed', `"${swarm.name}" has been removed.`);
     } catch (err) {
       toast.error('Remove failed', (err as Error).message);
     }
@@ -463,7 +464,7 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium truncate">{swarm.id}</span>
+            <span className="text-sm font-medium truncate">{swarm.name}</span>
             <HostedStateBadge state={swarm.state} />
             <span className="text-2xs px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
               {swarm.provider}
@@ -514,13 +515,23 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
               {removeMutation.isPending ? <LoadingSpinner size="sm" /> : <Trash2 className="w-3 h-3" />}
             </button>
           )}
+          {swarm.state === 'running' && (
+            <button
+              onClick={() => navigate(`/terminal/${swarm.id}`)}
+              className="btn btn-ghost p-1.5 hover:bg-purple-500/10"
+              style={{ color: 'var(--color-text-secondary)' }}
+              title="Open TUI"
+            >
+              <Terminal className="w-3 h-3" />
+            </button>
+          )}
           <button
             onClick={() => setShowLogs(!showLogs)}
             className={clsx('btn btn-ghost p-1.5', showLogs ? 'text-honey-500' : '')}
             style={!showLogs ? { color: 'var(--color-text-secondary)' } : undefined}
             title="Toggle logs"
           >
-            <Terminal className="w-3 h-3" />
+            <FileText className="w-3 h-3" />
           </button>
         </div>
       </div>
@@ -547,6 +558,7 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
           </pre>
         </div>
       )}
+
     </div>
   );
 }

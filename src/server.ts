@@ -112,6 +112,27 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   // Setup WebSocket handlers
   setupWebSocket(fastify);
 
+  // Register terminal WebSocket (native PTY for TUI tunneling)
+  // Gated behind swarm hosting — terminal only makes sense when hosting swarms.
+  // Dynamic import so @lydell/node-pty being unavailable doesn't crash the server.
+  if (config.swarmHosting.enabled) {
+    try {
+      const { PtyManager, handleTerminalWebSocket } = await import('./terminal/index.js');
+      const ptyManager = new PtyManager();
+      (fastify as unknown as { ptyManager: InstanceType<typeof PtyManager> }).ptyManager = ptyManager;
+
+      fastify.get('/ws/terminal', { websocket: true }, (socket, request) => {
+        const ws = socket as unknown as import('ws').WebSocket;
+        const query = request.query as Record<string, string>;
+        handleTerminalWebSocket(ws, query, ptyManager);
+      });
+
+      console.log('[openhive] Terminal WebSocket registered at /ws/terminal');
+    } catch (err) {
+      console.warn(`[openhive] Terminal support unavailable: ${(err as Error).message}`);
+    }
+  }
+
   // Initialize BridgeManager if bridge feature is enabled
   let bridgeManager: BridgeManager | undefined;
   if (config.bridge.enabled) {
@@ -399,6 +420,11 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
     async stop() {
       stopHeartbeat();
+      // Destroy terminal sessions
+      const ptyMgr = (fastify as unknown as { ptyManager?: { destroyAll(): void } }).ptyManager;
+      if (ptyMgr) {
+        ptyMgr.destroyAll();
+      }
       // Stop all bridges
       if (bridgeManager) {
         await bridgeManager.stopAll();
