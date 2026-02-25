@@ -24,6 +24,7 @@ import { getOrCreateLocalAgent } from './db/dal/agents.js';
 import { setLocalAgent } from './api/middleware/auth.js';
 import { initMapSyncListener, stopMapSyncListener } from './map/sync-listener.js';
 import { BridgeManager } from './bridge/manager.js';
+import { SwarmHubConnector } from './swarmhub/connector.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -144,8 +145,18 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
     console.log('[openhive] Bridge feature enabled');
   }
 
+  // Initialize SwarmHub connector (auto-detects SWARMHUB_API_URL + SWARMHUB_HIVE_TOKEN)
+  let swarmhubConnector: SwarmHubConnector | null = null;
+  if (config.swarmhub.enabled || SwarmHubConnector.fromEnv()) {
+    swarmhubConnector = SwarmHubConnector.fromEnv();
+    if (swarmhubConnector) {
+      (fastify as unknown as { swarmhubConnector: SwarmHubConnector }).swarmhubConnector = swarmhubConnector;
+      console.log('[openhive] SwarmHub connector detected');
+    }
+  }
+
   // Register API routes
-  await registerRoutes(fastify, config, bridgeManager);
+  await registerRoutes(fastify, config, bridgeManager, swarmhubConnector);
 
   // Register sync protocol routes (peer-to-peer, separate from API)
   await fastify.register(syncProtocolRoutes, { prefix: '/sync/v1' });
@@ -319,6 +330,7 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
       features: {
         swarm_hosting: config.swarmHosting.enabled,
         swarmcraft: config.swarmcraft.enabled,
+        swarmhub: swarmhubConnector?.isConnected || false,
       },
       endpoints: {
         api: '/api/v1',
@@ -403,6 +415,17 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         console.log('[openhive] Swarm hosting health monitor started');
       }
 
+      // Connect to SwarmHub
+      if (swarmhubConnector) {
+        try {
+          const identity = await swarmhubConnector.connect();
+          console.log(`[openhive] SwarmHub connector: connected as "${identity.slug}" (${identity.tier})`);
+        } catch (err) {
+          console.warn(`[openhive] SwarmHub connector: failed to connect: ${(err as Error).message}`);
+          console.warn('[openhive] SwarmHub features will be unavailable. Retrying on health checks.');
+        }
+      }
+
       // Start active bridges
       if (bridgeManager) {
         await bridgeManager.startAll();
@@ -424,6 +447,10 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
       const ptyMgr = (fastify as unknown as { ptyManager?: { destroyAll(): void } }).ptyManager;
       if (ptyMgr) {
         ptyMgr.destroyAll();
+      }
+      // Disconnect SwarmHub connector
+      if (swarmhubConnector) {
+        await swarmhubConnector.disconnect();
       }
       // Stop all bridges
       if (bridgeManager) {
