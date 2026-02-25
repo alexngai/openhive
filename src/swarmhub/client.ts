@@ -14,6 +14,9 @@ import type {
   GitHubTokenResponse,
   GitHubMultiTokenResponse,
   CachedToken,
+  SlackCredentialsRequest,
+  SlackCredentialsResponse,
+  SlackInstallationsResponse,
 } from './types.js';
 
 // Refresh tokens 10 minutes before expiry
@@ -105,6 +108,27 @@ export class SwarmHubClient {
   /** Clear all cached tokens (e.g. on reconnect or error) */
   clearTokenCache(): void {
     this.tokenCache.clear();
+  }
+
+  // ==========================================================================
+  // Slack Credentials
+  // ==========================================================================
+
+  /** List Slack installations (workspaces) mapped to this hive */
+  async getSlackInstallations(): Promise<SlackInstallationsResponse> {
+    return this.request<SlackInstallationsResponse>('GET', '/v1/internal/hive/slack-installations');
+  }
+
+  /**
+   * Get Slack bot credentials for this hive.
+   * Optionally scoped to a specific workspace (team_id).
+   */
+  async getSlackCredentials(options?: SlackCredentialsRequest): Promise<SlackCredentialsResponse> {
+    return this.request<SlackCredentialsResponse>(
+      'POST',
+      '/v1/internal/hive/slack-credentials',
+      options,
+    );
   }
 
   // ==========================================================================

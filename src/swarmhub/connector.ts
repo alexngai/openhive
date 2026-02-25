@@ -21,6 +21,9 @@ import type {
   HiveIdentity,
   GitHubTokenRequest,
   GitHubTokenResponse,
+  SlackCredentialsRequest,
+  SlackCredentialsResponse,
+  SlackInstallationsResponse,
 } from './types.js';
 
 const DEFAULT_HEALTH_CHECK_INTERVAL = 60_000; // 1 minute
@@ -130,6 +133,39 @@ export class SwarmHubConnector extends EventEmitter {
   async getRepos() {
     this.ensureConnected();
     return this.client.getRepos();
+  }
+
+  // ==========================================================================
+  // Slack Credentials
+  // ==========================================================================
+
+  /**
+   * Get Slack installations (workspaces) mapped to this hive.
+   * Includes channel mappings for each workspace.
+   */
+  async getSlackInstallations(): Promise<SlackInstallationsResponse> {
+    this.ensureConnected();
+    try {
+      return await this.client.getSlackInstallations();
+    } catch (err) {
+      this.state.lastError = (err as Error).message;
+      throw err;
+    }
+  }
+
+  /**
+   * Get Slack bot credentials via SwarmHub.
+   * Allows this hive to send messages to Slack without storing
+   * Slack App secrets locally — SwarmHub hosts the Slack App.
+   */
+  async getSlackCredentials(options?: SlackCredentialsRequest): Promise<SlackCredentialsResponse> {
+    this.ensureConnected();
+    try {
+      return await this.client.getSlackCredentials(options);
+    } catch (err) {
+      this.state.lastError = (err as Error).message;
+      throw err;
+    }
   }
 
   // ==========================================================================

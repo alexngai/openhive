@@ -4,11 +4,16 @@
  * Internal API endpoints for interacting with the SwarmHub bridge.
  * These allow swarms and agents running on this hive to request
  * credentials and inspect the SwarmHub connection status.
+ *
+ * Also handles webhook ingestion for events forwarded from SwarmHub
+ * (Slack messages, GitHub events, etc.).
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { authMiddleware } from '../api/middleware/auth.js';
+import { handleForwardedSlackEvent } from './webhook-handler.js';
 import type { SwarmHubConnector } from './connector.js';
+import type { ForwardedSlackEvent } from './types.js';
 
 export async function swarmhubRoutes(
   fastify: FastifyInstance,
@@ -88,5 +93,124 @@ export async function swarmhubRoutes(
         message: (err as Error).message,
       });
     }
+  });
+
+  // ==========================================================================
+  // Slack Integration (SwarmHub as Slack App host)
+  // ==========================================================================
+
+  // GET /swarmhub/slack/installations — List Slack workspaces mapped to this hive
+  fastify.get('/swarmhub/slack/installations', async (_request: FastifyRequest, reply: FastifyReply) => {
+    if (!connector.isConnected) {
+      return reply.status(503).send({ error: 'SwarmHub connector not connected' });
+    }
+
+    try {
+      const installations = await connector.getSlackInstallations();
+      return reply.send(installations);
+    } catch (err) {
+      return reply.status(502).send({
+        error: 'Failed to fetch Slack installations from SwarmHub',
+        message: (err as Error).message,
+      });
+    }
+  });
+
+  // POST /swarmhub/slack/credentials — Request Slack bot credentials
+  fastify.post<{
+    Body: { team_id?: string };
+  }>('/swarmhub/slack/credentials', async (request: FastifyRequest<{
+    Body: { team_id?: string };
+  }>, reply: FastifyReply) => {
+    if (!connector.isConnected) {
+      return reply.status(503).send({ error: 'SwarmHub connector not connected' });
+    }
+
+    try {
+      const body = request.body as { team_id?: string } | undefined;
+      const creds = await connector.getSlackCredentials({
+        team_id: body?.team_id,
+      });
+      return reply.send(creds);
+    } catch (err) {
+      const statusCode = (err as Error & { statusCode?: number }).statusCode || 502;
+      return reply.status(statusCode).send({
+        error: 'Failed to get Slack credentials from SwarmHub',
+        message: (err as Error).message,
+      });
+    }
+  });
+}
+
+/**
+ * SwarmHub webhook ingestion routes.
+ *
+ * These are registered separately (no auth middleware) because SwarmHub
+ * authenticates via the X-SwarmHub-Signature header, not Bearer tokens.
+ */
+export async function swarmhubWebhookRoutes(
+  fastify: FastifyInstance,
+  options: { connector: SwarmHubConnector },
+): Promise<void> {
+  const { connector } = options;
+
+  // ==========================================================================
+  // POST /webhooks/swarmhub — Receive forwarded events from SwarmHub
+  // ==========================================================================
+
+  fastify.post('/webhooks/swarmhub', async (request: FastifyRequest, reply: FastifyReply) => {
+    // Verify the request is from SwarmHub using the forwarded header
+    const forwardedBy = request.headers['x-swarmhub-forwarded'];
+    if (!forwardedBy) {
+      return reply.status(401).send({ error: 'Missing X-SwarmHub-Forwarded header' });
+    }
+
+    if (!connector.isConnected) {
+      return reply.status(503).send({ error: 'SwarmHub connector not connected' });
+    }
+
+    const body = request.body as Record<string, unknown>;
+    const source = body.source as string | undefined;
+
+    if (source === 'slack') {
+      return handleSlackWebhook(body, reply);
+    }
+
+    // Future: handle other sources (github, linear, etc.)
+    return reply.status(200).send({
+      ok: true,
+      message: `Event source "${source || 'unknown'}" acknowledged`,
+    });
+  });
+}
+
+/**
+ * Handle a Slack event forwarded from SwarmHub.
+ */
+function handleSlackWebhook(body: Record<string, unknown>, reply: FastifyReply) {
+  const event: ForwardedSlackEvent = {
+    team_id: body.team_id as string,
+    event_type: body.event_type as string,
+    event: body.event as ForwardedSlackEvent['event'],
+    event_id: body.event_id as string | undefined,
+  };
+
+  if (!event.team_id || !event.event_type || !event.event) {
+    return reply.status(400).send({
+      error: 'Invalid forwarded Slack event',
+      message: 'Missing team_id, event_type, or event payload',
+    });
+  }
+
+  const result = handleForwardedSlackEvent(event);
+
+  return reply.status(200).send({
+    ok: true,
+    source: 'slack',
+    team_id: event.team_id,
+    event_type: event.event_type,
+    result: result
+      ? { action: result.action, post_id: result.postId, comment_id: result.commentId }
+      : { action: 'skipped' },
   });
 }

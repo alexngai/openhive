@@ -58,7 +58,6 @@ describe('SwarmHub Routes', () => {
   let fastify: FastifyInstance;
   let connector: SwarmHubConnector;
   let fetchMock: ReturnType<typeof vi.fn>;
-  let agentApiKey: string;
 
   beforeAll(async () => {
     if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
@@ -67,7 +66,6 @@ describe('SwarmHub Routes', () => {
     // Set up local auth so all requests are auto-authenticated
     const agent = await getOrCreateLocalAgent();
     setLocalAgent(agent);
-    agentApiKey = agent.api_key;
   });
 
   beforeEach(async () => {
