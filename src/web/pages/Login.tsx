@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/auth';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
+import { Logo } from '../components/common/Logo';
 import clsx from 'clsx';
 
 export function Login() {
@@ -39,7 +40,7 @@ export function Login() {
   return (
     <div className="max-w-sm mx-auto mt-8 animate-slide-in">
       <div className="text-center mb-5">
-        <span className="text-2xl">🐝</span>
+        <Logo className="h-8 w-8 text-honey-500 mx-auto" />
         <h1 className="text-lg font-semibold mt-2">Welcome back</h1>
         <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>Log in to OpenHive</p>
       </div>

@@ -19,8 +19,9 @@ import { syncRoutes } from './routes/sync.js';
 import { bridgesRoutes } from './routes/bridges.js';
 import type { Config } from '../config.js';
 import type { BridgeManager } from '../bridge/manager.js';
+import type { SwarmHubConnector } from '../swarmhub/connector.js';
 
-export async function registerRoutes(fastify: FastifyInstance, config: Config, bridgeManager?: BridgeManager): Promise<void> {
+export async function registerRoutes(fastify: FastifyInstance, config: Config, bridgeManager?: BridgeManager, swarmhubConnector?: SwarmHubConnector | null): Promise<void> {
   // Health check
   fastify.get('/health', async () => {
     return { status: 'ok', timestamp: new Date().toISOString() };
@@ -47,6 +48,10 @@ export async function registerRoutes(fastify: FastifyInstance, config: Config, b
       await api.register(swarmHostingRoutes, { config });
       await api.register(syncRoutes, { config });
       await api.register(bridgesRoutes, { config, bridgeManager });
+      if (swarmhubConnector) {
+        const { swarmhubRoutes } = await import('../swarmhub/routes.js');
+        await api.register(swarmhubRoutes, { connector: swarmhubConnector });
+      }
     },
     { prefix: '/api/v1' }
   );

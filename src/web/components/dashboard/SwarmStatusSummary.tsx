@@ -25,7 +25,7 @@ export function SwarmStatusSummary() {
 
   const unified: UnifiedSwarm[] = [
     ...(hostedSwarms || []).map((s): UnifiedSwarm => ({
-      source: 'hosted', id: s.id, name: s.id, state: s.state, created_at: s.created_at,
+      source: 'hosted', id: s.id, name: s.name, state: s.state, created_at: s.created_at,
     })),
     ...(mapSwarms || []).map((s): UnifiedSwarm => ({
       source: 'map', id: s.id, name: s.name, status: s.status, agent_count: s.agent_count, created_at: s.created_at,

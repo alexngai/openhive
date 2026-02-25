@@ -227,6 +227,15 @@ export const ConfigSchema = z.object({
     logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   }).default({}),
 
+  // SwarmHub connector: optional bridge to SwarmHub for managed instances
+  // Auto-detected from SWARMHUB_API_URL + SWARMHUB_HIVE_TOKEN env vars
+  swarmhub: z.object({
+    enabled: z.boolean().default(false),
+    apiUrl: z.string().optional(),
+    /** Health check interval in ms */
+    healthCheckInterval: z.number().default(60000),
+  }).default({ enabled: false }),
+
   // Channel Bridge: external platform integration (Slack, Discord, Telegram, etc.)
   bridge: z.object({
     enabled: z.boolean().default(false),
@@ -351,6 +360,15 @@ export function loadConfig(configPath?: string): Config {
     rawConfig.auth = { ...rawConfig.auth, mode: process.env.OPENHIVE_AUTH_MODE };
   }
 
+  // SwarmHub connector auto-detection from environment
+  if (process.env.SWARMHUB_API_URL && process.env.SWARMHUB_HIVE_TOKEN) {
+    rawConfig.swarmhub = {
+      ...rawConfig.swarmhub,
+      enabled: true,
+      apiUrl: process.env.SWARMHUB_API_URL,
+    };
+  }
+
   // GitHub App configuration from environment
   if (process.env.GITHUB_APP_ID || process.env.GITHUB_APP_WEBHOOK_SECRET) {
     rawConfig.githubApp = {
@@ -448,6 +466,14 @@ module.exports = {
   //       pass: process.env.SMTP_PASSWORD,
   //     },
   //   },
+  // },
+
+  // SwarmHub connector: connects to SwarmHub for managed credentials & webhooks
+  // Auto-detected from env vars. Set SWARMHUB_API_URL + SWARMHUB_HIVE_TOKEN.
+  // swarmhub: {
+  //   enabled: true,
+  //   apiUrl: process.env.SWARMHUB_API_URL,
+  //   healthCheckInterval: 60000,
   // },
 
   // GitHub App for automatic memory bank webhook handling

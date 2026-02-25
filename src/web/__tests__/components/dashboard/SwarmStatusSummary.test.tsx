@@ -36,8 +36,8 @@ describe('SwarmStatusSummary', () => {
   it('renders hosted swarms with state badges', () => {
     mockUseHostedSwarms.mockReturnValue({
       data: [
-        { id: 'swarm-alpha', state: 'running', provider: 'local', created_at: '2025-01-01T00:00:00Z' },
-        { id: 'swarm-beta', state: 'stopped', provider: 'docker', created_at: '2025-01-01T00:00:00Z' },
+        { id: 'swarm-alpha', name: 'swarm-alpha', state: 'running', provider: 'local', created_at: '2025-01-01T00:00:00Z' },
+        { id: 'swarm-beta', name: 'swarm-beta', state: 'stopped', provider: 'docker', created_at: '2025-01-01T00:00:00Z' },
       ],
     });
     mockUseMapSwarms.mockReturnValue({ data: [] });
