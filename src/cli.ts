@@ -83,14 +83,29 @@ function createPrompt(): {
 }
 
 // ============================================================================
+// Non-interactive init overrides
+// ============================================================================
+
+interface InitOverrides {
+  name?: string;
+  port?: number;
+  authMode?: string;
+  verification?: string;
+}
+
+// ============================================================================
 // Setup wizard
 // ============================================================================
 
-async function runSetupWizard(explicitDataDir?: string): Promise<void> {
-  console.log(BANNER);
-  console.log('  Welcome to OpenHive! Let\'s get you set up.\n');
+async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides = {}): Promise<void> {
+  const nonInteractive = !!(overrides.name && overrides.port != null && overrides.authMode && overrides.verification);
 
-  const prompt = createPrompt();
+  if (!nonInteractive) {
+    console.log(BANNER);
+    console.log('  Welcome to OpenHive! Let\'s get you set up.\n');
+  }
+
+  const prompt = nonInteractive ? null : createPrompt();
 
   try {
     // Step 1: Determine data directory
@@ -98,45 +113,56 @@ async function runSetupWizard(explicitDataDir?: string): Promise<void> {
 
     if (explicitDataDir) {
       dataDir = path.resolve(explicitDataDir);
-      console.log(`  Data directory: ${dataDir}\n`);
+      if (!nonInteractive) console.log(`  Data directory: ${dataDir}\n`);
+    } else if (nonInteractive) {
+      dataDir = path.resolve(path.join(require('os').homedir(), '.openhive'));
     } else {
       const isHome = process.cwd() === require('os').homedir();
       const defaultDir = isHome
         ? path.join(require('os').homedir(), '.openhive')
         : path.join(process.cwd(), '.openhive');
 
-      dataDir = await prompt.ask('  Data directory', defaultDir);
+      dataDir = await prompt!.ask('  Data directory', defaultDir);
       dataDir = path.resolve(dataDir);
       console.log('');
     }
 
     // Step 2: Instance details
-    const instanceName = await prompt.ask('  Instance name', 'OpenHive');
-    const port = await prompt.ask('  Port', '3000');
-    const portNum = parseInt(port, 10) || 3000;
+    const instanceName = overrides.name ?? await prompt!.ask('  Instance name', 'OpenHive');
+    const portNum = overrides.port ?? (parseInt(await prompt!.ask('  Port', '3000'), 10) || 3000);
 
     // Step 3: Registration mode
-    const verificationIndex = await prompt.choose(
-      '  Registration mode:',
-      [
-        'Open - anyone can register (default)',
-        'Invite - require an invite code',
-        'Manual - admin approves each registration',
-      ],
-      0,
-    );
-    const verificationStrategy = ['open', 'invite', 'manual'][verificationIndex];
+    let verificationStrategy: string;
+    if (overrides.verification) {
+      verificationStrategy = overrides.verification;
+    } else {
+      const verificationIndex = await prompt!.choose(
+        '  Registration mode:',
+        [
+          'Open - anyone can register (default)',
+          'Invite - require an invite code',
+          'Manual - admin approves each registration',
+        ],
+        0,
+      );
+      verificationStrategy = ['open', 'invite', 'manual'][verificationIndex];
+    }
 
     // Step 4: Auth mode
-    const authIndex = await prompt.choose(
-      '  Auth mode:',
-      [
-        'Local - no login required, single-user (default)',
-        'Token - email/password registration and API keys',
-      ],
-      0,
-    );
-    const authMode = ['local', 'token'][authIndex];
+    let authMode: string;
+    if (overrides.authMode) {
+      authMode = overrides.authMode;
+    } else {
+      const authIndex = await prompt!.choose(
+        '  Auth mode:',
+        [
+          'Local - no login required, single-user (default)',
+          'Token - email/password registration and API keys',
+        ],
+        0,
+      );
+      authMode = ['local', 'token'][authIndex];
+    }
 
     // Step 5: Generate admin key
     const adminKey = nanoid(32);
@@ -155,11 +181,13 @@ async function runSetupWizard(explicitDataDir?: string): Promise<void> {
     console.log(`    Admin key:         ${adminKey}`);
     console.log('');
 
-    const confirmed = await prompt.confirm('  Proceed with setup?', true);
-    if (!confirmed) {
-      console.log('\n  Setup cancelled.\n');
-      prompt.close();
-      return;
+    if (!nonInteractive) {
+      const confirmed = await prompt!.confirm('  Proceed with setup?', true);
+      if (!confirmed) {
+        console.log('\n  Setup cancelled.\n');
+        prompt!.close();
+        return;
+      }
     }
 
     // Step 7: Create everything
@@ -238,14 +266,18 @@ module.exports = {
 `);
 
     // Ask if they want to start now
-    const startNow = await prompt.confirm('  Start the server now?', true);
-    prompt.close();
+    if (nonInteractive) {
+      prompt?.close();
+    } else {
+      const startNow = await prompt!.confirm('  Start the server now?', true);
+      prompt!.close();
 
-    if (startNow) {
-      await startServer({ dataDir, port: portNum });
+      if (startNow) {
+        await startServer({ dataDir, port: portNum });
+      }
     }
   } catch (error) {
-    prompt.close();
+    prompt?.close();
     throw error;
   }
 }
@@ -432,6 +464,10 @@ program
   .description('Run the setup wizard or generate a configuration file')
   .option('--config-only', 'Only generate a config file (no wizard)')
   .option('-o, --output <path>', 'Config file output path')
+  .option('--name <name>', 'Instance name (non-interactive)')
+  .option('--port <port>', 'Port number (non-interactive)')
+  .option('--auth-mode <mode>', 'Auth mode: local or token (non-interactive)')
+  .option('--verification <strategy>', 'Registration: open, invite, or manual (non-interactive)')
   .action(async (options) => {
     const globalOpts = program.opts();
 
@@ -447,7 +483,12 @@ program
       return;
     }
 
-    await runSetupWizard(globalOpts.dataDir);
+    await runSetupWizard(globalOpts.dataDir, {
+      name: options.name,
+      port: options.port ? parseInt(options.port, 10) : undefined,
+      authMode: options.authMode,
+      verification: options.verification,
+    });
   });
 
 // Admin commands
