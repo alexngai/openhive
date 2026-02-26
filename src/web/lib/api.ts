@@ -230,6 +230,99 @@ export interface SyncableResource {
   last_push_by: string | null;
   subscriber_count: number;
   owner_agent_id: string;
+  git_remote_url?: string;
+  tags?: string[];
+  owner?: Agent;
+  my_permission?: 'read' | 'write' | 'admin' | null;
+  created_at?: string;
+  updated_at?: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface ResourceSyncEvent {
+  id: string;
+  resource_id: string;
+  commit_hash: string;
+  commit_message: string | null;
+  pusher: string | null;
+  source: string | null;
+  created_at: string;
+}
+
+export interface CheckUpdatesResult {
+  has_updates: boolean;
+  previous_commit?: string | null;
+  current_commit: string;
+  source?: string;
+  event_id?: string;
+}
+
+export interface BatchCheckResult {
+  checked: number;
+  updated: Array<{
+    resource_id: string;
+    resource_type: string;
+    resource_name: string;
+    previous_commit: string | null;
+    current_commit: string;
+    event_id: string;
+  }>;
+  unchanged: string[];
+  errors: Array<{
+    resource_id: string;
+    resource_name: string;
+    error: string;
+  }>;
+}
+
+// Resource content types
+
+export interface MemoryFile {
+  path: string;
+  size: number;
+  modified: string;
+}
+
+export interface MemoryFileContent {
+  path: string;
+  frontmatter: Record<string, unknown> | null;
+  body: string;
+  size: number;
+}
+
+export interface MemorySearchResult {
+  path: string;
+  line: number;
+  snippet: string;
+  score: number;
+}
+
+export interface SkillSummary {
+  id: string;
+  name: string | null;
+  version: string | null;
+  status: string | null;
+  description: string | null;
+  tags: string[];
+  author: string | null;
+  path: string;
+}
+
+export interface SkillDetail {
+  id: string;
+  name: string | null;
+  version: string | null;
+  status: string | null;
+  description: string | null;
+  tags: string[];
+  author: string | null;
+  problem: string | null;
+  triggerConditions: string | null;
+  solution: string | null;
+  verification: string | null;
+  examples: string | null;
+  notes: string | null;
+  raw: string;
 }
 
 export interface SyncStatusResponse {

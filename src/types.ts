@@ -272,6 +272,7 @@ export interface MemoryBankSubscriptionWithAgent extends MemoryBankSubscription 
 export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session';
 export type ResourceVisibility = 'private' | 'shared' | 'public';
 export type ResourcePermission = 'read' | 'write' | 'admin';
+export type ResourceScope = 'global' | 'project' | 'agent' | 'manual';
 
 export interface SyncableResource {
   id: string;
@@ -285,6 +286,7 @@ export interface SyncableResource {
   last_push_by: string | null;
   last_push_at: string | null;
   owner_agent_id: string;
+  scope: ResourceScope;
   metadata: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;

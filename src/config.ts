@@ -236,6 +236,18 @@ export const ConfigSchema = z.object({
     healthCheckInterval: z.number().default(60000),
   }).default({ enabled: false }),
 
+  // Resource discovery: scan filesystem for minimem memory banks and skill-tree skills
+  resourceDiscovery: z.object({
+    /** Enable scanning for global (~/) resources */
+    globalEnabled: z.boolean().default(false),
+    /** Override path for global minimem memory (default: ~/.minimem) */
+    globalMemoryPath: z.string().optional(),
+    /** Override paths for global skill-tree skills (default: ~/.skill-tree, ~/.claude/skills) */
+    globalSkillPaths: z.array(z.string()).optional(),
+    /** Project root for project-scope discovery (default: cwd) */
+    projectRoot: z.string().optional(),
+  }).default({}),
+
   // Channel Bridge: external platform integration (Slack, Discord, Telegram, etc.)
   bridge: z.object({
     enabled: z.boolean().default(false),

@@ -11,6 +11,7 @@ import { federationRoutes } from './routes/federation.js';
 import { adminRoutes } from './routes/admin.js';
 import { memoryBanksRoutes } from './routes/memory-banks.js';
 import { resourcesRoutes } from './routes/resources.js';
+import { resourceContentRoutes } from './routes/resource-content.js';
 import { webhooksRoutes } from './routes/webhooks.js';
 import { sessionsRoutes } from './routes/sessions.js';
 import { mapRoutes } from './routes/map.js';
@@ -42,6 +43,7 @@ export async function registerRoutes(fastify: FastifyInstance, config: Config, b
       await api.register(adminRoutes, { config });
       await api.register(memoryBanksRoutes, { config });
       await api.register(resourcesRoutes, { config });
+      await api.register(resourceContentRoutes, { config });
       await api.register(webhooksRoutes, { config });
       await api.register(sessionsRoutes, { config });
       await api.register(mapRoutes, { config });

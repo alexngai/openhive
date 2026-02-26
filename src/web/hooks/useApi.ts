@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
-import type { Agent, HostedSwarm, MapSwarm, MapStats, SyncableResource, SyncStatusResponse } from '../lib/api';
+import type { Agent, HostedSwarm, MapSwarm, MapStats, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail } from '../lib/api';
 
 // Posts
 export function usePosts(options: {
@@ -415,5 +415,113 @@ export function useSyncStatus() {
     queryKey: ['sync-status'],
     queryFn: () => api.get<SyncStatusResponse>('/sync/status'),
     refetchInterval: 30000,
+  });
+}
+
+// Resources (extended)
+export function useResourcesByType(type: 'memory_bank' | 'skill', options?: { limit?: number }) {
+  const { limit = 50 } = options || {};
+
+  return useQuery({
+    queryKey: ['resources', { type, limit }],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: String(limit), type });
+      return api.get<{ data: SyncableResource[]; total: number }>(`/resources?${params}`);
+    },
+    refetchInterval: 30000,
+  });
+}
+
+export function useResource(id: string) {
+  return useQuery({
+    queryKey: ['resource', id],
+    queryFn: () => api.get<SyncableResource>(`/resources/${id}`),
+    enabled: !!id,
+  });
+}
+
+export function useResourceEvents(id: string, options?: { limit?: number }) {
+  const { limit = 20 } = options || {};
+
+  return useQuery({
+    queryKey: ['resource-events', id, { limit }],
+    queryFn: () => api.get<{ data: ResourceSyncEvent[]; total: number }>(
+      `/resources/${id}/events?limit=${limit}`
+    ),
+    enabled: !!id,
+    refetchInterval: 30000,
+  });
+}
+
+export function useCheckUpdates() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ resourceId, branch }: { resourceId: string; branch?: string }) =>
+      api.post<CheckUpdatesResult>(`/resources/${resourceId}/check-updates`, { branch }),
+    onSuccess: (_, { resourceId }) => {
+      queryClient.invalidateQueries({ queryKey: ['resource', resourceId] });
+      queryClient.invalidateQueries({ queryKey: ['resource-events', resourceId] });
+      queryClient.invalidateQueries({ queryKey: ['resources'] });
+    },
+  });
+}
+
+export function useBatchCheckUpdates() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: { resource_type?: 'memory_bank' | 'skill'; branch?: string }) =>
+      api.post<BatchCheckResult>('/resources/check-updates', data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['resources'] });
+      queryClient.invalidateQueries({ queryKey: ['resource-events'] });
+    },
+  });
+}
+
+// Resource Content - Memory Banks
+export function useMemoryFiles(resourceId: string) {
+  return useQuery({
+    queryKey: ['memory-files', resourceId],
+    queryFn: () => api.get<{ files: MemoryFile[] }>(`/resources/${resourceId}/content/files`),
+    select: (data) => data.files,
+    enabled: !!resourceId,
+  });
+}
+
+export function useMemoryFile(resourceId: string, path: string | null) {
+  return useQuery({
+    queryKey: ['memory-file', resourceId, path],
+    queryFn: () => api.get<MemoryFileContent>(`/resources/${resourceId}/content/file?path=${encodeURIComponent(path!)}`),
+    enabled: !!resourceId && !!path,
+  });
+}
+
+export function useMemorySearch(resourceId: string, query: string) {
+  return useQuery({
+    queryKey: ['memory-search', resourceId, query],
+    queryFn: () => api.get<{ results: MemorySearchResult[]; total: number }>(
+      `/resources/${resourceId}/content/search?q=${encodeURIComponent(query)}&limit=30`
+    ),
+    enabled: !!resourceId && query.length >= 2,
+  });
+}
+
+// Resource Content - Skills
+export function useSkillsList(resourceId: string) {
+  return useQuery({
+    queryKey: ['skills-list', resourceId],
+    queryFn: () => api.get<{ skills: SkillSummary[] }>(`/resources/${resourceId}/content/skills`),
+    select: (data) => data.skills,
+    enabled: !!resourceId,
+  });
+}
+
+export function useSkillDetail(resourceId: string, skillId: string | null) {
+  return useQuery({
+    queryKey: ['skill-detail', resourceId, skillId],
+    queryFn: () => api.get<SkillDetail>(`/resources/${resourceId}/content/skills/${skillId}`),
+    enabled: !!resourceId && !!skillId,
   });
 }
