@@ -182,6 +182,7 @@ export interface PaginatedResponse<T> {
 
 export interface HostedSwarm {
   id: string;
+  name: string;
   swarm_id: string | null;
   provider: string;
   state: 'provisioning' | 'starting' | 'running' | 'unhealthy' | 'stopping' | 'stopped' | 'failed';

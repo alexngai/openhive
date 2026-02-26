@@ -101,6 +101,7 @@ export async function swarmHostingRoutes(
 
       return reply.status(201).send({
         id: hosted.id,
+        name: hosted.config?.name ?? hosted.id,
         swarm_id: hosted.swarm_id,
         provider: hosted.provider,
         state: hosted.state,
@@ -138,6 +139,7 @@ export async function swarmHostingRoutes(
     // Strip sensitive fields from config
     const data = result.data.map((h) => ({
       id: h.id,
+      name: h.config?.name ?? h.id,
       swarm_id: h.swarm_id,
       provider: h.provider,
       state: h.state,
@@ -164,6 +166,7 @@ export async function swarmHostingRoutes(
 
     return reply.send({
       id: hosted.id,
+      name: hosted.config?.name ?? hosted.id,
       swarm_id: hosted.swarm_id,
       provider: hosted.provider,
       state: hosted.state,
@@ -252,6 +255,46 @@ export async function swarmHostingRoutes(
       return reply.type('text/plain').send(logs);
     } catch (error) {
       return handleSwarmError(error, reply);
+    }
+  });
+
+  // GET /map/hosted/:id/terminal-info — Get terminal command for connecting TUI to a swarm
+  fastify.get('/map/hosted/:id/terminal-info', {
+    preHandler: [authMiddleware],
+  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    const hosted = dal.findHostedSwarmById(request.params.id);
+    if (!hosted) {
+      return reply.status(404).send({ error: 'NOT_FOUND', message: 'Hosted swarm not found' });
+    }
+    if (hosted.state !== 'running') {
+      return reply.status(409).send({ error: 'NOT_RUNNING', message: 'Swarm is not running' });
+    }
+
+    const baseEndpoint = hosted.endpoint || `ws://127.0.0.1:${hosted.assigned_port}`;
+    // The TUI connects to /map for the MAP protocol. It internally derives /acp from /map.
+    // The stored endpoint often omits the path, so ensure it's present.
+    const mapEndpoint = baseEndpoint.endsWith('/map') ? baseEndpoint : `${baseEndpoint}/map`;
+
+    try {
+      const { resolveOpenSwarmTuiBinary } = await import('../../terminal/resolve-tui.js');
+      const binaryPath = resolveOpenSwarmTuiBinary();
+
+      console.log('[terminal-info] swarm=%s endpoint=%s binary=%s', request.params.id, mapEndpoint, binaryPath ?? 'NOT_FOUND');
+
+      return reply.send({
+        available: !!binaryPath,
+        command: binaryPath,
+        args: binaryPath ? ['--url', mapEndpoint, '--auto-connect'] : [],
+        endpoint: mapEndpoint,
+      });
+    } catch (err) {
+      console.warn('[terminal-info] resolve failed for swarm=%s:', request.params.id, err);
+      return reply.send({
+        available: false,
+        command: null,
+        args: [],
+        endpoint: mapEndpoint,
+      });
     }
   });
 }

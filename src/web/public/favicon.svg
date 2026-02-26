@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" width="220" height="220">
+  <!-- Outer hexagon ring as filled shape (two nested paths with evenodd) -->
+  <path
+    fill-rule="evenodd"
+    fill="#F59E0B"
+    d="M110,30 L178,69.3 L178,150.7 L110,190 L42,150.7 L42,69.3 Z
+       M110,49 L159,77.3 L159,142.7 L110,171 L61,142.7 L61,77.3 Z"
+  />
+  <!-- Inner filled circle -->
+  <circle cx="110" cy="110" r="28" fill="#F59E0B"/>
+</svg>
