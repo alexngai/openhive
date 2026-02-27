@@ -46,15 +46,11 @@ export * as resources from './db/dal/syncable-resources.js';
 
 // Auth exports
 export {
-  getVerificationStrategy,
-  registerStrategy,
-  listStrategies,
-  OpenStrategy,
-  InviteStrategy,
-  ManualStrategy,
-  type VerificationStrategy,
-  type VerificationChallenge,
-  type VerificationResult,
+  initJwks,
+  validateSwarmHubToken,
+  isJwksInitialized,
+  type SwarmHubJwtPayload,
+  type JwksConfig,
 } from './auth/index.js';
 
 // Realtime exports

@@ -160,6 +160,8 @@ const MIGRATION_REGISTRY: Record<number, string> = {
   18: MIGRATION_V18_RESOURCE_SCOPE,
   // Version 19: Event routing — post rules, subscriptions, delivery log
   19: EVENT_ROUTING_SCHEMA,
+  // Version 20: SwarmHub OAuth — add swarmhub_user_id for linked accounts
+  20: `ALTER TABLE agents ADD COLUMN swarmhub_user_id TEXT UNIQUE;`,
 };
 
 /** Get the SQL for a specific migration version.

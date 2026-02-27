@@ -338,3 +338,80 @@ export function clearPasswordResetToken(id: string): void {
     `UPDATE agents SET password_reset_token = NULL, password_reset_expires = NULL, updated_at = datetime('now') WHERE id = ?`
   ).run(id);
 }
+
+// SwarmHub OAuth account functions
+
+export interface SwarmHubUserInfo {
+  swarmhubUserId: string;
+  name?: string;
+  email?: string;
+  avatarUrl?: string;
+}
+
+/**
+ * Find an existing agent linked to a SwarmHub user, or create one.
+ * Used during SwarmHub OAuth authentication.
+ */
+export function findOrCreateSwarmHubAgent(info: SwarmHubUserInfo): Agent {
+  const db = getDatabase();
+
+  const existing = db
+    .prepare('SELECT * FROM agents WHERE swarmhub_user_id = ?')
+    .get(info.swarmhubUserId) as Record<string, unknown> | undefined;
+
+  if (existing) {
+    const agent = rowToAgent(existing);
+    // Update name/avatar if changed on SwarmHub
+    const updates: string[] = [];
+    const values: unknown[] = [];
+
+    if (info.name && info.name !== agent.name && !isNameTaken(info.name)) {
+      updates.push('name = ?');
+      values.push(info.name);
+    }
+    if (info.avatarUrl && info.avatarUrl !== agent.avatar_url) {
+      updates.push('avatar_url = ?');
+      values.push(info.avatarUrl);
+    }
+
+    if (updates.length > 0) {
+      updates.push("updated_at = datetime('now')");
+      values.push(agent.id);
+      db.prepare(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    }
+
+    return findAgentById(agent.id)!;
+  }
+
+  // Create new agent linked to SwarmHub user
+  const id = nanoid();
+  let finalName = info.name || `swarmhub-${info.swarmhubUserId.slice(0, 8)}`;
+  let attempt = 0;
+  while (isNameTaken(finalName)) {
+    attempt++;
+    finalName = `${info.name || 'swarmhub'}-${nanoid(4)}`;
+  }
+
+  db.prepare(`
+    INSERT INTO agents (
+      id, name, account_type, swarmhub_user_id,
+      email, avatar_url, is_verified, verification_status
+    ) VALUES (?, ?, 'swarmhub', ?, ?, ?, 1, 'verified')
+  `).run(
+    id,
+    finalName,
+    info.swarmhubUserId,
+    info.email || null,
+    info.avatarUrl || null,
+  );
+
+  return findAgentById(id)!;
+}
+
+export function findAgentBySwarmHubUserId(swarmhubUserId: string): Agent | null {
+  const db = getDatabase();
+  const row = db
+    .prepare('SELECT * FROM agents WHERE swarmhub_user_id = ?')
+    .get(swarmhubUserId) as Record<string, unknown> | undefined;
+  return row ? rowToAgent(row) : null;
+}

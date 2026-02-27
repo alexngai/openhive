@@ -52,21 +52,6 @@ const DatabaseSchema = z.union([
   PostgresDatabaseSchema,
 ]).default('./data/openhive.db');
 
-// Email configuration schema
-const EmailSchema = z.object({
-  enabled: z.boolean().default(false),
-  from: z.string().default('noreply@openhive.local'),
-  smtp: z.object({
-    host: z.string(),
-    port: z.number().default(587),
-    secure: z.boolean().default(false),
-    auth: z.object({
-      user: z.string(),
-      pass: z.string(),
-    }).optional(),
-  }).optional(),
-}).default({ enabled: false, from: 'noreply@openhive.local' });
-
 // Configuration schema
 export const ConfigSchema = z.object({
   port: z.number().default(3000),
@@ -83,11 +68,6 @@ export const ConfigSchema = z.object({
   admin: z.object({
     key: z.string().optional(),
     createOnStartup: z.boolean().default(true),
-  }).default({}),
-
-  verification: z.object({
-    strategy: z.enum(['open', 'invite', 'manual', 'social']).default('open'),
-    options: z.record(z.unknown()).default({}),
   }).default({}),
 
   rateLimit: z.object({
@@ -108,15 +88,8 @@ export const ConfigSchema = z.object({
 
   storage: StorageSchema,
 
-  email: EmailSchema,
-
   auth: z.object({
-    mode: z.enum(['local', 'token']).default('token'),
-  }).default({}),
-
-  jwt: z.object({
-    secret: z.string().optional(),
-    expiresIn: z.string().default('7d'),
+    mode: z.enum(['local', 'swarmhub']).default('local'),
   }).default({}),
 
   // MAP Hub configuration (headscale-style coordination for MAP swarms)
@@ -234,6 +207,13 @@ export const ConfigSchema = z.object({
     apiUrl: z.string().optional(),
     /** Health check interval in ms */
     healthCheckInterval: z.number().default(60000),
+    /** OAuth configuration for SwarmHub auth mode */
+    oauth: z.object({
+      clientId: z.string().optional(),
+      clientSecret: z.string().optional(),
+      /** Override JWKS URL (defaults to {apiUrl}/.well-known/jwks.json) */
+      jwksUrl: z.string().optional(),
+    }).default({}),
   }).default({ enabled: false }),
 
   // Resource discovery: scan filesystem for minimem memory banks and skill-tree skills
@@ -362,12 +342,6 @@ export function loadConfig(configPath?: string): Config {
   if (process.env.OPENHIVE_INSTANCE_URL) {
     rawConfig.instance = { ...rawConfig.instance, url: process.env.OPENHIVE_INSTANCE_URL };
   }
-  if (process.env.OPENHIVE_VERIFICATION) {
-    rawConfig.verification = { ...rawConfig.verification, strategy: process.env.OPENHIVE_VERIFICATION };
-  }
-  if (process.env.OPENHIVE_JWT_SECRET) {
-    rawConfig.jwt = { ...rawConfig.jwt, secret: process.env.OPENHIVE_JWT_SECRET };
-  }
   if (process.env.OPENHIVE_AUTH_MODE) {
     rawConfig.auth = { ...rawConfig.auth, mode: process.env.OPENHIVE_AUTH_MODE };
   }
@@ -381,6 +355,24 @@ export function loadConfig(configPath?: string): Config {
     };
   }
 
+  // SwarmHub OAuth configuration from environment
+  if (process.env.SWARMHUB_OAUTH_CLIENT_ID) {
+    rawConfig.swarmhub = {
+      ...rawConfig.swarmhub,
+      oauth: {
+        ...rawConfig.swarmhub?.oauth,
+        clientId: process.env.SWARMHUB_OAUTH_CLIENT_ID,
+        clientSecret: process.env.SWARMHUB_OAUTH_CLIENT_SECRET,
+      },
+    };
+
+    // Auto-detect auth mode: if OAuth credentials are present and auth mode
+    // wasn't explicitly set, switch to 'swarmhub' auth
+    if (!process.env.OPENHIVE_AUTH_MODE) {
+      rawConfig.auth = { ...rawConfig.auth, mode: 'swarmhub' };
+    }
+  }
+
   // GitHub App configuration from environment
   if (process.env.GITHUB_APP_ID || process.env.GITHUB_APP_WEBHOOK_SECRET) {
     rawConfig.githubApp = {
@@ -392,12 +384,6 @@ export function loadConfig(configPath?: string): Config {
       clientId: process.env.GITHUB_APP_CLIENT_ID,
       clientSecret: process.env.GITHUB_APP_CLIENT_SECRET,
     };
-  }
-
-  // Generate a default JWT secret if not provided (for development)
-  if (!rawConfig.jwt?.secret) {
-    // Generate a random secret - in production, this should be set explicitly
-    rawConfig.jwt = { ...rawConfig.jwt, secret: require('crypto').randomBytes(32).toString('hex') };
   }
 
   // Let zod apply defaults and validate
@@ -424,11 +410,6 @@ module.exports = {
   admin: {
     // key: 'your-secret-admin-key', // Set via OPENHIVE_ADMIN_KEY env var
     createOnStartup: true,
-  },
-
-  verification: {
-    strategy: 'open', // 'open', 'invite', 'manual', 'social'
-    options: {},
   },
 
   rateLimit: {
@@ -465,27 +446,17 @@ module.exports = {
   //   // publicUrl: 'https://cdn.example.com', // Optional: custom CDN URL
   // },
 
-  // Email configuration for password resets and notifications
-  // email: {
-  //   enabled: true,
-  //   from: 'noreply@example.com',
-  //   smtp: {
-  //     host: 'smtp.example.com',
-  //     port: 587,
-  //     secure: false,
-  //     auth: {
-  //       user: 'your-smtp-user',
-  //       pass: process.env.SMTP_PASSWORD,
-  //     },
-  //   },
-  // },
-
   // SwarmHub connector: connects to SwarmHub for managed credentials & webhooks
   // Auto-detected from env vars. Set SWARMHUB_API_URL + SWARMHUB_HIVE_TOKEN.
+  // In 'swarmhub' auth mode, also set SWARMHUB_OAUTH_CLIENT_ID + SWARMHUB_OAUTH_CLIENT_SECRET.
   // swarmhub: {
   //   enabled: true,
   //   apiUrl: process.env.SWARMHUB_API_URL,
   //   healthCheckInterval: 60000,
+  //   oauth: {
+  //     clientId: process.env.SWARMHUB_OAUTH_CLIENT_ID,
+  //     clientSecret: process.env.SWARMHUB_OAUTH_CLIENT_SECRET,
+  //   },
   // },
 
   // GitHub App for automatic memory bank webhook handling

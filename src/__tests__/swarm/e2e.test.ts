@@ -24,7 +24,7 @@ import { swarmHostingRoutes } from '../../api/routes/swarm-hosting.js';
 import { SwarmManager } from '../../swarm/manager.js';
 import * as dal from '../../swarm/dal.js';
 import { PtyManager, handleTerminalWebSocket } from '../../terminal/index.js';
-import type { Config } from '../../config.js';
+import { ConfigSchema, type Config } from '../../config.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
@@ -48,35 +48,27 @@ const SERVER_PORT = 19599;
 // ============================================================================
 
 function createTestConfig(): Config {
-  return {
+  return ConfigSchema.parse({
     port: SERVER_PORT,
     host: '127.0.0.1',
     database: TEST_DB_PATH,
-    instance: {
-      name: 'E2E Test OpenHive',
-      description: 'E2E test instance',
-      public: true,
-    },
+    instance: { name: 'E2E Test OpenHive', description: 'E2E test instance' },
     admin: { createOnStartup: false },
-    verification: { strategy: 'open', options: {} },
-    rateLimit: { enabled: false, max: 100, timeWindow: '1 minute' },
-    federation: { enabled: false, peers: [] },
-    cors: { enabled: false, origin: true },
-    email: { enabled: false, from: 'noreply@test.local' },
-    jwt: { secret: 'e2e-test-secret-key', expiresIn: '7d' },
-    githubApp: { enabled: false },
+    auth: { mode: 'local' },
+    rateLimit: { enabled: false },
+    cors: { enabled: false },
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
       openswarm_command: `node ${MAP_SERVER_SCRIPT}`,
       data_dir: TEST_DATA_DIR,
-      port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX] as [number, number],
+      port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
       max_swarms: 5,
-      health_check_interval: 600000, // Very long — we don't need periodic checks
+      health_check_interval: 600000,
       max_health_failures: 3,
       auto_restart: false,
     },
-  } as Config;
+  });
 }
 
 /** Wait for a condition to become true, polling every `intervalMs`. */

@@ -2,19 +2,24 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { api, Agent } from '../lib/api';
 
+interface SwarmHubOAuth {
+  authorizeUrl: string;
+  clientId: string;
+}
+
 interface AuthState {
   agent: Agent | null;
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   error: string | null;
-  authMode: 'local' | 'token' | null;
+  authMode: 'local' | 'swarmhub' | null;
+  swarmhubOAuth: SwarmHubOAuth | null;
 
   // Actions
   login: (token: string) => Promise<void>;
-  loginWithCredentials: (email: string, password: string) => Promise<void>;
-  register: (data: { name: string; description?: string; invite_code?: string }) => Promise<{ apiKey: string }>;
-  registerHuman: (data: { name: string; email: string; password: string }) => Promise<void>;
+  exchangeOAuthCode: (code: string) => Promise<void>;
+  register: (data: { name: string; description?: string }) => Promise<{ apiKey: string }>;
   logout: () => void;
   fetchAgent: () => Promise<void>;
   checkAuthMode: () => Promise<void>;
@@ -30,6 +35,7 @@ export const useAuthStore = create<AuthState>()(
       isLoading: false,
       error: null,
       authMode: null,
+      swarmhubOAuth: null,
 
       login: async (token: string) => {
         set({ isLoading: true, error: null });
@@ -55,24 +61,39 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      loginWithCredentials: async (email: string, password: string) => {
+      exchangeOAuthCode: async (code: string) => {
         set({ isLoading: true, error: null });
         try {
-          const response = await api.post<{ token: string; agent: Agent }>('/auth/login', {
-            email,
-            password,
-          });
+          const redirectUri = `${window.location.origin}/auth/callback`;
+          const response = await api.post<{
+            token: string;
+            agent?: Agent;
+            expires_in?: number;
+          }>('/auth/swarmhub/exchange', { code, redirect_uri: redirectUri });
+
           api.setToken(response.token);
-          set({
-            agent: response.agent,
-            token: response.token,
-            isAuthenticated: true,
-            isLoading: false,
-          });
+
+          if (response.agent) {
+            set({
+              agent: response.agent,
+              token: response.token,
+              isAuthenticated: true,
+              isLoading: false,
+            });
+          } else {
+            // Fetch agent info using the new token
+            const meResponse = await api.get<Agent>('/auth/me');
+            set({
+              agent: meResponse,
+              token: response.token,
+              isAuthenticated: true,
+              isLoading: false,
+            });
+          }
         } catch (error) {
           set({
             isLoading: false,
-            error: error instanceof Error ? error.message : 'Login failed',
+            error: error instanceof Error ? error.message : 'Authentication failed',
           });
           throw error;
         }
@@ -90,26 +111,6 @@ export const useAuthStore = create<AuthState>()(
             isLoading: false,
           });
           return { apiKey: response.api_key };
-        } catch (error) {
-          set({
-            isLoading: false,
-            error: error instanceof Error ? error.message : 'Registration failed',
-          });
-          throw error;
-        }
-      },
-
-      registerHuman: async (data) => {
-        set({ isLoading: true, error: null });
-        try {
-          const response = await api.post<{ token: string; agent: Agent }>('/auth/register', data);
-          api.setToken(response.token);
-          set({
-            agent: response.agent,
-            token: response.token,
-            isAuthenticated: true,
-            isLoading: false,
-          });
         } catch (error) {
           set({
             isLoading: false,
@@ -156,11 +157,13 @@ export const useAuthStore = create<AuthState>()(
 
       checkAuthMode: async () => {
         try {
-          const response = await api.get<{ mode: 'local' | 'token'; agent?: Agent }>('/auth/mode');
+          const response = await api.get<{
+            mode: 'local' | 'swarmhub';
+            agent?: Agent;
+            oauth?: { authorize_url: string; client_id: string };
+          }>('/auth/mode');
+
           if (response.mode === 'local' && response.agent) {
-            // Clear any stale token from a previous session so requests
-            // are sent without an Authorization header, letting the
-            // server's local-mode auto-auth take effect.
             api.setToken(null);
             set({
               authMode: 'local',
@@ -169,10 +172,15 @@ export const useAuthStore = create<AuthState>()(
               isAuthenticated: true,
             });
           } else {
-            set({ authMode: response.mode });
+            set({
+              authMode: response.mode,
+              swarmhubOAuth: response.oauth
+                ? { authorizeUrl: response.oauth.authorize_url, clientId: response.oauth.client_id }
+                : null,
+            });
           }
         } catch {
-          set({ authMode: 'token' });
+          set({ authMode: 'swarmhub' });
         }
       },
 
@@ -186,7 +194,6 @@ export const useAuthStore = create<AuthState>()(
         isAuthenticated: state.isAuthenticated,
       }),
       onRehydrateStorage: () => (state) => {
-        // Restore API token after rehydration
         if (state?.token) {
           api.setToken(state.token);
         }

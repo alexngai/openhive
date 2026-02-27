@@ -7,7 +7,7 @@ import * as hivesDAL from '../../db/dal/hives.js';
 import { swarmHostingRoutes } from '../../api/routes/swarm-hosting.js';
 import { SwarmManager } from '../../swarm/manager.js';
 import * as dal from '../../swarm/dal.js';
-import type { Config } from '../../config.js';
+import { ConfigSchema, type Config } from '../../config.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
@@ -18,34 +18,23 @@ const FIXTURES_DIR = path.resolve(__dirname, 'fixtures');
 const SLEEP_SCRIPT = path.join(FIXTURES_DIR, 'sleep-server.js');
 
 function createTestConfig(): Config {
-  return {
-    port: 3000,
-    host: '0.0.0.0',
+  return ConfigSchema.parse({
     database: TEST_DB_PATH,
-    instance: {
-      name: 'Test OpenHive',
-      description: 'Test instance',
-      public: true,
-    },
+    instance: { name: 'Test OpenHive', description: 'Test instance' },
     admin: { createOnStartup: false },
-    verification: { strategy: 'open', options: {} },
-    rateLimit: { enabled: false, max: 100, timeWindow: '1 minute' },
-    federation: { enabled: false, peers: [] },
-    cors: { enabled: true, origin: true },
-    email: { enabled: false, from: 'noreply@test.local' },
-    jwt: { secret: 'test-secret-key-for-testing-only', expiresIn: '7d' },
-    githubApp: { enabled: false },
+    auth: { mode: 'local' },
+    rateLimit: { enabled: false },
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
       openswarm_command: `node ${SLEEP_SCRIPT}`,
       data_dir: TEST_DATA_DIR,
-      port_range: [19200, 19210] as [number, number],
+      port_range: [19200, 19210],
       max_swarms: 5,
       health_check_interval: 100000,
       max_health_failures: 3,
     },
-  } as Config;
+  });
 }
 
 // Auth middleware that reads Bearer token

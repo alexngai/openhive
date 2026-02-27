@@ -169,7 +169,7 @@ describe('CLI', () => {
       expect(content).toContain('module.exports');
       expect(content).toContain('port');
       expect(content).toContain('database');
-      expect(content).toContain('verification');
+      expect(content).toContain('rateLimit');
     });
 
     it('should refuse to overwrite an existing file', () => {
