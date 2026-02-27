@@ -22,9 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package*.json ./
 
 # Install all dependencies (including devDependencies for build)
-# Use npm install (not npm ci) to correctly resolve platform-specific optional
-# dependencies (rollup, better-sqlite3) during cross-platform Docker builds
-RUN npm install
+RUN npm ci
 
 # Copy source code
 COPY . .
