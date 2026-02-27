@@ -14,6 +14,10 @@ import type {
   GitHubTokenResponse,
   GitHubMultiTokenResponse,
   CachedToken,
+  SlackCredentialsRequest,
+  SlackCredentialsResponse,
+  SlackInstallationsResponse,
+  PollEventsResponse,
 } from './types.js';
 
 // Refresh tokens 10 minutes before expiry
@@ -108,6 +112,81 @@ export class SwarmHubClient {
   }
 
   // ==========================================================================
+  // Slack Credentials
+  // ==========================================================================
+
+  /** List Slack installations (workspaces) mapped to this hive */
+  async getSlackInstallations(): Promise<SlackInstallationsResponse> {
+    return this.request<SlackInstallationsResponse>('GET', '/v1/internal/hive/slack-installations');
+  }
+
+  /**
+   * Get Slack bot credentials for this hive.
+   * Optionally scoped to a specific workspace (team_id).
+   */
+  async getSlackCredentials(options?: SlackCredentialsRequest): Promise<SlackCredentialsResponse> {
+    return this.request<SlackCredentialsResponse>(
+      'POST',
+      '/v1/internal/hive/slack-credentials',
+      options,
+    );
+  }
+
+  // ==========================================================================
+  // Event Polling (tunnel mode)
+  // ==========================================================================
+
+  /** Long-poll for events queued by SwarmHub for this hive. */
+  async pollEvents(options?: {
+    timeout?: number;
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<PollEventsResponse> {
+    const params = new URLSearchParams();
+    if (options?.timeout) params.set('timeout', String(options.timeout));
+    if (options?.limit) params.set('limit', String(options.limit));
+    const qs = params.toString();
+    const path = `/v1/internal/hive/events/poll${qs ? `?${qs}` : ''}`;
+    return this.request<PollEventsResponse>('GET', path, undefined, options?.signal);
+  }
+
+  /** Acknowledge successfully processed events. */
+  async acknowledgeEvents(eventIds: string[]): Promise<{ acknowledged: number }> {
+    return this.request<{ acknowledged: number }>(
+      'POST',
+      '/v1/internal/hive/events/ack',
+      { event_ids: eventIds },
+    );
+  }
+
+  // ==========================================================================
+  // Event Config
+  // ==========================================================================
+
+  /** Fetch event routing config managed by SwarmHub for this hive. */
+  async getEventConfig(): Promise<{
+    post_rules: Array<{
+      hive_id: string;
+      source: string;
+      event_types: string[];
+      filters?: Record<string, unknown>;
+      normalizer?: string;
+      thread_mode?: string;
+      priority?: number;
+    }>;
+    subscriptions: Array<{
+      hive_id: string;
+      swarm_id?: string;
+      source: string;
+      event_types: string[];
+      filters?: Record<string, unknown>;
+      priority?: number;
+    }>;
+  }> {
+    return this.request('GET', '/v1/internal/hive/event-config');
+  }
+
+  // ==========================================================================
   // Health Check
   // ==========================================================================
 
@@ -125,7 +204,7 @@ export class SwarmHubClient {
   // Internal
   // ==========================================================================
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const url = `${this.config.apiUrl}${path}`;
     const headers: Record<string, string> = {
       'Authorization': `Bearer ${this.config.hiveToken}`,
@@ -133,6 +212,10 @@ export class SwarmHubClient {
     };
 
     const init: RequestInit = { method, headers };
+
+    if (signal) {
+      init.signal = signal;
+    }
 
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';

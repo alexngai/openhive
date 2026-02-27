@@ -1,11 +1,12 @@
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
-import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE } from './schema.js';
+import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE, MIGRATION_V18_RESOURCE_SCOPE } from './schema.js';
 import { MAP_SCHEMA } from '../map/schema.js';
 import { SYNC_SCHEMA_V12, SYNC_SCHEMA_V13, SYNC_SCHEMA_V14, SYNC_SCHEMA_V15 } from '../sync/schema.js';
 import { HOSTED_SWARM_SCHEMA } from '../swarm/schema.js';
 import { BRIDGE_SCHEMA } from '../bridge/schema.js';
+import { EVENT_ROUTING_SCHEMA } from '../events/schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
 
@@ -94,6 +95,8 @@ export function initDatabase(config: string | DatabaseConfig): Database.Database
     db.exec(HOSTED_SWARM_SCHEMA);
     // Create bridge tables
     db.exec(BRIDGE_SCHEMA);
+    // Create event routing tables
+    db.exec(EVENT_ROUTING_SCHEMA);
     // Seed default data
     db.exec(SEED_DATA);
   } else if (versionRow.version < SCHEMA_VERSION) {
@@ -153,6 +156,10 @@ const MIGRATION_REGISTRY: Record<number, string> = {
   16: HOSTED_SWARM_SCHEMA,
   // Version 17: Channel Bridge — external platform integration
   17: BRIDGE_SCHEMA,
+  // Version 18: Resource scope column for discovery
+  18: MIGRATION_V18_RESOURCE_SCOPE,
+  // Version 19: Event routing — post rules, subscriptions, delivery log
+  19: EVENT_ROUTING_SCHEMA,
 };
 
 /** Get the SQL for a specific migration version.

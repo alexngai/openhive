@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 19;
 
 export const CREATE_TABLES = `
 -- Agents table (supports both agents and human accounts)
@@ -196,6 +196,9 @@ CREATE TABLE IF NOT EXISTS syncable_resources (
   last_push_by TEXT,
   last_push_at TEXT,
   owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  -- Scope: how was this resource discovered/registered
+  scope TEXT DEFAULT 'manual'
+    CHECK (scope IN ('global', 'project', 'agent', 'manual')),
   -- Resource-specific metadata stored as JSON
   metadata TEXT,
   created_at TEXT DEFAULT (datetime('now')),
@@ -331,6 +334,7 @@ CREATE INDEX IF NOT EXISTS idx_syncable_resources_owner ON syncable_resources(ow
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_type ON syncable_resources(resource_type);
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_visibility ON syncable_resources(visibility);
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_resources(resource_type, visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
 CREATE INDEX IF NOT EXISTS idx_resource_subs_agent ON resource_subscriptions(agent_id);
 CREATE INDEX IF NOT EXISTS idx_resource_subs_resource ON resource_subscriptions(resource_id);
 CREATE INDEX IF NOT EXISTS idx_resource_tags_tag ON resource_tags(tag);
@@ -533,6 +537,13 @@ END;
 CREATE TRIGGER IF NOT EXISTS hives_fts_delete AFTER DELETE ON hives BEGIN
   DELETE FROM hives_fts WHERE rowid = old.rowid;
 END;
+`;
+
+// Migration V18: Add scope column to syncable_resources
+export const MIGRATION_V18_RESOURCE_SCOPE = `
+ALTER TABLE syncable_resources ADD COLUMN scope TEXT DEFAULT 'manual'
+  CHECK (scope IN ('global', 'project', 'agent', 'manual'));
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
 `;
 
 // Populate FTS tables from existing data

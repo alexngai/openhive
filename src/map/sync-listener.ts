@@ -274,6 +274,23 @@ function disconnectFromSwarm(swarmId: string): void {
 }
 
 // ============================================================================
+// Send to Swarm (used by event dispatch)
+// ============================================================================
+
+/**
+ * Send a JSON-RPC message to a specific swarm via its WebSocket connection.
+ * Returns true if the message was sent, false if the swarm is not connected.
+ */
+export function sendToSwarm(swarmId: string, message: object): boolean {
+  const conn = connections.get(swarmId);
+  if (conn?.ws?.readyState === WebSocket.OPEN) {
+    conn.ws.send(JSON.stringify(message));
+    return true;
+  }
+  return false;
+}
+
+// ============================================================================
 // Lifecycle
 // ============================================================================
 

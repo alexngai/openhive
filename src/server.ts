@@ -25,6 +25,7 @@ import { setLocalAgent } from './api/middleware/auth.js';
 import { initMapSyncListener, stopMapSyncListener } from './map/sync-listener.js';
 import { BridgeManager } from './bridge/manager.js';
 import { SwarmHubConnector } from './swarmhub/connector.js';
+import { normalize, routeEvent } from './events/index.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -420,6 +421,14 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         try {
           const identity = await swarmhubConnector.connect();
           console.log(`[openhive] SwarmHub connector: connected as "${identity.slug}" (${identity.tier})`);
+
+          // Listen for polled GitHub webhook events (tunnel mode)
+          // Note: the connector's processPolledEvent now routes through the event system
+          // directly. This listener is kept for any external consumers.
+          swarmhubConnector.on('github_webhook', (event: { event_type: string; delivery_id: string; payload: Record<string, unknown> }) => {
+            const normalized = normalize('github', event.event_type, event.delivery_id, event.payload);
+            routeEvent(normalized);
+          });
         } catch (err) {
           console.warn(`[openhive] SwarmHub connector: failed to connect: ${(err as Error).message}`);
           console.warn('[openhive] SwarmHub features will be unavailable. Retrying on health checks.');

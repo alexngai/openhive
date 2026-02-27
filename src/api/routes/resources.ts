@@ -4,7 +4,8 @@ import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { broadcast, broadcastToChannel } from '../../realtime/index.js';
 import { checkRemoteForUpdates, checkRemotesBatch } from '../../utils/git-remote.js';
-import type { SyncableResourceType, ResourceVisibility } from '../../types.js';
+import { discoverLocalResources } from '../../discovery/index.js';
+import type { SyncableResourceType, ResourceVisibility, ResourceScope } from '../../types.js';
 import type { Config } from '../../config.js';
 
 // Valid resource types
@@ -131,6 +132,41 @@ export async function resourcesRoutes(
       total: result.total,
       limit,
       offset,
+    });
+  });
+
+  // Discover local filesystem resources (minimem memory banks, skill-tree skills)
+  const DiscoverLocalSchema = z.object({
+    scopes: z.array(z.enum(['global', 'project', 'agent'])).optional(),
+    agent_work_dir: z.string().optional(),
+  }).optional();
+
+  fastify.post('/resources/discover/local', { preHandler: authMiddleware }, async (request, reply) => {
+    const parseResult = DiscoverLocalSchema.safeParse(request.body || {});
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        error: 'Validation Error',
+        details: parseResult.error.issues,
+      });
+    }
+
+    const body = parseResult.data || {};
+
+    const result = await discoverLocalResources(config, {
+      ownerAgentId: request.agent!.id,
+      scopes: body.scopes as ResourceScope[],
+      agentWorkDir: body.agent_work_dir,
+    });
+
+    return reply.send({
+      created: result.created,
+      updated: result.updated,
+      skipped: result.skipped,
+      summary: {
+        created_count: result.created.length,
+        updated_count: result.updated.length,
+        skipped_count: result.skipped.length,
+      },
     });
   });
 

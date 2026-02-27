@@ -10,6 +10,7 @@ import type {
   SyncableResourceType,
   ResourceVisibility,
   ResourcePermission,
+  ResourceScope,
 } from '../../types.js';
 
 // Generate a webhook secret
@@ -28,6 +29,7 @@ export interface CreateResourceInput {
   git_remote_url: string;
   visibility?: ResourceVisibility;
   owner_agent_id: string;
+  scope?: ResourceScope;
   metadata?: Record<string, unknown>;
 }
 
@@ -37,8 +39,8 @@ export function createResource(input: CreateResourceInput): SyncableResource {
   const webhookSecret = generateWebhookSecret();
 
   db.prepare(`
-    INSERT INTO syncable_resources (id, resource_type, name, description, git_remote_url, webhook_secret, visibility, owner_agent_id, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO syncable_resources (id, resource_type, name, description, git_remote_url, webhook_secret, visibility, owner_agent_id, scope, metadata)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.resource_type,
@@ -48,6 +50,7 @@ export function createResource(input: CreateResourceInput): SyncableResource {
     webhookSecret,
     input.visibility || 'private',
     input.owner_agent_id,
+    input.scope || 'manual',
     input.metadata ? JSON.stringify(input.metadata) : null
   );
 
@@ -59,6 +62,42 @@ export function createResource(input: CreateResourceInput): SyncableResource {
   `).run(subId, input.owner_agent_id, id);
 
   return findResourceById(id)!;
+}
+
+/**
+ * Idempotent upsert for discovered resources.
+ * Uses the UNIQUE(owner_agent_id, resource_type, name) constraint.
+ * On conflict, updates git_remote_url, description, scope, and metadata.
+ * Returns the resource and whether it was newly created.
+ */
+export function upsertDiscoveredResource(input: CreateResourceInput): { resource: SyncableResource; created: boolean } {
+  const db = getDatabase();
+
+  // Check if the resource already exists
+  const existing = db.prepare(`
+    SELECT id FROM syncable_resources
+    WHERE owner_agent_id = ? AND resource_type = ? AND name = ?
+  `).get(input.owner_agent_id, input.resource_type, input.name) as { id: string } | undefined;
+
+  if (existing) {
+    // Update the existing resource
+    db.prepare(`
+      UPDATE syncable_resources
+      SET git_remote_url = ?, description = ?, scope = ?, metadata = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      input.git_remote_url,
+      input.description || null,
+      input.scope || 'manual',
+      input.metadata ? JSON.stringify(input.metadata) : null,
+      existing.id
+    );
+    return { resource: findResourceById(existing.id)!, created: false };
+  }
+
+  // Create new resource
+  const resource = createResource(input);
+  return { resource, created: true };
 }
 
 export function findResourceById(id: string): SyncableResource | null {
@@ -266,6 +305,7 @@ export function getResourceWithMeta(id: string, viewerAgentId?: string): Syncabl
     last_push_by: row.last_push_by as string | null,
     last_push_at: row.last_push_at as string | null,
     owner_agent_id: row.owner_agent_id as string,
+    scope: (row.scope as ResourceScope) || 'manual',
     metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
@@ -291,6 +331,7 @@ export interface ListResourcesOptions {
   resourceType?: SyncableResourceType;
   owned?: boolean;
   visibility?: ResourceVisibility;
+  scope?: ResourceScope;
   limit?: number;
   offset?: number;
 }
@@ -300,7 +341,7 @@ export function listAccessibleResources(options: ListResourcesOptions): {
   total: number;
 } {
   const db = getDatabase();
-  const { agentId, resourceType, owned, visibility, limit = 50, offset = 0 } = options;
+  const { agentId, resourceType, owned, visibility, scope, limit = 50, offset = 0 } = options;
 
   // Build query for resources the agent can access
   const whereClauses: string[] = [];
@@ -327,6 +368,11 @@ export function listAccessibleResources(options: ListResourcesOptions): {
   if (visibility) {
     whereClauses.push('r.visibility = ?');
     params.push(visibility);
+  }
+
+  if (scope) {
+    whereClauses.push('r.scope = ?');
+    params.push(scope);
   }
 
   const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
@@ -372,6 +418,7 @@ export function listAccessibleResources(options: ListResourcesOptions): {
       last_push_by: row.last_push_by as string | null,
       last_push_at: row.last_push_at as string | null,
       owner_agent_id: row.owner_agent_id as string,
+      scope: (row.scope as ResourceScope) || 'manual',
       metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
       created_at: row.created_at as string,
       updated_at: row.updated_at as string,
@@ -476,6 +523,7 @@ export function discoverPublicResources(options: DiscoverResourcesOptions): {
       last_push_by: row.last_push_by as string | null,
       last_push_at: row.last_push_at as string | null,
       owner_agent_id: row.owner_agent_id as string,
+      scope: (row.scope as ResourceScope) || 'manual',
       metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
       created_at: row.created_at as string,
       updated_at: row.updated_at as string,

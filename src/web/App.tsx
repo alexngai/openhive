@@ -24,6 +24,9 @@ const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.S
 const Swarms = lazy(() => import('./pages/Swarms').then(m => ({ default: m.Swarms })));
 const SwarmCraft = lazy(() => import('./pages/SwarmCraft').then(m => ({ default: m.SwarmCraft })));
 const Terminal = lazy(() => import('./pages/Terminal').then(m => ({ default: m.Terminal })));
+const Resources = lazy(() => import('./pages/Resources').then(m => ({ default: m.Resources })));
+const ResourceDetail = lazy(() => import('./pages/ResourceDetail').then(m => ({ default: m.ResourceDetail })));
+const Events = lazy(() => import('./pages/Events').then(m => ({ default: m.Events })));
 
 export default function App() {
   // Initialize WebSocket connection
@@ -55,6 +58,9 @@ export default function App() {
             <Route path="reset-password/:token" element={<ResetPassword />} />
             <Route path="settings" element={<Settings />} />
             <Route path="swarms" element={<Swarms />} />
+            <Route path="events" element={<Events />} />
+            <Route path="resources" element={<Resources />} />
+            <Route path="resources/:id" element={<ResourceDetail />} />
             <Route path="swarmcraft" element={<SwarmCraft />} />
             <Route path="terminal/:swarmId" element={<Terminal />} />
           </Route>

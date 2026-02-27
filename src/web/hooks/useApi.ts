@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
-import type { Agent, HostedSwarm, MapSwarm, MapStats, SyncableResource, SyncStatusResponse } from '../lib/api';
+import type { Agent, HostedSwarm, MapSwarm, MapStats, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry } from '../lib/api';
 
 // Posts
 export function usePosts(options: {
@@ -415,5 +415,256 @@ export function useSyncStatus() {
     queryKey: ['sync-status'],
     queryFn: () => api.get<SyncStatusResponse>('/sync/status'),
     refetchInterval: 30000,
+  });
+}
+
+// Resources (extended)
+export function useResourcesByType(type: 'memory_bank' | 'skill', options?: { limit?: number }) {
+  const { limit = 50 } = options || {};
+
+  return useQuery({
+    queryKey: ['resources', { type, limit }],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: String(limit), type });
+      return api.get<{ data: SyncableResource[]; total: number }>(`/resources?${params}`);
+    },
+    refetchInterval: 30000,
+  });
+}
+
+export function useResource(id: string) {
+  return useQuery({
+    queryKey: ['resource', id],
+    queryFn: () => api.get<SyncableResource>(`/resources/${id}`),
+    enabled: !!id,
+  });
+}
+
+export function useResourceEvents(id: string, options?: { limit?: number }) {
+  const { limit = 20 } = options || {};
+
+  return useQuery({
+    queryKey: ['resource-events', id, { limit }],
+    queryFn: () => api.get<{ data: ResourceSyncEvent[]; total: number }>(
+      `/resources/${id}/events?limit=${limit}`
+    ),
+    enabled: !!id,
+    refetchInterval: 30000,
+  });
+}
+
+export function useCheckUpdates() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ resourceId, branch }: { resourceId: string; branch?: string }) =>
+      api.post<CheckUpdatesResult>(`/resources/${resourceId}/check-updates`, { branch }),
+    onSuccess: (_, { resourceId }) => {
+      queryClient.invalidateQueries({ queryKey: ['resource', resourceId] });
+      queryClient.invalidateQueries({ queryKey: ['resource-events', resourceId] });
+      queryClient.invalidateQueries({ queryKey: ['resources'] });
+    },
+  });
+}
+
+export function useBatchCheckUpdates() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: { resource_type?: 'memory_bank' | 'skill'; branch?: string }) =>
+      api.post<BatchCheckResult>('/resources/check-updates', data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['resources'] });
+      queryClient.invalidateQueries({ queryKey: ['resource-events'] });
+    },
+  });
+}
+
+// Resource Content - Memory Banks
+export function useMemoryFiles(resourceId: string) {
+  return useQuery({
+    queryKey: ['memory-files', resourceId],
+    queryFn: () => api.get<{ files: MemoryFile[] }>(`/resources/${resourceId}/content/files`),
+    select: (data) => data.files,
+    enabled: !!resourceId,
+  });
+}
+
+export function useMemoryFile(resourceId: string, path: string | null) {
+  return useQuery({
+    queryKey: ['memory-file', resourceId, path],
+    queryFn: () => api.get<MemoryFileContent>(`/resources/${resourceId}/content/file?path=${encodeURIComponent(path!)}`),
+    enabled: !!resourceId && !!path,
+  });
+}
+
+export function useMemorySearch(resourceId: string, query: string) {
+  return useQuery({
+    queryKey: ['memory-search', resourceId, query],
+    queryFn: () => api.get<{ results: MemorySearchResult[]; total: number }>(
+      `/resources/${resourceId}/content/search?q=${encodeURIComponent(query)}&limit=30`
+    ),
+    enabled: !!resourceId && query.length >= 2,
+  });
+}
+
+// Resource Content - Skills
+export function useSkillsList(resourceId: string) {
+  return useQuery({
+    queryKey: ['skills-list', resourceId],
+    queryFn: () => api.get<{ skills: SkillSummary[] }>(`/resources/${resourceId}/content/skills`),
+    select: (data) => data.skills,
+    enabled: !!resourceId,
+  });
+}
+
+export function useSkillDetail(resourceId: string, skillId: string | null) {
+  return useQuery({
+    queryKey: ['skill-detail', resourceId, skillId],
+    queryFn: () => api.get<SkillDetail>(`/resources/${resourceId}/content/skills/${skillId}`),
+    enabled: !!resourceId && !!skillId,
+  });
+}
+
+// ── Event Post Rules ──
+
+export function usePostRules(hiveId?: string) {
+  return useQuery({
+    queryKey: ['post-rules', { hiveId }],
+    queryFn: () => {
+      const params = hiveId ? `?hive_id=${hiveId}` : '';
+      return api.get<{ data: PostRule[] }>(`/events/post-rules${params}`);
+    },
+    select: (data) => data.data,
+  });
+}
+
+export function useCreatePostRule() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: {
+      hive_id: string;
+      source: string;
+      event_types: string[];
+      filters?: { repos?: string[]; channels?: string[]; branches?: string[] };
+      normalizer?: string;
+      thread_mode?: 'post_per_event' | 'single_thread' | 'skip';
+      priority?: number;
+    }) => api.post<PostRule>('/events/post-rules', data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['post-rules'] });
+    },
+  });
+}
+
+export function useUpdatePostRule() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, ...data }: {
+      id: string;
+      source?: string;
+      event_types?: string[];
+      filters?: { repos?: string[]; channels?: string[]; branches?: string[] } | null;
+      normalizer?: string;
+      thread_mode?: 'post_per_event' | 'single_thread' | 'skip';
+      priority?: number;
+      enabled?: boolean;
+    }) => api.put<PostRule>(`/events/post-rules/${id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['post-rules'] });
+    },
+  });
+}
+
+export function useDeletePostRule() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/events/post-rules/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['post-rules'] });
+    },
+  });
+}
+
+// ── Event Subscriptions ──
+
+export function useEventSubscriptions(opts?: { hive_id?: string; swarm_id?: string }) {
+  return useQuery({
+    queryKey: ['event-subscriptions', opts],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (opts?.hive_id) params.set('hive_id', opts.hive_id);
+      if (opts?.swarm_id) params.set('swarm_id', opts.swarm_id);
+      const qs = params.toString();
+      return api.get<{ data: EventSubscription[] }>(`/events/subscriptions${qs ? `?${qs}` : ''}`);
+    },
+    select: (data) => data.data,
+  });
+}
+
+export function useCreateSubscription() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: {
+      hive_id: string;
+      swarm_id?: string;
+      source: string;
+      event_types: string[];
+      filters?: { repos?: string[]; channels?: string[]; branches?: string[] };
+      priority?: number;
+    }) => api.post<EventSubscription>('/events/subscriptions', data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['event-subscriptions'] });
+    },
+  });
+}
+
+export function useUpdateSubscription() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, ...data }: {
+      id: string;
+      source?: string;
+      event_types?: string[];
+      filters?: { repos?: string[]; channels?: string[]; branches?: string[] } | null;
+      priority?: number;
+      enabled?: boolean;
+    }) => api.put<EventSubscription>(`/events/subscriptions/${id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['event-subscriptions'] });
+    },
+  });
+}
+
+export function useDeleteSubscription() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/events/subscriptions/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['event-subscriptions'] });
+    },
+  });
+}
+
+// ── Delivery Log ──
+
+export function useDeliveryLog(opts?: { delivery_id?: string; swarm_id?: string; limit?: number; offset?: number }) {
+  return useQuery({
+    queryKey: ['delivery-log', opts],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (opts?.delivery_id) params.set('delivery_id', opts.delivery_id);
+      if (opts?.swarm_id) params.set('swarm_id', opts.swarm_id);
+      if (opts?.limit) params.set('limit', String(opts.limit));
+      if (opts?.offset) params.set('offset', String(opts.offset));
+      const qs = params.toString();
+      return api.get<{ data: DeliveryLogEntry[]; total: number }>(`/events/delivery-log${qs ? `?${qs}` : ''}`);
+    },
   });
 }

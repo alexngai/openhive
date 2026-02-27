@@ -9,11 +9,15 @@
  * - Establish and maintain connection to SwarmHub
  * - Periodic health checks
  * - Provide credential access (GitHub tokens) to other subsystems
+ * - Poll for queued events (tunnel mode) and process them
  * - Emit events for webhook forwarding, token refresh, etc.
  */
 
 import { EventEmitter } from 'events';
 import { SwarmHubClient } from './client.js';
+import { handleForwardedSlackEvent } from './webhook-handler.js';
+import { normalize, routeEvent } from '../events/index.js';
+import * as eventsDAL from '../db/dal/events.js';
 import type {
   SwarmHubConfig,
   ConnectorState,
@@ -21,9 +25,16 @@ import type {
   HiveIdentity,
   GitHubTokenRequest,
   GitHubTokenResponse,
+  SlackCredentialsRequest,
+  SlackCredentialsResponse,
+  SlackInstallationsResponse,
+  QueuedEvent,
 } from './types.js';
 
 const DEFAULT_HEALTH_CHECK_INTERVAL = 60_000; // 1 minute
+const POLL_TIMEOUT_SECONDS = 25;
+const POLL_MAX_RECONNECT_DELAY = 60_000; // 1 minute
+const POLL_BASE_RECONNECT_DELAY = 2_000; // 2 seconds
 
 export class SwarmHubConnector extends EventEmitter {
   private client: SwarmHubClient;
@@ -36,6 +47,11 @@ export class SwarmHubConnector extends EventEmitter {
     connectedAt: null,
   };
   private healthTimer?: ReturnType<typeof setInterval>;
+
+  // Event polling state
+  private pollAbortController?: AbortController;
+  private pollActive = false;
+  private pollReconnectAttempts = 0;
 
   constructor(config: SwarmHubConfig) {
     super();
@@ -62,6 +78,7 @@ export class SwarmHubConnector extends EventEmitter {
       apiUrl,
       hiveToken,
       healthCheckInterval: parseInt(process.env.SWARMHUB_HEALTH_INTERVAL || '', 10) || DEFAULT_HEALTH_CHECK_INTERVAL,
+      enableEventPolling: process.env.SWARMHUB_EVENT_POLLING !== 'false',
     });
   }
 
@@ -82,6 +99,16 @@ export class SwarmHubConnector extends EventEmitter {
       this.emit('connected', identity);
       this.startHealthMonitor();
 
+      // Start event polling if enabled (tunnel mode)
+      if (this.config.enableEventPolling !== false) {
+        this.startEventPoller();
+      }
+
+      // Pull event routing config from SwarmHub
+      this.pullEventConfig().catch((err) => {
+        console.warn(`[swarmhub] Failed to pull event config: ${(err as Error).message}`);
+      });
+
       return identity;
     } catch (err) {
       const message = (err as Error).message;
@@ -94,6 +121,7 @@ export class SwarmHubConnector extends EventEmitter {
 
   /** Disconnect and stop health monitoring */
   async disconnect(): Promise<void> {
+    this.stopEventPoller();
     this.stopHealthMonitor();
     this.client.clearTokenCache();
     this.setStatus('disconnected');
@@ -133,6 +161,39 @@ export class SwarmHubConnector extends EventEmitter {
   }
 
   // ==========================================================================
+  // Slack Credentials
+  // ==========================================================================
+
+  /**
+   * Get Slack installations (workspaces) mapped to this hive.
+   * Includes channel mappings for each workspace.
+   */
+  async getSlackInstallations(): Promise<SlackInstallationsResponse> {
+    this.ensureConnected();
+    try {
+      return await this.client.getSlackInstallations();
+    } catch (err) {
+      this.state.lastError = (err as Error).message;
+      throw err;
+    }
+  }
+
+  /**
+   * Get Slack bot credentials via SwarmHub.
+   * Allows this hive to send messages to Slack without storing
+   * Slack App secrets locally — SwarmHub hosts the Slack App.
+   */
+  async getSlackCredentials(options?: SlackCredentialsRequest): Promise<SlackCredentialsResponse> {
+    this.ensureConnected();
+    try {
+      return await this.client.getSlackCredentials(options);
+    } catch (err) {
+      this.state.lastError = (err as Error).message;
+      throw err;
+    }
+  }
+
+  // ==========================================================================
   // State
   // ==========================================================================
 
@@ -150,6 +211,183 @@ export class SwarmHubConnector extends EventEmitter {
 
   getState(): ConnectorState {
     return { ...this.state };
+  }
+
+  // ==========================================================================
+  // Event Polling (tunnel mode)
+  // ==========================================================================
+
+  private startEventPoller(): void {
+    this.stopEventPoller();
+    this.pollAbortController = new AbortController();
+    this.pollActive = true;
+    this.pollReconnectAttempts = 0;
+
+    console.log('[swarmhub] Event polling started');
+
+    // Fire-and-forget — the loop runs until stopEventPoller is called
+    this.runPollLoop(this.pollAbortController.signal).catch(() => {
+      // Errors are handled inside the loop
+    });
+  }
+
+  private stopEventPoller(): void {
+    if (!this.pollActive) return;
+    this.pollActive = false;
+    if (this.pollAbortController) {
+      this.pollAbortController.abort();
+      this.pollAbortController = undefined;
+    }
+    console.log('[swarmhub] Event polling stopped');
+  }
+
+  private async runPollLoop(signal: AbortSignal): Promise<void> {
+    while (this.pollActive && !signal.aborted) {
+      try {
+        const response = await this.client.pollEvents({
+          timeout: POLL_TIMEOUT_SECONDS,
+          limit: 10,
+          signal,
+        });
+
+        // Reset backoff on successful response
+        this.pollReconnectAttempts = 0;
+
+        if (response.events.length > 0) {
+          console.log(`[swarmhub] Received ${response.events.length} polled event(s)`);
+          const ackIds: string[] = [];
+
+          for (const event of response.events) {
+            try {
+              this.processPolledEvent(event);
+              ackIds.push(event.id);
+            } catch (err) {
+              console.error(`[swarmhub] Failed to process event ${event.id}:`, err);
+              // Still ack to prevent re-delivery of unprocessable events
+              ackIds.push(event.id);
+            }
+          }
+
+          // Acknowledge all processed events
+          if (ackIds.length > 0) {
+            try {
+              await this.client.acknowledgeEvents(ackIds);
+            } catch (err) {
+              console.error('[swarmhub] Failed to acknowledge events:', err);
+              // Events will be requeued after stale timeout — not critical
+            }
+          }
+        }
+        // If empty response (long-poll timeout), loop immediately
+      } catch (err) {
+        if (signal.aborted) return;
+
+        const message = (err as Error).message;
+        console.error(`[swarmhub] Poll error: ${message}`);
+        this.emit('poll_error', { message });
+
+        // Exponential backoff on error
+        const delay = Math.min(
+          POLL_BASE_RECONNECT_DELAY * Math.pow(2, this.pollReconnectAttempts),
+          POLL_MAX_RECONNECT_DELAY,
+        );
+        this.pollReconnectAttempts++;
+
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+
+  private processPolledEvent(event: QueuedEvent): void {
+    this.emit('webhook_received', {
+      event: event.event_type,
+      source: event.source,
+    });
+
+    if (event.source === 'slack') {
+      // Slack events still go through bridge inbound for channel mapping
+      handleForwardedSlackEvent({
+        team_id: event.payload.team_id as string,
+        event_type: event.payload.event_type as string,
+        event: event.payload.event as any,
+        event_id: event.payload.event_id as string | undefined,
+      });
+
+      // Also route through the event system for MAP dispatch + post rules
+      const normalized = normalize(
+        'slack',
+        event.payload.event_type as string,
+        event.payload.event_id as string || event.delivery_id || event.id,
+        event.payload,
+      );
+      routeEvent(normalized);
+    } else {
+      // GitHub and all other sources go through the event router
+      const normalized = normalize(
+        event.source,
+        event.payload.event_type as string || event.event_type,
+        event.payload.delivery_id as string || event.delivery_id || event.id,
+        event.source === 'github'
+          ? (event.payload.payload as Record<string, unknown>) || event.payload
+          : event.payload,
+      );
+      routeEvent(normalized);
+    }
+  }
+
+  // ==========================================================================
+  // Event Config Pull
+  // ==========================================================================
+
+  /** Pull event routing config from SwarmHub and apply locally. */
+  private async pullEventConfig(): Promise<void> {
+    try {
+      const config = await this.client.getEventConfig();
+
+      let rulesCreated = 0;
+      let subsCreated = 0;
+
+      if (config.post_rules) {
+        for (const rule of config.post_rules) {
+          eventsDAL.createPostRule({
+            hive_id: rule.hive_id,
+            source: rule.source,
+            event_types: rule.event_types,
+            filters: rule.filters as any,
+            normalizer: rule.normalizer,
+            thread_mode: rule.thread_mode as any,
+            priority: rule.priority,
+            created_by: 'swarmhub',
+          });
+          rulesCreated++;
+        }
+      }
+
+      if (config.subscriptions) {
+        for (const sub of config.subscriptions) {
+          eventsDAL.createSubscription({
+            hive_id: sub.hive_id,
+            swarm_id: sub.swarm_id,
+            source: sub.source,
+            event_types: sub.event_types,
+            filters: sub.filters as any,
+            priority: sub.priority,
+            created_by: 'swarmhub',
+          });
+          subsCreated++;
+        }
+      }
+
+      if (rulesCreated > 0 || subsCreated > 0) {
+        console.log(`[swarmhub] Pulled event config: ${rulesCreated} rule(s), ${subsCreated} subscription(s)`);
+      }
+    } catch (err) {
+      // Non-fatal — the endpoint may not exist on older SwarmHub versions
+      const message = (err as Error).message;
+      if (!message.includes('404')) {
+        throw err;
+      }
+    }
   }
 
   // ==========================================================================
