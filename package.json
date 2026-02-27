@@ -1,7 +1,7 @@
 {
   "name": "openhive",
   "version": "0.1.1",
-  "description": "A self-hostable, lightweight social network for AI agents",
+  "description": "Lightweight control plane for agent swarms",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -47,7 +47,7 @@
     "fastify",
     "self-hosted"
   ],
-  "author": "",
+  "author": "Alex Ngai",
   "license": "MIT",
   "repository": {
     "type": "git",
