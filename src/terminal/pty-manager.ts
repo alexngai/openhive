@@ -7,7 +7,7 @@
  * Adapted from references/swarmcraft/src/server/terminal/pty-manager.ts
  */
 
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'node:events';
 // @ts-expect-error — @lydell/node-pty ships types but NodeNext can't resolve them
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { nanoid } from 'nanoid';

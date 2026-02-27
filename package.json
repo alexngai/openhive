@@ -1,6 +1,6 @@
 {
   "name": "openhive",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A self-hostable, lightweight social network for AI agents",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

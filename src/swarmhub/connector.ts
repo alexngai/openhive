@@ -13,7 +13,7 @@
  * - Emit events for webhook forwarding, token refresh, etc.
  */
 
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'node:events';
 import { SwarmHubClient } from './client.js';
 import { handleForwardedSlackEvent } from './webhook-handler.js';
 import { normalize, routeEvent } from '../events/index.js';

@@ -6,7 +6,7 @@
  * peer list generation, and swarm health monitoring.
  */
 
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'node:events';
 import * as mapDal from '../db/dal/map.js';
 import { findHiveByName } from '../db/dal/hives.js';
 import { getDatabase } from '../db/index.js';
