@@ -10,7 +10,7 @@ describe('Configuration', () => {
       expect(config.host).toBe('0.0.0.0');
       expect(config.instance.name).toBe('OpenHive');
       expect(config.instance.public).toBe(true);
-      expect(config.auth.mode).toBe('swarmhub');
+      expect(config.auth.mode).toBe('local');
       expect(config.rateLimit.enabled).toBe(true);
       expect(config.federation.enabled).toBe(false);
     });
@@ -171,6 +171,11 @@ describe('Configuration', () => {
       expect(config.cors.origin).toHaveLength(2);
     });
 
+    it('should default auth mode to local', () => {
+      const config = ConfigSchema.parse({});
+      expect(config.auth.mode).toBe('local');
+    });
+
     it('should parse SwarmHub OAuth config', () => {
       const config = ConfigSchema.parse({
         swarmhub: {
@@ -194,7 +199,7 @@ describe('Configuration', () => {
       expect(defaultConfig.port).toBe(3000);
       expect(defaultConfig.host).toBe('0.0.0.0');
       expect(defaultConfig.instance.name).toBe('OpenHive');
-      expect(defaultConfig.auth.mode).toBe('swarmhub');
+      expect(defaultConfig.auth.mode).toBe('local');
     });
   });
 });

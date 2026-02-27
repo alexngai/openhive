@@ -89,7 +89,7 @@ export const ConfigSchema = z.object({
   storage: StorageSchema,
 
   auth: z.object({
-    mode: z.enum(['local', 'swarmhub']).default('swarmhub'),
+    mode: z.enum(['local', 'swarmhub']).default('local'),
   }).default({}),
 
   // MAP Hub configuration (headscale-style coordination for MAP swarms)
@@ -365,6 +365,12 @@ export function loadConfig(configPath?: string): Config {
         clientSecret: process.env.SWARMHUB_OAUTH_CLIENT_SECRET,
       },
     };
+
+    // Auto-detect auth mode: if OAuth credentials are present and auth mode
+    // wasn't explicitly set, switch to 'swarmhub' auth
+    if (!process.env.OPENHIVE_AUTH_MODE) {
+      rawConfig.auth = { ...rawConfig.auth, mode: 'swarmhub' };
+    }
   }
 
   // GitHub App configuration from environment
