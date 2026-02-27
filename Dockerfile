@@ -22,7 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package*.json ./
 
 # Install all dependencies (including devDependencies for build)
-RUN npm ci
+# Delete lockfile to force fresh resolution of platform-specific optional deps
+# (macOS-generated lockfile omits @rollup/rollup-linux-x64-gnu)
+RUN rm -f package-lock.json && npm install
 
 # Copy source code
 COPY . .
