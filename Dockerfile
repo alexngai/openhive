@@ -22,9 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package*.json ./
 
 # Install all dependencies (including devDependencies for build)
-# npm rebuild ensures platform-specific native binaries (rollup, better-sqlite3)
-# are correctly built for the target architecture during cross-platform builds
-RUN npm ci && npm rebuild
+# Use npm install (not npm ci) to correctly resolve platform-specific optional
+# dependencies (rollup, better-sqlite3) during cross-platform Docker builds
+RUN npm install
 
 # Copy source code
 COPY . .
