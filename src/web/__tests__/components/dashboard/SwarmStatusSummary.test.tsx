@@ -83,8 +83,8 @@ describe('SwarmStatusSummary', () => {
   it('sorts swarms by status priority (running/online first)', () => {
     mockUseHostedSwarms.mockReturnValue({
       data: [
-        { id: 'stopped-swarm', state: 'stopped', created_at: '2025-01-01T00:00:00Z' },
-        { id: 'running-swarm', state: 'running', created_at: '2025-01-01T00:00:00Z' },
+        { id: 'stopped-swarm', name: 'stopped-swarm', state: 'stopped', created_at: '2025-01-01T00:00:00Z' },
+        { id: 'running-swarm', name: 'running-swarm', state: 'running', created_at: '2025-01-01T00:00:00Z' },
       ],
     });
     mockUseMapSwarms.mockReturnValue({ data: [] });

@@ -325,6 +325,48 @@ export interface SkillDetail {
   raw: string;
 }
 
+// Event Config types
+export interface PostRule {
+  id: string;
+  hive_id: string;
+  source: string;
+  event_types: string[];
+  filters: { repos?: string[]; channels?: string[]; branches?: string[] } | null;
+  normalizer: string;
+  thread_mode: 'post_per_event' | 'single_thread' | 'skip';
+  priority: number;
+  enabled: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EventSubscription {
+  id: string;
+  hive_id: string;
+  swarm_id: string | null;
+  source: string;
+  event_types: string[];
+  filters: { repos?: string[]; channels?: string[]; branches?: string[] } | null;
+  priority: number;
+  enabled: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeliveryLogEntry {
+  id: string;
+  delivery_id: string;
+  subscription_id: string | null;
+  swarm_id: string;
+  source: string;
+  event_type: string;
+  status: 'sent' | 'failed' | 'offline';
+  error: string | null;
+  created_at: string;
+}
+
 export interface SyncStatusResponse {
   enabled: boolean;
   instance_id?: string;

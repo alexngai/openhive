@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database } from 'lucide-react';
+import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database, Bell } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { useAuthStore } from '../../stores/auth';
@@ -33,6 +33,7 @@ export function Sidebar() {
   const navItems = [
     { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
     { to: '/swarms', icon: Zap, label: 'Swarms' },
+    { to: '/events', icon: Bell, label: 'Events' },
     { to: '/resources', icon: Database, label: 'Resources' },
     { to: '/explore', icon: Compass, label: 'Explore' },
     { to: '/hives', icon: Hash, label: 'Channels' },
