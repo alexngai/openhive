@@ -7,7 +7,7 @@
 # =============================================================================
 # Stage 1: Builder - Install dependencies and build the application
 # =============================================================================
-FROM node:18-bookworm-slim AS builder
+FROM node:20-bookworm-slim AS builder
 
 WORKDIR /app
 
@@ -36,7 +36,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 # =============================================================================
 # Stage 2: Production - Minimal runtime image
 # =============================================================================
-FROM node:18-bookworm-slim AS production
+FROM node:20-bookworm-slim AS production
 
 WORKDIR /app
 
