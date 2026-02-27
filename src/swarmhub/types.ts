@@ -19,6 +19,8 @@ export interface SwarmHubConfig {
   hiveToken: string;
   /** Health check interval in ms (default: 60000) */
   healthCheckInterval: number;
+  /** Enable event polling for tunnel-mode hives (default: true when connector active) */
+  enableEventPolling?: boolean;
 }
 
 // ============================================================================
@@ -181,5 +183,26 @@ export interface SwarmHubEvents {
   disconnected: { reason: string };
   error: { message: string; code?: string };
   github_token_refreshed: { installationId: number; expiresAt: string };
-  webhook_received: { event: string; repository?: string };
+  webhook_received: { event: string; source?: string; repository?: string };
+  poll_error: { message: string };
+  github_webhook: { event_type: string; delivery_id: string; payload: Record<string, unknown> };
+}
+
+// ============================================================================
+// Event Polling (tunnel mode)
+// ============================================================================
+
+/** A queued event returned by the poll endpoint. */
+export interface QueuedEvent {
+  id: string;
+  source: string;
+  event_type: string;
+  delivery_id: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+/** Response from GET /v1/internal/hive/events/poll */
+export interface PollEventsResponse {
+  events: QueuedEvent[];
 }

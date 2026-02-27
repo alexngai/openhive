@@ -12,8 +12,11 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { authMiddleware } from '../api/middleware/auth.js';
 import { handleForwardedSlackEvent } from './webhook-handler.js';
+import { normalize, routeEvent } from '../events/index.js';
+import * as eventsDAL from '../db/dal/events.js';
 import type { SwarmHubConnector } from './connector.js';
 import type { ForwardedSlackEvent } from './types.js';
+import type { EventFilters, PostRuleThreadMode } from '../events/types.js';
 
 export async function swarmhubRoutes(
   fastify: FastifyInstance,
@@ -173,13 +176,90 @@ export async function swarmhubWebhookRoutes(
     const source = body.source as string | undefined;
 
     if (source === 'slack') {
-      return handleSlackWebhook(body, reply);
+      // Slack events go through bridge inbound for channel mapping
+      handleSlackWebhook(body, reply);
+
+      // Also route through event system for MAP dispatch + post rules
+      const normalized = normalize(
+        'slack',
+        body.event_type as string || 'unknown',
+        body.event_id as string || `wh_${Date.now()}`,
+        body,
+      );
+      routeEvent(normalized);
+      return;
     }
 
-    // Future: handle other sources (github, linear, etc.)
+    // All other sources (github, linear, etc.) go through the event router
+    const normalized = normalize(
+      source || 'unknown',
+      body.event_type as string || 'unknown',
+      body.delivery_id as string || body.event_id as string || `wh_${Date.now()}`,
+      source === 'github'
+        ? (body.payload as Record<string, unknown>) || body
+        : body,
+    );
+    const result = routeEvent(normalized);
+
     return reply.status(200).send({
       ok: true,
-      message: `Event source "${source || 'unknown'}" acknowledged`,
+      source: source || 'unknown',
+      posts_created: result.posts_created,
+      swarms_notified: result.swarms_notified,
+    });
+  });
+
+  // ==========================================================================
+  // POST /swarmhub/event-config — Receive event routing config from SwarmHub
+  // ==========================================================================
+
+  fastify.post('/swarmhub/event-config', async (request: FastifyRequest, reply: FastifyReply) => {
+    const forwardedBy = request.headers['x-swarmhub-forwarded'];
+    if (!forwardedBy) {
+      return reply.status(401).send({ error: 'Missing X-SwarmHub-Forwarded header' });
+    }
+
+    const body = request.body as {
+      post_rules?: Array<{
+        hive_id: string;
+        source: string;
+        event_types: string[];
+        filters?: EventFilters;
+        normalizer?: string;
+        thread_mode?: PostRuleThreadMode;
+        priority?: number;
+      }>;
+      subscriptions?: Array<{
+        hive_id: string;
+        swarm_id?: string;
+        source: string;
+        event_types: string[];
+        filters?: EventFilters;
+        priority?: number;
+      }>;
+    };
+
+    let rulesCreated = 0;
+    let subsCreated = 0;
+
+    if (body.post_rules) {
+      for (const rule of body.post_rules) {
+        eventsDAL.createPostRule({ ...rule, created_by: 'swarmhub' });
+        rulesCreated++;
+      }
+    }
+
+    if (body.subscriptions) {
+      for (const sub of body.subscriptions) {
+        eventsDAL.createSubscription({ ...sub, created_by: 'swarmhub' });
+        subsCreated++;
+      }
+    }
+
+    return reply.status(200).send({
+      ok: true,
+      post_rules_created: rulesCreated,
+      subscriptions_created: subsCreated,
     });
   });
 }
