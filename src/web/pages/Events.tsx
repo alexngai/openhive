@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   Plus, Trash2, Pencil, X, Bell, Radio, FileText,
   ChevronDown, ChevronUp, Settings2, Check, XCircle,
+  GitCommit, GitPullRequest, CircleDot, Github, MessageSquare, Play,
 } from 'lucide-react';
 import {
   usePostRules, useCreatePostRule, useUpdatePostRule, useDeletePostRule,
@@ -67,6 +68,84 @@ function EnabledDot({ enabled }: { enabled: boolean }) {
 }
 
 // =============================================================================
+// Presets
+// =============================================================================
+
+interface Preset {
+  label: string;
+  icon: React.ElementType;
+  source: string;
+  event_types: string;
+  thread_mode?: string;
+}
+
+const POST_RULE_PRESETS: Preset[] = [
+  { label: 'GitHub Code', icon: GitCommit, source: 'github', event_types: 'push', thread_mode: 'post_per_event' },
+  { label: 'GitHub PRs', icon: GitPullRequest, source: 'github', event_types: 'pull_request.opened, pull_request.closed', thread_mode: 'post_per_event' },
+  { label: 'GitHub Issues', icon: CircleDot, source: 'github', event_types: 'issues.opened, issues.closed', thread_mode: 'post_per_event' },
+  { label: 'GitHub All', icon: Github, source: 'github', event_types: 'push, pull_request.*, issues.*', thread_mode: 'post_per_event' },
+  { label: 'Slack Messages', icon: MessageSquare, source: 'slack', event_types: 'message', thread_mode: 'post_per_event' },
+];
+
+const SUBSCRIPTION_PRESETS: Preset[] = [
+  { label: 'GitHub Code', icon: GitCommit, source: 'github', event_types: 'push' },
+  { label: 'GitHub PRs', icon: GitPullRequest, source: 'github', event_types: 'pull_request.*' },
+  { label: 'GitHub Issues', icon: CircleDot, source: 'github', event_types: 'issues.*' },
+  { label: 'GitHub CI', icon: Play, source: 'github', event_types: 'check_run.*, check_suite.*, workflow_run.*' },
+  { label: 'GitHub All', icon: Github, source: 'github', event_types: '*' },
+  { label: 'Slack Messages', icon: MessageSquare, source: 'slack', event_types: 'message' },
+];
+
+function PresetPicker({
+  presets,
+  selected,
+  onSelect,
+}: {
+  presets: Preset[];
+  selected: string | null;
+  onSelect: (preset: Preset | null) => void;
+}) {
+  return (
+    <div className="mb-3">
+      <SectionLabel>Quick Setup</SectionLabel>
+      <div className="flex flex-wrap gap-1.5">
+        {presets.map((p) => (
+          <button
+            key={p.label}
+            type="button"
+            onClick={() => onSelect(p)}
+            className={clsx(
+              'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-2xs font-medium transition-colors border',
+              selected === p.label
+                ? 'border-honey-500/50 bg-honey-500/10 text-honey-500'
+                : 'border-transparent hover:bg-workspace-hover',
+            )}
+            style={selected !== p.label ? { color: 'var(--color-text-secondary)', backgroundColor: 'var(--color-elevated)' } : undefined}
+          >
+            <p.icon className="w-3 h-3" />
+            {p.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => onSelect(null)}
+          className={clsx(
+            'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-2xs font-medium transition-colors border',
+            selected === 'custom'
+              ? 'border-honey-500/50 bg-honey-500/10 text-honey-500'
+              : 'border-transparent hover:bg-workspace-hover',
+          )}
+          style={selected !== 'custom' ? { color: 'var(--color-text-secondary)', backgroundColor: 'var(--color-elevated)' } : undefined}
+        >
+          <Settings2 className="w-3 h-3" />
+          Custom
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
 // Post Rule Form
 // =============================================================================
 
@@ -83,6 +162,7 @@ function PostRuleForm({
   const createMutation = useCreatePostRule();
   const updateMutation = useUpdatePostRule();
 
+  const [selectedPreset, setSelectedPreset] = useState<string | null>(mode === 'create-rule' ? null : null);
   const [hiveId, setHiveId] = useState(rule?.hive_id || '');
   const [source, setSource] = useState(rule?.source || 'github');
   const [eventTypesRaw, setEventTypesRaw] = useState(rule?.event_types.join(', ') || '');
@@ -94,6 +174,20 @@ function PostRuleForm({
   );
 
   const isPending = createMutation.isPending || updateMutation.isPending;
+
+  const handlePresetSelect = (preset: Preset | null) => {
+    if (preset) {
+      setSelectedPreset(preset.label);
+      setSource(preset.source);
+      setEventTypesRaw(preset.event_types);
+      if (preset.thread_mode) setThreadMode(preset.thread_mode);
+    } else {
+      setSelectedPreset('custom');
+      setSource('github');
+      setEventTypesRaw('');
+      setThreadMode('post_per_event');
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -152,6 +246,14 @@ function PostRuleForm({
           <X className="w-3.5 h-3.5" />
         </button>
       </div>
+
+      {mode === 'create-rule' && (
+        <PresetPicker
+          presets={POST_RULE_PRESETS}
+          selected={selectedPreset}
+          onSelect={handlePresetSelect}
+        />
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
@@ -369,6 +471,7 @@ function SubscriptionForm({
   const createMutation = useCreateSubscription();
   const updateMutation = useUpdateSubscription();
 
+  const [selectedPreset, setSelectedPreset] = useState<string | null>(mode === 'create-sub' ? null : null);
   const [hiveId, setHiveId] = useState(sub?.hive_id || '');
   const [swarmId, setSwarmId] = useState(sub?.swarm_id || '');
   const [source, setSource] = useState(sub?.source || 'github');
@@ -380,6 +483,18 @@ function SubscriptionForm({
   );
 
   const isPending = createMutation.isPending || updateMutation.isPending;
+
+  const handlePresetSelect = (preset: Preset | null) => {
+    if (preset) {
+      setSelectedPreset(preset.label);
+      setSource(preset.source);
+      setEventTypesRaw(preset.event_types);
+    } else {
+      setSelectedPreset('custom');
+      setSource('github');
+      setEventTypesRaw('');
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -437,6 +552,14 @@ function SubscriptionForm({
           <X className="w-3.5 h-3.5" />
         </button>
       </div>
+
+      {mode === 'create-sub' && (
+        <PresetPicker
+          presets={SUBSCRIPTION_PRESETS}
+          selected={selectedPreset}
+          onSelect={handlePresetSelect}
+        />
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="grid grid-cols-2 gap-3">

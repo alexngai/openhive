@@ -678,4 +678,209 @@ describe('Events Page', () => {
       expect(rulesTab!.className).not.toContain('text-honey-500');
     });
   });
+
+  // ── Post Rule Presets ──
+
+  describe('Post Rule Presets', () => {
+    it('shows preset picker when creating a new rule', () => {
+      renderEvents();
+      const buttons = screen.getAllByRole('button');
+      const newBtn = buttons.find((b) => b.textContent?.includes('New Rule'));
+      fireEvent.click(newBtn!);
+
+      expect(screen.getByText('Quick Setup')).toBeDefined();
+      expect(screen.getByText('GitHub Code')).toBeDefined();
+      expect(screen.getByText('GitHub PRs')).toBeDefined();
+      expect(screen.getByText('GitHub Issues')).toBeDefined();
+      expect(screen.getByText('GitHub All')).toBeDefined();
+      expect(screen.getByText('Slack Messages')).toBeDefined();
+      expect(screen.getByText('Custom')).toBeDefined();
+    });
+
+    it('does not show preset picker when editing a rule', () => {
+      renderEvents();
+      const editButtons = screen.getAllByTitle('Edit');
+      fireEvent.click(editButtons[0]);
+
+      expect(screen.queryByText('Quick Setup')).toBeNull();
+    });
+
+    it('pre-fills source and event types when selecting "GitHub Code"', () => {
+      renderEvents();
+      const buttons = screen.getAllByRole('button');
+      const newBtn = buttons.find((b) => b.textContent?.includes('New Rule'));
+      fireEvent.click(newBtn!);
+
+      fireEvent.click(screen.getByText('GitHub Code'));
+
+      const sourceSelect = document.querySelector('select[value="github"]') as HTMLSelectElement | null;
+      expect(sourceSelect?.value || 'github').toBe('github');
+
+      const eventInput = screen.getByPlaceholderText('push, pull_request.opened, issues.*') as HTMLInputElement;
+      expect(eventInput.value).toBe('push');
+    });
+
+    it('pre-fills source and event types when selecting "GitHub PRs"', () => {
+      renderEvents();
+      const buttons = screen.getAllByRole('button');
+      const newBtn = buttons.find((b) => b.textContent?.includes('New Rule'));
+      fireEvent.click(newBtn!);
+
+      fireEvent.click(screen.getByText('GitHub PRs'));
+
+      const eventInput = screen.getByPlaceholderText('push, pull_request.opened, issues.*') as HTMLInputElement;
+      expect(eventInput.value).toBe('pull_request.opened, pull_request.closed');
+    });
+
+    it('pre-fills source and event types when selecting "Slack Messages"', () => {
+      renderEvents();
+      const buttons = screen.getAllByRole('button');
+      const newBtn = buttons.find((b) => b.textContent?.includes('New Rule'));
+      fireEvent.click(newBtn!);
+
+      fireEvent.click(screen.getByText('Slack Messages'));
+
+      const eventInput = screen.getByPlaceholderText('push, pull_request.opened, issues.*') as HTMLInputElement;
+      expect(eventInput.value).toBe('message');
+    });
+
+    it('clears fields when selecting "Custom"', () => {
+      renderEvents();
+      const buttons = screen.getAllByRole('button');
+      const newBtn = buttons.find((b) => b.textContent?.includes('New Rule'));
+      fireEvent.click(newBtn!);
+
+      // First select a preset
+      fireEvent.click(screen.getByText('GitHub Code'));
+      const eventInput = screen.getByPlaceholderText('push, pull_request.opened, issues.*') as HTMLInputElement;
+      expect(eventInput.value).toBe('push');
+
+      // Then select Custom
+      fireEvent.click(screen.getByText('Custom'));
+      expect(eventInput.value).toBe('');
+    });
+
+    it('highlights selected preset', () => {
+      renderEvents();
+      const buttons = screen.getAllByRole('button');
+      const newBtn = buttons.find((b) => b.textContent?.includes('New Rule'));
+      fireEvent.click(newBtn!);
+
+      fireEvent.click(screen.getByText('GitHub PRs'));
+
+      const presetBtn = screen.getByText('GitHub PRs').closest('button');
+      expect(presetBtn!.className).toContain('text-honey-500');
+    });
+
+    it('submits with preset values', async () => {
+      mockCreatePostRule.mockResolvedValue({});
+      renderEvents();
+
+      const buttons = screen.getAllByRole('button');
+      const newBtn = buttons.find((b) => b.textContent?.includes('New Rule'));
+      fireEvent.click(newBtn!);
+
+      // Select preset
+      fireEvent.click(screen.getByText('GitHub Issues'));
+
+      // Select hive (still required)
+      const hiveSelect = screen.getByText('Select hive...').closest('select') as HTMLSelectElement;
+      fireEvent.change(hiveSelect, { target: { value: 'hive_1' } });
+
+      // Submit
+      fireEvent.click(screen.getByText('Create'));
+
+      await waitFor(() => {
+        expect(mockCreatePostRule).toHaveBeenCalledWith(expect.objectContaining({
+          hive_id: 'hive_1',
+          source: 'github',
+          event_types: ['issues.opened', 'issues.closed'],
+          thread_mode: 'post_per_event',
+        }));
+      });
+    });
+  });
+
+  // ── Subscription Presets ──
+
+  describe('Subscription Presets', () => {
+    it('shows preset picker when creating a new subscription', () => {
+      renderEvents();
+      fireEvent.click(screen.getByText('Subscriptions'));
+
+      const buttons = screen.getAllByRole('button');
+      const newBtn = buttons.find((b) => b.textContent?.includes('New Subscription'));
+      fireEvent.click(newBtn!);
+
+      expect(screen.getByText('Quick Setup')).toBeDefined();
+      expect(screen.getByText('GitHub CI')).toBeDefined();
+      expect(screen.getByText('Custom')).toBeDefined();
+    });
+
+    it('does not show preset picker when editing a subscription', () => {
+      renderEvents();
+      fireEvent.click(screen.getByText('Subscriptions'));
+
+      const editButtons = screen.getAllByTitle('Edit');
+      fireEvent.click(editButtons[0]);
+
+      expect(screen.queryByText('Quick Setup')).toBeNull();
+    });
+
+    it('pre-fills "GitHub CI" preset with CI event types', () => {
+      renderEvents();
+      fireEvent.click(screen.getByText('Subscriptions'));
+
+      const buttons = screen.getAllByRole('button');
+      const newBtn = buttons.find((b) => b.textContent?.includes('New Subscription'));
+      fireEvent.click(newBtn!);
+
+      fireEvent.click(screen.getByText('GitHub CI'));
+
+      const eventInput = screen.getByPlaceholderText('push, pull_request.*, issues.opened') as HTMLInputElement;
+      expect(eventInput.value).toBe('check_run.*, check_suite.*, workflow_run.*');
+    });
+
+    it('pre-fills "GitHub All" preset with wildcard', () => {
+      renderEvents();
+      fireEvent.click(screen.getByText('Subscriptions'));
+
+      const buttons = screen.getAllByRole('button');
+      const newBtn = buttons.find((b) => b.textContent?.includes('New Subscription'));
+      fireEvent.click(newBtn!);
+
+      fireEvent.click(screen.getByText('GitHub All'));
+
+      const eventInput = screen.getByPlaceholderText('push, pull_request.*, issues.opened') as HTMLInputElement;
+      expect(eventInput.value).toBe('*');
+    });
+
+    it('submits with subscription preset values', async () => {
+      mockCreateSubscription.mockResolvedValue({});
+      renderEvents();
+      fireEvent.click(screen.getByText('Subscriptions'));
+
+      const buttons = screen.getAllByRole('button');
+      const newBtn = buttons.find((b) => b.textContent?.includes('New Subscription'));
+      fireEvent.click(newBtn!);
+
+      // Select preset
+      fireEvent.click(screen.getByText('GitHub PRs'));
+
+      // Select hive
+      const hiveSelect = screen.getByText('Select hive...').closest('select') as HTMLSelectElement;
+      fireEvent.change(hiveSelect, { target: { value: 'hive_1' } });
+
+      // Submit
+      fireEvent.click(screen.getByText('Create'));
+
+      await waitFor(() => {
+        expect(mockCreateSubscription).toHaveBeenCalledWith(expect.objectContaining({
+          hive_id: 'hive_1',
+          source: 'github',
+          event_types: ['pull_request.*'],
+        }));
+      });
+    });
+  });
 });
