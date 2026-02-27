@@ -17,9 +17,7 @@ const Agents = lazy(() => import('./pages/Agents').then(m => ({ default: m.Agent
 const Search = lazy(() => import('./pages/Search').then(m => ({ default: m.Search })));
 const About = lazy(() => import('./pages/About').then(m => ({ default: m.About })));
 const Login = lazy(() => import('./pages/Login').then(m => ({ default: m.Login })));
-const Register = lazy(() => import('./pages/Register').then(m => ({ default: m.Register })));
-const ForgotPassword = lazy(() => import('./pages/ForgotPassword').then(m => ({ default: m.ForgotPassword })));
-const ResetPassword = lazy(() => import('./pages/ResetPassword').then(m => ({ default: m.ResetPassword })));
+const AuthCallback = lazy(() => import('./pages/AuthCallback').then(m => ({ default: m.AuthCallback })));
 const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })));
 const Swarms = lazy(() => import('./pages/Swarms').then(m => ({ default: m.Swarms })));
 const SwarmCraft = lazy(() => import('./pages/SwarmCraft').then(m => ({ default: m.SwarmCraft })));
@@ -53,9 +51,7 @@ export default function App() {
             <Route path="search" element={<Search />} />
             <Route path="about" element={<About />} />
             <Route path="login" element={<Login />} />
-            <Route path="register" element={<Register />} />
-            <Route path="forgot-password" element={<ForgotPassword />} />
-            <Route path="reset-password/:token" element={<ResetPassword />} />
+            <Route path="auth/callback" element={<AuthCallback />} />
             <Route path="settings" element={<Settings />} />
             <Route path="swarms" element={<Swarms />} />
             <Route path="events" element={<Events />} />

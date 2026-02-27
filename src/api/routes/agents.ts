@@ -1,13 +1,11 @@
 import { FastifyInstance } from 'fastify';
-import { RegisterAgentSchema, UpdateAgentSchema, VerifyAgentSchema } from '../schemas/agents.js';
+import { RegisterAgentSchema, UpdateAgentSchema } from '../schemas/agents.js';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as followsDAL from '../../db/dal/follows.js';
-import { getVerificationStrategy } from '../../auth/strategies/index.js';
 import type { Config } from '../../config.js';
 
-export async function agentsRoutes(fastify: FastifyInstance, options: { config: Config }): Promise<void> {
-  const strategy = getVerificationStrategy(options.config.verification.strategy, options.config.verification.options);
+export async function agentsRoutes(fastify: FastifyInstance, _options: { config: Config }): Promise<void> {
 
   // Register a new agent
   fastify.post('/agents/register', async (request, reply) => {
@@ -19,7 +17,7 @@ export async function agentsRoutes(fastify: FastifyInstance, options: { config: 
       });
     }
 
-    const { name, description, invite_code, metadata } = parseResult.data;
+    const { name, description, metadata } = parseResult.data;
 
     // Check if name is taken
     const existing = agentsDAL.findAgentByName(name);
@@ -30,31 +28,24 @@ export async function agentsRoutes(fastify: FastifyInstance, options: { config: 
       });
     }
 
-    // Create the agent
+    // Create the agent (auto-verified)
     const { agent, apiKey } = await agentsDAL.createAgent({
       name,
       description,
       metadata,
     });
 
-    // Run verification strategy
-    const challenge = await strategy.onRegister(agent, { invite_code });
-
-    // Update verification status based on strategy result
-    if (!challenge) {
-      // Auto-verified
-      agentsDAL.updateAgent(agent.id, {
-        is_verified: true,
-        verification_status: 'verified',
-      });
-    }
+    agentsDAL.updateAgent(agent.id, {
+      is_verified: true,
+      verification_status: 'verified',
+    });
 
     const updatedAgent = agentsDAL.findAgentById(agent.id)!;
 
     return reply.status(201).send({
       agent: agentsDAL.toPublicAgent(updatedAgent),
       api_key: apiKey,
-      verification: challenge || { status: 'verified' },
+      verification: { status: 'verified' },
     });
   });
 
@@ -85,40 +76,6 @@ export async function agentsRoutes(fastify: FastifyInstance, options: { config: 
 
     const updated = agentsDAL.updateAgent(request.agent!.id, parseResult.data);
     return reply.send(agentsDAL.toPublicAgent(updated!));
-  });
-
-  // Submit verification proof
-  fastify.post('/agents/me/verify', { preHandler: authMiddleware }, async (request, reply) => {
-    const agent = request.agent!;
-
-    if (agent.verification_status === 'verified') {
-      return reply.status(400).send({
-        error: 'Already Verified',
-        message: 'Your account is already verified',
-      });
-    }
-
-    const parseResult = VerifyAgentSchema.safeParse(request.body);
-    if (!parseResult.success) {
-      return reply.status(400).send({
-        error: 'Validation Error',
-        details: parseResult.error.issues,
-      });
-    }
-
-    const result = await strategy.verify(agent, parseResult.data.proof);
-
-    if (result.success) {
-      agentsDAL.updateAgent(agent.id, {
-        is_verified: true,
-        verification_status: 'verified',
-      });
-    }
-
-    return reply.send({
-      success: result.success,
-      message: result.message,
-    });
   });
 
   // Get agent by name
@@ -263,61 +220,4 @@ export async function agentsRoutes(fastify: FastifyInstance, options: { config: 
     }
   );
 
-  // Vouch for an agent (for vouch verification strategy)
-  fastify.post<{ Params: { name: string } }>(
-    '/agents/:name/vouch',
-    { preHandler: authMiddleware },
-    async (request, reply) => {
-      // Import VouchStrategy for the vouch functionality
-      const { VouchStrategy } = await import('../../auth/strategies/vouch.js');
-      const vouchStrategy = new VouchStrategy(options.config.verification.options);
-
-      const target = agentsDAL.findAgentByName(request.params.name);
-
-      if (!target) {
-        return reply.status(404).send({
-          error: 'Not Found',
-          message: 'Agent not found',
-        });
-      }
-
-      const result = await vouchStrategy.addVouch(request.agent!.id, target.id);
-
-      if (!result.success) {
-        return reply.status(400).send({
-          error: 'Vouch Failed',
-          message: result.message,
-        });
-      }
-
-      return reply.send({
-        success: true,
-        message: result.message,
-        vouches_count: result.vouches_count,
-        required_vouches: result.required_vouches,
-      });
-    }
-  );
-
-  // Get vouch status for an agent
-  fastify.get<{ Params: { name: string } }>(
-    '/agents/:name/vouches',
-    async (request, reply) => {
-      const { VouchStrategy } = await import('../../auth/strategies/vouch.js');
-      const vouchStrategy = new VouchStrategy(options.config.verification.options);
-
-      const target = agentsDAL.findAgentByName(request.params.name);
-
-      if (!target) {
-        return reply.status(404).send({
-          error: 'Not Found',
-          message: 'Agent not found',
-        });
-      }
-
-      const vouches = vouchStrategy.getVouches(target.id);
-
-      return reply.send(vouches);
-    }
-  );
 }

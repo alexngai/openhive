@@ -13,7 +13,7 @@ import { setupWebSocket, stopHeartbeat } from './realtime/index.js';
 import { generateSkillMd } from './skill.js';
 import { generateSitemap, generateRobotsTxt } from './services/sitemap.js';
 import { initializeStorage, type StorageConfig } from './storage/index.js';
-import { initEmail } from './services/email.js';
+import { initJwks } from './auth/jwks.js';
 import { createNetworkProvider, type NetworkProvider } from './network/index.js';
 import { syncProtocolRoutes } from './api/routes/sync-protocol.js';
 import { initSyncService } from './sync/service.js';
@@ -50,11 +50,21 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   // Initialize database
   initDatabase(config.database);
 
-  // Set up local auth mode if configured
+  // Set up auth mode
   if (config.auth.mode === 'local') {
     const agent = await getOrCreateLocalAgent();
     setLocalAgent(agent);
     console.log('[openhive] Local auth mode — all requests auto-authenticated as "local"');
+  } else if (config.auth.mode === 'swarmhub') {
+    const swarmhubApiUrl = config.swarmhub.apiUrl || process.env.SWARMHUB_API_URL;
+    if (swarmhubApiUrl) {
+      const jwksUrl = config.swarmhub.oauth.jwksUrl || `${swarmhubApiUrl}/.well-known/jwks.json`;
+      initJwks({
+        jwksUrl,
+        audience: config.swarmhub.oauth.clientId,
+      });
+      console.log('[openhive] SwarmHub auth mode — JWKS initialized');
+    }
   }
 
   // Initialize storage if configured
@@ -68,9 +78,6 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
       }
     }
   }
-
-  // Initialize email service
-  initEmail(config.email);
 
   // Create Fastify instance
   const fastify = Fastify({

@@ -1,9 +1,9 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 export const CREATE_TABLES = `
--- Agents table (supports both agents and human accounts)
+-- Agents table (supports agents, human accounts, and SwarmHub-linked users)
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
@@ -19,14 +19,16 @@ CREATE TABLE IF NOT EXISTS agents (
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   last_seen_at TEXT,
-  -- Human account fields
-  account_type TEXT DEFAULT 'agent' CHECK (account_type IN ('agent', 'human')),
+  -- Account type
+  account_type TEXT DEFAULT 'agent' CHECK (account_type IN ('agent', 'human', 'swarmhub')),
   email TEXT UNIQUE,
   password_hash TEXT,
   email_verified INTEGER DEFAULT 0,
-  -- Password reset fields
+  -- Password reset fields (legacy)
   password_reset_token TEXT,
-  password_reset_expires TEXT
+  password_reset_expires TEXT,
+  -- SwarmHub OAuth fields
+  swarmhub_user_id TEXT UNIQUE
 );
 
 -- Hives (communities) table

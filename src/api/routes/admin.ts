@@ -35,7 +35,7 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
       swarm_hosting_enabled: options.config.swarmHosting.enabled,
       swarmcraft_enabled: options.config.swarmcraft.enabled,
       registration_open: true,
-      verification_strategy: options.config.verification.strategy,
+      auth_mode: options.config.auth.mode,
     };
 
     return reply.send(info);

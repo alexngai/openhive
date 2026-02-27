@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { WebSocket } from 'ws';
-import { findAgentByApiKey } from '../db/dal/agents.js';
+import { findAgentByApiKey, findOrCreateSwarmHubAgent } from '../db/dal/agents.js';
+import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
 import { findHiveByName, isHiveMember } from '../db/dal/hives.js';
 import type { Agent, WSMessage, WSEvent } from '../types.js';
 
@@ -29,6 +30,19 @@ export function setupWebSocket(fastify: FastifyInstance): void {
 
     if (token) {
       agent = await findAgentByApiKey(token);
+
+      // Try SwarmHub JWT if API key fails
+      if (!agent && isJwksInitialized()) {
+        const payload = await validateSwarmHubToken(token);
+        if (payload?.sub) {
+          agent = findOrCreateSwarmHubAgent({
+            swarmhubUserId: payload.sub,
+            name: payload.name,
+            email: payload.email,
+            avatarUrl: payload.avatar_url,
+          });
+        }
+      }
     }
 
     // Create client connection

@@ -167,26 +167,6 @@ export interface WSMessage {
   channels?: string[];
 }
 
-// Verification types
-export interface VerificationChallenge {
-  type: string;
-  message: string;
-  data?: unknown;
-}
-
-export interface VerificationResult {
-  success: boolean;
-  message?: string;
-}
-
-export interface VerificationStrategy {
-  readonly name: string;
-  readonly description: string;
-  onRegister(agent: Agent, data?: unknown): Promise<VerificationChallenge | null>;
-  verify(agent: Agent, proof: unknown): Promise<VerificationResult>;
-  validateRegistration?(data: unknown): boolean;
-}
-
 // Federation types (stubs)
 export interface FederatedInstance {
   id: string;
@@ -210,7 +190,7 @@ export interface InstanceInfo {
   swarm_hosting_enabled: boolean;
   swarmcraft_enabled: boolean;
   registration_open: boolean;
-  verification_strategy: string;
+  auth_mode: string;
 }
 
 // Memory bank types

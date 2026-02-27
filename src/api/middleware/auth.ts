@@ -1,5 +1,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
-import { findAgentByApiKey, findAgentById, updateAgentLastSeen } from '../../db/dal/agents.js';
+import { findAgentByApiKey, updateAgentLastSeen } from '../../db/dal/agents.js';
+import { validateSwarmHubToken, isJwksInitialized } from '../../auth/jwks.js';
+import { findOrCreateSwarmHubAgent } from '../../db/dal/agents.js';
 import type { Agent } from '../../types.js';
 
 // Extend FastifyRequest to include agent
@@ -17,28 +19,25 @@ export function setLocalAgent(agent: Agent | null): void {
 }
 
 /**
- * Try to authenticate using JWT token
- * Returns the agent if successful, null otherwise
+ * Try to authenticate using a SwarmHub JWT token (JWKS validation).
+ * Returns the agent if successful, null otherwise.
  */
-async function tryJwtAuth(request: FastifyRequest): Promise<Agent | null> {
-  try {
-    // Check if JWT is registered
-    if (typeof request.jwtVerify !== 'function') {
-      return null;
-    }
-
-    await request.jwtVerify();
-    const payload = request.user as { id: string } | undefined;
-
-    if (!payload?.id) {
-      return null;
-    }
-
-    const agent = findAgentById(payload.id);
-    return agent;
-  } catch {
+async function trySwarmHubAuth(token: string): Promise<Agent | null> {
+  if (!isJwksInitialized()) {
     return null;
   }
+
+  const payload = await validateSwarmHubToken(token);
+  if (!payload?.sub) {
+    return null;
+  }
+
+  return findOrCreateSwarmHubAgent({
+    swarmhubUserId: payload.sub,
+    name: payload.name,
+    email: payload.email,
+    avatarUrl: payload.avatar_url,
+  });
 }
 
 export async function authMiddleware(
@@ -48,7 +47,6 @@ export async function authMiddleware(
   const authHeader = request.headers.authorization;
 
   if (!authHeader) {
-    // In local mode, auto-authenticate with the local agent
     if (localAgent) {
       updateAgentLastSeen(localAgent.id);
       request.agent = localAgent;
@@ -70,12 +68,12 @@ export async function authMiddleware(
     });
   }
 
-  // First try API key authentication (for agents)
+  // 1. Try API key authentication (for agents/bots)
   let agent = await findAgentByApiKey(token);
 
-  // If API key fails, try JWT authentication (for humans)
+  // 2. Try SwarmHub JWT authentication (for humans via OAuth)
   if (!agent) {
-    agent = await tryJwtAuth(request);
+    agent = await trySwarmHubAuth(token);
   }
 
   if (!agent) {
@@ -85,10 +83,7 @@ export async function authMiddleware(
     });
   }
 
-  // Update last seen (fire and forget)
   updateAgentLastSeen(agent.id);
-
-  // Attach agent to request
   request.agent = agent;
 }
 
@@ -99,7 +94,6 @@ export async function optionalAuthMiddleware(
   const authHeader = request.headers.authorization;
 
   if (!authHeader) {
-    // In local mode, auto-authenticate with the local agent
     if (localAgent) {
       updateAgentLastSeen(localAgent.id);
       request.agent = localAgent;
@@ -113,29 +107,17 @@ export async function optionalAuthMiddleware(
     return;
   }
 
-  // First try API key authentication
+  // 1. Try API key authentication
   let agent = await findAgentByApiKey(token);
 
-  // If API key fails, try JWT authentication
+  // 2. Try SwarmHub JWT authentication
   if (!agent) {
-    agent = await tryJwtAuth(request);
+    agent = await trySwarmHubAuth(token);
   }
 
   if (agent) {
     updateAgentLastSeen(agent.id);
     request.agent = agent;
-  }
-}
-
-export function requireVerified(
-  request: FastifyRequest,
-  reply: FastifyReply
-): void {
-  if (!request.agent?.is_verified) {
-    reply.status(403).send({
-      error: 'Forbidden',
-      message: 'This action requires a verified account',
-    });
   }
 }
 

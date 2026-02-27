@@ -5,31 +5,20 @@ import * as agentsDAL from '../../db/dal/agents.js';
 import * as followsDAL from '../../db/dal/follows.js';
 import { agentsRoutes } from '../../api/routes/agents.js';
 import { authMiddleware, optionalAuthMiddleware } from '../../api/middleware/auth.js';
-import type { Config } from '../../config.js';
+import { ConfigSchema, type Config } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 const TEST_ROOT = testRoot('agents-routes');
 const TEST_DB_PATH = testDbPath(TEST_ROOT, 'agents-routes-test.db');
 
 function createTestConfig(): Config {
-  return {
-    port: 3000,
-    host: '0.0.0.0',
+  return ConfigSchema.parse({
     database: TEST_DB_PATH,
-    instance: {
-      name: 'Test OpenHive',
-      description: 'Test instance',
-      public: true,
-    },
+    instance: { name: 'Test OpenHive', description: 'Test instance' },
     admin: { createOnStartup: false },
-    verification: { strategy: 'open', options: {} },
-    rateLimit: { enabled: false, max: 100, timeWindow: '1 minute' },
-    federation: { enabled: false, peers: [] },
-    cors: { enabled: true, origin: true },
-    email: { enabled: false, from: 'noreply@test.local' },
-    jwt: { secret: 'test-secret-key-for-testing-only', expiresIn: '7d' },
-    githubApp: { enabled: false },
-  };
+    auth: { mode: 'local' },
+    rateLimit: { enabled: false },
+  });
 }
 
 async function createTestApp(config: Config): Promise<FastifyInstance> {
