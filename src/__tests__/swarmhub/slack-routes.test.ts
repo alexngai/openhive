@@ -271,7 +271,7 @@ describe('SwarmHub Slack Routes', () => {
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.payload);
       expect(body.ok).toBe(true);
-      expect(body.message).toContain('linear');
+      expect(body.source).toBe('linear');
     });
 
     it('returns 400 for invalid Slack event payload', async () => {
