@@ -325,6 +325,45 @@ export interface SkillDetail {
   raw: string;
 }
 
+// OpenTasks content types
+
+export interface OpenTasksGraphSummary {
+  node_count: number;
+  edge_count: number;
+  task_counts: {
+    open: number;
+    in_progress: number;
+    blocked: number;
+    closed: number;
+  };
+  context_count: number;
+  feedback_count: number;
+  ready_count: number;
+  daemon_connected: boolean;
+}
+
+export interface OpenTasksNodeSummary {
+  id: string;
+  type: string;
+  title: string;
+  status?: string;
+  priority?: number;
+  archived?: boolean;
+}
+
+export interface OpenTasksReadyResponse {
+  items: OpenTasksNodeSummary[];
+  total: number;
+  daemon_connected: boolean;
+}
+
+export interface OpenTasksStatus {
+  daemon_running: boolean;
+  graph_file_exists: boolean;
+  graph_last_modified: string | null;
+  socket_path: string;
+}
+
 // Event Config types
 export interface PostRule {
   id: string;

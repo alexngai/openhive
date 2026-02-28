@@ -6,6 +6,7 @@ import { listMemoryFiles } from 'minimem/internal';
 import { FilesystemStorageAdapter, discoverSkills } from 'skill-tree';
 import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
+import { OpenHiveOpenTasksClient } from '../../opentasks/index.js';
 import type { SyncableResource } from '../../types.js';
 import type { Config } from '../../config.js';
 
@@ -598,6 +599,129 @@ export async function resourceContentRoutes(
       examples: skill.examples,
       notes: skill.notes || null,
       raw,
+    });
+  });
+
+  // ============================================================================
+  // OpenTasks Content Endpoints
+  // ============================================================================
+
+  /** Validate that a resource is an OpenTasks task resource */
+  function validateOpenTasksResource(
+    resource: SyncableResource,
+    reply: { status: (code: number) => { send: (body: unknown) => unknown } }
+  ): boolean {
+    const meta = resource.metadata as Record<string, unknown> | null;
+    if (resource.resource_type !== 'task' || !meta?.opentasks) {
+      reply.status(400).send({
+        error: 'Bad Request',
+        message: 'This endpoint is only available for OpenTasks task resources',
+      });
+      return false;
+    }
+    return true;
+  }
+
+  // 6. OpenTasks graph summary
+  fastify.get<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/summary', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const client = new OpenHiveOpenTasksClient(localPath);
+    await client.connectDaemon();
+    try {
+      const summary = await client.getGraphSummary();
+      return reply.send({ ...summary, daemon_connected: client.connected });
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  // 7. OpenTasks ready tasks (unblocked, open)
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { limit?: number };
+  }>('/resources/:id/content/opentasks/ready', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const limit = Math.min(Math.max(request.query.limit || 50, 1), 200);
+    const client = new OpenHiveOpenTasksClient(localPath);
+    await client.connectDaemon();
+    try {
+      const ready = await client.getReady({ limit });
+      return reply.send({ items: ready, total: ready.length, daemon_connected: client.connected });
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  // 8. OpenTasks task listing
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { status?: string; limit?: number; offset?: number };
+  }>('/resources/:id/content/opentasks/tasks', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const client = new OpenHiveOpenTasksClient(localPath);
+    const connected = await client.connectDaemon();
+    try {
+      if (!connected) {
+        // Fallback: return summary from JSONL
+        const summary = await client.getGraphSummary();
+        return reply.send({
+          daemon_connected: false,
+          message: 'Daemon not running; returning summary only',
+          task_counts: summary.task_counts,
+        });
+      }
+
+      const result = await client.queryNodes({
+        type: 'task',
+        status: request.query.status,
+        archived: false,
+        limit: Math.min(Math.max(request.query.limit || 50, 1), 200),
+        offset: request.query.offset || 0,
+      });
+
+      return reply.send({
+        items: result?.items || [],
+        daemon_connected: true,
+      });
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  // 9. OpenTasks daemon status
+  fastify.get<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/status', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const client = new OpenHiveOpenTasksClient(localPath);
+    const daemonRunning = await client.isDaemonRunning();
+    const graphPath = join(localPath, 'graph.jsonl');
+    const graphExists = existsSync(graphPath);
+    const graphModified = graphExists ? statSync(graphPath).mtime.toISOString() : null;
+
+    return reply.send({
+      daemon_running: daemonRunning,
+      graph_file_exists: graphExists,
+      graph_last_modified: graphModified,
+      socket_path: join(localPath, 'daemon.sock'),
     });
   });
 }

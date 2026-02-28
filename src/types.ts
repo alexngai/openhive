@@ -320,6 +320,16 @@ export interface TaskResourceMetadata {
   task_schema_version?: string;
   default_priority?: 'low' | 'medium' | 'high';
   categories?: string[];
+  /** Discriminator: true when this task resource is backed by OpenTasks */
+  opentasks?: boolean;
+  /** OpenTasks location hash from .opentasks/config.json */
+  location_hash?: string;
+  /** OpenTasks location name from .opentasks/config.json */
+  location_name?: string;
+  /** Approximate node count from graph.jsonl */
+  node_count?: number;
+  /** Approximate edge count from graph.jsonl */
+  edge_count?: number;
 }
 
 export interface SkillResourceMetadata {

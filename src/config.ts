@@ -260,6 +260,10 @@ export const ConfigSchema = z.object({
     globalSkillPaths: z.array(z.string()).optional(),
     /** Project root for project-scope discovery (default: cwd) */
     projectRoot: z.string().optional(),
+    /** Override path for global OpenTasks store (default: ~/.opentasks) */
+    globalOpenTasksPath: z.string().optional(),
+    /** Enable OpenTasks discovery (default: true) */
+    openTasksEnabled: z.boolean().default(true),
   }).default({}),
 
   // Channel Bridge: external platform integration (Slack, Discord, Telegram, etc.)

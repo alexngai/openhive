@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Database, Wrench, RefreshCw, ChevronRight, GitCommit, Eye, Users, Tag, Clock } from 'lucide-react';
+import { Database, Wrench, ListChecks, RefreshCw, ChevronRight, GitCommit, Eye, Users, Tag, Clock, Zap, Network } from 'lucide-react';
 import { useResourcesByType, useBatchCheckUpdates, useSyncStatus, useMapSwarms } from '../hooks/useApi';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
@@ -8,11 +8,12 @@ import { toast } from '../stores/toast';
 import type { SyncableResource } from '../lib/api';
 import clsx from 'clsx';
 
-type ResourceTab = 'memory_bank' | 'skill';
+type ResourceTab = 'memory_bank' | 'skill' | 'task';
 
 const TABS: { key: ResourceTab; label: string; icon: React.ElementType }[] = [
   { key: 'memory_bank', label: 'Memory Banks', icon: Database },
   { key: 'skill', label: 'Skills', icon: Wrench },
+  { key: 'task', label: 'Tasks', icon: ListChecks },
 ];
 
 function SyncDot({ lastPushAt }: { lastPushAt: string | null }) {
@@ -42,8 +43,15 @@ function VisibilityBadge({ visibility }: { visibility: string }) {
   );
 }
 
+const RESOURCE_ICONS: Record<string, React.ElementType> = {
+  memory_bank: Database,
+  skill: Wrench,
+  task: ListChecks,
+};
+
 function ResourceCard({ resource }: { resource: SyncableResource }) {
-  const Icon = resource.resource_type === 'memory_bank' ? Database : Wrench;
+  const Icon = RESOURCE_ICONS[resource.resource_type] || Database;
+  const meta = resource.metadata as Record<string, unknown> | null;
 
   return (
     <Link
@@ -73,6 +81,23 @@ function ResourceCard({ resource }: { resource: SyncableResource }) {
         )}
 
         <div className="flex items-center gap-3 mt-1.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+          {/* OpenTasks-specific metadata from discovery */}
+          {resource.resource_type === 'task' && meta?.opentasks && (
+            <>
+              {typeof meta.node_count === 'number' && (
+                <span className="flex items-center gap-1" title="Graph nodes">
+                  <Network className="w-3 h-3" />
+                  {meta.node_count} nodes
+                </span>
+              )}
+              {typeof meta.edge_count === 'number' && (
+                <span className="flex items-center gap-1" title="Graph edges">
+                  <Zap className="w-3 h-3" />
+                  {meta.edge_count} edges
+                </span>
+              )}
+            </>
+          )}
           {resource.last_commit_hash && (
             <span className="flex items-center gap-1" title={resource.last_commit_hash}>
               <GitCommit className="w-3 h-3" />
@@ -229,17 +254,20 @@ export function Resources() {
       ) : (
         <div className="py-12 text-center">
           <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3" style={{ backgroundColor: 'var(--color-elevated)' }}>
-            {activeTab === 'memory_bank' ? (
-              <Database className="w-6 h-6" style={{ color: 'var(--color-text-muted)' }} />
-            ) : (
-              <Wrench className="w-6 h-6" style={{ color: 'var(--color-text-muted)' }} />
-            )}
+            {(() => {
+              const EmptyIcon = RESOURCE_ICONS[activeTab] || Database;
+              return <EmptyIcon className="w-6 h-6" style={{ color: 'var(--color-text-muted)' }} />;
+            })()}
           </div>
-          <p className="text-sm font-medium mb-1">No {activeTab === 'memory_bank' ? 'memory banks' : 'skills'} yet</p>
+          <p className="text-sm font-medium mb-1">
+            No {activeTab === 'memory_bank' ? 'memory banks' : activeTab === 'skill' ? 'skills' : 'task stores'} yet
+          </p>
           <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
             {activeTab === 'memory_bank'
               ? 'Connect a swarm with minimem to start syncing memories'
-              : 'Connect a swarm with skill-tree to start syncing skills'}
+              : activeTab === 'skill'
+                ? 'Connect a swarm with skill-tree to start syncing skills'
+                : 'Run resource discovery on a project with .opentasks/ to find task stores'}
           </p>
         </div>
       )}
