@@ -32,8 +32,9 @@ COPY . .
 # Build the application
 RUN npm run build
 
-# Remove devDependencies and clean cache for smaller node_modules
-RUN npm ci --omit=dev && npm cache clean --force
+# Remove devDependencies — use prune (not ci) to preserve platform-specific
+# optional deps like @img/sharp-linux-x64 that npm ci would re-resolve away
+RUN npm prune --omit=dev && npm cache clean --force
 
 # =============================================================================
 # Stage 2: Production - Minimal runtime image
