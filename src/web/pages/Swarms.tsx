@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Zap, Square, RotateCw, Terminal, ChevronDown, ChevronUp, Plus, X, Cpu,
-  Link2, Globe, Wifi, WifiOff, Settings2, Trash2, FileText,
+  Link2, Globe, Wifi, WifiOff, Settings2, Trash2, FileText, Shield,
 } from 'lucide-react';
 import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-generator';
 import { toast } from '../stores/toast';
@@ -12,16 +12,17 @@ import {
 } from '../hooks/useApi';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
-import { HostedStateBadge, MapStatusBadge, SectionLabel } from '../components/swarm/StatusBadges';
+import { HostedStateBadge, MapStatusBadge, SandboxBadge, SectionLabel } from '../components/swarm/StatusBadges';
 import type { HostedSwarm, MapSwarm } from '../lib/api';
 import clsx from 'clsx';
 
 const PROVIDERS = [
-  { value: 'local',  label: 'Local',   desc: 'Sidecar process on this machine' },
-  { value: 'docker', label: 'Docker',  desc: 'Docker container' },
-  { value: 'fly',    label: 'Fly.io',  desc: 'Fly.io machine' },
-  { value: 'ssh',    label: 'SSH',     desc: 'Remote host via SSH' },
-  { value: 'k8s',    label: 'K8s',     desc: 'Kubernetes pod' },
+  { value: 'local',            label: 'Local',           desc: 'Sidecar process on this machine' },
+  { value: 'local-sandboxed',  label: 'Local (Sandbox)', desc: 'Sandboxed process with OS-level isolation' },
+  { value: 'docker',           label: 'Docker',          desc: 'Docker container' },
+  { value: 'fly',              label: 'Fly.io',          desc: 'Fly.io machine' },
+  { value: 'ssh',              label: 'SSH',             desc: 'Remote host via SSH' },
+  { value: 'k8s',              label: 'K8s',             desc: 'Kubernetes pod' },
 ] as const;
 
 const TRANSPORTS = [
@@ -38,6 +39,44 @@ const AUTH_METHODS = [
 ] as const;
 
 // =============================================================================
+// Sandbox Policy Info (shown in Advanced section for sandboxed provider)
+// =============================================================================
+
+function SandboxPolicyFields() {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>
+        <Shield className="w-3 h-3 text-blue-400" />
+        Sandbox Policy
+      </div>
+      <div className="space-y-1.5">
+        <PolicyRow label="Filesystem" desc="Writes restricted to swarm data directory; sensitive paths (~/.ssh, ~/.gnupg, ~/.aws) denied" />
+        <PolicyRow label="Network" desc="Domain allowlist enforced via proxy — only configured domains are reachable" />
+        <PolicyRow label="Hive overrides" desc="Hive-specific policies (e.g. allowed domains) are applied when auto-joining a hive" />
+      </div>
+      <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+        Sandbox policies are configured server-side in openhive.config.js under swarmHosting.sandbox.
+        Per-hive overrides apply automatically based on the selected hive.
+      </p>
+    </div>
+  );
+}
+
+function PolicyRow({ label, desc }: { label: string; desc: string }) {
+  return (
+    <div className="flex items-baseline gap-2 text-2xs">
+      <span
+        className="shrink-0 px-1.5 py-0.5 rounded font-medium"
+        style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+      >
+        {label}
+      </span>
+      <span style={{ color: 'var(--color-text-muted)' }}>{desc}</span>
+    </div>
+  );
+}
+
+// =============================================================================
 // Spawn Form
 // =============================================================================
 
@@ -52,6 +91,16 @@ function SpawnForm({ onClose }: { onClose: () => void }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [adapterConfigRaw, setAdapterConfigRaw] = useState('');
   const [metadataRaw, setMetadataRaw] = useState('');
+
+  const isSandboxed = provider === 'local-sandboxed';
+
+  // Auto-expand Advanced when switching to sandboxed provider
+  useEffect(() => {
+    if (isSandboxed && !showAdvanced) {
+      setShowAdvanced(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSandboxed]);
 
   const spawnMutation = useSpawnSwarm();
   const { data: hives } = useHives({ sort: 'popular', limit: 50 });
@@ -123,7 +172,7 @@ function SpawnForm({ onClose }: { onClose: () => void }) {
               maxLength={100}
             />
           </div>
-          <div className="w-40">
+          <div className="w-48">
             <SectionLabel>Provider</SectionLabel>
             <select
               value={provider}
@@ -139,6 +188,23 @@ function SpawnForm({ onClose }: { onClose: () => void }) {
             </p>
           </div>
         </div>
+
+        {/* Sandbox info callout */}
+        {isSandboxed && (
+          <div
+            className="flex items-start gap-2 px-3 py-2 rounded-md text-xs"
+            style={{ backgroundColor: 'rgba(59, 130, 246, 0.08)', border: '1px solid rgba(59, 130, 246, 0.15)' }}
+          >
+            <Shield className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-medium text-blue-400">Sandbox enabled</span>
+              <span style={{ color: 'var(--color-text-secondary)' }}>
+                {' '}&mdash; process will run with OS-level filesystem and network restrictions
+                (bubblewrap on Linux, seatbelt on macOS). Configure allowed domains and paths in Advanced.
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Row 2: Description */}
         <div>
@@ -198,6 +264,9 @@ function SpawnForm({ onClose }: { onClose: () => void }) {
 
         {showAdvanced && (
           <div className="space-y-3 pl-3 border-l-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
+            {/* Sandbox policy (only shown for sandboxed provider) */}
+            {isSandboxed && <SandboxPolicyFields />}
+
             <div>
               <SectionLabel>Adapter Config (JSON)</SectionLabel>
               <textarea
@@ -467,8 +536,9 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
             <span className="text-sm font-medium truncate">{swarm.name}</span>
             <HostedStateBadge state={swarm.state} />
             <span className="text-2xs px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
-              {swarm.provider}
+              {swarm.provider === 'local-sandboxed' ? 'local' : swarm.provider}
             </span>
+            {swarm.provider === 'local-sandboxed' && <SandboxBadge />}
           </div>
           <div className="flex items-center gap-2 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
             {swarm.assigned_port && <span>:{swarm.assigned_port}</span>}

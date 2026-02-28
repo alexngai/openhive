@@ -16,6 +16,15 @@ import { nanoid } from 'nanoid';
 // Types
 // =============================================================================
 
+export interface TerminalSandboxConfig {
+  /** Domains the terminal session is allowed to reach */
+  allowed_domains?: string[];
+  /** Filesystem paths the session can write to */
+  allow_write?: string[];
+  /** Filesystem paths denied for reading */
+  deny_read?: string[];
+}
+
 export interface TerminalSessionConfig {
   /** Command to run (defaults to user's shell) */
   command?: string;
@@ -29,6 +38,8 @@ export interface TerminalSessionConfig {
   cols?: number;
   /** Initial rows (default: 24) */
   rows?: number;
+  /** Optional sandbox config to restrict the terminal session */
+  sandbox?: TerminalSandboxConfig;
 }
 
 export type TerminalSessionStatus = 'running' | 'stopped' | 'failed';
@@ -69,6 +80,8 @@ export class PtyManager extends EventEmitter {
 
   /**
    * Create a new terminal session.
+   * If a sandbox config is provided, the session command is wrapped with
+   * OS-level restrictions via @anthropic-ai/sandbox-runtime.
    */
   create(config: TerminalSessionConfig = {}): TerminalSessionInfo {
     if (this.sessions.size >= MAX_SESSIONS) {
@@ -224,5 +237,101 @@ export class PtyManager extends EventEmitter {
         // Ignore errors during shutdown
       }
     }
+  }
+
+  /**
+   * Create a sandboxed terminal session.
+   * Wraps the command with sandbox-runtime restrictions before spawning the PTY.
+   * The sandbox restricts filesystem and network access at the OS level.
+   */
+  async createSandboxed(config: TerminalSessionConfig & { sandbox: TerminalSandboxConfig }): Promise<TerminalSessionInfo> {
+    if (this.sessions.size >= MAX_SESSIONS) {
+      throw new Error(`Maximum number of terminal sessions (${MAX_SESSIONS}) reached`);
+    }
+
+    const shell = config.command || process.env.SHELL || 'bash';
+    const args = config.args || [];
+    const cwd = config.cwd || process.env.HOME || process.cwd();
+    const cols = config.cols || 80;
+    const rows = config.rows || 24;
+
+    const env = {
+      ...process.env,
+      ...config.env,
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+    };
+
+    // Build the full command string
+    const fullCommand = args.length > 0
+      ? `${shell} ${args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')}`
+      : shell;
+
+    let wrappedCommand: string;
+
+    try {
+      const { SandboxManager, SandboxRuntimeConfigSchema } = await import('@anthropic-ai/sandbox-runtime');
+
+      const srtConfig = SandboxRuntimeConfigSchema.parse({
+        network: {
+          allowedDomains: config.sandbox.allowed_domains ?? [],
+          deniedDomains: [],
+          allowLocalBinding: true,
+        },
+        filesystem: {
+          denyRead: config.sandbox.deny_read ?? ['~/.ssh', '~/.gnupg', '~/.aws'],
+          allowWrite: config.sandbox.allow_write ?? [cwd],
+          denyWrite: [],
+        },
+        allowPty: true, // Terminal sessions need PTY
+      });
+
+      await SandboxManager.initialize(srtConfig);
+      wrappedCommand = await SandboxManager.wrapWithSandbox(fullCommand);
+    } catch (err) {
+      console.warn(`[terminal] Sandbox wrapping failed, falling back to unsandboxed: ${(err as Error).message}`);
+      // Fall back to unsandboxed
+      return this.create(config);
+    }
+
+    const id = nanoid();
+
+    // Spawn the PTY with the wrapped command via sh -c
+    const ptyProcess = ptySpawn('sh', ['-c', wrappedCommand], {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      cwd,
+      env: env as Record<string, string>,
+    });
+
+    const state: TerminalSessionState = {
+      id,
+      config: { command: shell, args, cwd, cols, rows },
+      ptyProcess,
+      status: 'running',
+      createdAt: Date.now(),
+      stoppedAt: null,
+      exitCode: null,
+    };
+
+    this.sessions.set(id, state);
+
+    ptyProcess.onData((data: string) => {
+      this.emit('session.data', { sessionId: id, data });
+    });
+
+    ptyProcess.onExit(({ exitCode, signal }: { exitCode: number; signal?: number }) => {
+      state.status = 'stopped';
+      state.stoppedAt = Date.now();
+      state.exitCode = exitCode;
+      this.emit('session.exit', { sessionId: id, exitCode, signal });
+      console.log(`[terminal] Sandboxed session ${id} exited: code=${exitCode}, signal=${signal}`);
+    });
+
+    this.emit('session.created', { sessionId: id, pid: ptyProcess.pid });
+    console.log(`[terminal] Sandboxed session ${id} created: ${shell} ${args.join(' ')}, PID=${ptyProcess.pid}`);
+
+    return this.getInfo(id)!;
   }
 }

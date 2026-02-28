@@ -43,7 +43,7 @@ const SpawnSwarmSchema = z.object({
   adapter: z.string().max(100).optional(),
   adapter_config: z.record(z.unknown()).optional(),
   hive: z.string().max(100).optional(),
-  provider: z.enum(['local', 'docker', 'fly', 'ssh', 'k8s']).optional(),
+  provider: z.enum(['local', 'local-sandboxed', 'docker', 'fly', 'ssh', 'k8s']).optional(),
   metadata: z.record(z.unknown()).optional(),
   credential_overrides: z.record(z.string(), z.string()).optional(),
   workspace: WorkspaceSchema.optional(),

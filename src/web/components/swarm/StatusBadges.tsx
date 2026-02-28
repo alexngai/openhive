@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import { Shield } from 'lucide-react';
 import type { HostedSwarm } from '../../lib/api';
 
 export const HOSTED_STATE_STYLES: Record<HostedSwarm['state'], { label: string; bg: string; text: string }> = {
@@ -33,6 +34,15 @@ export function MapStatusBadge({ status }: { status: string }) {
     <span className={clsx('inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs font-medium', style.bg, style.text)}>
       <span className={clsx('w-1.5 h-1.5 rounded-full', status === 'online' ? 'bg-emerald-400 animate-pulse' : 'bg-current opacity-50')} />
       {style.label}
+    </span>
+  );
+}
+
+export function SandboxBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 text-2xs px-1.5 py-0.5 rounded font-medium bg-blue-500/10 text-blue-400">
+      <Shield className="w-2.5 h-2.5" />
+      Sandboxed
     </span>
   );
 }
