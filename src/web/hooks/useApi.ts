@@ -298,6 +298,9 @@ export function useSpawnSwarm() {
       hive?: string;
       provider?: string;
       metadata?: Record<string, unknown>;
+      workspace?: {
+        repos: Array<{ url: string; branch?: string; path?: string; depth?: number }>;
+      };
     }) => api.post<HostedSwarm>('/map/hosted/spawn', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['hosted-swarms'] });

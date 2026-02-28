@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Zap, Square, RotateCw, Terminal, ChevronDown, ChevronUp, Plus, X, Cpu,
-  Link2, Globe, Wifi, WifiOff, Settings2, Trash2, FileText, Shield,
+  Link2, Globe, Wifi, WifiOff, Settings2, Trash2, FileText, Shield, GitBranch,
 } from 'lucide-react';
 import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-generator';
 import { toast } from '../stores/toast';
@@ -80,6 +80,15 @@ function PolicyRow({ label, desc }: { label: string; desc: string }) {
 // Spawn Form
 // =============================================================================
 
+interface WorkspaceRepoEntry {
+  url: string;
+  branch: string;
+  path: string;
+  depth: string;
+}
+
+const emptyRepo = (): WorkspaceRepoEntry => ({ url: '', branch: '', path: '', depth: '' });
+
 function SpawnForm({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState(() =>
     uniqueNamesGenerator({ dictionaries: [adjectives, colors, animals], separator: '-', length: 3 })
@@ -91,6 +100,7 @@ function SpawnForm({ onClose }: { onClose: () => void }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [adapterConfigRaw, setAdapterConfigRaw] = useState('');
   const [metadataRaw, setMetadataRaw] = useState('');
+  const [workspaceRepos, setWorkspaceRepos] = useState<WorkspaceRepoEntry[]>([]);
 
   const isSandboxed = provider === 'local-sandboxed';
 
@@ -128,6 +138,22 @@ function SpawnForm({ onClose }: { onClose: () => void }) {
       }
     }
 
+    // Build workspace config from repo entries
+    const validRepos = workspaceRepos
+      .filter((r) => r.url.trim())
+      .map((r) => {
+        const repo: { url: string; branch?: string; path?: string; depth?: number } = {
+          url: r.url.trim(),
+        };
+        if (r.branch.trim()) repo.branch = r.branch.trim();
+        if (r.path.trim()) repo.path = r.path.trim();
+        if (r.depth.trim()) {
+          const d = parseInt(r.depth, 10);
+          if (d > 0) repo.depth = d;
+        }
+        return repo;
+      });
+
     try {
       await spawnMutation.mutateAsync({
         name,
@@ -137,6 +163,7 @@ function SpawnForm({ onClose }: { onClose: () => void }) {
         provider: provider !== 'local' ? provider : undefined,
         adapter_config,
         metadata,
+        workspace: validRepos.length > 0 ? { repos: validRepos } : undefined,
       });
       toast.success('Swarm spawned', `"${name}" is starting up.`);
       onClose();
@@ -248,6 +275,106 @@ function SpawnForm({ onClose }: { onClose: () => void }) {
               ))}
             </select>
           </div>
+        </div>
+
+        {/* Workspace (Git Repos) */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <SectionLabel>
+              <span className="flex items-center gap-1">
+                <GitBranch className="w-3 h-3" />
+                Workspace Repos
+              </span>
+            </SectionLabel>
+            {workspaceRepos.length === 0 && (
+              <button
+                type="button"
+                onClick={() => setWorkspaceRepos([emptyRepo()])}
+                className="text-2xs text-honey-500 hover:text-honey-400 transition-colors"
+              >
+                + Add repo
+              </button>
+            )}
+          </div>
+
+          {workspaceRepos.length === 0 ? (
+            <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+              Optionally clone git repos into the swarm's working directory before it starts.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {workspaceRepos.map((repo, i) => (
+                <div key={i} className="space-y-1.5 p-2 rounded-md" style={{ backgroundColor: 'var(--color-elevated)' }}>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={repo.url}
+                      onChange={(e) => {
+                        const updated = [...workspaceRepos];
+                        updated[i] = { ...updated[i], url: e.target.value };
+                        setWorkspaceRepos(updated);
+                      }}
+                      className="input flex-1 font-mono text-xs"
+                      placeholder="https://github.com/org/repo.git"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setWorkspaceRepos(workspaceRepos.filter((_, j) => j !== i))}
+                      className="btn btn-ghost p-1 text-red-400 hover:bg-red-500/10"
+                      title="Remove repo"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={repo.branch}
+                      onChange={(e) => {
+                        const updated = [...workspaceRepos];
+                        updated[i] = { ...updated[i], branch: e.target.value };
+                        setWorkspaceRepos(updated);
+                      }}
+                      className="input flex-1 text-2xs"
+                      placeholder="Branch (default)"
+                    />
+                    <input
+                      type="text"
+                      value={repo.path}
+                      onChange={(e) => {
+                        const updated = [...workspaceRepos];
+                        updated[i] = { ...updated[i], path: e.target.value };
+                        setWorkspaceRepos(updated);
+                      }}
+                      className="input flex-1 text-2xs"
+                      placeholder="Path (root)"
+                    />
+                    <input
+                      type="text"
+                      value={repo.depth}
+                      onChange={(e) => {
+                        const updated = [...workspaceRepos];
+                        updated[i] = { ...updated[i], depth: e.target.value.replace(/\D/g, '') };
+                        setWorkspaceRepos(updated);
+                      }}
+                      className="input w-16 text-2xs"
+                      placeholder="Depth"
+                    />
+                  </div>
+                </div>
+              ))}
+              {workspaceRepos.length < 10 && (
+                <button
+                  type="button"
+                  onClick={() => setWorkspaceRepos([...workspaceRepos, emptyRepo()])}
+                  className="text-2xs text-honey-500 hover:text-honey-400 transition-colors flex items-center gap-1"
+                >
+                  <Plus className="w-2.5 h-2.5" />
+                  Add another repo
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Advanced toggle */}
