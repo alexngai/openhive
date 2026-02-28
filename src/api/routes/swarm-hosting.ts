@@ -26,6 +26,17 @@ import type { Config } from '../../config.js';
 // Zod Schemas
 // ============================================================================
 
+const WorkspaceRepoSchema = z.object({
+  url: z.string().min(1).max(2000),
+  branch: z.string().max(200).optional(),
+  path: z.string().max(500).optional(),
+  depth: z.number().int().positive().optional(),
+});
+
+const WorkspaceSchema = z.object({
+  repos: z.array(WorkspaceRepoSchema).min(1).max(10),
+});
+
 const SpawnSwarmSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
@@ -35,6 +46,7 @@ const SpawnSwarmSchema = z.object({
   provider: z.enum(['local', 'docker', 'fly', 'ssh', 'k8s']).optional(),
   metadata: z.record(z.unknown()).optional(),
   credential_overrides: z.record(z.string(), z.string()).optional(),
+  workspace: WorkspaceSchema.optional(),
 });
 
 // ============================================================================
@@ -49,6 +61,7 @@ function handleSwarmError(error: unknown, reply: FastifyReply): FastifyReply {
       NO_PORTS_AVAILABLE: 503,
       HIVE_NOT_FOUND: 404,
       PREAUTH_KEY_FAILED: 500,
+      WORKSPACE_SETUP_FAILED: 500,
       SPAWN_FAILED: 500,
       NOT_FOUND: 404,
       NOT_OWNER: 403,

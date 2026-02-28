@@ -5,7 +5,7 @@
  * Follows the same pattern as HeadscaleManager (src/headscale/manager.ts).
  */
 
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, execFile, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type {
@@ -15,6 +15,7 @@ import type {
   InstanceStatus,
   LogOptions,
   HostedSwarmState,
+  WorkspaceConfig,
 } from '../types.js';
 
 interface ManagedProcess {
@@ -59,6 +60,46 @@ function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): boolean 
   }
 }
 
+/**
+ * Clone workspace repositories into the swarm data directory.
+ * Runs sequentially so errors are clearly attributable to a specific repo.
+ */
+async function cloneWorkspaceRepos(
+  workspace: WorkspaceConfig,
+  dataDir: string,
+  env: Record<string, string>,
+): Promise<void> {
+  for (const repo of workspace.repos) {
+    const cloneDir = repo.path ? path.resolve(dataDir, repo.path) : dataDir;
+
+    // Ensure the target directory exists
+    if (!fs.existsSync(cloneDir)) {
+      fs.mkdirSync(cloneDir, { recursive: true });
+    }
+
+    const args = ['clone'];
+    if (repo.depth) {
+      args.push('--depth', String(repo.depth));
+    }
+    if (repo.branch) {
+      args.push('--branch', repo.branch);
+    }
+    args.push('--', repo.url, cloneDir);
+
+    await new Promise<void>((resolve, reject) => {
+      execFile('git', args, { env, timeout: 120_000 }, (error, _stdout, stderr) => {
+        if (error) {
+          reject(new Error(
+            `git clone failed for ${repo.url}: ${error.message}${stderr ? `\n${stderr}` : ''}`
+          ));
+        } else {
+          resolve();
+        }
+      });
+    });
+  }
+}
+
 export class LocalProvider implements HostingProvider {
   readonly type = 'local' as const;
 
@@ -97,6 +138,11 @@ export class LocalProvider implements HostingProvider {
     const dataDir = path.resolve(config.data_dir);
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true });
+    }
+
+    // Clone workspace repos before spawning the process
+    if (config.workspace?.repos.length) {
+      await cloneWorkspaceRepos(config.workspace, dataDir, process.env as Record<string, string>);
     }
 
     // Parse the command (could be 'npx openswarm', 'node /path/to/bin', etc.)
