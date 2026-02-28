@@ -33,8 +33,11 @@ COPY . .
 RUN npm run build
 
 # Remove devDependencies — use prune (not ci) to preserve platform-specific
-# optional deps like @img/sharp-linux-x64 that npm ci would re-resolve away
-RUN npm prune --omit=dev && npm cache clean --force
+# optional deps like @img/sharp-linux-x64 that npm ci would re-resolve away.
+# Verify sharp loads; if prune removed its platform bindings, reinstall them.
+RUN npm prune --omit=dev \
+    && (node -e "require('sharp')" 2>/dev/null || npm install --no-save @img/sharp-linux-x64) \
+    && npm cache clean --force
 
 # =============================================================================
 # Stage 2: Production - Minimal runtime image
