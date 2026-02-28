@@ -2,6 +2,10 @@
 set -e
 
 DB_PATH="/app/data/openhive.db"
+# Pass --database to skip the interactive setup wizard (which waits for stdin
+# that doesn't exist in a container). The CLI checks isInitialised() for a
+# .openhive-root marker file, and without --database it launches the wizard.
+SERVE_CMD="node dist/cli.js serve --database ${DB_PATH}"
 
 # ── Fetch boot-time config from SwarmHub ────────────────────────────
 # When running as a managed hive, fetch secrets (OAuth client_secret, etc.)
@@ -79,14 +83,14 @@ YAML
     # Start app through Litestream with signal forwarding.
     # If Litestream fails to start, fall back to running without replication.
     trap 'kill -TERM $PID 2>/dev/null' TERM INT
-    litestream replicate -exec "node dist/cli.js serve" -config /tmp/litestream.yml &
+    litestream replicate -exec "$SERVE_CMD" -config /tmp/litestream.yml &
     PID=$!
     wait $PID
     EXIT_CODE=$?
 
     if [ $EXIT_CODE -ne 0 ]; then
       echo "[entrypoint] WARNING: Litestream exited with code $EXIT_CODE, restarting without replication"
-      exec node dist/cli.js serve
+      exec $SERVE_CMD
     fi
   else
     # Standard CLI mode — works for plain S3/GCS URLs without custom endpoints.
@@ -97,17 +101,17 @@ YAML
 
     # Start app through Litestream with signal forwarding.
     trap 'kill -TERM $PID 2>/dev/null' TERM INT
-    litestream replicate -exec "node dist/cli.js serve" "$DB_PATH" "$LITESTREAM_REPLICA_URL" &
+    litestream replicate -exec "$SERVE_CMD" "$DB_PATH" "$LITESTREAM_REPLICA_URL" &
     PID=$!
     wait $PID
     EXIT_CODE=$?
 
     if [ $EXIT_CODE -ne 0 ]; then
       echo "[entrypoint] WARNING: Litestream exited with code $EXIT_CODE, restarting without replication"
-      exec node dist/cli.js serve
+      exec $SERVE_CMD
     fi
   fi
 else
   # No replication configured — start normally (local/self-hosted mode)
-  exec node dist/cli.js serve
+  exec $SERVE_CMD
 fi
