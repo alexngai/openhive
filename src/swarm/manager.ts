@@ -233,6 +233,7 @@ export class SwarmManager {
         hive: input.hive,
         inherit_env: inheritEnv,
       },
+      workspace: input.workspace,
     };
 
     // Create DB record
@@ -873,6 +874,7 @@ export type SwarmHostingErrorCode =
   | 'NO_PORTS_AVAILABLE'
   | 'HIVE_NOT_FOUND'
   | 'PREAUTH_KEY_FAILED'
+  | 'WORKSPACE_SETUP_FAILED'
   | 'SPAWN_FAILED'
   | 'NOT_FOUND'
   | 'NOT_OWNER'

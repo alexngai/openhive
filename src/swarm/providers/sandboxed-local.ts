@@ -25,6 +25,7 @@ import type {
   HostedSwarmState,
   SwarmSandboxPolicy,
 } from '../types.js';
+import { cloneWorkspaceRepos } from './workspace.js';
 
 interface ManagedProcess {
   process: ChildProcess;
@@ -176,6 +177,11 @@ export class SandboxedLocalProvider implements HostingProvider {
     const dataDir = path.resolve(config.data_dir);
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true });
+    }
+
+    // Clone workspace repos before spawning the process
+    if (config.workspace?.repos.length) {
+      await cloneWorkspaceRepos(config.workspace, dataDir, process.env as Record<string, string>);
     }
 
     // Parse the command

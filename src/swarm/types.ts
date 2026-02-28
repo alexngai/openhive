@@ -50,6 +50,28 @@ export interface BootstrapToken {
 }
 
 // ============================================================================
+// Workspace Configuration
+// ============================================================================
+
+/** A git repository to clone into the swarm's working directory */
+export interface WorkspaceRepo {
+  /** Git remote URL (HTTPS or SSH) */
+  url: string;
+  /** Branch to checkout (defaults to the remote's default branch) */
+  branch?: string;
+  /** Relative path within the data directory to clone into (defaults to ".") */
+  path?: string;
+  /** Shallow clone depth (omit for full clone) */
+  depth?: number;
+}
+
+/** Workspace setup configuration for a swarm instance */
+export interface WorkspaceConfig {
+  /** Git repositories to clone into the swarm's working directory */
+  repos: WorkspaceRepo[];
+}
+
+// ============================================================================
 // Spawn Configuration
 // ============================================================================
 
@@ -71,6 +93,8 @@ export interface SpawnSwarmInput {
   metadata?: Record<string, unknown>;
   /** Per-spawn credential overrides (highest priority layer) */
   credential_overrides?: Record<string, string>;
+  /** Workspace setup (e.g. repos to clone before the swarm starts) */
+  workspace?: WorkspaceConfig;
 }
 
 /** Internal config passed to the hosting provider */
@@ -90,6 +114,8 @@ export interface SwarmProvisionConfig {
   inherit_env?: boolean;
   /** Metadata for re-resolving credentials on auto-restart (persisted to DB) */
   credential_resolution?: CredentialResolutionMeta;
+  /** Workspace setup (repos to clone before process starts) */
+  workspace?: WorkspaceConfig;
 }
 
 // ============================================================================
