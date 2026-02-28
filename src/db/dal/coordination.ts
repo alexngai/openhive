@@ -45,6 +45,8 @@ function rowToTask(row: Record<string, unknown>): CoordinationTask {
     error: row.error as string | null,
     progress: row.progress as number,
     deadline: row.deadline as string | null,
+    origin_instance_id: row.origin_instance_id as string | null,
+    origin_task_id: row.origin_task_id as string | null,
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
     completed_at: row.completed_at as string | null,

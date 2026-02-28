@@ -99,6 +99,9 @@ export interface CoordinationTask {
   error: string | null;
   progress: number;
   deadline: string | null;
+  /** Cross-instance origin tracking */
+  origin_instance_id: string | null;
+  origin_task_id: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;

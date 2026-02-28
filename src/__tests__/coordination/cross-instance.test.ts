@@ -319,6 +319,164 @@ describe('Cross-Instance Event Materialization', () => {
     });
   });
 
+  // ── Cross-Instance Claim/Complete ────────────────────────────
+
+  describe('Cross-instance claim and complete', () => {
+    it('should resolve a claim event back to the originating task via origin chain', () => {
+      const db = getDatabase();
+
+      // Find the task that was materialized from instance A's offer
+      const taskRow = db.prepare(
+        'SELECT * FROM coordination_tasks WHERE title = ? AND hive_id = ?',
+      ).get('Analyze cross-instance dataset', hiveB_id) as Record<string, unknown>;
+      expect(taskRow).toBeDefined();
+
+      const localTaskId = taskRow.id as string;  // ct_xyz (B's local ID)
+      expect(taskRow.origin_instance_id).toBe(ORIGIN_INSTANCE);
+      expect(taskRow.origin_task_id).toBe(originTaskId);
+
+      // Simulate: a swarm on B claims the task.
+      // The claim hook would record an event with:
+      //   task_id = localTaskId (B's local ID)
+      //   origin_instance_id = 'inst_A' (from task.origin_instance_id)
+      //   origin_task_id = originTaskId (from task.origin_task_id)
+      //
+      // When this event arrives at instance A, A needs to find its original
+      // task. The resolveTaskByOriginChain function should handle this:
+      //   1. findTaskByOrigin('inst_B', localTaskId) → not found on B (that's B's own ID)
+      //   2. findTaskByOrigin('inst_A', originTaskId) → FOUND (matches the origin tracking)
+      //
+      // We simulate this on instance B itself (since we only have one DB).
+      // The task on B has origin_instance_id='inst_A', origin_task_id=originTaskId.
+      // A claim event from 'inst_B' carrying origin fields should find it.
+
+      const claimPayloadStr = JSON.stringify({
+        task_id: localTaskId,
+        origin_instance_id: ORIGIN_INSTANCE,
+        origin_task_id: originTaskId,
+        claimed_by: {
+          instance_id: 'inst_B',
+          agent_id: 'agent_on_B',
+          name: 'claimer-agent',
+          avatar_url: null,
+        },
+      });
+
+      const claimEvent: HiveEvent = {
+        id: `evt_claim_${nanoid()}`,
+        sync_group_id: 'sg_cross_test',
+        seq: 10,
+        event_type: 'coordination_task_claimed',
+        origin_instance_id: 'inst_B',
+        origin_ts: Date.now(),
+        payload: claimPayloadStr,
+        signature: signEvent(claimPayloadStr, keypair.privateKey),
+        received_at: new Date().toISOString(),
+        is_local: 0,
+      };
+
+      materializeEvent(claimEvent, hiveB_id, hiveB_name, false);
+
+      // Verify: task status should be updated to 'accepted'
+      const updatedTask = db.prepare(
+        'SELECT status FROM coordination_tasks WHERE id = ?',
+      ).get(localTaskId) as { status: string };
+      expect(updatedTask.status).toBe('accepted');
+    });
+
+    it('should resolve a complete event back to the originating task via origin chain', () => {
+      const db = getDatabase();
+
+      const taskRow = db.prepare(
+        'SELECT id FROM coordination_tasks WHERE title = ? AND hive_id = ?',
+      ).get('Analyze cross-instance dataset', hiveB_id) as { id: string };
+      const localTaskId = taskRow.id;
+
+      const completePayloadStr = JSON.stringify({
+        task_id: localTaskId,
+        origin_instance_id: ORIGIN_INSTANCE,
+        origin_task_id: originTaskId,
+        completed_by: {
+          instance_id: 'inst_B',
+          agent_id: 'agent_on_B',
+          name: 'completer-agent',
+          avatar_url: null,
+        },
+        status: 'completed',
+        result: { output: 'analysis done' },
+        error: null,
+      });
+
+      const completeEvent: HiveEvent = {
+        id: `evt_complete_${nanoid()}`,
+        sync_group_id: 'sg_cross_test',
+        seq: 11,
+        event_type: 'coordination_task_completed',
+        origin_instance_id: 'inst_B',
+        origin_ts: Date.now(),
+        payload: completePayloadStr,
+        signature: signEvent(completePayloadStr, keypair.privateKey),
+        received_at: new Date().toISOString(),
+        is_local: 0,
+      };
+
+      materializeEvent(completeEvent, hiveB_id, hiveB_name, false);
+
+      // Verify: task status and result should be updated
+      const updatedTask = db.prepare(
+        'SELECT status, result FROM coordination_tasks WHERE id = ?',
+      ).get(localTaskId) as { status: string; result: string };
+      expect(updatedTask.status).toBe('completed');
+      expect(JSON.parse(updatedTask.result)).toEqual({ output: 'analysis done' });
+    });
+
+    it('should resolve via direct origin_task_id fallback when other lookups miss', () => {
+      // Create a task locally (no origin columns — simulates the offering instance)
+      const db = getDatabase();
+      const localId = `ct_local_${nanoid()}`;
+      db.prepare(`
+        INSERT INTO coordination_tasks (id, hive_id, title, description, priority,
+          assigned_by_agent_id, assigned_to_swarm_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(localId, hiveB_id, 'Locally created task', null, 'medium', agentA_id, swarmB1_id);
+
+      // A claim event arrives from a remote instance. The remote task's
+      // origin_task_id matches our local task's ID (because the remote
+      // instance materialized our offered event and stored our ID as origin).
+      const claimPayloadStr = JSON.stringify({
+        task_id: `ct_remote_${nanoid()}`,  // remote's local ID — won't match
+        origin_instance_id: null,          // doesn't know its own origin
+        origin_task_id: localId,           // but carries our original ID
+        claimed_by: {
+          instance_id: 'inst_C',
+          agent_id: 'agent_on_C',
+          name: 'remote-claimer',
+          avatar_url: null,
+        },
+      });
+
+      const claimEvent: HiveEvent = {
+        id: `evt_fallback_${nanoid()}`,
+        sync_group_id: 'sg_cross_test',
+        seq: 12,
+        event_type: 'coordination_task_claimed',
+        origin_instance_id: 'inst_C',
+        origin_ts: Date.now(),
+        payload: claimPayloadStr,
+        signature: signEvent(claimPayloadStr, keypair.privateKey),
+        received_at: new Date().toISOString(),
+        is_local: 0,
+      };
+
+      materializeEvent(claimEvent, hiveB_id, hiveB_name, false);
+
+      const updatedTask = db.prepare(
+        'SELECT status FROM coordination_tasks WHERE id = ?',
+      ).get(localId) as { status: string };
+      expect(updatedTask.status).toBe('accepted');
+    });
+  });
+
   // ── Idempotency Across Instances ──────────────────────────────
 
   describe('Idempotency', () => {

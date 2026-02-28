@@ -97,6 +97,8 @@ export function onCoordinationTaskClaimed(task: CoordinationTask, agent: Agent):
     const instanceId = getInstanceId(groups[0]);
     const payload: CoordinationTaskClaimedPayload = {
       task_id: task.id,
+      origin_instance_id: task.origin_instance_id,
+      origin_task_id: task.origin_task_id,
       claimed_by: agentToSnapshot(agent, instanceId),
     };
 
@@ -118,6 +120,8 @@ export function onCoordinationTaskCompleted(
     const instanceId = getInstanceId(groups[0]);
     const payload: CoordinationTaskCompletedPayload = {
       task_id: task.id,
+      origin_instance_id: task.origin_instance_id,
+      origin_task_id: task.origin_task_id,
       completed_by: agentToSnapshot(agent, instanceId),
       status,
       result: task.result,

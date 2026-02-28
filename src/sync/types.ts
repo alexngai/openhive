@@ -170,11 +170,17 @@ export interface CoordinationTaskOfferedPayload {
 
 export interface CoordinationTaskClaimedPayload {
   task_id: string;
+  /** Origin of the task if it was replicated from another instance */
+  origin_instance_id?: string | null;
+  origin_task_id?: string | null;
   claimed_by: AgentSnapshot;
 }
 
 export interface CoordinationTaskCompletedPayload {
   task_id: string;
+  /** Origin of the task if it was replicated from another instance */
+  origin_instance_id?: string | null;
+  origin_task_id?: string | null;
   completed_by: AgentSnapshot;
   status: 'completed' | 'failed';
   result: Record<string, unknown> | null;

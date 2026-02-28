@@ -524,10 +524,36 @@ function materializeCoordinationTaskOffered(event: HiveEvent, payload: Coordinat
   syncLogger.info('Materialized coordination_task_offered', { task_id: payload.task_id, origin: event.origin_instance_id });
 }
 
+function resolveTaskByOriginChain(
+  event: HiveEvent,
+  payload: { task_id: string; origin_instance_id?: string | null; origin_task_id?: string | null },
+): ReturnType<typeof coordinationDal.findTaskById> {
+  // 1. The claiming instance's local ID may match our origin tracking
+  //    (e.g., we created the task locally with that ID as origin_task_id)
+  let task = coordinationDal.findTaskByOrigin(event.origin_instance_id, payload.task_id);
+  // 2. The payload carries the task's original origin (where it was first offered).
+  //    This handles: A offers → B materializes → B claims → A receives claim.
+  //    A's local task has no origin columns (created locally), but the payload
+  //    tells us it was originally from A with origin_task_id = the original ID.
+  if (!task && payload.origin_instance_id && payload.origin_task_id) {
+    task = coordinationDal.findTaskByOrigin(payload.origin_instance_id, payload.origin_task_id);
+  }
+  // 3. Direct ID match — covers same-instance case and the case where
+  //    the original task ID happens to match our local ID (task was created here)
+  if (!task) {
+    task = coordinationDal.findTaskById(payload.task_id);
+  }
+  // 4. The payload's origin_task_id might be our local task ID
+  //    (A offered task ct_abc → B got it with origin_task_id=ct_abc → B claims →
+  //     claim event has origin_task_id=ct_abc → A can find by direct ID ct_abc)
+  if (!task && payload.origin_task_id) {
+    task = coordinationDal.findTaskById(payload.origin_task_id);
+  }
+  return task;
+}
+
 function materializeCoordinationTaskClaimed(event: HiveEvent, payload: CoordinationTaskClaimedPayload): void {
-  // Look up by origin tracking first, then fall back to direct ID
-  const task = coordinationDal.findTaskByOrigin(event.origin_instance_id, payload.task_id)
-    ?? coordinationDal.findTaskById(payload.task_id);
+  const task = resolveTaskByOriginChain(event, payload);
   if (!task) {
     syncLogger.warn('coordination_task_claimed for unknown task', { task_id: payload.task_id, origin: event.origin_instance_id });
     return;
@@ -538,20 +564,18 @@ function materializeCoordinationTaskClaimed(event: HiveEvent, payload: Coordinat
   broadcastToChannel(`coordination:${task.hive_id}`, {
     type: 'task_status_updated',
     data: {
-      task_id: payload.task_id,
+      task_id: task.id,
       status: 'accepted',
       claimed_by: payload.claimed_by,
       origin_instance_id: event.origin_instance_id,
     },
   });
 
-  syncLogger.info('Materialized coordination_task_claimed', { task_id: payload.task_id });
+  syncLogger.info('Materialized coordination_task_claimed', { task_id: task.id, local_id: task.id, payload_id: payload.task_id });
 }
 
 function materializeCoordinationTaskCompleted(event: HiveEvent, payload: CoordinationTaskCompletedPayload): void {
-  // Look up by origin tracking first, then fall back to direct ID
-  const task = coordinationDal.findTaskByOrigin(event.origin_instance_id, payload.task_id)
-    ?? coordinationDal.findTaskById(payload.task_id);
+  const task = resolveTaskByOriginChain(event, payload);
   if (!task) {
     syncLogger.warn('coordination_task_completed for unknown task', { task_id: payload.task_id, origin: event.origin_instance_id });
     return;
@@ -566,14 +590,14 @@ function materializeCoordinationTaskCompleted(event: HiveEvent, payload: Coordin
   broadcastToChannel(`coordination:${task.hive_id}`, {
     type: 'task_status_updated',
     data: {
-      task_id: payload.task_id,
+      task_id: task.id,
       status: payload.status,
       completed_by: payload.completed_by,
       origin_instance_id: event.origin_instance_id,
     },
   });
 
-  syncLogger.info('Materialized coordination_task_completed', { task_id: payload.task_id, status: payload.status });
+  syncLogger.info('Materialized coordination_task_completed', { task_id: task.id, status: payload.status });
 }
 
 function materializeCoordinationMessage(event: HiveEvent, payload: CoordinationMessagePayload): void {
