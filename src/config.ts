@@ -155,7 +155,7 @@ export const ConfigSchema = z.object({
   swarmHosting: z.object({
     enabled: z.boolean().default(true),
     /** Default hosting provider */
-    default_provider: z.enum(['local', 'docker', 'fly', 'ssh', 'k8s']).default('local'),
+    default_provider: z.enum(['local', 'local-sandboxed', 'docker', 'fly', 'ssh', 'k8s']).default('local'),
     /** Command to run OpenSwarm (e.g. 'npx openswarm' or path to binary) */
     openswarm_command: z.string().default('npx openswarm serve'),
     /** Base directory for swarm instance data */
@@ -189,6 +189,40 @@ export const ConfigSchema = z.object({
         extra_vars: z.record(z.string(), z.string()).optional(),
       })).default({}),
     }).default({}),
+    /** Sandbox configuration for process isolation (requires @anthropic-ai/sandbox-runtime) */
+    sandbox: z.object({
+      /** Enable OS-level sandboxing for locally spawned swarms */
+      enabled: z.boolean().default(false),
+      /** Default sandbox policy applied to all swarms */
+      default_policy: z.object({
+        /** Domains the swarm is allowed to reach (empty = no network) */
+        allowed_domains: z.array(z.string()).default([]),
+        /** Domains explicitly blocked */
+        denied_domains: z.array(z.string()).default([]),
+        /** Allow process to bind to local ports (default: true for swarm servers) */
+        allow_local_binding: z.boolean().default(true),
+        /** Filesystem paths the swarm can write to (data dir is always included) */
+        allow_write: z.array(z.string()).default([]),
+        /** Filesystem paths denied for writing */
+        deny_write: z.array(z.string()).default([]),
+        /** Filesystem paths denied for reading */
+        deny_read: z.array(z.string()).default([
+          '~/.ssh', '~/.gnupg', '~/.aws', '~/.config/gcloud', '~/.azure', '~/.kube',
+        ]),
+        /** Allow PTY allocation inside sandbox */
+        allow_pty: z.boolean().default(false),
+      }).default({}),
+      /** Per-hive sandbox policy overrides */
+      hive_overrides: z.record(z.string(), z.object({
+        allowed_domains: z.array(z.string()).optional(),
+        denied_domains: z.array(z.string()).optional(),
+        allow_local_binding: z.boolean().optional(),
+        allow_write: z.array(z.string()).optional(),
+        deny_write: z.array(z.string()).optional(),
+        deny_read: z.array(z.string()).optional(),
+        allow_pty: z.boolean().optional(),
+      })).default({}),
+    }).default({ enabled: false }),
   }).default({}),
 
   // SwarmCraft: MAP client for monitoring and steering coding agents
@@ -506,6 +540,23 @@ module.exports = {
   //     hive_overrides: {
   //       'cogops': { credential_set: 'cogops' },
   //       'my-repo': { extra_vars: { GITHUB_TOKEN: process.env.MY_REPO_TOKEN } },
+  //     },
+  //   },
+  //
+  //   // Sandbox: OS-level isolation for swarm processes (bubblewrap on Linux, seatbelt on macOS)
+  //   // Requires: @anthropic-ai/sandbox-runtime + bubblewrap & socat (Linux) or ripgrep (macOS)
+  //   sandbox: {
+  //     enabled: true,
+  //     default_policy: {
+  //       allowed_domains: [],          // no network by default (add domains as needed)
+  //       deny_read: ['~/.ssh', '~/.gnupg', '~/.aws'],
+  //       allow_write: [],              // swarm data dir is always auto-included
+  //       allow_local_binding: true,    // swarms need to listen on their assigned port
+  //     },
+  //     hive_overrides: {
+  //       'github-agents': {
+  //         allowed_domains: ['api.github.com', '*.githubusercontent.com'],
+  //       },
   //     },
   //   },
   // },

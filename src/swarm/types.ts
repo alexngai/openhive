@@ -9,7 +9,7 @@
 // Hosting Provider Types
 // ============================================================================
 
-export type HostingProviderType = 'local' | 'docker' | 'fly' | 'ssh' | 'k8s';
+export type HostingProviderType = 'local' | 'local-sandboxed' | 'docker' | 'fly' | 'ssh' | 'k8s';
 
 export type HostedSwarmState =
   | 'provisioning'  // Provider is setting up the instance
@@ -210,6 +210,8 @@ export interface SwarmHostingConfig {
   max_restart_attempts: number;
   /** Credential configuration for swarm processes */
   credentials?: SwarmCredentialConfig;
+  /** Sandbox configuration for process isolation */
+  sandbox?: SwarmSandboxConfig;
 }
 
 // ============================================================================
@@ -258,4 +260,38 @@ export interface SwarmCredentialConfig {
   default_set?: string;
   /** Per-hive credential overrides */
   hive_overrides?: Record<string, HiveCredentialOverride>;
+}
+
+// ============================================================================
+// Sandbox Configuration
+// ============================================================================
+
+/**
+ * Sandbox policy applied to a hosted swarm process.
+ * Powered by @anthropic-ai/sandbox-runtime (bubblewrap on Linux, seatbelt on macOS).
+ */
+export interface SwarmSandboxPolicy {
+  /** Domains the swarm is allowed to reach (empty = no network access) */
+  allowed_domains?: string[];
+  /** Domains explicitly blocked (takes precedence over allowed_domains) */
+  denied_domains?: string[];
+  /** Allow the swarm process to bind to local ports (required for serving) */
+  allow_local_binding?: boolean;
+  /** Filesystem paths the swarm is allowed to write (empty = no writes) */
+  allow_write?: string[];
+  /** Filesystem paths denied for writing (overrides allow_write) */
+  deny_write?: string[];
+  /** Filesystem paths denied for reading */
+  deny_read?: string[];
+  /** Allow PTY allocation inside sandbox (for TUI adapters) */
+  allow_pty?: boolean;
+}
+
+export interface SwarmSandboxConfig {
+  /** Enable sandboxing for locally spawned swarms */
+  enabled: boolean;
+  /** Default sandbox policy applied to all swarms unless overridden */
+  default_policy?: SwarmSandboxPolicy;
+  /** Per-hive sandbox policy overrides */
+  hive_overrides?: Record<string, SwarmSandboxPolicy>;
 }

@@ -15,6 +15,7 @@ import { registerSwarm } from '../map/service.js';
 import * as mapDal from '../db/dal/map.js';
 import * as dal from './dal.js';
 import { LocalProvider } from './providers/local.js';
+import { SandboxedLocalProvider } from './providers/sandboxed-local.js';
 import { resolveCredentialOverlay } from './credentials.js';
 import type {
   SpawnSwarmInput,
@@ -23,6 +24,7 @@ import type {
   HostingProvider,
   HostedSwarm,
   SwarmHostingConfig,
+  SwarmSandboxPolicy,
 } from './types.js';
 
 export class SwarmManager {
@@ -51,6 +53,24 @@ export class SwarmManager {
       this.handleProcessExit(instanceId, code, signal);
     };
     this.providers.set('local', localProvider);
+
+    // Initialize sandboxed local provider if sandbox config is present
+    if (config.sandbox?.enabled) {
+      const sandboxedProvider = new SandboxedLocalProvider(
+        command,
+        config.sandbox.default_policy,
+      );
+      sandboxedProvider.onProcessExit = (instanceId, code, signal) => {
+        this.handleProcessExit(instanceId, code, signal);
+      };
+      this.providers.set('local-sandboxed', sandboxedProvider);
+
+      if (sandboxedProvider.isSandboxAvailable()) {
+        console.log('[swarm-manager] Sandboxed local provider initialized');
+      } else {
+        console.warn('[swarm-manager] Sandbox requested but dependencies unavailable — sandboxed spawns will fall back to unsandboxed');
+      }
+    }
   }
 
   /**
@@ -227,7 +247,12 @@ export class SwarmManager {
     try {
       // Provision via the hosting provider
       dal.updateHostedSwarm(hosted.id, { state: 'starting' });
-      const result = await provider.provision(provisionConfig);
+
+      // Resolve sandbox policy for sandboxed providers
+      const sandboxPolicy = this.resolveSandboxPolicy(input.hive);
+      const result = provider instanceof SandboxedLocalProvider
+        ? await provider.provision(provisionConfig, sandboxPolicy)
+        : await provider.provision(provisionConfig);
 
       // Track instance ↔ hosted swarm mapping
       this.instanceToHostedId.set(result.instance_id, hosted.id);
@@ -517,8 +542,8 @@ export class SwarmManager {
 
           if (healthy) {
             // Reset failures, ensure state is running
-            if (provider instanceof LocalProvider) {
-              (provider as LocalProvider).resetHealthFailures(instanceId);
+            if (provider instanceof LocalProvider || provider instanceof SandboxedLocalProvider) {
+              (provider as LocalProvider | SandboxedLocalProvider).resetHealthFailures(instanceId);
             }
             if (hosted.state !== 'running') {
               dal.updateHostedSwarm(hosted.id, { state: 'running', error: null });
@@ -529,8 +554,8 @@ export class SwarmManager {
             }
           } else {
             let failures = 1;
-            if (provider instanceof LocalProvider) {
-              failures = (provider as LocalProvider).recordHealthFailure(instanceId);
+            if (provider instanceof LocalProvider || provider instanceof SandboxedLocalProvider) {
+              failures = (provider as LocalProvider | SandboxedLocalProvider).recordHealthFailure(instanceId);
             }
 
             if (failures >= this.config.max_health_failures) {
@@ -563,6 +588,13 @@ export class SwarmManager {
       localProvider.onProcessExit = null;
       await localProvider.stopAll();
       localProvider.removeExitHandler();
+    }
+
+    const sandboxedProvider = this.providers.get('local-sandboxed');
+    if (sandboxedProvider instanceof SandboxedLocalProvider) {
+      sandboxedProvider.onProcessExit = null;
+      await sandboxedProvider.stopAll();
+      sandboxedProvider.removeExitHandler();
     }
 
     // Mark all active hosted swarms as stopped and clean up MAP registrations
@@ -751,6 +783,32 @@ export class SwarmManager {
   // ==========================================================================
   // Internals
   // ==========================================================================
+
+  /**
+   * Resolve the sandbox policy for a swarm, merging default + hive overrides.
+   */
+  private resolveSandboxPolicy(hive?: string): SwarmSandboxPolicy | undefined {
+    const sandboxConfig = this.config.sandbox;
+    if (!sandboxConfig?.enabled) return undefined;
+
+    const defaultPolicy = sandboxConfig.default_policy ?? {};
+
+    if (!hive || !sandboxConfig.hive_overrides?.[hive]) {
+      return defaultPolicy;
+    }
+
+    // Merge: hive override fields take precedence over defaults
+    const hiveOverride = sandboxConfig.hive_overrides[hive];
+    return {
+      allowed_domains: hiveOverride.allowed_domains ?? defaultPolicy.allowed_domains,
+      denied_domains: hiveOverride.denied_domains ?? defaultPolicy.denied_domains,
+      allow_local_binding: hiveOverride.allow_local_binding ?? defaultPolicy.allow_local_binding,
+      allow_write: hiveOverride.allow_write ?? defaultPolicy.allow_write,
+      deny_write: hiveOverride.deny_write ?? defaultPolicy.deny_write,
+      deny_read: hiveOverride.deny_read ?? defaultPolicy.deny_read,
+      allow_pty: hiveOverride.allow_pty ?? defaultPolicy.allow_pty,
+    };
+  }
 
   private allocatePort(): number | null {
     const [min, max] = this.config.port_range;
