@@ -17,6 +17,7 @@ import * as dal from './dal.js';
 import { LocalProvider } from './providers/local.js';
 import { SandboxedLocalProvider } from './providers/sandboxed-local.js';
 import { resolveCredentialOverlay } from './credentials.js';
+import { findResourceById, subscribeToResource } from '../db/dal/syncable-resources.js';
 import type {
   SpawnSwarmInput,
   SwarmProvisionConfig,
@@ -196,6 +197,29 @@ export class SwarmManager {
       }
     }
 
+    // Resolve injected resources
+    let injectedResources: BootstrapToken['resources'];
+    if (input.inject_resources && input.inject_resources.length > 0) {
+      injectedResources = [];
+      for (const resourceId of input.inject_resources) {
+        const resource = findResourceById(resourceId);
+        if (!resource) continue;
+        injectedResources.push({
+          id: resource.id,
+          resource_type: resource.resource_type,
+          name: resource.name,
+          git_remote_url: resource.git_remote_url,
+          metadata: resource.metadata,
+        });
+        // Auto-subscribe the spawning agent to the resource
+        try {
+          subscribeToResource(agentId, resource.id, 'read');
+        } catch {
+          // Already subscribed or other constraint — ignore
+        }
+      }
+    }
+
     const bootstrapToken: BootstrapToken = {
       version: 1,
       openhive_url: this.instanceUrl,
@@ -204,6 +228,7 @@ export class SwarmManager {
       adapter,
       adapter_config: input.adapter_config,
       metadata: input.metadata,
+      resources: injectedResources,
       issued_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(), // 1 hour
     };

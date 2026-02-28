@@ -153,7 +153,17 @@ export type WSEventType =
   | 'swarm_stopped'
   // MAP sync events (relayed from swarms)
   | 'memory:sync'
-  | 'skill:sync';
+  | 'skill:sync'
+  // Cross-instance resource replication events
+  | 'resource_published'
+  | 'resource_unpublished'
+  | 'resource_replicated'
+  | 'resource_synced'
+  // Coordination events
+  | 'task_assigned'
+  | 'task_status_updated'
+  | 'context_shared'
+  | 'swarm_message_received';
 
 export interface WSEvent {
   type: WSEventType;

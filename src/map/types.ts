@@ -62,6 +62,13 @@ export interface MapSwarmCapabilities {
   protocols?: string[]; // e.g. ['acp', 'a2a']
 }
 
+export interface CoordinationCapability {
+  accepts_tasks: boolean;
+  task_types?: string[];
+  max_concurrent_tasks?: number;
+  accepts_messages: boolean;
+}
+
 // ============================================================================
 // Node Types (analogous to individual tailscale nodes / MAP agents)
 // ============================================================================

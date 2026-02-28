@@ -81,7 +81,7 @@
     "lucide-react": "^0.563.0",
     "marked": "^17.0.1",
     "mime-types": "^3.0.2",
-    "minimem": "^0.0.4",
+    "minimem": "^0.0.6",
     "nanoid": "^5.0.9",
     "nodemailer": "^7.0.13",
     "openhive-types": "^0.1.0",

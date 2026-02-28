@@ -299,6 +299,40 @@ export async function federationRoutes(
     return reply.send({ data: result.data });
   });
 
+  fastify.get('/federation/remote/resources', async (request, reply) => {
+    const { instance_url, type, limit, offset } = request.query as {
+      instance_url: string;
+      type?: string;
+      limit?: string;
+      offset?: string;
+    };
+
+    if (!instance_url) {
+      return reply.status(400).send({
+        error: 'Bad Request',
+        message: 'instance_url is required',
+      });
+    }
+
+    const result = await federation.fetchRemoteResourcesWithError(instance_url, {
+      type,
+      limit: limit ? parseInt(limit, 10) : 20,
+      offset: offset ? parseInt(offset, 10) : 0,
+    });
+
+    if (!result.success) {
+      return reply.send({
+        data: [],
+        error: {
+          type: result.error?.type,
+          message: result.error?.message,
+        },
+      });
+    }
+
+    return reply.send({ data: result.data });
+  });
+
   fastify.get('/federation/remote/hives', async (request, reply) => {
     const { instance_url, limit, offset } = request.query as {
       instance_url: string;
