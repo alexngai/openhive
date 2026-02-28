@@ -32,8 +32,14 @@ COPY . .
 # Build the application
 RUN npm run build
 
-# Remove devDependencies and clean cache for smaller node_modules
-RUN npm ci --omit=dev && npm cache clean --force
+# Remove devDependencies
+RUN npm prune --omit=dev && npm cache clean --force
+
+# Sharp v0.34+ distributes native bindings as platform-specific optional packages
+# (@img/sharp-linux-x64, @img/sharp-libvips-linux-x64) that npm prune removes.
+# Reinstall sharp after pruning so npm re-resolves the correct matched versions.
+RUN npm install --no-save sharp \
+    && node -e "require('sharp'); console.log('[build] sharp native bindings verified')"
 
 # =============================================================================
 # Stage 2: Production - Minimal runtime image
