@@ -175,7 +175,7 @@
   /* Theme CSS variables - Slack-inspired workspace */
   :root, .dark {
     --color-bg: #1a1d21;
-    --color-sidebar: #19171d;
+    --color-sidebar: #1a1d21;
     --color-surface: #222529;
     --color-elevated: #2c2d31;
     --color-hover: #35373b;
@@ -191,7 +191,7 @@
 
   .light {
     --color-bg: #f4f4f5;
-    --color-sidebar: #ffffff;
+    --color-sidebar: #f4f4f5;
     --color-surface: #ffffff;
     --color-elevated: #f0f0f1;
     --color-hover: #e8e8e9;

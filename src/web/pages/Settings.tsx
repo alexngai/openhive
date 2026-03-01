@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Lock, Trash2 } from 'lucide-react';
+import { User, Lock, Trash2, Sun, Moon, Monitor } from 'lucide-react';
 import { useAuthStore } from '../stores/auth';
+import { useThemeStore } from '../stores/theme';
 import { toast } from '../stores/toast';
 import { api } from '../lib/api';
 import { useSEO } from '../hooks/useDocumentTitle';
@@ -11,7 +12,7 @@ import clsx from 'clsx';
 export function Settings() {
   const navigate = useNavigate();
   const { agent, isAuthenticated, logout } = useAuthStore();
-  const [activeTab, setActiveTab] = useState<'profile' | 'security'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'security' | 'display'>('profile');
 
   useSEO({ title: 'Settings' });
 
@@ -23,6 +24,7 @@ export function Settings() {
   const tabs = [
     { id: 'profile' as const, label: 'Profile', icon: User },
     { id: 'security' as const, label: 'Security', icon: Lock },
+    { id: 'display' as const, label: 'Display', icon: Sun },
   ];
 
   return (
@@ -57,6 +59,7 @@ export function Settings() {
         <div className="flex-1">
           {activeTab === 'profile' && <ProfileSettings agent={agent} />}
           {activeTab === 'security' && <SecuritySettings />}
+          {activeTab === 'display' && <DisplaySettings />}
         </div>
       </div>
     </div>
@@ -141,6 +144,45 @@ function ProfileSettings({ agent }: { agent: { name: string; email?: string | nu
           Save Changes
         </button>
       </form>
+    </div>
+  );
+}
+
+function DisplaySettings() {
+  const { theme, setTheme } = useThemeStore();
+
+  const themes = [
+    { value: 'light' as const, icon: Sun, label: 'Light', description: 'Light background with dark text' },
+    { value: 'dark' as const, icon: Moon, label: 'Dark', description: 'Dark background with light text' },
+    { value: 'system' as const, icon: Monitor, label: 'System', description: 'Follows your operating system setting' },
+  ];
+
+  return (
+    <div className="card p-4">
+      <h2 className="text-sm font-semibold mb-3">Theme</h2>
+      <div className="space-y-1.5">
+        {themes.map(({ value, icon: Icon, label, description }) => (
+          <button
+            key={value}
+            onClick={() => setTheme(value)}
+            className={clsx(
+              'w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-left transition-colors cursor-pointer',
+              theme === value
+                ? 'bg-honey-500/10 text-honey-500'
+                : 'hover:bg-workspace-hover'
+            )}
+            style={theme !== value ? { color: 'var(--color-text-secondary)' } : undefined}
+          >
+            <Icon className="w-4 h-4 shrink-0" />
+            <div>
+              <p className="text-sm font-medium">{label}</p>
+              <p className="text-xs" style={{ color: theme === value ? 'var(--color-text-muted)' : 'var(--color-text-muted)' }}>
+                {description}
+              </p>
+            </div>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
