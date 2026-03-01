@@ -39,6 +39,11 @@ export interface HiveIdentity {
   endpoint_url: string | null;
 }
 
+/** Boot-time config returned by GET /v1/internal/hive/config */
+export interface HiveConfig {
+  oauth: { client_id: string; client_secret: string } | null;
+}
+
 /** Repository mapping returned by GET /v1/internal/hive/repos */
 export interface HiveRepo {
   repo_full_name: string;

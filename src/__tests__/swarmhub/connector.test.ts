@@ -475,6 +475,51 @@ describe('SwarmHubConnector', () => {
     });
   });
 
+  // ── hive config and OAuth ──
+
+  describe('hive config and OAuth', () => {
+    it('fetches hive config on connect and exposes OAuth client secret', async () => {
+      // Identity request
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => MOCK_IDENTITY,
+      });
+      // Config request
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          oauth: { client_id: 'hive-client-id', client_secret: 'hive-client-secret-xyz' },
+        }),
+      });
+
+      await connector.connect();
+
+      expect(connector.getOAuthClientSecret()).toBe('hive-client-secret-xyz');
+    });
+
+    it('getOAuthClientSecret returns undefined when config fetch fails', async () => {
+      // Identity request
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => MOCK_IDENTITY,
+      });
+      // Config request fails
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        text: async () => 'Not Found',
+      });
+
+      await connector.connect();
+
+      expect(connector.getOAuthClientSecret()).toBeUndefined();
+    });
+
+    it('getOAuthClientSecret returns undefined before connect', () => {
+      expect(connector.getOAuthClientSecret()).toBeUndefined();
+    });
+  });
+
   // ── getState snapshot ──
 
   describe('getState', () => {

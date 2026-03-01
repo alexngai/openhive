@@ -40,7 +40,7 @@ export async function registerRoutes(fastify: FastifyInstance, config: Config, b
       await api.register(feedRoutes);
       await api.register(searchRoutes);
       await api.register(uploadsRoutes);
-      await api.register(authRoutes, { config: { authMode: config.auth.mode, swarmhubApiUrl: config.swarmhub.apiUrl || process.env.SWARMHUB_API_URL, swarmhubOAuthClientId: config.swarmhub.oauth.clientId, swarmhubOAuthClientSecret: config.swarmhub.oauth.clientSecret } });
+      await api.register(authRoutes, { config: { authMode: config.auth.mode, swarmhubApiUrl: config.swarmhub.apiUrl || process.env.SWARMHUB_API_URL, swarmhubOAuthClientId: config.swarmhub.oauth.clientId, swarmhubOAuthClientSecret: config.swarmhub.oauth.clientSecret }, swarmhubConnector });
       await api.register(federationRoutes, { config });
       await api.register(adminRoutes, { config });
       await api.register(memoryBanksRoutes, { config });

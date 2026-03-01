@@ -3,6 +3,7 @@ import { z } from 'zod';
 import * as agentsDAL from '../../db/dal/agents.js';
 import { toPublicAgent } from '../../db/dal/agents.js';
 import { authMiddleware } from '../middleware/auth.js';
+import type { SwarmHubConnector } from '../../swarmhub/connector.js';
 
 const CodeExchangeSchema = z.object({
   code: z.string().min(1),
@@ -18,7 +19,7 @@ interface AuthConfig {
 
 export async function authRoutes(
   fastify: FastifyInstance,
-  opts: { config: AuthConfig }
+  opts: { config: AuthConfig; swarmhubConnector?: SwarmHubConnector | null }
 ): Promise<void> {
 
   // GET /auth/mode — public, returns auth mode and SwarmHub OAuth URL
@@ -58,6 +59,19 @@ export async function authRoutes(
 
     const { code, redirect_uri } = parseResult.data;
 
+    // Resolve client secret: prefer static config, fall back to connector (fetched at boot)
+    const clientSecret =
+      opts.config.swarmhubOAuthClientSecret ||
+      opts.swarmhubConnector?.getOAuthClientSecret();
+
+    if (!clientSecret) {
+      fastify.log.error('No OAuth client secret available — cannot exchange code');
+      return reply.status(500).send({
+        error: 'Configuration Error',
+        message: 'OAuth client secret not configured',
+      });
+    }
+
     try {
       const tokenRes = await fetch(
         `${opts.config.swarmhubApiUrl}/oauth/token`,
@@ -72,7 +86,7 @@ export async function authRoutes(
             code,
             redirect_uri,
             client_id: opts.config.swarmhubOAuthClientId,
-            client_secret: opts.config.swarmhubOAuthClientSecret,
+            client_secret: clientSecret,
           }),
           signal: AbortSignal.timeout(10_000),
         }

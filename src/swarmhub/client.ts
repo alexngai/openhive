@@ -160,6 +160,17 @@ export class SwarmHubClient {
   }
 
   // ==========================================================================
+  // Hive Config (boot-time secrets)
+  // ==========================================================================
+
+  /** Fetch boot-time config (OAuth client secret, etc.) from SwarmHub. */
+  async getHiveConfig(): Promise<{
+    oauth: { client_id: string; client_secret: string } | null;
+  }> {
+    return this.request('GET', '/v1/internal/hive/config');
+  }
+
+  // ==========================================================================
   // Event Config
   // ==========================================================================
 

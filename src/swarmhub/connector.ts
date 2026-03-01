@@ -23,6 +23,7 @@ import type {
   ConnectorState,
   ConnectorStatus,
   HiveIdentity,
+  HiveConfig,
   GitHubTokenRequest,
   GitHubTokenResponse,
   SlackCredentialsRequest,
@@ -46,6 +47,7 @@ export class SwarmHubConnector extends EventEmitter {
     lastError: null,
     connectedAt: null,
   };
+  private hiveConfig: HiveConfig | null = null;
   private healthTimer?: ReturnType<typeof setInterval>;
 
   // Event polling state
@@ -95,6 +97,16 @@ export class SwarmHubConnector extends EventEmitter {
       this.state.identity = identity;
       this.state.connectedAt = new Date().toISOString();
       this.setStatus('connected');
+
+      // Fetch boot-time config (OAuth client secret, etc.)
+      try {
+        this.hiveConfig = await this.client.getHiveConfig();
+        if (this.hiveConfig.oauth) {
+          console.log('[swarmhub] OAuth config fetched (client secret available)');
+        }
+      } catch (err) {
+        console.warn(`[swarmhub] Failed to fetch hive config: ${(err as Error).message}`);
+      }
 
       this.emit('connected', identity);
       this.startHealthMonitor();
@@ -211,6 +223,11 @@ export class SwarmHubConnector extends EventEmitter {
 
   getState(): ConnectorState {
     return { ...this.state };
+  }
+
+  /** Returns the OAuth client secret fetched at connect time, or undefined. */
+  getOAuthClientSecret(): string | undefined {
+    return this.hiveConfig?.oauth?.client_secret;
   }
 
   // ==========================================================================
