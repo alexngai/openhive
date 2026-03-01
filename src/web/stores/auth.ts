@@ -12,6 +12,7 @@ interface AuthState {
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  isReady: boolean;
   error: string | null;
   authMode: 'local' | 'swarmhub' | null;
   swarmhubOAuth: SwarmHubOAuth | null;
@@ -33,6 +34,7 @@ export const useAuthStore = create<AuthState>()(
       token: null,
       isAuthenticated: false,
       isLoading: false,
+      isReady: false,
       error: null,
       authMode: null,
       swarmhubOAuth: null,
@@ -170,17 +172,19 @@ export const useAuthStore = create<AuthState>()(
               agent: response.agent,
               token: null,
               isAuthenticated: true,
+              isReady: true,
             });
           } else {
             set({
               authMode: response.mode,
+              isReady: true,
               swarmhubOAuth: response.oauth
                 ? { authorizeUrl: response.oauth.authorize_url, clientId: response.oauth.client_id }
                 : null,
             });
           }
         } catch {
-          set({ authMode: 'swarmhub' });
+          set({ authMode: 'swarmhub', isReady: true });
         }
       },
 
