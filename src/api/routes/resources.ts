@@ -6,6 +6,7 @@ import { broadcast, broadcastToChannel } from '../../realtime/index.js';
 import { checkRemoteForUpdates, checkRemotesBatch } from '../../utils/git-remote.js';
 import { discoverLocalResources } from '../../discovery/index.js';
 import type { SyncableResourceType, ResourceVisibility, ResourceScope } from '../../types.js';
+import { onResourcePublished, onResourceUpdated, onResourceUnpublished } from '../../sync/resource-hooks.js';
 import type { Config } from '../../config.js';
 
 // Valid resource types
@@ -217,6 +218,13 @@ export async function resourcesRoutes(
           },
           timestamp: new Date().toISOString(),
         });
+
+        onResourcePublished(
+          { id: resource.id, resource_type, name, description: description ?? null, git_remote_url, visibility },
+          tags ?? [],
+          metadata ?? null,
+          request.agent!,
+        );
       }
 
       return reply.status(201).send({
@@ -329,6 +337,13 @@ export async function resourcesRoutes(
       resourcesDAL.updateResource(resource.id, updateData);
       const resourceWithMeta = resourcesDAL.getResourceWithMeta(resource.id, request.agent!.id);
 
+      // Fire sync hook for non-private resources
+      const updatedVisibility = parseResult.data.visibility ?? resource.visibility;
+      if (updatedVisibility !== 'private') {
+        const { name: n, description: d, visibility: v, metadata: m } = updateData;
+        onResourceUpdated(resource.id, { name: n, description: d, visibility: v, metadata: m }, request.agent!);
+      }
+
       return reply.send(resourceWithMeta);
     }
   );
@@ -353,6 +368,11 @@ export async function resourcesRoutes(
           error: 'Forbidden',
           message: 'Only the owner can delete a resource',
         });
+      }
+
+      // Fire sync hook before deleting so peers learn about the removal
+      if (resource.visibility !== 'private') {
+        onResourceUnpublished(resource.id, request.agent!);
       }
 
       resourcesDAL.deleteResource(resource.id);

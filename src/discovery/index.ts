@@ -1,12 +1,12 @@
 /**
  * Resource Discovery Service
  *
- * Scans the filesystem for minimem memory banks and skill-tree skills
- * across three scopes: global, project, and agent.
+ * Scans the filesystem for minimem memory banks, skill-tree skills,
+ * and OpenTasks stores across three scopes: global, project, and agent.
  *
  * Discovery is on-demand (user-triggered), not automatic.
  */
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { listMemoryFiles } from 'minimem/internal';
@@ -72,6 +72,11 @@ function getGlobalSkillPaths(config: Config): string[] {
   ];
 }
 
+/** Default global OpenTasks path */
+function getGlobalOpenTasksPath(config: Config): string {
+  return config.resourceDiscovery.globalOpenTasksPath || join(homedir(), '.opentasks');
+}
+
 /** Project root */
 function getProjectRoot(config: Config): string {
   return config.resourceDiscovery.projectRoot || process.cwd();
@@ -115,6 +120,55 @@ function hasClaudeSkills(dir: string): boolean {
   return true;
 }
 
+/** Check if a directory contains an OpenTasks store (.opentasks/) */
+function hasOpenTasks(dir: string): boolean {
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) return false;
+  const opentasksDir = join(dir, '.opentasks');
+  if (!existsSync(opentasksDir) || !statSync(opentasksDir).isDirectory()) return false;
+  return (
+    existsSync(join(opentasksDir, 'config.json')) ||
+    existsSync(join(opentasksDir, 'graph.jsonl'))
+  );
+}
+
+/** Read metadata from an OpenTasks store for resource registration */
+function readOpenTasksMeta(dir: string): Record<string, unknown> {
+  const opentasksDir = join(dir, '.opentasks');
+  const meta: Record<string, unknown> = { opentasks: true };
+
+  // Read config.json for location identity
+  const configPath = join(opentasksDir, 'config.json');
+  if (existsSync(configPath)) {
+    try {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+      if (config.location?.hash) meta.location_hash = config.location.hash;
+      if (config.location?.name) meta.location_name = config.location.name;
+    } catch { /* ignore parse errors */ }
+  }
+
+  // Count graph entries for summary
+  const graphPath = join(opentasksDir, 'graph.jsonl');
+  if (existsSync(graphPath)) {
+    try {
+      const content = readFileSync(graphPath, 'utf-8');
+      const lines = content.split('\n').filter(l => l.trim());
+      let nodeCount = 0;
+      let edgeCount = 0;
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line);
+          if (obj.from_id && obj.to_id) edgeCount++;
+          else if (obj.id) nodeCount++;
+        } catch { /* skip malformed lines */ }
+      }
+      meta.node_count = nodeCount;
+      meta.edge_count = edgeCount;
+    } catch { /* ignore read errors */ }
+  }
+
+  return meta;
+}
+
 // ============================================================================
 // Core Discovery Logic
 // ============================================================================
@@ -129,6 +183,7 @@ function registerDiscovered(
     description: string;
     path: string;
     scope: ResourceScope;
+    metadata?: Record<string, unknown>;
   }
 ): void {
   const { resource, created } = resourcesDAL.upsertDiscoveredResource({
@@ -139,6 +194,7 @@ function registerDiscovered(
     visibility: 'private',
     owner_agent_id: input.ownerAgentId,
     scope: input.scope,
+    metadata: input.metadata,
   });
 
   const entry = {
@@ -156,13 +212,14 @@ function registerDiscovered(
   }
 }
 
-/** Scan a directory for memory banks and skills at a given scope */
+/** Scan a directory for memory banks, skills, and OpenTasks stores at a given scope */
 async function scanDirectory(
   result: DiscoveryResult,
   dir: string,
   scope: ResourceScope,
   ownerAgentId: string,
-  namePrefix: string
+  namePrefix: string,
+  config?: Config
 ): Promise<void> {
   const resolvedDir = resolve(dir);
 
@@ -205,6 +262,22 @@ async function scanDirectory(
       description: `Claude skills (${scope} scope) at ${claudeSkillsPath}`,
       path: claudeSkillsPath,
       scope,
+    });
+  }
+
+  // Check for OpenTasks store
+  const openTasksEnabled = config?.resourceDiscovery.openTasksEnabled !== false;
+  if (openTasksEnabled && hasOpenTasks(resolvedDir)) {
+    const opentasksPath = join(resolvedDir, '.opentasks');
+    const meta = readOpenTasksMeta(resolvedDir);
+    registerDiscovered(result, {
+      ownerAgentId,
+      resourceType: 'task',
+      name: `${namePrefix}/opentasks`,
+      description: `OpenTasks store (${scope} scope) at ${opentasksPath}`,
+      path: opentasksPath,
+      scope,
+      metadata: meta,
     });
   }
 }
@@ -264,6 +337,27 @@ async function scanGlobalPaths(
       result.skipped.push({ path: resolved, reason: 'No skills found' });
     }
   }
+
+  // Global OpenTasks: ~/.opentasks
+  if (config.resourceDiscovery.openTasksEnabled !== false) {
+    const globalOpenTasksDir = getGlobalOpenTasksPath(config);
+    // The .opentasks dir IS the store; check its parent for hasOpenTasks
+    const parentDir = resolve(globalOpenTasksDir, '..');
+    if (hasOpenTasks(parentDir)) {
+      const meta = readOpenTasksMeta(parentDir);
+      registerDiscovered(result, {
+        ownerAgentId,
+        resourceType: 'task',
+        name: 'global/opentasks',
+        description: `Global OpenTasks store at ${globalOpenTasksDir}`,
+        path: globalOpenTasksDir,
+        scope: 'global',
+        metadata: meta,
+      });
+    } else {
+      result.skipped.push({ path: globalOpenTasksDir, reason: 'No OpenTasks store found' });
+    }
+  }
 }
 
 // ============================================================================
@@ -297,12 +391,12 @@ export async function discoverLocalResources(
   // Project scope
   if (scopes.includes('project')) {
     const projectRoot = getProjectRoot(config);
-    await scanDirectory(result, projectRoot, 'project', ownerAgentId, 'project');
+    await scanDirectory(result, projectRoot, 'project', ownerAgentId, 'project', config);
   }
 
   // Agent scope
   if (scopes.includes('agent') && agentWorkDir) {
-    await scanDirectory(result, agentWorkDir, 'agent', ownerAgentId, 'agent');
+    await scanDirectory(result, agentWorkDir, 'agent', ownerAgentId, 'agent', config);
   }
 
   return result;

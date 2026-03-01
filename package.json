@@ -86,6 +86,7 @@
     "nodemailer": "^7.0.13",
     "openhive-types": "^0.1.0",
     "openswarm": "^0.1.4",
+    "opentasks": "^0.0.4",
     "pg": "^8.18.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

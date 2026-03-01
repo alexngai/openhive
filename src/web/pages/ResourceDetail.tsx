@@ -10,6 +10,7 @@ import { PageLoader } from '../components/common/LoadingSpinner';
 import { toast } from '../stores/toast';
 import { MemoryBrowser } from '../components/resources/MemoryBrowser';
 import { SkillBrowser } from '../components/resources/SkillBrowser';
+import { OpenTasksSummary } from '../components/resources/OpenTasksSummary';
 import type { SyncableResource, ResourceSyncEvent } from '../lib/api';
 import clsx from 'clsx';
 
@@ -257,6 +258,11 @@ export function ResourceDetail() {
       {resource.resource_type === 'skill' && (
         <div className="mb-3">
           <SkillBrowser resourceId={resource.id} />
+        </div>
+      )}
+      {resource.resource_type === 'task' && (resource.metadata as Record<string, unknown> | null)?.opentasks && (
+        <div className="mb-3">
+          <OpenTasksSummary resourceId={resource.id} />
         </div>
       )}
 

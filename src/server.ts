@@ -26,6 +26,7 @@ import { initMapSyncListener, stopMapSyncListener } from './map/sync-listener.js
 import { BridgeManager } from './bridge/manager.js';
 import { SwarmHubConnector } from './swarmhub/connector.js';
 import { normalize, routeEvent } from './events/index.js';
+import { initCoordinationService } from './coordination/index.js';
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -411,6 +412,9 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         syncService.start();
         console.log(`[openhive] Sync service started (instance: ${syncService.getInstanceId()})`);
       }
+
+      // Initialize coordination service (must be before MAP sync listener)
+      initCoordinationService();
 
       // Start MAP sync listener (subscribe to swarm MAP endpoints for sync messages)
       if (config.mapHub.enabled) {

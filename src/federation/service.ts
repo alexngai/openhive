@@ -581,6 +581,110 @@ export async function fetchRemotePostWithError(
   }
 }
 
+// ============================================================================
+// Remote Resources
+// ============================================================================
+
+/**
+ * Remote resource type (discovered from federated instances)
+ */
+export interface RemoteResource {
+  id: string;
+  resource_type: 'memory_bank' | 'task' | 'skill' | 'session';
+  name: string;
+  description: string | null;
+  git_remote_url: string;
+  visibility: 'shared' | 'public';
+  scope: string;
+  owner_agent_id: string;
+  tags: string[];
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+  instance_url: string;
+}
+
+/**
+ * Fetch public/shared resources from a remote instance
+ */
+export async function fetchRemoteResources(
+  instanceUrl: string,
+  options: { type?: string; limit?: number; offset?: number } = {}
+): Promise<RemoteResource[]> {
+  const result = await fetchRemoteResourcesWithError(instanceUrl, options);
+  return result.data;
+}
+
+/**
+ * Fetch public/shared resources from a remote instance with detailed error information
+ */
+export async function fetchRemoteResourcesWithError(
+  instanceUrl: string,
+  options: { type?: string; limit?: number; offset?: number } = {}
+): Promise<FetchResult<RemoteResource>> {
+  const normalizedUrl = instanceUrl.replace(/\/$/, '');
+  const params = new URLSearchParams();
+  if (options.type) params.set('type', options.type);
+  if (options.limit) params.set('limit', String(options.limit));
+  if (options.offset) params.set('offset', String(options.offset));
+
+  const fetchUrl = `${normalizedUrl}/api/v1/resources/discover?${params}`;
+
+  try {
+    const response = await fetch(fetchUrl, {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'OpenHive/0.2.0 Federation',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      const error = categorizeError(null, response.status);
+      error.instanceUrl = normalizedUrl;
+
+      federationLogger.warn('Failed to fetch remote resources', {
+        url: fetchUrl,
+        statusCode: response.status,
+        errorType: error.type,
+      });
+
+      return { success: false, data: [], error };
+    }
+
+    const data = (await response.json()) as { data?: unknown[] };
+    const resources = data.data || [];
+
+    const remoteResources = resources.map((resource) => ({
+      ...(resource as Record<string, unknown>),
+      instance_url: normalizedUrl,
+    })) as RemoteResource[];
+
+    federationLogger.info('Fetched remote resources successfully', {
+      url: normalizedUrl,
+      count: remoteResources.length,
+      type: options.type,
+    });
+
+    return { success: true, data: remoteResources };
+  } catch (error) {
+    const fedError = categorizeError(error);
+    fedError.instanceUrl = normalizedUrl;
+
+    federationLogger.error('Error fetching remote resources', {
+      url: fetchUrl,
+      errorType: fedError.type,
+      message: fedError.message,
+      originalError: fedError.originalError,
+    });
+
+    return { success: false, data: [], error: fedError };
+  }
+}
+
+// ============================================================================
+// Remote Hives
+// ============================================================================
+
 /**
  * Remote hive type
  */

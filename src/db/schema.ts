@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 23;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -203,6 +203,10 @@ CREATE TABLE IF NOT EXISTS syncable_resources (
     CHECK (scope IN ('global', 'project', 'agent', 'manual')),
   -- Resource-specific metadata stored as JSON
   metadata TEXT,
+  -- Cross-instance sync origin tracking
+  origin_instance_id TEXT,
+  origin_resource_id TEXT,
+  sync_event_id TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   UNIQUE(owner_agent_id, resource_type, name)
@@ -337,6 +341,7 @@ CREATE INDEX IF NOT EXISTS idx_syncable_resources_type ON syncable_resources(res
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_visibility ON syncable_resources(visibility);
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_resources(resource_type, visibility);
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
 CREATE INDEX IF NOT EXISTS idx_resource_subs_agent ON resource_subscriptions(agent_id);
 CREATE INDEX IF NOT EXISTS idx_resource_subs_resource ON resource_subscriptions(resource_id);
 CREATE INDEX IF NOT EXISTS idx_resource_tags_tag ON resource_tags(tag);
@@ -539,6 +544,24 @@ END;
 CREATE TRIGGER IF NOT EXISTS hives_fts_delete AFTER DELETE ON hives BEGIN
   DELETE FROM hives_fts WHERE rowid = old.rowid;
 END;
+`;
+
+// Migration V21: Add origin tracking columns to syncable_resources for cross-instance sync
+export const MIGRATION_V21_RESOURCE_ORIGIN = `
+ALTER TABLE syncable_resources ADD COLUMN origin_instance_id TEXT;
+ALTER TABLE syncable_resources ADD COLUMN origin_resource_id TEXT;
+ALTER TABLE syncable_resources ADD COLUMN sync_event_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
+`;
+
+// Migration V23: Add origin tracking columns to coordination tables for cross-instance idempotency
+export const MIGRATION_V23_COORDINATION_ORIGIN = `
+ALTER TABLE coordination_tasks ADD COLUMN origin_instance_id TEXT;
+ALTER TABLE coordination_tasks ADD COLUMN origin_task_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_coord_tasks_origin ON coordination_tasks(origin_instance_id, origin_task_id);
+ALTER TABLE swarm_messages ADD COLUMN origin_instance_id TEXT;
+ALTER TABLE swarm_messages ADD COLUMN origin_message_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_swarm_messages_origin ON swarm_messages(origin_instance_id, origin_message_id);
 `;
 
 // Migration V18: Add scope column to syncable_resources

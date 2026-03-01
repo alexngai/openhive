@@ -13,6 +13,8 @@ import { getDatabase } from '../db/index.js';
 import { nanoid } from 'nanoid';
 import { upsertRemoteAgent } from '../db/dal/remote-agents.js';
 import { insertPendingEvent, countPendingEvents, trimPendingEvents } from '../db/dal/sync-events.js';
+import { createSyncEvent } from '../db/dal/syncable-resources.js';
+import * as coordinationDal from '../db/dal/coordination.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import { getMaterializerRepo } from './materializer-repo.js';
 import type {
@@ -24,6 +26,14 @@ import type {
   CommentUpdatedPayload,
   CommentDeletedPayload,
   VoteCastPayload,
+  ResourcePublishedPayload,
+  ResourceUpdatedPayload,
+  ResourceUnpublishedPayload,
+  ResourceSyncedPayload,
+  CoordinationTaskOfferedPayload,
+  CoordinationTaskClaimedPayload,
+  CoordinationTaskCompletedPayload,
+  CoordinationMessagePayload,
   AgentSnapshot,
 } from './types.js';
 
@@ -84,6 +94,30 @@ export function materializeEvent(event: HiveEvent, hiveId: string, hiveName: str
       break;
     case 'vote_cast':
       materializeVoteCast(event, payload as VoteCastPayload);
+      break;
+    case 'resource_published':
+      materializeResourcePublished(event, payload as ResourcePublishedPayload, isLocal);
+      break;
+    case 'resource_updated':
+      materializeResourceUpdated(event, payload as ResourceUpdatedPayload);
+      break;
+    case 'resource_unpublished':
+      materializeResourceUnpublished(event, payload as ResourceUnpublishedPayload);
+      break;
+    case 'resource_synced':
+      materializeResourceSynced(event, payload as ResourceSyncedPayload);
+      break;
+    case 'coordination_task_offered':
+      materializeCoordinationTaskOffered(event, payload as CoordinationTaskOfferedPayload);
+      break;
+    case 'coordination_task_claimed':
+      materializeCoordinationTaskClaimed(event, payload as CoordinationTaskClaimedPayload);
+      break;
+    case 'coordination_task_completed':
+      materializeCoordinationTaskCompleted(event, payload as CoordinationTaskCompletedPayload);
+      break;
+    case 'coordination_message':
+      materializeCoordinationMessage(event, payload as CoordinationMessagePayload);
       break;
     default:
       syncLogger.warn(`Unknown event type: ${event.event_type}`, { event_id: event.id });
@@ -327,6 +361,275 @@ function materializeVoteCast(event: HiveEvent, payload: VoteCastPayload): void {
   }
 
   syncLogger.info('Materialized vote_cast', { target_type: payload.target_type, target_id: targetId });
+}
+
+// ── Resource Materialization ────────────────────────────────────
+
+function materializeResourcePublished(event: HiveEvent, payload: ResourcePublishedPayload, isLocal: boolean): void {
+  const repo = getMaterializerRepo();
+
+  const existing = repo.findResourceByOrigin(event.origin_instance_id, payload.resource_id);
+  if (existing) return;
+
+  const { authorId } = resolveAuthor(payload.owner, isLocal);
+  const id = `rr_${nanoid()}`;
+  const createdAt = new Date(event.origin_ts).toISOString();
+
+  repo.upsertRemoteResource({
+    id, resource_type: payload.resource_type, name: payload.name,
+    description: payload.description, git_remote_url: payload.git_remote_url,
+    visibility: payload.visibility, owner_agent_id: authorId,
+    sync_event_id: event.id, origin_instance_id: event.origin_instance_id,
+    origin_resource_id: payload.resource_id,
+    metadata: payload.metadata ? JSON.stringify(payload.metadata) : null,
+    created_at: createdAt,
+  });
+
+  broadcastToChannel(`resource:${payload.resource_type}:${id}`, {
+    type: 'resource_published',
+    data: {
+      resource_id: id,
+      resource_type: payload.resource_type,
+      name: payload.name,
+      visibility: payload.visibility,
+      origin_instance_id: event.origin_instance_id,
+    },
+  });
+
+  syncLogger.info('Materialized resource_published', { resource_id: id, origin: event.origin_instance_id });
+}
+
+function materializeResourceUpdated(event: HiveEvent, payload: ResourceUpdatedPayload): void {
+  const repo = getMaterializerRepo();
+
+  const resource = repo.findResourceByOrigin(event.origin_instance_id, payload.resource_id);
+  if (!resource) {
+    syncLogger.warn('resource_updated for unknown resource', { resource_id: payload.resource_id, origin: event.origin_instance_id });
+    return;
+  }
+
+  if (resource.updated_at) {
+    const existingTs = new Date(resource.updated_at).getTime();
+    if (event.origin_ts <= existingTs) {
+      syncLogger.info('Skipping stale resource_updated (last-writer-wins)', {
+        resource_id: resource.id,
+        event_ts: event.origin_ts,
+        existing_ts: existingTs,
+      });
+      return;
+    }
+  }
+
+  const eventTs = new Date(event.origin_ts).toISOString();
+  const f = payload.fields;
+  const hasUpdates = f.name !== undefined || f.description !== undefined || f.visibility !== undefined || f.metadata !== undefined;
+  if (!hasUpdates) return;
+
+  repo.updateRemoteResource(resource.id, {
+    name: f.name, description: f.description, visibility: f.visibility,
+    metadata: f.metadata ? JSON.stringify(f.metadata) : undefined,
+    updated_at: eventTs,
+  });
+
+  syncLogger.info('Materialized resource_updated', { resource_id: resource.id });
+}
+
+function materializeResourceUnpublished(event: HiveEvent, payload: ResourceUnpublishedPayload): void {
+  const repo = getMaterializerRepo();
+
+  const resource = repo.findResourceByOrigin(event.origin_instance_id, payload.resource_id);
+  if (!resource) return;
+
+  broadcastToChannel(`resource:${resource.resource_type}:${resource.id}`, {
+    type: 'resource_unpublished',
+    data: {
+      resource_id: resource.id,
+      resource_type: resource.resource_type,
+      origin_instance_id: event.origin_instance_id,
+    },
+  });
+
+  repo.deleteRemoteResource(resource.id);
+  syncLogger.info('Materialized resource_unpublished', { resource_id: resource.id });
+}
+
+function materializeResourceSynced(event: HiveEvent, payload: ResourceSyncedPayload): void {
+  const repo = getMaterializerRepo();
+
+  const resource = repo.findResourceByOrigin(event.origin_instance_id, payload.resource_id);
+  if (!resource) {
+    syncLogger.warn('resource_synced for unknown resource', { resource_id: payload.resource_id, origin: event.origin_instance_id });
+    return;
+  }
+
+  const eventTs = new Date(event.origin_ts).toISOString();
+  repo.updateResourceCommit(resource.id, payload.commit_hash, eventTs);
+
+  const syncEvent = createSyncEvent({
+    resource_id: resource.id,
+    commit_hash: payload.commit_hash,
+    commit_message: payload.commit_message ?? undefined,
+    pusher: `sync:${payload.pusher_agent_id}`,
+    files_added: payload.files_added,
+    files_modified: payload.files_modified,
+    files_removed: payload.files_removed,
+  });
+
+  broadcastToChannel(`resource:${resource.resource_type}:${resource.id}`, {
+    type: 'resource_synced',
+    data: {
+      resource_id: resource.id,
+      resource_type: resource.resource_type,
+      commit_hash: payload.commit_hash,
+      commit_message: payload.commit_message,
+      pusher_agent_id: payload.pusher_agent_id,
+      event_id: syncEvent.id,
+      origin_instance_id: event.origin_instance_id,
+    },
+  });
+
+  syncLogger.info('Materialized resource_synced', { resource_id: resource.id, commit: payload.commit_hash });
+}
+
+// ── Coordination Materialization ────────────────────────────────
+
+function materializeCoordinationTaskOffered(event: HiveEvent, payload: CoordinationTaskOfferedPayload): void {
+  // Idempotency: check if task already exists by origin tracking
+  const existing = coordinationDal.findTaskByOrigin(event.origin_instance_id, payload.task_id);
+  if (existing) return;
+
+  coordinationDal.createTask(payload.hive_id, {
+    title: payload.title,
+    description: payload.description ?? undefined,
+    priority: payload.priority,
+    assigned_by_agent_id: payload.offered_by.agent_id,
+    assigned_by_swarm_id: undefined,
+    assigned_to_swarm_id: payload.assigned_to_swarm_id ?? '',
+    context: payload.context ?? undefined,
+    deadline: payload.deadline ?? undefined,
+    origin_instance_id: event.origin_instance_id,
+    origin_task_id: payload.task_id,
+  });
+
+  broadcastToChannel(`coordination:${payload.hive_id}`, {
+    type: 'task_assigned',
+    data: {
+      task_id: payload.task_id,
+      title: payload.title,
+      priority: payload.priority,
+      origin_instance_id: event.origin_instance_id,
+    },
+  });
+
+  syncLogger.info('Materialized coordination_task_offered', { task_id: payload.task_id, origin: event.origin_instance_id });
+}
+
+function resolveTaskByOriginChain(
+  event: HiveEvent,
+  payload: { task_id: string; origin_instance_id?: string | null; origin_task_id?: string | null },
+): ReturnType<typeof coordinationDal.findTaskById> {
+  // 1. The claiming instance's local ID may match our origin tracking
+  //    (e.g., we created the task locally with that ID as origin_task_id)
+  let task = coordinationDal.findTaskByOrigin(event.origin_instance_id, payload.task_id);
+  // 2. The payload carries the task's original origin (where it was first offered).
+  //    This handles: A offers → B materializes → B claims → A receives claim.
+  //    A's local task has no origin columns (created locally), but the payload
+  //    tells us it was originally from A with origin_task_id = the original ID.
+  if (!task && payload.origin_instance_id && payload.origin_task_id) {
+    task = coordinationDal.findTaskByOrigin(payload.origin_instance_id, payload.origin_task_id);
+  }
+  // 3. Direct ID match — covers same-instance case and the case where
+  //    the original task ID happens to match our local ID (task was created here)
+  if (!task) {
+    task = coordinationDal.findTaskById(payload.task_id);
+  }
+  // 4. The payload's origin_task_id might be our local task ID
+  //    (A offered task ct_abc → B got it with origin_task_id=ct_abc → B claims →
+  //     claim event has origin_task_id=ct_abc → A can find by direct ID ct_abc)
+  if (!task && payload.origin_task_id) {
+    task = coordinationDal.findTaskById(payload.origin_task_id);
+  }
+  return task;
+}
+
+function materializeCoordinationTaskClaimed(event: HiveEvent, payload: CoordinationTaskClaimedPayload): void {
+  const task = resolveTaskByOriginChain(event, payload);
+  if (!task) {
+    syncLogger.warn('coordination_task_claimed for unknown task', { task_id: payload.task_id, origin: event.origin_instance_id });
+    return;
+  }
+
+  coordinationDal.updateTask(task.id, { status: 'accepted' });
+
+  broadcastToChannel(`coordination:${task.hive_id}`, {
+    type: 'task_status_updated',
+    data: {
+      task_id: task.id,
+      status: 'accepted',
+      claimed_by: payload.claimed_by,
+      origin_instance_id: event.origin_instance_id,
+    },
+  });
+
+  syncLogger.info('Materialized coordination_task_claimed', { task_id: task.id, local_id: task.id, payload_id: payload.task_id });
+}
+
+function materializeCoordinationTaskCompleted(event: HiveEvent, payload: CoordinationTaskCompletedPayload): void {
+  const task = resolveTaskByOriginChain(event, payload);
+  if (!task) {
+    syncLogger.warn('coordination_task_completed for unknown task', { task_id: payload.task_id, origin: event.origin_instance_id });
+    return;
+  }
+
+  coordinationDal.updateTask(task.id, {
+    status: payload.status,
+    result: payload.result ?? undefined,
+    error: payload.error ?? undefined,
+  });
+
+  broadcastToChannel(`coordination:${task.hive_id}`, {
+    type: 'task_status_updated',
+    data: {
+      task_id: task.id,
+      status: payload.status,
+      completed_by: payload.completed_by,
+      origin_instance_id: event.origin_instance_id,
+    },
+  });
+
+  syncLogger.info('Materialized coordination_task_completed', { task_id: task.id, status: payload.status });
+}
+
+function materializeCoordinationMessage(event: HiveEvent, payload: CoordinationMessagePayload): void {
+  // Idempotency: check if message already exists by origin tracking
+  const existing = coordinationDal.findMessageByOrigin(event.origin_instance_id, payload.message_id);
+  if (existing) return;
+
+  const msg = coordinationDal.createMessage({
+    hive_id: payload.hive_id ?? undefined,
+    from_swarm_id: payload.from_swarm_id,
+    to_swarm_id: payload.to_swarm_id ?? '',
+    content_type: payload.content_type,
+    content: typeof payload.content === 'string' ? payload.content : JSON.stringify(payload.content),
+    reply_to: payload.reply_to ?? undefined,
+    metadata: payload.metadata ?? undefined,
+    origin_instance_id: event.origin_instance_id,
+    origin_message_id: payload.message_id,
+  });
+
+  const channel = payload.hive_id
+    ? `coordination:${payload.hive_id}`
+    : `swarm:${payload.to_swarm_id}`;
+  broadcastToChannel(channel, {
+    type: 'swarm_message_received',
+    data: {
+      message_id: msg.id,
+      from_swarm_id: payload.from_swarm_id,
+      origin_instance_id: event.origin_instance_id,
+    },
+  });
+
+  syncLogger.info('Materialized coordination_message', { message_id: msg.id, origin: event.origin_instance_id });
 }
 
 // ── Pending Queue Processing ────────────────────────────────────

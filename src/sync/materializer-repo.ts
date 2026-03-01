@@ -34,6 +34,18 @@ export interface MaterializerRepository {
   deleteCommentTree(path: string): number;
   updatePostCommentCount(postId: string, delta: number): void;
 
+  // Resources
+  findResourceByOrigin(originInstanceId: string, originResourceId: string): { id: string; resource_type: string; updated_at: string | null } | null;
+  upsertRemoteResource(input: {
+    id: string; resource_type: string; name: string; description: string | null;
+    git_remote_url: string; visibility: string; owner_agent_id: string;
+    sync_event_id: string; origin_instance_id: string; origin_resource_id: string;
+    metadata: string | null; created_at: string;
+  }): void;
+  updateRemoteResource(id: string, fields: { name?: string; description?: string; visibility?: string; metadata?: string; updated_at: string }): void;
+  deleteRemoteResource(id: string): void;
+  updateResourceCommit(id: string, commitHash: string, updatedAt: string): void;
+
   // Votes
   findVoteTarget(targetType: 'post' | 'comment', targetId: string): { id: string } | null;
   findVote(agentId: string, targetType: string, targetId: string): { id: string; value: number } | null;
@@ -139,6 +151,54 @@ export class SQLiteMaterializerRepository implements MaterializerRepository {
 
   updatePostCommentCount(postId: string, delta: number) {
     this.db.prepare('UPDATE posts SET comment_count = comment_count + ? WHERE id = ?').run(delta, postId);
+  }
+
+  findResourceByOrigin(originInstanceId: string, originResourceId: string) {
+    return this.db.prepare(
+      'SELECT id, resource_type, updated_at FROM syncable_resources WHERE origin_instance_id = ? AND origin_resource_id = ?'
+    ).get(originInstanceId, originResourceId) as { id: string; resource_type: string; updated_at: string | null } | null;
+  }
+
+  upsertRemoteResource(input: {
+    id: string; resource_type: string; name: string; description: string | null;
+    git_remote_url: string; visibility: string; owner_agent_id: string;
+    sync_event_id: string; origin_instance_id: string; origin_resource_id: string;
+    metadata: string | null; created_at: string;
+  }) {
+    this.db.prepare(`
+      INSERT INTO syncable_resources (id, resource_type, name, description, git_remote_url, visibility, owner_agent_id, sync_event_id, origin_instance_id, origin_resource_id, metadata, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(origin_instance_id, origin_resource_id) DO UPDATE SET
+        name = excluded.name, description = excluded.description,
+        git_remote_url = excluded.git_remote_url, visibility = excluded.visibility,
+        metadata = excluded.metadata, updated_at = datetime('now')
+    `).run(input.id, input.resource_type, input.name, input.description,
+      input.git_remote_url, input.visibility, input.owner_agent_id,
+      input.sync_event_id, input.origin_instance_id, input.origin_resource_id,
+      input.metadata, input.created_at);
+  }
+
+  updateRemoteResource(id: string, fields: { name?: string; description?: string; visibility?: string; metadata?: string; updated_at: string }) {
+    const updates: string[] = [];
+    const values: unknown[] = [];
+    if (fields.name !== undefined) { updates.push('name = ?'); values.push(fields.name); }
+    if (fields.description !== undefined) { updates.push('description = ?'); values.push(fields.description); }
+    if (fields.visibility !== undefined) { updates.push('visibility = ?'); values.push(fields.visibility); }
+    if (fields.metadata !== undefined) { updates.push('metadata = ?'); values.push(fields.metadata); }
+    updates.push('updated_at = ?'); values.push(fields.updated_at);
+    values.push(id);
+    if (updates.length > 1) {
+      this.db.prepare(`UPDATE syncable_resources SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    }
+  }
+
+  deleteRemoteResource(id: string) {
+    this.db.prepare('DELETE FROM syncable_resources WHERE id = ?').run(id);
+  }
+
+  updateResourceCommit(id: string, commitHash: string, updatedAt: string) {
+    this.db.prepare('UPDATE syncable_resources SET last_commit_hash = ?, updated_at = ? WHERE id = ?')
+      .run(commitHash, updatedAt, id);
   }
 
   findVoteTarget(targetType: 'post' | 'comment', targetId: string) {

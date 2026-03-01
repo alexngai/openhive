@@ -29,7 +29,9 @@ export type HiveEventType =
   | 'post_created' | 'post_updated' | 'post_deleted'
   | 'comment_created' | 'comment_updated' | 'comment_deleted'
   | 'vote_cast'
-  | 'hive_setting_changed' | 'membership_changed' | 'moderator_changed';
+  | 'hive_setting_changed' | 'membership_changed' | 'moderator_changed'
+  | 'resource_published' | 'resource_updated' | 'resource_unpublished' | 'resource_synced'
+  | 'coordination_task_offered' | 'coordination_task_claimed' | 'coordination_task_completed' | 'coordination_message';
 
 export interface HiveEvent {
   id: string;
@@ -111,6 +113,89 @@ export interface ModeratorChangedPayload {
   agent: AgentSnapshot;
   action: 'add' | 'remove';
   by: AgentSnapshot;
+}
+
+export interface ResourcePublishedPayload {
+  resource_id: string;
+  resource_type: 'memory_bank' | 'task' | 'skill' | 'session';
+  name: string;
+  description: string | null;
+  git_remote_url: string;
+  visibility: 'shared' | 'public';
+  owner: AgentSnapshot;
+  tags: string[];
+  metadata: Record<string, unknown> | null;
+}
+
+export interface ResourceUpdatedPayload {
+  resource_id: string;
+  fields: Partial<{
+    name: string;
+    description: string;
+    visibility: 'private' | 'shared' | 'public';
+    tags: string[];
+    metadata: Record<string, unknown>;
+  }>;
+  updated_by: AgentSnapshot;
+}
+
+export interface ResourceUnpublishedPayload {
+  resource_id: string;
+  unpublished_by: AgentSnapshot;
+}
+
+export interface ResourceSyncedPayload {
+  resource_id: string;
+  commit_hash: string;
+  commit_message: string | null;
+  pusher_agent_id: string;
+  files_added: number;
+  files_modified: number;
+  files_removed: number;
+}
+
+// ── Coordination Event Payloads ─────────────────────────────────
+
+export interface CoordinationTaskOfferedPayload {
+  task_id: string;
+  title: string;
+  description: string | null;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  offered_by: AgentSnapshot;
+  hive_id: string;
+  assigned_to_swarm_id: string | null;
+  context: Record<string, unknown> | null;
+  deadline: string | null;
+}
+
+export interface CoordinationTaskClaimedPayload {
+  task_id: string;
+  /** Origin of the task if it was replicated from another instance */
+  origin_instance_id?: string | null;
+  origin_task_id?: string | null;
+  claimed_by: AgentSnapshot;
+}
+
+export interface CoordinationTaskCompletedPayload {
+  task_id: string;
+  /** Origin of the task if it was replicated from another instance */
+  origin_instance_id?: string | null;
+  origin_task_id?: string | null;
+  completed_by: AgentSnapshot;
+  status: 'completed' | 'failed';
+  result: Record<string, unknown> | null;
+  error: string | null;
+}
+
+export interface CoordinationMessagePayload {
+  message_id: string;
+  from_swarm_id: string;
+  to_swarm_id: string | null;
+  hive_id: string | null;
+  content_type: 'text' | 'json' | 'binary_ref';
+  content: unknown;
+  reply_to: string | null;
+  metadata: Record<string, unknown> | null;
 }
 
 // ── Sync Group ──────────────────────────────────────────────────

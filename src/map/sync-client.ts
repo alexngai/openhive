@@ -24,6 +24,13 @@
 import WebSocket from 'ws';
 import type { MapSyncMessage, MapSyncMethod } from './types.js';
 import { SYNC_METHODS, createSyncNotification } from './types.js';
+import type {
+  MapCoordinationMessage,
+  TaskStatusParams,
+  ContextShareParams,
+  MessageSendParams,
+} from 'openhive-types';
+import { COORDINATION_METHODS, createCoordinationNotification } from 'openhive-types';
 
 // ============================================================================
 // Types
@@ -76,6 +83,7 @@ export interface MapSyncClientConfig {
 }
 
 export type SyncMessageHandler = (msg: MapSyncMessage, resource: SyncResource) => void;
+export type CoordinationMessageHandler = (msg: MapCoordinationMessage) => void;
 
 // ============================================================================
 // Client
@@ -86,6 +94,10 @@ export class MapSyncClient {
   private hubWs: WebSocket | null = null;
   private memoryHandlers: SyncMessageHandler[] = [];
   private skillHandlers: SyncMessageHandler[] = [];
+  private taskAssignHandlers: CoordinationMessageHandler[] = [];
+  private taskStatusHandlers: CoordinationMessageHandler[] = [];
+  private contextShareHandlers: CoordinationMessageHandler[] = [];
+  private messageHandlers: CoordinationMessageHandler[] = [];
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
@@ -147,6 +159,63 @@ export class MapSyncClient {
   }
 
   // --------------------------------------------------------------------------
+  // Emit coordination notifications (swarm → hub)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Emit an x-openhive/task.status notification to report task progress.
+   */
+  emitTaskStatus(params: TaskStatusParams): void {
+    this.broadcastCoordination(createCoordinationNotification('x-openhive/task.status', params));
+  }
+
+  /**
+   * Emit an x-openhive/context.share notification to share context with peers.
+   */
+  emitContextShare(params: ContextShareParams): void {
+    this.broadcastCoordination(createCoordinationNotification('x-openhive/context.share', params));
+  }
+
+  /**
+   * Emit an x-openhive/message.send notification to send a message to another swarm.
+   */
+  emitMessage(params: MessageSendParams): void {
+    this.broadcastCoordination(createCoordinationNotification('x-openhive/message.send', params));
+  }
+
+  // --------------------------------------------------------------------------
+  // Subscribe to incoming coordination notifications (hub → swarm)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Register a handler for incoming x-openhive/task.assign notifications.
+   */
+  onTaskAssigned(handler: CoordinationMessageHandler): void {
+    this.taskAssignHandlers.push(handler);
+  }
+
+  /**
+   * Register a handler for incoming x-openhive/task.status notifications.
+   */
+  onTaskStatus(handler: CoordinationMessageHandler): void {
+    this.taskStatusHandlers.push(handler);
+  }
+
+  /**
+   * Register a handler for incoming x-openhive/context.share notifications.
+   */
+  onContextShared(handler: CoordinationMessageHandler): void {
+    this.contextShareHandlers.push(handler);
+  }
+
+  /**
+   * Register a handler for incoming x-openhive/message.send notifications.
+   */
+  onMessage(handler: CoordinationMessageHandler): void {
+    this.messageHandlers.push(handler);
+  }
+
+  // --------------------------------------------------------------------------
   // WebSocket Server (swarm's own MAP endpoint)
   // --------------------------------------------------------------------------
 
@@ -173,6 +242,18 @@ export class MapSyncClient {
     }
   }
 
+  /**
+   * Broadcast a coordination notification to all connected clients.
+   */
+  private broadcastCoordination(msg: MapCoordinationMessage): void {
+    const payload = JSON.stringify(msg);
+    for (const ws of this.wsClients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(payload);
+      }
+    }
+  }
+
   // --------------------------------------------------------------------------
   // Hub Connection (receive relayed notifications from OpenHive)
   // --------------------------------------------------------------------------
@@ -191,11 +272,15 @@ export class MapSyncClient {
       ws.on('message', (data) => {
         try {
           const parsed = JSON.parse(data.toString());
-          if (parsed?.jsonrpc === '2.0' && SYNC_METHODS.has(parsed?.method)) {
+          if (parsed?.jsonrpc !== '2.0' || typeof parsed?.method !== 'string') return;
+
+          if (SYNC_METHODS.has(parsed.method)) {
             this.handleIncomingSync(parsed as MapSyncMessage);
+          } else if (COORDINATION_METHODS.has(parsed.method)) {
+            this.handleIncomingCoordination(parsed as MapCoordinationMessage);
           }
         } catch {
-          // Ignore non-sync messages
+          // Ignore non-JSON or unrecognized messages
         }
       });
 
@@ -248,6 +333,26 @@ export class MapSyncClient {
         handler(msg, resource);
       } catch (err) {
         console.error(`[map-sync-client] Handler error for ${msg.method}:`, err);
+      }
+    }
+  }
+
+  private handleIncomingCoordination(msg: MapCoordinationMessage): void {
+    const handlerMap: Record<string, CoordinationMessageHandler[]> = {
+      'x-openhive/task.assign': this.taskAssignHandlers,
+      'x-openhive/task.status': this.taskStatusHandlers,
+      'x-openhive/context.share': this.contextShareHandlers,
+      'x-openhive/message.send': this.messageHandlers,
+    };
+
+    const handlers = handlerMap[msg.method];
+    if (!handlers) return;
+
+    for (const handler of handlers) {
+      try {
+        handler(msg);
+      } catch (err) {
+        console.error(`[map-sync-client] Coordination handler error for ${msg.method}:`, err);
       }
     }
   }

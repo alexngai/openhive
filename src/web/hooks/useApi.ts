@@ -422,7 +422,7 @@ export function useSyncStatus() {
 }
 
 // Resources (extended)
-export function useResourcesByType(type: 'memory_bank' | 'skill', options?: { limit?: number }) {
+export function useResourcesByType(type: 'memory_bank' | 'skill' | 'task', options?: { limit?: number }) {
   const { limit = 50 } = options || {};
 
   return useQuery({
@@ -526,6 +526,28 @@ export function useSkillDetail(resourceId: string, skillId: string | null) {
     queryKey: ['skill-detail', resourceId, skillId],
     queryFn: () => api.get<SkillDetail>(`/resources/${resourceId}/content/skills/${skillId}`),
     enabled: !!resourceId && !!skillId,
+  });
+}
+
+// ── OpenTasks ──
+
+export function useOpenTasksSummary(resourceId: string) {
+  return useQuery({
+    queryKey: ['opentasks-summary', resourceId],
+    queryFn: () => api.get<import('../lib/api').OpenTasksGraphSummary>(
+      `/resources/${resourceId}/content/opentasks/summary`
+    ),
+    enabled: !!resourceId,
+  });
+}
+
+export function useOpenTasksReady(resourceId: string) {
+  return useQuery({
+    queryKey: ['opentasks-ready', resourceId],
+    queryFn: () => api.get<import('../lib/api').OpenTasksReadyResponse>(
+      `/resources/${resourceId}/content/opentasks/ready`
+    ),
+    enabled: !!resourceId,
   });
 }
 

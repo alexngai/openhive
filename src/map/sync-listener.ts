@@ -20,8 +20,10 @@ import { mapHubEvents } from './service.js';
 import { listSwarms, findSwarmById, findSwarmsByOwnerAgentIds } from '../db/dal/map.js';
 import { findResourceById, updateResourceSyncState, createSyncEvent, getResourceSubscribers } from '../db/dal/syncable-resources.js';
 import { broadcastToChannel } from '../realtime/index.js';
+import { onResourceSynced } from '../sync/resource-hooks.js';
 import type { MapSyncMessage, MapTransport } from './types.js';
 import { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE } from './types.js';
+import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
 
 interface SwarmConnection {
   swarmId: string;
@@ -93,7 +95,12 @@ export function handleSyncMessage(msg: MapSyncMessage, sourceSwarmId: string): v
     pusher: `map:${agent_id}`,
   });
 
-  // 3. Broadcast to local WebSocket channels for UI/non-MAP clients
+  // 3. Record cross-instance sync event for peers
+  if (resource.visibility !== 'private') {
+    onResourceSynced(resource_id, commit_hash, null, agent_id, 0, 0, 0);
+  }
+
+  // 4. Broadcast to local WebSocket channels for UI/non-MAP clients
   //    Convert JSON-RPC method back to internal WSEventType for local broadcast
   const wsEventType = msg.method === 'x-openhive/memory.sync' ? 'memory:sync' : 'skill:sync';
   broadcastToChannel(`resource:${resource.resource_type}:${resource_id}`, {
@@ -121,7 +128,7 @@ export function handleSyncMessage(msg: MapSyncMessage, sourceSwarmId: string): v
     });
   }
 
-  // 4. Relay to subscribed swarms
+  // 5. Relay to subscribed swarms
   relaySyncMessage(msg, sourceSwarmId);
 
   console.log(`[map-sync] Processed ${msg.method} for ${resource.name} (${resource_id}) commit=${commit_hash.slice(0, 8)}`);
@@ -216,6 +223,8 @@ function connectToSwarm(swarmId: string, name: string, endpoint: string, transpo
         const parsed = JSON.parse(data.toString());
         if (isMapSyncMessage(parsed)) {
           handleSyncMessage(parsed, swarmId);
+        } else if (isCoordinationMessage(parsed)) {
+          handleCoordinationMessage(parsed, swarmId);
         }
       } catch {
         // Ignore non-JSON or unrecognized messages

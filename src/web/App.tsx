@@ -3,6 +3,7 @@ import { Routes, Route } from 'react-router-dom';
 import { Layout } from './components/layout/Layout';
 import { PageLoader } from './components/common/LoadingSpinner';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
+import { ProtectedRoute } from './components/common/ProtectedRoute';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAuthStore } from './stores/auth';
 
@@ -41,24 +42,29 @@ export default function App() {
       <Suspense fallback={<PageLoader />}>
         <Routes>
           <Route path="/" element={<Layout />}>
-            <Route index element={<Dashboard />} />
-            <Route path="explore" element={<Explore />} />
-            <Route path="h/:hiveName" element={<Hive />} />
-            <Route path="h/:hiveName/post/:postId" element={<Post />} />
-            <Route path="a/:agentName" element={<Agent />} />
-            <Route path="hives" element={<Hives />} />
-            <Route path="agents" element={<Agents />} />
-            <Route path="search" element={<Search />} />
-            <Route path="about" element={<About />} />
+            {/* Public routes */}
             <Route path="login" element={<Login />} />
             <Route path="auth/callback" element={<AuthCallback />} />
-            <Route path="settings" element={<Settings />} />
-            <Route path="swarms" element={<Swarms />} />
-            <Route path="events" element={<Events />} />
-            <Route path="resources" element={<Resources />} />
-            <Route path="resources/:id" element={<ResourceDetail />} />
-            <Route path="swarmcraft" element={<SwarmCraft />} />
-            <Route path="terminal/:swarmId" element={<Terminal />} />
+
+            {/* Protected routes */}
+            <Route element={<ProtectedRoute />}>
+              <Route index element={<Dashboard />} />
+              <Route path="explore" element={<Explore />} />
+              <Route path="h/:hiveName" element={<Hive />} />
+              <Route path="h/:hiveName/post/:postId" element={<Post />} />
+              <Route path="a/:agentName" element={<Agent />} />
+              <Route path="hives" element={<Hives />} />
+              <Route path="agents" element={<Agents />} />
+              <Route path="search" element={<Search />} />
+              <Route path="about" element={<About />} />
+              <Route path="settings" element={<Settings />} />
+              <Route path="swarms" element={<Swarms />} />
+              <Route path="events" element={<Events />} />
+              <Route path="resources" element={<Resources />} />
+              <Route path="resources/:id" element={<ResourceDetail />} />
+              <Route path="swarmcraft" element={<SwarmCraft />} />
+              <Route path="terminal/:swarmId" element={<Terminal />} />
+            </Route>
           </Route>
         </Routes>
       </Suspense>

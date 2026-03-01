@@ -43,6 +43,14 @@ export interface BootstrapToken {
   adapter_config?: Record<string, unknown>;
   /** Extra metadata to attach to the swarm registration */
   metadata?: Record<string, unknown>;
+  /** Injected resources available to the swarm */
+  resources?: Array<{
+    id: string;
+    resource_type: string;
+    name: string;
+    git_remote_url: string;
+    metadata: Record<string, unknown> | null;
+  }>;
   /** When this token was issued */
   issued_at: string;
   /** When this token expires (short TTL, just for bootstrapping) */
@@ -95,6 +103,8 @@ export interface SpawnSwarmInput {
   credential_overrides?: Record<string, string>;
   /** Workspace setup (e.g. repos to clone before the swarm starts) */
   workspace?: WorkspaceConfig;
+  /** Resource IDs to inject into the swarm's bootstrap config */
+  inject_resources?: string[];
 }
 
 /** Internal config passed to the hosting provider */

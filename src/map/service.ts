@@ -20,6 +20,7 @@ import type {
   MapSwarm,
   MapNode,
   PeerList,
+  CoordinationCapability,
 } from './types.js';
 
 // ============================================================================
@@ -161,6 +162,39 @@ export function getPeerList(swarmId: string): PeerList {
     peers,
     generated_at: new Date().toISOString(),
   };
+}
+
+// ============================================================================
+// Capability-based Discovery
+// ============================================================================
+
+/**
+ * Discover MAP nodes that have coordination capabilities matching the filter.
+ * Queries nodes in swarms belonging to the given hive, then filters by parsing
+ * their capabilities JSON for the coordination field.
+ */
+export function discoverByCapability(
+  hiveId: string,
+  filter: { task_type?: string; accepts_messages?: boolean }
+): MapNode[] {
+  const { data: nodes } = mapDal.discoverNodes({ hive_id: hiveId, limit: 500 });
+
+  return nodes.filter((node) => {
+    if (!node.capabilities) return false;
+    const coord = (node.capabilities as Record<string, unknown>).coordination as CoordinationCapability | undefined;
+    if (!coord) return false;
+
+    if (filter.task_type !== undefined) {
+      if (!coord.accepts_tasks) return false;
+      if (coord.task_types && !coord.task_types.includes(filter.task_type)) return false;
+    }
+
+    if (filter.accepts_messages !== undefined && coord.accepts_messages !== filter.accepts_messages) {
+      return false;
+    }
+
+    return true;
+  }) as unknown as MapNode[];
 }
 
 // ============================================================================

@@ -1,12 +1,13 @@
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
-import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE, MIGRATION_V18_RESOURCE_SCOPE } from './schema.js';
+import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE, MIGRATION_V18_RESOURCE_SCOPE, MIGRATION_V21_RESOURCE_ORIGIN, MIGRATION_V23_COORDINATION_ORIGIN } from './schema.js';
 import { MAP_SCHEMA } from '../map/schema.js';
 import { SYNC_SCHEMA_V12, SYNC_SCHEMA_V13, SYNC_SCHEMA_V14, SYNC_SCHEMA_V15 } from '../sync/schema.js';
 import { HOSTED_SWARM_SCHEMA } from '../swarm/schema.js';
 import { BRIDGE_SCHEMA } from '../bridge/schema.js';
 import { EVENT_ROUTING_SCHEMA } from '../events/schema.js';
+import { COORDINATION_SCHEMA } from '../coordination/schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
 
@@ -97,6 +98,8 @@ export function initDatabase(config: string | DatabaseConfig): Database.Database
     db.exec(BRIDGE_SCHEMA);
     // Create event routing tables
     db.exec(EVENT_ROUTING_SCHEMA);
+    // Create coordination tables
+    db.exec(COORDINATION_SCHEMA);
     // Seed default data
     db.exec(SEED_DATA);
   } else if (versionRow.version < SCHEMA_VERSION) {
@@ -162,6 +165,12 @@ const MIGRATION_REGISTRY: Record<number, string> = {
   19: EVENT_ROUTING_SCHEMA,
   // Version 20: SwarmHub OAuth — add swarmhub_user_id for linked accounts
   20: `ALTER TABLE agents ADD COLUMN swarmhub_user_id TEXT UNIQUE;`,
+  // Version 21: Resource origin tracking for cross-instance sync
+  21: MIGRATION_V21_RESOURCE_ORIGIN,
+  // Version 22: Coordination tables — inter-swarm task delegation, messaging, context sharing
+  22: COORDINATION_SCHEMA,
+  // Version 23: Origin tracking for coordination tables (cross-instance idempotency)
+  23: MIGRATION_V23_COORDINATION_ORIGIN,
 };
 
 /** Get the SQL for a specific migration version.
