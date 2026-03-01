@@ -226,7 +226,8 @@ export class OpenHiveOpenTasksClient {
         const result = await this.ipc.request<OpenTasksQueryResult>(
           'tools.query', { ready: { limit: options?.limit } }
         );
-        return result.items;
+        const items = result.items;
+        return options?.limit ? items.slice(0, options.limit) : items;
       } catch { /* fall through to JSONL */ }
     }
     return this.readReadyFromJsonl(options?.limit);

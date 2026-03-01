@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { OpenHiveOpenTasksClient } from '../../opentasks/client.js';
+import { OpenHiveOpenTasksClient } from '../../opentasks-client/client.js';
 import { testRoot, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
 
 const TEST_ROOT = testRoot('opentasks-client');

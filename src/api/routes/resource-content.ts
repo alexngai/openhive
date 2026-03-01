@@ -6,7 +6,7 @@ import { listMemoryFiles } from 'minimem/internal';
 import { FilesystemStorageAdapter, discoverSkills } from 'skill-tree';
 import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
-import { OpenHiveOpenTasksClient } from '../../opentasks/index.js';
+import { OpenHiveOpenTasksClient } from '../../opentasks-client/index.js';
 import type { SyncableResource } from '../../types.js';
 import type { Config } from '../../config.js';
 
