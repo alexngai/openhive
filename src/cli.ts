@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
 import { createHive } from './server.js';

@@ -98,7 +98,7 @@ export function handleSyncMessage(msg: MapSyncMessage, sourceSwarmId: string): v
 
   // 3. Store trajectory checkpoint metadata (if present)
   if (msg.method === 'trajectory/checkpoint') {
-    const checkpoint = (msg.params as Record<string, unknown>).checkpoint as Record<string, unknown> | undefined;
+    const checkpoint = (msg.params as unknown as Record<string, unknown>).checkpoint as Record<string, unknown> | undefined;
     if (checkpoint) {
       try {
         createTrajectoryCheckpoint({
