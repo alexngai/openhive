@@ -230,7 +230,6 @@ export const ConfigSchema = z.object({
     enabled: z.boolean().default(true),
     prefix: z.string().default('/api/swarmcraft'),
     wsPath: z.string().default('/ws/swarmcraft'),
-    terminalWsPath: z.string().default('/ws/swarmcraft/terminal'),
     logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   }).default({}),
 
@@ -570,7 +569,6 @@ module.exports = {
   //   enabled: true,
   //   prefix: '/api/swarmcraft',
   //   wsPath: '/ws/swarmcraft',
-  //   terminalWsPath: '/ws/swarmcraft/terminal',
   //   logLevel: 'info',
   // },
 
