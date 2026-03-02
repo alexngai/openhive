@@ -102,9 +102,12 @@ export function handleSyncMessage(msg: MapSyncMessage, sourceSwarmId: string): v
 
   // 4. Broadcast to local WebSocket channels for UI/non-MAP clients
   //    Convert JSON-RPC method back to internal WSEventType for local broadcast
-  const wsEventType = msg.method === 'x-openhive/memory.sync' ? 'memory:sync' : 'skill:sync';
+  const wsEventType =
+    msg.method === 'x-openhive/memory.sync' ? 'memory:sync'
+    : msg.method === 'trajectory/checkpoint' ? 'trajectory:sync'
+    : 'skill:sync';
   broadcastToChannel(`resource:${resource.resource_type}:${resource_id}`, {
-    type: wsEventType as 'memory:sync' | 'skill:sync',
+    type: wsEventType as 'memory:sync' | 'skill:sync' | 'trajectory:sync',
     data: {
       resource_id,
       resource_type: resource.resource_type,

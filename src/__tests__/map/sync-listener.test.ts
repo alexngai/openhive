@@ -31,6 +31,7 @@ describe('MAP Sync Listener', () => {
   let agent2Id: string;
   let memoryResourceId: string;
   let skillResourceId: string;
+  let sessionResourceId: string;
   let swarmId: string;
 
   beforeAll(async () => {
@@ -66,6 +67,14 @@ describe('MAP Sync Listener', () => {
     });
     skillResourceId = skillResource.id;
 
+    const sessionResource = resourcesDAL.createResource({
+      resource_type: 'session',
+      name: 'test-session-log',
+      git_remote_url: 'https://github.com/test/sessions.git',
+      owner_agent_id: agentId,
+    });
+    sessionResourceId = sessionResource.id;
+
     // Create a swarm owned by agent 1
     const swarm = mapDAL.createSwarm(agentId, {
       name: 'test-swarm-1',
@@ -92,6 +101,10 @@ describe('MAP Sync Listener', () => {
 
     it('should map x-openhive/skill.sync to skill', () => {
       expect(SYNC_MESSAGE_RESOURCE_TYPE['x-openhive/skill.sync']).toBe('skill');
+    });
+
+    it('should map trajectory/checkpoint to session', () => {
+      expect(SYNC_MESSAGE_RESOURCE_TYPE['trajectory/checkpoint']).toBe('session');
     });
   });
 
@@ -242,6 +255,75 @@ describe('MAP Sync Listener', () => {
       // Verify a sync event was created
       const { data: events } = resourcesDAL.getSyncEvents(memoryResourceId, 10, 0);
       const auditEvent = events.find((e) => e.commit_hash === 'audit_commit_hash');
+      expect(auditEvent).toBeDefined();
+      expect(auditEvent!.pusher).toBe(`map:${agentId}`);
+    });
+
+    it('should process a valid trajectory/checkpoint message', () => {
+      mockBroadcast.mockClear();
+
+      const msg: MapSyncMessage = createSyncNotification('trajectory/checkpoint', {
+        resource_id: sessionResourceId,
+        agent_id: agentId,
+        commit_hash: 'checkpoint_hash_001',
+        timestamp: new Date().toISOString(),
+      });
+
+      handleSyncMessage(msg, swarmId);
+
+      // Verify sync state was updated
+      const resource = resourcesDAL.findResourceById(sessionResourceId);
+      expect(resource).not.toBeNull();
+      expect(resource!.last_commit_hash).toBe('checkpoint_hash_001');
+
+      // Verify broadcast uses trajectory:sync event type (not skill:sync)
+      expect(mockBroadcast).toHaveBeenCalledWith(
+        `resource:session:${sessionResourceId}`,
+        expect.objectContaining({
+          type: 'trajectory:sync',
+          data: expect.objectContaining({
+            resource_id: sessionResourceId,
+            resource_type: 'session',
+            commit_hash: 'checkpoint_hash_001',
+          }),
+        }),
+      );
+
+      // Should NOT get legacy memory_bank channel broadcast
+      expect(mockBroadcast).toHaveBeenCalledTimes(1);
+    });
+
+    it('should reject trajectory/checkpoint for non-session resources', () => {
+      mockBroadcast.mockClear();
+
+      // Send trajectory/checkpoint for a memory_bank resource — should be rejected
+      const msg: MapSyncMessage = createSyncNotification('trajectory/checkpoint', {
+        resource_id: memoryResourceId, // This is a memory_bank
+        agent_id: agentId,
+        commit_hash: 'wrong_type_hash',
+        timestamp: new Date().toISOString(),
+      });
+
+      handleSyncMessage(msg, swarmId);
+
+      // Should not broadcast
+      expect(mockBroadcast).not.toHaveBeenCalled();
+    });
+
+    it('should create audit entry for trajectory/checkpoint', () => {
+      mockBroadcast.mockClear();
+
+      const msg: MapSyncMessage = createSyncNotification('trajectory/checkpoint', {
+        resource_id: sessionResourceId,
+        agent_id: agentId,
+        commit_hash: 'trajectory_audit_hash',
+        timestamp: new Date().toISOString(),
+      });
+
+      handleSyncMessage(msg, swarmId);
+
+      const { data: events } = resourcesDAL.getSyncEvents(sessionResourceId, 10, 0);
+      const auditEvent = events.find((e) => e.commit_hash === 'trajectory_audit_hash');
       expect(auditEvent).toBeDefined();
       expect(auditEvent!.pusher).toBe(`map:${agentId}`);
     });

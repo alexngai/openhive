@@ -282,9 +282,9 @@ export interface MapNodePublic {
 
 // ============================================================================
 // MAP Sync Notifications (JSON-RPC 2.0)
-// Canonical definitions live in openhive-types — re-exported here so
+// Canonical definitions live in src/shared/types — re-exported here so
 // internal imports (sync-listener, sync-client, tests) don't need to change.
 // ============================================================================
 
-export type { MapSyncMethod, MapSyncParams, MapSyncMessage } from 'openhive-types';
-export { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE, createSyncNotification } from 'openhive-types';
+export type { MapSyncMethod, MapSyncParams, MapSyncMessage } from '../shared/types/index.js';
+export { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE, createSyncNotification } from '../shared/types/index.js';

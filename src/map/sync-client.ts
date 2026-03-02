@@ -21,6 +21,7 @@
  *   await client.stop();
  */
 
+import { createHash } from 'node:crypto';
 import WebSocket from 'ws';
 import type { MapSyncMessage, MapSyncMethod } from './types.js';
 import { SYNC_METHODS, createSyncNotification } from './types.js';
@@ -29,8 +30,19 @@ import type {
   TaskStatusParams,
   ContextShareParams,
   MessageSendParams,
-} from 'openhive-types';
-import { COORDINATION_METHODS, createCoordinationNotification } from 'openhive-types';
+  SessionSyncParams,
+  SessionContentRequest,
+  SessionContentChunkParams,
+} from '../shared/types/index.js';
+import {
+  COORDINATION_METHODS,
+  createCoordinationNotification,
+  createSessionSyncNotification,
+  SESSION_CONTENT_METHOD,
+  SESSION_CONTENT_CHUNK_METHOD,
+  INLINE_TRANSCRIPT_THRESHOLD,
+  STREAM_CHUNK_SIZE,
+} from '../shared/types/index.js';
 
 // ============================================================================
 // Types
@@ -85,6 +97,17 @@ export interface MapSyncClientConfig {
 export type SyncMessageHandler = (msg: MapSyncMessage, resource: SyncResource) => void;
 export type CoordinationMessageHandler = (msg: MapCoordinationMessage) => void;
 
+/** Callback that provides checkpoint content for serving content requests from the hub. */
+export type SessionContentProvider = (checkpointId: string) => Promise<{
+  metadata: Record<string, unknown>;
+  transcript: string;
+  prompts: string;
+  context: string;
+} | null>;
+
+/** Handler for incoming session sync notifications (from other swarms via relay). */
+export type SessionSyncHandler = (msg: MapSyncMessage) => void;
+
 // ============================================================================
 // Client
 // ============================================================================
@@ -94,10 +117,12 @@ export class MapSyncClient {
   private hubWs: WebSocket | null = null;
   private memoryHandlers: SyncMessageHandler[] = [];
   private skillHandlers: SyncMessageHandler[] = [];
+  private sessionHandlers: SessionSyncHandler[] = [];
   private taskAssignHandlers: CoordinationMessageHandler[] = [];
   private taskStatusHandlers: CoordinationMessageHandler[] = [];
   private contextShareHandlers: CoordinationMessageHandler[] = [];
   private messageHandlers: CoordinationMessageHandler[] = [];
+  private contentProvider: SessionContentProvider | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
@@ -140,6 +165,33 @@ export class MapSyncClient {
     }));
   }
 
+  /**
+   * Emit a trajectory/checkpoint notification after a sessionlog checkpoint is committed.
+   * Carries richer metadata than memory/skill syncs — includes inline checkpoint summary.
+   */
+  emitSessionSync(params: {
+    resource_id: string;
+    commit_hash: string;
+    checkpoint: SessionSyncParams['checkpoint'];
+  }): void {
+    const msg = createSessionSyncNotification({
+      resource_id: params.resource_id,
+      agent_id: this.config.agent_id,
+      commit_hash: params.commit_hash,
+      timestamp: new Date().toISOString(),
+      checkpoint: params.checkpoint,
+    });
+    this.broadcastAny(msg);
+  }
+
+  /**
+   * Set the content provider for serving checkpoint content requests from the hub.
+   * The provider reads from the sessionlog checkpoint store.
+   */
+  setSessionContentProvider(provider: SessionContentProvider): void {
+    this.contentProvider = provider;
+  }
+
   // --------------------------------------------------------------------------
   // Subscribe to incoming sync notifications (hub → swarm)
   // --------------------------------------------------------------------------
@@ -156,6 +208,13 @@ export class MapSyncClient {
    */
   onSkillSync(handler: SyncMessageHandler): void {
     this.skillHandlers.push(handler);
+  }
+
+  /**
+   * Register a handler for incoming trajectory/checkpoint notifications (relayed).
+   */
+  onSessionSync(handler: SessionSyncHandler): void {
+    this.sessionHandlers.push(handler);
   }
 
   // --------------------------------------------------------------------------
@@ -222,10 +281,27 @@ export class MapSyncClient {
   /**
    * Handle an incoming WebSocket connection to this swarm's MAP endpoint.
    * Call this from the swarm's WebSocket server when a new connection arrives.
-   * OpenHive's sync listener will connect here to listen for sync notifications.
+   * OpenHive's sync listener will connect here to listen for sync notifications
+   * and to send content requests.
    */
   handleIncomingConnection(ws: WebSocket): void {
     this.wsClients.add(ws);
+
+    // Listen for incoming messages (e.g., content requests from hub)
+    ws.on('message', (data) => {
+      try {
+        const parsed = JSON.parse(data.toString());
+        if (parsed?.jsonrpc !== '2.0') return;
+
+        // Content request (JSON-RPC request with `id`)
+        if (parsed.method === SESSION_CONTENT_METHOD && parsed.id) {
+          this.handleContentRequest(parsed as SessionContentRequest, ws);
+        }
+      } catch {
+        // Ignore non-JSON or unrecognized messages
+      }
+    });
+
     ws.on('close', () => this.wsClients.delete(ws));
     ws.on('error', () => this.wsClients.delete(ws));
   }
@@ -246,6 +322,18 @@ export class MapSyncClient {
    * Broadcast a coordination notification to all connected clients.
    */
   private broadcastCoordination(msg: MapCoordinationMessage): void {
+    const payload = JSON.stringify(msg);
+    for (const ws of this.wsClients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(payload);
+      }
+    }
+  }
+
+  /**
+   * Broadcast any JSON-RPC message to all connected clients.
+   */
+  private broadcastAny(msg: { jsonrpc: '2.0'; method: string; params: unknown }): void {
     const payload = JSON.stringify(msg);
     for (const ws of this.wsClients) {
       if (ws.readyState === WebSocket.OPEN) {
@@ -327,6 +415,17 @@ export class MapSyncClient {
     if (!resource) return;
 
     // Dispatch to handlers
+    if (msg.method === 'trajectory/checkpoint') {
+      for (const handler of this.sessionHandlers) {
+        try {
+          handler(msg);
+        } catch (err) {
+          console.error(`[map-sync-client] Session sync handler error:`, err);
+        }
+      }
+      return;
+    }
+
     const handlers = msg.method === 'x-openhive/memory.sync' ? this.memoryHandlers : this.skillHandlers;
     for (const handler of handlers) {
       try {
@@ -354,6 +453,116 @@ export class MapSyncClient {
       } catch (err) {
         console.error(`[map-sync-client] Coordination handler error for ${msg.method}:`, err);
       }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Content Request Handling (hub requests checkpoint content)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Handle a trajectory/content request from the hub.
+   * Reads checkpoint data via the content provider and responds inline or streams.
+   */
+  private async handleContentRequest(req: SessionContentRequest, ws: WebSocket): Promise<void> {
+    const { checkpoint_id } = req.params;
+
+    if (!this.contentProvider) {
+      ws.send(JSON.stringify({
+        jsonrpc: '2.0',
+        id: req.id,
+        error: { code: -32603, message: 'No content provider configured' },
+      }));
+      return;
+    }
+
+    let content: Awaited<ReturnType<SessionContentProvider>>;
+    try {
+      content = await this.contentProvider(checkpoint_id);
+    } catch (err) {
+      ws.send(JSON.stringify({
+        jsonrpc: '2.0',
+        id: req.id,
+        error: { code: -32603, message: `Failed to read checkpoint: ${(err as Error).message}` },
+      }));
+      return;
+    }
+
+    if (!content) {
+      ws.send(JSON.stringify({
+        jsonrpc: '2.0',
+        id: req.id,
+        error: { code: -32602, message: `Checkpoint not found: ${checkpoint_id}` },
+      }));
+      return;
+    }
+
+    const include = new Set(req.params.include ?? ['metadata', 'transcript', 'prompts', 'context']);
+    const transcriptBytes = include.has('transcript') ? Buffer.from(content.transcript, 'utf-8') : null;
+
+    // Build inline artifacts (small payloads)
+    const artifacts: Record<string, unknown> = {};
+    if (include.has('metadata')) artifacts.metadata = content.metadata;
+    if (include.has('prompts')) artifacts.prompts = content.prompts;
+    if (include.has('context')) artifacts.context = content.context;
+
+    // Decide inline vs streaming based on transcript size
+    if (!transcriptBytes || transcriptBytes.length < INLINE_TRANSCRIPT_THRESHOLD) {
+      // Inline response — all artifacts fit in one message
+      if (transcriptBytes) artifacts.transcript = content.transcript;
+      ws.send(JSON.stringify({
+        jsonrpc: '2.0',
+        id: req.id,
+        result: {
+          checkpoint_id,
+          streaming: false,
+          artifacts,
+        },
+      }));
+      return;
+    }
+
+    // Streaming response — transcript artifact will arrive as chunks
+    const chunks = chunkBuffer(transcriptBytes, STREAM_CHUNK_SIZE);
+    const streamId = `stream_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    // Send initial response with small artifacts inline + stream info
+    ws.send(JSON.stringify({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: {
+        checkpoint_id,
+        streaming: true,
+        stream_id: streamId,
+        artifacts,
+        stream_artifact: 'transcript',
+        stream_info: {
+          total_bytes: transcriptBytes.length,
+          total_chunks: chunks.length,
+          encoding: 'base64',
+        },
+      },
+    }));
+
+    // Compute full checksum
+    const checksum = createHash('sha256').update(transcriptBytes).digest('hex');
+
+    // Send chunks
+    for (let i = 0; i < chunks.length; i++) {
+      const isFinal = i === chunks.length - 1;
+      const chunk: { jsonrpc: '2.0'; method: typeof SESSION_CONTENT_CHUNK_METHOD; params: SessionContentChunkParams } = {
+        jsonrpc: '2.0',
+        method: SESSION_CONTENT_CHUNK_METHOD,
+        params: {
+          stream_id: streamId,
+          index: i,
+          data: chunks[i].toString('base64'),
+          ...(isFinal ? { final: true, checksum: `sha256:${checksum}` } : {}),
+        },
+      };
+
+      if (ws.readyState !== WebSocket.OPEN) break;
+      ws.send(JSON.stringify(chunk));
     }
   }
 
@@ -455,4 +664,33 @@ export class MapSyncClient {
     }
     this.wsClients.clear();
   }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/** Split a buffer into chunks of at most `maxSize` bytes, splitting on newline boundaries. */
+function chunkBuffer(buf: Buffer, maxSize: number): Buffer[] {
+  if (buf.length <= maxSize) return [buf];
+
+  const chunks: Buffer[] = [];
+  let offset = 0;
+
+  while (offset < buf.length) {
+    let end = Math.min(offset + maxSize, buf.length);
+
+    // If we're not at the end of the buffer, find the last newline within this chunk
+    if (end < buf.length) {
+      const lastNewline = buf.lastIndexOf(0x0a, end - 1);
+      if (lastNewline > offset) {
+        end = lastNewline + 1; // Include the newline
+      }
+    }
+
+    chunks.push(buf.subarray(offset, end));
+    offset = end;
+  }
+
+  return chunks;
 }

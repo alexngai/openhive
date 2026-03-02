@@ -154,6 +154,7 @@ export type WSEventType =
   // MAP sync events (relayed from swarms)
   | 'memory:sync'
   | 'skill:sync'
+  | 'trajectory:sync'
   // Cross-instance resource replication events
   | 'resource_published'
   | 'resource_unpublished'
