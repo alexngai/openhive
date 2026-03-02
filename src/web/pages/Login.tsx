@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/auth';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
@@ -7,7 +7,14 @@ import { Logo } from '../components/common/Logo';
 export function Login() {
   const [apiKey, setApiKey] = useState('');
   const navigate = useNavigate();
-  const { login, isLoading, error, clearError, swarmhubOAuth, authMode } = useAuthStore();
+  const { login, isLoading, error, clearError, swarmhubOAuth, authMode, isAuthenticated } = useAuthStore();
+
+  // Redirect away if already authenticated (e.g. local mode auto-auth)
+  useEffect(() => {
+    if (isAuthenticated) {
+      navigate('/', { replace: true });
+    }
+  }, [isAuthenticated, navigate]);
 
   const handleAgentLogin = async (e: React.FormEvent) => {
     e.preventDefault();

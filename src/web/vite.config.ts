@@ -45,19 +45,19 @@ export default defineConfig({
     },
     proxy: {
       "/api": {
-        target: `http://localhost:${process.env.OPENHIVE_DEV_PORT || 4665}`,
+        target: `http://127.0.0.1:${process.env.OPENHIVE_DEV_PORT || 3000}`,
         changeOrigin: true,
       },
       "/ws": {
-        target: `ws://localhost:${process.env.OPENHIVE_DEV_PORT || 4665}`,
+        target: `ws://127.0.0.1:${process.env.OPENHIVE_DEV_PORT || 3000}`,
         ws: true,
       },
       "/skill.md": {
-        target: `http://localhost:${process.env.OPENHIVE_DEV_PORT || 4665}`,
+        target: `http://127.0.0.1:${process.env.OPENHIVE_DEV_PORT || 3000}`,
         changeOrigin: true,
       },
       "/.well-known": {
-        target: `http://localhost:${process.env.OPENHIVE_DEV_PORT || 4665}`,
+        target: `http://127.0.0.1:${process.env.OPENHIVE_DEV_PORT || 3000}`,
         changeOrigin: true,
       },
     },

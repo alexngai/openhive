@@ -165,11 +165,11 @@ export const useAuthStore = create<AuthState>()(
             oauth?: { authorize_url: string; client_id: string };
           }>('/auth/mode');
 
-          if (response.mode === 'local' && response.agent) {
+          if (response.mode === 'local') {
             api.setToken(null);
             set({
               authMode: 'local',
-              agent: response.agent,
+              agent: response.agent ?? null,
               token: null,
               isAuthenticated: true,
               isReady: true,
@@ -184,7 +184,7 @@ export const useAuthStore = create<AuthState>()(
             });
           }
         } catch {
-          set({ authMode: 'swarmhub', isReady: true });
+          set({ isReady: true });
         }
       },
 
