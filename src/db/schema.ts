@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 26;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -452,6 +452,52 @@ CREATE TABLE IF NOT EXISTS sync_peer_configs (
 
 CREATE INDEX IF NOT EXISTS idx_sync_peer_configs_status ON sync_peer_configs(status);
 CREATE INDEX IF NOT EXISTS idx_sync_peer_configs_source ON sync_peer_configs(source);
+
+-- ============================================================================
+-- Trajectory Checkpoints (stored from trajectory/checkpoint sync notifications)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS trajectory_checkpoints (
+  id TEXT PRIMARY KEY,
+  session_resource_id TEXT NOT NULL REFERENCES syncable_resources(id) ON DELETE CASCADE,
+  checkpoint_id TEXT NOT NULL,
+  commit_hash TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  branch TEXT,
+  files_touched TEXT NOT NULL DEFAULT '[]',
+  checkpoints_count INTEGER NOT NULL DEFAULT 0,
+  token_usage TEXT,
+  summary TEXT,
+  attribution TEXT,
+  source_swarm_id TEXT,
+  source_agent_id TEXT,
+  synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(session_resource_id, checkpoint_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_trajectory_checkpoints_session ON trajectory_checkpoints(session_resource_id);
+CREATE INDEX IF NOT EXISTS idx_trajectory_checkpoints_synced ON trajectory_checkpoints(synced_at);
+
+-- ============================================================================
+-- Ingest API Keys (operator-generated keys for external agent authentication)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS ingest_keys (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  key_hash TEXT UNIQUE NOT NULL,
+  key_value TEXT NOT NULL,
+  scopes TEXT NOT NULL DEFAULT '["map"]',
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  revoked INTEGER DEFAULT 0,
+  expires_at TEXT,
+  created_by TEXT REFERENCES agents(id) ON DELETE SET NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  last_used_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingest_keys_hash ON ingest_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_ingest_keys_agent ON ingest_keys(agent_id);
 `;
 
 export const SEED_DATA = `

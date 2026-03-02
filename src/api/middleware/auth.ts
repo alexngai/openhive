@@ -1,13 +1,15 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
-import { findAgentByApiKey, updateAgentLastSeen } from '../../db/dal/agents.js';
+import { findAgentById, findAgentByApiKey, updateAgentLastSeen } from '../../db/dal/agents.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../../auth/jwks.js';
 import { findOrCreateSwarmHubAgent } from '../../db/dal/agents.js';
-import type { Agent } from '../../types.js';
+import { validateIngestKey } from '../../db/dal/ingest-keys.js';
+import type { Agent, IngestKeyScope } from '../../types.js';
 
 // Extend FastifyRequest to include agent
 declare module 'fastify' {
   interface FastifyRequest {
     agent?: Agent;
+    ingestKeyScopes?: IngestKeyScope[];
   }
 }
 
@@ -17,6 +19,53 @@ let localAgent: Agent | null = null;
 export function setLocalAgent(agent: Agent | null): void {
   localAgent = agent;
 }
+
+// ============================================================================
+// Scope enforcement
+// ============================================================================
+
+/**
+ * Map a request URL path to the scope required to access it.
+ * Returns null if the path doesn't require a specific scope (public routes).
+ */
+function getRequiredScope(url: string): IngestKeyScope | null {
+  // Strip /api/v1/ prefix and get the first path segment
+  const match = url.match(/^\/api\/v1\/([^/?]+)/);
+  if (!match) return null;
+
+  const segment = match[1];
+  switch (segment) {
+    case 'map':
+    case 'coordination':
+      return 'map';
+    case 'sessions':
+      return 'sessions';
+    case 'resources':
+    case 'resource-content':
+    case 'memory-banks':
+      return 'resources';
+    case 'admin':
+      return 'admin';
+    default:
+      // agents, hives, posts, comments, feed, search, auth, etc.
+      // These require '*' scope for ingest keys
+      return '*';
+  }
+}
+
+/**
+ * Check whether a set of scopes grants access to the required scope.
+ */
+function scopeAllows(scopes: IngestKeyScope[], required: IngestKeyScope | null): boolean {
+  if (!required) return true;
+  if (scopes.includes('*')) return true;
+  if (required === '*') return false; // Only wildcard grants access to unscoped routes
+  return scopes.includes(required);
+}
+
+// ============================================================================
+// Auth middleware
+// ============================================================================
 
 /**
  * Try to authenticate using a SwarmHub JWT token (JWKS validation).
@@ -68,6 +117,32 @@ export async function authMiddleware(
     });
   }
 
+  // 0. Try ingest key authentication (SHA-256, O(1) lookup)
+  if (token.startsWith('ohk_')) {
+    const ingestKey = validateIngestKey(token);
+    if (ingestKey) {
+      const agent = findAgentById(ingestKey.agent_id);
+      if (agent) {
+        // Check scope before granting access
+        const required = getRequiredScope(request.url);
+        if (!scopeAllows(ingestKey.scopes, required)) {
+          return reply.status(403).send({
+            error: 'Forbidden',
+            message: `Ingest key does not have the '${required}' scope required for this endpoint`,
+          });
+        }
+        updateAgentLastSeen(agent.id);
+        request.agent = agent;
+        request.ingestKeyScopes = ingestKey.scopes;
+        return;
+      }
+    }
+    return reply.status(401).send({
+      error: 'Unauthorized',
+      message: 'Invalid or expired ingest key',
+    });
+  }
+
   // 1. Try API key authentication (for agents/bots)
   let agent = await findAgentByApiKey(token);
 
@@ -104,6 +179,23 @@ export async function optionalAuthMiddleware(
   const [scheme, token] = authHeader.split(' ');
 
   if (scheme?.toLowerCase() !== 'bearer' || !token) {
+    return;
+  }
+
+  // 0. Try ingest key authentication (SHA-256, O(1) lookup)
+  if (token.startsWith('ohk_')) {
+    const ingestKey = validateIngestKey(token);
+    if (ingestKey) {
+      const agent = findAgentById(ingestKey.agent_id);
+      if (agent) {
+        const required = getRequiredScope(request.url);
+        if (scopeAllows(ingestKey.scopes, required)) {
+          updateAgentLastSeen(agent.id);
+          request.agent = agent;
+          request.ingestKeyScopes = ingestKey.scopes;
+        }
+      }
+    }
     return;
   }
 

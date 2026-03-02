@@ -1019,7 +1019,7 @@ vi.mock('ws', () => ({
 // Import after mocking ws
 import { MapSyncClient } from '../../map/sync-client.js';
 import type { MapSyncClientConfig } from '../../map/sync-client.js';
-import type { MapCoordinationMessage } from 'openhive-types';
+import type { MapCoordinationMessage } from '../../shared/types/index.js';
 
 describe('MapSyncClient — Coordination Extension', () => {
   const defaultConfig: MapSyncClientConfig = {

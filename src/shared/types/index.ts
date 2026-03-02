@@ -1,26 +1,35 @@
 /**
- * openhive-types
+ * Shared OpenHive types
  *
- * Lightweight shared types for the OpenHive ecosystem.
- * Zero runtime dependencies — safe for any consumer to install.
- *
- * Trajectory protocol types → @multi-agent-protocol/sdk
- * Checkpoint metadata types → sessionlog
- * OpenHive vendor extensions → this package
+ * Wire format types for MAP sync, session sync, and coordination notifications.
  */
 
 // MAP sync wire format (JSON-RPC 2.0 notifications)
 export type { MapSyncMethod, MapSyncParams, MapSyncMessage } from './map-sync.js';
 export { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE, createSyncNotification } from './map-sync.js';
 
-// Session sync notification (OpenHive envelope for trajectory/checkpoint)
+// MAP session sync wire format (JSON-RPC 2.0 notifications + request/response)
 export type {
   SessionSyncParams,
   SessionSyncMessage,
+  SessionContentField,
+  SessionContentRequest,
+  SessionContentResultInline,
+  SessionContentResultStreaming,
+  SessionContentResult,
+  SessionContentResponse,
+  SessionContentErrorResponse,
+  SessionContentChunkParams,
+  SessionContentChunkMessage,
 } from './map-session-sync.js';
 export {
   createSessionSyncNotification,
   SESSION_SYNC_METHOD,
+  SESSION_CONTENT_METHOD,
+  SESSION_CONTENT_CHUNK_METHOD,
+  INLINE_TRANSCRIPT_THRESHOLD,
+  STREAM_CHUNK_SIZE,
+  CONTENT_REQUEST_TIMEOUT_MS,
 } from './map-session-sync.js';
 
 // MAP coordination wire format (JSON-RPC 2.0 notifications)

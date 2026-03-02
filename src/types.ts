@@ -97,6 +97,22 @@ export interface InviteCode {
   created_at: string;
 }
 
+export type IngestKeyScope = 'map' | 'sessions' | 'resources' | 'admin' | '*';
+
+export interface IngestKey {
+  id: string;
+  label: string;
+  key_hash: string;
+  key_value: string;
+  scopes: IngestKeyScope[];
+  agent_id: string;
+  revoked: boolean;
+  expires_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  last_used_at: string | null;
+}
+
 export interface Follow {
   id: string;
   follower_id: string;
@@ -154,6 +170,7 @@ export type WSEventType =
   // MAP sync events (relayed from swarms)
   | 'memory:sync'
   | 'skill:sync'
+  | 'trajectory:sync'
   // Cross-instance resource replication events
   | 'resource_published'
   | 'resource_unpublished'

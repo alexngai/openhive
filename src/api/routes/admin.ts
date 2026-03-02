@@ -4,6 +4,7 @@ import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import * as postsDAL from '../../db/dal/posts.js';
 import * as invitesDAL from '../../db/dal/invites.js';
+import * as ingestKeysDAL from '../../db/dal/ingest-keys.js';
 import type { Config } from '../../config.js';
 import type { InstanceInfo } from '../../types.js';
 
@@ -227,4 +228,139 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
       },
     });
   });
+
+  // ═══════════════════════════════════════════════════════════════
+  // Ingest API Keys
+  // ═══════════════════════════════════════════════════════════════
+
+  // Create ingest key
+  fastify.post<{
+    Body: { label: string; agent_id?: string; agent_name?: string; expires_in_hours?: number };
+  }>(
+    '/admin/ingest-keys',
+    { preHandler: adminAuth },
+    async (request, reply) => {
+      const { label, agent_id, agent_name, scopes, expires_in_hours } = request.body as {
+        label: string;
+        agent_id?: string;
+        agent_name?: string;
+        scopes?: string[];
+        expires_in_hours?: number;
+      };
+
+      if (!label) {
+        return reply.status(400).send({ error: 'Validation Error', message: 'label is required' });
+      }
+
+      let targetAgentId = agent_id;
+
+      if (!targetAgentId) {
+        // Auto-create a synthetic agent for this key
+        const name = agent_name || `ingest-${label}`;
+        const existing = agentsDAL.findAgentByName(name);
+        if (existing) {
+          targetAgentId = existing.id;
+        } else {
+          const { agent } = await agentsDAL.createAgent({
+            name,
+            description: `Auto-created agent for ingest key: ${label}`,
+          });
+          targetAgentId = agent.id;
+        }
+      } else {
+        const existing = agentsDAL.findAgentById(targetAgentId);
+        if (!existing) {
+          return reply.status(404).send({ error: 'Not Found', message: 'Agent not found' });
+        }
+      }
+
+      // Validate scopes
+      const validScopes = ['map', 'sessions', 'resources', 'admin', '*'];
+      const keyScopes = scopes?.length ? scopes : ['map'];
+      for (const s of keyScopes) {
+        if (!validScopes.includes(s)) {
+          return reply.status(400).send({
+            error: 'Validation Error',
+            message: `Invalid scope '${s}'. Valid scopes: ${validScopes.join(', ')}`,
+          });
+        }
+      }
+
+      const result = ingestKeysDAL.createIngestKey(request.agent?.id ?? targetAgentId, {
+        label,
+        agent_id: targetAgentId,
+        scopes: keyScopes as ingestKeysDAL.CreateIngestKeyInput['scopes'],
+        expires_in_hours,
+      });
+
+      return reply.status(201).send({
+        id: result.key.id,
+        key: result.plaintext_key,
+        label: result.key.label,
+        scopes: result.key.scopes,
+        agent_id: result.key.agent_id,
+        expires_at: result.key.expires_at,
+        created_at: result.key.created_at,
+      });
+    },
+  );
+
+  // List ingest keys
+  fastify.get<{
+    Querystring: { agent_id?: string; include_revoked?: boolean; limit?: number; offset?: number };
+  }>(
+    '/admin/ingest-keys',
+    { preHandler: adminAuth },
+    async (request, reply) => {
+      const keys = ingestKeysDAL.listIngestKeys({
+        agent_id: request.query.agent_id,
+        include_revoked: request.query.include_revoked,
+        limit: Math.min(request.query.limit || 50, 100),
+        offset: request.query.offset || 0,
+      });
+
+      const data = keys.map((k) => ({
+        id: k.id,
+        label: k.label,
+        key: k.key_value,
+        scopes: k.scopes,
+        agent_id: k.agent_id,
+        revoked: k.revoked,
+        expires_at: k.expires_at,
+        created_by: k.created_by,
+        created_at: k.created_at,
+        last_used_at: k.last_used_at,
+      }));
+
+      return reply.send({ data });
+    },
+  );
+
+  // Revoke ingest key (soft delete)
+  fastify.post<{ Params: { id: string } }>(
+    '/admin/ingest-keys/:id/revoke',
+    { preHandler: adminAuth },
+    async (request, reply) => {
+      const revoked = ingestKeysDAL.revokeIngestKey(request.params.id);
+      if (!revoked) {
+        return reply
+          .status(404)
+          .send({ error: 'Not Found', message: 'Ingest key not found or already revoked' });
+      }
+      return reply.send({ success: true });
+    },
+  );
+
+  // Delete ingest key (hard delete)
+  fastify.delete<{ Params: { id: string } }>(
+    '/admin/ingest-keys/:id',
+    { preHandler: adminAuth },
+    async (request, reply) => {
+      const deleted = ingestKeysDAL.deleteIngestKey(request.params.id);
+      if (!deleted) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Ingest key not found' });
+      }
+      return reply.status(204).send();
+    },
+  );
 }

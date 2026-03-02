@@ -10,4 +10,5 @@ logs/
 .env.local
 .env.*.local
 .openhive/
+.dev-port
 test-data/

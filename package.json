@@ -84,7 +84,7 @@
     "minimem": "^0.0.6",
     "nanoid": "^5.0.9",
     "nodemailer": "^7.0.13",
-    "openhive-types": "^0.1.0",
+    "openhive-types": "^0.2.0",
     "openswarm": "^0.1.4",
     "opentasks": "^0.0.4",
     "pg": "^8.18.0",

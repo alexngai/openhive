@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
 import { createHive } from './server.js';
@@ -111,18 +112,15 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
     // Step 1: Determine data directory
     let dataDir: string;
 
+    const globalDefault = path.join(os.homedir(), '.openhive');
+
     if (explicitDataDir) {
       dataDir = path.resolve(explicitDataDir);
       if (!nonInteractive) console.log(`  Data directory: ${dataDir}\n`);
     } else if (nonInteractive) {
-      dataDir = path.resolve(path.join(require('os').homedir(), '.openhive'));
+      dataDir = path.resolve(globalDefault);
     } else {
-      const isHome = process.cwd() === require('os').homedir();
-      const defaultDir = isHome
-        ? path.join(require('os').homedir(), '.openhive')
-        : path.join(process.cwd(), '.openhive');
-
-      dataDir = await prompt!.ask('  Data directory', defaultDir);
+      dataDir = await prompt!.ask('  Data directory', globalDefault);
       dataDir = path.resolve(dataDir);
       console.log('');
     }

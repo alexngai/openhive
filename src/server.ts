@@ -454,10 +454,30 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         }
       }
 
-      const address = await fastify.listen({
-        port: config.port,
-        host: config.host,
-      });
+      // Try to listen, auto-increment port if configured one is taken
+      let port = config.port;
+      const maxPortAttempts = 10;
+      let address!: string;
+
+      for (let attempt = 0; attempt < maxPortAttempts; attempt++) {
+        try {
+          address = await fastify.listen({ port, host: config.host });
+          break;
+        } catch (err: unknown) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code === 'EADDRINUSE' && attempt < maxPortAttempts - 1) {
+            console.log(`[openhive] Port ${port} in use, trying ${port + 1}...`);
+            port++;
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      // Write port file for dev tools (e.g. Vite proxy)
+      const portFile = path.join(__dirname, '..', '.dev-port');
+      try { fs.writeFileSync(portFile, String(port)); } catch { /* ignore */ }
+
       return address;
     },
 
@@ -492,6 +512,10 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
       }
       await fastify.close();
       closeDatabase();
+
+      // Clean up dev port file
+      const portFile = path.join(__dirname, '..', '.dev-port');
+      try { fs.unlinkSync(portFile); } catch { /* ignore */ }
     },
   };
 

@@ -1,5 +1,4 @@
 import { Outlet, useLocation } from 'react-router-dom';
-import { Header } from './Header';
 import { Sidebar } from './Sidebar';
 import { ToastContainer } from '../common/Toast';
 
@@ -13,20 +12,17 @@ export function Layout() {
   return (
     <div className="h-screen flex overflow-hidden">
       <Sidebar />
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <Header />
-        <main className="flex-1 overflow-y-auto" style={{ backgroundColor: 'var(--color-bg)' }}>
-          {isFullWidth ? (
-            <div className="h-full">
-              <Outlet />
-            </div>
-          ) : (
-            <div className="max-w-4xl mx-auto px-4 py-4">
-              <Outlet />
-            </div>
-          )}
-        </main>
-      </div>
+      <main className="flex-1 overflow-y-auto min-w-0" style={{ backgroundColor: 'var(--color-bg)' }}>
+        {isFullWidth ? (
+          <div className="h-full">
+            <Outlet />
+          </div>
+        ) : (
+          <div className="max-w-4xl mx-auto px-4 py-4">
+            <Outlet />
+          </div>
+        )}
+      </main>
       <ToastContainer />
     </div>
   );
