@@ -107,6 +107,9 @@ export function initDatabase(config: string | DatabaseConfig): Database.Database
     runMigrations(db, versionRow.version, SCHEMA_VERSION);
   }
 
+  // Repair any columns that were lost to silently-swallowed migration errors
+  repairSchema(db);
+
   return db;
 }
 
@@ -171,6 +174,51 @@ const MIGRATION_REGISTRY: Record<number, string> = {
   22: COORDINATION_SCHEMA,
   // Version 23: Origin tracking for coordination tables (cross-instance idempotency)
   23: MIGRATION_V23_COORDINATION_ORIGIN,
+  // Version 24: Trajectory checkpoints table (stored from trajectory/checkpoint sync notifications)
+  24: `
+CREATE TABLE IF NOT EXISTS trajectory_checkpoints (
+  id TEXT PRIMARY KEY,
+  session_resource_id TEXT NOT NULL REFERENCES syncable_resources(id) ON DELETE CASCADE,
+  checkpoint_id TEXT NOT NULL,
+  commit_hash TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  branch TEXT,
+  files_touched TEXT NOT NULL DEFAULT '[]',
+  checkpoints_count INTEGER NOT NULL DEFAULT 0,
+  token_usage TEXT,
+  summary TEXT,
+  attribution TEXT,
+  source_swarm_id TEXT,
+  source_agent_id TEXT,
+  synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(session_resource_id, checkpoint_id)
+);
+CREATE INDEX IF NOT EXISTS idx_trajectory_checkpoints_session ON trajectory_checkpoints(session_resource_id);
+CREATE INDEX IF NOT EXISTS idx_trajectory_checkpoints_synced ON trajectory_checkpoints(synced_at);
+  `,
+  // Version 25: Ingest API keys for external agent authentication
+  25: `
+CREATE TABLE IF NOT EXISTS ingest_keys (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  key_hash TEXT UNIQUE NOT NULL,
+  key_value TEXT NOT NULL,
+  scopes TEXT NOT NULL DEFAULT '["map"]',
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  revoked INTEGER DEFAULT 0,
+  expires_at TEXT,
+  created_by TEXT REFERENCES agents(id) ON DELETE SET NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  last_used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_keys_hash ON ingest_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_ingest_keys_agent ON ingest_keys(agent_id);
+  `,
+  // Version 26: Add key_value and scopes columns to ingest_keys (added mid-development)
+  26: `
+ALTER TABLE ingest_keys ADD COLUMN key_value TEXT NOT NULL DEFAULT '';
+ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
+  `,
 };
 
 /** Get the SQL for a specific migration version.
@@ -199,10 +247,16 @@ function runMigrations(database: Database.Database, fromVersion: number, toVersi
   const migrations = getMigrationRange(fromVersion, toVersion);
 
   for (const { version, sql } of migrations) {
-    try {
-      database.exec(sql);
-    } catch {
-      // Ignore migration errors (column may already exist)
+    // Execute each SQL statement independently so one failure doesn't block the rest.
+    // This is important for ALTER TABLE migrations where individual columns
+    // may already exist but others still need to be added.
+    const statements = sql.split(';').map(s => s.trim()).filter(s => s.length > 0);
+    for (const stmt of statements) {
+      try {
+        database.exec(stmt);
+      } catch {
+        // Ignore errors (e.g. column/table already exists)
+      }
     }
 
     // Special handling for FTS migration - populate existing data
@@ -216,6 +270,20 @@ function runMigrations(database: Database.Database, fromVersion: number, toVersi
   }
 
   database.prepare('UPDATE schema_version SET version = ?').run(toVersion);
+}
+
+/**
+ * Ensure critical columns exist regardless of schema version.
+ * Repairs tables where migrations were silently swallowed by the old catch-all.
+ */
+function repairSchema(database: Database.Database): void {
+  const repairs = [
+    "ALTER TABLE ingest_keys ADD COLUMN key_value TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '[\"map\"]'",
+  ];
+  for (const sql of repairs) {
+    try { database.exec(sql); } catch { /* column already exists */ }
+  }
 }
 
 // Transaction helper

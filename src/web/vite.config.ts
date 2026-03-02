@@ -1,6 +1,22 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
+import fs from "fs";
+
+// Read backend port from .dev-port file (written by backend on startup)
+// Falls back to OPENHIVE_DEV_PORT env var, then 3000
+function getBackendPort(): number {
+  try {
+    const portFile = path.resolve(__dirname, "../../.dev-port");
+    const port = parseInt(fs.readFileSync(portFile, "utf-8").trim(), 10);
+    if (port > 0) return port;
+  } catch {
+    // File doesn't exist yet — use fallback
+  }
+  return parseInt(process.env.OPENHIVE_DEV_PORT || "3000", 10);
+}
+
+const backendPort = getBackendPort();
 
 export default defineConfig({
   plugins: [react()],
@@ -44,20 +60,20 @@ export default defineConfig({
       allow: ["../.."],
     },
     proxy: {
-      "/api": {
-        target: `http://127.0.0.1:${process.env.OPENHIVE_DEV_PORT || 3000}`,
+      "/api/": {
+        target: `http://127.0.0.1:${backendPort}`,
         changeOrigin: true,
       },
       "/ws": {
-        target: `ws://127.0.0.1:${process.env.OPENHIVE_DEV_PORT || 3000}`,
+        target: `ws://127.0.0.1:${backendPort}`,
         ws: true,
       },
       "/skill.md": {
-        target: `http://127.0.0.1:${process.env.OPENHIVE_DEV_PORT || 3000}`,
+        target: `http://127.0.0.1:${backendPort}`,
         changeOrigin: true,
       },
       "/.well-known": {
-        target: `http://127.0.0.1:${process.env.OPENHIVE_DEV_PORT || 3000}`,
+        target: `http://127.0.0.1:${backendPort}`,
         changeOrigin: true,
       },
     },

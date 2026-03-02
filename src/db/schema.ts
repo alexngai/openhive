@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 26;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -477,6 +477,27 @@ CREATE TABLE IF NOT EXISTS trajectory_checkpoints (
 
 CREATE INDEX IF NOT EXISTS idx_trajectory_checkpoints_session ON trajectory_checkpoints(session_resource_id);
 CREATE INDEX IF NOT EXISTS idx_trajectory_checkpoints_synced ON trajectory_checkpoints(synced_at);
+
+-- ============================================================================
+-- Ingest API Keys (operator-generated keys for external agent authentication)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS ingest_keys (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  key_hash TEXT UNIQUE NOT NULL,
+  key_value TEXT NOT NULL,
+  scopes TEXT NOT NULL DEFAULT '["map"]',
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  revoked INTEGER DEFAULT 0,
+  expires_at TEXT,
+  created_by TEXT REFERENCES agents(id) ON DELETE SET NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  last_used_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingest_keys_hash ON ingest_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_ingest_keys_agent ON ingest_keys(agent_id);
 `;
 
 export const SEED_DATA = `

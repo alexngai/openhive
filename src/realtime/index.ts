@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { WebSocket } from 'ws';
-import { findAgentByApiKey, findOrCreateSwarmHubAgent } from '../db/dal/agents.js';
+import { findAgentById, findAgentByApiKey, findOrCreateSwarmHubAgent } from '../db/dal/agents.js';
+import { validateIngestKey } from '../db/dal/ingest-keys.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
 import { findHiveByName, isHiveMember } from '../db/dal/hives.js';
 import type { Agent, WSMessage, WSEvent } from '../types.js';
@@ -29,18 +30,26 @@ export function setupWebSocket(fastify: FastifyInstance): void {
     let agent: Agent | null = null;
 
     if (token) {
-      agent = await findAgentByApiKey(token);
+      // Try ingest key first (ohk_ prefix, SHA-256 O(1) lookup)
+      if (token.startsWith('ohk_')) {
+        const ingestKey = validateIngestKey(token);
+        if (ingestKey) {
+          agent = findAgentById(ingestKey.agent_id) ?? null;
+        }
+      } else {
+        agent = await findAgentByApiKey(token);
 
-      // Try SwarmHub JWT if API key fails
-      if (!agent && isJwksInitialized()) {
-        const payload = await validateSwarmHubToken(token);
-        if (payload?.sub) {
-          agent = findOrCreateSwarmHubAgent({
-            swarmhubUserId: payload.sub,
-            name: payload.name,
-            email: payload.email,
-            avatarUrl: payload.avatar_url,
-          });
+        // Try SwarmHub JWT if API key fails
+        if (!agent && isJwksInitialized()) {
+          const payload = await validateSwarmHubToken(token);
+          if (payload?.sub) {
+            agent = findOrCreateSwarmHubAgent({
+              swarmhubUserId: payload.sub,
+              name: payload.name,
+              email: payload.email,
+              avatarUrl: payload.avatar_url,
+            });
+          }
         }
       }
     }
