@@ -41,6 +41,11 @@ RUN npm prune --omit=dev && npm cache clean --force
 RUN npm install --no-save sharp \
     && node -e "require('sharp'); console.log('[build] sharp native bindings verified')"
 
+# node-pty distributes platform-specific native bindings as optional packages
+# (@lydell/node-pty-linux-x64) that npm prune removes. Reinstall after pruning.
+RUN npm install --no-save @lydell/node-pty \
+    && node -e "require('@lydell/node-pty'); console.log('[build] node-pty native bindings verified')"
+
 # =============================================================================
 # Stage 2: Production - Minimal runtime image
 # =============================================================================
