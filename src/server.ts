@@ -185,14 +185,12 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
       const scPrefix = config.swarmcraft.prefix || '/api/swarmcraft';
       const scWsPath = config.swarmcraft.wsPath || '/ws/swarmcraft';
-      const scTerminalWsPath = config.swarmcraft.terminalWsPath || '/ws/swarmcraft/terminal';
 
       const { swarmcraftPlugin } = await import('swarmcraft/plugin');
       await fastify.register(swarmcraftPlugin, {
         database: { type: 'sqlite', path: dbPath, tablePrefix: 'sc_' },
         prefix: scPrefix,
         wsPath: scWsPath,
-        terminalWsPath: scTerminalWsPath,
         logLevel: config.swarmcraft.logLevel || 'info',
         corsOrigin: typeof config.cors.origin === 'string' ? config.cors.origin : undefined,
       });
