@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
+import * as trajectoryDAL from '../../db/dal/trajectory-checkpoints.js';
 import { getDatabase } from '../../db/index.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import {
@@ -1130,6 +1131,57 @@ export async function sessionsRoutes(
         limit,
         offset,
       });
+    }
+  );
+
+  // ============================================================================
+  // Trajectory Checkpoint Endpoints (from MAP sync)
+  // ============================================================================
+
+  // List all sessions with trajectory checkpoint stats
+  fastify.get<{ Querystring: { limit?: number; offset?: number } }>(
+    '/sessions/overview',
+    async (request, reply) => {
+      const limit = Math.min(Number(request.query.limit) || 50, 100);
+      const offset = Number(request.query.offset) || 0;
+      const result = trajectoryDAL.listAllSessions(limit, offset);
+      return reply.send(result);
+    }
+  );
+
+  // List trajectory checkpoints for a session
+  fastify.get<{ Params: { id: string }; Querystring: { limit?: number; offset?: number } }>(
+    '/sessions/:id/trajectory-checkpoints',
+    async (request, reply) => {
+      const resource = resourcesDAL.findResourceById(request.params.id);
+      if (!resource || resource.resource_type !== 'session') {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Session not found',
+        });
+      }
+
+      const limit = Math.min(Number(request.query.limit) || 50, 100);
+      const offset = Number(request.query.offset) || 0;
+      const result = trajectoryDAL.listCheckpointsForSession(resource.id, limit, offset);
+      return reply.send(result);
+    }
+  );
+
+  // Get trajectory stats for a session
+  fastify.get<{ Params: { id: string } }>(
+    '/sessions/:id/trajectory-stats',
+    async (request, reply) => {
+      const resource = resourcesDAL.findResourceById(request.params.id);
+      if (!resource || resource.resource_type !== 'session') {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Session not found',
+        });
+      }
+
+      const stats = trajectoryDAL.getSessionStats(resource.id);
+      return reply.send(stats);
     }
   );
 }

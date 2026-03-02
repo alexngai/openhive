@@ -406,6 +406,105 @@ export interface DeliveryLogEntry {
   created_at: string;
 }
 
+// Trajectory / Session types
+
+export interface TrajectoryCheckpoint {
+  id: string;
+  session_resource_id: string;
+  checkpoint_id: string;
+  commit_hash: string;
+  agent: string;
+  branch: string | null;
+  files_touched: string[];
+  checkpoints_count: number;
+  token_usage: { input_tokens?: number; output_tokens?: number } | null;
+  summary: { intent?: string; outcome?: string } | null;
+  attribution: Record<string, unknown> | null;
+  source_swarm_id: string | null;
+  source_agent_id: string | null;
+  synced_at: string;
+}
+
+export interface SessionStats {
+  total_checkpoints: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_files_touched: number;
+  latest_agent: string | null;
+  first_synced_at: string | null;
+  last_synced_at: string | null;
+}
+
+export interface SessionListItem {
+  id: string;
+  name: string;
+  description: string | null;
+  visibility: string;
+  owner_agent_id: string;
+  last_commit_hash: string | null;
+  last_push_at: string | null;
+  total_checkpoints: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  latest_agent: string | null;
+  last_synced_at: string | null;
+}
+
+// Session event types (ACP-compatible)
+
+export interface SessionEvent {
+  id: string;
+  timestamp: string;
+  sequence: number;
+  type: 'user_message' | 'assistant_message' | 'assistant_thinking' | 'tool_call' | 'tool_result' | 'token_usage' | 'custom' | 'error' | 'checkpoint' | 'mode_change' | 'plan_update';
+  // user_message / assistant_message
+  content?: SessionContentBlock[];
+  stopReason?: string;
+  // assistant_thinking
+  thinking?: string;
+  // tool_call
+  toolCallId?: string;
+  toolName?: string;
+  input?: Record<string, unknown>;
+  // tool_result
+  isError?: boolean;
+  // token_usage
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  // custom
+  eventType?: string;
+  data?: unknown;
+  // error
+  code?: number;
+  message?: string;
+}
+
+export interface SessionContentBlock {
+  type: 'text' | 'tool_call' | 'tool_result' | 'image' | 'audio' | 'resource_link';
+  text?: string;
+  toolCallId?: string;
+  toolName?: string;
+  input?: Record<string, unknown>;
+  output?: string;
+  error?: string;
+  status?: string;
+  content?: SessionContentBlock[];
+  isError?: boolean;
+  data?: string;
+  mimeType?: string;
+  uri?: string;
+  name?: string;
+}
+
+export interface SessionEventsResponse {
+  format_id: string;
+  total: number;
+  limit: number;
+  offset: number;
+  events: SessionEvent[];
+}
+
 export interface SyncStatusResponse {
   enabled: boolean;
   instance_id?: string;

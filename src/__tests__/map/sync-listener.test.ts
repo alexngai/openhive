@@ -11,6 +11,7 @@ import * as agentsDAL from '../../db/dal/agents.js';
 import * as mapDAL from '../../db/dal/map.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { handleSyncMessage } from '../../map/sync-listener.js';
+import * as trajectoryDAL from '../../db/dal/trajectory-checkpoints.js';
 import { SYNC_MESSAGE_RESOURCE_TYPE, createSyncNotification } from '../../map/types.js';
 import type { MapSyncMessage } from '../../map/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
@@ -326,6 +327,129 @@ describe('MAP Sync Listener', () => {
       const auditEvent = events.find((e) => e.commit_hash === 'trajectory_audit_hash');
       expect(auditEvent).toBeDefined();
       expect(auditEvent!.pusher).toBe(`map:${agentId}`);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  // Checkpoint metadata storage via handleSyncMessage
+  // ═══════════════════════════════════════════════════════════════
+
+  describe('checkpoint metadata storage', () => {
+    it('should store checkpoint metadata when params.checkpoint is present', () => {
+      mockBroadcast.mockClear();
+
+      const msg: MapSyncMessage = {
+        jsonrpc: '2.0',
+        method: 'trajectory/checkpoint',
+        params: {
+          resource_id: sessionResourceId,
+          agent_id: agentId,
+          commit_hash: 'store_meta_hash_001',
+          timestamp: new Date().toISOString(),
+          checkpoint: {
+            id: 'chk_store_001',
+            agent: 'claude-coder',
+            branch: 'feature-x',
+            files_touched: ['src/app.ts', 'src/utils.ts'],
+            checkpoints_count: 5,
+            token_usage: { input_tokens: 2000, output_tokens: 800 },
+            summary: { intent: 'add auth flow', outcome: 'implemented' },
+            attribution: { claude: 0.9, human: 0.1 },
+          },
+        } as Record<string, unknown>,
+      } as MapSyncMessage;
+
+      handleSyncMessage(msg, swarmId);
+
+      // Verify checkpoint was stored
+      const { data: checkpoints } = trajectoryDAL.listCheckpointsForSession(sessionResourceId);
+      const stored = checkpoints.find((c) => c.commit_hash === 'store_meta_hash_001');
+      expect(stored).toBeDefined();
+      expect(stored!.checkpoint_id).toBe('chk_store_001');
+      expect(stored!.agent).toBe('claude-coder');
+      expect(stored!.branch).toBe('feature-x');
+      expect(stored!.files_touched).toEqual(['src/app.ts', 'src/utils.ts']);
+      expect(stored!.checkpoints_count).toBe(5);
+      expect(stored!.token_usage).toEqual({ input_tokens: 2000, output_tokens: 800 });
+      expect(stored!.summary).toEqual({ intent: 'add auth flow', outcome: 'implemented' });
+      expect(stored!.attribution).toEqual({ claude: 0.9, human: 0.1 });
+      expect(stored!.source_swarm_id).toBe(swarmId);
+      expect(stored!.source_agent_id).toBe(agentId);
+    });
+
+    it('should use commit_hash as checkpoint_id when checkpoint.id is missing', () => {
+      mockBroadcast.mockClear();
+
+      const msg: MapSyncMessage = {
+        jsonrpc: '2.0',
+        method: 'trajectory/checkpoint',
+        params: {
+          resource_id: sessionResourceId,
+          agent_id: agentId,
+          commit_hash: 'store_meta_hash_002',
+          timestamp: new Date().toISOString(),
+          checkpoint: {
+            agent: 'fallback-agent',
+          },
+        } as Record<string, unknown>,
+      } as MapSyncMessage;
+
+      handleSyncMessage(msg, swarmId);
+
+      const { data: checkpoints } = trajectoryDAL.listCheckpointsForSession(sessionResourceId);
+      const stored = checkpoints.find((c) => c.commit_hash === 'store_meta_hash_002');
+      expect(stored).toBeDefined();
+      expect(stored!.checkpoint_id).toBe('store_meta_hash_002');
+      expect(stored!.agent).toBe('fallback-agent');
+    });
+
+    it('should not store checkpoint when params.checkpoint is absent', () => {
+      mockBroadcast.mockClear();
+
+      const msg: MapSyncMessage = createSyncNotification('trajectory/checkpoint', {
+        resource_id: sessionResourceId,
+        agent_id: agentId,
+        commit_hash: 'no_checkpoint_meta_hash',
+        timestamp: new Date().toISOString(),
+      });
+
+      handleSyncMessage(msg, swarmId);
+
+      // The sync still processes (broadcast happens), but no checkpoint row
+      const { data: checkpoints } = trajectoryDAL.listCheckpointsForSession(sessionResourceId);
+      const stored = checkpoints.find((c) => c.commit_hash === 'no_checkpoint_meta_hash');
+      expect(stored).toBeUndefined();
+    });
+
+    it('should dedup checkpoint metadata on repeated sync', () => {
+      mockBroadcast.mockClear();
+
+      const makeMsg = (commitHash: string): MapSyncMessage => ({
+        jsonrpc: '2.0',
+        method: 'trajectory/checkpoint',
+        params: {
+          resource_id: sessionResourceId,
+          agent_id: agentId,
+          commit_hash: commitHash,
+          timestamp: new Date().toISOString(),
+          checkpoint: {
+            id: 'chk_dedup_sync',
+            agent: 'dedup-agent',
+          },
+        } as Record<string, unknown>,
+      } as MapSyncMessage);
+
+      // First send
+      handleSyncMessage(makeMsg('dedup_hash_1'), swarmId);
+
+      // Second send with different commit_hash but same checkpoint_id
+      // The sync-listener dedup on commit_hash will skip this (resource already has dedup_hash_1)
+      // But even if it got through, trajectory DAL dedup on (session, checkpoint_id) would catch it
+      handleSyncMessage(makeMsg('dedup_hash_2'), swarmId);
+
+      const { data: checkpoints } = trajectoryDAL.listCheckpointsForSession(sessionResourceId);
+      const matches = checkpoints.filter((c) => c.checkpoint_id === 'chk_dedup_sync');
+      expect(matches.length).toBe(1);
     });
   });
 

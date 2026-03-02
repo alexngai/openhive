@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
-import type { Agent, HostedSwarm, MapSwarm, MapStats, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry } from '../lib/api';
+import type { Agent, HostedSwarm, MapSwarm, MapStats, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse } from '../lib/api';
 
 // Posts
 export function usePosts(options: {
@@ -691,5 +691,50 @@ export function useDeliveryLog(opts?: { delivery_id?: string; swarm_id?: string;
       const qs = params.toString();
       return api.get<{ data: DeliveryLogEntry[]; total: number }>(`/events/delivery-log${qs ? `?${qs}` : ''}`);
     },
+  });
+}
+
+// ── Sessions / Trajectory ──
+
+export function useSessionsList(options?: { limit?: number }) {
+  const { limit = 50 } = options || {};
+
+  return useQuery({
+    queryKey: ['sessions-overview', { limit }],
+    queryFn: () => api.get<{ data: SessionListItem[]; total: number }>(`/sessions/overview?limit=${limit}`),
+    refetchInterval: 30000,
+  });
+}
+
+export function useSessionCheckpoints(id: string, options?: { limit?: number }) {
+  const { limit = 50 } = options || {};
+
+  return useQuery({
+    queryKey: ['session-checkpoints', id, { limit }],
+    queryFn: () => api.get<{ data: TrajectoryCheckpoint[]; total: number }>(
+      `/sessions/${id}/trajectory-checkpoints?limit=${limit}`
+    ),
+    enabled: !!id,
+    refetchInterval: 30000,
+  });
+}
+
+export function useSessionStats(id: string) {
+  return useQuery({
+    queryKey: ['session-stats', id],
+    queryFn: () => api.get<SessionStats>(`/sessions/${id}/trajectory-stats`),
+    enabled: !!id,
+  });
+}
+
+export function useSessionEvents(id: string, options?: { limit?: number; offset?: number; enabled?: boolean }) {
+  const { limit = 200, offset = 0, enabled = true } = options || {};
+
+  return useQuery({
+    queryKey: ['session-events', id, { limit, offset }],
+    queryFn: () => api.get<SessionEventsResponse>(
+      `/sessions/${id}/events?limit=${limit}&offset=${offset}`
+    ),
+    enabled: !!id && enabled,
   });
 }

@@ -25,6 +25,8 @@ const SwarmCraft = lazy(() => import('./pages/SwarmCraft').then(m => ({ default:
 const Terminal = lazy(() => import('./pages/Terminal').then(m => ({ default: m.Terminal })));
 const Resources = lazy(() => import('./pages/Resources').then(m => ({ default: m.Resources })));
 const ResourceDetail = lazy(() => import('./pages/ResourceDetail').then(m => ({ default: m.ResourceDetail })));
+const Sessions = lazy(() => import('./pages/Sessions').then(m => ({ default: m.Sessions })));
+const SessionDetail = lazy(() => import('./pages/SessionDetail').then(m => ({ default: m.SessionDetail })));
 const Events = lazy(() => import('./pages/Events').then(m => ({ default: m.Events })));
 
 export default function App() {
@@ -59,6 +61,8 @@ export default function App() {
               <Route path="about" element={<About />} />
               <Route path="settings" element={<Settings />} />
               <Route path="swarms" element={<Swarms />} />
+              <Route path="sessions" element={<Sessions />} />
+              <Route path="sessions/:id" element={<SessionDetail />} />
               <Route path="events" element={<Events />} />
               <Route path="resources" element={<Resources />} />
               <Route path="resources/:id" element={<ResourceDetail />} />

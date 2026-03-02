@@ -24,6 +24,7 @@ import { onResourceSynced } from '../sync/resource-hooks.js';
 import type { MapSyncMessage, MapTransport } from './types.js';
 import { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE } from './types.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
+import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
 
 interface SwarmConnection {
   swarmId: string;
@@ -95,12 +96,37 @@ export function handleSyncMessage(msg: MapSyncMessage, sourceSwarmId: string): v
     pusher: `map:${agent_id}`,
   });
 
-  // 3. Record cross-instance sync event for peers
+  // 3. Store trajectory checkpoint metadata (if present)
+  if (msg.method === 'trajectory/checkpoint') {
+    const checkpoint = (msg.params as Record<string, unknown>).checkpoint as Record<string, unknown> | undefined;
+    if (checkpoint) {
+      try {
+        createTrajectoryCheckpoint({
+          session_resource_id: resource_id,
+          checkpoint_id: (checkpoint.id as string) || commit_hash,
+          commit_hash,
+          agent: (checkpoint.agent as string) || 'unknown',
+          branch: checkpoint.branch as string | undefined,
+          files_touched: checkpoint.files_touched as string[] | undefined,
+          checkpoints_count: checkpoint.checkpoints_count as number | undefined,
+          token_usage: checkpoint.token_usage as Record<string, unknown> | undefined,
+          summary: checkpoint.summary as Record<string, unknown> | undefined,
+          attribution: checkpoint.attribution as Record<string, unknown> | undefined,
+          source_swarm_id: sourceSwarmId,
+          source_agent_id: agent_id,
+        });
+      } catch (err) {
+        console.warn(`[map-sync] Failed to store trajectory checkpoint: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  // 4. Record cross-instance sync event for peers
   if (resource.visibility !== 'private') {
     onResourceSynced(resource_id, commit_hash, null, agent_id, 0, 0, 0);
   }
 
-  // 4. Broadcast to local WebSocket channels for UI/non-MAP clients
+  // 5. Broadcast to local WebSocket channels for UI/non-MAP clients
   //    Convert JSON-RPC method back to internal WSEventType for local broadcast
   const wsEventType =
     msg.method === 'x-openhive/memory.sync' ? 'memory:sync'
@@ -131,7 +157,7 @@ export function handleSyncMessage(msg: MapSyncMessage, sourceSwarmId: string): v
     });
   }
 
-  // 5. Relay to subscribed swarms
+  // 6. Relay to subscribed swarms
   relaySyncMessage(msg, sourceSwarmId);
 
   console.log(`[map-sync] Processed ${msg.method} for ${resource.name} (${resource_id}) commit=${commit_hash.slice(0, 8)}`);
