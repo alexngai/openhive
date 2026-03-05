@@ -248,7 +248,10 @@ function startHeartbeat(): void {
 
     for (const [ws, client] of clients) {
       if (now - client.lastPing > timeout) {
-        // Client hasn't responded to ping, close connection
+        // Client hasn't responded to ping — clean up channels before terminating
+        for (const channel of client.channels) {
+          unsubscribeFromChannel(ws, channel);
+        }
         ws.terminate();
         clients.delete(ws);
       } else if (ws.readyState === WebSocket.OPEN) {

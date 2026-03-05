@@ -220,15 +220,23 @@ export class LocalProvider implements HostingProvider {
             // Force-kill the entire process group
             killProcessGroup(child, 'SIGKILL');
           }
-          resolve();
+          exitHandler();
         }, 5000);
 
-        child.on('exit', () => {
+        const exitHandler = () => {
           clearTimeout(timeout);
+          child.removeListener('exit', exitHandler);
           resolve();
-        });
+        };
+
+        child.on('exit', exitHandler);
       });
     }
+
+    // Remove all listeners on the child process to release closures
+    child.removeAllListeners();
+    child.stdout?.removeAllListeners();
+    child.stderr?.removeAllListeners();
 
     this.processes.delete(instanceId);
   }

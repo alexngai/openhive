@@ -38,6 +38,9 @@ interface SwarmConnection {
 
 const connections: Map<string, SwarmConnection> = new Map();
 
+// Stored handler reference so we can remove it on shutdown
+let swarmRegisteredHandler: ((e: { swarm_id: string; name: string; map_endpoint: string }) => void) | null = null;
+
 const RECONNECT_BASE_MS = 5_000;
 const RECONNECT_MAX_MS = 60_000;
 const MAX_RECONNECT_ATTEMPTS = 20;
@@ -279,6 +282,8 @@ function scheduleReconnect(conn: SwarmConnection): void {
   if (conn.reconnectTimer) return;
   if (conn.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
     console.warn(`[map-sync] Giving up reconnecting to swarm ${conn.name} after ${MAX_RECONNECT_ATTEMPTS} attempts`);
+    // Remove the stale connection entry to prevent unbounded Map growth
+    connections.delete(conn.swarmId);
     return;
   }
 
@@ -347,13 +352,14 @@ export function initMapSyncListener(): void {
     console.log(`[map-sync] Connecting to ${onlineSwarms.length} online swarm(s) for sync listening`);
   }
 
-  // Subscribe to new swarm registrations
-  mapHubEvents.on('swarm_registered', (e: { swarm_id: string; name: string; map_endpoint: string }) => {
+  // Subscribe to new swarm registrations (store reference for cleanup)
+  swarmRegisteredHandler = (e: { swarm_id: string; name: string; map_endpoint: string }) => {
     const swarm = findSwarmById(e.swarm_id);
     if (swarm) {
       connectToSwarm(swarm.id, swarm.name, swarm.map_endpoint, swarm.map_transport);
     }
-  });
+  };
+  mapHubEvents.on('swarm_registered', swarmRegisteredHandler);
 
   console.log('[map-sync] Sync listener initialized');
 }
@@ -362,6 +368,12 @@ export function initMapSyncListener(): void {
  * Stop all swarm connections and clean up.
  */
 export function stopMapSyncListener(): void {
+  // Remove the event listener to prevent accumulation on reinit
+  if (swarmRegisteredHandler) {
+    mapHubEvents.removeListener('swarm_registered', swarmRegisteredHandler);
+    swarmRegisteredHandler = null;
+  }
+
   for (const swarmId of connections.keys()) {
     disconnectFromSwarm(swarmId);
   }

@@ -138,6 +138,8 @@ export class SwarmHubConnector extends EventEmitter {
     this.client.clearTokenCache();
     this.setStatus('disconnected');
     this.emit('disconnected', { reason: 'manual' });
+    // Remove all listeners to prevent accumulation if reconnected
+    this.removeAllListeners();
   }
 
   // ==========================================================================

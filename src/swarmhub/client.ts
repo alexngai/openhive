@@ -23,6 +23,9 @@ import type {
 // Refresh tokens 10 minutes before expiry
 const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
 
+// Maximum number of cached tokens to prevent unbounded growth
+const MAX_TOKEN_CACHE_SIZE = 50;
+
 export class SwarmHubClient {
   private config: SwarmHubConfig;
   private tokenCache = new Map<string, CachedToken>();
@@ -79,6 +82,20 @@ export class SwarmHubClient {
 
     // Handle multi-installation response (use first token)
     const tokenResponse = 'tokens' in response ? response.tokens[0] : response;
+
+    // Evict expired entries and enforce max size before caching
+    if (this.tokenCache.size >= MAX_TOKEN_CACHE_SIZE) {
+      for (const [key, cached] of this.tokenCache) {
+        if (this.isTokenExpiring(cached)) {
+          this.tokenCache.delete(key);
+        }
+      }
+      // If still at capacity, evict oldest (first inserted)
+      if (this.tokenCache.size >= MAX_TOKEN_CACHE_SIZE) {
+        const firstKey = this.tokenCache.keys().next().value;
+        if (firstKey !== undefined) this.tokenCache.delete(firstKey);
+      }
+    }
 
     // Cache the token
     this.tokenCache.set(cacheKey, {
