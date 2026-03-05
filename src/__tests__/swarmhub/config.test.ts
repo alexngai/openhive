@@ -143,6 +143,8 @@ describe('SwarmHub config', () => {
     const savedEnv: Record<string, string | undefined> = {};
 
     beforeEach(() => {
+      savedEnv.SWARMHUB_API_URL = process.env.SWARMHUB_API_URL;
+      savedEnv.SWARMHUB_HIVE_TOKEN = process.env.SWARMHUB_HIVE_TOKEN;
       savedEnv.SWARMHUB_OAUTH_CLIENT_ID = process.env.SWARMHUB_OAUTH_CLIENT_ID;
       savedEnv.SWARMHUB_OAUTH_CLIENT_SECRET = process.env.SWARMHUB_OAUTH_CLIENT_SECRET;
       savedEnv.OPENHIVE_AUTH_MODE = process.env.OPENHIVE_AUTH_MODE;
@@ -158,7 +160,9 @@ describe('SwarmHub config', () => {
       }
     });
 
-    it('defaults to local auth when no OAuth credentials', () => {
+    it('defaults to local auth when no bridge env vars are set', () => {
+      delete process.env.SWARMHUB_API_URL;
+      delete process.env.SWARMHUB_HIVE_TOKEN;
       delete process.env.SWARMHUB_OAUTH_CLIENT_ID;
       delete process.env.OPENHIVE_AUTH_MODE;
 
@@ -166,22 +170,37 @@ describe('SwarmHub config', () => {
       expect(config.auth.mode).toBe('local');
     });
 
-    it('auto-detects swarmhub auth when OAuth client ID is present', async () => {
-      process.env.SWARMHUB_OAUTH_CLIENT_ID = 'test-client-id';
-      process.env.SWARMHUB_OAUTH_CLIENT_SECRET = 'test-secret';
+    it('auto-detects swarmhub auth when bridge env vars are present', async () => {
+      process.env.SWARMHUB_API_URL = 'https://api.swarmhub.dev';
+      process.env.SWARMHUB_HIVE_TOKEN = 'test-token';
+      delete process.env.SWARMHUB_OAUTH_CLIENT_ID;
       delete process.env.OPENHIVE_AUTH_MODE;
 
-      // Simulate what loadConfig does
       const { loadConfig } = await import('../../config.js');
       const config = loadConfig();
 
       expect(config.auth.mode).toBe('swarmhub');
+      expect(config.swarmhub.enabled).toBe(true);
+    });
+
+    it('does not auto-detect swarmhub auth from OAuth client ID alone', async () => {
+      delete process.env.SWARMHUB_API_URL;
+      delete process.env.SWARMHUB_HIVE_TOKEN;
+      process.env.SWARMHUB_OAUTH_CLIENT_ID = 'test-client-id';
+      process.env.SWARMHUB_OAUTH_CLIENT_SECRET = 'test-secret';
+      delete process.env.OPENHIVE_AUTH_MODE;
+
+      const { loadConfig } = await import('../../config.js');
+      const config = loadConfig();
+
+      // OAuth client ID populates config but doesn't trigger auth mode change
+      expect(config.auth.mode).toBe('local');
       expect(config.swarmhub.oauth.clientId).toBe('test-client-id');
     });
 
     it('respects explicit OPENHIVE_AUTH_MODE override to local', async () => {
-      process.env.SWARMHUB_OAUTH_CLIENT_ID = 'test-client-id';
-      process.env.SWARMHUB_OAUTH_CLIENT_SECRET = 'test-secret';
+      process.env.SWARMHUB_API_URL = 'https://api.swarmhub.dev';
+      process.env.SWARMHUB_HIVE_TOKEN = 'test-token';
       process.env.OPENHIVE_AUTH_MODE = 'local';
 
       const { loadConfig } = await import('../../config.js');

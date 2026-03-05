@@ -390,9 +390,17 @@ export function loadConfig(configPath?: string): Config {
       enabled: true,
       apiUrl: process.env.SWARMHUB_API_URL,
     };
+
+    // Auto-detect auth mode: managed hives use SwarmHub as identity provider.
+    // OAuth credentials are fetched at boot via the bridge connector, so the
+    // presence of the bridge env vars is sufficient to enable swarmhub auth.
+    if (!process.env.OPENHIVE_AUTH_MODE) {
+      rawConfig.auth = { ...rawConfig.auth, mode: 'swarmhub' };
+    }
   }
 
-  // SwarmHub OAuth configuration from environment
+  // SwarmHub OAuth configuration from environment (legacy — new hives fetch
+  // credentials from the bridge config endpoint instead of env vars)
   if (process.env.SWARMHUB_OAUTH_CLIENT_ID) {
     rawConfig.swarmhub = {
       ...rawConfig.swarmhub,
@@ -402,12 +410,6 @@ export function loadConfig(configPath?: string): Config {
         clientSecret: process.env.SWARMHUB_OAUTH_CLIENT_SECRET,
       },
     };
-
-    // Auto-detect auth mode: if OAuth credentials are present and auth mode
-    // wasn't explicitly set, switch to 'swarmhub' auth
-    if (!process.env.OPENHIVE_AUTH_MODE) {
-      rawConfig.auth = { ...rawConfig.auth, mode: 'swarmhub' };
-    }
   }
 
   // GitHub App configuration from environment
