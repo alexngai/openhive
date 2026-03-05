@@ -1,32 +1,39 @@
-import Fastify, { FastifyInstance } from 'fastify';
-import cors from '@fastify/cors';
-import rateLimit from '@fastify/rate-limit';
-import websocket from '@fastify/websocket';
-import fastifyStatic from '@fastify/static';
-import multipart from '@fastify/multipart';
-import * as path from 'path';
-import * as fs from 'fs';
-import { Config, loadConfig } from './config.js';
-import { initDatabase, closeDatabase } from './db/index.js';
-import { registerRoutes } from './api/index.js';
-import { setupWebSocket, stopHeartbeat } from './realtime/index.js';
-import { generateSkillMd } from './skill.js';
-import { generateSitemap, generateRobotsTxt } from './services/sitemap.js';
-import { initializeStorage, type StorageConfig } from './storage/index.js';
-import { initJwks } from './auth/jwks.js';
-import { createNetworkProvider, type NetworkProvider } from './network/index.js';
-import { syncProtocolRoutes } from './api/routes/sync-protocol.js';
-import { initSyncService } from './sync/service.js';
-import type { SyncService } from './sync/service.js';
-import { SwarmManager } from './swarm/manager.js';
-import type { SwarmHostingConfig } from './swarm/types.js';
-import { getOrCreateLocalAgent } from './db/dal/agents.js';
-import { setLocalAgent } from './api/middleware/auth.js';
-import { initMapSyncListener, stopMapSyncListener } from './map/sync-listener.js';
-import { BridgeManager } from './bridge/manager.js';
-import { SwarmHubConnector } from './swarmhub/connector.js';
-import { normalize, routeEvent } from './events/index.js';
-import { initCoordinationService } from './coordination/index.js';
+import Fastify, { FastifyInstance } from "fastify";
+import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
+import websocket from "@fastify/websocket";
+import fastifyStatic from "@fastify/static";
+import multipart from "@fastify/multipart";
+import * as path from "path";
+import * as fs from "fs";
+import { Config, loadConfig } from "./config.js";
+import { initDatabase, closeDatabase } from "./db/index.js";
+import { registerRoutes } from "./api/index.js";
+import { setupWebSocket, stopHeartbeat } from "./realtime/index.js";
+import { generateSkillMd } from "./skill.js";
+import { generateSitemap, generateRobotsTxt } from "./services/sitemap.js";
+import { initializeStorage, type StorageConfig } from "./storage/index.js";
+import { initJwks } from "./auth/jwks.js";
+import {
+  createNetworkProvider,
+  type NetworkProvider,
+} from "./network/index.js";
+import { syncProtocolRoutes } from "./api/routes/sync-protocol.js";
+import { initSyncService } from "./sync/service.js";
+import type { SyncService } from "./sync/service.js";
+import { SwarmManager } from "./swarm/manager.js";
+import type { SwarmHostingConfig } from "./swarm/types.js";
+import { getOrCreateLocalAgent } from "./db/dal/agents.js";
+import { setLocalAgent } from "./api/middleware/auth.js";
+import {
+  initMapSyncListener,
+  stopMapSyncListener,
+} from "./map/sync-listener.js";
+import { BridgeManager } from "./bridge/manager.js";
+import { SwarmHubConnector } from "./swarmhub/connector.js";
+import { normalize, routeEvent } from "./events/index.js";
+import { initCoordinationService } from "./coordination/index.js";
+import { registerHostnameGuard } from "./api/middleware/hostname-guard.js";
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -35,10 +42,12 @@ export interface HiveServer {
   stop(): Promise<void>;
 }
 
-export async function createHive(configInput?: Partial<Config> | string): Promise<HiveServer> {
+export async function createHive(
+  configInput?: Partial<Config> | string,
+): Promise<HiveServer> {
   // Load configuration
   let config: Config;
-  if (typeof configInput === 'string') {
+  if (typeof configInput === "string") {
     config = loadConfig(configInput);
   } else if (configInput) {
     config = loadConfig();
@@ -52,24 +61,33 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   initDatabase(config.database);
 
   // Set up auth mode
-  if (config.auth.mode === 'local') {
+  if (config.auth.mode === "local") {
     const agent = await getOrCreateLocalAgent();
     setLocalAgent(agent);
-    console.log('[openhive] Local auth mode — all requests auto-authenticated as "local"');
-  } else if (config.auth.mode === 'swarmhub') {
-    const swarmhubApiUrl = config.swarmhub.apiUrl || process.env.SWARMHUB_API_URL;
+    console.log(
+      '[openhive] Local auth mode — all requests auto-authenticated as "local"',
+    );
+  } else if (config.auth.mode === "swarmhub") {
+    const swarmhubApiUrl =
+      config.swarmhub.apiUrl || process.env.SWARMHUB_API_URL;
     // JWKS init is deferred until the connector fetches the client_id from
     // SwarmHub's bridge config. If the legacy env var is still set, use it
     // as an early hint so tokens can be validated before the connector connects.
     if (swarmhubApiUrl && config.swarmhub.oauth.clientId) {
-      const jwksUrl = config.swarmhub.oauth.jwksUrl || `${swarmhubApiUrl}/.well-known/jwks.json`;
+      const jwksUrl =
+        config.swarmhub.oauth.jwksUrl ||
+        `${swarmhubApiUrl}/.well-known/jwks.json`;
       initJwks({
         jwksUrl,
         audience: config.swarmhub.oauth.clientId,
       });
-      console.log('[openhive] SwarmHub auth mode — JWKS initialized (from env)');
+      console.log(
+        "[openhive] SwarmHub auth mode — JWKS initialized (from env)",
+      );
     } else if (swarmhubApiUrl) {
-      console.log('[openhive] SwarmHub auth mode — JWKS will initialize after connector fetches client_id');
+      console.log(
+        "[openhive] SwarmHub auth mode — JWKS will initialize after connector fetches client_id",
+      );
     }
   }
 
@@ -77,7 +95,7 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   if (config.storage) {
     initializeStorage(config.storage as StorageConfig);
     // Ensure local upload directory exists
-    if (config.storage.type === 'local') {
+    if (config.storage.type === "local") {
       const uploadPath = path.resolve(config.storage.path);
       if (!fs.existsSync(uploadPath)) {
         fs.mkdirSync(uploadPath, { recursive: true });
@@ -88,7 +106,7 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   // Create Fastify instance
   const fastify = Fastify({
     logger: {
-      level: 'info',
+      level: "info",
     },
   });
 
@@ -96,8 +114,8 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   if (config.cors.enabled) {
     await fastify.register(cors, {
       origin: config.cors.origin,
-      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Key'],
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Key"],
     });
   }
 
@@ -111,6 +129,13 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         return (request as { agent?: { id: string } }).agent?.id || request.ip;
       },
     });
+  }
+
+  // Hostname guard — rejects requests with mismatched Host header.
+  // Only active in swarmhub auth mode (managed hosting). Skipped in
+  // local mode so developers can access via localhost, IP, tunnels, etc.
+  if (config.auth.mode === "swarmhub") {
+    registerHostnameGuard(fastify, config.instance.url);
   }
 
   // Register multipart for file uploads
@@ -132,19 +157,24 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   // Dynamic import so @lydell/node-pty being unavailable doesn't crash the server.
   if (config.swarmHosting.enabled) {
     try {
-      const { PtyManager, handleTerminalWebSocket } = await import('./terminal/index.js');
+      const { PtyManager, handleTerminalWebSocket } =
+        await import("./terminal/index.js");
       const ptyManager = new PtyManager();
-      (fastify as unknown as { ptyManager: InstanceType<typeof PtyManager> }).ptyManager = ptyManager;
+      (
+        fastify as unknown as { ptyManager: InstanceType<typeof PtyManager> }
+      ).ptyManager = ptyManager;
 
-      fastify.get('/ws/terminal', { websocket: true }, (socket, request) => {
-        const ws = socket as unknown as import('ws').WebSocket;
+      fastify.get("/ws/terminal", { websocket: true }, (socket, request) => {
+        const ws = socket as unknown as import("ws").WebSocket;
         const query = request.query as Record<string, string>;
         handleTerminalWebSocket(ws, query, ptyManager);
       });
 
-      console.log('[openhive] Terminal WebSocket registered at /ws/terminal');
+      console.log("[openhive] Terminal WebSocket registered at /ws/terminal");
     } catch (err) {
-      console.warn(`[openhive] Terminal support unavailable: ${(err as Error).message}`);
+      console.warn(
+        `[openhive] Terminal support unavailable: ${(err as Error).message}`,
+      );
     }
   }
 
@@ -156,7 +186,7 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
       credentialEncryptionKey: config.bridge.credentialEncryptionKey,
       webhookBaseUrl: config.bridge.webhookBaseUrl,
     });
-    console.log('[openhive] Bridge feature enabled');
+    console.log("[openhive] Bridge feature enabled");
   }
 
   // Initialize SwarmHub connector (auto-detects SWARMHUB_API_URL + SWARMHUB_HIVE_TOKEN)
@@ -164,8 +194,10 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   if (config.swarmhub.enabled || SwarmHubConnector.fromEnv()) {
     swarmhubConnector = SwarmHubConnector.fromEnv();
     if (swarmhubConnector) {
-      (fastify as unknown as { swarmhubConnector: SwarmHubConnector }).swarmhubConnector = swarmhubConnector;
-      console.log('[openhive] SwarmHub connector detected');
+      (
+        fastify as unknown as { swarmhubConnector: SwarmHubConnector }
+      ).swarmhubConnector = swarmhubConnector;
+      console.log("[openhive] SwarmHub connector detected");
     }
   }
 
@@ -173,7 +205,7 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   await registerRoutes(fastify, config, bridgeManager, swarmhubConnector);
 
   // Register sync protocol routes (peer-to-peer, separate from API)
-  await fastify.register(syncProtocolRoutes, { prefix: '/sync/v1' });
+  await fastify.register(syncProtocolRoutes, { prefix: "/sync/v1" });
 
   // Initialize sync service
   let syncService: SyncService | null = null;
@@ -184,99 +216,135 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   // Initialize SwarmCraft plugin (MAP client for agent monitoring)
   if (config.swarmcraft.enabled) {
     try {
-      const { getDatabaseConfig } = await import('./db/index.js');
+      const { getDatabaseConfig } = await import("./db/index.js");
       const dbConf = getDatabaseConfig();
-      const dbPath = (dbConf && dbConf.type === 'sqlite') ? dbConf.path : './data/openhive.db';
+      const dbPath =
+        dbConf && dbConf.type === "sqlite" ? dbConf.path : "./data/openhive.db";
 
-      const scPrefix = config.swarmcraft.prefix || '/api/swarmcraft';
-      const scWsPath = config.swarmcraft.wsPath || '/ws/swarmcraft';
+      const scPrefix = config.swarmcraft.prefix || "/api/swarmcraft";
+      const scWsPath = config.swarmcraft.wsPath || "/ws/swarmcraft";
 
-      const { swarmcraftPlugin } = await import('swarmcraft/plugin');
+      const { swarmcraftPlugin } = await import("swarmcraft/plugin");
       await fastify.register(swarmcraftPlugin, {
-        database: { type: 'sqlite', path: dbPath, tablePrefix: 'sc_' },
+        database: { type: "sqlite", path: dbPath, tablePrefix: "sc_" },
         prefix: scPrefix,
         wsPath: scWsPath,
-        logLevel: config.swarmcraft.logLevel || 'info',
-        corsOrigin: typeof config.cors.origin === 'string' ? config.cors.origin : undefined,
+        logLevel: config.swarmcraft.logLevel || "info",
+        corsOrigin:
+          typeof config.cors.origin === "string"
+            ? config.cors.origin
+            : undefined,
       });
       console.log(`[openhive] SwarmCraft plugin registered at ${scPrefix}`);
 
       // Bridge: auto-connect SwarmCraft MAP client when swarms register with the Hub
       const mcm = (fastify as any).swarmcraft.mapClientManager;
-      const connectSwarm = async (id: string, name: string, endpoint: string, authMethod?: string) => {
+      const connectSwarm = async (
+        id: string,
+        name: string,
+        endpoint: string,
+        authMethod?: string,
+      ) => {
         try {
           await mcm.connect({
-            id, name, url: endpoint,
-            auth: authMethod === 'none' || !authMethod
-              ? { method: 'none' as const }
-              : { method: authMethod as 'bearer' | 'api-key', token: undefined },
+            id,
+            name,
+            url: endpoint,
+            auth:
+              authMethod === "none" || !authMethod
+                ? { method: "none" as const }
+                : {
+                    method: authMethod as "bearer" | "api-key",
+                    token: undefined,
+                  },
           });
           console.log(`[openhive] SwarmCraft bridge: connected to ${name}`);
         } catch (err) {
-          console.warn(`[openhive] SwarmCraft bridge: failed to connect to ${name}: ${(err as Error).message}`);
+          console.warn(
+            `[openhive] SwarmCraft bridge: failed to connect to ${name}: ${(err as Error).message}`,
+          );
         }
       };
 
       // Connect to existing online swarms at startup
-      const { listSwarms } = await import('./db/dal/map.js');
-      const { data: online } = listSwarms({ status: 'online', limit: 500 });
-      for (const s of online) await connectSwarm(s.id, s.name, s.map_endpoint, s.auth_method);
+      const { listSwarms } = await import("./db/dal/map.js");
+      const { data: online } = listSwarms({ status: "online", limit: 500 });
+      for (const s of online)
+        await connectSwarm(s.id, s.name, s.map_endpoint, s.auth_method);
 
       // Subscribe to new registrations
-      const { mapHubEvents } = await import('./map/service.js');
-      mapHubEvents.on('swarm_registered', (e: { swarm_id: string; name: string; map_endpoint: string; auth_method?: string }) => {
-        connectSwarm(e.swarm_id, e.name, e.map_endpoint, e.auth_method);
-      });
+      const { mapHubEvents } = await import("./map/service.js");
+      mapHubEvents.on(
+        "swarm_registered",
+        (e: {
+          swarm_id: string;
+          name: string;
+          map_endpoint: string;
+          auth_method?: string;
+        }) => {
+          connectSwarm(e.swarm_id, e.name, e.map_endpoint, e.auth_method);
+        },
+      );
     } catch (err) {
-      console.warn(`[openhive] Failed to register SwarmCraft plugin: ${(err as Error).message}`);
+      console.warn(
+        `[openhive] Failed to register SwarmCraft plugin: ${(err as Error).message}`,
+      );
     }
   }
 
   // Initialize swarm hosting manager
   let swarmManager: SwarmManager | null = null;
   if (config.swarmHosting.enabled) {
-    const instanceUrl = config.instance.url || `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`;
-    swarmManager = new SwarmManager(config.swarmHosting as SwarmHostingConfig, instanceUrl);
+    const instanceUrl =
+      config.instance.url ||
+      `http://${config.host === "0.0.0.0" ? "127.0.0.1" : config.host}:${config.port}`;
+    swarmManager = new SwarmManager(
+      config.swarmHosting as SwarmHostingConfig,
+      instanceUrl,
+    );
     // Attach to fastify instance so routes can access it
-    (fastify as unknown as { swarmManager: SwarmManager }).swarmManager = swarmManager;
-    console.log('[openhive] Swarm hosting enabled');
+    (fastify as unknown as { swarmManager: SwarmManager }).swarmManager =
+      swarmManager;
+    console.log("[openhive] Swarm hosting enabled");
   }
 
   // Serve skill.md
-  fastify.get('/skill.md', async (_request, reply) => {
+  fastify.get("/skill.md", async (_request, reply) => {
     const skillMd = generateSkillMd(config);
-    return reply.type('text/markdown').send(skillMd);
+    return reply.type("text/markdown").send(skillMd);
   });
 
   // Serve sitemap.xml for SEO
-  fastify.get('/sitemap.xml', async (_request, reply) => {
-    const baseUrl = config.instance.url || `http://${config.host}:${config.port}`;
+  fastify.get("/sitemap.xml", async (_request, reply) => {
+    const baseUrl =
+      config.instance.url || `http://${config.host}:${config.port}`;
     const sitemap = generateSitemap({ baseUrl });
-    return reply.type('application/xml').send(sitemap);
+    return reply.type("application/xml").send(sitemap);
   });
 
   // Serve robots.txt for crawlers
-  fastify.get('/robots.txt', async (_request, reply) => {
-    const baseUrl = config.instance.url || `http://${config.host}:${config.port}`;
+  fastify.get("/robots.txt", async (_request, reply) => {
+    const baseUrl =
+      config.instance.url || `http://${config.host}:${config.port}`;
     const robotsTxt = generateRobotsTxt(baseUrl);
-    return reply.type('text/plain').send(robotsTxt);
+    return reply.type("text/plain").send(robotsTxt);
   });
 
   // Serve web UI static files (if they exist)
   // In dev mode (__dirname = src/), src/web has source files not built assets,
   // so we check for a built index.html to avoid serving raw .tsx files.
-  const webPath = path.join(__dirname, 'web');
-  const webPathAlt = path.join(__dirname, '..', 'dist', 'web');
+  const webPath = path.join(__dirname, "web");
+  const webPathAlt = path.join(__dirname, "..", "dist", "web");
   const actualWebPath =
-    (fs.existsSync(path.join(webPath, 'assets')) ? webPath : null) ||
-    (fs.existsSync(path.join(webPathAlt, 'index.html')) ? webPathAlt : null);
+    (fs.existsSync(path.join(webPath, "assets")) ? webPath : null) ||
+    (fs.existsSync(path.join(webPathAlt, "index.html")) ? webPathAlt : null);
 
   // Track whether @fastify/static has been registered yet.
   // The first registration decorates the reply with sendFile(); subsequent ones must not.
   let staticRegistered = false;
 
   // Serve uploaded files from local storage
-  if (config.storage?.type === 'local') {
+  if (config.storage?.type === "local") {
     const uploadPath = path.resolve(config.storage.path);
     await fastify.register(fastifyStatic, {
       root: uploadPath,
@@ -289,7 +357,7 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   if (actualWebPath) {
     await fastify.register(fastifyStatic, {
       root: actualWebPath,
-      prefix: '/',
+      prefix: "/",
       decorateReply: !staticRegistered,
     });
     staticRegistered = true;
@@ -297,42 +365,52 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
     // SPA fallback for all non-API routes
     fastify.setNotFoundHandler((request, reply) => {
       // Don't serve SPA for API routes or skill.md
-      if (request.url.startsWith('/api') || request.url === '/skill.md' || request.url.startsWith('/.well-known')) {
-        return reply.status(404).send({ error: 'Not Found' });
+      if (
+        request.url.startsWith("/api") ||
+        request.url === "/skill.md" ||
+        request.url.startsWith("/.well-known")
+      ) {
+        return reply.status(404).send({ error: "Not Found" });
       }
       // Serve index.html for SPA routes
-      return reply.sendFile('index.html', actualWebPath);
+      return reply.sendFile("index.html", actualWebPath);
     });
   } else {
     // Serve inline admin panel if no built web UI
-    fastify.get('/', async (_request, reply) => {
-      return reply.type('text/html').send(getWelcomeHtml(config));
+    fastify.get("/", async (_request, reply) => {
+      return reply.type("text/html").send(getWelcomeHtml(config));
     });
-    fastify.get('/admin', async (_request, reply) => {
-      return reply.type('text/html').send(getInlineAdminHtml(config));
+    fastify.get("/admin", async (_request, reply) => {
+      return reply.type("text/html").send(getInlineAdminHtml(config));
     });
-    fastify.get('/admin/*', async (_request, reply) => {
-      return reply.type('text/html').send(getInlineAdminHtml(config));
+    fastify.get("/admin/*", async (_request, reply) => {
+      return reply.type("text/html").send(getInlineAdminHtml(config));
     });
   }
 
   // Federation discovery (stub)
-  fastify.get('/.well-known/openhive.json', async (_request, reply) => {
+  fastify.get("/.well-known/openhive.json", async (_request, reply) => {
     // Get stats from database
-    const db = require('./db/index.js').getDatabase();
-    const agentCount = db.prepare('SELECT COUNT(*) as count FROM agents').get() as { count: number };
-    const postCount = db.prepare('SELECT COUNT(*) as count FROM posts').get() as { count: number };
-    const hiveCount = db.prepare('SELECT COUNT(*) as count FROM hives').get() as { count: number };
+    const db = require("./db/index.js").getDatabase();
+    const agentCount = db
+      .prepare("SELECT COUNT(*) as count FROM agents")
+      .get() as { count: number };
+    const postCount = db
+      .prepare("SELECT COUNT(*) as count FROM posts")
+      .get() as { count: number };
+    const hiveCount = db
+      .prepare("SELECT COUNT(*) as count FROM hives")
+      .get() as { count: number };
 
     // Build response
     const wellKnown: Record<string, unknown> = {
-      version: '0.2.0',
+      version: "0.2.0",
       name: config.instance.name,
       description: config.instance.description,
       url: config.instance.url,
       federation: {
         enabled: config.federation.enabled,
-        protocol_version: '1.0',
+        protocol_version: "1.0",
       },
       stats: {
         agents: agentCount.count,
@@ -345,16 +423,16 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         swarmhub: swarmhubConnector?.isConnected || false,
       },
       endpoints: {
-        api: '/api/v1',
-        websocket: '/ws',
-        skill: '/skill.md',
+        api: "/api/v1",
+        websocket: "/ws",
+        skill: "/skill.md",
       },
     };
 
     // Add MAP Hub info if enabled
     if (config.mapHub.enabled) {
       try {
-        const { getWellKnownMapInfo } = require('./map/service.js');
+        const { getWellKnownMapInfo } = require("./map/service.js");
         Object.assign(wellKnown, getWellKnownMapInfo());
       } catch {
         // MAP module not available, skip
@@ -368,17 +446,18 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
   // Supports: tailscale-cloud, headscale-sidecar, headscale-external, none
   let networkProvider: NetworkProvider;
 
-  if (config.network.provider !== 'none') {
+  if (config.network.provider !== "none") {
     // Use the new network config
     networkProvider = createNetworkProvider(config.network);
   } else if (config.headscale.enabled) {
     // Backward compat: legacy headscale config maps to headscale-sidecar
-    const serverUrl = config.headscale.serverUrl ||
+    const serverUrl =
+      config.headscale.serverUrl ||
       config.instance.url ||
-      `http://${config.host}:${config.headscale.listenAddr.split(':')[1] || '8085'}`;
+      `http://${config.host}:${config.headscale.listenAddr.split(":")[1] || "8085"}`;
 
     networkProvider = createNetworkProvider({
-      provider: 'headscale-sidecar',
+      provider: "headscale-sidecar",
       headscaleSidecar: {
         serverUrl,
         dataDir: config.headscale.dataDir,
@@ -389,7 +468,7 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
       },
     });
   } else {
-    networkProvider = createNetworkProvider({ provider: 'none' });
+    networkProvider = createNetworkProvider({ provider: "none" });
   }
 
   const server: HiveServer = {
@@ -398,22 +477,32 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
 
     async start() {
       // Start mesh networking provider before listening
-      if (networkProvider.type !== 'none') {
+      if (networkProvider.type !== "none") {
         try {
           await networkProvider.start();
           // Attach to fastify instance so routes can access it
-          (fastify as unknown as { networkProvider: NetworkProvider }).networkProvider = networkProvider;
-          console.log(`[openhive] Network provider started (${networkProvider.type})`);
+          (
+            fastify as unknown as { networkProvider: NetworkProvider }
+          ).networkProvider = networkProvider;
+          console.log(
+            `[openhive] Network provider started (${networkProvider.type})`,
+          );
         } catch (err) {
-          console.warn(`[openhive] Network provider failed to start: ${(err as Error).message}`);
-          console.warn('[openhive] MAP hub will work without L3/L4 mesh networking.');
+          console.warn(
+            `[openhive] Network provider failed to start: ${(err as Error).message}`,
+          );
+          console.warn(
+            "[openhive] MAP hub will work without L3/L4 mesh networking.",
+          );
         }
       }
 
       // Start sync service
       if (syncService) {
         syncService.start();
-        console.log(`[openhive] Sync service started (instance: ${syncService.getInstanceId()})`);
+        console.log(
+          `[openhive] Sync service started (instance: ${syncService.getInstanceId()})`,
+        );
       }
 
       // Initialize coordination service (must be before MAP sync listener)
@@ -427,37 +516,60 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
       // Start swarm hosting health monitor
       if (swarmManager) {
         swarmManager.startHealthMonitor();
-        console.log('[openhive] Swarm hosting health monitor started');
+        console.log("[openhive] Swarm hosting health monitor started");
       }
 
       // Connect to SwarmHub
       if (swarmhubConnector) {
         try {
           const identity = await swarmhubConnector.connect();
-          console.log(`[openhive] SwarmHub connector: connected as "${identity.slug}" (${identity.tier})`);
+          console.log(
+            `[openhive] SwarmHub connector: connected as "${identity.slug}" (${identity.tier})`,
+          );
 
           // Initialize (or re-initialize) JWKS with the client_id from the bridge.
           // This is the primary source of truth — the env var is just an optional early hint.
           const dynamicClientId = swarmhubConnector.getOAuthClientId();
           if (dynamicClientId) {
-            const swarmhubApiUrl = config.swarmhub.apiUrl || process.env.SWARMHUB_API_URL;
+            const swarmhubApiUrl =
+              config.swarmhub.apiUrl || process.env.SWARMHUB_API_URL;
             if (swarmhubApiUrl) {
-              const jwksUrl = config.swarmhub.oauth.jwksUrl || `${swarmhubApiUrl}/.well-known/jwks.json`;
+              const jwksUrl =
+                config.swarmhub.oauth.jwksUrl ||
+                `${swarmhubApiUrl}/.well-known/jwks.json`;
               initJwks({ jwksUrl, audience: dynamicClientId });
-              console.log(`[openhive] JWKS initialized with client_id from SwarmHub bridge`);
+              console.log(
+                `[openhive] JWKS initialized with client_id from SwarmHub bridge`,
+              );
             }
           }
 
           // Listen for polled GitHub webhook events (tunnel mode)
           // Note: the connector's processPolledEvent now routes through the event system
           // directly. This listener is kept for any external consumers.
-          swarmhubConnector.on('github_webhook', (event: { event_type: string; delivery_id: string; payload: Record<string, unknown> }) => {
-            const normalized = normalize('github', event.event_type, event.delivery_id, event.payload);
-            routeEvent(normalized);
-          });
+          swarmhubConnector.on(
+            "github_webhook",
+            (event: {
+              event_type: string;
+              delivery_id: string;
+              payload: Record<string, unknown>;
+            }) => {
+              const normalized = normalize(
+                "github",
+                event.event_type,
+                event.delivery_id,
+                event.payload,
+              );
+              routeEvent(normalized);
+            },
+          );
         } catch (err) {
-          console.warn(`[openhive] SwarmHub connector: failed to connect: ${(err as Error).message}`);
-          console.warn('[openhive] SwarmHub features will be unavailable. Retrying on health checks.');
+          console.warn(
+            `[openhive] SwarmHub connector: failed to connect: ${(err as Error).message}`,
+          );
+          console.warn(
+            "[openhive] SwarmHub features will be unavailable. Retrying on health checks.",
+          );
         }
       }
 
@@ -465,7 +577,9 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
       if (bridgeManager) {
         await bridgeManager.startAll();
         if (bridgeManager.runningCount > 0) {
-          console.log(`[openhive] Started ${bridgeManager.runningCount} active bridge(s)`);
+          console.log(
+            `[openhive] Started ${bridgeManager.runningCount} active bridge(s)`,
+          );
         }
       }
 
@@ -480,8 +594,10 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
           break;
         } catch (err: unknown) {
           const code = (err as NodeJS.ErrnoException).code;
-          if (code === 'EADDRINUSE' && attempt < maxPortAttempts - 1) {
-            console.log(`[openhive] Port ${port} in use, trying ${port + 1}...`);
+          if (code === "EADDRINUSE" && attempt < maxPortAttempts - 1) {
+            console.log(
+              `[openhive] Port ${port} in use, trying ${port + 1}...`,
+            );
             port++;
             continue;
           }
@@ -490,8 +606,12 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
       }
 
       // Write port file for dev tools (e.g. Vite proxy)
-      const portFile = path.join(__dirname, '..', '.dev-port');
-      try { fs.writeFileSync(portFile, String(port)); } catch { /* ignore */ }
+      const portFile = path.join(__dirname, "..", ".dev-port");
+      try {
+        fs.writeFileSync(portFile, String(port));
+      } catch {
+        /* ignore */
+      }
 
       return address;
     },
@@ -499,7 +619,9 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
     async stop() {
       stopHeartbeat();
       // Destroy terminal sessions
-      const ptyMgr = (fastify as unknown as { ptyManager?: { destroyAll(): void } }).ptyManager;
+      const ptyMgr = (
+        fastify as unknown as { ptyManager?: { destroyAll(): void } }
+      ).ptyManager;
       if (ptyMgr) {
         ptyMgr.destroyAll();
       }
@@ -522,15 +644,19 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
         syncService.stop();
       }
       // Stop mesh networking provider
-      if (networkProvider.type !== 'none') {
+      if (networkProvider.type !== "none") {
         await networkProvider.stop();
       }
       await fastify.close();
       closeDatabase();
 
       // Clean up dev port file
-      const portFile = path.join(__dirname, '..', '.dev-port');
-      try { fs.unlinkSync(portFile); } catch { /* ignore */ }
+      const portFile = path.join(__dirname, "..", ".dev-port");
+      try {
+        fs.unlinkSync(portFile);
+      } catch {
+        /* ignore */
+      }
     },
   };
 
