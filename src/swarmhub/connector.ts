@@ -227,6 +227,11 @@ export class SwarmHubConnector extends EventEmitter {
     return { ...this.state };
   }
 
+  /** Returns the OAuth client ID fetched at connect time, or undefined. */
+  getOAuthClientId(): string | undefined {
+    return this.hiveConfig?.oauth?.client_id;
+  }
+
   /** Returns the OAuth client secret fetched at connect time, or undefined. */
   getOAuthClientSecret(): string | undefined {
     return this.hiveConfig?.oauth?.client_secret;

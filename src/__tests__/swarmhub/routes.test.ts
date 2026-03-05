@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import { swarmhubRoutes } from '../../swarmhub/routes.js';
+import { authRoutes } from '../../api/routes/auth.js';
 import { SwarmHubConnector } from '../../swarmhub/connector.js';
 import type { SwarmHubConfig } from '../../swarmhub/types.js';
 import { getOrCreateLocalAgent } from '../../db/dal/agents.js';
@@ -318,5 +319,156 @@ describe('SwarmHub Routes', () => {
 
       expect(res.statusCode).toBe(502);
     });
+  });
+});
+
+// ── Auth route dynamic client_id tests ──
+
+describe('Auth routes — dynamic client_id from connector', () => {
+  let fastify: FastifyInstance;
+  let connector: SwarmHubConnector;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const STATIC_CONFIG = {
+    authMode: 'swarmhub' as const,
+    swarmhubApiUrl: 'https://api.swarmhub.test',
+    swarmhubOAuthClientId: 'static-client-id',
+    swarmhubOAuthClientSecret: 'static-client-secret',
+  };
+
+  beforeAll(async () => {
+    // DB already initialized from outer describe
+  });
+
+  beforeEach(async () => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    connector = new SwarmHubConnector(CONNECTOR_CONFIG);
+
+    fastify = Fastify();
+    await fastify.register(authRoutes, {
+      config: STATIC_CONFIG,
+      swarmhubConnector: connector,
+    });
+    await fastify.ready();
+  });
+
+  afterEach(async () => {
+    await connector.disconnect();
+    await fastify.close();
+    vi.restoreAllMocks();
+  });
+
+  it('GET /auth/mode returns connector client_id when available', async () => {
+    // Connect the connector with hive config that includes client_id
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => MOCK_IDENTITY,
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        oauth: { client_id: 'dynamic-client-id', client_secret: 'dynamic-secret' },
+      }),
+    });
+    await connector.connect();
+
+    const res = await fastify.inject({
+      method: 'GET',
+      url: '/auth/mode',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.mode).toBe('swarmhub');
+    expect(body.oauth.client_id).toBe('dynamic-client-id');
+  });
+
+  it('GET /auth/mode falls back to static config when connector has no client_id', async () => {
+    // Connect but config fetch fails — connector returns undefined for client_id
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => MOCK_IDENTITY,
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      text: async () => 'Not Found',
+    });
+    await connector.connect();
+
+    const res = await fastify.inject({
+      method: 'GET',
+      url: '/auth/mode',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.mode).toBe('swarmhub');
+    expect(body.oauth.client_id).toBe('static-client-id');
+  });
+
+  it('GET /auth/mode falls back to static config when connector is not connected', async () => {
+    // Don't connect — connector.getOAuthClientId() returns undefined
+    const res = await fastify.inject({
+      method: 'GET',
+      url: '/auth/mode',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.mode).toBe('swarmhub');
+    expect(body.oauth.client_id).toBe('static-client-id');
+  });
+
+  it('POST /auth/swarmhub/exchange uses connector client_id in token request', async () => {
+    // Connect with dynamic credentials
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => MOCK_IDENTITY,
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        oauth: { client_id: 'dynamic-client-id', client_secret: 'dynamic-secret' },
+      }),
+    });
+    await connector.connect();
+
+    // After connect, stop polling so it doesn't consume our token exchange mock
+    await connector.disconnect();
+
+    // Re-register a fresh fastify with the same (now-configured) connector
+    // so the connector still has the fetched hive config with dynamic credentials.
+    // We need a new fetch mock implementation that handles just the token exchange.
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        access_token: 'test-access-token',
+        token_type: 'bearer',
+        expires_in: 3600,
+      }),
+    });
+
+    const res = await fastify.inject({
+      method: 'POST',
+      url: '/auth/swarmhub/exchange',
+      payload: {
+        code: 'test-auth-code',
+        redirect_uri: 'https://my-project.swarmhub.dev/auth/callback',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    // Verify the token exchange fetch was called with the dynamic client_id
+    const tokenCall = fetchMock.mock.calls.find(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('/oauth/token')
+    );
+    expect(tokenCall).toBeDefined();
+    const tokenBody = JSON.parse(tokenCall![1].body);
+    expect(tokenBody.client_id).toBe('dynamic-client-id');
+    expect(tokenBody.client_secret).toBe('dynamic-secret');
   });
 });

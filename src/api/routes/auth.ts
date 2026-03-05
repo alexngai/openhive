@@ -34,11 +34,17 @@ export async function authRoutes(
       });
     }
 
+    // Prefer client_id from bridge config (fetched at boot) over static env var,
+    // so re-provisioned hives pick up the new OAuth client without a redeploy.
+    const clientId =
+      opts.swarmhubConnector?.getOAuthClientId() ||
+      opts.config.swarmhubOAuthClientId;
+
     return reply.send({
       mode: 'swarmhub',
       oauth: {
         authorize_url: `${opts.config.swarmhubApiUrl}/oauth/authorize`,
-        client_id: opts.config.swarmhubOAuthClientId,
+        client_id: clientId,
       },
     });
   });
@@ -59,10 +65,14 @@ export async function authRoutes(
 
     const { code, redirect_uri } = parseResult.data;
 
-    // Resolve client secret: prefer static config, fall back to connector (fetched at boot)
+    // Resolve OAuth credentials: prefer connector (fetched at boot) over static config,
+    // so re-provisioned hives pick up the new OAuth client without a redeploy.
+    const exchangeClientId =
+      opts.swarmhubConnector?.getOAuthClientId() ||
+      opts.config.swarmhubOAuthClientId;
     const clientSecret =
-      opts.config.swarmhubOAuthClientSecret ||
-      opts.swarmhubConnector?.getOAuthClientSecret();
+      opts.swarmhubConnector?.getOAuthClientSecret() ||
+      opts.config.swarmhubOAuthClientSecret;
 
     if (!clientSecret) {
       fastify.log.error('No OAuth client secret available — cannot exchange code');
@@ -85,7 +95,7 @@ export async function authRoutes(
             grant_type: 'authorization_code',
             code,
             redirect_uri,
-            client_id: opts.config.swarmhubOAuthClientId,
+            client_id: exchangeClientId,
             client_secret: clientSecret,
           }),
           signal: AbortSignal.timeout(10_000),

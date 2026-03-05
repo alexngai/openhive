@@ -431,6 +431,18 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
           const identity = await swarmhubConnector.connect();
           console.log(`[openhive] SwarmHub connector: connected as "${identity.slug}" (${identity.tier})`);
 
+          // Re-initialize JWKS if the connector fetched an updated client_id
+          // (e.g. hive was re-provisioned and got a new OAuth client)
+          const dynamicClientId = swarmhubConnector.getOAuthClientId();
+          if (dynamicClientId && dynamicClientId !== config.swarmhub.oauth.clientId) {
+            const swarmhubApiUrl = config.swarmhub.apiUrl || process.env.SWARMHUB_API_URL;
+            if (swarmhubApiUrl) {
+              const jwksUrl = config.swarmhub.oauth.jwksUrl || `${swarmhubApiUrl}/.well-known/jwks.json`;
+              initJwks({ jwksUrl, audience: dynamicClientId });
+              console.log(`[openhive] JWKS re-initialized with updated client_id from SwarmHub`);
+            }
+          }
+
           // Listen for polled GitHub webhook events (tunnel mode)
           // Note: the connector's processPolledEvent now routes through the event system
           // directly. This listener is kept for any external consumers.
