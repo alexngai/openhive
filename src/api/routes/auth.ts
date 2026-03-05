@@ -34,8 +34,8 @@ export async function authRoutes(
       });
     }
 
-    // Prefer client_id from bridge config (fetched at boot) over static env var,
-    // so re-provisioned hives pick up the new OAuth client without a redeploy.
+    // Primary source: connector (fetched from SwarmHub bridge at boot).
+    // Fallback: static env var (legacy, will be removed).
     const clientId =
       opts.swarmhubConnector?.getOAuthClientId() ||
       opts.config.swarmhubOAuthClientId;
@@ -65,8 +65,8 @@ export async function authRoutes(
 
     const { code, redirect_uri } = parseResult.data;
 
-    // Resolve OAuth credentials: prefer connector (fetched at boot) over static config,
-    // so re-provisioned hives pick up the new OAuth client without a redeploy.
+    // Primary source: connector (fetched from SwarmHub bridge at boot).
+    // Fallback: static env var (legacy, will be removed).
     const exchangeClientId =
       opts.swarmhubConnector?.getOAuthClientId() ||
       opts.config.swarmhubOAuthClientId;

@@ -237,6 +237,7 @@ export class SwarmHubConnector extends EventEmitter {
     return this.hiveConfig?.oauth?.client_secret;
   }
 
+
   // ==========================================================================
   // Event Polling (tunnel mode)
   // ==========================================================================
@@ -442,6 +443,7 @@ export class SwarmHubConnector extends EventEmitter {
           this.setStatus('error');
           this.emit('error', { message: 'Health check failed' });
         }
+
       } catch (err) {
         this.state.lastError = (err as Error).message;
         if (this.state.status === 'connected') {

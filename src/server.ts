@@ -58,13 +58,18 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
     console.log('[openhive] Local auth mode — all requests auto-authenticated as "local"');
   } else if (config.auth.mode === 'swarmhub') {
     const swarmhubApiUrl = config.swarmhub.apiUrl || process.env.SWARMHUB_API_URL;
-    if (swarmhubApiUrl) {
+    // JWKS init is deferred until the connector fetches the client_id from
+    // SwarmHub's bridge config. If the legacy env var is still set, use it
+    // as an early hint so tokens can be validated before the connector connects.
+    if (swarmhubApiUrl && config.swarmhub.oauth.clientId) {
       const jwksUrl = config.swarmhub.oauth.jwksUrl || `${swarmhubApiUrl}/.well-known/jwks.json`;
       initJwks({
         jwksUrl,
         audience: config.swarmhub.oauth.clientId,
       });
-      console.log('[openhive] SwarmHub auth mode — JWKS initialized');
+      console.log('[openhive] SwarmHub auth mode — JWKS initialized (from env)');
+    } else if (swarmhubApiUrl) {
+      console.log('[openhive] SwarmHub auth mode — JWKS will initialize after connector fetches client_id');
     }
   }
 
@@ -431,15 +436,15 @@ export async function createHive(configInput?: Partial<Config> | string): Promis
           const identity = await swarmhubConnector.connect();
           console.log(`[openhive] SwarmHub connector: connected as "${identity.slug}" (${identity.tier})`);
 
-          // Re-initialize JWKS if the connector fetched an updated client_id
-          // (e.g. hive was re-provisioned and got a new OAuth client)
+          // Initialize (or re-initialize) JWKS with the client_id from the bridge.
+          // This is the primary source of truth — the env var is just an optional early hint.
           const dynamicClientId = swarmhubConnector.getOAuthClientId();
-          if (dynamicClientId && dynamicClientId !== config.swarmhub.oauth.clientId) {
+          if (dynamicClientId) {
             const swarmhubApiUrl = config.swarmhub.apiUrl || process.env.SWARMHUB_API_URL;
             if (swarmhubApiUrl) {
               const jwksUrl = config.swarmhub.oauth.jwksUrl || `${swarmhubApiUrl}/.well-known/jwks.json`;
               initJwks({ jwksUrl, audience: dynamicClientId });
-              console.log(`[openhive] JWKS re-initialized with updated client_id from SwarmHub`);
+              console.log(`[openhive] JWKS initialized with client_id from SwarmHub bridge`);
             }
           }
 

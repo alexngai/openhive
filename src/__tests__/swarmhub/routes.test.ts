@@ -472,3 +472,168 @@ describe('Auth routes — dynamic client_id from connector', () => {
     expect(tokenBody.client_secret).toBe('dynamic-secret');
   });
 });
+
+// ── Auth routes — no static config (connector-only, the new default) ──
+
+describe('Auth routes — connector-only (no static config)', () => {
+  let fastify: FastifyInstance;
+  let connector: SwarmHubConnector;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  // No swarmhubOAuthClientId or swarmhubOAuthClientSecret — simulates
+  // new hives where SWARMHUB_OAUTH_CLIENT_ID env var is no longer set.
+  const NO_STATIC_CONFIG = {
+    authMode: 'swarmhub' as const,
+    swarmhubApiUrl: 'https://api.swarmhub.test',
+  };
+
+  beforeEach(async () => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    connector = new SwarmHubConnector(CONNECTOR_CONFIG);
+
+    fastify = Fastify();
+    await fastify.register(authRoutes, {
+      config: NO_STATIC_CONFIG,
+      swarmhubConnector: connector,
+    });
+    await fastify.ready();
+  });
+
+  afterEach(async () => {
+    await connector.disconnect();
+    await fastify.close();
+    vi.restoreAllMocks();
+  });
+
+  it('GET /auth/mode returns connector client_id (no env var fallback needed)', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => MOCK_IDENTITY,
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        oauth: { client_id: 'bridge-client-id', client_secret: 'bridge-secret' },
+      }),
+    });
+    await connector.connect();
+
+    const res = await fastify.inject({
+      method: 'GET',
+      url: '/auth/mode',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.oauth.client_id).toBe('bridge-client-id');
+  });
+
+  it('GET /auth/mode returns undefined client_id when connector not connected and no env var', async () => {
+    // Connector not connected, no static config — client_id is undefined
+    const res = await fastify.inject({
+      method: 'GET',
+      url: '/auth/mode',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.mode).toBe('swarmhub');
+    expect(body.oauth.client_id).toBeUndefined();
+  });
+
+  it('POST /auth/swarmhub/exchange returns 500 when no secret available', async () => {
+    // Connector not connected, no static secret
+    const res = await fastify.inject({
+      method: 'POST',
+      url: '/auth/swarmhub/exchange',
+      payload: {
+        code: 'some-code',
+        redirect_uri: 'https://example.com/callback',
+      },
+    });
+
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.payload);
+    expect(body.error).toBe('Configuration Error');
+  });
+
+  it('POST /auth/swarmhub/exchange works with connector credentials only', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => MOCK_IDENTITY,
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        oauth: { client_id: 'bridge-client-id', client_secret: 'bridge-secret' },
+      }),
+    });
+    await connector.connect();
+    await connector.disconnect();
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        access_token: 'user-token',
+        token_type: 'bearer',
+      }),
+    });
+
+    const res = await fastify.inject({
+      method: 'POST',
+      url: '/auth/swarmhub/exchange',
+      payload: {
+        code: 'auth-code',
+        redirect_uri: 'https://example.com/callback',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.token).toBe('user-token');
+
+    // Verify bridge credentials were used
+    const tokenCall = fetchMock.mock.calls.find(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('/oauth/token')
+    );
+    const tokenBody = JSON.parse(tokenCall![1].body);
+    expect(tokenBody.client_id).toBe('bridge-client-id');
+    expect(tokenBody.client_secret).toBe('bridge-secret');
+  });
+
+  it('POST /auth/swarmhub/exchange returns 401 when SwarmHub rejects the code', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => MOCK_IDENTITY,
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        oauth: { client_id: 'bridge-client-id', client_secret: 'bridge-secret' },
+      }),
+    });
+    await connector.connect();
+    await connector.disconnect();
+
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: async () => 'invalid_grant',
+    });
+
+    const res = await fastify.inject({
+      method: 'POST',
+      url: '/auth/swarmhub/exchange',
+      payload: {
+        code: 'expired-code',
+        redirect_uri: 'https://example.com/callback',
+      },
+    });
+
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.payload);
+    expect(body.error).toBe('OAuth Error');
+  });
+});
