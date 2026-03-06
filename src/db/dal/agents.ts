@@ -111,7 +111,7 @@ export function findAgentByName(name: string): Agent | null {
 
 export async function findAgentByApiKey(apiKey: string): Promise<Agent | null> {
   const db = getDatabase();
-  const agents = db.prepare('SELECT * FROM agents').all() as Record<string, unknown>[];
+  const agents = db.prepare('SELECT * FROM agents WHERE api_key_hash IS NOT NULL').all() as Record<string, unknown>[];
 
   for (const row of agents) {
     const matches = await bcrypt.compare(apiKey, row.api_key_hash as string);
