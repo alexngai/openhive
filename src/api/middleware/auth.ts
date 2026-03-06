@@ -86,6 +86,7 @@ async function trySwarmHubAuth(token: string): Promise<Agent | null> {
     name: payload.name,
     email: payload.email,
     avatarUrl: payload.avatar_url,
+    role: payload.role,
   });
 }
 

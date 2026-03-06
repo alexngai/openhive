@@ -346,6 +346,7 @@ export interface SwarmHubUserInfo {
   name?: string;
   email?: string;
   avatarUrl?: string;
+  role?: 'owner' | 'admin' | 'member';
 }
 
 /**
@@ -361,7 +362,7 @@ export function findOrCreateSwarmHubAgent(info: SwarmHubUserInfo): Agent {
 
   if (existing) {
     const agent = rowToAgent(existing);
-    // Update name/avatar if changed on SwarmHub
+    // Update name/avatar/admin status if changed on SwarmHub
     const updates: string[] = [];
     const values: unknown[] = [];
 
@@ -372,6 +373,14 @@ export function findOrCreateSwarmHubAgent(info: SwarmHubUserInfo): Agent {
     if (info.avatarUrl && info.avatarUrl !== agent.avatar_url) {
       updates.push('avatar_url = ?');
       values.push(info.avatarUrl);
+    }
+    // Sync admin status from SwarmHub role on each login
+    if (info.role) {
+      const shouldBeAdmin = info.role === 'owner' || info.role === 'admin';
+      if (shouldBeAdmin !== agent.is_admin) {
+        updates.push('is_admin = ?');
+        values.push(shouldBeAdmin ? 1 : 0);
+      }
     }
 
     if (updates.length > 0) {
@@ -392,17 +401,21 @@ export function findOrCreateSwarmHubAgent(info: SwarmHubUserInfo): Agent {
     finalName = `${info.name || 'swarmhub'}-${nanoid(4)}`;
   }
 
+  // Grant admin to hive owners and org admins
+  const isAdmin = (info.role === 'owner' || info.role === 'admin') ? 1 : 0;
+
   db.prepare(`
     INSERT INTO agents (
       id, name, account_type, swarmhub_user_id,
-      email, avatar_url, is_verified, verification_status
-    ) VALUES (?, ?, 'swarmhub', ?, ?, ?, 1, 'verified')
+      email, avatar_url, is_verified, verification_status, is_admin
+    ) VALUES (?, ?, 'swarmhub', ?, ?, ?, 1, 'verified', ?)
   `).run(
     id,
     finalName,
     info.swarmhubUserId,
     info.email || null,
     info.avatarUrl || null,
+    isAdmin,
   );
 
   return findAgentById(id)!;

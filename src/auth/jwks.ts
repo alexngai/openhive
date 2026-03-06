@@ -5,6 +5,7 @@ export interface SwarmHubJwtPayload extends JWTPayload {
   email?: string;
   name?: string;
   avatar_url?: string;
+  role?: 'owner' | 'admin' | 'member';
 }
 
 export interface JwksConfig {
