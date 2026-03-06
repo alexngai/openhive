@@ -43,7 +43,7 @@ export async function authRoutes(
     return reply.send({
       mode: 'swarmhub',
       oauth: {
-        authorize_url: `${opts.config.swarmhubApiUrl}/oauth/authorize`,
+        authorize_url: `${opts.config.swarmhubApiUrl}/v1/oauth/authorize`,
         client_id: clientId,
       },
     });
@@ -84,7 +84,7 @@ export async function authRoutes(
 
     try {
       const tokenRes = await fetch(
-        `${opts.config.swarmhubApiUrl}/oauth/token`,
+        `${opts.config.swarmhubApiUrl}/v1/oauth/token`,
         {
           method: 'POST',
           headers: {
