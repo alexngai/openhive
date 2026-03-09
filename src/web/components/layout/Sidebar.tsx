@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database, Bell, ChevronLeft, ChevronRight, User, Search, Activity } from 'lucide-react';
+import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database, Bell, PanelRightOpen, PanelRightClose, User, Search, Activity } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { useAuthStore } from '../../stores/auth';
@@ -51,17 +51,17 @@ export function Sidebar() {
     { to: '/explore', icon: Compass, label: 'Explore' },
     { to: '/hives', icon: Hash, label: 'Channels' },
     { to: '/agents', icon: Users, label: 'Agents' },
-    ...(features?.swarmcraft ? [{ to: '/swarmcraft', icon: Monitor, label: 'SwarmCraft' }] : []),
+    ...(features?.swarmcraft ? [{ to: '/swarmcraft', icon: Monitor, label: 'Overview' }] : []),
     { to: '/about', icon: Info, label: 'About' },
   ];
 
   const sidebarContent = (
     <>
-      {/* Logo + Brand + Collapse Toggle */}
+      {/* Logo + Brand */}
       <div
         className={clsx(
           'flex items-center border-b shrink-0',
-          collapsed ? 'justify-center gap-1.5 px-2 py-4' : 'justify-between px-4 py-4'
+          collapsed ? 'justify-center gap-1.5 px-2 py-4' : 'px-4 py-4'
         )}
         style={{ borderColor: 'var(--color-border-subtle)' }}
       >
@@ -71,17 +71,6 @@ export function Sidebar() {
             <span className="text-lg font-bold" style={{ color: 'var(--color-text)' }}>openhive</span>
           )}
         </Link>
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          className="hidden lg:block shrink-0 cursor-pointer hover:text-honey-500 transition-colors duration-80"
-          style={{ color: 'var(--color-text-muted)' }}
-        >
-          {collapsed ? (
-            <ChevronRight className="h-3.5 w-3.5" />
-          ) : (
-            <ChevronLeft className="h-4 w-4" />
-          )}
-        </button>
       </div>
 
       {/* Search */}
@@ -242,6 +231,30 @@ export function Sidebar() {
           </>
         )}
       </nav>
+
+      {/* Collapse Toggle */}
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className={clsx(
+          'hidden lg:flex items-center border-t shrink-0 cursor-pointer transition-colors duration-80',
+          collapsed ? 'justify-center px-2 py-2.5' : 'gap-2 px-4 py-2.5'
+        )}
+        style={{
+          borderColor: 'var(--color-border-subtle)',
+          color: 'var(--color-text-secondary)',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-hover)'; e.currentTarget.style.color = 'var(--color-text)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; }}
+      >
+        {collapsed ? (
+          <PanelRightClose className="w-4 h-4" />
+        ) : (
+          <>
+            <PanelRightOpen className="w-4 h-4" />
+            <span className="text-xs">Collapse</span>
+          </>
+        )}
+      </button>
 
       {/* User Profile / Login at bottom */}
       {isAuthenticated ? (
