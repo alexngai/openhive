@@ -29,6 +29,7 @@ import {
   initMapSyncListener,
   stopMapSyncListener,
 } from "./map/sync-listener.js";
+import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { SwarmHubConnector } from "./swarmhub/connector.js";
 import { normalize, routeEvent } from "./events/index.js";
@@ -151,6 +152,11 @@ export async function createHive(
 
   // Setup WebSocket handlers
   setupWebSocket(fastify);
+
+  // Register MAP inbound WebSocket (/ws/map) for agents connecting to the hub
+  if (config.mapHub.enabled) {
+    setupMapWebSocket(fastify);
+  }
 
   // Register terminal WebSocket (native PTY for TUI tunneling)
   // Gated behind swarm hosting — terminal only makes sense when hosting swarms.
@@ -637,7 +643,9 @@ export async function createHive(
       if (swarmManager) {
         await swarmManager.shutdown();
       }
-      // Stop MAP sync listener
+      // Stop MAP inbound WebSocket connections
+      stopMapWebSocket();
+      // Stop MAP sync listener (outbound connections)
       stopMapSyncListener();
       // Stop sync service
       if (syncService) {

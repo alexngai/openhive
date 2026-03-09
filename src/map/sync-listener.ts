@@ -25,6 +25,7 @@ import type { MapSyncMessage, MapTransport } from './types.js';
 import { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE } from './types.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
 import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
+import { getInbound } from './connection-registry.js';
 
 interface SwarmConnection {
   swarmId: string;
@@ -49,7 +50,7 @@ const MAX_RECONNECT_ATTEMPTS = 20;
 // Message Handling
 // ============================================================================
 
-function isMapSyncMessage(data: unknown): data is MapSyncMessage {
+export function isMapSyncMessage(data: unknown): data is MapSyncMessage {
   if (!data || typeof data !== 'object') return false;
   const msg = data as Record<string, unknown>;
   if (msg.jsonrpc !== '2.0') return false;
@@ -190,15 +191,13 @@ function relaySyncMessage(msg: MapSyncMessage, sourceSwarmId: string): void {
   const targetSwarms = findSwarmsByOwnerAgentIds(subscriberAgentIds);
 
   // Send to each target swarm (skip the source)
-  const payload = JSON.stringify(msg);
+  // Uses sendToSwarm() for dual-transport delivery (inbound + outbound)
   let relayed = 0;
 
   for (const swarm of targetSwarms) {
     if (swarm.id === sourceSwarmId) continue;
 
-    const conn = connections.get(swarm.id);
-    if (conn?.ws?.readyState === WebSocket.OPEN) {
-      conn.ws.send(payload);
+    if (sendToSwarm(swarm.id, msg)) {
       relayed++;
     }
   }
@@ -213,6 +212,11 @@ function relaySyncMessage(msg: MapSyncMessage, sourceSwarmId: string): void {
 // ============================================================================
 
 function connectToSwarm(swarmId: string, name: string, endpoint: string, transport: MapTransport): void {
+  // Skip hub-inbound swarms — they connect to us, we don't connect out to them
+  if (endpoint === 'hub-inbound') {
+    return;
+  }
+
   // Only WebSocket transport is supported for now
   if (transport !== 'websocket') {
     console.log(`[map-sync] Skipping swarm ${name} — transport ${transport} not yet supported for sync listening`);
@@ -322,15 +326,37 @@ function disconnectFromSwarm(swarmId: string): void {
 
 /**
  * Send a JSON-RPC message to a specific swarm via its WebSocket connection.
+ * Checks inbound connections first (agent connected to us via /ws/map),
+ * then falls back to outbound connections (we connected to the swarm).
  * Returns true if the message was sent, false if the swarm is not connected.
  */
 export function sendToSwarm(swarmId: string, message: object): boolean {
-  const conn = connections.get(swarmId);
-  if (conn?.ws?.readyState === WebSocket.OPEN) {
-    conn.ws.send(JSON.stringify(message));
+  const payload = JSON.stringify(message);
+
+  // Try inbound connection first (agent connected to hub via /ws/map)
+  const inbound = getInbound(swarmId);
+  if (inbound?.ws.readyState === WebSocket.OPEN) {
+    inbound.ws.send(payload);
     return true;
   }
+
+  // Fall back to outbound connection (hub connected to swarm's endpoint)
+  const conn = connections.get(swarmId);
+  if (conn?.ws?.readyState === WebSocket.OPEN) {
+    conn.ws.send(payload);
+    return true;
+  }
+
   return false;
+}
+
+/**
+ * Check if there is an active outbound connection for a swarm.
+ * Used by ws-map to decide whether to mark a swarm offline on inbound disconnect.
+ */
+export function hasOutboundConnection(swarmId: string): boolean {
+  const conn = connections.get(swarmId);
+  return conn?.ws?.readyState === WebSocket.OPEN;
 }
 
 // ============================================================================
