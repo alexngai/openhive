@@ -21,16 +21,57 @@ const EVENT_CONFIG: Record<string, { icon: React.ElementType; format: (data: Rec
 
 const EVENT_TYPES = Object.keys(EVENT_CONFIG);
 
+function groupByDay(items: ActivityItem[]): { label: string; items: ActivityItem[] }[] {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  const groups: Map<string, ActivityItem[]> = new Map();
+
+  for (const item of items) {
+    const itemDate = new Date(item.timestamp);
+    itemDate.setHours(0, 0, 0, 0);
+
+    let label: string;
+    if (itemDate.getTime() === today.getTime()) {
+      label = 'TODAY';
+    } else if (itemDate.getTime() === yesterday.getTime()) {
+      label = 'YESTERDAY';
+    } else {
+      label = itemDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase();
+    }
+
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label)!.push(item);
+  }
+
+  return Array.from(groups.entries()).map(([label, items]) => ({ label, items }));
+}
+
 function ActivityRow({ item }: { item: ActivityItem }) {
   const config = EVENT_CONFIG[item.type];
   const Icon = config?.icon || Activity;
 
+  const time = new Date(item.timestamp).toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+
   return (
-    <div className="flex items-center gap-2 px-2 py-1.5 rounded-md">
-      <Icon className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
-      <span className="text-xs truncate flex-1">{item.message}</span>
+    <div className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-workspace-hover transition-colors group">
+      <div
+        className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
+        style={{ backgroundColor: 'var(--color-elevated)' }}
+      >
+        <Icon className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <span className="text-xs truncate block">{item.message}</span>
+      </div>
       <span className="text-2xs shrink-0" style={{ color: 'var(--color-text-muted)' }}>
-        <TimeAgo date={item.timestamp} />
+        {time}
       </span>
     </div>
   );
@@ -59,8 +100,6 @@ export function RecentActivity() {
     };
   }, [addActivity]);
 
-  // Register a listener for each event type
-  // We need individual useWSEvent calls since each needs its own stable callback
   const handlers = useMemo(() =>
     EVENT_TYPES.reduce((acc, event) => {
       acc[event] = handleEvent(event);
@@ -80,18 +119,31 @@ export function RecentActivity() {
   useWSEvent('resource_updated', handlers.resource_updated);
   useWSEvent('resource_created', handlers.resource_created);
 
+  const grouped = useMemo(() => groupByDay(activities.slice(0, 20)), [activities]);
+
   return (
-    <div className="card p-4">
-      <h2 className="text-xs font-semibold mb-3" style={{ color: 'var(--color-text-secondary)' }}>Recent Activity</h2>
+    <div className="card">
+      <div className="px-4 pt-4 pb-2">
+        <h2 className="text-sm font-semibold">Activity</h2>
+      </div>
 
       {activities.length === 0 ? (
-        <p className="text-xs text-center py-4" style={{ color: 'var(--color-text-muted)' }}>
+        <p className="text-xs text-center py-6 px-4" style={{ color: 'var(--color-text-muted)' }}>
           No recent activity. Events will appear here in real-time.
         </p>
       ) : (
-        <div className="space-y-0.5 max-h-64 overflow-y-auto">
-          {activities.slice(0, 20).map((item) => (
-            <ActivityRow key={item.id} item={item} />
+        <div className="px-1 pb-2 max-h-80 overflow-y-auto">
+          {grouped.map((group) => (
+            <div key={group.label}>
+              <div className="px-3 pt-3 pb-1">
+                <span className="text-2xs font-semibold tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
+                  {group.label}
+                </span>
+              </div>
+              {group.items.map((item) => (
+                <ActivityRow key={item.id} item={item} />
+              ))}
+            </div>
           ))}
         </div>
       )}

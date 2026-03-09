@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Cpu, Globe, ChevronRight } from 'lucide-react';
+import { Cpu, Globe, ArrowRight, ChevronRight } from 'lucide-react';
 import { useHostedSwarms, useMapSwarms } from '../../hooks/useApi';
 import { HostedStateBadge, MapStatusBadge } from '../swarm/StatusBadges';
 import type { HostedSwarm, MapSwarm } from '../../lib/api';
@@ -19,6 +19,17 @@ function getStatusKey(s: UnifiedSwarm): string {
   return s.source === 'hosted' ? s.state : s.status;
 }
 
+function SwarmInitial({ name }: { name: string }) {
+  return (
+    <div
+      className="w-7 h-7 rounded-md flex items-center justify-center shrink-0 text-2xs font-semibold uppercase"
+      style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+    >
+      {name.charAt(0)}
+    </div>
+  );
+}
+
 export function SwarmStatusSummary() {
   const { data: hostedSwarms } = useHostedSwarms();
   const { data: mapSwarms } = useMapSwarms();
@@ -31,59 +42,55 @@ export function SwarmStatusSummary() {
       source: 'map', id: s.id, name: s.name, status: s.status, agent_count: s.agent_count, created_at: s.created_at,
     })),
   ].sort((a, b) => (STATE_PRIORITY[getStatusKey(a)] ?? 9) - (STATE_PRIORITY[getStatusKey(b)] ?? 9))
-   .slice(0, 8);
+   .slice(0, 6);
 
   const total = (hostedSwarms?.length || 0) + (mapSwarms?.length || 0);
 
-  if (total === 0) {
-    return (
-      <div className="card p-4">
-        <h2 className="text-xs font-semibold mb-3" style={{ color: 'var(--color-text-secondary)' }}>Swarm Status</h2>
-        <p className="text-xs text-center py-4" style={{ color: 'var(--color-text-muted)' }}>No swarms connected</p>
-        <Link to="/swarms" className="text-2xs text-honey-500 hover:text-honey-400 transition-colors">
-          Connect a swarm
+  return (
+    <div className="card">
+      <div className="flex items-center justify-between px-4 pt-4 pb-3">
+        <h2 className="text-sm font-semibold">Swarms</h2>
+        <Link
+          to="/swarms"
+          className="w-7 h-7 rounded-md flex items-center justify-center transition-colors"
+          style={{ border: '1px solid var(--color-border)' }}
+        >
+          <ArrowRight className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
         </Link>
       </div>
-    );
-  }
 
-  return (
-    <div className="card p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-xs font-semibold" style={{ color: 'var(--color-text-secondary)' }}>Swarm Status</h2>
-        <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>{total} total</span>
-      </div>
-
-      <div className="space-y-1">
-        {unified.map((swarm) => (
-          <div
-            key={`${swarm.source}-${swarm.id}`}
-            className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-workspace-hover transition-colors"
-          >
-            {swarm.source === 'hosted' ? (
-              <Cpu className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
-            ) : (
-              <Globe className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
-            )}
-            <span className="text-xs truncate flex-1">{swarm.name}</span>
-            {swarm.source === 'hosted' ? (
-              <HostedStateBadge state={swarm.state} />
-            ) : (
-              <MapStatusBadge status={swarm.status} />
-            )}
-            <span className="text-2xs px-1 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
-              {swarm.source === 'hosted' ? 'hosted' : 'registered'}
-            </span>
-          </div>
-        ))}
-      </div>
-
-      <Link
-        to="/swarms"
-        className="flex items-center gap-1 mt-3 text-2xs text-honey-500 hover:text-honey-400 transition-colors"
-      >
-        View all swarms <ChevronRight className="w-3 h-3" />
-      </Link>
+      {total === 0 ? (
+        <div className="px-4 pb-4">
+          <p className="text-xs py-4 text-center" style={{ color: 'var(--color-text-muted)' }}>
+            No swarms connected
+          </p>
+          <Link to="/swarms" className="text-2xs text-honey-500 hover:text-honey-400 transition-colors">
+            Connect a swarm
+          </Link>
+        </div>
+      ) : (
+        <div className="pb-2">
+          {unified.map((swarm) => (
+            <Link
+              key={`${swarm.source}-${swarm.id}`}
+              to="/swarms"
+              className="flex items-center gap-3 px-4 py-2 hover:bg-workspace-hover transition-colors group"
+            >
+              <SwarmInitial name={swarm.name} />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-medium truncate">{swarm.name}</div>
+                <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+                  {swarm.source === 'hosted' ? 'hosted' : `${swarm.agent_count} agents`}
+                </div>
+              </div>
+              <ChevronRight
+                className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                style={{ color: 'var(--color-text-muted)' }}
+              />
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
