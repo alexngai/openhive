@@ -1,7 +1,8 @@
 # Design: Hive as Addressable MAP Entity
 
-> Status: Draft
+> Status: Implemented (Phases 1–4)
 > Date: 2026-03-07
+> Updated: 2026-03-13
 
 ## Problem Statement
 
@@ -181,11 +182,12 @@ Conversations:
 Both layers coexist in the same SQLite database. Agent-inbox uses prefixed tables (`inbox_*`) to avoid collisions. OpenHive passes its database handle to agent-inbox:
 
 ```typescript
-const inbox = await createAgentInbox({
-  config: { socketPath: "..." },
-  sqliteDb: getDatabase(),      // OpenHive's existing DB handle
-  sqlitePrefix: "inbox_",       // Namespace the tables
-});
+// inbox-bridge.ts uses individual components (not the factory) to avoid IPC overhead:
+const storage = new SqliteStorage({ db: getDatabase(), prefix: 'inbox_' });
+const events = new EventEmitter();
+const router = new MessageRouter(storage, events, 'default');
+const traceability = new TraceabilityLayer(storage, events);
+const jsonRpc = new MailJsonRpcServer(storage, router, events);
 ```
 
 No cross-writes between layers. The UI can query both to show a unified view if needed.
@@ -433,9 +435,11 @@ Agent-inbox queries OpenHive's existing tables (`map_nodes`, `map_swarm_hives`, 
 |-------|-------|---------|
 | `mail.turn.added` | Messaging | Turn recorded in conversation |
 | `mail.created` | Messaging | New conversation created |
-| `mail.participant.joined` | Messaging | Agent joins conversation |
+| `mail.participant.joined` | Messaging | Agent joins or is invited to conversation |
+| `mail.closed` | Messaging | Conversation closed |
 | `x-hive.post.created` | Channel | New post in hive feed |
 | `x-hive.comment.added` | Channel | New comment on post |
+| `x-hive.vote.cast` | Channel | Post or comment voted on |
 
 **`map/subscribe`** with filtering:
 ```json
@@ -766,3 +770,207 @@ Posts, comments, votes, memberships tables are **unchanged**. Agent-inbox create
 8. **Scope vs hive addressing** — Separate concepts. Scope broadcasts are observability (within a MAP system). Hive addressing is routing (through the hub). Agents use explicit `map/send` to `hive:<name>` for hive communication.
 
 9. **Rate limiting, summaries** — Deferred.
+
+---
+
+## Future Work (TODOs)
+
+### `map/connect` capability negotiation
+
+The current `map/connect` handler returns a static set of capabilities. The MAP spec allows clients to send `requestedCapabilities` in the request, and the server should return the intersection of what it supports and what the client requested. This would enable read-only agents or agents restricted to specific methods.
+
+**When**: When a client needs restricted capabilities or when the MAP SDK starts sending `requestedCapabilities`.
+
+**Where**: `src/map/ws-map.ts` — `handleMapConnect()`
+
+### `map/subscribe.ack` backpressure
+
+The MAP spec defines `map/subscribe.ack` for clients to acknowledge receipt of events up to a sequence number. The server can then apply backpressure (pause sending until the client catches up). Currently events are fire-and-forget.
+
+The subscription model already tracks `sequence` numbers per subscription, so adding ack support is straightforward: add a `lastAckedSequence` field to `MapSubscription`, add a handler for `map/subscribe.ack`, and optionally pause delivery when the gap exceeds a threshold.
+
+**When**: At scale with high-volume subscriptions where clients fall behind.
+
+**Where**: `src/map/event-subscriptions.ts` — add `handleMapSubscribeAck()`, modify `notifySubscribers()` to check ack gap.
+
+### Rate limiting and message summaries
+
+Rate limiting for `map/send` and `x-hive/*` methods. Message summaries for hive broadcasts (condensing multiple messages into a digest). Both deferred from the original design.
+
+---
+
+## Federation Peer Management API (Design)
+
+> Status: Designed, not yet implemented. Handlers are stubbed.
+
+### Problem
+
+Federation peers are currently configured statically in `openhive.config.js` and initialized at startup. There is no way to add or remove peers at runtime without restarting the server. This is sufficient for small, known clusters but blocks dynamic federation networks.
+
+### Design Goals
+
+1. **Runtime peer management** — add/remove/list peers without restart
+2. **Admin-only** — federation topology is infrastructure, not user-facing
+3. **Persistent** — peer additions survive restarts (stored in DB, merged with config)
+4. **Observable** — connection status, last sync time, queue depth visible via API
+5. **Graceful** — removing a peer drains its delivery queue before disconnecting
+
+### MAP WebSocket Methods
+
+These methods are available to admin-authenticated connections on `/ws/map`. Non-admin connections receive `-32003 Forbidden`.
+
+#### `map/federation/list-peers`
+
+List all federation peers and their connection status.
+
+```json
+// Request
+{ "method": "map/federation/list-peers", "id": 1, "params": {} }
+
+// Response
+{
+  "result": {
+    "peers": [
+      {
+        "systemId": "hive-west",
+        "url": "wss://west.example.com/ws/map",
+        "status": "connected",
+        "connectedSince": "2026-03-13T10:00:00Z",
+        "lastMessageAt": "2026-03-13T14:22:00Z",
+        "queueDepth": 0,
+        "source": "config"
+      },
+      {
+        "systemId": "hive-east",
+        "url": "wss://east.example.com/ws/map",
+        "status": "disconnected",
+        "lastMessageAt": "2026-03-12T08:00:00Z",
+        "queueDepth": 3,
+        "source": "runtime"
+      }
+    ]
+  }
+}
+```
+
+**Fields:**
+- `status` — `"connected"` | `"disconnected"` | `"connecting"` | `"error"`
+- `queueDepth` — number of messages waiting in the delivery queue for this peer
+- `source` — `"config"` (from openhive.config.js) | `"runtime"` (added via API)
+
+#### `map/federation/add-peer`
+
+Add a new federation peer at runtime. The peer is persisted in the database and takes effect immediately.
+
+```json
+// Request
+{
+  "method": "map/federation/add-peer",
+  "id": 2,
+  "params": {
+    "systemId": "hive-south",
+    "url": "wss://south.example.com/ws/map",
+    "auth": { "method": "bearer", "token": "fed_token_xyz" }
+  }
+}
+
+// Response
+{ "result": { "ok": true, "status": "connecting" } }
+
+// Error (duplicate)
+{ "error": { "code": -32009, "message": "Peer already exists: hive-south" } }
+```
+
+**Behavior:**
+1. Validate params (systemId, url required)
+2. Check for duplicate systemId
+3. Persist to `federation_peers` table (new table)
+4. Call `federation.federate(peer)` to initiate connection
+5. Return immediately — connection happens async
+
+#### `map/federation/remove-peer`
+
+Remove a federation peer. Optionally drain the delivery queue first.
+
+```json
+// Request
+{
+  "method": "map/federation/remove-peer",
+  "id": 3,
+  "params": {
+    "systemId": "hive-south",
+    "drain": true
+  }
+}
+
+// Response
+{ "result": { "ok": true, "drained": 0 } }
+
+// Error
+{ "error": { "code": -32001, "message": "Peer not found: hive-south" } }
+```
+
+**Behavior:**
+1. If `drain: true` (default), flush remaining queued messages before disconnecting
+2. Call `federation.disconnect(systemId)`
+3. Remove from `federation_peers` table
+4. Config-sourced peers can be removed at runtime but reappear on restart (warning returned)
+
+### REST API Equivalents
+
+For dashboard/admin tooling, the same operations are available via REST:
+
+| Method | Endpoint | Maps to |
+|--------|----------|---------|
+| GET | `/api/v1/admin/federation/peers` | `map/federation/list-peers` |
+| POST | `/api/v1/admin/federation/peers` | `map/federation/add-peer` |
+| DELETE | `/api/v1/admin/federation/peers/:systemId` | `map/federation/remove-peer` |
+
+All require `X-Admin-Key` header.
+
+### Database Schema
+
+New table for runtime-added peers (config peers are NOT stored here):
+
+```sql
+CREATE TABLE IF NOT EXISTS federation_peers (
+  system_id   TEXT PRIMARY KEY,
+  url         TEXT NOT NULL,
+  auth_method TEXT DEFAULT 'none',    -- 'bearer' | 'api-key' | 'none'
+  auth_token  TEXT,                    -- encrypted at rest
+  status      TEXT DEFAULT 'active',   -- 'active' | 'suspended'
+  added_at    TEXT NOT NULL,
+  added_by    TEXT,                    -- agent_id of admin who added
+  metadata    TEXT DEFAULT '{}'        -- JSON blob for future use
+);
+```
+
+On startup, `initInboxBridge()` merges config peers with DB peers. DB peers override config peers if `systemId` collides.
+
+### Event Notifications
+
+Federation state changes emit events to MAP subscribers:
+
+| Event | Data | When |
+|-------|------|------|
+| `federation.peer.connected` | `{ systemId, url }` | Peer connection established |
+| `federation.peer.disconnected` | `{ systemId, reason }` | Peer connection lost |
+| `federation.peer.added` | `{ systemId, url, source }` | New peer added |
+| `federation.peer.removed` | `{ systemId }` | Peer removed |
+
+These use the existing `map/subscribe` mechanism. Agents can subscribe to `federation.*` events to monitor topology changes.
+
+### Implementation Plan
+
+| Step | File | Change |
+|------|------|--------|
+| 1 | `src/db/schema.ts` | Add `federation_peers` table migration |
+| 2 | `src/db/dal/federation.ts` | CRUD for federation_peers |
+| 3 | `src/map/ws-map.ts` | Add `map/federation/*` method routing + admin check |
+| 4 | `src/map/inbox-bridge.ts` | Merge config + DB peers on init, expose `addPeer()`/`removePeer()` |
+| 5 | `src/api/routes/admin.ts` | REST endpoints for federation peer management |
+| 6 | `src/__tests__/map/federation.test.ts` | Tests for runtime peer management |
+
+### Stub Implementation
+
+The method routing is in place in `ws-map.ts` but handlers return `"Not yet implemented"`. This allows the MAP SDK to discover the methods via `map/connect` capabilities without breaking on unimplemented functionality.

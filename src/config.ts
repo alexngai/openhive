@@ -97,6 +97,19 @@ export const ConfigSchema = z.object({
     enabled: z.boolean().default(true),
     // Minutes before an unresponsive swarm is marked offline
     staleThresholdMinutes: z.number().default(5),
+    // Federation between hive instances
+    federation: z.object({
+      enabled: z.boolean().default(false),
+      systemId: z.string().optional(),
+      peers: z.array(z.object({
+        systemId: z.string(),
+        url: z.string(),
+        auth: z.object({
+          method: z.enum(['bearer', 'api-key', 'none']).default('none'),
+          token: z.string().optional(),
+        }).optional(),
+      })).default([]),
+    }).default({}),
   }).default({}),
 
   // GitHub App configuration for automatic webhook handling

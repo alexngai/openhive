@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import WebSocket from 'ws';
-import { initDatabase, closeDatabase } from '../../db/index.js';
+import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as mapDAL from '../../db/dal/map.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
@@ -30,6 +30,7 @@ import { isCoordinationMessage } from '../../coordination/listener.js';
 import { createSyncNotification } from '../../map/types.js';
 import type { MapSyncMessage } from '../../map/types.js';
 import { createHive } from '../../db/dal/hives.js';
+import { initInboxBridge, stopInboxBridge, getInboxStorage } from '../../map/inbox-bridge.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 // Mock broadcastToChannel — sync-listener imports it for WebSocket broadcasts
@@ -345,6 +346,253 @@ describe('MAP Inbound WebSocket', () => {
       const inboundPeer = peers.find((p) => p.swarm_id === swarm2Id);
       expect(inboundPeer).toBeDefined();
       expect(inboundPeer!.map_endpoint).toBe('hub-inbound');
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  // Phase 2: Direct addressing + agent registration
+  // ═══════════════════════════════════════════════════════════════
+
+  describe('Phase 2 — direct addressing and agent registration', () => {
+    let p2AgentId: string;
+    let p2Agent2Id: string;
+    let p2Swarm1Id: string;
+    let p2Swarm2Id: string;
+
+    beforeAll(async () => {
+      await initInboxBridge();
+
+      const { agent: a1 } = await agentsDAL.createAgent({
+        name: 'p2-agent-1',
+        description: 'Phase 2 Agent 1',
+      });
+      p2AgentId = a1.id;
+
+      const { agent: a2 } = await agentsDAL.createAgent({
+        name: 'p2-agent-2',
+        description: 'Phase 2 Agent 2',
+      });
+      p2Agent2Id = a2.id;
+
+      const s1 = mapDAL.createSwarm(p2AgentId, {
+        name: 'p2-swarm-1',
+        map_endpoint: 'hub-inbound',
+        map_transport: 'websocket',
+        auth_method: 'none',
+      });
+      p2Swarm1Id = s1.id;
+      mapDAL.updateSwarm(p2Swarm1Id, { status: 'online' });
+
+      const s2 = mapDAL.createSwarm(p2Agent2Id, {
+        name: 'p2-swarm-2',
+        map_endpoint: 'hub-inbound',
+        map_transport: 'websocket',
+        auth_method: 'none',
+      });
+      p2Swarm2Id = s2.id;
+      mapDAL.updateSwarm(p2Swarm2Id, { status: 'online' });
+
+      // Register inbound connections
+      registerInbound(p2Swarm1Id, {
+        ws: createMockWs(),
+        agentId: p2AgentId,
+        swarmId: p2Swarm1Id,
+        connectedAt: new Date().toISOString(),
+        lastMessageAt: new Date().toISOString(),
+      });
+      registerInbound(p2Swarm2Id, {
+        ws: createMockWs(),
+        agentId: p2Agent2Id,
+        swarmId: p2Swarm2Id,
+        connectedAt: new Date().toISOString(),
+        lastMessageAt: new Date().toISOString(),
+      });
+    });
+
+    afterAll(async () => {
+      unregisterInbound(p2Swarm1Id);
+      unregisterInbound(p2Swarm2Id);
+      await stopInboxBridge();
+    });
+
+    it('should resolve agent to swarm via ownership fallback', () => {
+      // p2AgentId owns p2Swarm1Id — resolveAgentSwarm uses listSwarms fallback
+      const { data: swarms } = mapDAL.listSwarms({ owner_agent_id: p2AgentId, status: 'online', limit: 1 });
+      expect(swarms.length).toBeGreaterThan(0);
+      expect(swarms[0].id).toBe(p2Swarm1Id);
+    });
+
+    it('should resolve agent to swarm via map_nodes when node is registered', () => {
+      // Register a node for p2Agent2 in p2Swarm1
+      const node = mapDAL.createNode({
+        swarm_id: p2Swarm1Id,
+        map_agent_id: 'custom-agent-id',
+        name: 'custom-node',
+        role: 'worker',
+        state: 'active',
+        capabilities: {},
+      });
+
+      // The node should be findable via direct SQL (matches resolveAgentSwarm logic)
+      const db = getDatabase();
+      const found = db.prepare(
+        "SELECT swarm_id FROM map_nodes WHERE map_agent_id = ? AND state = 'active' LIMIT 1"
+      ).get('custom-agent-id') as { swarm_id: string } | undefined;
+      expect(found).toBeDefined();
+      expect(found!.swarm_id).toBe(p2Swarm1Id);
+
+      // Cleanup
+      mapDAL.deleteNode(node.id);
+    });
+
+    it('should register agent in inbox on putAgent', () => {
+      const inboxStorage = getInboxStorage();
+
+      // Simulate what ws-map does on connect
+      inboxStorage.putAgent({
+        agent_id: p2AgentId,
+        scope: 'default',
+        status: 'active',
+        metadata: { swarm_id: p2Swarm1Id, name: 'p2-agent-1' },
+        registered_at: new Date().toISOString(),
+        last_active_at: new Date().toISOString(),
+      });
+
+      const agent = inboxStorage.getAgent(p2AgentId);
+      expect(agent).toBeDefined();
+      expect(agent!.status).toBe('active');
+      expect(agent!.metadata).toEqual(
+        expect.objectContaining({ swarm_id: p2Swarm1Id }),
+      );
+    });
+
+    it('should mark agent offline in inbox on disconnect', () => {
+      const inboxStorage = getInboxStorage();
+
+      // First register
+      inboxStorage.putAgent({
+        agent_id: p2Agent2Id,
+        scope: 'default',
+        status: 'active',
+        metadata: { swarm_id: p2Swarm2Id },
+        registered_at: new Date().toISOString(),
+        last_active_at: new Date().toISOString(),
+      });
+
+      // Simulate disconnect
+      const inboxAgent = inboxStorage.getAgent(p2Agent2Id);
+      expect(inboxAgent).toBeDefined();
+      inboxAgent!.status = 'offline';
+      inboxAgent!.last_active_at = new Date().toISOString();
+      inboxStorage.putAgent(inboxAgent!);
+
+      const updated = inboxStorage.getAgent(p2Agent2Id);
+      expect(updated!.status).toBe('offline');
+    });
+
+    it('should create and delete agent nodes via DAL', () => {
+      // Simulates map/agents/register
+      const node = mapDAL.createNode({
+        swarm_id: p2Swarm1Id,
+        map_agent_id: 'register-test-agent',
+        name: 'test-node',
+        role: 'worker',
+        state: 'active',
+        capabilities: { tools: ['search'] },
+      });
+
+      expect(node.id).toBeDefined();
+      expect(node.map_agent_id).toBe('register-test-agent');
+
+      const found = mapDAL.findNodeBySwarmAndAgentId(p2Swarm1Id, 'register-test-agent');
+      expect(found).toBeDefined();
+
+      // Simulates map/agents/unregister
+      mapDAL.deleteNode(node.id);
+      const deleted = mapDAL.findNodeBySwarmAndAgentId(p2Swarm1Id, 'register-test-agent');
+      expect(deleted).toBeFalsy();
+    });
+
+    it('should deliver direct message via inbox router and sendToSwarm', async () => {
+      const inboxStorage = getInboxStorage();
+      const { getInboxRouter } = await import('../../map/inbox-bridge.js');
+      const router = getInboxRouter();
+
+      // Register sender in inbox
+      inboxStorage.putAgent({
+        agent_id: p2Swarm1Id,
+        scope: 'default',
+        status: 'active',
+        metadata: {},
+        registered_at: new Date().toISOString(),
+        last_active_at: new Date().toISOString(),
+      });
+
+      // Route a direct message (simulates handleDirectSend)
+      const message = await router.routeMessage({
+        from: p2Swarm1Id,
+        to: p2Swarm2Id,
+        payload: 'Direct message test',
+      });
+
+      expect(message.id).toBeDefined();
+      expect(message.sender_id).toBe(p2Swarm1Id);
+
+      // Verify stored
+      const stored = inboxStorage.getMessage(message.id);
+      expect(stored).toBeDefined();
+      expect(stored!.content).toEqual({ type: 'text', text: 'Direct message test' });
+
+      // Verify delivery via sendToSwarm
+      const conn = getInbound(p2Swarm2Id);
+      const sendSpy = conn?.ws.send as ReturnType<typeof vi.fn>;
+      const sent = sendToSwarm(p2Swarm2Id, {
+        jsonrpc: '2.0',
+        method: 'map/send',
+        params: {
+          from: { type: 'agent', id: p2Swarm1Id },
+          to: { type: 'agent', id: p2Swarm2Id },
+          payload: 'Direct message test',
+          messageId: message.id,
+        },
+      });
+      expect(sent).toBe(true);
+      expect(sendSpy).toHaveBeenCalled();
+    });
+
+    it('should list agents via discoverNodes', () => {
+      const node = mapDAL.createNode({
+        swarm_id: p2Swarm1Id,
+        map_agent_id: 'listable-agent',
+        name: 'listable',
+        role: 'worker',
+        state: 'active',
+        capabilities: {},
+      });
+
+      const { data } = mapDAL.discoverNodes({ swarm_id: p2Swarm1Id, state: 'active' });
+      expect(data.length).toBeGreaterThanOrEqual(1);
+      expect(data.some(n => n.map_agent_id === 'listable-agent')).toBe(true);
+
+      mapDAL.deleteNode(node.id);
+    });
+
+    it('should filter agents by map_agent_id', () => {
+      const node = mapDAL.createNode({
+        swarm_id: p2Swarm1Id,
+        map_agent_id: 'findable-agent',
+        name: 'findable',
+        role: 'worker',
+        state: 'active',
+        capabilities: {},
+      });
+
+      const { data } = mapDAL.discoverNodes({ map_agent_id: 'findable-agent', state: 'active', limit: 1 });
+      expect(data).toHaveLength(1);
+      expect(data[0].map_agent_id).toBe('findable-agent');
+      expect(data[0].swarm_id).toBe(p2Swarm1Id);
+
+      mapDAL.deleteNode(node.id);
     });
   });
 });

@@ -335,6 +335,11 @@ export function discoverNodes(options: DiscoverNodesOptions): {
     params.push(options.swarm_id);
   }
 
+  if (options.map_agent_id) {
+    where.push('n.map_agent_id = ?');
+    params.push(options.map_agent_id);
+  }
+
   if (options.role) {
     where.push('n.role = ?');
     params.push(options.role);

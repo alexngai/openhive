@@ -30,6 +30,7 @@ import {
   stopMapSyncListener,
 } from "./map/sync-listener.js";
 import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
+import { initInboxBridge, stopInboxBridge } from "./map/inbox-bridge.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { SwarmHubConnector } from "./swarmhub/connector.js";
 import { normalize, routeEvent } from "./events/index.js";
@@ -156,6 +157,9 @@ export async function createHive(
   // Register MAP inbound WebSocket (/ws/map) for agents connecting to the hub
   if (config.mapHub.enabled) {
     setupMapWebSocket(fastify);
+    await initInboxBridge({
+      federation: config.mapHub.federation,
+    });
   }
 
   // Register terminal WebSocket (native PTY for TUI tunneling)
@@ -643,6 +647,8 @@ export async function createHive(
       if (swarmManager) {
         await swarmManager.shutdown();
       }
+      // Stop inbox bridge (agent-inbox in router mode)
+      await stopInboxBridge();
       // Stop MAP inbound WebSocket connections
       stopMapWebSocket();
       // Stop MAP sync listener (outbound connections)

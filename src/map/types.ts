@@ -201,6 +201,7 @@ export interface UpdateNodeInput {
 export interface DiscoverNodesOptions {
   hive_id?: string;
   swarm_id?: string;
+  map_agent_id?: string;
   role?: string;
   state?: MapNodeState;
   tags?: string[];

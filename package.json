@@ -69,6 +69,7 @@
     "@tailwindcss/postcss": "^4.1.18",
     "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-query": "^5.90.20",
+    "agent-inbox": "^0.1.7",
     "bcrypt": "^5.1.1",
     "better-sqlite3": "^12.6.2",
     "clsx": "^2.1.1",
