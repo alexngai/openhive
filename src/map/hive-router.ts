@@ -66,12 +66,14 @@ export async function routeHiveMessage(
 
   // Build recipient list (all member swarms except sender)
   const targetSwarms = memberSwarms.filter((s) => s.id !== sourceSwarmId);
-  const allMemberIds = memberSwarms.map((s) => s.id);
+  // Use agent IDs for inbox storage so getInbox(agentId) works correctly.
+  // Fall back to swarm ID if owner_agent_id is not set.
+  const allMemberAgentIds = memberSwarms.map((s) => s.owner_agent_id ?? s.id);
 
   // Store message via inbox router
   const message = await getInboxRouter().routeMessage({
     from: sourceSwarmId,
-    to: allMemberIds,
+    to: allMemberAgentIds,
     payload: params.payload,
     scope: hiveName,
     subject: (params.subject as string) ?? undefined,

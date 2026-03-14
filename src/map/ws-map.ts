@@ -17,8 +17,8 @@ import { validateIngestKey } from '../db/dal/ingest-keys.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
 import {
   listSwarms, createSwarm, heartbeatSwarm, updateSwarm,
-  createNode, deleteNode, findNodeBySwarmAndAgentId,
-  discoverNodes,
+  createNode, deleteNode, findNodeBySwarmAndAgentId, updateNode,
+  discoverNodes, findSwarmById,
 } from '../db/dal/map.js';
 import { handleSyncMessage, hasOutboundConnection, sendToSwarm } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
@@ -128,6 +128,58 @@ function sendJsonRpcResult(ws: WebSocket, id: string | number | null | undefined
 }
 
 // ============================================================================
+// Message Processing
+// ============================================================================
+
+async function processMessage(ws: WebSocket, data: unknown, swarmId: string): Promise<void> {
+  try {
+    const parsed = JSON.parse((data as Buffer).toString());
+
+    if (isMapSyncMessage(parsed)) {
+      handleSyncMessage(parsed, swarmId);
+    } else if (isCoordinationMessage(parsed)) {
+      handleCoordinationMessage(parsed, swarmId);
+    } else if (parsed.method === 'ping') {
+      sendJsonRpc(ws, 'pong', {});
+    } else if (parsed.method === 'map/connect') {
+      handleMapConnect(ws, parsed);
+    } else if (parsed.method === 'map/send') {
+      await handleMapSend(ws, parsed, swarmId);
+    } else if (parsed.method === 'map/agents/register') {
+      handleAgentRegister(ws, parsed, swarmId);
+    } else if (parsed.method === 'map/agents/spawn') {
+      handleAgentSpawn(ws, parsed, swarmId);
+    } else if (parsed.method === 'map/agents/update') {
+      handleAgentUpdate(ws, parsed, swarmId);
+    } else if (parsed.method === 'map/agents/list') {
+      handleAgentList(ws, parsed, swarmId);
+    } else if (parsed.method === 'map/agents/unregister') {
+      handleAgentUnregister(ws, parsed, swarmId);
+    } else if (parsed.method === 'map/subscribe') {
+      handleMapSubscribe(ws, parsed, swarmId);
+    } else if (parsed.method === 'map/unsubscribe') {
+      handleMapUnsubscribe(ws, parsed, swarmId);
+    } else if (parsed.method?.startsWith('map/federation/')) {
+      handleFederationMethod(ws, parsed, swarmId);
+    } else if (parsed.method?.startsWith('x-hive/')) {
+      handleXHiveMethod(ws, parsed, swarmId);
+    } else if (parsed.method?.startsWith('mail/')) {
+      handleMailMethod(ws, parsed);
+    }
+    // Unknown methods silently ignored (JSON-RPC 2.0 semantics)
+
+    // Update heartbeat on any valid message
+    const conn = getAllInbound().get(swarmId);
+    if (conn) {
+      conn.lastMessageAt = new Date().toISOString();
+    }
+    heartbeatSwarm(swarmId);
+  } catch {
+    // Ignore non-JSON messages
+  }
+}
+
+// ============================================================================
 // WebSocket Handler
 // ============================================================================
 
@@ -136,7 +188,56 @@ export function setupMapWebSocket(fastify: FastifyInstance): void {
     const ws = socket as unknown as WebSocket;
     const query = request.query as { token?: string; swarm_id?: string; auto_register?: string };
 
-    // Authenticate
+    // Buffer messages arriving during async auth to avoid race condition:
+    // The client can send messages as soon as the WebSocket opens, but
+    // we need to authenticate before we can process them.
+    const pendingMessages: Buffer[] = [];
+    let ready = false;
+    let swarmId: string | undefined;
+    let agentId: string | undefined;
+
+    // Register message/close/error handlers synchronously BEFORE any await
+    // to prevent losing messages sent during async authentication
+    ws.on('message', (data) => {
+      if (!ready) {
+        pendingMessages.push(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
+        return;
+      }
+      processMessage(ws, data, swarmId!);
+    });
+
+    ws.on('close', () => {
+      if (swarmId) {
+        unregisterInbound(swarmId);
+        cleanupSubscriptions(swarmId);
+        console.log(`[ws-map] Swarm ${swarmId} disconnected`);
+
+        // Mark agent offline in inbox
+        if (agentId) {
+          try {
+            const inboxStorage = getInboxStorage();
+            const inboxAgent = inboxStorage.getAgent(agentId);
+            if (inboxAgent) {
+              inboxAgent.status = 'offline';
+              inboxAgent.last_active_at = new Date().toISOString();
+              inboxStorage.putAgent(inboxAgent);
+            }
+          } catch { /* non-fatal */ }
+        }
+
+        // Mark swarm offline if no outbound connection exists either
+        if (!hasOutboundConnection(swarmId)) {
+          updateSwarm(swarmId, { status: 'offline' });
+        }
+      }
+    });
+
+    ws.on('error', (err) => {
+      console.warn(`[ws-map] WebSocket error for swarm ${swarmId}: ${err.message}`);
+    });
+
+    // --- Async authentication starts here ---
+
     if (!query.token) {
       sendJsonRpcError(ws, -32000, 'Missing token query parameter');
       ws.close(4001, 'Unauthorized');
@@ -150,8 +251,10 @@ export function setupMapWebSocket(fastify: FastifyInstance): void {
       return;
     }
 
+    agentId = agent.id;
+
     // Resolve swarm
-    let swarmId = resolveSwarm(agent.id, query.swarm_id);
+    swarmId = resolveSwarm(agent.id, query.swarm_id);
 
     if (!swarmId && query.auto_register === 'true') {
       swarmId = autoRegisterSwarm(agent.id, agent.name);
@@ -220,78 +323,12 @@ export function setupMapWebSocket(fastify: FastifyInstance): void {
 
     console.log(`[ws-map] Swarm ${swarmId} connected inbound (agent: ${agent.name})`);
 
-    // Handle messages
-    ws.on('message', (data) => {
-      try {
-        const parsed = JSON.parse(data.toString());
-
-        if (isMapSyncMessage(parsed)) {
-          handleSyncMessage(parsed, swarmId!);
-        } else if (isCoordinationMessage(parsed)) {
-          handleCoordinationMessage(parsed, swarmId!);
-        } else if (parsed.method === 'ping') {
-          sendJsonRpc(ws, 'pong', {});
-        } else if (parsed.method === 'map/connect') {
-          handleMapConnect(ws, parsed);
-        } else if (parsed.method === 'map/send') {
-          handleMapSend(ws, parsed, swarmId!);
-        } else if (parsed.method === 'map/agents/register') {
-          handleAgentRegister(ws, parsed, swarmId!);
-        } else if (parsed.method === 'map/agents/list') {
-          handleAgentList(ws, parsed, swarmId!);
-        } else if (parsed.method === 'map/agents/unregister') {
-          handleAgentUnregister(ws, parsed, swarmId!);
-        } else if (parsed.method === 'map/subscribe') {
-          handleMapSubscribe(ws, parsed, swarmId!);
-        } else if (parsed.method === 'map/unsubscribe') {
-          handleMapUnsubscribe(ws, parsed, swarmId!);
-        } else if (parsed.method?.startsWith('map/federation/')) {
-          handleFederationMethod(ws, parsed, swarmId!);
-        } else if (parsed.method?.startsWith('x-hive/')) {
-          handleXHiveMethod(ws, parsed, swarmId!);
-        } else if (parsed.method?.startsWith('mail/')) {
-          handleMailMethod(ws, parsed);
-        }
-        // Unknown methods silently ignored (JSON-RPC 2.0 semantics)
-
-        // Update heartbeat on any valid message
-        const conn = getAllInbound().get(swarmId!);
-        if (conn) {
-          conn.lastMessageAt = new Date().toISOString();
-        }
-        heartbeatSwarm(swarmId!);
-      } catch {
-        // Ignore non-JSON messages
-      }
-    });
-
-    // Handle close
-    ws.on('close', () => {
-      unregisterInbound(swarmId!);
-      cleanupSubscriptions(swarmId!);
-      console.log(`[ws-map] Swarm ${swarmId} disconnected`);
-
-      // Mark agent offline in inbox
-      try {
-        const inboxStorage = getInboxStorage();
-        const inboxAgent = inboxStorage.getAgent(agent.id);
-        if (inboxAgent) {
-          inboxAgent.status = 'offline';
-          inboxAgent.last_active_at = new Date().toISOString();
-          inboxStorage.putAgent(inboxAgent);
-        }
-      } catch { /* non-fatal */ }
-
-      // Mark swarm offline if no outbound connection exists either
-      if (!hasOutboundConnection(swarmId!)) {
-        updateSwarm(swarmId!, { status: 'offline' });
-      }
-    });
-
-    // Handle errors
-    ws.on('error', (err) => {
-      console.warn(`[ws-map] WebSocket error for swarm ${swarmId}: ${err.message}`);
-    });
+    // Mark ready and drain any messages that arrived during auth
+    ready = true;
+    for (const buffered of pendingMessages) {
+      processMessage(ws, buffered, swarmId);
+    }
+    pendingMessages.length = 0;
   });
 
   // Start heartbeat
@@ -308,8 +345,10 @@ function handleMapConnect(
   ws: WebSocket,
   msg: { id?: string | number | null; params?: Record<string, unknown> },
 ): void {
+  const participantId = (msg.params?.participantId as string) ?? '';
   sendJsonRpcResult(ws, msg.id, {
     protocolVersion: '2025-01-01',
+    sessionId: `session-${participantId || 'anon'}-${Date.now()}`,
     serverId: 'openhive-hub',
     capabilities: {
       mail: { enabled: true, canCreate: true, canJoin: true, canViewHistory: true },
@@ -325,7 +364,15 @@ async function handleMapSend(
   msg: { id?: string | number | null; params?: Record<string, unknown> },
   sourceSwarmId: string,
 ): Promise<void> {
-  const toId = (msg.params?.to as { id?: string })?.id;
+  const to = msg.params?.to as { id?: string; scope?: string } | undefined;
+  const toId = to?.id;
+
+  // Support scope-based addressing (broadcast to all members of a scope)
+  if (!toId && to?.scope) {
+    // Scope-based sends are fire-and-forget broadcasts; ack without delivery tracking
+    sendJsonRpcResult(ws, msg.id, { ok: true, broadcast: true, scope: to.scope });
+    return;
+  }
 
   if (!toId) {
     sendJsonRpcError(ws, -32602, 'Missing to.id in map/send params', msg.id);
@@ -360,9 +407,18 @@ async function handleDirectSend(
   sourceSwarmId: string,
   targetSwarmId: string,
 ): Promise<void> {
+  // Resolve target agent ID for proper inbox storage (getInbox queries by agent ID).
+  // Try inbound connection first, then fall back to DB lookup.
+  const targetConn = getAllInbound().get(targetSwarmId);
+  let targetAgentId = targetConn?.agentId;
+  if (!targetAgentId) {
+    const swarm = findSwarmById(targetSwarmId);
+    targetAgentId = swarm?.owner_agent_id ?? targetSwarmId;
+  }
+
   const message = await getInboxRouter().routeMessage({
     from: sourceSwarmId,
-    to: targetSwarmId,
+    to: targetAgentId,
     payload: msg.params?.payload,
     subject: (msg.params?.subject as string) ?? undefined,
   });
@@ -400,10 +456,15 @@ function handleAgentRegister(
   swarmId: string,
 ): void {
   try {
+    // SDK may not provide agentId — generate one from name or use a random ID
+    const explicitId = (msg.params?.agentId as string) ?? (msg.params?.agent_id as string);
+    const name = (msg.params?.name as string) ?? 'unnamed';
+    const agentId = explicitId || `${name}-${swarmId.slice(-8)}`;
+
     const node = createNode({
       swarm_id: swarmId,
-      map_agent_id: (msg.params?.agentId as string) ?? (msg.params?.agent_id as string),
-      name: (msg.params?.name as string) ?? 'unnamed',
+      map_agent_id: agentId,
+      name,
       role: (msg.params?.role as string) ?? 'worker',
       state: 'active',
       capabilities: (msg.params?.capabilities as Record<string, unknown>) ?? {},
@@ -422,9 +483,79 @@ function handleAgentRegister(
       });
     } catch { /* non-fatal */ }
 
-    sendJsonRpcResult(ws, msg.id, { nodeId: node.id, agentId: node.map_agent_id });
+    sendJsonRpcResult(ws, msg.id, {
+      agent: { id: node.map_agent_id, state: node.state, name: node.name, role: node.role },
+      nodeId: node.id,
+    });
   } catch (err) {
     sendJsonRpcError(ws, -32603, `Failed to register agent: ${err instanceof Error ? err.message : err}`, msg.id);
+  }
+}
+
+function handleAgentSpawn(
+  ws: WebSocket,
+  msg: { id?: string | number | null; params?: Record<string, unknown> },
+  swarmId: string,
+): void {
+  try {
+    const agentId = (msg.params?.agentId as string) ?? (msg.params?.agent_id as string);
+    const node = createNode({
+      swarm_id: swarmId,
+      map_agent_id: agentId,
+      name: (msg.params?.name as string) ?? 'spawned',
+      role: (msg.params?.role as string) ?? 'agent',
+      state: 'active',
+      capabilities: (msg.params?.capabilities as Record<string, unknown>) ?? {},
+    });
+
+    // Register in inbox for discoverability
+    try {
+      const inboxStorage = getInboxStorage();
+      inboxStorage.putAgent({
+        agent_id: node.map_agent_id,
+        scope: 'default',
+        status: 'active',
+        metadata: { swarm_id: swarmId, node_id: node.id, spawned: true },
+        registered_at: new Date().toISOString(),
+        last_active_at: new Date().toISOString(),
+      });
+    } catch { /* non-fatal */ }
+
+    // Return format matching MAP SDK expectations
+    sendJsonRpcResult(ws, msg.id, {
+      agent: { id: node.map_agent_id, state: 'active', name: node.name, role: node.role },
+    });
+  } catch (err) {
+    sendJsonRpcError(ws, -32603, `Failed to spawn agent: ${err instanceof Error ? err.message : err}`, msg.id);
+  }
+}
+
+function handleAgentUpdate(
+  ws: WebSocket,
+  msg: { id?: string | number | null; params?: Record<string, unknown> },
+  swarmId: string,
+): void {
+  try {
+    const agentId = (msg.params?.agentId as string) ?? (msg.params?.agent_id as string);
+    const node = findNodeBySwarmAndAgentId(swarmId, agentId);
+    if (!node) {
+      sendJsonRpcError(ws, -32001, `Agent not found: ${agentId}`, msg.id);
+      return;
+    }
+
+    const newState = (msg.params?.state as string) ?? node.state;
+    updateNode(node.id, {
+      state: newState as import('../map/types.js').MapNodeState | undefined,
+      capabilities: msg.params?.metadata
+        ? { ...(typeof node.capabilities === 'object' ? node.capabilities : {}), ...(msg.params.metadata as Record<string, unknown>) }
+        : undefined,
+    });
+
+    sendJsonRpcResult(ws, msg.id, {
+      agent: { id: node.map_agent_id, state: newState, name: node.name, role: node.role },
+    });
+  } catch (err) {
+    sendJsonRpcError(ws, -32603, `Failed to update agent: ${err instanceof Error ? err.message : err}`, msg.id);
   }
 }
 
