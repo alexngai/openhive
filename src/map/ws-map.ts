@@ -20,6 +20,10 @@ import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
 import { registerInbound, unregisterInbound, getAllInbound } from './connection-registry.js';
+import { MAP_TASK_METHOD_SET } from './task-types.js';
+import { handleTaskRequest, MAPTaskRequestError, storeErrorToJsonRpc } from './task-handler.js';
+import { getMapTaskStore, MAPTaskStoreError } from './task-store.js';
+import { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
 import type { Agent } from '../types.js';
 
 const HEARTBEAT_INTERVAL = 30_000;
@@ -99,14 +103,29 @@ function sendJsonRpc(ws: WebSocket, method: string, params: Record<string, unkno
   }
 }
 
-function sendJsonRpcError(ws: WebSocket, code: number, message: string): void {
+function sendJsonRpcError(ws: WebSocket, code: number, message: string, id?: string | number | null): void {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
       jsonrpc: '2.0',
-      id: null,
+      id: id ?? null,
       error: { code, message },
     }));
   }
+}
+
+function sendJsonRpcResponse(ws: WebSocket, id: string | number, result: unknown): void {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      result,
+    }));
+  }
+}
+
+/** Type guard: is this a JSON-RPC request (has id + method)? */
+function isJsonRpcRequest(data: Record<string, unknown>): boolean {
+  return data.jsonrpc === '2.0' && typeof data.method === 'string' && data.id != null;
 }
 
 // ============================================================================
@@ -173,7 +192,27 @@ export function setupMapWebSocket(fastify: FastifyInstance): void {
       try {
         const parsed = JSON.parse(data.toString());
 
-        if (isMapSyncMessage(parsed)) {
+        if (isJsonRpcRequest(parsed) && MAP_TASK_METHOD_SET.has(parsed.method as string)) {
+          // MAP task request (needs a response)
+          try {
+            const result = handleTaskRequest(
+              parsed.method as string,
+              parsed.params,
+              { swarmId: swarmId!, agentId: agent.id },
+              getMapTaskStore(),
+            );
+            sendJsonRpcResponse(ws, parsed.id as string | number, result);
+          } catch (err) {
+            if (err instanceof MAPTaskRequestError) {
+              sendJsonRpcError(ws, err.code, err.message, parsed.id as string | number);
+            } else if (err instanceof MAPTaskStoreError) {
+              const rpcErr = storeErrorToJsonRpc(err);
+              sendJsonRpcError(ws, rpcErr.code, rpcErr.message, parsed.id as string | number);
+            } else {
+              sendJsonRpcError(ws, -32603, 'Internal error', parsed.id as string | number);
+            }
+          }
+        } else if (isMapSyncMessage(parsed)) {
           handleSyncMessage(parsed, swarmId!);
         } else if (isCoordinationMessage(parsed)) {
           handleCoordinationMessage(parsed, swarmId!);
@@ -196,6 +235,10 @@ export function setupMapWebSocket(fastify: FastifyInstance): void {
     // Handle close
     ws.on('close', () => {
       unregisterInbound(swarmId!);
+
+      // Clean up MAP tasks owned by this swarm
+      getMapTaskStore().removeBySwarm(swarmId!);
+
       console.log(`[ws-map] Swarm ${swarmId} disconnected`);
 
       // Mark swarm offline if no outbound connection exists either
@@ -210,8 +253,9 @@ export function setupMapWebSocket(fastify: FastifyInstance): void {
     });
   });
 
-  // Start heartbeat
+  // Start heartbeat and task broadcaster
   startMapHeartbeat();
+  initTaskBroadcaster(getMapTaskStore());
 
   console.log('[openhive] MAP WebSocket registered at /ws/map');
 }
@@ -245,6 +289,8 @@ function startMapHeartbeat(): void {
 // ============================================================================
 
 export function stopMapWebSocket(): void {
+  stopTaskBroadcaster();
+
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;

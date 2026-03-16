@@ -180,7 +180,12 @@ export type WSEventType =
   | 'task_assigned'
   | 'task_status_updated'
   | 'context_shared'
-  | 'swarm_message_received';
+  | 'swarm_message_received'
+  // MAP task events (from connected agents)
+  | 'task.created'
+  | 'task.assigned'
+  | 'task.status'
+  | 'task.completed';
 
 export interface WSEvent {
   type: WSEventType;

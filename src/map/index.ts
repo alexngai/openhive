@@ -74,3 +74,24 @@ export type {
 } from './types.js';
 
 export { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE, createSyncNotification } from './types.js';
+
+// MAP Task Hub
+export { MAPTaskStore, getMapTaskStore, resetMapTaskStore, MAPTaskStoreError } from './task-store.js';
+export { handleTaskRequest, MAPTaskRequestError, storeErrorToJsonRpc } from './task-handler.js';
+export { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
+export { MAP_TASK_METHODS, MAP_TASK_METHOD_SET } from './task-types.js';
+export type {
+  MAPTask,
+  MAPTaskStatus,
+  MAPTaskEvent,
+  MAPTaskEventType,
+  MAPTaskMethod,
+  TasksCreateParams,
+  TasksAssignParams,
+  TasksUpdateParams,
+  TasksListParams,
+  TasksCreateResult,
+  TasksAssignResult,
+  TasksUpdateResult,
+  TasksListResult,
+} from './task-types.js';
