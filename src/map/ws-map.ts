@@ -24,6 +24,8 @@ import { MAP_TASK_METHOD_SET } from './task-types.js';
 import { handleTaskRequest, MAPTaskRequestError, storeErrorToJsonRpc } from './task-handler.js';
 import { getMapTaskStore, MAPTaskStoreError } from './task-store.js';
 import { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
+import { MAP_OPENTASKS_METHOD_SET } from './opentasks-types.js';
+import { handleOpenTasksRequest, OpenTasksRequestError } from './opentasks-handler.js';
 import type { Agent } from '../types.js';
 
 const HEARTBEAT_INTERVAL = 30_000;
@@ -212,6 +214,21 @@ export function setupMapWebSocket(fastify: FastifyInstance): void {
               sendJsonRpcError(ws, -32603, 'Internal error', parsed.id as string | number);
             }
           }
+        } else if (isJsonRpcRequest(parsed) && MAP_OPENTASKS_METHOD_SET.has(parsed.method as string)) {
+          // MAP OpenTasks request (async — proxies to local OpenTasks daemon)
+          handleOpenTasksRequest(
+            parsed.method as string,
+            parsed.params,
+            { swarmId: swarmId!, agentId: agent.id },
+          ).then((result) => {
+            sendJsonRpcResponse(ws, parsed.id as string | number, result);
+          }).catch((err) => {
+            if (err instanceof OpenTasksRequestError) {
+              sendJsonRpcError(ws, err.code, err.message, parsed.id as string | number);
+            } else {
+              sendJsonRpcError(ws, -32603, 'Internal error', parsed.id as string | number);
+            }
+          });
         } else if (isMapSyncMessage(parsed)) {
           handleSyncMessage(parsed, swarmId!);
         } else if (isCoordinationMessage(parsed)) {

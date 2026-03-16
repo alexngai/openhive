@@ -1,0 +1,319 @@
+/**
+ * Tests for MAP OpenTasks request handler:
+ * - Dispatches map/opentasks/* methods to OpenHiveOpenTasksClient
+ * - Validates required params (resource_id)
+ * - Validates resource access and type
+ * - Returns correct result shapes
+ * - Handles errors properly
+ */
+
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
+import { handleOpenTasksRequest, OpenTasksRequestError } from '../../map/opentasks-handler.js';
+import { MAP_OPENTASKS_METHODS } from '../../map/opentasks-types.js';
+import { initDatabase, closeDatabase } from '../../db/index.js';
+import * as agentsDAL from '../../db/dal/agents.js';
+import * as resourcesDAL from '../../db/dal/syncable-resources.js';
+import { testRoot, testDbPath, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
+
+const TEST_ROOT = testRoot('opentasks-handler');
+const TEST_DB_PATH = testDbPath(TEST_ROOT, 'handler-test.db');
+
+// ============================================================================
+// Fixture Helpers
+// ============================================================================
+
+interface GraphNode {
+  id: string;
+  type: 'task' | 'context' | 'feedback' | 'external';
+  title?: string;
+  status?: string;
+  priority?: number;
+  archived?: boolean;
+}
+
+interface GraphEdge {
+  id: string;
+  from_id: string;
+  to_id: string;
+  type: string;
+  deleted?: boolean;
+}
+
+function buildGraphJsonl(nodes: GraphNode[], edges: GraphEdge[]): string {
+  const lines: string[] = [];
+  for (const node of nodes) lines.push(JSON.stringify(node));
+  for (const edge of edges) lines.push(JSON.stringify(edge));
+  return lines.join('\n') + '\n';
+}
+
+function createOpenTasksDir(
+  baseDir: string,
+  opts: { nodes?: GraphNode[]; edges?: GraphEdge[] } = {},
+): string {
+  const opentasksDir = path.join(baseDir, '.opentasks');
+  fs.mkdirSync(opentasksDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(opentasksDir, 'graph.jsonl'),
+    buildGraphJsonl(opts.nodes || [], opts.edges || []),
+  );
+  return opentasksDir;
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+describe('handleOpenTasksRequest', () => {
+  let agentId: string;
+  let resourceId: string;
+  const ctx = { swarmId: 'swarm-test', agentId: '' };
+
+  beforeAll(async () => {
+    fs.mkdirSync(TEST_ROOT, { recursive: true });
+    initDatabase(TEST_DB_PATH);
+
+    // Create an agent
+    const { agent } = await agentsDAL.createAgent({ name: 'test-agent' });
+    agentId = agent.id;
+    ctx.agentId = agentId;
+
+    // Create an .opentasks directory with test data
+    const fixtureDir = mkTestDir(TEST_ROOT, 'opentasks-fixture');
+    const opentasksDir = createOpenTasksDir(fixtureDir, {
+      nodes: [
+        { id: 't-1', type: 'task', title: 'Ready Task', status: 'open', priority: 1 },
+        { id: 't-2', type: 'task', title: 'Blocked Task', status: 'open', priority: 2 },
+        { id: 't-3', type: 'task', title: 'Blocker', status: 'open', priority: 0 },
+        { id: 't-4', type: 'task', title: 'Done', status: 'closed' },
+        { id: 'c-1', type: 'context', title: 'Context Node' },
+        { id: 'f-1', type: 'feedback', title: 'Feedback Node' },
+      ],
+      edges: [
+        { id: 'e-1', from_id: 't-3', to_id: 't-2', type: 'blocks' },
+      ],
+    });
+
+    // Register the resource pointing to the .opentasks directory
+    const resource = resourcesDAL.createResource({
+      name: 'test-opentasks',
+      resource_type: 'task',
+      git_remote_url: opentasksDir,
+      owner_agent_id: agentId,
+      visibility: 'public',
+      metadata: { opentasks: true },
+    });
+    resourceId = resource.id;
+  });
+
+  afterAll(() => {
+    closeDatabase();
+    cleanTestRoot(TEST_ROOT);
+  });
+
+  // ==========================================================================
+  // map/opentasks/summary
+  // ==========================================================================
+
+  describe('map/opentasks/summary', () => {
+    it('returns graph summary with correct counts', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.SUMMARY,
+        { resource_id: resourceId },
+        ctx,
+      );
+
+      expect(result).toHaveProperty('node_count', 6);
+      expect(result).toHaveProperty('edge_count', 1);
+      expect(result).toHaveProperty('context_count', 1);
+      expect(result).toHaveProperty('feedback_count', 1);
+      expect(result).toHaveProperty('daemon_connected', false);
+      expect(result).toHaveProperty('task_counts');
+      const summary = result as { task_counts: Record<string, number> };
+      expect(summary.task_counts.open).toBe(3);
+      expect(summary.task_counts.closed).toBe(1);
+    });
+
+    it('throws on missing resource_id', async () => {
+      await expect(
+        handleOpenTasksRequest(MAP_OPENTASKS_METHODS.SUMMARY, {}, ctx),
+      ).rejects.toThrow(OpenTasksRequestError);
+    });
+
+    it('throws on null params', async () => {
+      await expect(
+        handleOpenTasksRequest(MAP_OPENTASKS_METHODS.SUMMARY, null, ctx),
+      ).rejects.toThrow(OpenTasksRequestError);
+    });
+  });
+
+  // ==========================================================================
+  // map/opentasks/ready
+  // ==========================================================================
+
+  describe('map/opentasks/ready', () => {
+    it('returns ready (unblocked open) tasks', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.READY,
+        { resource_id: resourceId },
+        ctx,
+      ) as { items: Array<{ id: string }>; total: number };
+
+      // t-1 (no blockers), t-3 (no blockers) are ready; t-2 is blocked by t-3
+      const ids = result.items.map(i => i.id);
+      expect(ids).toContain('t-1');
+      expect(ids).toContain('t-3');
+      expect(ids).not.toContain('t-2');
+      expect(result.total).toBe(2);
+    });
+
+    it('sorts by priority (lower number = higher priority)', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.READY,
+        { resource_id: resourceId },
+        ctx,
+      ) as { items: Array<{ id: string; priority?: number }> };
+
+      // t-3 has priority 0, t-1 has priority 1
+      expect(result.items[0].id).toBe('t-3');
+      expect(result.items[1].id).toBe('t-1');
+    });
+
+    it('respects limit parameter', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.READY,
+        { resource_id: resourceId, limit: 1 },
+        ctx,
+      ) as { items: unknown[]; total: number };
+
+      expect(result.items).toHaveLength(1);
+    });
+
+    it('throws on missing resource_id', async () => {
+      await expect(
+        handleOpenTasksRequest(MAP_OPENTASKS_METHODS.READY, {}, ctx),
+      ).rejects.toThrow(OpenTasksRequestError);
+    });
+  });
+
+  // ==========================================================================
+  // map/opentasks/query
+  // ==========================================================================
+
+  describe('map/opentasks/query', () => {
+    it('returns fallback when daemon is not running', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.QUERY,
+        { resource_id: resourceId },
+        ctx,
+      ) as { daemon_connected: boolean; items: unknown[] };
+
+      expect(result.daemon_connected).toBe(false);
+      expect(result.items).toEqual([]);
+    });
+
+    it('throws on missing resource_id', async () => {
+      await expect(
+        handleOpenTasksRequest(MAP_OPENTASKS_METHODS.QUERY, {}, ctx),
+      ).rejects.toThrow(OpenTasksRequestError);
+    });
+  });
+
+  // ==========================================================================
+  // map/opentasks/status
+  // ==========================================================================
+
+  describe('map/opentasks/status', () => {
+    it('returns daemon and graph file status', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.STATUS,
+        { resource_id: resourceId },
+        ctx,
+      ) as {
+        daemon_running: boolean;
+        graph_file_exists: boolean;
+        graph_last_modified: string | null;
+      };
+
+      expect(result.daemon_running).toBe(false);
+      expect(result.graph_file_exists).toBe(true);
+      expect(result.graph_last_modified).toBeTruthy();
+    });
+
+    it('throws on missing resource_id', async () => {
+      await expect(
+        handleOpenTasksRequest(MAP_OPENTASKS_METHODS.STATUS, {}, ctx),
+      ).rejects.toThrow(OpenTasksRequestError);
+    });
+  });
+
+  // ==========================================================================
+  // Access control & validation
+  // ==========================================================================
+
+  describe('access control', () => {
+    it('throws on non-existent resource', async () => {
+      await expect(
+        handleOpenTasksRequest(
+          MAP_OPENTASKS_METHODS.SUMMARY,
+          { resource_id: 'non-existent' },
+          ctx,
+        ),
+      ).rejects.toThrow(/not found/i);
+    });
+
+    it('throws on non-opentasks resource', async () => {
+      const dir = mkTestDir(TEST_ROOT, 'non-opentasks');
+      const memResource = resourcesDAL.createResource({
+        name: 'memory-bank',
+        resource_type: 'memory_bank',
+        git_remote_url: dir,
+        owner_agent_id: agentId,
+        visibility: 'public',
+        metadata: {},
+      });
+
+      await expect(
+        handleOpenTasksRequest(
+          MAP_OPENTASKS_METHODS.SUMMARY,
+          { resource_id: memResource.id },
+          ctx,
+        ),
+      ).rejects.toThrow(/not an OpenTasks resource/i);
+    });
+
+    it('throws on access denied for private resource', async () => {
+      const { agent: otherAgent } = await agentsDAL.createAgent({ name: 'other-agent' });
+      const dir = mkTestDir(TEST_ROOT, 'private-opentasks');
+      createOpenTasksDir(dir);
+
+      const privateResource = resourcesDAL.createResource({
+        name: 'private-tasks',
+        resource_type: 'task',
+        git_remote_url: path.join(dir, '.opentasks'),
+        owner_agent_id: agentId,
+        visibility: 'private',
+        metadata: { opentasks: true },
+      });
+
+      await expect(
+        handleOpenTasksRequest(
+          MAP_OPENTASKS_METHODS.SUMMARY,
+          { resource_id: privateResource.id },
+          { swarmId: 'other-swarm', agentId: otherAgent.id },
+        ),
+      ).rejects.toThrow(/access denied/i);
+    });
+  });
+
+  // ==========================================================================
+  // Unknown method
+  // ==========================================================================
+
+  it('throws on unknown method', async () => {
+    await expect(
+      handleOpenTasksRequest('map/opentasks/delete', {}, ctx),
+    ).rejects.toThrow(OpenTasksRequestError);
+  });
+});

@@ -95,3 +95,18 @@ export type {
   TasksUpdateResult,
   TasksListResult,
 } from './task-types.js';
+
+// MAP OpenTasks (remote access to local OpenTasks graphs)
+export { handleOpenTasksRequest, OpenTasksRequestError } from './opentasks-handler.js';
+export { MAP_OPENTASKS_METHODS, MAP_OPENTASKS_METHOD_SET } from './opentasks-types.js';
+export type {
+  MAPOpenTasksMethod,
+  OpenTasksSummaryParams,
+  OpenTasksReadyParams,
+  OpenTasksQueryParams,
+  OpenTasksStatusParams,
+  OpenTasksSummaryResult,
+  OpenTasksReadyResult,
+  OpenTasksQueryResult,
+  OpenTasksStatusResult,
+} from './opentasks-types.js';
