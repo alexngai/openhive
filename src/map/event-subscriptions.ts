@@ -9,13 +9,18 @@
 
 import { nanoid } from 'nanoid';
 import { WebSocket } from 'ws';
+import { sendToInbound } from './connection-registry.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
+
+type SubscriptionTransport =
+  | { type: 'websocket'; ws: WebSocket }
+  | { type: 'mesh'; swarmId: string };
 
 interface MapSubscription {
   id: string;
   swarmId: string;
-  ws: WebSocket;
+  transport: SubscriptionTransport;
   sequence: number;
   filter: {
     eventTypes?: string[];
@@ -49,7 +54,7 @@ export function handleMapSubscribe(
   const sub: MapSubscription = {
     id: nanoid(),
     swarmId,
-    ws,
+    transport: { type: 'websocket', ws },
     sequence: 0,
     filter,
   };
@@ -115,10 +120,9 @@ export function notifySubscribers(
 ): void {
   for (const sub of subscriptions.values()) {
     if (!matchesFilter(sub.filter, eventType, context)) continue;
-    if (sub.ws.readyState !== WebSocket.OPEN) continue;
 
     sub.sequence++;
-    sub.ws.send(JSON.stringify({
+    const payload = JSON.stringify({
       jsonrpc: '2.0',
       method: 'map/event',
       params: {
@@ -128,7 +132,15 @@ export function notifySubscribers(
         event: { type: eventType, data },
         eventId: nanoid(),
       },
-    }));
+    });
+
+    if (sub.transport.type === 'websocket') {
+      if (sub.transport.ws.readyState === WebSocket.OPEN) {
+        sub.transport.ws.send(payload);
+      }
+    } else if (sub.transport.type === 'mesh') {
+      sendToInbound(sub.swarmId, JSON.parse(payload));
+    }
   }
 }
 
@@ -143,6 +155,34 @@ function matchesFilter(
   if (filter.hive && context?.hive !== filter.hive) return false;
   if (filter.conversationId && context?.conversationId !== filter.conversationId) return false;
   return true;
+}
+
+/**
+ * Subscribe a mesh-connected swarm to events.
+ * Events are delivered via sendToInbound() which uses the mesh transport.
+ */
+export function handleMeshSubscribe(
+  swarmId: string,
+  filter: MapSubscription['filter'],
+): string {
+  const sub: MapSubscription = {
+    id: nanoid(),
+    swarmId,
+    transport: { type: 'mesh', swarmId },
+    sequence: 0,
+    filter,
+  };
+
+  subscriptions.set(sub.id, sub);
+
+  let swarmSet = swarmSubscriptions.get(swarmId);
+  if (!swarmSet) {
+    swarmSet = new Set();
+    swarmSubscriptions.set(swarmId, swarmSet);
+  }
+  swarmSet.add(sub.id);
+
+  return sub.id;
 }
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────

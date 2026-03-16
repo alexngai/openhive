@@ -20,12 +20,17 @@ import {
 import type { Storage } from 'agent-inbox';
 import { getDatabase } from '../db/index.js';
 import { notifySubscribers } from './event-subscriptions.js';
+import { initMeshDeliveryBridge, stopMeshDeliveryBridge } from './mesh-delivery-bridge.js';
 
 let storage: Storage | null = null;
 let router: MessageRouter | null = null;
 let jsonRpc: MailJsonRpcServer | null = null;
 let events: EventEmitter | null = null;
 let federation: ConnectionManager | null = null;
+
+// FederationGateway instances for mesh-capable peers (need persistent refs + cleanup)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const meshGateways: any[] = [];
 
 // TraceabilityLayer auto-subscribes to events on construction.
 // We hold a reference to keep it alive for the bridge's lifetime.
@@ -41,8 +46,12 @@ export interface InboxBridgeOptions {
       systemId: string;
       url: string;
       auth?: { method: FederationAuthMethod; token?: string };
+      /** If set, use mesh transport for this peer instead of HTTP */
+      meshPeerId?: string;
     }>;
   };
+  /** Whether mesh transport is enabled (for delivery bridge wiring) */
+  meshEnabled?: boolean;
 }
 
 /**
@@ -118,9 +127,22 @@ export async function initInboxBridge(opts?: InboxBridgeOptions): Promise<void> 
     // Start delivery queue ticking for offline peers
     federation.queue.startTicking();
 
+    // Wire mesh federation gateways for peers that have meshPeerId
+    if (opts.meshEnabled) {
+      await wireMeshFederationGateways(opts.federation.peers ?? [], opts.federation.systemId);
+    }
+
     console.log('[openhive] Inbox bridge initialized with federation (inbox_* tables in shared DB)');
   } else {
     console.log('[openhive] Inbox bridge initialized (inbox_* tables in shared DB)');
+  }
+
+  // Initialize mesh delivery bridge if mesh is enabled
+  if (opts?.meshEnabled && storage && events) {
+    initMeshDeliveryBridge({
+      storage: storage as unknown as { putMessage(msg: Record<string, unknown>): void },
+      events,
+    });
   }
 }
 
@@ -128,6 +150,14 @@ export async function initInboxBridge(opts?: InboxBridgeOptions): Promise<void> 
  * Stop inbox bridge. Does NOT close the database (owned by OpenHive).
  */
 export async function stopInboxBridge(): Promise<void> {
+  stopMeshDeliveryBridge();
+
+  // Disconnect mesh federation gateways
+  for (const gw of meshGateways) {
+    try { await gw.disconnect('inbox-bridge-stop'); } catch { /* ignore */ }
+  }
+  meshGateways.length = 0;
+
   if (federation) {
     await federation.destroy();
     federation = null;
@@ -179,4 +209,97 @@ export function getInboxEvents(): EventEmitter {
  */
 export function getFederation(): ConnectionManager | null {
   return federation;
+}
+
+// ─── Mesh Federation Gateway Wiring ─────────────────────────────────────────
+
+/**
+ * For federation peers that have a meshPeerId, create FederationGateway instances
+ * using the hub's embedded MapServer. Incoming federation messages are routed
+ * through the local inbox router.
+ *
+ * Falls back to existing HTTP federation (ConnectionManager) for peers without meshPeerId.
+ */
+async function wireMeshFederationGateways(
+  peers: NonNullable<InboxBridgeOptions['federation']>['peers'],
+  systemId?: string,
+): Promise<void> {
+  if (!peers || peers.length === 0) return;
+
+  const meshPeers = peers.filter(p => p.meshPeerId);
+  if (meshPeers.length === 0) return;
+
+  // Dynamic import to avoid hard dependency
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let agenticMesh: any;
+  try {
+    agenticMesh = await import('agentic-mesh');
+  } catch {
+    console.warn('[inbox-bridge] agentic-mesh not available — skipping mesh federation gateways');
+    return;
+  }
+
+  const { isMeshEnabled, getHubMeshPeer } = await import('./mesh-peer.js');
+  if (!isMeshEnabled()) {
+    console.warn('[inbox-bridge] Mesh not enabled — skipping mesh federation gateways');
+    return;
+  }
+
+  const hubPeer = getHubMeshPeer();
+  const localSystemId = systemId ?? hubPeer.peerId;
+
+  for (const peer of meshPeers) {
+    try {
+      const gateway = agenticMesh.createFederationGateway(hubPeer.server, {
+        localSystemId,
+        remoteSystemId: peer.systemId,
+        remoteEndpoint: peer.url || `mesh://${peer.meshPeerId}`,
+        auth: peer.auth ? { method: peer.auth.method, credentials: peer.auth.token } : undefined,
+      });
+
+      // Wire incoming federation messages into the inbox router
+      gateway.on('message:received', (envelope: Record<string, unknown>) => {
+        const msg = envelope.message ?? envelope;
+        const fromAgent = (msg as Record<string, unknown>).from as string ?? peer.systemId;
+        const targetAgent = resolveEnvelopeTarget(envelope);
+
+        router?.routeMessage({
+          from: `${fromAgent}@${peer.systemId}`,
+          to: targetAgent,
+          payload: (msg as Record<string, unknown>).payload,
+          subject: (((msg as Record<string, unknown>).meta as Record<string, unknown> | undefined)?._meta as Record<string, unknown> | undefined)?.subject as string | undefined,
+        }).catch(err => {
+          console.error(`[inbox-bridge] Mesh federation message routing failed from ${peer.systemId}:`, err);
+        });
+      });
+
+      // Keep a persistent reference so the gateway isn't garbage collected
+      meshGateways.push(gateway);
+
+      // If the mesh peer is already connected, try to connect the gateway
+      const peerConn = hubPeer.getPeerConnection(peer.meshPeerId!);
+      if (peerConn) {
+        console.log(`[inbox-bridge] Mesh federation gateway created for ${peer.systemId} (peer connected)`);
+      } else {
+        console.log(`[inbox-bridge] Mesh federation gateway created for ${peer.systemId} (peer not yet connected)`);
+      }
+    } catch (err) {
+      console.warn(`[inbox-bridge] Failed to create mesh federation gateway for ${peer.systemId}:`, err);
+    }
+  }
+}
+
+function resolveEnvelopeTarget(envelope: Record<string, unknown>): string {
+  const targetAgents = envelope.targetAgents as string[] | undefined;
+  if (targetAgents && targetAgents.length > 0) return targetAgents[0];
+
+  const msg = (envelope.message ?? envelope) as Record<string, unknown>;
+  const to = msg.to;
+  if (typeof to === 'string') return to;
+  if (to && typeof to === 'object') {
+    const a = to as Record<string, unknown>;
+    if (typeof a.agent === 'string') return a.agent;
+    if (Array.isArray(a.agents) && a.agents.length > 0) return a.agents[0];
+  }
+  return 'broadcast';
 }

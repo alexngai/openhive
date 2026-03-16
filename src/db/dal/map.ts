@@ -61,6 +61,7 @@ function rowToSwarm(row: Record<string, unknown>): MapSwarm {
     headscale_node_id: row.headscale_node_id as string | null,
     tailscale_ips: parseJsonField(row.tailscale_ips),
     tailscale_dns_name: row.tailscale_dns_name as string | null,
+    mesh_peer_id: row.mesh_peer_id as string | null,
     metadata: parseJsonField(row.metadata),
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
@@ -99,8 +100,8 @@ export function createSwarm(
 
   db.prepare(`
     INSERT INTO map_swarms (id, name, description, map_endpoint, map_transport,
-      owner_agent_id, capabilities, auth_method, auth_token_hash, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      owner_agent_id, capabilities, auth_method, auth_token_hash, metadata, mesh_peer_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.name,
@@ -111,7 +112,8 @@ export function createSwarm(
     input.capabilities ? JSON.stringify(input.capabilities) : null,
     input.auth_method || 'bearer',
     input.auth_token ? hashToken(input.auth_token) : null,
-    input.metadata ? JSON.stringify(input.metadata) : null
+    input.metadata ? JSON.stringify(input.metadata) : null,
+    input.mesh_peer_id || null
   );
 
   return findSwarmById(id)!;
@@ -126,6 +128,12 @@ export function findSwarmById(id: string): MapSwarm | null {
 export function findSwarmByEndpoint(endpoint: string): MapSwarm | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM map_swarms WHERE map_endpoint = ?').get(endpoint) as Record<string, unknown> | undefined;
+  return row ? rowToSwarm(row) : null;
+}
+
+export function findSwarmByMeshPeerId(peerId: string): MapSwarm | null {
+  const db = getDatabase();
+  const row = db.prepare('SELECT * FROM map_swarms WHERE mesh_peer_id = ?').get(peerId) as Record<string, unknown> | undefined;
   return row ? rowToSwarm(row) : null;
 }
 
@@ -147,6 +155,7 @@ export function updateSwarm(id: string, input: UpdateSwarmInput): MapSwarm | nul
   if (input.headscale_node_id !== undefined) { sets.push('headscale_node_id = ?'); values.push(input.headscale_node_id); }
   if (input.tailscale_ips !== undefined) { sets.push('tailscale_ips = ?'); values.push(JSON.stringify(input.tailscale_ips)); }
   if (input.tailscale_dns_name !== undefined) { sets.push('tailscale_dns_name = ?'); values.push(input.tailscale_dns_name); }
+  if (input.mesh_peer_id !== undefined) { sets.push('mesh_peer_id = ?'); values.push(input.mesh_peer_id); }
   if (input.metadata !== undefined) { sets.push('metadata = ?'); values.push(JSON.stringify(input.metadata)); }
 
   values.push(id);
@@ -230,6 +239,7 @@ export function getSwarmPublic(id: string): MapSwarmPublic | null {
     scope_count: swarm.scope_count,
     tailscale_ips: swarm.tailscale_ips,
     tailscale_dns_name: swarm.tailscale_dns_name,
+    mesh_peer_id: swarm.mesh_peer_id,
     metadata: swarm.metadata,
     hives,
     created_at: swarm.created_at,
@@ -505,6 +515,7 @@ export function getPeerList(swarmId: string): SwarmPeer[] {
       shared_hives: sharedHives.map((h) => h.name),
       tailscale_ips: parseJsonField(row.tailscale_ips),
       tailscale_dns_name: row.tailscale_dns_name as string | null,
+      mesh_peer_id: row.mesh_peer_id as string | null,
     };
   });
 }

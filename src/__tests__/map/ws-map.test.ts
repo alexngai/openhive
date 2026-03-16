@@ -133,7 +133,7 @@ describe('MAP Inbound WebSocket', () => {
     it('should register and retrieve an inbound connection', () => {
       const ws = createMockWs();
       registerInbound('swarm_1', {
-        ws,
+        transport: { type: 'websocket', ws },
         agentId: 'agent_1',
         swarmId: 'swarm_1',
         connectedAt: new Date().toISOString(),
@@ -142,7 +142,7 @@ describe('MAP Inbound WebSocket', () => {
 
       const conn = getInbound('swarm_1');
       expect(conn).toBeDefined();
-      expect(conn!.ws).toBe(ws);
+      expect(conn!.transport.type).toBe('websocket');
       expect(conn!.agentId).toBe('agent_1');
     });
 
@@ -153,7 +153,7 @@ describe('MAP Inbound WebSocket', () => {
     it('should unregister a connection', () => {
       const ws = createMockWs();
       registerInbound('swarm_1', {
-        ws,
+        transport: { type: 'websocket', ws },
         agentId: 'agent_1',
         swarmId: 'swarm_1',
         connectedAt: new Date().toISOString(),
@@ -170,7 +170,7 @@ describe('MAP Inbound WebSocket', () => {
       const ws2 = createMockWs();
 
       registerInbound('swarm_1', {
-        ws: ws1,
+        transport: { type: 'websocket', ws: ws1 },
         agentId: 'agent_1',
         swarmId: 'swarm_1',
         connectedAt: new Date().toISOString(),
@@ -178,14 +178,15 @@ describe('MAP Inbound WebSocket', () => {
       });
 
       registerInbound('swarm_1', {
-        ws: ws2,
+        transport: { type: 'websocket', ws: ws2 },
         agentId: 'agent_1',
         swarmId: 'swarm_1',
         connectedAt: new Date().toISOString(),
         lastMessageAt: new Date().toISOString(),
       });
 
-      expect(getInbound('swarm_1')!.ws).toBe(ws2);
+      const conn = getInbound('swarm_1')!;
+      expect(conn.transport.type === 'websocket' && conn.transport.ws === ws2).toBe(true);
       expect((ws1.close as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
       expect(getInboundCount()).toBe(1);
     });
@@ -193,8 +194,8 @@ describe('MAP Inbound WebSocket', () => {
     it('should track count correctly', () => {
       expect(getInboundCount()).toBe(0);
 
-      registerInbound('s1', { ws: createMockWs(), agentId: 'a1', swarmId: 's1', connectedAt: '', lastMessageAt: '' });
-      registerInbound('s2', { ws: createMockWs(), agentId: 'a2', swarmId: 's2', connectedAt: '', lastMessageAt: '' });
+      registerInbound('s1', { transport: { type: 'websocket', ws: createMockWs() }, agentId: 'a1', swarmId: 's1', connectedAt: '', lastMessageAt: '' });
+      registerInbound('s2', { transport: { type: 'websocket', ws: createMockWs() }, agentId: 'a2', swarmId: 's2', connectedAt: '', lastMessageAt: '' });
       expect(getInboundCount()).toBe(2);
 
       unregisterInbound('s1');
@@ -262,7 +263,7 @@ describe('MAP Inbound WebSocket', () => {
     it('should deliver via inbound connection when available', () => {
       const ws = createMockWs();
       registerInbound(swarmId, {
-        ws,
+        transport: { type: 'websocket', ws },
         agentId,
         swarmId,
         connectedAt: new Date().toISOString(),
@@ -284,7 +285,7 @@ describe('MAP Inbound WebSocket', () => {
     it('should skip closed inbound connections', () => {
       const ws = createMockWs(WebSocket.CLOSED);
       registerInbound(swarmId, {
-        ws,
+        transport: { type: 'websocket', ws },
         agentId,
         swarmId,
         connectedAt: new Date().toISOString(),
@@ -394,14 +395,14 @@ describe('MAP Inbound WebSocket', () => {
 
       // Register inbound connections
       registerInbound(p2Swarm1Id, {
-        ws: createMockWs(),
+        transport: { type: 'websocket', ws: createMockWs() },
         agentId: p2AgentId,
         swarmId: p2Swarm1Id,
         connectedAt: new Date().toISOString(),
         lastMessageAt: new Date().toISOString(),
       });
       registerInbound(p2Swarm2Id, {
-        ws: createMockWs(),
+        transport: { type: 'websocket', ws: createMockWs() },
         agentId: p2Agent2Id,
         swarmId: p2Swarm2Id,
         connectedAt: new Date().toISOString(),
@@ -545,7 +546,7 @@ describe('MAP Inbound WebSocket', () => {
 
       // Verify delivery via sendToSwarm
       const conn = getInbound(p2Swarm2Id);
-      const sendSpy = conn?.ws.send as ReturnType<typeof vi.fn>;
+      const sendSpy = conn?.transport.type === 'websocket' ? conn.transport.ws.send as ReturnType<typeof vi.fn> : undefined;
       const sent = sendToSwarm(p2Swarm2Id, {
         jsonrpc: '2.0',
         method: 'map/send',

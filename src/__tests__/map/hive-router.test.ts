@@ -93,14 +93,14 @@ describe('Hive Router', () => {
 
     // Register inbound connections so sendToSwarm works
     registerInbound(swarmId, {
-      ws: createMockWs(),
+      transport: { type: 'websocket', ws: createMockWs() },
       agentId,
       swarmId,
       connectedAt: new Date().toISOString(),
       lastMessageAt: new Date().toISOString(),
     });
     registerInbound(swarm2Id, {
-      ws: createMockWs(),
+      transport: { type: 'websocket', ws: createMockWs() },
       agentId: agent2Id,
       swarmId: swarm2Id,
       connectedAt: new Date().toISOString(),
@@ -149,7 +149,7 @@ describe('Hive Router', () => {
 
   it('should send to target swarms via sendToSwarm', async () => {
     const conn = (await import('../../map/connection-registry.js')).getInbound(swarm2Id);
-    const sendSpy = conn?.ws.send as ReturnType<typeof vi.fn>;
+    const sendSpy = (conn?.transport.type === 'websocket' ? conn.transport.ws.send : undefined) as ReturnType<typeof vi.fn>;
     const callsBefore = sendSpy?.mock.calls.length ?? 0;
 
     await routeHiveMessage(swarmId, {
@@ -163,7 +163,7 @@ describe('Hive Router', () => {
 
   it('should not send back to the sender swarm', async () => {
     const conn = (await import('../../map/connection-registry.js')).getInbound(swarmId);
-    const sendSpy = conn?.ws.send as ReturnType<typeof vi.fn>;
+    const sendSpy = (conn?.transport.type === 'websocket' ? conn.transport.ws.send : undefined) as ReturnType<typeof vi.fn>;
     const callsBefore = sendSpy?.mock.calls.length ?? 0;
 
     await routeHiveMessage(swarmId, {

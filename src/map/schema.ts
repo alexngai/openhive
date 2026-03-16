@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS map_swarms (
   -- Connection info
   map_endpoint TEXT NOT NULL,
   map_transport TEXT DEFAULT 'websocket'
-    CHECK (map_transport IN ('websocket', 'http-sse', 'ndjson')),
+    CHECK (map_transport IN ('websocket', 'http-sse', 'ndjson', 'mesh')),
   -- Ownership
   owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   -- State
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS map_swarms (
   headscale_node_id TEXT,
   tailscale_ips TEXT,            -- JSON array of assigned Tailscale IPs
   tailscale_dns_name TEXT,       -- MagicDNS hostname
+  mesh_peer_id TEXT,           -- agentic-mesh peer ID for P2P connectivity
   -- Metadata (JSON)
   metadata TEXT,
   created_at TEXT DEFAULT (datetime('now')),
@@ -116,4 +117,5 @@ CREATE INDEX IF NOT EXISTS idx_map_swarm_hives_hive ON map_swarm_hives(hive_id);
 CREATE INDEX IF NOT EXISTS idx_map_preauth_keys_hive ON map_preauth_keys(hive_id);
 CREATE INDEX IF NOT EXISTS idx_map_federation_log_source ON map_federation_log(source_swarm_id);
 CREATE INDEX IF NOT EXISTS idx_map_federation_log_target ON map_federation_log(target_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_map_swarms_mesh_peer ON map_swarms(mesh_peer_id);
 `;

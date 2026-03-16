@@ -18,7 +18,7 @@
 // Swarm Types (analogous to headscale machines)
 // ============================================================================
 
-export type MapTransport = 'websocket' | 'http-sse' | 'ndjson';
+export type MapTransport = 'websocket' | 'http-sse' | 'ndjson' | 'mesh';
 export type MapAuthMethod = 'bearer' | 'api-key' | 'mtls' | 'none';
 export type SwarmStatus = 'online' | 'offline' | 'unreachable';
 
@@ -46,6 +46,7 @@ export interface MapSwarm {
   headscale_node_id: string | null;
   tailscale_ips: string[] | null;
   tailscale_dns_name: string | null;
+  mesh_peer_id: string | null;
   // Metadata
   metadata: Record<string, unknown> | null;
   created_at: string;
@@ -153,6 +154,7 @@ export interface RegisterSwarmInput {
   metadata?: Record<string, unknown>;
   // Optional pre-auth key for auto-registration + auto-join
   preauth_key?: string;
+  mesh_peer_id?: string;
 }
 
 export interface UpdateSwarmInput {
@@ -169,6 +171,7 @@ export interface UpdateSwarmInput {
   headscale_node_id?: string;
   tailscale_ips?: string[];
   tailscale_dns_name?: string;
+  mesh_peer_id?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -233,6 +236,7 @@ export interface SwarmPeer {
   // Headscale/Tailscale network info (for L3/L4 connectivity)
   tailscale_ips: string[] | null;
   tailscale_dns_name: string | null;
+  mesh_peer_id: string | null;
 }
 
 export interface PeerList {
@@ -260,6 +264,7 @@ export interface MapSwarmPublic {
   // Headscale/Tailscale network info
   tailscale_ips: string[] | null;
   tailscale_dns_name: string | null;
+  mesh_peer_id: string | null;
   metadata: Record<string, unknown> | null;
   hives: string[];
   created_at: string;

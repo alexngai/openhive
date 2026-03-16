@@ -97,14 +97,14 @@ describe('Phase 4 — Replay + Federation', () => {
     mapDAL.joinHive(swarm2Id, hiveId);
 
     registerInbound(swarmId, {
-      ws: createMockWs(),
+      transport: { type: 'websocket', ws: createMockWs() },
       agentId,
       swarmId,
       connectedAt: new Date().toISOString(),
       lastMessageAt: new Date().toISOString(),
     });
     registerInbound(swarm2Id, {
-      ws: createMockWs(),
+      transport: { type: 'websocket', ws: createMockWs() },
       agentId: agent2Id,
       swarmId: swarm2Id,
       connectedAt: new Date().toISOString(),

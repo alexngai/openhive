@@ -25,7 +25,8 @@ import type { MapSyncMessage, MapTransport } from './types.js';
 import { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE } from './types.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
 import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
-import { getInbound } from './connection-registry.js';
+import { sendToInbound } from './connection-registry.js';
+import { isMeshEnabled, getHubMeshPeer } from './mesh-peer.js';
 
 interface SwarmConnection {
   swarmId: string;
@@ -217,7 +218,13 @@ function connectToSwarm(swarmId: string, name: string, endpoint: string, transpo
     return;
   }
 
-  // Only WebSocket transport is supported for now
+  // Mesh transport: connect via MeshPeer instead of WebSocket
+  if (transport === 'mesh') {
+    connectToSwarmViaMesh(swarmId, name, endpoint);
+    return;
+  }
+
+  // Only WebSocket transport is supported for outbound connections beyond mesh
   if (transport !== 'websocket') {
     console.log(`[map-sync] Skipping swarm ${name} — transport ${transport} not yet supported for sync listening`);
     return;
@@ -282,6 +289,47 @@ function connectToSwarm(swarmId: string, name: string, endpoint: string, transpo
   }
 }
 
+/**
+ * Register a mesh-transport swarm for sync listening.
+ * Unlike WebSocket swarms, mesh peers connect inbound to the hub (not outbound).
+ * The mesh-handler.ts routes their messages through dispatchMapMessage().
+ * This just registers the connection tracking so sendToSwarm() can find them.
+ */
+function connectToSwarmViaMesh(swarmId: string, name: string, endpoint: string): void {
+  if (!isMeshEnabled()) {
+    console.log(`[map-sync] Mesh not enabled — skipping mesh swarm ${name}`);
+    return;
+  }
+
+  // Extract peer ID from mesh:// endpoint
+  const peerId = endpoint.startsWith('mesh://') ? endpoint.slice(7) : endpoint;
+
+  const hubPeer = getHubMeshPeer();
+
+  // Check if already connected to this peer
+  const existingConn = hubPeer.getPeerConnection(peerId);
+  if (existingConn) {
+    console.log(`[map-sync] Already connected to mesh swarm ${name} (peer: ${peerId})`);
+    return;
+  }
+
+  // For mesh peers, we don't actively connect out — the peer connects to the hub.
+  // The mesh-handler.ts already handles incoming connections and routes messages
+  // through dispatchMapMessage(). We just need to register the connection tracking.
+  const conn: SwarmConnection = {
+    swarmId,
+    name,
+    endpoint,
+    transport: 'mesh',
+    ws: null, // No WebSocket for mesh connections
+    reconnectTimer: null,
+    reconnectAttempts: 0,
+  };
+  connections.set(swarmId, conn);
+
+  console.log(`[map-sync] Registered mesh swarm ${name} (peer: ${peerId}) for sync listening`);
+}
+
 function scheduleReconnect(conn: SwarmConnection): void {
   if (conn.reconnectTimer) return;
   if (conn.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
@@ -331,20 +379,29 @@ function disconnectFromSwarm(swarmId: string): void {
  * Returns true if the message was sent, false if the swarm is not connected.
  */
 export function sendToSwarm(swarmId: string, message: object): boolean {
-  const payload = JSON.stringify(message);
-
-  // Try inbound connection first (agent connected to hub via /ws/map)
-  const inbound = getInbound(swarmId);
-  if (inbound?.ws.readyState === WebSocket.OPEN) {
-    inbound.ws.send(payload);
+  // Try inbound connection first (agent connected to hub via /ws/map or mesh)
+  if (sendToInbound(swarmId, message)) {
     return true;
   }
 
   // Fall back to outbound connection (hub connected to swarm's endpoint)
+  const payload = JSON.stringify(message);
   const conn = connections.get(swarmId);
   if (conn?.ws?.readyState === WebSocket.OPEN) {
     conn.ws.send(payload);
     return true;
+  }
+
+  // Try mesh peer connection as last resort
+  if (conn?.transport === 'mesh' && isMeshEnabled()) {
+    const peerId = conn.endpoint.startsWith('mesh://') ? conn.endpoint.slice(7) : conn.endpoint;
+    try {
+      const hubPeer = getHubMeshPeer();
+      hubPeer.send('openhive-hub', peerId, message).catch(() => {});
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   return false;

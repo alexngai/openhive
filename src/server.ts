@@ -31,6 +31,8 @@ import {
 } from "./map/sync-listener.js";
 import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
 import { initInboxBridge, stopInboxBridge } from "./map/inbox-bridge.js";
+import { initMeshPeer, stopMeshPeer } from "./map/mesh-peer.js";
+import { setupMeshHandler, stopMeshHandler } from "./map/mesh-handler.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { SwarmHubConnector } from "./swarmhub/connector.js";
 import { normalize, routeEvent } from "./events/index.js";
@@ -159,7 +161,14 @@ export async function createHive(
     setupMapWebSocket(fastify);
     await initInboxBridge({
       federation: config.mapHub.federation,
+      meshEnabled: config.mapHub.mesh?.enabled ?? false,
     });
+
+    // Initialize mesh transport if enabled
+    if (config.mapHub.mesh?.enabled) {
+      await initMeshPeer(config.mapHub.mesh);
+      setupMeshHandler();
+    }
   }
 
   // Register terminal WebSocket (native PTY for TUI tunneling)
@@ -647,6 +656,9 @@ export async function createHive(
       if (swarmManager) {
         await swarmManager.shutdown();
       }
+      // Stop mesh handler and peer
+      stopMeshHandler();
+      await stopMeshPeer();
       // Stop inbox bridge (agent-inbox in router mode)
       await stopInboxBridge();
       // Stop MAP inbound WebSocket connections

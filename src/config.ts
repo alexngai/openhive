@@ -110,6 +110,15 @@ export const ConfigSchema = z.object({
         }).optional(),
       })).default([]),
     }).default({}),
+    mesh: z.object({
+      enabled: z.boolean().default(false),
+      peerId: z.string().optional(),
+      transport: z.object({
+        type: z.enum(['tcp', 'nebula', 'tailscale', 'headscale']).default('tcp'),
+        listenAddr: z.string().default('0.0.0.0'),
+        listenPort: z.number().default(9090),
+      }).default({}),
+    }).default({ enabled: false }),
   }).default({}),
 
   // GitHub App configuration for automatic webhook handling
