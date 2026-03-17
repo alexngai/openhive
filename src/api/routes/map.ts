@@ -209,11 +209,11 @@ export async function mapRoutes(
   });
 
   // GET /map/swarms -- List swarms
-  fastify.get('/map/swarms', {
-    preHandler: [optionalAuthMiddleware],
-  }, async (request: FastifyRequest<{
+  fastify.get<{
     Querystring: { hive_id?: string; status?: string; limit?: string; offset?: string };
-  }>, reply: FastifyReply) => {
+  }>('/map/swarms', {
+    preHandler: [optionalAuthMiddleware],
+  }, async (request, reply) => {
     const { hive_id, status, limit, offset } = request.query;
 
     const result = mapDal.listSwarms({
@@ -248,9 +248,9 @@ export async function mapRoutes(
   });
 
   // GET /map/swarms/:id -- Get swarm details
-  fastify.get('/map/swarms/:id', {
+  fastify.get<{ Params: { id: string } }>('/map/swarms/:id', {
     preHandler: [optionalAuthMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     const pub = mapDal.getSwarmPublic(request.params.id);
     if (!pub) {
       return reply.status(404).send({ error: 'Not Found', message: 'Swarm not found' });
@@ -259,9 +259,9 @@ export async function mapRoutes(
   });
 
   // PUT /map/swarms/:id -- Update swarm
-  fastify.put('/map/swarms/:id', {
+  fastify.put<{ Params: { id: string } }>('/map/swarms/:id', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
         throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
@@ -281,9 +281,9 @@ export async function mapRoutes(
   });
 
   // DELETE /map/swarms/:id -- Deregister swarm
-  fastify.delete('/map/swarms/:id', {
+  fastify.delete<{ Params: { id: string } }>('/map/swarms/:id', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
         throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
@@ -301,9 +301,9 @@ export async function mapRoutes(
   });
 
   // POST /map/swarms/:id/heartbeat -- Swarm heartbeat
-  fastify.post('/map/swarms/:id/heartbeat', {
+  fastify.post<{ Params: { id: string } }>('/map/swarms/:id/heartbeat', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
         throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
@@ -317,9 +317,9 @@ export async function mapRoutes(
   });
 
   // POST /map/swarms/:id/hives -- Join a hive
-  fastify.post('/map/swarms/:id/hives', {
+  fastify.post<{ Params: { id: string } }>('/map/swarms/:id/hives', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
         throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
@@ -338,9 +338,9 @@ export async function mapRoutes(
   });
 
   // DELETE /map/swarms/:id/hives/:hiveName -- Leave a hive
-  fastify.delete('/map/swarms/:id/hives/:hiveName', {
+  fastify.delete<{ Params: { id: string; hiveName: string } }>('/map/swarms/:id/hives/:hiveName', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string; hiveName: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
         throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
@@ -374,9 +374,7 @@ export async function mapRoutes(
   });
 
   // GET /map/nodes -- Discover nodes
-  fastify.get('/map/nodes', {
-    preHandler: [optionalAuthMiddleware],
-  }, async (request: FastifyRequest<{
+  fastify.get<{
     Querystring: {
       hive_id?: string;
       swarm_id?: string;
@@ -387,7 +385,9 @@ export async function mapRoutes(
       limit?: string;
       offset?: string;
     };
-  }>, reply: FastifyReply) => {
+  }>('/map/nodes', {
+    preHandler: [optionalAuthMiddleware],
+  }, async (request, reply) => {
     const { hive_id, swarm_id, role, state, tags, visibility, limit, offset } = request.query;
 
     const result = mapDal.discoverNodes({
@@ -405,9 +405,9 @@ export async function mapRoutes(
   });
 
   // GET /map/nodes/:id -- Get node details
-  fastify.get('/map/nodes/:id', {
+  fastify.get<{ Params: { id: string } }>('/map/nodes/:id', {
     preHandler: [optionalAuthMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     const node = mapDal.findNodeById(request.params.id);
     if (!node) {
       return reply.status(404).send({ error: 'Not Found', message: 'Node not found' });
@@ -416,9 +416,9 @@ export async function mapRoutes(
   });
 
   // PUT /map/nodes/:id -- Update node
-  fastify.put('/map/nodes/:id', {
+  fastify.put<{ Params: { id: string } }>('/map/nodes/:id', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       const node = mapDal.findNodeById(request.params.id);
       if (!node) {
@@ -438,9 +438,9 @@ export async function mapRoutes(
   });
 
   // DELETE /map/nodes/:id -- Deregister node
-  fastify.delete('/map/nodes/:id', {
+  fastify.delete<{ Params: { id: string } }>('/map/nodes/:id', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       const node = mapDal.findNodeById(request.params.id);
       if (!node) {
@@ -463,9 +463,9 @@ export async function mapRoutes(
   // ==========================================================================
 
   // GET /map/peers/:swarmId -- Get peer list for a swarm
-  fastify.get('/map/peers/:swarmId', {
+  fastify.get<{ Params: { swarmId: string } }>('/map/peers/:swarmId', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { swarmId: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       if (!mapDal.isSwarmOwner(request.params.swarmId, request.agent!.id)) {
         throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
@@ -504,11 +504,11 @@ export async function mapRoutes(
   });
 
   // GET /map/preauth-keys -- List pre-auth keys
-  fastify.get('/map/preauth-keys', {
-    preHandler: [authMiddleware, requireAdmin],
-  }, async (request: FastifyRequest<{
+  fastify.get<{
     Querystring: { hive_id?: string; limit?: string; offset?: string };
-  }>, reply: FastifyReply) => {
+  }>('/map/preauth-keys', {
+    preHandler: [authMiddleware, requireAdmin],
+  }, async (request, reply) => {
     const { hive_id, limit, offset } = request.query;
 
     const keys = mapDal.listPreauthKeys({
@@ -532,9 +532,9 @@ export async function mapRoutes(
   });
 
   // DELETE /map/preauth-keys/:id -- Revoke pre-auth key
-  fastify.delete('/map/preauth-keys/:id', {
+  fastify.delete<{ Params: { id: string } }>('/map/preauth-keys/:id', {
     preHandler: [authMiddleware, requireAdmin],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       const deleted = mapDal.deletePreauthKey(request.params.id);
       if (!deleted) {
@@ -563,11 +563,11 @@ export async function mapRoutes(
   // ==========================================================================
 
   // POST /map/swarms/:id/network -- Provision mesh network access for a swarm
-  fastify.post('/map/swarms/:id/network', {
-    preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{
+  fastify.post<{
     Params: { id: string };
-  }>, reply: FastifyReply) => {
+  }>('/map/swarms/:id/network', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
     try {
       const swarm = mapDal.findSwarmById(request.params.id);
       if (!swarm) {
@@ -603,9 +603,9 @@ export async function mapRoutes(
   });
 
   // GET /map/swarms/:id/network -- Get mesh network info for a swarm
-  fastify.get('/map/swarms/:id/network', {
+  fastify.get<{ Params: { id: string } }>('/map/swarms/:id/network', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
         throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');

@@ -258,7 +258,7 @@ export class SQLiteProvider implements DatabaseProvider {
   syncEvents: any = null;
   syncPeerConfigs: any = null;
 
-  constructor(private config: SQLiteProviderConfig) {
+  constructor(config: SQLiteProviderConfig) {
     // Ensure directory exists
     const dbPath = path.resolve(config.path);
     const dbDir = path.dirname(dbPath);

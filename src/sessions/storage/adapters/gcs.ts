@@ -2,6 +2,7 @@
 // Google Cloud Storage Session Storage Adapter
 // ============================================================================
 
+// @ts-expect-error optional dependency
 import { Storage, Bucket } from '@google-cloud/storage';
 import type {
   SessionStorageAdapter,
@@ -174,7 +175,7 @@ export class GCSSessionStorageAdapter implements SessionStorageAdapter {
     });
 
     const sessionPrefix = this.getSessionPrefix(options);
-    const fileInfos: SessionFileInfo[] = files.map((file) => ({
+    const fileInfos: SessionFileInfo[] = files.map((file: any) => ({
       path: file.name.substring(sessionPrefix.length + 1),
       size: parseInt(file.metadata.size as string, 10) || 0,
       lastModified:

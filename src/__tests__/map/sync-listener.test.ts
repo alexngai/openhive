@@ -357,7 +357,7 @@ describe('MAP Sync Listener', () => {
             attribution: { claude: 0.9, human: 0.1 },
           },
         } as Record<string, unknown>,
-      } as MapSyncMessage;
+      } as unknown as MapSyncMessage;
 
       handleSyncMessage(msg, swarmId);
 
@@ -392,7 +392,7 @@ describe('MAP Sync Listener', () => {
             agent: 'fallback-agent',
           },
         } as Record<string, unknown>,
-      } as MapSyncMessage;
+      } as unknown as MapSyncMessage;
 
       handleSyncMessage(msg, swarmId);
 
@@ -437,7 +437,7 @@ describe('MAP Sync Listener', () => {
             agent: 'dedup-agent',
           },
         } as Record<string, unknown>,
-      } as MapSyncMessage);
+      } as unknown as MapSyncMessage);
 
       // First send
       handleSyncMessage(makeMsg('dedup_hash_1'), swarmId);

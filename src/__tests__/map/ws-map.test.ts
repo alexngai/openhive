@@ -49,7 +49,7 @@ const TEST_DB_PATH = testDbPath(TEST_ROOT, 'ws-map.db');
 // Helpers: mock WebSocket
 // ============================================================================
 
-function createMockWs(readyState = WebSocket.OPEN): WebSocket {
+function createMockWs(readyState: number = WebSocket.OPEN): WebSocket {
   const ws = new EventEmitter() as unknown as WebSocket;
   (ws as unknown as { readyState: number }).readyState = readyState;
   (ws as unknown as { send: (data: string) => void }).send = vi.fn();

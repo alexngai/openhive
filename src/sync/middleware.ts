@@ -40,8 +40,8 @@ export async function syncAuthMiddleware(
   ).get(token) as { id: string; name: string; status: string } | undefined;
 
   if (peerConfig) {
-    (request as Record<string, unknown>).syncPeerId = peerConfig.id;
-    (request as Record<string, unknown>).syncPeerName = peerConfig.name;
+    (request as unknown as Record<string, unknown>).syncPeerId = peerConfig.id;
+    (request as unknown as Record<string, unknown>).syncPeerName = peerConfig.name;
     return;
   }
 
@@ -51,8 +51,8 @@ export async function syncAuthMiddleware(
   ).get(token) as { id: string; peer_swarm_id: string; status: string } | undefined;
 
   if (syncPeer) {
-    (request as Record<string, unknown>).syncPeerId = syncPeer.id;
-    (request as Record<string, unknown>).syncPeerName = syncPeer.peer_swarm_id;
+    (request as unknown as Record<string, unknown>).syncPeerId = syncPeer.id;
+    (request as unknown as Record<string, unknown>).syncPeerName = syncPeer.peer_swarm_id;
     return;
   }
 
@@ -121,7 +121,7 @@ export async function syncRateLimitMiddleware(
   ensureRateLimitCleanup();
 
   // Use authenticated peer identity if available, fall back to IP
-  const peerId = (request as Record<string, unknown>).syncPeerId as string || request.ip;
+  const peerId = (request as unknown as Record<string, unknown>).syncPeerId as string || request.ip;
   const now = Date.now();
 
   let entry = peerRequestCounts.get(peerId);

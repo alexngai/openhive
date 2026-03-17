@@ -128,9 +128,7 @@ export async function swarmHostingRoutes(
   });
 
   // GET /map/hosted — List hosted swarms
-  fastify.get('/map/hosted', {
-    preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{
+  fastify.get<{
     Querystring: {
       state?: string;
       provider?: string;
@@ -138,7 +136,9 @@ export async function swarmHostingRoutes(
       limit?: string;
       offset?: string;
     };
-  }>, reply: FastifyReply) => {
+  }>('/map/hosted', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
     const { state, provider, mine, limit, offset } = request.query;
 
     const result = dal.listHostedSwarms({
@@ -169,9 +169,9 @@ export async function swarmHostingRoutes(
   });
 
   // GET /map/hosted/:id — Get hosted swarm details
-  fastify.get('/map/hosted/:id', {
+  fastify.get<{ Params: { id: string } }>('/map/hosted/:id', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     const hosted = dal.findHostedSwarmById(request.params.id);
     if (!hosted) {
       return reply.status(404).send({ error: 'NOT_FOUND', message: 'Hosted swarm not found' });
@@ -195,9 +195,9 @@ export async function swarmHostingRoutes(
   });
 
   // POST /map/hosted/:id/stop — Stop a hosted swarm
-  fastify.post('/map/hosted/:id/stop', {
+  fastify.post<{ Params: { id: string } }>('/map/hosted/:id/stop', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       const manager = getManager(request);
       const hosted = await manager.stop(request.params.id, request.agent!.id);
@@ -213,9 +213,9 @@ export async function swarmHostingRoutes(
   });
 
   // POST /map/hosted/:id/restart — Restart a hosted swarm
-  fastify.post('/map/hosted/:id/restart', {
+  fastify.post<{ Params: { id: string } }>('/map/hosted/:id/restart', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       const manager = getManager(request);
       const hosted = await manager.restart(request.params.id, request.agent!.id);
@@ -232,9 +232,9 @@ export async function swarmHostingRoutes(
   });
 
   // DELETE /map/hosted/:id — Remove a stopped/failed hosted swarm record
-  fastify.delete('/map/hosted/:id', {
+  fastify.delete<{ Params: { id: string } }>('/map/hosted/:id', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     const hosted = dal.findHostedSwarmById(request.params.id);
     if (!hosted) {
       return reply.status(404).send({ error: 'NOT_FOUND', message: 'Hosted swarm not found' });
@@ -254,12 +254,12 @@ export async function swarmHostingRoutes(
   });
 
   // GET /map/hosted/:id/logs — Get logs from a hosted swarm
-  fastify.get('/map/hosted/:id/logs', {
-    preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{
+  fastify.get<{
     Params: { id: string };
     Querystring: { lines?: string };
-  }>, reply: FastifyReply) => {
+  }>('/map/hosted/:id/logs', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
     try {
       const manager = getManager(request);
       const lines = request.query.lines ? parseInt(request.query.lines, 10) : undefined;
@@ -272,9 +272,9 @@ export async function swarmHostingRoutes(
   });
 
   // GET /map/hosted/:id/terminal-info — Get terminal command for connecting TUI to a swarm
-  fastify.get('/map/hosted/:id/terminal-info', {
+  fastify.get<{ Params: { id: string } }>('/map/hosted/:id/terminal-info', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     const hosted = dal.findHostedSwarmById(request.params.id);
     if (!hosted) {
       return reply.status(404).send({ error: 'NOT_FOUND', message: 'Hosted swarm not found' });

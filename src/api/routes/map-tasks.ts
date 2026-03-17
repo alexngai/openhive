@@ -23,9 +23,7 @@ export async function mapTasksRoutes(
 ): Promise<void> {
 
   // GET /map/tasks -- List MAP tasks with optional filters
-  fastify.get('/map/tasks', {
-    preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{
+  fastify.get<{
     Querystring: {
       status?: string;
       assignee?: string;
@@ -33,7 +31,9 @@ export async function mapTasksRoutes(
       limit?: string;
       cursor?: string;
     };
-  }>, reply: FastifyReply) => {
+  }>('/map/tasks', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
     const { status, assignee, swarm_id, limit, cursor } = request.query;
     const store = getMapTaskStore();
 
@@ -71,9 +71,9 @@ export async function mapTasksRoutes(
   });
 
   // GET /map/tasks/:id -- Get a single MAP task
-  fastify.get('/map/tasks/:id', {
+  fastify.get<{ Params: { id: string } }>('/map/tasks/:id', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     const store = getMapTaskStore();
     const task = store.get(request.params.id);
 

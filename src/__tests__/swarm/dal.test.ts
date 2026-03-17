@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
-import * as hivesDAL from '../../db/dal/hives.js';
 import * as dal from '../../swarm/dal.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
@@ -10,7 +9,6 @@ const TEST_DB_PATH = testDbPath(TEST_ROOT, 'swarm-dal-test.db');
 
 describe('Swarm DAL', () => {
   let testAgentId: string;
-  let testAgentApiKey: string;
 
   beforeAll(async () => {
     initDatabase(TEST_DB_PATH);
@@ -21,7 +19,6 @@ describe('Swarm DAL', () => {
       description: 'Agent for swarm DAL tests',
     });
     testAgentId = result.agent.id;
-    testAgentApiKey = result.apiKey;
   });
 
   afterAll(() => {

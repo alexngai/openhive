@@ -269,7 +269,7 @@ describe('Coordination System', () => {
     });
 
     it('should paginate task results', () => {
-      const { data: allTasks, total: allTotal } = coordinationDAL.listTasks({ hive_id: hiveId });
+      const { data: _allTasks, total: allTotal } = coordinationDAL.listTasks({ hive_id: hiveId });
       expect(allTotal).toBeGreaterThan(1); // We have multiple tasks
 
       // Fetch first page with limit 2
@@ -452,7 +452,7 @@ describe('Coordination System', () => {
     });
 
     it('should paginate message results', () => {
-      const { data: all, total: allTotal } = coordinationDAL.listMessages();
+      const { data: _all, total: allTotal } = coordinationDAL.listMessages();
       expect(allTotal).toBeGreaterThan(1);
 
       const { data: page1, total: total1 } = coordinationDAL.listMessages({

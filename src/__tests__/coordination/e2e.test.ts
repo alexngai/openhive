@@ -35,7 +35,7 @@ const mockSendToSwarm = vi.mocked(sendToSwarm);
 
 // Coordination service (real, not mocked)
 import { CoordinationService } from '../../coordination/service.js';
-import { initCoordinationService, getCoordinationService } from '../../coordination/index.js';
+import { initCoordinationService } from '../../coordination/index.js';
 
 // Sync hooks
 import {
@@ -79,7 +79,6 @@ let syncGroupPrivateKey: string;
 let nodeAId: string;
 let nodeBId: string;
 let nodeCId: string;
-let nodeDId: string;
 let resourceId1: string;
 let resourceId2: string;
 
@@ -219,14 +218,13 @@ describe('Coordination E2E — Single Instance Integration', () => {
     });
     nodeCId = nodeC.id;
 
-    const nodeD = mapDAL.createNode({
+    mapDAL.createNode({
       swarm_id: swarmId2,
       map_agent_id: 'agent-d',
       name: 'Node D',
       role: 'worker',
       capabilities: {},
     });
-    nodeDId = nodeD.id;
 
     // 6. Create 2 syncable resources
     const res1 = resourcesDAL.createResource({

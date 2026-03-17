@@ -121,11 +121,11 @@ export async function coordinationRoutes(
   });
 
   // GET /coordination/tasks -- List tasks
-  fastify.get('/coordination/tasks', {
-    preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{
+  fastify.get<{
     Querystring: { hive_id?: string; status?: string; swarm_id?: string; limit?: string; offset?: string };
-  }>, reply: FastifyReply) => {
+  }>('/coordination/tasks', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
     const { hive_id, status, swarm_id, limit, offset } = request.query;
     const service = getCoordinationService();
 
@@ -144,9 +144,9 @@ export async function coordinationRoutes(
   });
 
   // GET /coordination/tasks/:id -- Get task by ID
-  fastify.get('/coordination/tasks/:id', {
+  fastify.get<{ Params: { id: string } }>('/coordination/tasks/:id', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     const service = getCoordinationService();
     const task = service.getTask(request.params.id);
     if (!task) {
@@ -156,9 +156,9 @@ export async function coordinationRoutes(
   });
 
   // PATCH /coordination/tasks/:id -- Update task status
-  fastify.patch('/coordination/tasks/:id', {
+  fastify.patch<{ Params: { id: string } }>('/coordination/tasks/:id', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     try {
       const body = UpdateTaskSchema.parse(request.body);
       const service = getCoordinationService();
@@ -211,11 +211,11 @@ export async function coordinationRoutes(
   });
 
   // GET /coordination/contexts -- List contexts
-  fastify.get('/coordination/contexts', {
-    preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{
+  fastify.get<{
     Querystring: { hive_id?: string; type?: string; swarm_id?: string; limit?: string; offset?: string };
-  }>, reply: FastifyReply) => {
+  }>('/coordination/contexts', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
     const { hive_id, type, swarm_id, limit, offset } = request.query;
     const service = getCoordinationService();
 
@@ -234,9 +234,9 @@ export async function coordinationRoutes(
   });
 
   // GET /coordination/contexts/:id -- Get context by ID
-  fastify.get('/coordination/contexts/:id', {
+  fastify.get<{ Params: { id: string } }>('/coordination/contexts/:id', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     const service = getCoordinationService();
     const ctx = service.getContext(request.params.id);
     if (!ctx) {
@@ -279,11 +279,11 @@ export async function coordinationRoutes(
   });
 
   // GET /coordination/messages -- Get messages
-  fastify.get('/coordination/messages', {
-    preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{
+  fastify.get<{
     Querystring: { swarm_id?: string; hive_id?: string; since?: string; limit?: string; offset?: string };
-  }>, reply: FastifyReply) => {
+  }>('/coordination/messages', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
     const { swarm_id, hive_id, since, limit, offset } = request.query;
     const service = getCoordinationService();
 
@@ -302,9 +302,9 @@ export async function coordinationRoutes(
   });
 
   // PATCH /coordination/messages/:id/read -- Mark message read
-  fastify.patch('/coordination/messages/:id/read', {
+  fastify.patch<{ Params: { id: string } }>('/coordination/messages/:id/read', {
     preHandler: [authMiddleware],
-  }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     const service = getCoordinationService();
     service.markRead(request.params.id);
     return reply.send({ status: 'ok' });

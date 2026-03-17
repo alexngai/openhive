@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
+import { initDatabase, closeDatabase } from '../../db/index.js';
 import { dispatchToSwarms } from '../../events/dispatch.js';
 import type { NormalizedEvent, EventSubscription } from '../../events/types.js';
 

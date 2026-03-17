@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
+import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as eventsDAL from '../../db/dal/events.js';
 import { routeEvent } from '../../events/router.js';
 import type { NormalizedEvent } from '../../events/types.js';
 
 // Mock WebSocket dispatch (no real swarm connections in tests)
-const mockSendToSwarm = vi.fn(() => false);
+const mockSendToSwarm = vi.fn((..._args: unknown[]) => false);
 vi.mock('../../map/sync-listener.js', () => ({
   sendToSwarm: (...args: unknown[]) => mockSendToSwarm(...args),
 }));
@@ -137,8 +137,6 @@ describe('Event Router', () => {
       const event = makeGithubPushEvent({ delivery_id: 'del_skip_test' });
 
       // Count posts before
-      const beforeCount = (db.prepare('SELECT COUNT(*) as count FROM posts WHERE hive_id = ?').get(testHiveId) as { count: number }).count;
-
       routeEvent(event);
 
       // Posts still created from other matching rules, but the skip rule didn't add one
@@ -192,7 +190,7 @@ describe('Event Router', () => {
       });
 
       const event = makeGithubPushEvent({ delivery_id: 'del_map_test' });
-      const result = routeEvent(event);
+      routeEvent(event);
 
       // sendToSwarm is mocked to return false (offline), but it should be called
       expect(mockSendToSwarm).toHaveBeenCalledWith(

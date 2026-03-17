@@ -25,7 +25,7 @@ import {
   serializeFrontmatter,
   parseFrontmatter as minimemParseFrontmatter,
 } from 'minimem/session';
-import type { MemoryFrontmatter, KnowledgeLink } from 'minimem/session';
+import type { MemoryFrontmatter } from 'minimem/session';
 
 import { FilesystemStorageAdapter } from 'skill-tree';
 import type { Skill } from 'skill-tree';

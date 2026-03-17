@@ -17,7 +17,7 @@ import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import * as mapDAL from '../../db/dal/map.js';
-import * as coordinationDal from '../../db/dal/coordination.js';
+import '../../db/dal/coordination.js';
 import { materializeEvent } from '../../sync/materializer.js';
 import { signEvent, generateSigningKeyPair } from '../../sync/crypto.js';
 import type { HiveEvent } from '../../sync/types.js';

@@ -92,6 +92,7 @@ export class SwarmManager {
     }
 
     try {
+      // @ts-expect-error import.meta.url used for createRequire in bundled output
       const require_ = createRequire(import.meta.url);
       const pkgPath = require_.resolve('openswarm/package.json');
       const pkgDir = path.dirname(pkgPath);
@@ -658,7 +659,7 @@ export class SwarmManager {
     if (hosted.state === 'stopped' || hosted.state === 'failed') return;
 
     const isGraceful = code === 0;
-    const eventType = isGraceful ? 'swarm_shutdown' : 'swarm_crashed';
+    const eventType = isGraceful ? 'swarm_stopped' as const : 'swarm_offline' as const;
     const errorMsg = isGraceful
       ? 'Process exited gracefully'
       : `Process crashed (code=${code}, signal=${signal})`;
@@ -797,7 +798,7 @@ export class SwarmManager {
     }
 
     broadcastToChannel('map:discovery', {
-      type: 'swarm_restarted',
+      type: 'swarm_spawned',
       data: {
         hosted_swarm_id: hostedId,
         name: hosted.config?.name,

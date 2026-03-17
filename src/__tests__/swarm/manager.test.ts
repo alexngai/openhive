@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as path from 'path';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import { SwarmManager, SwarmHostingError } from '../../swarm/manager.js';
-import * as dal from '../../swarm/dal.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
@@ -32,7 +31,6 @@ function createTestConfig(overrides?: Partial<SwarmHostingConfig>): SwarmHosting
 
 describe('SwarmManager', () => {
   let agentId: string;
-  let agentApiKey: string;
   let hiveAgentId: string;
 
   beforeAll(async () => {
@@ -43,7 +41,6 @@ describe('SwarmManager', () => {
       description: 'Agent for manager tests',
     });
     agentId = agentResult.agent.id;
-    agentApiKey = agentResult.apiKey;
 
     // Create a second agent for ownership tests
     const hiveAgentResult = await agentsDAL.createAgent({

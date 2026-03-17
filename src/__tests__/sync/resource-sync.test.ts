@@ -11,14 +11,14 @@
  *    onTaskAssigned, onTaskStatus, onContextShared, onMessage
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from 'vitest';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import * as syncGroupsDAL from '../../db/dal/sync-groups.js';
 import * as mapDAL from '../../db/dal/map.js';
 import * as coordinationDal from '../../db/dal/coordination.js';
-import { signEvent, generateSigningKeyPair } from '../../sync/crypto.js';
+import { signEvent } from '../../sync/crypto.js';
 import { materializeEvent } from '../../sync/materializer.js';
 import { getMaterializerRepo } from '../../sync/materializer-repo.js';
 import type { HiveEvent } from '../../sync/types.js';
@@ -1188,8 +1188,8 @@ describe('MapSyncClient — Coordination Extension', () => {
       expect(ws.sentMessages.length).toBe(1);
       const msg = JSON.parse(ws.sentMessages[0]) as MapCoordinationMessage;
       expect(msg.method).toBe('x-openhive/message.send');
-      expect((msg.params as Record<string, unknown>).message_id).toBe('sm_minimal');
-      expect((msg.params as Record<string, unknown>).content_type).toBe('json');
+      expect((msg.params as unknown as Record<string, unknown>).message_id).toBe('sm_minimal');
+      expect((msg.params as unknown as Record<string, unknown>).content_type).toBe('json');
     });
   });
 

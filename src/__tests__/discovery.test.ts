@@ -134,8 +134,6 @@ describe('Resource Discovery', () => {
   describe('discoverLocalResources', () => {
     let projectDir: string;
     let memoryDir: string;
-    let skillDir: string;
-
     beforeEach(() => {
       // Create fresh test directories for each test
       projectDir = mkTestDir(TEST_ROOT, `project-${Date.now()}`);

@@ -1,10 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
-import * as agentsDAL from '../../db/dal/agents.js';
 import * as followsDAL from '../../db/dal/follows.js';
 import { agentsRoutes } from '../../api/routes/agents.js';
-import { authMiddleware, optionalAuthMiddleware } from '../../api/middleware/auth.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 

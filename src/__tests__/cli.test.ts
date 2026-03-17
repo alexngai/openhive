@@ -1,5 +1,5 @@
-import { describe, it, expect, afterAll } from 'vitest';
-import { execSync, execFileSync } from 'child_process';
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';

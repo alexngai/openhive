@@ -796,7 +796,7 @@ export async function memoryBanksRoutes(
 
         // Broadcast to WebSocket subscribers using standardized channel pattern
         const eventPayload = {
-          type: 'memory_bank_updated',
+          type: 'memory_bank_updated' as const,
           data: {
             bank_id: resource.id,
             bank_name: resource.name,
@@ -932,7 +932,7 @@ export async function memoryBanksRoutes(
 
           // Broadcast to WebSocket subscribers using standardized channel pattern
           const batchEventPayload = {
-            type: 'memory_bank_updated',
+            type: 'memory_bank_updated' as const,
             data: {
               bank_id: resource.id,
               bank_name: resource.name,

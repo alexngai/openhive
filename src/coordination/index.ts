@@ -18,7 +18,6 @@ export type {
   MapCoordinationMessage,
 } from './types.js';
 export { createCoordinationNotification } from './types.js';
-export { COORDINATION_SCHEMA } from './schema.js';
 
 // ============================================================================
 // Singleton

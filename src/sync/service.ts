@@ -660,7 +660,7 @@ export class SyncService {
         signal: AbortSignal.timeout(5000),
       }).then(async res => {
         if (res.ok) {
-          const response: HeartbeatResponse = await res.json();
+          const response = await res.json() as HeartbeatResponse;
           syncPeerConfigsDAL.updatePeerConfigHeartbeat(peer.id);
           // GAP-6: Reset failure count on successful heartbeat
           syncPeerConfigsDAL.resetFailureCount(peer.id);
@@ -782,7 +782,7 @@ export class SyncService {
         throw new Error(`Pull failed: ${response.status} ${response.statusText}`);
       }
 
-      const data: PullEventsResponse = await response.json();
+      const data = await response.json() as PullEventsResponse;
 
       if (data.events.length > 0) {
         // NEW-1: Wrap insert + materialize in a transaction so partial failures roll back
@@ -890,7 +890,7 @@ export class SyncService {
           });
 
           if (response.ok) {
-            const data: HandshakeResponse = await response.json();
+            const data = await response.json() as HandshakeResponse;
 
             // Warn if remote is on a newer protocol version
             if (data.protocol_version && data.protocol_version > SYNC_PROTOCOL_VERSION) {

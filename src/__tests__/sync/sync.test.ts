@@ -4,24 +4,24 @@
  * peer resolver, gossip, compaction, and protocol routes.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import * as postsDAL from '../../db/dal/posts.js';
-import * as commentsDAL from '../../db/dal/comments.js';
 import * as remoteAgentsDAL from '../../db/dal/remote-agents.js';
 import * as syncGroupsDAL from '../../db/dal/sync-groups.js';
 import * as syncEventsDAL from '../../db/dal/sync-events.js';
 import * as syncPeersDAL from '../../db/dal/sync-peers.js';
 import * as syncPeerConfigsDAL from '../../db/dal/sync-peer-configs.js';
 import { generateSigningKeyPair, signEvent, verifyEventSignature, generateSyncToken } from '../../sync/crypto.js';
-import { materializeEvent, materializeBatch, processPendingQueue } from '../../sync/materializer.js';
-import { onPostCreated, onCommentCreated, onVoteCast } from '../../sync/hooks.js';
+import { materializeEvent } from '../../sync/materializer.js';
+import { onPostCreated } from '../../sync/hooks.js';
 import { ManualPeerResolver, HubPeerResolver, CompositePeerResolver } from '../../sync/peer-resolver.js';
 import { buildGossipPayload, processGossipPeers } from '../../sync/gossip.js';
 import { compactEvents, createSnapshot } from '../../sync/compaction.js';
-import type { HiveEvent, GossipConfig, SyncPeer } from '../../sync/types.js';
+import type { HiveEvent, SyncPeer } from '../../sync/types.js';
+import type { GossipConfig } from '../../sync/gossip.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 const TEST_ROOT = testRoot('sync');
@@ -419,9 +419,7 @@ describe('Hive Sync System', () => {
     it('should materialize a vote_cast event', () => {
       const syncGroup = syncGroupsDAL.findSyncGroupByHive(testHiveId)!;
 
-      // Find the remote post
       const db = getDatabase();
-      const post = db.prepare('SELECT * FROM posts WHERE origin_post_id = ?').get('remote_post_1') as Record<string, unknown>;
 
       const payload = JSON.stringify({
         target_type: 'post',

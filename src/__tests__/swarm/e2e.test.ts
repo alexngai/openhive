@@ -91,7 +91,7 @@ function collectWsMessages(
   predicate: (messages: string[]) => boolean,
   timeoutMs = 10000,
 ): Promise<string[]> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve, _reject) => {
     const messages: string[] = [];
     const timer = setTimeout(() => {
       ws.removeAllListeners('message');
@@ -121,8 +121,6 @@ describe('E2E: Swarm Hosting + Terminal WebSocket', () => {
   let testAgent: { id: string; apiKey: string; name: string };
   let otherAgent: { id: string; apiKey: string; name: string };
   const agentsByKey = new Map<string, { id: string; name: string }>();
-
-  let serverAddress: string;
 
   beforeAll(async () => {
     cleanTestRoot(TEST_ROOT);
@@ -196,7 +194,7 @@ describe('E2E: Swarm Hosting + Terminal WebSocket', () => {
     );
 
     // Start listening
-    serverAddress = await app.listen({ port: SERVER_PORT, host: '127.0.0.1' });
+    await app.listen({ port: SERVER_PORT, host: '127.0.0.1' });
   }, 30000);
 
   afterAll(async () => {
