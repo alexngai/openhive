@@ -27,17 +27,28 @@ export const MAP_OPENTASKS_METHOD_SET = new Set<string>(Object.values(MAP_OPENTA
 // Request Parameter Types
 // ============================================================================
 
-export interface OpenTasksSummaryParams {
-  resource_id: string;
+/**
+ * Common resource targeting fields.
+ * Agents can identify a resource by either:
+ * - `resource_id`: the OpenHive resource ID (e.g. "res_abc123")
+ * - `path`: local filesystem path to the .opentasks directory
+ *
+ * At least one must be provided. If both are given, resource_id takes precedence.
+ * When `path` is used and no matching resource exists, OpenHive will auto-register
+ * the resource for the requesting agent (if the path is a valid .opentasks directory).
+ */
+export interface OpenTasksResourceTarget {
+  resource_id?: string;
+  path?: string;
 }
 
-export interface OpenTasksReadyParams {
-  resource_id: string;
+export interface OpenTasksSummaryParams extends OpenTasksResourceTarget {}
+
+export interface OpenTasksReadyParams extends OpenTasksResourceTarget {
   limit?: number;
 }
 
-export interface OpenTasksQueryParams {
-  resource_id: string;
+export interface OpenTasksQueryParams extends OpenTasksResourceTarget {
   filter?: {
     status?: string;
     type?: string;
@@ -47,9 +58,7 @@ export interface OpenTasksQueryParams {
   offset?: number;
 }
 
-export interface OpenTasksStatusParams {
-  resource_id: string;
-}
+export interface OpenTasksStatusParams extends OpenTasksResourceTarget {}
 
 // ============================================================================
 // Response Types

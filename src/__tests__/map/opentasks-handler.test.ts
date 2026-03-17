@@ -308,6 +308,106 @@ describe('handleOpenTasksRequest', () => {
   });
 
   // ==========================================================================
+  // Path-based resolution
+  // ==========================================================================
+
+  describe('path-based resolution', () => {
+    let pathFixtureDir: string;
+    let opentasksDirPath: string;
+
+    beforeAll(() => {
+      pathFixtureDir = mkTestDir(TEST_ROOT, 'path-fixture');
+      opentasksDirPath = createOpenTasksDir(pathFixtureDir, {
+        nodes: [
+          { id: 'p-1', type: 'task', title: 'Path Task 1', status: 'open', priority: 1 },
+          { id: 'p-2', type: 'task', title: 'Path Task 2', status: 'open', priority: 0 },
+        ],
+        edges: [],
+      });
+    });
+
+    it('resolves by .opentasks directory path (auto-registers)', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.SUMMARY,
+        { path: opentasksDirPath },
+        ctx,
+      );
+
+      expect(result).toHaveProperty('node_count', 2);
+      expect(result).toHaveProperty('daemon_connected', false);
+    });
+
+    it('resolves by parent directory path (finds .opentasks inside)', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.SUMMARY,
+        { path: pathFixtureDir },
+        ctx,
+      );
+
+      expect(result).toHaveProperty('node_count', 2);
+    });
+
+    it('returns correct ready tasks via path', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.READY,
+        { path: opentasksDirPath },
+        ctx,
+      ) as { items: Array<{ id: string }>; total: number };
+
+      const ids = result.items.map(i => i.id);
+      expect(ids).toContain('p-1');
+      expect(ids).toContain('p-2');
+      expect(result.total).toBe(2);
+    });
+
+    it('reuses auto-registered resource on subsequent calls', async () => {
+      // First call registers
+      const result1 = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.STATUS,
+        { path: opentasksDirPath },
+        ctx,
+      ) as { graph_file_exists: boolean };
+      expect(result1.graph_file_exists).toBe(true);
+
+      // Second call should find existing resource, not create a new one
+      const result2 = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.STATUS,
+        { path: opentasksDirPath },
+        ctx,
+      ) as { graph_file_exists: boolean };
+      expect(result2.graph_file_exists).toBe(true);
+    });
+
+    it('throws on invalid path (no .opentasks)', async () => {
+      const emptyDir = mkTestDir(TEST_ROOT, 'empty-dir');
+      await expect(
+        handleOpenTasksRequest(
+          MAP_OPENTASKS_METHODS.SUMMARY,
+          { path: emptyDir },
+          ctx,
+        ),
+      ).rejects.toThrow(/no valid .opentasks directory/i);
+    });
+
+    it('throws when neither resource_id nor path is provided', async () => {
+      await expect(
+        handleOpenTasksRequest(MAP_OPENTASKS_METHODS.SUMMARY, {}, ctx),
+      ).rejects.toThrow(/missing resource_id or path/i);
+    });
+
+    it('prefers resource_id over path when both provided', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.SUMMARY,
+        { resource_id: resourceId, path: opentasksDirPath },
+        ctx,
+      );
+
+      // Should use the original resource (6 nodes) not the path fixture (2 nodes)
+      expect(result).toHaveProperty('node_count', 6);
+    });
+  });
+
+  // ==========================================================================
   // Unknown method
   // ==========================================================================
 

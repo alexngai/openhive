@@ -7,10 +7,11 @@
  */
 
 import { resolve } from 'node:path';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MAP_OPENTASKS_METHODS } from './opentasks-types.js';
 import type {
+  OpenTasksResourceTarget,
   OpenTasksSummaryParams,
   OpenTasksReadyParams,
   OpenTasksQueryParams,
@@ -56,31 +57,126 @@ function resolveLocalPath(resource: SyncableResource): string | null {
   return resolve(url);
 }
 
-function resolveResource(resourceId: string, agentId: string): { resource: SyncableResource; localPath: string } {
-  const resource = resourcesDAL.findResourceById(resourceId);
-  if (!resource) {
-    throw new OpenTasksRequestError(-32001, `Resource not found: ${resourceId}`);
-  }
-
+/**
+ * Validate that a resolved resource is a local OpenTasks directory.
+ */
+function validateOpenTasksResource(
+  resource: SyncableResource,
+  agentId: string,
+  label: string,
+): string {
   if (!resourcesDAL.canAccessResource(agentId, resource)) {
-    throw new OpenTasksRequestError(-32003, `Access denied to resource: ${resourceId}`);
+    throw new OpenTasksRequestError(-32003, `Access denied to resource: ${label}`);
   }
 
   const meta = resource.metadata as Record<string, unknown> | null;
   if (resource.resource_type !== 'task' || !meta?.opentasks) {
-    throw new OpenTasksRequestError(-32602, `Resource is not an OpenTasks resource: ${resourceId}`);
+    throw new OpenTasksRequestError(-32602, `Resource is not an OpenTasks resource: ${label}`);
   }
 
   const localPath = resolveLocalPath(resource);
   if (!localPath) {
-    throw new OpenTasksRequestError(-32002, `Resource is not local to this instance: ${resourceId}`);
+    throw new OpenTasksRequestError(-32002, `Resource is not local to this instance: ${label}`);
   }
 
   if (!existsSync(localPath) || !statSync(localPath).isDirectory()) {
-    throw new OpenTasksRequestError(-32001, `Resource path does not exist: ${resourceId}`);
+    throw new OpenTasksRequestError(-32001, `Resource path does not exist: ${label}`);
   }
 
-  return { resource, localPath };
+  return localPath;
+}
+
+/**
+ * Check if a path is a valid .opentasks directory (has config.json or graph.jsonl).
+ */
+function isValidOpenTasksDir(dirPath: string): boolean {
+  if (!existsSync(dirPath) || !statSync(dirPath).isDirectory()) return false;
+  return existsSync(join(dirPath, 'config.json')) || existsSync(join(dirPath, 'graph.jsonl'));
+}
+
+/**
+ * Read metadata from an .opentasks directory for auto-registration.
+ */
+function readOpenTasksMeta(opentasksDir: string): Record<string, unknown> {
+  const meta: Record<string, unknown> = { opentasks: true };
+  const configPath = join(opentasksDir, 'config.json');
+  if (existsSync(configPath)) {
+    try {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+      if (config.location?.hash) meta.location_hash = config.location.hash;
+      if (config.location?.name) meta.location_name = config.location.name;
+    } catch { /* ignore parse errors */ }
+  }
+  return meta;
+}
+
+/**
+ * Auto-register a local .opentasks directory as a syncable resource.
+ * Called when an agent provides a path that doesn't match any existing resource.
+ */
+function autoRegisterResource(opentasksPath: string, agentId: string): SyncableResource {
+  const meta = readOpenTasksMeta(opentasksPath);
+  const { resource } = resourcesDAL.upsertDiscoveredResource({
+    resource_type: 'task',
+    name: `auto/${opentasksPath.replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').slice(0, 60)}`,
+    description: `Auto-registered OpenTasks store at ${opentasksPath}`,
+    git_remote_url: opentasksPath,
+    visibility: 'private',
+    owner_agent_id: agentId,
+    scope: 'agent',
+    metadata: meta,
+  });
+  return resource;
+}
+
+/**
+ * Resolve a resource from either resource_id or path.
+ * - resource_id: direct lookup by ID
+ * - path: lookup by local filesystem path, with auto-register fallback
+ */
+function resolveResource(
+  params: OpenTasksResourceTarget,
+  agentId: string,
+): { resource: SyncableResource; localPath: string } {
+  // Strategy 1: resolve by resource_id (existing behavior)
+  if (params.resource_id) {
+    const resource = resourcesDAL.findResourceById(params.resource_id);
+    if (!resource) {
+      throw new OpenTasksRequestError(-32001, `Resource not found: ${params.resource_id}`);
+    }
+    const localPath = validateOpenTasksResource(resource, agentId, params.resource_id);
+    return { resource, localPath };
+  }
+
+  // Strategy 2: resolve by path
+  if (params.path) {
+    const normalizedPath = resolve(params.path);
+
+    // Check the path itself, and also check if it's a parent containing .opentasks/
+    let opentasksPath = normalizedPath;
+    if (!isValidOpenTasksDir(normalizedPath)) {
+      const nested = join(normalizedPath, '.opentasks');
+      if (isValidOpenTasksDir(nested)) {
+        opentasksPath = nested;
+      } else {
+        throw new OpenTasksRequestError(-32001, `No valid .opentasks directory at path: ${params.path}`);
+      }
+    }
+
+    // Try to find an existing resource matching this path
+    const existing = resourcesDAL.findResourceByLocalPath(opentasksPath, agentId, 'task');
+    if (existing) {
+      const localPath = validateOpenTasksResource(existing, agentId, params.path);
+      return { resource: existing, localPath };
+    }
+
+    // Auto-register the resource for this agent
+    const resource = autoRegisterResource(opentasksPath, agentId);
+    const localPath = validateOpenTasksResource(resource, agentId, params.path);
+    return { resource, localPath };
+  }
+
+  throw new OpenTasksRequestError(-32602, 'Invalid params: missing resource_id or path');
 }
 
 // ============================================================================
@@ -108,10 +204,7 @@ export async function handleOpenTasksRequest(
   switch (method) {
     case MAP_OPENTASKS_METHODS.SUMMARY: {
       const p = params as OpenTasksSummaryParams;
-      if (!p?.resource_id) {
-        throw new OpenTasksRequestError(-32602, 'Invalid params: missing resource_id');
-      }
-      const { localPath } = resolveResource(p.resource_id, context.agentId);
+      const { localPath } = resolveResource(p ?? {}, context.agentId);
       const client = new OpenHiveOpenTasksClient(localPath);
       await client.connectDaemon();
       try {
@@ -124,11 +217,8 @@ export async function handleOpenTasksRequest(
 
     case MAP_OPENTASKS_METHODS.READY: {
       const p = params as OpenTasksReadyParams;
-      if (!p?.resource_id) {
-        throw new OpenTasksRequestError(-32602, 'Invalid params: missing resource_id');
-      }
-      const limit = Math.min(Math.max(p.limit || 50, 1), 200);
-      const { localPath } = resolveResource(p.resource_id, context.agentId);
+      const { localPath } = resolveResource(p ?? {}, context.agentId);
+      const limit = Math.min(Math.max(p?.limit || 50, 1), 200);
       const client = new OpenHiveOpenTasksClient(localPath);
       await client.connectDaemon();
       try {
@@ -141,10 +231,7 @@ export async function handleOpenTasksRequest(
 
     case MAP_OPENTASKS_METHODS.QUERY: {
       const p = params as OpenTasksQueryParams;
-      if (!p?.resource_id) {
-        throw new OpenTasksRequestError(-32602, 'Invalid params: missing resource_id');
-      }
-      const { localPath } = resolveResource(p.resource_id, context.agentId);
+      const { localPath } = resolveResource(p ?? {}, context.agentId);
       const client = new OpenHiveOpenTasksClient(localPath);
       const connected = await client.connectDaemon();
       try {
@@ -160,11 +247,11 @@ export async function handleOpenTasksRequest(
         }
 
         const result = await client.queryNodes({
-          type: p.filter?.type || 'task',
-          status: p.filter?.status,
-          archived: p.filter?.archived ?? false,
-          limit: Math.min(Math.max(p.limit || 50, 1), 200),
-          offset: p.offset || 0,
+          type: p?.filter?.type || 'task',
+          status: p?.filter?.status,
+          archived: p?.filter?.archived ?? false,
+          limit: Math.min(Math.max(p?.limit || 50, 1), 200),
+          offset: p?.offset || 0,
         });
 
         return {
@@ -178,10 +265,7 @@ export async function handleOpenTasksRequest(
 
     case MAP_OPENTASKS_METHODS.STATUS: {
       const p = params as OpenTasksStatusParams;
-      if (!p?.resource_id) {
-        throw new OpenTasksRequestError(-32602, 'Invalid params: missing resource_id');
-      }
-      const { localPath } = resolveResource(p.resource_id, context.agentId);
+      const { localPath } = resolveResource(p ?? {}, context.agentId);
       const client = new OpenHiveOpenTasksClient(localPath);
       const daemonRunning = await client.isDaemonRunning();
       const graphPath = join(localPath, 'graph.jsonl');

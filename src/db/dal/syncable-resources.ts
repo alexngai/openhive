@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid';
 import { randomBytes } from 'crypto';
+import { resolve } from 'node:path';
 import { getDatabase } from '../index.js';
 import type {
   SyncableResource,
@@ -176,6 +177,53 @@ export function findResourceByRepoName(
   const normalizedInput = `${host.toLowerCase()}/${fullName.toLowerCase()}`;
   const resources = findResourcesByRepoUrl(normalizedInput, resourceType);
   return resources.length > 0 ? resources[0] : null;
+}
+
+/**
+ * Find an OpenTasks resource by its local filesystem path.
+ * Normalizes both the input path and stored git_remote_url before comparing.
+ * Returns the first accessible match for the given agent.
+ */
+export function findResourceByLocalPath(
+  localPath: string,
+  agentId: string,
+  resourceType?: SyncableResourceType
+): SyncableResource | null {
+  const db = getDatabase();
+  const normalizedInput = resolve(localPath);
+
+  let query = `
+    SELECT r.* FROM syncable_resources r
+    WHERE (
+      r.owner_agent_id = ?
+      OR r.visibility = 'public'
+      OR r.id IN (SELECT resource_id FROM resource_subscriptions WHERE agent_id = ?)
+    )
+  `;
+  const params: unknown[] = [agentId, agentId];
+
+  if (resourceType) {
+    query += ' AND r.resource_type = ?';
+    params.push(resourceType);
+  }
+
+  const rows = db.prepare(query).all(...params) as Record<string, unknown>[];
+
+  for (const row of rows) {
+    const storedPath = row.git_remote_url as string;
+    // Skip remote URLs — only match local paths
+    if (storedPath.startsWith('http') || storedPath.startsWith('git://') || storedPath.startsWith('ssh://')) {
+      continue;
+    }
+    if (resolve(storedPath) === normalizedInput) {
+      return {
+        ...row,
+        metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
+      } as unknown as SyncableResource;
+    }
+  }
+
+  return null;
 }
 
 export interface UpdateResourceInput {
