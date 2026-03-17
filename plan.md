@@ -12,35 +12,48 @@ When an agent subscribes to a federated `task` resource (or when one is material
 3. Make the existing content API endpoints work against the local clone
 4. Optionally allow write-back (push) for agents with `write`/`admin` permission
 
+## Immediate Scope
+
+The sync flow (sections 4–6 below): clone-on-subscribe, pull-on-sync-event, and the content API `resolveLocalPath()` change. These are the minimal pieces that make federated task resources queryable.
+
+---
+
 ## Design
 
 ### 1. Storage Layout
 
-Add a `resourceStorage` section to config (alongside existing `storage`):
+The git repo root for an OpenTasks store **is** the `.opentasks/` directory itself (that's what discovery registers as `git_remote_url`, and what the `OpenHiveOpenTasksClient` constructor receives). Clones go directly into the resource directory — no extra nesting:
+
+```
+./data/resources/<resource_id>/    ← git repo root = opentasks dir
+├── .git/
+├── graph.jsonl
+├── config.json
+└── daemon.sock                    ← never exists for clones (no local daemon)
+```
+
+`local_path` points here. The `OpenHiveOpenTasksClient` takes this path directly. The client already handles the no-daemon case gracefully: `connectDaemon()` returns `false`, all queries fall back to JSONL parsing.
+
+Using `resource_id` (the local ID, e.g. `res_abc123`) as the directory name because:
+- Unique per instance (no collision)
+- Maps directly to existing DAL lookups
+- Cleanup on unsubscribe/unpublish is straightforward
+
+### 2. Config
 
 ```ts
 // in config.ts, inside the config schema
 resourceStorage: z.object({
   /** Base directory for cloned/managed resource data */
   dataDir: z.string().default('./data/resources'),
+  /** Auto-clone federated resources on subscribe (if false, require explicit sync trigger) */
+  autoClone: z.boolean().default(true),
 }).default({}),
 ```
 
-Local clones live at:
-```
-<dataDir>/<resource_id>/
-  └── .opentasks/         (or the resource content directly)
-      ├── .git/
-      ├── graph.jsonl
-      └── config.json
-```
+Follows the existing pattern (`swarmHosting.data_dir` → `./data/swarms`, `headscale.dataDir` → `./data/headscale`). Disk quotas and pull intervals are real concerns but can be added later without schema changes — the config object is extensible.
 
-Using `resource_id` (the local ID, e.g. `res_abc123`) as the directory name, not the origin instance/resource, because:
-- It's unique per instance (no collision)
-- It maps directly to the existing DAL lookups
-- Cleanup on unsubscribe/unpublish is straightforward
-
-### 2. Schema Changes
+### 3. Schema Changes
 
 Add a `local_path` column to `syncable_resources`:
 
@@ -52,7 +65,7 @@ ALTER TABLE syncable_resources ADD COLUMN local_path TEXT;
 - For federated resources that get cloned: `local_path` = the resolved absolute path to the clone
 - `resolveLocalPath()` in `resource-content.ts` checks `local_path` first, falls back to `git_remote_url`
 
-### 3. Git Clone/Sync Service
+### 4. Git Clone/Sync Service
 
 New file: `src/resources/git-sync.ts`
 
@@ -84,7 +97,7 @@ export interface GitSyncService {
 
 Implementation uses `child_process.execFile('git', [...])` — same approach as the existing `src/utils/git-remote.ts` which already shells out to git for `ls-remote`.
 
-### 4. Clone-on-Subscribe Hook
+### 5. Clone-on-Subscribe Hook
 
 Modify `POST /resources/:id/subscribe` in `resources.ts`:
 
@@ -93,9 +106,11 @@ When an agent subscribes to a federated `task` resource that has a remote `git_r
 2. On success, update the resource's `local_path` in the DB
 3. The content API endpoints now work because `resolveLocalPath()` finds the `local_path`
 
-This should be **async / non-blocking** — the subscribe response returns immediately, and the clone happens in the background. A `resource_cloning` → `resource_cloned` event pair on WebSocket lets the agent know when it's ready.
+This is **async / non-blocking** — the subscribe response returns immediately, and the clone happens in the background. A `resource_cloning` → `resource_cloned` event pair on WebSocket lets the agent know when it's ready.
 
-### 5. Sync-on-Event Hook
+If the resource is already cloned (`local_path IS NOT NULL`), skip the clone — just create the subscription.
+
+### 6. Sync-on-Event Hook
 
 Modify `materializeResourceSynced()` in `materializer.ts`:
 
@@ -104,9 +119,9 @@ When a `resource_synced` event arrives for a resource that has a `local_path`:
 2. Update `last_commit_hash` in the DB
 3. Broadcast `resource_updated` on WebSocket
 
-This replaces the current behavior which only updates the commit hash metadata — now it actually pulls the content.
+If `local_path` is NULL (nobody subscribed locally, no clone exists), no-op — keeps the existing metadata-only behavior.
 
-### 6. Content API Changes
+### 7. Content API Changes
 
 Modify `resolveLocalPath()` in `resource-content.ts`:
 
@@ -127,41 +142,36 @@ function resolveLocalPath(resource: SyncableResource): string | null {
 
 No other content API changes needed — the OpenTasks client already works against any local directory.
 
-### 7. Git Endpoint on OpenHive (for serving repos to other instances)
-
-New route group: `POST /api/v1/resources/:id/git/*`
-
-This is the counterpart — so that when Instance B clones from Instance A, there's an endpoint to clone from. Two options:
-
-**Option A: Smart HTTP git transport** — Implement git's smart HTTP protocol (`/info/refs?service=git-upload-pack`, `/git-upload-pack`). This is complex but fully self-contained.
-
-**Option B: Redirect to actual git remote** — If the resource's `git_remote_url` is a GitHub/Gitea URL, just tell the cloning instance to clone from there directly. OpenHive provides the URL + auth token. Simpler but requires the git host to be accessible from Instance B.
-
-**Recommendation: Option B first**, with Option A as a future enhancement. Most resources will have their git repos hosted somewhere accessible. For fully self-contained instances (no external git host), we'd need Option A later.
-
-For Option B, the clone URL is just the `git_remote_url` from the resource, exposed via the existing resource metadata API (already returned to subscribed agents with access).
-
 ### 8. Cleanup
 
 - `materializeResourceUnpublished()`: call `gitSyncService.removeClone(resourceId)` before deleting the DB row
-- `DELETE /resources/:id/subscribe` (unsubscribe): if no other subscribers remain, call `removeClone()`
-- Startup: scan `<dataDir>` for orphaned clones (resource deleted but directory remains) and clean up
+- Startup: verify each `local_path` still exists on disk, clear stale values
 
-## Files to Create/Modify
+Cleanup-on-last-unsubscribe is deferred — keeping clones around avoids re-cloning if someone re-subscribes, and the storage cost is low for JSONL-based graphs.
 
-### New files:
-1. `src/resources/git-sync.ts` — GitSyncService implementation
-2. `src/resources/types.ts` — Types for the service (or add to existing `types.ts`)
+### 9. Clone Failure Handling
 
-### Modified files:
-1. `src/config.ts` — Add `resourceStorage.dataDir` config
-2. `src/db/schema.ts` — Add migration for `local_path` column
-3. `src/types.ts` — Add `local_path` to `SyncableResource` type
-4. `src/db/dal/syncable-resources.ts` — Read/write `local_path`, add `updateLocalPath()` function
-5. `src/api/routes/resource-content.ts` — Update `resolveLocalPath()` to check `local_path`
-6. `src/api/routes/resources.ts` — Hook into subscribe to trigger clone
-7. `src/sync/materializer.ts` — Hook into `resource_synced` to trigger pull
-8. `src/discovery/index.ts` — No changes needed (local discovery doesn't use `local_path`)
+When a clone fails (network error, auth required, disk full):
+- Subscribe still succeeds (subscription = access grant, not data availability)
+- `local_path` stays `NULL`
+- Content API returns the existing "Resource does not point to a local filesystem path" error
+- Retry path: an explicit `POST /resources/:id/sync` endpoint to re-trigger the clone
+
+---
+
+## Scenarios
+
+| # | Scenario | Behavior |
+|---|----------|----------|
+| 1 | **Fresh subscribe to federated task resource** | Clone triggers async, `local_path` set on success, WS event emitted |
+| 2 | **Resource already cloned, another agent subscribes** | `local_path` already set → skip clone, create subscription only |
+| 3 | **`resource_synced` event arrives** | If `local_path` set → `git pull`. If NULL → no-op |
+| 4 | **Last subscriber unsubscribes** | Keep clone around (lazy cleanup). `local_path` persists |
+| 5 | **`resource_unpublished` event arrives** | Delete clone, set `local_path = NULL`, delete DB row |
+| 6 | **OpenHive restarts** | Clones persist on disk, `local_path` in DB → works immediately |
+| 7 | **Clone fails** | Subscribe succeeds, `local_path` stays NULL, manual retry via sync endpoint |
+
+---
 
 ## Sequence Diagram
 
@@ -196,12 +206,65 @@ Instance A                          Instance B
     |                                   |   → WS: resource_updated
 ```
 
-## Open Questions
+---
 
-1. **Auth for cloning**: How does Instance B authenticate when cloning from Instance A's git URL? If it's a GitHub URL, maybe a PAT in the resource metadata. If it's Instance A's own git endpoint (Option A), use the sync group's pre-auth keys. For now, we can support unauthenticated (public repos) and URL-embedded credentials.
+## Files to Create/Modify
 
-2. **Clone all resource types or just tasks?**: Memory banks and skills would also benefit from local clones. The design above works for any resource type — should we clone all subscribed federated resources, or only `task` type initially?
+### New files:
+1. `src/resources/git-sync.ts` — GitSyncService implementation
 
-3. **Write-back**: When Agent Y on Instance B modifies a cloned task graph, should the push go directly to the git remote, or should it go through Instance A's API? Direct git push is simpler but bypasses Instance A's access control.
+### Modified files:
+1. `src/config.ts` — Add `resourceStorage` config section
+2. `src/db/schema.ts` — Add migration for `local_path` column
+3. `src/types.ts` — Add `local_path` to `SyncableResource` type
+4. `src/db/dal/syncable-resources.ts` — Read/write `local_path`, add `updateLocalPath()` function
+5. `src/api/routes/resource-content.ts` — Update `resolveLocalPath()` to check `local_path`
+6. `src/api/routes/resources.ts` — Hook into subscribe to trigger clone
+7. `src/sync/materializer.ts` — Hook into `resource_synced` to trigger pull
 
-4. **Disk quotas**: Should there be a per-resource or global storage limit for clones? The config could include `resourceStorage.maxTotalSize` and `resourceStorage.maxPerResource`.
+---
+
+## Future Work (not in immediate scope)
+
+### Git Endpoint for Serving Repos
+
+Currently Instance B clones from whatever URL is in `git_remote_url` (typically a GitHub/Gitea URL). For fully self-contained instances with no external git host, OpenHive would need to serve git repos itself:
+
+- **Option A: Smart HTTP git transport** — Implement `/info/refs?service=git-upload-pack` and `/git-upload-pack`. Complex but fully self-contained.
+- **Option B: Redirect to actual git remote** — Expose the `git_remote_url` + auth token to the cloning instance. Simpler but requires the git host to be accessible from Instance B.
+
+Recommendation: Option B first (most resources have externally-hosted git repos), Option A as a later enhancement.
+
+### Auth for Cloning
+
+How Instance B authenticates when cloning:
+- Public repos: no auth needed (works today)
+- GitHub/Gitea PAT: embedded in resource metadata or provided via config
+- Instance A's own git endpoint (Option A above): use sync group pre-auth keys
+
+### Disk Quotas
+
+```ts
+// Future config additions
+resourceStorage: z.object({
+  // ...existing...
+  maxTotalBytes: z.number().default(0),       // 0 = unlimited
+  maxPerResourceBytes: z.number().default(0), // 0 = unlimited
+  pullInterval: z.number().default(0),        // ms, 0 = sync-event-only
+  cleanupOnUnsubscribe: z.boolean().default(false),
+}).default({}),
+```
+
+### Write-Back
+
+When Agent Y on Instance B modifies a cloned task graph, push options:
+- **Direct git push**: simpler but bypasses Instance A's access control
+- **Route through Instance A's API**: respects access control but requires API support for task mutations
+
+### Read-Only Daemon for Clones
+
+OpenHive could optionally start a read-only OpenTasks daemon for cloned resources to enable richer queries beyond JSONL parsing. The `OpenHiveOpenTasksClient` already supports both daemon and JSONL modes, so this would be transparent to the content API.
+
+### Clone All Resource Types
+
+The design works for memory banks and skills too — not just tasks. Extending to other types is a config flag, not an architecture change.
