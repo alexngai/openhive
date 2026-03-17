@@ -1,5 +1,7 @@
 import { nanoid } from 'nanoid';
 import { randomBytes } from 'crypto';
+import { resolve, normalize } from 'node:path';
+import { realpathSync, existsSync } from 'node:fs';
 import { getDatabase } from '../index.js';
 import type {
   SyncableResource,
@@ -176,6 +178,113 @@ export function findResourceByRepoName(
   const normalizedInput = `${host.toLowerCase()}/${fullName.toLowerCase()}`;
   const resources = findResourcesByRepoUrl(normalizedInput, resourceType);
   return resources.length > 0 ? resources[0] : null;
+}
+
+/**
+ * Canonicalize a local path: resolve symlinks if the path exists,
+ * otherwise fall back to resolve() + normalize() for consistent comparison.
+ */
+function canonicalPath(p: string): string {
+  const resolved = resolve(normalize(p));
+  try {
+    if (existsSync(resolved)) {
+      return realpathSync(resolved);
+    }
+  } catch { /* fall through */ }
+  return resolved;
+}
+
+/**
+ * Find an OpenTasks resource by its local filesystem path.
+ * Uses realpath to resolve symlinks and normalize path variants so that
+ * relative, absolute, and symlinked paths all match the same resource.
+ * Returns the first accessible match for the given agent.
+ */
+export function findResourceByLocalPath(
+  localPath: string,
+  agentId: string,
+  resourceType?: SyncableResourceType
+): SyncableResource | null {
+  const db = getDatabase();
+  const normalizedInput = canonicalPath(localPath);
+
+  let query = `
+    SELECT r.* FROM syncable_resources r
+    WHERE (
+      r.owner_agent_id = ?
+      OR r.visibility = 'public'
+      OR r.id IN (SELECT resource_id FROM resource_subscriptions WHERE agent_id = ?)
+    )
+  `;
+  const params: unknown[] = [agentId, agentId];
+
+  if (resourceType) {
+    query += ' AND r.resource_type = ?';
+    params.push(resourceType);
+  }
+
+  const rows = db.prepare(query).all(...params) as Record<string, unknown>[];
+
+  for (const row of rows) {
+    const storedPath = row.git_remote_url as string;
+    // Skip remote URLs — only match local paths
+    if (storedPath.startsWith('http') || storedPath.startsWith('git://') || storedPath.startsWith('ssh://')) {
+      continue;
+    }
+    if (canonicalPath(storedPath) === normalizedInput) {
+      return {
+        ...row,
+        metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
+      } as unknown as SyncableResource;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Find a resource by its OpenTasks location hash (from .opentasks/config.json).
+ * The location hash is stored in metadata.location_hash and is the canonical
+ * OpenTasks identity — stable across machines and OpenHive instances.
+ */
+export function findResourceByLocationHash(
+  locationHash: string,
+  agentId: string,
+  resourceType?: SyncableResourceType
+): SyncableResource | null {
+  const db = getDatabase();
+
+  let query = `
+    SELECT r.* FROM syncable_resources r
+    WHERE (
+      r.owner_agent_id = ?
+      OR r.visibility = 'public'
+      OR r.id IN (SELECT resource_id FROM resource_subscriptions WHERE agent_id = ?)
+    )
+  `;
+  const params: unknown[] = [agentId, agentId];
+
+  if (resourceType) {
+    query += ' AND r.resource_type = ?';
+    params.push(resourceType);
+  }
+
+  const rows = db.prepare(query).all(...params) as Record<string, unknown>[];
+
+  for (const row of rows) {
+    if (!row.metadata) continue;
+    try {
+      const meta = JSON.parse(row.metadata as string);
+      if (meta.location_hash === locationHash) {
+        return {
+          ...row,
+          metadata: meta,
+        } as unknown as SyncableResource;
+      }
+    } catch { /* skip malformed metadata */ }
+  }
+
+  return null;
 }
 
 export interface UpdateResourceInput {
