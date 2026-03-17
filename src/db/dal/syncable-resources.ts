@@ -243,11 +243,12 @@ export function findResourceByLocalPath(
 }
 
 /**
- * Find a resource by its scoped name (e.g. "project/opentasks", "global/opentasks").
- * Used by remote agents that know the resource name but not its local path.
+ * Find a resource by its OpenTasks location hash (from .opentasks/config.json).
+ * The location hash is stored in metadata.location_hash and is the canonical
+ * OpenTasks identity — stable across machines and OpenHive instances.
  */
-export function findResourceByName(
-  name: string,
+export function findResourceByLocationHash(
+  locationHash: string,
   agentId: string,
   resourceType?: SyncableResourceType
 ): SyncableResource | null {
@@ -255,29 +256,35 @@ export function findResourceByName(
 
   let query = `
     SELECT r.* FROM syncable_resources r
-    WHERE r.name = ?
-    AND (
+    WHERE (
       r.owner_agent_id = ?
       OR r.visibility = 'public'
       OR r.id IN (SELECT resource_id FROM resource_subscriptions WHERE agent_id = ?)
     )
   `;
-  const params: unknown[] = [name, agentId, agentId];
+  const params: unknown[] = [agentId, agentId];
 
   if (resourceType) {
     query += ' AND r.resource_type = ?';
     params.push(resourceType);
   }
 
-  query += ' LIMIT 1';
+  const rows = db.prepare(query).all(...params) as Record<string, unknown>[];
 
-  const row = db.prepare(query).get(...params) as Record<string, unknown> | undefined;
-  if (!row) return null;
+  for (const row of rows) {
+    if (!row.metadata) continue;
+    try {
+      const meta = JSON.parse(row.metadata as string);
+      if (meta.location_hash === locationHash) {
+        return {
+          ...row,
+          metadata: meta,
+        } as unknown as SyncableResource;
+      }
+    } catch { /* skip malformed metadata */ }
+  }
 
-  return {
-    ...row,
-    metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
-  } as unknown as SyncableResource;
+  return null;
 }
 
 export interface UpdateResourceInput {

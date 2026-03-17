@@ -32,17 +32,18 @@ export const MAP_OPENTASKS_METHOD_SET = new Set<string>(Object.values(MAP_OPENTA
  * Agents can identify a resource by one of:
  * - `resource_id`: the OpenHive resource ID (e.g. "res_abc123")
  * - `path`: local filesystem path to the .opentasks directory (resolves symlinks)
- * - `name`: scoped resource name (e.g. "project/opentasks", "global/opentasks")
+ * - `location_hash`: the OpenTasks location hash from .opentasks/config.json
  *
- * At least one must be provided. Priority: resource_id > path > name.
+ * At least one must be provided. Priority: resource_id > path > location_hash.
  * When `path` is used and no matching resource exists, OpenHive will auto-register
  * the resource for the requesting agent (if the path is a valid .opentasks directory).
- * The `name` strategy is useful for remote agents that know the scope but not the path.
+ * The `location_hash` is the canonical OpenTasks identity — stable across machines
+ * and OpenHive instances that have the same graph.
  */
 export interface OpenTasksResourceTarget {
   resource_id?: string;
   path?: string;
-  name?: string;
+  location_hash?: string;
 }
 
 export interface OpenTasksSummaryParams extends OpenTasksResourceTarget {}

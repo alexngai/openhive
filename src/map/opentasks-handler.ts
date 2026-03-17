@@ -143,12 +143,12 @@ function autoRegisterResource(opentasksPath: string, agentId: string): SyncableR
 }
 
 /**
- * Resolve a resource from resource_id, path, or name.
- * Priority: resource_id > path > name.
+ * Resolve a resource from resource_id, path, or location_hash.
+ * Priority: resource_id > path > location_hash.
  *
- * - resource_id: direct lookup by ID
+ * - resource_id: direct lookup by OpenHive ID (instance-local)
  * - path: lookup by local filesystem path (resolves symlinks), auto-registers if new
- * - name: lookup by scoped name (e.g. "project/opentasks") — for remote agents
+ * - location_hash: lookup by OpenTasks location hash (stable across instances)
  */
 function resolveResource(
   params: OpenTasksResourceTarget,
@@ -192,17 +192,17 @@ function resolveResource(
     return { resource, localPath };
   }
 
-  // Strategy 3: resolve by scoped name (for remote agents)
-  if (params.name) {
-    const resource = resourcesDAL.findResourceByName(params.name, agentId, 'task');
+  // Strategy 3: resolve by OpenTasks location hash (stable across instances)
+  if (params.location_hash) {
+    const resource = resourcesDAL.findResourceByLocationHash(params.location_hash, agentId, 'task');
     if (!resource) {
-      throw new OpenTasksRequestError(-32001, `Resource not found with name: ${params.name}`);
+      throw new OpenTasksRequestError(-32001, `Resource not found with location_hash: ${params.location_hash}`);
     }
-    const localPath = validateOpenTasksResource(resource, agentId, params.name);
+    const localPath = validateOpenTasksResource(resource, agentId, params.location_hash);
     return { resource, localPath };
   }
 
-  throw new OpenTasksRequestError(-32602, 'Invalid params: missing resource_id, path, or name');
+  throw new OpenTasksRequestError(-32602, 'Invalid params: missing resource_id, path, or location_hash');
 }
 
 // ============================================================================

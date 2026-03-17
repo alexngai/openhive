@@ -50,7 +50,7 @@ function buildGraphJsonl(nodes: GraphNode[], edges: GraphEdge[]): string {
 
 function createOpenTasksDir(
   baseDir: string,
-  opts: { nodes?: GraphNode[]; edges?: GraphEdge[] } = {},
+  opts: { nodes?: GraphNode[]; edges?: GraphEdge[]; locationHash?: string; locationName?: string } = {},
 ): string {
   const opentasksDir = path.join(baseDir, '.opentasks');
   fs.mkdirSync(opentasksDir, { recursive: true });
@@ -58,6 +58,12 @@ function createOpenTasksDir(
     path.join(opentasksDir, 'graph.jsonl'),
     buildGraphJsonl(opts.nodes || [], opts.edges || []),
   );
+  if (opts.locationHash) {
+    const config: Record<string, unknown> = {
+      location: { hash: opts.locationHash, name: opts.locationName || opts.locationHash },
+    };
+    fs.writeFileSync(path.join(opentasksDir, 'config.json'), JSON.stringify(config));
+  }
   return opentasksDir;
 }
 
@@ -389,10 +395,10 @@ describe('handleOpenTasksRequest', () => {
       ).rejects.toThrow(/no valid .opentasks directory/i);
     });
 
-    it('throws when neither resource_id nor path nor name is provided', async () => {
+    it('throws when neither resource_id nor path nor location_hash is provided', async () => {
       await expect(
         handleOpenTasksRequest(MAP_OPENTASKS_METHODS.SUMMARY, {}, ctx),
-      ).rejects.toThrow(/missing resource_id, path, or name/i);
+      ).rejects.toThrow(/missing resource_id, path, or location_hash/i);
     });
 
     it('resolves symlinked path to same resource as real path', async () => {
@@ -441,37 +447,37 @@ describe('handleOpenTasksRequest', () => {
   });
 
   // ==========================================================================
-  // Name-based resolution (for remote agents)
+  // Location hash resolution (cross-instance identity)
   // ==========================================================================
 
-  describe('name-based resolution', () => {
-    let namedResourceId: string;
-    let namedDir: string;
+  describe('location_hash resolution', () => {
+    const HASH_A = 'k7m2x9p4';
 
     beforeAll(() => {
-      namedDir = mkTestDir(TEST_ROOT, 'named-opentasks');
-      const opentasksDir = createOpenTasksDir(namedDir, {
+      const hashDir = mkTestDir(TEST_ROOT, 'hash-opentasks');
+      const opentasksDir = createOpenTasksDir(hashDir, {
         nodes: [
-          { id: 'n-1', type: 'task', title: 'Named Task', status: 'open', priority: 1 },
+          { id: 'h-1', type: 'task', title: 'Hash Task', status: 'open', priority: 1 },
         ],
         edges: [],
+        locationHash: HASH_A,
+        locationName: 'test-workspace',
       });
 
-      const resource = resourcesDAL.createResource({
-        name: 'project/opentasks',
+      resourcesDAL.createResource({
+        name: 'hash-test/opentasks',
         resource_type: 'task',
         git_remote_url: opentasksDir,
         owner_agent_id: agentId,
         visibility: 'public',
-        metadata: { opentasks: true },
+        metadata: { opentasks: true, location_hash: HASH_A, location_name: 'test-workspace' },
       });
-      namedResourceId = resource.id;
     });
 
-    it('resolves resource by scoped name', async () => {
+    it('resolves resource by location_hash', async () => {
       const result = await handleOpenTasksRequest(
         MAP_OPENTASKS_METHODS.SUMMARY,
-        { name: 'project/opentasks' },
+        { location_hash: HASH_A },
         ctx,
       );
 
@@ -479,82 +485,113 @@ describe('handleOpenTasksRequest', () => {
       expect(result).toHaveProperty('daemon_connected', false);
     });
 
-    it('returns ready tasks via name', async () => {
+    it('returns ready tasks via location_hash', async () => {
       const result = await handleOpenTasksRequest(
         MAP_OPENTASKS_METHODS.READY,
-        { name: 'project/opentasks' },
+        { location_hash: HASH_A },
         ctx,
       ) as { items: Array<{ id: string }>; total: number };
 
       expect(result.items).toHaveLength(1);
-      expect(result.items[0].id).toBe('n-1');
+      expect(result.items[0].id).toBe('h-1');
     });
 
-    it('throws on non-existent name', async () => {
+    it('throws on non-existent location_hash', async () => {
       await expect(
         handleOpenTasksRequest(
           MAP_OPENTASKS_METHODS.SUMMARY,
-          { name: 'nonexistent/opentasks' },
+          { location_hash: 'nonexistent' },
           ctx,
         ),
-      ).rejects.toThrow(/not found with name/i);
+      ).rejects.toThrow(/not found with location_hash/i);
     });
 
-    it('prefers resource_id over name', async () => {
+    it('prefers resource_id over location_hash', async () => {
       const result = await handleOpenTasksRequest(
         MAP_OPENTASKS_METHODS.SUMMARY,
-        { resource_id: resourceId, name: 'project/opentasks' },
+        { resource_id: resourceId, location_hash: HASH_A },
         ctx,
       );
 
-      // Should use the original resource (6 nodes) not the named one (1 node)
+      // Should use the original resource (6 nodes) not the hash resource (1 node)
       expect(result).toHaveProperty('node_count', 6);
     });
 
-    it('prefers path over name', async () => {
-      // Path fixture has 2 nodes, named resource has 1
-      const pathDir = mkTestDir(TEST_ROOT, 'path-vs-name');
+    it('prefers path over location_hash', async () => {
+      const pathDir = mkTestDir(TEST_ROOT, 'path-vs-hash');
       createOpenTasksDir(pathDir, {
         nodes: [
-          { id: 'pn-1', type: 'task', title: 'PvN 1', status: 'open' },
-          { id: 'pn-2', type: 'task', title: 'PvN 2', status: 'open' },
-          { id: 'pn-3', type: 'task', title: 'PvN 3', status: 'open' },
+          { id: 'ph-1', type: 'task', title: 'PvH 1', status: 'open' },
+          { id: 'ph-2', type: 'task', title: 'PvH 2', status: 'open' },
+          { id: 'ph-3', type: 'task', title: 'PvH 3', status: 'open' },
         ],
         edges: [],
       });
 
       const result = await handleOpenTasksRequest(
         MAP_OPENTASKS_METHODS.SUMMARY,
-        { path: pathDir, name: 'project/opentasks' },
+        { path: pathDir, location_hash: HASH_A },
         ctx,
       );
 
-      // Should use path (3 nodes) not name (1 node)
+      // Should use path (3 nodes) not location_hash (1 node)
       expect(result).toHaveProperty('node_count', 3);
     });
 
-    it('name-based access denied for private resource from other agent', async () => {
-      const { agent: otherAgent } = await agentsDAL.createAgent({ name: 'name-test-other' });
-      const privateDir = mkTestDir(TEST_ROOT, 'private-named');
-      const privateOpentasksDir = createOpenTasksDir(privateDir);
+    it('location_hash access denied for private resource from other agent', async () => {
+      const { agent: otherAgent } = await agentsDAL.createAgent({ name: 'hash-test-other' });
+      const privateDir = mkTestDir(TEST_ROOT, 'private-hash');
+      const privateHash = 'priv8xyz';
+      const privateOpentasksDir = createOpenTasksDir(privateDir, {
+        locationHash: privateHash,
+      });
 
       resourcesDAL.createResource({
-        name: 'private/opentasks',
+        name: 'private-hash/opentasks',
         resource_type: 'task',
         git_remote_url: privateOpentasksDir,
         owner_agent_id: agentId,
         visibility: 'private',
-        metadata: { opentasks: true },
+        metadata: { opentasks: true, location_hash: privateHash },
       });
 
-      // Other agent tries to access by name — should not find it
+      // Other agent tries to access by location_hash — should not find it
       await expect(
         handleOpenTasksRequest(
           MAP_OPENTASKS_METHODS.SUMMARY,
-          { name: 'private/opentasks' },
+          { location_hash: privateHash },
           { swarmId: 'other', agentId: otherAgent.id },
         ),
-      ).rejects.toThrow(/not found with name/i);
+      ).rejects.toThrow(/not found with location_hash/i);
+    });
+
+    it('auto-registered resource is findable by location_hash', async () => {
+      const autoDir = mkTestDir(TEST_ROOT, 'auto-hash');
+      const autoHash = 'auto1234';
+      createOpenTasksDir(autoDir, {
+        nodes: [
+          { id: 'a-1', type: 'task', title: 'Auto Hash Task', status: 'open' },
+          { id: 'a-2', type: 'task', title: 'Auto Hash Task 2', status: 'open' },
+        ],
+        edges: [],
+        locationHash: autoHash,
+      });
+
+      // First: auto-register via path
+      await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.SUMMARY,
+        { path: autoDir },
+        ctx,
+      );
+
+      // Then: resolve via location_hash (should find the auto-registered resource)
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.SUMMARY,
+        { location_hash: autoHash },
+        ctx,
+      );
+
+      expect(result).toHaveProperty('node_count', 2);
     });
   });
 
