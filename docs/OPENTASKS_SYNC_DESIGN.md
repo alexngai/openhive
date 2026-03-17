@@ -69,6 +69,16 @@ Four JSON-RPC 2.0 methods exposed to connected swarms:
 | `map/opentasks/query` | Advanced node filtering with daemon fallback |
 | `map/opentasks/status` | Daemon health check + graph file existence |
 
+All methods accept an `OpenTasksResourceTarget` to identify which resource to query. Agents can target by:
+
+| Field | Priority | Identity Source | Stable Across Instances |
+|-------|----------|-----------------|------------------------|
+| `resource_id` | 1 (highest) | OpenHive DB (`res_xxx`) | No |
+| `path` | 2 | Local filesystem path | No |
+| `location_hash` | 3 | `.opentasks/config.json` | Yes |
+
+The `location_hash` is the canonical OpenTasks identity — derived from the graph's `config.json` and stable across machines and OpenHive instances. When `path` is used and no matching resource exists, the handler auto-registers the resource for the requesting agent.
+
 Request context carries swarm ID + agent ID. Resource access is validated before returning data.
 
 ### 3. MAP Task Store (`src/map/task-store.ts`, `src/map/task-handler.ts`, `src/map/task-broadcaster.ts`)
