@@ -8,16 +8,18 @@
 
 import {
   listSwarms, createNode, deleteNode, findNodeBySwarmAndAgentId,
-  updateNode, discoverNodes, findSwarmById,
+  updateNode, discoverNodes, findSwarmById, findNodeById, getNodeHierarchy,
 } from '../db/dal/map.js';
 import { handleSyncMessage, isMapSyncMessage, sendToSwarm } from './sync-listener.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
 import { routeHiveMessage, isHiveRouteError } from './hive-router.js';
 import { getInboxJsonRpc, getInboxRouter, getInboxStorage } from './inbox-bridge.js';
 import { handleXHiveMethod } from './hive-extensions.js';
+import type { MapNode } from './types.js';
 import { handleMapSubscribe, handleMapUnsubscribe } from './event-subscriptions.js';
 import { getAllInbound } from './connection-registry.js';
 import type { MapNodeState } from './types.js';
+import { classifyMethod, getChannel } from './mesh-channels.js';
 
 // ─── Reply abstraction ──────────────────────────────────────────────────────
 
@@ -40,6 +42,15 @@ export async function dispatchMapMessage(
   reply: ReplyFunctions,
   ws?: import('ws').WebSocket | null,
 ): Promise<void> {
+  // Track message on its protocol channel (if classified)
+  const method = parsed.method as string | undefined;
+  if (method) {
+    const channelName = classifyMethod(method);
+    if (channelName) {
+      getChannel(channelName)?.recordReceived(parsed, swarmId);
+    }
+  }
+
   if (isMapSyncMessage(parsed)) {
     handleSyncMessage(parsed as any, swarmId);
   } else if (isCoordinationMessage(parsed)) {
@@ -60,6 +71,8 @@ export async function dispatchMapMessage(
     handleAgentList(parsed, swarmId, reply);
   } else if (parsed.method === 'map/agents/unregister') {
     handleAgentUnregister(parsed, swarmId, reply);
+  } else if (parsed.method === 'map/agents/hierarchy') {
+    handleAgentHierarchy(parsed, swarmId, reply);
   } else if (parsed.method === 'map/subscribe' && ws) {
     handleMapSubscribe(ws, parsed as any, swarmId);
   } else if (parsed.method === 'map/unsubscribe' && ws) {
@@ -207,6 +220,17 @@ function handleAgentRegister(
     const name = (params?.name as string) ?? 'unnamed';
     const agentId = explicitId || `${name}-${swarmId.slice(-8)}`;
 
+    // Resolve parent: accept parent agent ID or parent node ID
+    const parentAgentId = (params?.parent as string) ?? (params?.parent_agent_id as string);
+    const parentNodeId = (params?.parent_node_id as string);
+    let resolvedParentNodeId: string | undefined;
+    if (parentNodeId) {
+      resolvedParentNodeId = parentNodeId;
+    } else if (parentAgentId) {
+      const parentNode = findNodeBySwarmAndAgentId(swarmId, parentAgentId);
+      resolvedParentNodeId = parentNode?.id;
+    }
+
     const node = createNode({
       swarm_id: swarmId,
       map_agent_id: agentId,
@@ -214,6 +238,7 @@ function handleAgentRegister(
       role: (params?.role as string) ?? 'worker',
       state: 'active',
       capabilities: (params?.capabilities as Record<string, unknown>) ?? {},
+      parent_node_id: resolvedParentNodeId,
     });
 
     // Also register in inbox for discoverability
@@ -223,14 +248,14 @@ function handleAgentRegister(
         agent_id: node.map_agent_id,
         scope: 'default',
         status: 'active',
-        metadata: { swarm_id: swarmId, node_id: node.id },
+        metadata: { swarm_id: swarmId, node_id: node.id, parent_node_id: node.parent_node_id },
         registered_at: new Date().toISOString(),
         last_active_at: new Date().toISOString(),
       });
     } catch { /* non-fatal */ }
 
     reply.sendResult(msgId, {
-      agent: { id: node.map_agent_id, state: node.state, name: node.name, role: node.role },
+      agent: { id: node.map_agent_id, state: node.state, name: node.name, role: node.role, parent: node.parent_node_id },
       nodeId: node.id,
     });
   } catch (err) {
@@ -248,6 +273,18 @@ function handleAgentSpawn(
 
   try {
     const agentId = (params?.agentId as string) ?? (params?.agent_id as string);
+
+    // Resolve parent
+    const parentAgentId = (params?.parent as string) ?? (params?.parent_agent_id as string);
+    const parentNodeId = (params?.parent_node_id as string);
+    let resolvedParentNodeId: string | undefined;
+    if (parentNodeId) {
+      resolvedParentNodeId = parentNodeId;
+    } else if (parentAgentId) {
+      const parentNode = findNodeBySwarmAndAgentId(swarmId, parentAgentId);
+      resolvedParentNodeId = parentNode?.id;
+    }
+
     const node = createNode({
       swarm_id: swarmId,
       map_agent_id: agentId,
@@ -255,6 +292,7 @@ function handleAgentSpawn(
       role: (params?.role as string) ?? 'agent',
       state: 'active',
       capabilities: (params?.capabilities as Record<string, unknown>) ?? {},
+      parent_node_id: resolvedParentNodeId,
     });
 
     // Register in inbox for discoverability
@@ -264,7 +302,7 @@ function handleAgentSpawn(
         agent_id: node.map_agent_id,
         scope: 'default',
         status: 'active',
-        metadata: { swarm_id: swarmId, node_id: node.id, spawned: true },
+        metadata: { swarm_id: swarmId, node_id: node.id, spawned: true, parent_node_id: node.parent_node_id },
         registered_at: new Date().toISOString(),
         last_active_at: new Date().toISOString(),
       });
@@ -272,7 +310,7 @@ function handleAgentSpawn(
 
     // Return format matching MAP SDK expectations
     reply.sendResult(msgId, {
-      agent: { id: node.map_agent_id, state: 'active', name: node.name, role: node.role },
+      agent: { id: node.map_agent_id, state: 'active', name: node.name, role: node.role, parent: node.parent_node_id },
     });
   } catch (err) {
     reply.sendError(-32603, `Failed to spawn agent: ${err instanceof Error ? err.message : err}`, msgId);
@@ -341,6 +379,67 @@ function handleAgentUnregister(
     }
   } catch (err) {
     reply.sendError(-32603, `Failed to unregister agent: ${err instanceof Error ? err.message : err}`, msgId);
+  }
+}
+
+function handleAgentHierarchy(
+  msg: Record<string, unknown>,
+  swarmId: string,
+  reply: ReplyFunctions,
+): void {
+  const params = msg.params as Record<string, unknown> | undefined;
+  const msgId = msg.id as string | number | null | undefined;
+
+  try {
+    const agentId = (params?.agentId as string) ?? (params?.agent_id as string);
+    const nodeId = params?.node_id as string | undefined;
+
+    // Resolve node: by node_id directly, or by agent_id within the swarm
+    let node;
+    if (nodeId) {
+      node = findNodeById(nodeId);
+    } else if (agentId) {
+      node = findNodeBySwarmAndAgentId(swarmId, agentId);
+    }
+
+    if (!node) {
+      reply.sendError(-32001, `Agent node not found: ${agentId ?? nodeId ?? 'unspecified'}`, msgId);
+      return;
+    }
+
+    const hierarchy = getNodeHierarchy(node.id, {
+      includeParent: (params?.includeParent as boolean) ?? true,
+      includeChildren: (params?.includeChildren as boolean) ?? true,
+      includeSiblings: (params?.includeSiblings as boolean) ?? false,
+      includeAncestors: (params?.includeAncestors as boolean) ?? false,
+      includeDescendants: (params?.includeDescendants as boolean) ?? false,
+      maxDepth: (params?.maxDepth as number) ?? 5,
+    });
+
+    if (!hierarchy) {
+      reply.sendError(-32001, `Node not found: ${node.id}`, msgId);
+      return;
+    }
+
+    const toAgent = (n: MapNode) => ({
+      id: n.map_agent_id,
+      nodeId: n.id,
+      name: n.name,
+      role: n.role,
+      state: n.state,
+      parent: n.parent_node_id,
+    });
+
+    reply.sendResult(msgId, {
+      agent: toAgent(hierarchy.node),
+      parent: hierarchy.parent ? toAgent(hierarchy.parent) : null,
+      children: hierarchy.children?.map(toAgent),
+      siblings: hierarchy.siblings?.map(toAgent),
+      ancestors: hierarchy.ancestors?.map(toAgent),
+      descendants: hierarchy.descendants?.map(toAgent),
+    });
+  } catch (err) {
+    reply.sendError(-32603, `Failed to get agent hierarchy: ${err instanceof Error ? err.message : err}`, msgId);
   }
 }
 

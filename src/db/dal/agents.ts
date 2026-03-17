@@ -89,12 +89,21 @@ export async function getOrCreateLocalAgent(): Promise<Agent> {
   const existing = findAgentByName('local');
   if (existing) return existing;
 
-  const { agent } = await createAgent({
-    name: 'local',
-    description: 'Local auto-authenticated user',
-    is_admin: true,
-  });
-  return agent;
+  try {
+    const { agent } = await createAgent({
+      name: 'local',
+      description: 'Local auto-authenticated user',
+      is_admin: true,
+    });
+    return agent;
+  } catch (err) {
+    // Handle TOCTOU race: concurrent callers both pass the findAgentByName
+    // check, then one wins the insert and the other hits UNIQUE constraint.
+    // Re-fetch — the winner's row now exists.
+    const retried = findAgentByName('local');
+    if (retried) return retried;
+    throw err;
+  }
 }
 
 export function findAgentById(id: string): Agent | null {

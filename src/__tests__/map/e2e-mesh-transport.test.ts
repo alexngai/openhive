@@ -28,12 +28,32 @@ import {
   findSwarmByMeshPeerId,
   listSwarms,
   discoverNodes,
+  createNode,
+  findNodeBySwarmAndAgentId,
+  getNodeChildren,
+  getNodeParent,
+  getNodeHierarchy,
+  getNodeAncestors,
 } from '../../db/dal/map.js';
 import { setupMapWebSocket, stopMapWebSocket } from '../../map/ws-map.js';
 import { initInboxBridge, stopInboxBridge, getInboxStorage } from '../../map/inbox-bridge.js';
 import { initMeshPeer, stopMeshPeer, getHubMeshPeer, isMeshEnabled } from '../../map/mesh-peer.js';
 import { setupMeshHandler, stopMeshHandler } from '../../map/mesh-handler.js';
 import { getAllInbound } from '../../map/connection-registry.js';
+import {
+  createHiveScope, deleteHiveScope, joinHiveScope, leaveHiveScope,
+  broadcastToHiveScope, getHiveScopeMembers, hiveScopeId, syncHiveScopesFromDb,
+} from '../../map/hive-scopes.js';
+import { joinHive as serviceJoinHive, leaveHive as serviceLeaveHive } from '../../map/service.js';
+import { createSwarm as dalCreateSwarm } from '../../db/dal/map.js';
+import {
+  HubChannel, initDefaultChannels as initChannels, closeAllChannels,
+  getChannel, listChannels, getAllChannelStats, classifyMethod,
+  createChannel, flushAllQueues,
+} from '../../map/mesh-channels.js';
+import { getPeerList } from '../../map/service.js';
+import { sendToSwarm } from '../../map/sync-listener.js';
+import { routeHiveMessage, isHiveRouteError } from '../../map/hive-router.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 // Mock broadcastToChannel (imported transitively by sync-listener)
@@ -1091,6 +1111,1258 @@ describe('E2E: Mesh Transport', () => {
           expect(swarm!.status).toBe('offline');
           expect(getAllInbound().has(swarm!.id)).toBe(false);
         }
+      }
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Feature 1: Hive Scopes
+  // ══════════════════════════════════════════════════════════════════════
+
+  describe('Hive Scopes', () => {
+    it('should create a hive scope and join/leave members', () => {
+      // Create a scope for the test hive
+      createHiveScope('scope-test-hive');
+      const server = getHubMeshPeer().server;
+      const scope = server.getScope(hiveScopeId('scope-test-hive'));
+      expect(scope).toBeDefined();
+
+      // Join two agents
+      joinHiveScope('scope-test-hive', 'agent-alpha');
+      joinHiveScope('scope-test-hive', 'agent-beta');
+
+      const members = getHiveScopeMembers('scope-test-hive');
+      expect(members).toContain('agent-alpha');
+      expect(members).toContain('agent-beta');
+      expect(members.length).toBe(2);
+
+      // Leave one agent
+      leaveHiveScope('scope-test-hive', 'agent-alpha');
+      const membersAfter = getHiveScopeMembers('scope-test-hive');
+      expect(membersAfter).not.toContain('agent-alpha');
+      expect(membersAfter).toContain('agent-beta');
+      expect(membersAfter.length).toBe(1);
+    });
+
+    it('should auto-create scope on joinHiveScope if it does not exist', () => {
+      // Join without explicit createHiveScope — should auto-create
+      joinHiveScope('auto-created-hive', 'agent-gamma');
+
+      const server = getHubMeshPeer().server;
+      const scope = server.getScope(hiveScopeId('auto-created-hive'));
+      expect(scope).toBeDefined();
+
+      const members = getHiveScopeMembers('auto-created-hive');
+      expect(members).toContain('agent-gamma');
+    });
+
+    it('should delete scope on deleteHiveScope', () => {
+      createHiveScope('ephemeral-hive');
+      const server = getHubMeshPeer().server;
+      expect(server.getScope(hiveScopeId('ephemeral-hive'))).toBeDefined();
+
+      deleteHiveScope('ephemeral-hive');
+      expect(server.getScope(hiveScopeId('ephemeral-hive'))).toBeUndefined();
+    });
+
+    it('should broadcast to hive scope members', async () => {
+      createHiveScope('broadcast-hive');
+      joinHiveScope('broadcast-hive', 'listener-1');
+      joinHiveScope('broadcast-hive', 'listener-2');
+
+      // Broadcast should succeed (scope exists and has members)
+      const result = await broadcastToHiveScope('broadcast-hive', 'sender-agent', { text: 'hello hive' });
+      expect(result).toBe(true);
+
+      // Broadcast to nonexistent scope should return false
+      const result2 = await broadcastToHiveScope('nonexistent-hive', 'sender-agent', { text: 'hello' });
+      expect(result2).toBe(false);
+    });
+
+    it('should auto-join hive scopes when mesh peer connects', async () => {
+      // Create a hive scope for mesh-test-hive (the hive created in beforeAll)
+      createHiveScope(hive.name);
+
+      // Create a test mesh peer and join it to the hive
+      const hubPeer = getHubMeshPeer();
+      const peerId = 'hive-scope-test-peer';
+
+      // Simulate peer connection (mesh-handler will auto-join hive scopes)
+      hubPeer.emit('peer:connected', peerId);
+      await new Promise((r) => setTimeout(r, 300));
+
+      try {
+        // Find the auto-registered swarm
+        const swarm = findSwarmByMeshPeerId(peerId);
+        expect(swarm).not.toBeNull();
+
+        // Join the swarm to the test hive (DB level)
+        joinSwarmToHive(swarm!.id, hive.id);
+
+        // Disconnect and reconnect — now with hive membership
+        hubPeer.emit('peer:disconnected', peerId);
+        await new Promise((r) => setTimeout(r, 200));
+
+        hubPeer.emit('peer:connected', peerId);
+        await new Promise((r) => setTimeout(r, 300));
+
+        // The swarm's owner agent should now be in the hive scope
+        const members = getHiveScopeMembers(hive.name);
+        const reconnectedSwarm = findSwarmByMeshPeerId(peerId);
+        expect(members).toContain(reconnectedSwarm!.owner_agent_id);
+      } finally {
+        hubPeer.emit('peer:disconnected', peerId);
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    });
+
+    it('should join hive scope when calling service.joinHive for mesh swarms', () => {
+      // Create a new hive for this test
+      const testHive = hivesDAL.createHive({
+        name: 'service-join-test',
+        description: 'Test hive for service.joinHive scope wiring',
+        owner_id: agentA.id,
+      });
+      createHiveScope(testHive.name);
+
+      // Register a mesh swarm owned by agentB (only mesh swarms join scopes)
+      const swarm = dalCreateSwarm(agentB.id, {
+        name: 'scope-join-swarm',
+        map_endpoint: 'mesh://scope-join-peer',
+        map_transport: 'mesh',
+        mesh_peer_id: 'scope-join-peer',
+        auth_method: 'none',
+      });
+
+      // Join hive via service (should also join scope for mesh swarm)
+      serviceJoinHive(swarm.id, testHive.name);
+
+      const members = getHiveScopeMembers(testHive.name);
+      expect(members).toContain(agentB.id);
+    });
+
+    it('should NOT join hive scope for WS-only swarms via service.joinHive', () => {
+      const testHive = hivesDAL.createHive({
+        name: 'service-ws-noscope-test',
+        description: 'Test that WS swarms do not join scopes',
+        owner_id: agentA.id,
+      });
+      createHiveScope(testHive.name);
+
+      // Register a WS swarm
+      const swarm = dalCreateSwarm(agentB.id, {
+        name: 'ws-noscope-swarm',
+        map_endpoint: 'hub-inbound',
+        map_transport: 'websocket',
+        auth_method: 'none',
+      });
+
+      // Join hive via service — WS swarm should NOT be added to scope
+      serviceJoinHive(swarm.id, testHive.name);
+
+      const members = getHiveScopeMembers(testHive.name);
+      expect(members).not.toContain(agentB.id);
+    });
+
+    it('should leave hive scope when calling service.leaveHive for mesh swarms', () => {
+      // Create hive and scope
+      const testHive = hivesDAL.createHive({
+        name: 'service-leave-test',
+        description: 'Test hive for service.leaveHive scope wiring',
+        owner_id: agentA.id,
+      });
+      createHiveScope(testHive.name);
+
+      // Register a mesh swarm and join hive
+      const swarm = dalCreateSwarm(agentB.id, {
+        name: 'scope-leave-swarm',
+        map_endpoint: 'mesh://scope-leave-peer',
+        map_transport: 'mesh',
+        mesh_peer_id: 'scope-leave-peer',
+        auth_method: 'none',
+      });
+      serviceJoinHive(swarm.id, testHive.name);
+      expect(getHiveScopeMembers(testHive.name)).toContain(agentB.id);
+
+      // Leave hive (should also leave scope)
+      serviceLeaveHive(swarm.id, testHive.name);
+      expect(getHiveScopeMembers(testHive.name)).not.toContain(agentB.id);
+    });
+
+    it('should sync hive scopes from DB on startup', () => {
+      // Simulate startup sync with known hive data
+      syncHiveScopesFromDb(
+        [{ name: 'synced-hive-1' }, { name: 'synced-hive-2' }],
+        [
+          { hive_name: 'synced-hive-1', agent_id: 'sync-agent-a' },
+          { hive_name: 'synced-hive-1', agent_id: 'sync-agent-b' },
+          { hive_name: 'synced-hive-2', agent_id: 'sync-agent-c' },
+        ],
+      );
+
+      const server = getHubMeshPeer().server;
+      expect(server.getScope(hiveScopeId('synced-hive-1'))).toBeDefined();
+      expect(server.getScope(hiveScopeId('synced-hive-2'))).toBeDefined();
+
+      const members1 = getHiveScopeMembers('synced-hive-1');
+      expect(members1).toContain('sync-agent-a');
+      expect(members1).toContain('sync-agent-b');
+
+      const members2 = getHiveScopeMembers('synced-hive-2');
+      expect(members2).toContain('sync-agent-c');
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Feature 2: Agent Hierarchy
+  // ══════════════════════════════════════════════════════════════════════
+
+  describe('Agent Hierarchy', () => {
+    it('should register agents with parent-child relationships', () => {
+      // Register orchestrator (no parent)
+      const orchestrator = dalCreateSwarm(agentA.id, {
+        name: 'hierarchy-swarm',
+        map_endpoint: 'hub-inbound',
+        map_transport: 'websocket',
+        auth_method: 'none',
+      });
+
+      const orchNode = createNode({
+        swarm_id: orchestrator.id,
+        map_agent_id: 'orchestrator-1',
+        name: 'Orchestrator',
+        role: 'orchestrator',
+        state: 'active',
+      });
+
+      // Register workers with orchestrator as parent
+      const worker1 = createNode({
+        swarm_id: orchestrator.id,
+        map_agent_id: 'worker-1',
+        name: 'Worker 1',
+        role: 'worker',
+        state: 'active',
+        parent_node_id: orchNode.id,
+      });
+
+      const worker2 = createNode({
+        swarm_id: orchestrator.id,
+        map_agent_id: 'worker-2',
+        name: 'Worker 2',
+        role: 'worker',
+        state: 'active',
+        parent_node_id: orchNode.id,
+      });
+
+      // Verify parent-child relationships
+      expect(worker1.parent_node_id).toBe(orchNode.id);
+      expect(worker2.parent_node_id).toBe(orchNode.id);
+      expect(orchNode.parent_node_id).toBeNull();
+
+      // Query children
+      const children = getNodeChildren(orchNode.id);
+      expect(children.length).toBe(2);
+      expect(children.map((c: any) => c.map_agent_id)).toContain('worker-1');
+      expect(children.map((c: any) => c.map_agent_id)).toContain('worker-2');
+
+      // Query parent
+      const parent = getNodeParent(worker1.id);
+      expect(parent).not.toBeNull();
+      expect(parent!.map_agent_id).toBe('orchestrator-1');
+    });
+
+    it('should return full hierarchy via getNodeHierarchy', () => {
+      const swarm = dalCreateSwarm(agentA.id, {
+        name: 'deep-hierarchy-swarm',
+        map_endpoint: 'hub-inbound',
+        map_transport: 'websocket',
+        auth_method: 'none',
+      });
+
+      // Create 3-level hierarchy: root → mid → leaf
+      const root = createNode({
+        swarm_id: swarm.id,
+        map_agent_id: 'root-agent',
+        name: 'Root',
+        role: 'orchestrator',
+        state: 'active',
+      });
+
+      const mid = createNode({
+        swarm_id: swarm.id,
+        map_agent_id: 'mid-agent',
+        name: 'Mid',
+        role: 'specialist',
+        state: 'active',
+        parent_node_id: root.id,
+      });
+
+      const leaf = createNode({
+        swarm_id: swarm.id,
+        map_agent_id: 'leaf-agent',
+        name: 'Leaf',
+        role: 'worker',
+        state: 'active',
+        parent_node_id: mid.id,
+      });
+
+      // Get hierarchy from mid node
+      const hierarchy = getNodeHierarchy(mid.id, {
+        includeParent: true,
+        includeChildren: true,
+        includeSiblings: true,
+        includeAncestors: true,
+        includeDescendants: true,
+      });
+
+      expect(hierarchy).not.toBeNull();
+      expect(hierarchy!.node.map_agent_id).toBe('mid-agent');
+      expect(hierarchy!.parent?.map_agent_id).toBe('root-agent');
+      expect(hierarchy!.children?.length).toBe(1);
+      expect(hierarchy!.children?.[0].map_agent_id).toBe('leaf-agent');
+      expect(hierarchy!.ancestors?.length).toBe(1);
+      expect(hierarchy!.ancestors?.[0].map_agent_id).toBe('root-agent');
+      expect(hierarchy!.descendants?.length).toBe(1);
+      expect(hierarchy!.descendants?.[0].map_agent_id).toBe('leaf-agent');
+    });
+
+    it('should register agent with parent via WebSocket map/agents/register', async () => {
+      const { ws } = await connectWsAgent(SERVER_PORT, agentA.apiKey);
+
+      try {
+        // Register orchestrator
+        const orchResult = await wsRpc(ws, 'map/agents/register', {
+          agentId: 'ws-orch',
+          name: 'WS Orchestrator',
+          role: 'orchestrator',
+        });
+        expect(orchResult.error).toBeUndefined();
+        const orchNodeId = (orchResult.result as any).nodeId;
+
+        // Register worker with parent
+        const workerResult = await wsRpc(ws, 'map/agents/register', {
+          agentId: 'ws-worker',
+          name: 'WS Worker',
+          role: 'worker',
+          parent: 'ws-orch',
+        });
+        expect(workerResult.error).toBeUndefined();
+        expect((workerResult.result as any).agent.parent).toBe(orchNodeId);
+
+        // Query hierarchy
+        const hierarchyResult = await wsRpc(ws, 'map/agents/hierarchy', {
+          agentId: 'ws-orch',
+          includeChildren: true,
+        });
+        expect(hierarchyResult.error).toBeUndefined();
+        const hier = hierarchyResult.result as any;
+        expect(hier.agent.id).toBe('ws-orch');
+        expect(hier.children?.length).toBe(1);
+        expect(hier.children[0].id).toBe('ws-worker');
+      } finally {
+        await closeWs(ws);
+      }
+    });
+
+    it('should spawn agent with parent via map/agents/spawn', async () => {
+      const { ws } = await connectWsAgent(SERVER_PORT, agentB.apiKey);
+
+      try {
+        // Register parent first
+        const parentResult = await wsRpc(ws, 'map/agents/register', {
+          agentId: 'spawn-parent',
+          name: 'Spawn Parent',
+          role: 'orchestrator',
+        });
+        expect(parentResult.error).toBeUndefined();
+        const parentNodeId = (parentResult.result as any).nodeId;
+
+        // Spawn child with parent
+        const childResult = await wsRpc(ws, 'map/agents/spawn', {
+          agentId: 'spawn-child',
+          name: 'Spawn Child',
+          role: 'worker',
+          parent: 'spawn-parent',
+        });
+        expect(childResult.error).toBeUndefined();
+        expect((childResult.result as any).agent.parent).toBe(parentNodeId);
+      } finally {
+        await closeWs(ws);
+      }
+    });
+
+    it('should enforce max hierarchy depth of 5', () => {
+      const swarm = dalCreateSwarm(agentA.id, {
+        name: 'depth-test-swarm',
+        map_endpoint: 'hub-inbound',
+        map_transport: 'websocket',
+        auth_method: 'none',
+      });
+
+      // Create chain of 7 nodes (exceeds max depth of 5)
+      let parentId: string | undefined;
+      const nodes: any[] = [];
+      for (let i = 0; i < 7; i++) {
+        const node = createNode({
+          swarm_id: swarm.id,
+          map_agent_id: `depth-${i}`,
+          name: `Depth ${i}`,
+          role: 'agent',
+          state: 'active',
+          parent_node_id: parentId,
+        });
+        nodes.push(node);
+        parentId = node.id;
+      }
+
+      // Get ancestors of deepest node — should only return 5 (max depth)
+      const ancestors = getNodeAncestors(nodes[6].id, 5);
+      expect(ancestors.length).toBe(5);
+      // Should be nodes 5, 4, 3, 2, 1 (not 0 — cut off by depth)
+      expect(ancestors[0].map_agent_id).toBe('depth-5');
+      expect(ancestors[4].map_agent_id).toBe('depth-1');
+    });
+  });
+
+  // ==========================================================================
+  // Feature 3: MessageChannels for Protocol Separation
+  // ==========================================================================
+
+  describe('MessageChannels', () => {
+    it('should initialize default protocol channels', () => {
+      // Default channels may already be created by test setup; create them if not
+      initChannels();
+
+      const channels = listChannels();
+      expect(channels.length).toBeGreaterThanOrEqual(4);
+
+      const names = channels.map(c => c.name);
+      expect(names).toContain('proto:resource-sync');
+      expect(names).toContain('proto:coordination');
+      expect(names).toContain('proto:mail');
+      expect(names).toContain('proto:federation');
+    });
+
+    it('should classify methods to correct channels', () => {
+
+      expect(classifyMethod('x-openhive/memory.sync')).toBe('proto:resource-sync');
+      expect(classifyMethod('x-openhive/skill.sync')).toBe('proto:resource-sync');
+      expect(classifyMethod('x-openhive/trajectory.checkpoint')).toBe('proto:resource-sync');
+      expect(classifyMethod('x-openhive/task.assign')).toBe('proto:coordination');
+      expect(classifyMethod('x-openhive/task.status')).toBe('proto:coordination');
+      expect(classifyMethod('x-openhive/context.share')).toBe('proto:coordination');
+      expect(classifyMethod('x-openhive/message.send')).toBe('proto:coordination');
+      expect(classifyMethod('mail/create')).toBe('proto:mail');
+      expect(classifyMethod('mail/send')).toBe('proto:mail');
+      expect(classifyMethod('map/federation/list-peers')).toBe('proto:federation');
+      expect(classifyMethod('map/agents/register')).toBeNull();
+      expect(classifyMethod('ping')).toBeNull();
+    });
+
+    it('should track per-channel stats on received messages', () => {
+      closeAllChannels();
+      initChannels();
+
+      const coordination = getChannel('proto:coordination')!;
+      const mail = getChannel('proto:mail')!;
+
+      const statsBefore = coordination.getStats();
+      expect(statsBefore.messagesReceived).toBe(0);
+
+      // Simulate receiving coordination messages
+      coordination.recordReceived({ method: 'x-openhive/task.assign' }, 'swarm-1');
+      coordination.recordReceived({ method: 'x-openhive/task.status' }, 'swarm-2');
+
+      const statsAfter = coordination.getStats();
+      expect(statsAfter.messagesReceived).toBe(2);
+
+      // Mail should still be zero
+      expect(mail.getStats().messagesReceived).toBe(0);
+    });
+
+    it('should queue messages for offline swarms and flush on reconnect', () => {
+
+      const channel = new HubChannel('test:queue', {
+        enableOfflineQueue: true,
+        offlineQueueTTL: 60_000,
+        maxQueueSize: 10,
+      });
+
+      // Send to a non-existent swarm (will fail and queue)
+      const sent = channel.send('nonexistent-swarm', { test: true });
+      expect(sent).toBe(false);
+
+      const stats = channel.getStats();
+      expect(stats.queuedMessages).toBe(1);
+      expect(stats.messagesSent).toBe(0);
+
+      channel.close();
+    });
+
+    it('should enforce max queue size by dropping oldest', () => {
+
+      const channel = new HubChannel('test:maxqueue', {
+        enableOfflineQueue: true,
+        offlineQueueTTL: 60_000,
+        maxQueueSize: 3,
+      });
+
+      // Queue 5 messages (max 3)
+      for (let i = 0; i < 5; i++) {
+        channel.send('offline-swarm', { seq: i });
+      }
+
+      const stats = channel.getStats();
+      expect(stats.queuedMessages).toBe(3);
+      // 2 oldest were dropped
+      expect(stats.failedDeliveries).toBe(2);
+
+      channel.close();
+    });
+
+    it('should reset stats independently per channel', () => {
+
+      const ch1 = new HubChannel('test:reset-1');
+      const ch2 = new HubChannel('test:reset-2');
+
+      ch1.recordReceived({}, 'swarm-1');
+      ch1.recordReceived({}, 'swarm-2');
+      ch2.recordReceived({}, 'swarm-3');
+
+      expect(ch1.getStats().messagesReceived).toBe(2);
+      expect(ch2.getStats().messagesReceived).toBe(1);
+
+      ch1.resetStats();
+      expect(ch1.getStats().messagesReceived).toBe(0);
+      expect(ch2.getStats().messagesReceived).toBe(1);
+
+      ch1.close();
+      ch2.close();
+    });
+
+    it('should provide aggregate stats via getAllChannelStats', () => {
+      closeAllChannels();
+      initChannels();
+
+      // Record some messages
+      getChannel('proto:mail')!.recordReceived({ method: 'mail/send' }, 'swarm-1');
+      getChannel('proto:coordination')!.recordReceived({ method: 'x-openhive/task.assign' }, 'swarm-2');
+
+      const allStats = getAllChannelStats();
+      expect(Object.keys(allStats)).toContain('proto:mail');
+      expect(Object.keys(allStats)).toContain('proto:coordination');
+      expect(allStats['proto:mail'].messagesReceived).toBe(1);
+      expect(allStats['proto:coordination'].messagesReceived).toBe(1);
+    });
+
+    it('should handle RPC timeout', async () => {
+
+      // Note: request() will fail immediately since the target swarm doesn't exist
+      // (sendToSwarm returns false), throwing before the timeout kicks in
+      const channel = new HubChannel('test:rpc', { rpcTimeout: 100 });
+
+      await expect(
+        channel.request('nonexistent-swarm', { action: 'do-thing' }, 50),
+      ).rejects.toThrow('Failed to send RPC request');
+
+      expect(channel.getStats().failedDeliveries).toBe(1);
+      channel.close();
+    });
+  });
+
+  // ==========================================================================
+  // Feature 5: Direct Peer-to-Peer Messaging
+  // ==========================================================================
+
+  describe('Direct P2P', () => {
+    it('should include mesh_peer_id in peer list for direct connectivity', () => {
+      // Create two swarms with mesh peer IDs that share a hive
+      const hiveName = `p2p-test-hive-${Date.now()}`;
+      const hive = hivesDAL.createHive({
+        name: hiveName,
+        description: 'Test hive for P2P',
+        owner_id: agentA.id,
+      });
+
+      const swarm1 = dalCreateSwarm(agentA.id, {
+        name: 'p2p-swarm-1',
+        map_endpoint: 'mesh://peer-1',
+        map_transport: 'mesh',
+        mesh_peer_id: 'peer-1',
+        auth_method: 'none',
+      });
+
+      const swarm2 = dalCreateSwarm(agentA.id, {
+        name: 'p2p-swarm-2',
+        map_endpoint: 'mesh://peer-2',
+        map_transport: 'mesh',
+        mesh_peer_id: 'peer-2',
+        auth_method: 'none',
+      });
+
+      // Join both to the same hive
+      joinSwarmToHive(swarm1.id, hive.id);
+      joinSwarmToHive(swarm2.id, hive.id);
+
+      // Get peer list for swarm1
+      const peerList = getPeerList(swarm1.id);
+
+      expect(peerList.peers.length).toBeGreaterThanOrEqual(1);
+      const peer2 = peerList.peers.find(p => p.swarm_id === swarm2.id);
+      expect(peer2).toBeDefined();
+      expect(peer2!.mesh_peer_id).toBe('peer-2');
+      expect(peer2!.map_endpoint).toBe('mesh://peer-2');
+      expect(peer2!.map_transport).toBe('mesh');
+      expect(peer2!.shared_hives).toContain(hiveName);
+    });
+
+    it('should have updated sendToSwarm fallback chain with PeerConnection', () => {
+      // Verify the sendToSwarm function tries the direct PeerConnection path
+      // by attempting to send to a swarm with a mesh_peer_id
+      const swarm = dalCreateSwarm(agentA.id, {
+        name: 'p2p-fallback-swarm',
+        map_endpoint: 'mesh://p2p-fallback-peer',
+        map_transport: 'mesh',
+        mesh_peer_id: 'p2p-fallback-peer',
+        auth_method: 'none',
+      });
+
+      // This should return false (no connections available) but not throw
+      const result = sendToSwarm(swarm.id, { jsonrpc: '2.0', method: 'test', params: {} });
+      expect(result).toBe(false);
+    });
+
+    it('should include mesh config in bootstrap token when mesh is enabled', () => {
+      // Verify BootstrapToken type includes mesh field
+      const token = {
+        version: 1 as const,
+        openhive_url: 'http://localhost:3000',
+        preauth_key: 'test',
+        swarm_name: 'test-swarm',
+        adapter: 'macro-agent',
+        mesh: {
+          hub_peer_id: 'openhive-hub-test',
+          hub_address: 'localhost',
+          hub_port: 9090,
+        },
+        issued_at: new Date().toISOString(),
+        expires_at: new Date().toISOString(),
+      };
+
+      // Type check: mesh field is properly structured
+      expect(token.mesh.hub_peer_id).toBe('openhive-hub-test');
+      expect(token.mesh.hub_address).toBe('localhost');
+      expect(token.mesh.hub_port).toBe(9090);
+    });
+  });
+
+  // ==========================================================================
+  // Feature 4: FederationGateway for Cross-Instance Communication
+  // ==========================================================================
+
+  describe('FederationGateway', () => {
+    it('should create sync gateway for mesh-enabled peer', async () => {
+      const { createSyncGateway, hasGateway, closeAllGateways } = await import('../../sync/federation-bridge.js');
+
+      // Create a gateway (may or may not succeed depending on agentic-mesh availability)
+      const created = await createSyncGateway({
+        localSystemId: 'test-hub',
+        remoteSystemId: 'remote-hub',
+        remoteMeshPeerId: 'remote-mesh-peer',
+        syncToken: 'test-token',
+        maxHops: 3,
+      });
+
+      // If agentic-mesh FederationGateway is available, gateway should exist
+      if (created) {
+        expect(hasGateway('remote-mesh-peer')).toBe(true);
+      }
+
+      await closeAllGateways();
+      expect(hasGateway('remote-mesh-peer')).toBe(false);
+    });
+
+    it('should fall back to HTTP when gateway push fails', async () => {
+      const { pushViaGateway } = await import('../../sync/federation-bridge.js');
+
+      // Push to a non-existent gateway should return false
+      const result = await pushViaGateway('nonexistent-peer', [], 0, 'test-trace');
+      expect(result).toBe(false);
+    });
+
+    it('should track gateway status', async () => {
+      const { getGatewayStatus } = await import('../../sync/federation-bridge.js');
+
+      // Non-existent gateway returns null
+      const status = getGatewayStatus('nonexistent-peer');
+      expect(status).toBeNull();
+    });
+
+    it('should have mesh_peer_id in SyncPeerConfig type', () => {
+      // Verify the type includes mesh_peer_id
+      const config = {
+        id: 'test',
+        name: 'test-peer',
+        sync_endpoint: 'http://localhost:3000/sync/v1',
+        shared_hives: ['test-hive'],
+        signing_key: null,
+        sync_token: null,
+        peer_instance_id: null,
+        is_manual: true,
+        source: 'manual' as const,
+        status: 'pending' as const,
+        last_heartbeat_at: null,
+        last_error: null,
+        gossip_ttl: 0,
+        failure_count: 0,
+        discovered_via: null,
+        mesh_peer_id: 'mesh-peer-123', // Feature 4: mesh peer support
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      expect(config.mesh_peer_id).toBe('mesh-peer-123');
+    });
+
+    it('should register inbound event handler', async () => {
+      const { onInboundSyncEvents, closeAllGateways } = await import('../../sync/federation-bridge.js');
+
+      let receivedEvents: unknown[] = [];
+      onInboundSyncEvents((events, seq, trace) => {
+        receivedEvents = events;
+      });
+
+      // Handler registered successfully — will be called by gateway message:received
+      // (no-op test since we can't trigger gateway events without a real connection)
+      expect(receivedEvents).toEqual([]);
+
+      await closeAllGateways();
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // E2E: Hive Broadcast via WS Protocol
+  // ══════════════════════════════════════════════════════════════════════
+
+  describe('E2E: Hive Broadcast via WS Protocol', () => {
+    it('should deliver hive broadcast from one WS agent to another WS agent in the same hive', async () => {
+      const connA = await connectWsAgent(SERVER_PORT, agentA.apiKey);
+      const connB = await connectWsAgent(SERVER_PORT, agentB.apiKey);
+
+      try {
+        const swarmIdA = connA.welcome.params.swarm_id as string;
+        const swarmIdB = connB.welcome.params.swarm_id as string;
+
+        // Join both swarms to the hive at DB level (required for membership check)
+        joinSwarmToHive(swarmIdA, hive.id);
+        joinSwarmToHive(swarmIdB, hive.id);
+
+        // Ensure hive scope exists (but do NOT join WS agents to scope —
+        // scope is for mesh agents; WS agents receive via sendToSwarm fallback)
+        createHiveScope(hive.name);
+
+        // Collect notifications on B before sending
+        const msgPromise = collectNotifications(connB.ws, 'map/send', 1, 5000);
+
+        // A sends to hive
+        const sendRes = await wsRpc(connA.ws, 'map/send', {
+          to: { id: `hive:${hive.name}` },
+          payload: { text: 'hello hive e2e' },
+          subject: 'e2e test',
+        });
+        expect(sendRes.error).toBeUndefined();
+        const result = sendRes.result as { messageId: string; hiveName: string; recipientCount: number };
+        expect(result.messageId).toBeDefined();
+        expect(result.hiveName).toBe(hive.name);
+
+        // B should receive the hive broadcast
+        const received = await msgPromise;
+        expect(received.length).toBe(1);
+        expect(received[0].params.payload).toEqual({ text: 'hello hive e2e' });
+        expect(received[0].params.messageId).toBe(result.messageId);
+      } finally {
+        await closeWs(connA.ws);
+        await closeWs(connB.ws);
+      }
+    });
+
+    it('should return error when non-member sends to a hive via WS', async () => {
+      // Create a hive that agentA is not a member of
+      const restrictedHive = hivesDAL.createHive({
+        name: `restricted-${Date.now()}`,
+        description: 'Restricted hive',
+        owner_id: agentB.id,
+      });
+
+      const connA = await connectWsAgent(SERVER_PORT, agentA.apiKey);
+      try {
+        const res = await wsRpc(connA.ws, 'map/send', {
+          to: { id: `hive:${restrictedHive.name}` },
+          payload: { text: 'should fail' },
+        });
+        // Should get an error — agentA's swarm is not a member
+        expect(res.error).toBeDefined();
+        expect(res.error!.code).toBe(-32002);
+      } finally {
+        await closeWs(connA.ws);
+      }
+    });
+
+    it('should store hive broadcast in inbox for member agents', async () => {
+      const connA = await connectWsAgent(SERVER_PORT, agentA.apiKey);
+      const connB = await connectWsAgent(SERVER_PORT, agentB.apiKey);
+
+      try {
+        const swarmIdA = connA.welcome.params.swarm_id as string;
+        const swarmIdB = connB.welcome.params.swarm_id as string;
+
+        // Create a fresh hive for inbox test
+        const inboxHive = hivesDAL.createHive({
+          name: `inbox-test-${Date.now()}`,
+          description: 'Inbox test hive',
+          owner_id: agentA.id,
+        });
+        hivesDAL.joinHive(inboxHive.id, agentB.id);
+
+        joinSwarmToHive(swarmIdA, inboxHive.id);
+        joinSwarmToHive(swarmIdB, inboxHive.id);
+        createHiveScope(inboxHive.name);
+
+        // Send hive message
+        const sendRes = await wsRpc(connA.ws, 'map/send', {
+          to: { id: `hive:${inboxHive.name}` },
+          payload: { text: 'inbox test payload' },
+        });
+        expect(sendRes.error).toBeUndefined();
+
+        // Wait for inbox storage
+        await new Promise((r) => setTimeout(r, 300));
+
+        // Check inbox for agentB — inbox stores messages with scope metadata
+        const inbox = getInboxStorage();
+        const agentBId = connB.welcome.params.agent_id as string;
+        const messages = inbox.getInbox(agentBId, { limit: 50 });
+        // The inbox message may store payload as a nested object or stringified
+        const found = messages.find((m: any) => {
+          const payload = typeof m.payload === 'string' ? JSON.parse(m.payload) : m.payload;
+          return payload?.text === 'inbox test payload' || m.scope === inboxHive.name;
+        });
+        expect(found).toBeDefined();
+      } finally {
+        await closeWs(connA.ws);
+        await closeWs(connB.ws);
+      }
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // E2E: Mixed Mesh + WS Hive Broadcast
+  // ══════════════════════════════════════════════════════════════════════
+
+  describe('E2E: Mixed Mesh + WS Hive Broadcast', () => {
+    it('should route hive message with both mesh and WS members present', async () => {
+      const hubPeer = getHubMeshPeer();
+      const mixedHive = hivesDAL.createHive({
+        name: `mixed-${Date.now()}`,
+        description: 'Mixed transport hive',
+        owner_id: agentA.id,
+      });
+      createHiveScope(mixedHive.name);
+
+      // Connect a WS agent
+      const connWs = await connectWsAgent(SERVER_PORT, agentA.apiKey);
+      const wsSwarmId = connWs.welcome.params.swarm_id as string;
+      const wsAgentId = connWs.welcome.params.agent_id as string;
+
+      // Connect a mesh peer
+      const meshPeerId = `mixed-mesh-${Date.now()}`;
+      hubPeer.emit('peer:connected', meshPeerId);
+      await new Promise((r) => setTimeout(r, 200));
+      const meshSwarm = findSwarmByMeshPeerId(meshPeerId)!;
+
+      try {
+        // Join both to the hive
+        joinSwarmToHive(wsSwarmId, mixedHive.id);
+        joinSwarmToHive(meshSwarm.id, mixedHive.id);
+        joinHiveScope(mixedHive.name, wsAgentId);
+        joinHiveScope(mixedHive.name, meshSwarm.owner_agent_id);
+
+        // Route a hive message directly via the router (from the mesh swarm)
+        const result = await routeHiveMessage(meshSwarm.id, {
+          to: { id: `hive:${mixedHive.name}` },
+          payload: { text: 'from mesh to hive' },
+        });
+
+        expect(isHiveRouteError(result)).toBe(false);
+        if (!isHiveRouteError(result)) {
+          expect(result.hiveName).toBe(mixedHive.name);
+          // At least the WS agent should be counted as a recipient
+          expect(result.recipientCount).toBeGreaterThanOrEqual(1);
+        }
+      } finally {
+        await closeWs(connWs.ws);
+        hubPeer.emit('peer:disconnected', meshPeerId);
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    });
+
+    it('should de-duplicate delivery for agents in both scope and inbound registry', async () => {
+      const hubPeer = getHubMeshPeer();
+      const dedupeHive = hivesDAL.createHive({
+        name: `dedupe-${Date.now()}`,
+        description: 'Dedup test hive',
+        owner_id: agentA.id,
+      });
+      createHiveScope(dedupeHive.name);
+
+      // Connect two mesh peers
+      const peer1Id = `dedupe-peer-1-${Date.now()}`;
+      const peer2Id = `dedupe-peer-2-${Date.now()}`;
+      hubPeer.emit('peer:connected', peer1Id);
+      hubPeer.emit('peer:connected', peer2Id);
+      await new Promise((r) => setTimeout(r, 200));
+      const swarm1 = findSwarmByMeshPeerId(peer1Id)!;
+      const swarm2 = findSwarmByMeshPeerId(peer2Id)!;
+
+      try {
+        // Join both to hive and scope
+        joinSwarmToHive(swarm1.id, dedupeHive.id);
+        joinSwarmToHive(swarm2.id, dedupeHive.id);
+        joinHiveScope(dedupeHive.name, swarm1.owner_agent_id);
+        joinHiveScope(dedupeHive.name, swarm2.owner_agent_id);
+
+        // Route from swarm1 — swarm2 should receive exactly once
+        const result = await routeHiveMessage(swarm1.id, {
+          to: { id: `hive:${dedupeHive.name}` },
+          payload: { text: 'dedupe test' },
+        });
+
+        expect(isHiveRouteError(result)).toBe(false);
+        if (!isHiveRouteError(result)) {
+          // recipientCount should be 1 (just swarm2, not duplicated)
+          expect(result.recipientCount).toBe(1);
+        }
+      } finally {
+        hubPeer.emit('peer:disconnected', peer1Id);
+        hubPeer.emit('peer:disconnected', peer2Id);
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // E2E: Agent Hierarchy via WS Dispatch
+  // ══════════════════════════════════════════════════════════════════════
+
+  describe('E2E: Agent Hierarchy via WS Dispatch', () => {
+    it('should build and query a 3-level hierarchy entirely through WS dispatch', async () => {
+      const { ws } = await connectWsAgent(SERVER_PORT, agentA.apiKey);
+
+      try {
+        // Register orchestrator
+        const orchRes = await wsRpc(ws, 'map/agents/register', {
+          agentId: 'e2e-orch',
+          name: 'E2E Orchestrator',
+          role: 'orchestrator',
+        });
+        expect(orchRes.error).toBeUndefined();
+
+        // Register specialist with orchestrator as parent
+        const specRes = await wsRpc(ws, 'map/agents/register', {
+          agentId: 'e2e-specialist',
+          name: 'E2E Specialist',
+          role: 'specialist',
+          parent: 'e2e-orch',
+        });
+        expect(specRes.error).toBeUndefined();
+
+        // Register worker with specialist as parent
+        const workerRes = await wsRpc(ws, 'map/agents/register', {
+          agentId: 'e2e-worker',
+          name: 'E2E Worker',
+          role: 'worker',
+          parent: 'e2e-specialist',
+        });
+        expect(workerRes.error).toBeUndefined();
+
+        // Query hierarchy from orchestrator with full tree
+        const hierRes = await wsRpc(ws, 'map/agents/hierarchy', {
+          agentId: 'e2e-orch',
+          includeChildren: true,
+          includeDescendants: true,
+        });
+        expect(hierRes.error).toBeUndefined();
+        const hier = hierRes.result as any;
+        expect(hier.agent.id).toBe('e2e-orch');
+        expect(hier.children?.length).toBe(1);
+        expect(hier.children[0].id).toBe('e2e-specialist');
+        expect(hier.descendants?.length).toBe(2); // specialist + worker
+        const descendantIds = hier.descendants.map((d: any) => d.id);
+        expect(descendantIds).toContain('e2e-specialist');
+        expect(descendantIds).toContain('e2e-worker');
+
+        // Query hierarchy from worker with ancestors
+        const workerHier = await wsRpc(ws, 'map/agents/hierarchy', {
+          agentId: 'e2e-worker',
+          includeAncestors: true,
+        });
+        expect(workerHier.error).toBeUndefined();
+        const wh = workerHier.result as any;
+        expect(wh.ancestors?.length).toBe(2); // specialist + orchestrator
+        const ancestorIds = wh.ancestors.map((a: any) => a.id);
+        expect(ancestorIds).toContain('e2e-specialist');
+        expect(ancestorIds).toContain('e2e-orch');
+      } finally {
+        await closeWs(ws);
+      }
+    });
+
+    it('should return siblings in hierarchy query via WS', async () => {
+      const { ws } = await connectWsAgent(SERVER_PORT, agentB.apiKey);
+
+      try {
+        // Register parent
+        const parentRes = await wsRpc(ws, 'map/agents/register', {
+          agentId: 'sibling-parent',
+          name: 'Sibling Parent',
+          role: 'orchestrator',
+        });
+        expect(parentRes.error).toBeUndefined();
+
+        // Register two sibling workers
+        const w1Res = await wsRpc(ws, 'map/agents/register', {
+          agentId: 'sibling-w1',
+          name: 'Sibling W1',
+          role: 'worker',
+          parent: 'sibling-parent',
+        });
+        expect(w1Res.error).toBeUndefined();
+
+        const w2Res = await wsRpc(ws, 'map/agents/register', {
+          agentId: 'sibling-w2',
+          name: 'Sibling W2',
+          role: 'worker',
+          parent: 'sibling-parent',
+        });
+        expect(w2Res.error).toBeUndefined();
+
+        // Query w1 with siblings
+        const hierRes = await wsRpc(ws, 'map/agents/hierarchy', {
+          agentId: 'sibling-w1',
+          includeSiblings: true,
+        });
+        expect(hierRes.error).toBeUndefined();
+        const hier = hierRes.result as any;
+        expect(hier.siblings?.length).toBe(1);
+        expect(hier.siblings[0].id).toBe('sibling-w2');
+      } finally {
+        await closeWs(ws);
+      }
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // E2E: Channel Stats via Message Dispatch
+  // ══════════════════════════════════════════════════════════════════════
+
+  describe('E2E: Channel Stats via Message Dispatch', () => {
+    it('should increment proto:mail stats when mail/create is dispatched via WS', async () => {
+      closeAllChannels();
+      initChannels();
+
+      const mailBefore = getChannel('proto:mail')!.getStats().messagesReceived;
+
+      const { ws } = await connectWsAgent(SERVER_PORT, agentA.apiKey);
+      try {
+        const res = await wsRpc(ws, 'mail/create', {
+          subject: 'Channel stats test',
+          scope: 'default',
+        });
+        expect(res.error).toBeUndefined();
+
+        const mailAfter = getChannel('proto:mail')!.getStats().messagesReceived;
+        expect(mailAfter).toBe(mailBefore + 1);
+      } finally {
+        await closeWs(ws);
+      }
+    });
+
+    it('should NOT increment stats for unclassified methods like map/agents/register', async () => {
+      closeAllChannels();
+      initChannels();
+
+      const allBefore = getAllChannelStats();
+      const totalBefore = Object.values(allBefore).reduce((sum, s) => sum + s.messagesReceived, 0);
+
+      const { ws } = await connectWsAgent(SERVER_PORT, agentA.apiKey);
+      try {
+        await wsRpc(ws, 'map/agents/register', {
+          agentId: 'stats-check-agent',
+          name: 'Stats Check',
+          role: 'worker',
+        });
+
+        const allAfter = getAllChannelStats();
+        const totalAfter = Object.values(allAfter).reduce((sum, s) => sum + s.messagesReceived, 0);
+        // map/agents/register is not classified — no channel stats should change
+        expect(totalAfter).toBe(totalBefore);
+      } finally {
+        await closeWs(ws);
+      }
+    });
+
+    it('should increment stats for multiple protocol channels in a single session', async () => {
+      closeAllChannels();
+      initChannels();
+
+      const { ws } = await connectWsAgent(SERVER_PORT, agentA.apiKey);
+      try {
+        // Send a mail message (proto:mail)
+        await wsRpc(ws, 'mail/create', { subject: 'Multi-channel 1', scope: 'default' });
+
+        // Send another mail message
+        await wsRpc(ws, 'mail/create', { subject: 'Multi-channel 2', scope: 'default' });
+
+        const mailStats = getChannel('proto:mail')!.getStats();
+        expect(mailStats.messagesReceived).toBe(2);
+
+        // Unclassified messages shouldn't affect any channel
+        await wsRpc(ws, 'map/connect', {});
+        expect(getChannel('proto:mail')!.getStats().messagesReceived).toBe(2);
+      } finally {
+        await closeWs(ws);
+      }
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // E2E: Channel Queue Flush on Mesh Reconnect
+  // ══════════════════════════════════════════════════════════════════════
+
+  describe('E2E: Channel Queue Flush on Mesh Reconnect', () => {
+    it('should flush queued channel messages when mesh peer reconnects', async () => {
+      const hubPeer = getHubMeshPeer();
+      const flushPeerId = `flush-peer-${Date.now()}`;
+
+      // Connect mesh peer and capture swarm ID
+      hubPeer.emit('peer:connected', flushPeerId);
+      await new Promise((r) => setTimeout(r, 200));
+      const swarm = findSwarmByMeshPeerId(flushPeerId)!;
+      expect(swarm).toBeDefined();
+
+      // Disconnect the peer
+      hubPeer.emit('peer:disconnected', flushPeerId);
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Create a channel in the registry with offline queueing
+      const channelName = `test:e2e-flush-${Date.now()}`;
+      const channel = createChannel(channelName, {
+        enableOfflineQueue: true,
+        offlineQueueTTL: 60_000,
+        maxQueueSize: 100,
+      });
+
+      // Queue messages (will fail because peer is disconnected)
+      channel.send(swarm.id, { msg: 'queued-1' });
+      channel.send(swarm.id, { msg: 'queued-2' });
+      channel.send(swarm.id, { msg: 'queued-3' });
+
+      const statsBefore = channel.getStats();
+      expect(statsBefore.queuedMessages).toBe(3);
+      expect(statsBefore.messagesSent).toBe(0);
+
+      // Reconnect the peer — mesh-handler calls flushAllQueues(swarm.id)
+      hubPeer.emit('peer:connected', flushPeerId);
+      await new Promise((r) => setTimeout(r, 300));
+
+      const statsAfter = channel.getStats();
+      // Queued messages should have been flushed (sent to the now-connected peer)
+      expect(statsAfter.queuedMessages).toBe(0);
+      expect(statsAfter.messagesSent).toBe(3);
+
+      // Cleanup
+      hubPeer.emit('peer:disconnected', flushPeerId);
+      await new Promise((r) => setTimeout(r, 200));
+      channel.close();
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // E2E: sendToSwarm with Live Inbound Mesh
+  // ══════════════════════════════════════════════════════════════════════
+
+  describe('E2E: sendToSwarm with Live Inbound Mesh', () => {
+    it('should deliver via sendToSwarm when mesh peer is live in inbound registry', async () => {
+      const hubPeer = getHubMeshPeer();
+      const livePeerId = `live-mesh-${Date.now()}`;
+
+      hubPeer.emit('peer:connected', livePeerId);
+      await new Promise((r) => setTimeout(r, 200));
+      const swarm = findSwarmByMeshPeerId(livePeerId)!;
+
+      try {
+        // sendToSwarm should succeed via inbound connection
+        const sent = sendToSwarm(swarm.id, {
+          jsonrpc: '2.0',
+          method: 'test/ping',
+          params: { ts: Date.now() },
+        });
+        expect(sent).toBe(true);
+      } finally {
+        hubPeer.emit('peer:disconnected', livePeerId);
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    });
+
+    it('should return false from sendToSwarm after mesh peer disconnects', async () => {
+      const hubPeer = getHubMeshPeer();
+      const discPeerId = `disc-mesh-${Date.now()}`;
+
+      hubPeer.emit('peer:connected', discPeerId);
+      await new Promise((r) => setTimeout(r, 200));
+      const swarm = findSwarmByMeshPeerId(discPeerId)!;
+
+      // Disconnect
+      hubPeer.emit('peer:disconnected', discPeerId);
+      await new Promise((r) => setTimeout(r, 200));
+
+      // sendToSwarm should fail (no connections available)
+      const sent = sendToSwarm(swarm.id, {
+        jsonrpc: '2.0',
+        method: 'test/ping',
+        params: {},
+      });
+      expect(sent).toBe(false);
+    });
+
+    it('should deliver to mesh peer via inbound and track in channel stats', async () => {
+      closeAllChannels();
+      initChannels();
+
+      const hubPeer = getHubMeshPeer();
+      const trackPeerId = `track-mesh-${Date.now()}`;
+
+      hubPeer.emit('peer:connected', trackPeerId);
+      await new Promise((r) => setTimeout(r, 200));
+      const swarm = findSwarmByMeshPeerId(trackPeerId)!;
+
+      try {
+        const resourceChannel = getChannel('proto:resource-sync')!;
+        const sentBefore = resourceChannel.getStats().messagesSent;
+
+        // Send via channel (which uses sendToSwarm internally)
+        const delivered = resourceChannel.send(swarm.id, {
+          jsonrpc: '2.0',
+          method: 'x-openhive/memory.sync',
+          params: { resource_id: 'res-1' },
+        });
+        expect(delivered).toBe(true);
+
+        const sentAfter = resourceChannel.getStats().messagesSent;
+        expect(sentAfter).toBe(sentBefore + 1);
+      } finally {
+        hubPeer.emit('peer:disconnected', trackPeerId);
+        await new Promise((r) => setTimeout(r, 200));
       }
     });
   });

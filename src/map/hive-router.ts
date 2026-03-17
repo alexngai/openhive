@@ -12,6 +12,7 @@ import { findHiveByName } from '../db/dal/hives.js';
 import { listSwarms, getSwarmHives } from '../db/dal/map.js';
 import { getInboxRouter, getFederation } from './inbox-bridge.js';
 import { sendToSwarm } from './sync-listener.js';
+import { broadcastToHiveScope, getHiveScopeMembers } from './hive-scopes.js';
 
 export interface HiveRouteResult {
   messageId: string;
@@ -84,7 +85,7 @@ export async function routeHiveMessage(
     },
   });
 
-  // Fan out to target swarms via dual-transport delivery
+  // Fan out to target swarms
   const broadcastPayload = {
     jsonrpc: '2.0' as const,
     method: 'map/send',
@@ -97,8 +98,20 @@ export async function routeHiveMessage(
     },
   };
 
+  // Try scope-based broadcast for mesh agents first
+  const scopeBroadcast = await broadcastToHiveScope(hiveName, sourceSwarmId, broadcastPayload);
+
+  // Build a set of agents already reached via scope broadcast to prevent double-delivery
+  const scopeMembers = scopeBroadcast ? new Set(getHiveScopeMembers(hiveName)) : new Set<string>();
+
+  // Fan out to swarms not already reached via scope broadcast
   let delivered = 0;
   for (const swarm of targetSwarms) {
+    // Skip swarms whose owner agent was already reached via scope broadcast
+    if (scopeMembers.has(swarm.owner_agent_id)) {
+      delivered++;
+      continue;
+    }
     if (sendToSwarm(swarm.id, broadcastPayload)) {
       delivered++;
     }

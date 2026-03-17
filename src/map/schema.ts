@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS map_nodes (
   scopes TEXT,
   visibility TEXT DEFAULT 'public'
     CHECK (visibility IN ('public', 'hive-only', 'swarm-only')),
+  -- Hierarchy
+  parent_node_id TEXT REFERENCES map_nodes(id) ON DELETE SET NULL,
   -- Metadata
   metadata TEXT,
   tags TEXT,
@@ -112,10 +114,19 @@ CREATE INDEX IF NOT EXISTS idx_map_nodes_swarm ON map_nodes(swarm_id);
 CREATE INDEX IF NOT EXISTS idx_map_nodes_role ON map_nodes(role);
 CREATE INDEX IF NOT EXISTS idx_map_nodes_state ON map_nodes(state);
 CREATE INDEX IF NOT EXISTS idx_map_nodes_visibility ON map_nodes(visibility);
+CREATE INDEX IF NOT EXISTS idx_map_nodes_parent ON map_nodes(parent_node_id);
 CREATE INDEX IF NOT EXISTS idx_map_swarm_hives_swarm ON map_swarm_hives(swarm_id);
 CREATE INDEX IF NOT EXISTS idx_map_swarm_hives_hive ON map_swarm_hives(hive_id);
 CREATE INDEX IF NOT EXISTS idx_map_preauth_keys_hive ON map_preauth_keys(hive_id);
 CREATE INDEX IF NOT EXISTS idx_map_federation_log_source ON map_federation_log(source_swarm_id);
 CREATE INDEX IF NOT EXISTS idx_map_federation_log_target ON map_federation_log(target_swarm_id);
 CREATE INDEX IF NOT EXISTS idx_map_swarms_mesh_peer ON map_swarms(mesh_peer_id);
+`;
+
+/**
+ * Migration V27: Agent hierarchy — add parent_node_id to map_nodes.
+ */
+export const MAP_MIGRATION_V27_HIERARCHY = `
+ALTER TABLE map_nodes ADD COLUMN parent_node_id TEXT REFERENCES map_nodes(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_map_nodes_parent ON map_nodes(parent_node_id);
 `;

@@ -23,6 +23,14 @@ export type MeshPeerInstance = {
     removeMessageHandler(agentId: string): void;
     send(from: string, to: unknown, payload: unknown, meta?: Record<string, unknown>): Promise<unknown>;
     getSystemInfo(): Record<string, unknown>;
+    // Scope management (used for hive-scope mapping)
+    createScope(params: { scopeId?: string; name?: string; persistent?: boolean; joinPolicy?: string; sendPolicy?: string; metadata?: Record<string, unknown> }): unknown;
+    deleteScope(scopeId: string): unknown;
+    getScope(scopeId: string): unknown | undefined;
+    listScopes(filter?: Record<string, unknown>): unknown[];
+    joinScope(scopeId: string, agentId: string): unknown;
+    leaveScope(scopeId: string, agentId: string): unknown;
+    getScopeMembers(scopeId: string): string[];
   };
   start(transport?: unknown): Promise<void>;
   stop(): Promise<void>;

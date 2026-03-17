@@ -263,6 +263,7 @@ export interface SyncPeerConfig {
   gossip_ttl: number;
   failure_count: number;
   discovered_via: string | null;
+  mesh_peer_id: string | null;
   created_at: string;
   updated_at: string;
 }

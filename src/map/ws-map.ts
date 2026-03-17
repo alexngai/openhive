@@ -25,6 +25,7 @@ import { cleanupSubscriptions } from './event-subscriptions.js';
 import { dispatchMapMessage } from './message-dispatch.js';
 import type { ReplyFunctions } from './message-dispatch.js';
 import type { Agent } from '../types.js';
+import { flushAllQueues } from './mesh-channels.js';
 
 const HEARTBEAT_INTERVAL = 30_000;
 let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -291,6 +292,9 @@ export function setupMapWebSocket(fastify: FastifyInstance): void {
     } catch {
       // Inbox bridge may not be initialized yet — non-fatal
     }
+
+    // Flush any queued channel messages for this swarm
+    flushAllQueues(swarmId);
 
     console.log(`[ws-map] Swarm ${swarmId} connected inbound (agent: ${agent.name})`);
 

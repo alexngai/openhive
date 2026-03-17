@@ -378,13 +378,49 @@ function disconnectFromSwarm(swarmId: string): void {
  * then falls back to outbound connections (we connected to the swarm).
  * Returns true if the message was sent, false if the swarm is not connected.
  */
+/** Lightweight cache: swarmId → { meshPeerId, ownerAgentId } */
+const meshPeerCache = new Map<string, { meshPeerId: string; ownerAgentId: string }>();
+
+/** Cache a swarm's mesh peer mapping (call on registration/update). */
+export function cacheMeshPeer(swarmId: string, meshPeerId: string, ownerAgentId: string): void {
+  meshPeerCache.set(swarmId, { meshPeerId, ownerAgentId });
+}
+
+/** Remove a swarm from the mesh peer cache (call on deletion/disconnect). */
+export function uncacheMeshPeer(swarmId: string): void {
+  meshPeerCache.delete(swarmId);
+}
+
 export function sendToSwarm(swarmId: string, message: object): boolean {
-  // Try inbound connection first (agent connected to hub via /ws/map or mesh)
+  // 1. Try inbound connection first (agent connected to hub via /ws/map or mesh)
   if (sendToInbound(swarmId, message)) {
     return true;
   }
 
-  // Fall back to outbound connection (hub connected to swarm's endpoint)
+  // 2. Try direct PeerConnection (P2P without hub relay)
+  if (isMeshEnabled()) {
+    // Check cache first, fall back to DB only on miss
+    let meshInfo = meshPeerCache.get(swarmId);
+    if (!meshInfo) {
+      const swarm = findSwarmById(swarmId);
+      if (swarm?.mesh_peer_id) {
+        meshInfo = { meshPeerId: swarm.mesh_peer_id, ownerAgentId: swarm.owner_agent_id };
+        meshPeerCache.set(swarmId, meshInfo);
+      }
+    }
+    if (meshInfo) {
+      try {
+        const hubPeer = getHubMeshPeer();
+        const peerConn = hubPeer.getPeerConnection(meshInfo.meshPeerId);
+        if (peerConn && (peerConn as any).isConnected) {
+          (peerConn as any).sendMessage(meshInfo.ownerAgentId, message).catch(() => {});
+          return true;
+        }
+      } catch { /* fall through */ }
+    }
+  }
+
+  // 3. Fall back to outbound connection (hub connected to swarm's endpoint)
   const payload = JSON.stringify(message);
   const conn = connections.get(swarmId);
   if (conn?.ws?.readyState === WebSocket.OPEN) {
@@ -392,7 +428,7 @@ export function sendToSwarm(swarmId: string, message: object): boolean {
     return true;
   }
 
-  // Try mesh peer connection as last resort
+  // 4. Try mesh relay as last resort (hub routes via MapServer)
   if (conn?.transport === 'mesh' && isMeshEnabled()) {
     const peerId = conn.endpoint.startsWith('mesh://') ? conn.endpoint.slice(7) : conn.endpoint;
     try {

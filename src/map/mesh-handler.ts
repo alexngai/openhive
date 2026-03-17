@@ -13,9 +13,13 @@ import { registerInbound, unregisterInbound, initMeshPeerRef } from './connectio
 import { cleanupSubscriptions } from './event-subscriptions.js';
 import { getInboxStorage } from './inbox-bridge.js';
 import {
-  findSwarmByMeshPeerId, createSwarm, heartbeatSwarm, updateSwarm,
+  findSwarmByMeshPeerId, createSwarm, heartbeatSwarm, updateSwarm, getSwarmHives,
 } from '../db/dal/map.js';
+import { findHiveById } from '../db/dal/hives.js';
 import { getOrCreateLocalAgent } from '../db/dal/agents.js';
+import { joinHiveScope } from './hive-scopes.js';
+import { flushAllQueues } from './mesh-channels.js';
+import { cacheMeshPeer, uncacheMeshPeer } from './sync-listener.js';
 
 /**
  * Initialize mesh handler — listens for peer connections on the hub's MeshPeer.
@@ -73,6 +77,25 @@ async function handlePeerConnected(remotePeerId: string): Promise<void> {
   // Mark swarm online
   heartbeatSwarm(swarm.id);
 
+  // Auto-join hive scopes for this swarm's memberships
+  const swarmHives = getSwarmHives(swarm.id);
+  const agentId = swarm.owner_agent_id;
+  for (const sh of swarmHives) {
+    try {
+      const hive = findHiveById(sh.hive_id);
+      if (hive) {
+        joinHiveScope(hive.name, agentId);
+      }
+    } catch (err) {
+      console.error(`[mesh-handler] Failed to join hive scope for hive ${sh.hive_id}:`, err);
+    }
+  }
+
+  // Cache mesh peer mapping for fast sendToSwarm lookups
+  if (swarm.mesh_peer_id) {
+    cacheMeshPeer(swarm.id, swarm.mesh_peer_id, swarm.owner_agent_id);
+  }
+
   // Register in connection registry
   const now = new Date().toISOString();
   registerInbound(swarm.id, {
@@ -82,6 +105,12 @@ async function handlePeerConnected(remotePeerId: string): Promise<void> {
     connectedAt: now,
     lastMessageAt: now,
   });
+
+  // Flush any queued channel messages for this swarm
+  const flushed = flushAllQueues(swarm.id);
+  if (flushed > 0) {
+    console.log(`[mesh-handler] Flushed ${flushed} queued message(s) for swarm ${swarm.id}`);
+  }
 
   // Set up message handler for this peer on the MapServer
   const hubPeer = getHubMeshPeer();
@@ -149,6 +178,9 @@ async function handlePeerConnected(remotePeerId: string): Promise<void> {
 function handlePeerDisconnected(remotePeerId: string): void {
   const swarm = findSwarmByMeshPeerId(remotePeerId);
   if (!swarm) return;
+
+  // Invalidate mesh peer cache
+  uncacheMeshPeer(swarm.id);
 
   // Unregister from connection registry
   unregisterInbound(swarm.id);

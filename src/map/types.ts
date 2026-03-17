@@ -85,6 +85,8 @@ export interface MapNode {
   name: string | null;
   description: string | null;
   role: string | null;
+  // Hierarchy
+  parent_node_id: string | null;
   // State (mirrors MAP agent states)
   state: MapNodeState;
   // Discovery info
@@ -155,6 +157,13 @@ export interface RegisterSwarmInput {
   // Optional pre-auth key for auto-registration + auto-join
   preauth_key?: string;
   mesh_peer_id?: string;
+  // Opt-in: provision L3/L4 network access (Tailscale/Headscale) at registration
+  provision_network?: {
+    hive_name: string;
+    reusable?: boolean;
+    ephemeral?: boolean;
+    expiration_hours?: number;
+  };
 }
 
 export interface UpdateSwarmInput {
@@ -187,6 +196,7 @@ export interface RegisterNodeInput {
   visibility?: MapNodeVisibility;
   metadata?: Record<string, unknown>;
   tags?: string[];
+  parent_node_id?: string;
 }
 
 export interface UpdateNodeInput {

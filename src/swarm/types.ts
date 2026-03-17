@@ -51,6 +51,12 @@ export interface BootstrapToken {
     git_remote_url: string;
     metadata: Record<string, unknown> | null;
   }>;
+  /** Hub mesh config for direct P2P connectivity (if mesh is enabled) */
+  mesh?: {
+    hub_peer_id: string;
+    hub_address: string;
+    hub_port?: number;
+  };
   /** When this token was issued */
   issued_at: string;
   /** When this token expires (short TTL, just for bootstrapping) */

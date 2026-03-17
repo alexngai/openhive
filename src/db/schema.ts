@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 28;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -445,6 +445,7 @@ CREATE TABLE IF NOT EXISTS sync_peer_configs (
   gossip_ttl INTEGER DEFAULT 0,
   failure_count INTEGER DEFAULT 0,
   discovered_via TEXT,
+  mesh_peer_id TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   UNIQUE(sync_endpoint)
@@ -452,6 +453,7 @@ CREATE TABLE IF NOT EXISTS sync_peer_configs (
 
 CREATE INDEX IF NOT EXISTS idx_sync_peer_configs_status ON sync_peer_configs(status);
 CREATE INDEX IF NOT EXISTS idx_sync_peer_configs_source ON sync_peer_configs(source);
+CREATE INDEX IF NOT EXISTS idx_sync_peer_configs_mesh ON sync_peer_configs(mesh_peer_id);
 
 -- ============================================================================
 -- Trajectory Checkpoints (stored from trajectory/checkpoint sync notifications)
@@ -638,4 +640,12 @@ ON CONFLICT DO NOTHING;
 INSERT INTO hives_fts(rowid, name, description)
 SELECT rowid, name, description FROM hives WHERE true
 ON CONFLICT DO NOTHING;
+`;
+
+/**
+ * Migration V28: Add mesh_peer_id to sync_peer_configs for FederationGateway routing.
+ */
+export const MIGRATION_V28_SYNC_MESH_PEER = `
+ALTER TABLE sync_peer_configs ADD COLUMN mesh_peer_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_sync_peer_configs_mesh ON sync_peer_configs(mesh_peer_id);
 `;

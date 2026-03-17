@@ -8,9 +8,11 @@
 
 import { EventEmitter } from 'node:events';
 import * as mapDal from '../db/dal/map.js';
-import { findHiveByName } from '../db/dal/hives.js';
+import { findHiveByName, findHiveById } from '../db/dal/hives.js';
 import { getDatabase } from '../db/index.js';
 import { broadcastToChannel } from '../realtime/index.js';
+import { joinHiveScope, leaveHiveScope, createHiveScope } from './hive-scopes.js';
+import { provisionSwarmNetwork, revokeSwarmNetwork, isNetworkAvailable, type NetworkProvisionResult } from './network-bridge.js';
 
 /** Event bus for MAP Hub lifecycle events (used by SwarmCraft bridge) */
 export const mapHubEvents = new EventEmitter();
@@ -30,16 +32,18 @@ import type {
 export interface RegisterSwarmResult {
   swarm: MapSwarm;
   auto_joined_hive: string | null;
+  network_provision: NetworkProvisionResult | null;
 }
 
 /**
  * Register a new MAP swarm with the hub.
  * Optionally uses a pre-auth key for automated registration + auto-join.
+ * Optionally provisions L3/L4 network access if `provision_network` is set.
  */
-export function registerSwarm(
+export async function registerSwarm(
   ownerAgentId: string,
   input: RegisterSwarmInput
-): RegisterSwarmResult {
+): Promise<RegisterSwarmResult> {
   // Check for duplicate endpoint
   const existing = mapDal.findSwarmByEndpoint(input.map_endpoint);
   if (existing) {
@@ -66,6 +70,11 @@ export function registerSwarm(
   // Auto-join hive if pre-auth key specified one
   if (autoJoinedHive) {
     mapDal.joinHive(swarm.id, autoJoinedHive);
+    // Join MapServer scope for the auto-joined hive
+    const autoHive = findHiveById(autoJoinedHive);
+    if (autoHive) {
+      joinHiveScope(autoHive.name, ownerAgentId);
+    }
   }
 
   // Broadcast swarm registration event
@@ -86,7 +95,18 @@ export function registerSwarm(
     auth_method: swarm.auth_method,
   });
 
-  return { swarm, auto_joined_hive: autoJoinedHive };
+  // Opt-in: provision L3/L4 network access
+  let networkProvision: NetworkProvisionResult | null = null;
+  if (input.provision_network && isNetworkAvailable()) {
+    try {
+      networkProvision = await provisionSwarmNetwork(swarm.id, input.provision_network);
+    } catch (err) {
+      // Non-fatal — swarm is already created, network provisioning is best-effort
+      console.warn(`[map-service] Network provisioning failed for swarm ${swarm.id}:`, (err as Error).message);
+    }
+  }
+
+  return { swarm, auto_joined_hive: autoJoinedHive, network_provision: networkProvision };
 }
 
 // ============================================================================
@@ -212,8 +232,16 @@ export function joinHive(swarmId: string, hiveName: string): void {
 
   mapDal.joinHive(swarmId, hive.id);
 
-  // Broadcast to hive channel
+  // Join MapServer scope for this hive (mesh broadcast) — only for mesh-connected swarms.
+  // WS-only swarms must NOT join scopes, otherwise the de-duplication logic in
+  // routeHiveMessage will skip their sendToSwarm() fallback delivery.
   const swarm = mapDal.findSwarmById(swarmId);
+  const agentId = swarm?.owner_agent_id ?? swarmId;
+  if (swarm?.map_transport === 'mesh') {
+    joinHiveScope(hiveName, agentId);
+  }
+
+  // Broadcast to hive channel
   broadcastToChannel(`map:hive:${hive.id}`, {
     type: 'swarm_joined_hive',
     data: {
@@ -236,7 +264,13 @@ export function leaveHive(swarmId: string, hiveName: string): boolean {
   const result = mapDal.leaveHive(swarmId, hive.id);
 
   if (result) {
+    // Leave MapServer scope for this hive (only mesh swarms were joined)
     const swarm = mapDal.findSwarmById(swarmId);
+    const agentId = swarm?.owner_agent_id ?? swarmId;
+    if (swarm?.map_transport === 'mesh') {
+      leaveHiveScope(hiveName, agentId);
+    }
+
     broadcastToChannel(`map:hive:${hive.id}`, {
       type: 'swarm_left_hive',
       data: {

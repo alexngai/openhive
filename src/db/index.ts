@@ -1,8 +1,8 @@
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
-import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE, MIGRATION_V18_RESOURCE_SCOPE, MIGRATION_V21_RESOURCE_ORIGIN, MIGRATION_V23_COORDINATION_ORIGIN } from './schema.js';
-import { MAP_SCHEMA } from '../map/schema.js';
+import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE, MIGRATION_V18_RESOURCE_SCOPE, MIGRATION_V21_RESOURCE_ORIGIN, MIGRATION_V23_COORDINATION_ORIGIN, MIGRATION_V28_SYNC_MESH_PEER } from './schema.js';
+import { MAP_SCHEMA, MAP_MIGRATION_V27_HIERARCHY } from '../map/schema.js';
 import { SYNC_SCHEMA_V12, SYNC_SCHEMA_V13, SYNC_SCHEMA_V14, SYNC_SCHEMA_V15 } from '../sync/schema.js';
 import { HOSTED_SWARM_SCHEMA } from '../swarm/schema.js';
 import { BRIDGE_SCHEMA } from '../bridge/schema.js';
@@ -219,6 +219,9 @@ CREATE INDEX IF NOT EXISTS idx_ingest_keys_agent ON ingest_keys(agent_id);
 ALTER TABLE ingest_keys ADD COLUMN key_value TEXT NOT NULL DEFAULT '';
 ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   `,
+  // Version 27: Agent hierarchy — parent_node_id for swarm topologies
+  27: MAP_MIGRATION_V27_HIERARCHY,
+  28: MIGRATION_V28_SYNC_MESH_PEER,
 };
 
 /** Get the SQL for a specific migration version.

@@ -41,6 +41,13 @@ import {
   leaveHive,
   MapHubError,
 } from '../../map/service.js';
+import {
+  provisionSwarmNetwork,
+  revokeSwarmNetwork,
+  refreshSwarmNetworkInfo,
+  isNetworkAvailable,
+  NetworkBridgeError,
+} from '../../map/network-bridge.js';
 import type { Config } from '../../config.js';
 
 // ============================================================================
@@ -64,6 +71,12 @@ const RegisterSwarmSchema = z.object({
   auth_token: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),
   preauth_key: z.string().optional(),
+  provision_network: z.object({
+    hive_name: z.string().min(1).max(100),
+    reusable: z.boolean().optional(),
+    ephemeral: z.boolean().optional(),
+    expiration_hours: z.number().min(1).max(8760).optional(),
+  }).optional(),
 });
 
 const UpdateSwarmSchema = z.object({
@@ -164,6 +177,16 @@ function handleMapError(error: unknown, reply: FastifyReply): FastifyReply {
       message: error.message,
     });
   }
+  if (error instanceof NetworkBridgeError) {
+    const statusMap: Record<string, number> = {
+      PROVIDER_NOT_AVAILABLE: 503,
+      SWARM_NOT_FOUND: 404,
+    };
+    return reply.status(statusMap[error.code] || 500).send({
+      error: error.code,
+      message: error.message,
+    });
+  }
   if (error instanceof z.ZodError) {
     return reply.status(422).send({
       error: 'VALIDATION_ERROR',
@@ -201,7 +224,7 @@ export async function mapRoutes(
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const body = RegisterSwarmSchema.parse(request.body);
-      const result = registerSwarm(request.agent!.id, body);
+      const result = await registerSwarm(request.agent!.id, body);
       return reply.status(201).send(result);
     } catch (error) {
       return handleMapError(error, reply);
@@ -288,6 +311,9 @@ export async function mapRoutes(
       if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
         throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
       }
+
+      // Revoke network access before deletion (best-effort)
+      await revokeSwarmNetwork(request.params.id).catch(() => {});
 
       const deleted = mapDal.deleteSwarm(request.params.id);
       if (!deleted) {
@@ -580,20 +606,18 @@ export async function mapRoutes(
 
       const body = NetworkProvisionSchema.parse(request.body);
 
-      const provider = (request.server as unknown as { networkProvider?: import('../../network/types.js').NetworkProvider }).networkProvider;
-      if (!provider || !provider.isReady()) {
+      if (!isNetworkAvailable()) {
         return reply.status(503).send({
           error: 'NETWORK_NOT_AVAILABLE',
           message: 'No mesh network provider configured. Set network.provider in config.',
         });
       }
 
-      const result = await provider.createAuthKey({
-        hiveName: body.hive_name,
-        swarmName: swarm.name || request.params.id,
+      const result = await provisionSwarmNetwork(request.params.id, {
+        hive_name: body.hive_name,
         reusable: body.reusable,
         ephemeral: body.ephemeral,
-        expirationHours: body.expiration_hours,
+        expiration_hours: body.expiration_hours,
       });
 
       return reply.status(201).send(result);
@@ -616,8 +640,7 @@ export async function mapRoutes(
         return reply.status(404).send({ error: 'Not Found', message: 'Swarm not found' });
       }
 
-      const provider = (request.server as unknown as { networkProvider?: import('../../network/types.js').NetworkProvider }).networkProvider;
-      if (!provider || !provider.isReady()) {
+      if (!isNetworkAvailable()) {
         // Return whatever we have stored in the DB
         return reply.send({
           provider: 'none',
@@ -627,21 +650,13 @@ export async function mapRoutes(
         });
       }
 
-      const hives = mapDal.getSwarmHiveNames(request.params.id);
-      const deviceInfo = await provider.getDeviceInfo(swarm.name, hives[0]);
-
-      // Update stored network info if we got data from the provider
-      if (deviceInfo.id) {
-        mapDal.updateSwarm(request.params.id, {
-          headscale_node_id: deviceInfo.id,
-          tailscale_ips: deviceInfo.ips,
-          tailscale_dns_name: deviceInfo.dnsName || undefined,
-        });
-      }
+      // Refresh from provider and update DB
+      const refreshed = await refreshSwarmNetworkInfo(request.params.id);
 
       return reply.send({
-        provider: provider.type,
-        ...deviceInfo,
+        headscale_node_id: swarm.headscale_node_id,
+        tailscale_ips: refreshed?.ips ?? swarm.tailscale_ips,
+        tailscale_dns_name: refreshed?.dnsName ?? swarm.tailscale_dns_name,
       });
     } catch (error) {
       return handleMapError(error, reply);

@@ -28,6 +28,7 @@ import type {
   PullEventsResponse,
   GossipPeerInfo,
 } from './types.js';
+import { pushViaGateway, hasGateway, createSyncGateway } from './federation-bridge.js';
 
 /** Current sync protocol version — bump on breaking changes */
 export const SYNC_PROTOCOL_VERSION = 1;
@@ -126,6 +127,11 @@ export class SyncService {
       syncLogger.error('Initial handshakes failed', { error: (err as Error).message });
     });
 
+    // Wire FederationGateway for mesh-enabled sync peers
+    this.wireSyncGateways().catch(err => {
+      syncLogger.warn('Sync gateway wiring failed', { error: (err as Error).message });
+    });
+
     // Start heartbeat loop
     if (this.config.heartbeat_interval > 0) {
       this.heartbeatTimer = setInterval(() => {
@@ -167,6 +173,9 @@ export class SyncService {
       clearInterval(this.pendingCleanupTimer);
       this.pendingCleanupTimer = null;
     }
+
+    // Clean up federation gateways
+    import('./federation-bridge.js').then(mod => mod.closeAllGateways()).catch(() => {});
 
     syncLogger.info('Sync service stopped');
   }
@@ -569,6 +578,28 @@ export class SyncService {
       event_count: events.length,
     });
 
+    const eventPayload = events.map(e => ({
+      id: e.id,
+      event_type: e.event_type,
+      origin_instance_id: e.origin_instance_id,
+      origin_ts: e.origin_ts,
+      payload: e.payload,
+      signature: e.signature,
+    }));
+
+    // Try FederationGateway for mesh-enabled peers
+    const peerConfig = syncPeerConfigsDAL.findPeerConfigByEndpoint(peer.peer_endpoint);
+    if (peerConfig?.mesh_peer_id && hasGateway(peerConfig.mesh_peer_id)) {
+      const pushed = await pushViaGateway(peerConfig.mesh_peer_id, eventPayload, nextSeq, traceId);
+      if (pushed) {
+        syncPeersDAL.updateSyncPeerSeqSent(peerId, nextSeq);
+        return;
+      }
+      // Fall through to HTTP if gateway push fails
+      syncLogger.info('Gateway push failed, falling back to HTTP', { peer: peer.peer_swarm_id });
+    }
+
+    // HTTP push (existing path)
     const response = await fetch(`${peer.peer_endpoint}/groups/${remoteGroupId}/events`, {
       method: 'POST',
       headers: {
@@ -577,14 +608,7 @@ export class SyncService {
         'X-Trace-Id': traceId,
       },
       body: JSON.stringify({
-        events: events.map(e => ({
-          id: e.id,
-          event_type: e.event_type,
-          origin_instance_id: e.origin_instance_id,
-          origin_ts: e.origin_ts,
-          payload: e.payload,
-          signature: e.signature,
-        })),
+        events: eventPayload,
         sender_seq: nextSeq,
         trace_id: traceId,
       }),
@@ -847,6 +871,26 @@ export class SyncService {
     }
 
     return totalPulled;
+  }
+
+  /** Wire FederationGateway for mesh-enabled sync peers */
+  private async wireSyncGateways(): Promise<void> {
+    const allConfigs = syncPeerConfigsDAL.listPeerConfigs({});
+    const meshPeers = allConfigs.filter(p => p.mesh_peer_id);
+
+    if (meshPeers.length === 0) return;
+
+    syncLogger.info('Wiring federation gateways for mesh sync peers', { count: meshPeers.length });
+
+    for (const peerConfig of meshPeers) {
+      await createSyncGateway({
+        localSystemId: this.instanceId,
+        remoteSystemId: peerConfig.peer_instance_id || peerConfig.id,
+        remoteMeshPeerId: peerConfig.mesh_peer_id!,
+        syncToken: peerConfig.sync_token ?? undefined,
+        maxHops: 3,
+      });
+    }
   }
 
   /** Initiate handshakes with all pending peer configs */

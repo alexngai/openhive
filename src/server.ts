@@ -33,11 +33,13 @@ import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
 import { initInboxBridge, stopInboxBridge } from "./map/inbox-bridge.js";
 import { initMeshPeer, stopMeshPeer } from "./map/mesh-peer.js";
 import { setupMeshHandler, stopMeshHandler } from "./map/mesh-handler.js";
+import { initDefaultChannels, closeAllChannels } from "./map/mesh-channels.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { SwarmHubConnector } from "./swarmhub/connector.js";
 import { normalize, routeEvent } from "./events/index.js";
 import { initCoordinationService } from "./coordination/index.js";
 import { registerHostnameGuard } from "./api/middleware/hostname-guard.js";
+import { initNetworkBridge, stopNetworkBridge } from "./map/network-bridge.js";
 
 export interface HiveServer {
   fastify: FastifyInstance;
@@ -164,8 +166,9 @@ export async function createHive(
       meshEnabled: config.mapHub.mesh?.enabled ?? false,
     });
 
-    // Initialize mesh transport if enabled
+    // Initialize mesh transport and protocol channels
     if (config.mapHub.mesh?.enabled) {
+      initDefaultChannels();
       await initMeshPeer(config.mapHub.mesh);
       setupMeshHandler();
     }
@@ -503,6 +506,8 @@ export async function createHive(
           (
             fastify as unknown as { networkProvider: NetworkProvider }
           ).networkProvider = networkProvider;
+          // Initialize the network bridge so MAP layer can provision on registration
+          initNetworkBridge(networkProvider);
           console.log(
             `[openhive] Network provider started (${networkProvider.type})`,
           );
@@ -656,8 +661,9 @@ export async function createHive(
       if (swarmManager) {
         await swarmManager.shutdown();
       }
-      // Stop mesh handler and peer
+      // Stop mesh handler, channels, and peer
       stopMeshHandler();
+      closeAllChannels();
       await stopMeshPeer();
       // Stop inbox bridge (agent-inbox in router mode)
       await stopInboxBridge();
@@ -670,6 +676,7 @@ export async function createHive(
         syncService.stop();
       }
       // Stop mesh networking provider
+      stopNetworkBridge();
       if (networkProvider.type !== "none") {
         await networkProvider.stop();
       }

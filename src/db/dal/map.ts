@@ -76,6 +76,7 @@ function rowToNode(row: Record<string, unknown>): MapNode {
     name: row.name as string | null,
     description: row.description as string | null,
     role: row.role as string | null,
+    parent_node_id: (row.parent_node_id as string | null) ?? null,
     state: row.state as MapNode['state'],
     capabilities: parseJsonField(row.capabilities),
     scopes: parseJsonField(row.scopes),
@@ -256,8 +257,8 @@ export function createNode(input: RegisterNodeInput): MapNode {
 
   db.prepare(`
     INSERT INTO map_nodes (id, swarm_id, map_agent_id, name, description, role,
-      state, capabilities, scopes, visibility, metadata, tags)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      state, capabilities, scopes, visibility, metadata, tags, parent_node_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.swarm_id,
@@ -270,7 +271,8 @@ export function createNode(input: RegisterNodeInput): MapNode {
     input.scopes ? JSON.stringify(input.scopes) : null,
     input.visibility || 'public',
     input.metadata ? JSON.stringify(input.metadata) : null,
-    input.tags ? JSON.stringify(input.tags) : null
+    input.tags ? JSON.stringify(input.tags) : null,
+    input.parent_node_id || null
   );
 
   return findNodeById(id)!;
@@ -320,6 +322,120 @@ export function deleteSwarmNodes(swarmId: string): number {
   const db = getDatabase();
   const result = db.prepare('DELETE FROM map_nodes WHERE swarm_id = ?').run(swarmId);
   return result.changes;
+}
+
+// ============================================================================
+// Node Hierarchy
+// ============================================================================
+
+const MAX_HIERARCHY_DEPTH = 5;
+
+/**
+ * Get the parent node of a given node.
+ */
+export function getNodeParent(nodeId: string): MapNode | null {
+  const node = findNodeById(nodeId);
+  if (!node?.parent_node_id) return null;
+  return findNodeById(node.parent_node_id);
+}
+
+/**
+ * Get all direct children of a node.
+ */
+export function getNodeChildren(nodeId: string): MapNode[] {
+  const db = getDatabase();
+  const rows = db.prepare(
+    'SELECT * FROM map_nodes WHERE parent_node_id = ? ORDER BY created_at'
+  ).all(nodeId) as Record<string, unknown>[];
+  return rows.map(rowToNode);
+}
+
+/**
+ * Get ancestors of a node up to maxDepth levels (default: MAX_HIERARCHY_DEPTH).
+ */
+export function getNodeAncestors(nodeId: string, maxDepth = MAX_HIERARCHY_DEPTH): MapNode[] {
+  const ancestors: MapNode[] = [];
+  let current = findNodeById(nodeId);
+
+  for (let i = 0; i < maxDepth && current?.parent_node_id; i++) {
+    const parent = findNodeById(current.parent_node_id);
+    if (!parent) break;
+    ancestors.push(parent);
+    current = parent;
+  }
+
+  return ancestors;
+}
+
+/**
+ * Get all descendants of a node up to maxDepth levels (breadth-first).
+ */
+export function getNodeDescendants(nodeId: string, maxDepth = MAX_HIERARCHY_DEPTH): MapNode[] {
+  const descendants: MapNode[] = [];
+  let currentLevel = [nodeId];
+
+  for (let depth = 0; depth < maxDepth && currentLevel.length > 0; depth++) {
+    const nextLevel: string[] = [];
+    for (const id of currentLevel) {
+      const children = getNodeChildren(id);
+      descendants.push(...children);
+      nextLevel.push(...children.map(c => c.id));
+    }
+    currentLevel = nextLevel;
+  }
+
+  return descendants;
+}
+
+/**
+ * Get the full hierarchy view for a node.
+ */
+export function getNodeHierarchy(nodeId: string, options?: {
+  includeParent?: boolean;
+  includeChildren?: boolean;
+  includeSiblings?: boolean;
+  includeAncestors?: boolean;
+  includeDescendants?: boolean;
+  maxDepth?: number;
+}): {
+  node: MapNode;
+  parent?: MapNode | null;
+  children?: MapNode[];
+  siblings?: MapNode[];
+  ancestors?: MapNode[];
+  descendants?: MapNode[];
+} | null {
+  const node = findNodeById(nodeId);
+  if (!node) return null;
+
+  const maxDepth = options?.maxDepth ?? MAX_HIERARCHY_DEPTH;
+  const result: ReturnType<typeof getNodeHierarchy> = { node };
+
+  if (options?.includeParent !== false) {
+    result.parent = node.parent_node_id ? findNodeById(node.parent_node_id) : null;
+  }
+
+  if (options?.includeChildren !== false) {
+    result.children = getNodeChildren(nodeId);
+  }
+
+  if (options?.includeSiblings) {
+    if (node.parent_node_id) {
+      result.siblings = getNodeChildren(node.parent_node_id).filter(n => n.id !== nodeId);
+    } else {
+      result.siblings = [];
+    }
+  }
+
+  if (options?.includeAncestors) {
+    result.ancestors = getNodeAncestors(nodeId, maxDepth);
+  }
+
+  if (options?.includeDescendants) {
+    result.descendants = getNodeDescendants(nodeId, maxDepth);
+  }
+
+  return result;
 }
 
 /**

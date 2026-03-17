@@ -13,6 +13,7 @@ import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-
 import { broadcastToChannel } from '../realtime/index.js';
 import { registerSwarm } from '../map/service.js';
 import * as mapDal from '../db/dal/map.js';
+import { isMeshEnabled, getHubMeshPeer } from '../map/mesh-peer.js';
 import * as dal from './dal.js';
 import { LocalProvider } from './providers/local.js';
 import { SandboxedLocalProvider } from './providers/sandboxed-local.js';
@@ -220,6 +221,19 @@ export class SwarmManager {
       }
     }
 
+    // Include hub mesh config for direct P2P connectivity
+    let meshConfig: BootstrapToken['mesh'];
+    if (isMeshEnabled()) {
+      try {
+        const hubPeer = getHubMeshPeer();
+        meshConfig = {
+          hub_peer_id: hubPeer.peerId,
+          hub_address: this.instanceUrl.replace(/^https?:\/\//, '').replace(/:\d+$/, ''),
+          hub_port: 9090, // Default mesh port
+        };
+      } catch { /* mesh not available */ }
+    }
+
     const bootstrapToken: BootstrapToken = {
       version: 1,
       openhive_url: this.instanceUrl,
@@ -229,6 +243,7 @@ export class SwarmManager {
       adapter_config: input.adapter_config,
       metadata: input.metadata,
       resources: injectedResources,
+      mesh: meshConfig,
       issued_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(), // 1 hour
     };
@@ -313,7 +328,7 @@ export class SwarmManager {
           mapDal.deleteSwarm(staleSwarm.id);
         }
 
-        const mapResult = registerSwarm(agentId, {
+        const mapResult = await registerSwarm(agentId, {
           name,
           description: input.description,
           map_endpoint: endpoint,

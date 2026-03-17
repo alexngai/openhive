@@ -7,6 +7,7 @@ import * as invitesDAL from '../../db/dal/invites.js';
 import * as ingestKeysDAL from '../../db/dal/ingest-keys.js';
 import type { Config } from '../../config.js';
 import type { InstanceInfo } from '../../types.js';
+import { getAllChannelStats } from '../../map/mesh-channels.js';
 
 export async function adminRoutes(fastify: FastifyInstance, options: { config: Config }): Promise<void> {
   const adminAuth = async (request: Parameters<typeof authMiddleware>[0], reply: Parameters<typeof authMiddleware>[1]) => {
@@ -226,6 +227,7 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
       posts: {
         total: postsDAL.countPosts(),
       },
+      channels: getAllChannelStats(),
     });
   });
 
