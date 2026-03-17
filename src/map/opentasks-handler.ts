@@ -6,9 +6,8 @@
  * OpenTasks daemon (or JSONL fallback).
  */
 
-import { resolve } from 'node:path';
-import { existsSync, statSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { resolve, join, normalize } from 'node:path';
+import { existsSync, statSync, readFileSync, realpathSync } from 'node:fs';
 import { MAP_OPENTASKS_METHODS } from './opentasks-types.js';
 import type {
   OpenTasksResourceTarget,
@@ -49,12 +48,26 @@ export class OpenTasksRequestError extends Error {
 
 const REMOTE_URL_PREFIXES = ['http', 'git://', 'ssh://'];
 
+/**
+ * Canonicalize a local path: resolve symlinks if path exists,
+ * otherwise fall back to resolve() for consistent comparison.
+ */
+function canonicalPath(p: string): string {
+  const resolved = resolve(normalize(p));
+  try {
+    if (existsSync(resolved)) {
+      return realpathSync(resolved);
+    }
+  } catch { /* fall through */ }
+  return resolved;
+}
+
 function resolveLocalPath(resource: SyncableResource): string | null {
   const url = resource.git_remote_url;
   for (const prefix of REMOTE_URL_PREFIXES) {
     if (url.startsWith(prefix)) return null;
   }
-  return resolve(url);
+  return canonicalPath(url);
 }
 
 /**
@@ -130,9 +143,12 @@ function autoRegisterResource(opentasksPath: string, agentId: string): SyncableR
 }
 
 /**
- * Resolve a resource from either resource_id or path.
+ * Resolve a resource from resource_id, path, or name.
+ * Priority: resource_id > path > name.
+ *
  * - resource_id: direct lookup by ID
- * - path: lookup by local filesystem path, with auto-register fallback
+ * - path: lookup by local filesystem path (resolves symlinks), auto-registers if new
+ * - name: lookup by scoped name (e.g. "project/opentasks") — for remote agents
  */
 function resolveResource(
   params: OpenTasksResourceTarget,
@@ -148,16 +164,16 @@ function resolveResource(
     return { resource, localPath };
   }
 
-  // Strategy 2: resolve by path
+  // Strategy 2: resolve by path (canonicalized via realpath)
   if (params.path) {
-    const normalizedPath = resolve(params.path);
+    const normalizedPath = canonicalPath(params.path);
 
     // Check the path itself, and also check if it's a parent containing .opentasks/
     let opentasksPath = normalizedPath;
     if (!isValidOpenTasksDir(normalizedPath)) {
       const nested = join(normalizedPath, '.opentasks');
       if (isValidOpenTasksDir(nested)) {
-        opentasksPath = nested;
+        opentasksPath = canonicalPath(nested);
       } else {
         throw new OpenTasksRequestError(-32001, `No valid .opentasks directory at path: ${params.path}`);
       }
@@ -176,7 +192,17 @@ function resolveResource(
     return { resource, localPath };
   }
 
-  throw new OpenTasksRequestError(-32602, 'Invalid params: missing resource_id or path');
+  // Strategy 3: resolve by scoped name (for remote agents)
+  if (params.name) {
+    const resource = resourcesDAL.findResourceByName(params.name, agentId, 'task');
+    if (!resource) {
+      throw new OpenTasksRequestError(-32001, `Resource not found with name: ${params.name}`);
+    }
+    const localPath = validateOpenTasksResource(resource, agentId, params.name);
+    return { resource, localPath };
+  }
+
+  throw new OpenTasksRequestError(-32602, 'Invalid params: missing resource_id, path, or name');
 }
 
 // ============================================================================

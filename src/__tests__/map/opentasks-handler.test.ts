@@ -389,10 +389,43 @@ describe('handleOpenTasksRequest', () => {
       ).rejects.toThrow(/no valid .opentasks directory/i);
     });
 
-    it('throws when neither resource_id nor path is provided', async () => {
+    it('throws when neither resource_id nor path nor name is provided', async () => {
       await expect(
         handleOpenTasksRequest(MAP_OPENTASKS_METHODS.SUMMARY, {}, ctx),
-      ).rejects.toThrow(/missing resource_id or path/i);
+      ).rejects.toThrow(/missing resource_id, path, or name/i);
+    });
+
+    it('resolves symlinked path to same resource as real path', async () => {
+      const symlinkDir = path.join(TEST_ROOT, 'symlink-fixture');
+      try {
+        fs.symlinkSync(pathFixtureDir, symlinkDir);
+      } catch {
+        // Skip if symlinks not supported (Windows without admin)
+        return;
+      }
+
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.SUMMARY,
+        { path: path.join(symlinkDir, '.opentasks') },
+        ctx,
+      );
+
+      // Should resolve to the same underlying resource (2 nodes)
+      expect(result).toHaveProperty('node_count', 2);
+
+      fs.unlinkSync(symlinkDir);
+    });
+
+    it('resolves relative path to same resource', async () => {
+      // Use a path with redundant segments that resolve() normalizes
+      const redundantPath = path.join(pathFixtureDir, '..', path.basename(pathFixtureDir), '.opentasks');
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.SUMMARY,
+        { path: redundantPath },
+        ctx,
+      );
+
+      expect(result).toHaveProperty('node_count', 2);
     });
 
     it('prefers resource_id over path when both provided', async () => {
@@ -404,6 +437,124 @@ describe('handleOpenTasksRequest', () => {
 
       // Should use the original resource (6 nodes) not the path fixture (2 nodes)
       expect(result).toHaveProperty('node_count', 6);
+    });
+  });
+
+  // ==========================================================================
+  // Name-based resolution (for remote agents)
+  // ==========================================================================
+
+  describe('name-based resolution', () => {
+    let namedResourceId: string;
+    let namedDir: string;
+
+    beforeAll(() => {
+      namedDir = mkTestDir(TEST_ROOT, 'named-opentasks');
+      const opentasksDir = createOpenTasksDir(namedDir, {
+        nodes: [
+          { id: 'n-1', type: 'task', title: 'Named Task', status: 'open', priority: 1 },
+        ],
+        edges: [],
+      });
+
+      const resource = resourcesDAL.createResource({
+        name: 'project/opentasks',
+        resource_type: 'task',
+        git_remote_url: opentasksDir,
+        owner_agent_id: agentId,
+        visibility: 'public',
+        metadata: { opentasks: true },
+      });
+      namedResourceId = resource.id;
+    });
+
+    it('resolves resource by scoped name', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.SUMMARY,
+        { name: 'project/opentasks' },
+        ctx,
+      );
+
+      expect(result).toHaveProperty('node_count', 1);
+      expect(result).toHaveProperty('daemon_connected', false);
+    });
+
+    it('returns ready tasks via name', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.READY,
+        { name: 'project/opentasks' },
+        ctx,
+      ) as { items: Array<{ id: string }>; total: number };
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].id).toBe('n-1');
+    });
+
+    it('throws on non-existent name', async () => {
+      await expect(
+        handleOpenTasksRequest(
+          MAP_OPENTASKS_METHODS.SUMMARY,
+          { name: 'nonexistent/opentasks' },
+          ctx,
+        ),
+      ).rejects.toThrow(/not found with name/i);
+    });
+
+    it('prefers resource_id over name', async () => {
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.SUMMARY,
+        { resource_id: resourceId, name: 'project/opentasks' },
+        ctx,
+      );
+
+      // Should use the original resource (6 nodes) not the named one (1 node)
+      expect(result).toHaveProperty('node_count', 6);
+    });
+
+    it('prefers path over name', async () => {
+      // Path fixture has 2 nodes, named resource has 1
+      const pathDir = mkTestDir(TEST_ROOT, 'path-vs-name');
+      createOpenTasksDir(pathDir, {
+        nodes: [
+          { id: 'pn-1', type: 'task', title: 'PvN 1', status: 'open' },
+          { id: 'pn-2', type: 'task', title: 'PvN 2', status: 'open' },
+          { id: 'pn-3', type: 'task', title: 'PvN 3', status: 'open' },
+        ],
+        edges: [],
+      });
+
+      const result = await handleOpenTasksRequest(
+        MAP_OPENTASKS_METHODS.SUMMARY,
+        { path: pathDir, name: 'project/opentasks' },
+        ctx,
+      );
+
+      // Should use path (3 nodes) not name (1 node)
+      expect(result).toHaveProperty('node_count', 3);
+    });
+
+    it('name-based access denied for private resource from other agent', async () => {
+      const { agent: otherAgent } = await agentsDAL.createAgent({ name: 'name-test-other' });
+      const privateDir = mkTestDir(TEST_ROOT, 'private-named');
+      const privateOpentasksDir = createOpenTasksDir(privateDir);
+
+      resourcesDAL.createResource({
+        name: 'private/opentasks',
+        resource_type: 'task',
+        git_remote_url: privateOpentasksDir,
+        owner_agent_id: agentId,
+        visibility: 'private',
+        metadata: { opentasks: true },
+      });
+
+      // Other agent tries to access by name — should not find it
+      await expect(
+        handleOpenTasksRequest(
+          MAP_OPENTASKS_METHODS.SUMMARY,
+          { name: 'private/opentasks' },
+          { swarmId: 'other', agentId: otherAgent.id },
+        ),
+      ).rejects.toThrow(/not found with name/i);
     });
   });
 

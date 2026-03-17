@@ -29,17 +29,20 @@ export const MAP_OPENTASKS_METHOD_SET = new Set<string>(Object.values(MAP_OPENTA
 
 /**
  * Common resource targeting fields.
- * Agents can identify a resource by either:
+ * Agents can identify a resource by one of:
  * - `resource_id`: the OpenHive resource ID (e.g. "res_abc123")
- * - `path`: local filesystem path to the .opentasks directory
+ * - `path`: local filesystem path to the .opentasks directory (resolves symlinks)
+ * - `name`: scoped resource name (e.g. "project/opentasks", "global/opentasks")
  *
- * At least one must be provided. If both are given, resource_id takes precedence.
+ * At least one must be provided. Priority: resource_id > path > name.
  * When `path` is used and no matching resource exists, OpenHive will auto-register
  * the resource for the requesting agent (if the path is a valid .opentasks directory).
+ * The `name` strategy is useful for remote agents that know the scope but not the path.
  */
 export interface OpenTasksResourceTarget {
   resource_id?: string;
   path?: string;
+  name?: string;
 }
 
 export interface OpenTasksSummaryParams extends OpenTasksResourceTarget {}

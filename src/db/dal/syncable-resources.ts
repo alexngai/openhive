@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 import { randomBytes } from 'crypto';
-import { resolve } from 'node:path';
+import { resolve, normalize } from 'node:path';
+import { realpathSync, existsSync } from 'node:fs';
 import { getDatabase } from '../index.js';
 import type {
   SyncableResource,
@@ -180,8 +181,23 @@ export function findResourceByRepoName(
 }
 
 /**
+ * Canonicalize a local path: resolve symlinks if the path exists,
+ * otherwise fall back to resolve() + normalize() for consistent comparison.
+ */
+function canonicalPath(p: string): string {
+  const resolved = resolve(normalize(p));
+  try {
+    if (existsSync(resolved)) {
+      return realpathSync(resolved);
+    }
+  } catch { /* fall through */ }
+  return resolved;
+}
+
+/**
  * Find an OpenTasks resource by its local filesystem path.
- * Normalizes both the input path and stored git_remote_url before comparing.
+ * Uses realpath to resolve symlinks and normalize path variants so that
+ * relative, absolute, and symlinked paths all match the same resource.
  * Returns the first accessible match for the given agent.
  */
 export function findResourceByLocalPath(
@@ -190,7 +206,7 @@ export function findResourceByLocalPath(
   resourceType?: SyncableResourceType
 ): SyncableResource | null {
   const db = getDatabase();
-  const normalizedInput = resolve(localPath);
+  const normalizedInput = canonicalPath(localPath);
 
   let query = `
     SELECT r.* FROM syncable_resources r
@@ -215,7 +231,7 @@ export function findResourceByLocalPath(
     if (storedPath.startsWith('http') || storedPath.startsWith('git://') || storedPath.startsWith('ssh://')) {
       continue;
     }
-    if (resolve(storedPath) === normalizedInput) {
+    if (canonicalPath(storedPath) === normalizedInput) {
       return {
         ...row,
         metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
@@ -224,6 +240,44 @@ export function findResourceByLocalPath(
   }
 
   return null;
+}
+
+/**
+ * Find a resource by its scoped name (e.g. "project/opentasks", "global/opentasks").
+ * Used by remote agents that know the resource name but not its local path.
+ */
+export function findResourceByName(
+  name: string,
+  agentId: string,
+  resourceType?: SyncableResourceType
+): SyncableResource | null {
+  const db = getDatabase();
+
+  let query = `
+    SELECT r.* FROM syncable_resources r
+    WHERE r.name = ?
+    AND (
+      r.owner_agent_id = ?
+      OR r.visibility = 'public'
+      OR r.id IN (SELECT resource_id FROM resource_subscriptions WHERE agent_id = ?)
+    )
+  `;
+  const params: unknown[] = [name, agentId, agentId];
+
+  if (resourceType) {
+    query += ' AND r.resource_type = ?';
+    params.push(resourceType);
+  }
+
+  query += ' LIMIT 1';
+
+  const row = db.prepare(query).get(...params) as Record<string, unknown> | undefined;
+  if (!row) return null;
+
+  return {
+    ...row,
+    metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
+  } as unknown as SyncableResource;
 }
 
 export interface UpdateResourceInput {
