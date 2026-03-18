@@ -285,6 +285,7 @@ export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session';
 export type ResourceVisibility = 'private' | 'shared' | 'public';
 export type ResourcePermission = 'read' | 'write' | 'admin';
 export type ResourceScope = 'global' | 'project' | 'agent' | 'manual';
+export type SyncStrategy = 'metadata' | 'local' | 'ls-remote' | 'mirror' | 'bundle';
 
 export interface SyncableResource {
   id: string;
@@ -299,6 +300,8 @@ export interface SyncableResource {
   last_push_at: string | null;
   owner_agent_id: string;
   scope: ResourceScope;
+  sync_strategy: SyncStrategy;
+  local_path: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;

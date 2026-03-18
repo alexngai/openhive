@@ -7,7 +7,8 @@
  */
 
 import { resolve, join, normalize } from 'node:path';
-import { existsSync, statSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, statSync, readFileSync, realpathSync, appendFileSync } from 'node:fs';
+import { nanoid } from 'nanoid';
 import { MAP_OPENTASKS_METHODS } from './opentasks-types.js';
 import type {
   OpenTasksResourceTarget,
@@ -15,10 +16,14 @@ import type {
   OpenTasksReadyParams,
   OpenTasksQueryParams,
   OpenTasksStatusParams,
+  OpenTasksCreateTaskParams,
+  OpenTasksUpdateStatusParams,
   OpenTasksSummaryResult,
   OpenTasksReadyResult,
   OpenTasksQueryResult,
   OpenTasksStatusResult,
+  OpenTasksCreateTaskResult,
+  OpenTasksUpdateStatusResult,
 } from './opentasks-types.js';
 import { OpenHiveOpenTasksClient } from '../opentasks-client/index.js';
 import * as resourcesDAL from '../db/dal/syncable-resources.js';
@@ -63,6 +68,11 @@ function canonicalPath(p: string): string {
 }
 
 function resolveLocalPath(resource: SyncableResource): string | null {
+  // Prefer explicit local_path (set by discovery or sync orchestrator)
+  if (resource.local_path) {
+    return canonicalPath(resource.local_path);
+  }
+  // Fall back to git_remote_url if it's a local path
   const url = resource.git_remote_url;
   for (const prefix of REMOTE_URL_PREFIXES) {
     if (url.startsWith(prefix)) return null;
@@ -137,6 +147,8 @@ function autoRegisterResource(opentasksPath: string, agentId: string): SyncableR
     visibility: 'private',
     owner_agent_id: agentId,
     scope: 'agent',
+    sync_strategy: 'local',
+    local_path: opentasksPath,
     metadata: meta,
   });
   return resource;
@@ -226,7 +238,10 @@ export async function handleOpenTasksRequest(
   method: string,
   params: unknown,
   context: OpenTasksRequestContext,
-): Promise<OpenTasksSummaryResult | OpenTasksReadyResult | OpenTasksQueryResult | OpenTasksStatusResult> {
+): Promise<
+  OpenTasksSummaryResult | OpenTasksReadyResult | OpenTasksQueryResult | OpenTasksStatusResult |
+  OpenTasksCreateTaskResult | OpenTasksUpdateStatusResult
+> {
   switch (method) {
     case MAP_OPENTASKS_METHODS.SUMMARY: {
       const p = params as OpenTasksSummaryParams;
@@ -302,6 +317,77 @@ export async function handleOpenTasksRequest(
         daemon_running: daemonRunning,
         graph_file_exists: graphExists,
         graph_last_modified: graphModified,
+      };
+    }
+
+    case MAP_OPENTASKS_METHODS.CREATE_TASK: {
+      const p = params as OpenTasksCreateTaskParams;
+      if (!p?.title) {
+        throw new OpenTasksRequestError(-32602, 'Invalid params: title is required');
+      }
+      const { localPath } = resolveResource(p, context.agentId);
+      const graphPath = join(localPath, 'graph.jsonl');
+
+      const nodeId = `task_${nanoid()}`;
+      const node = {
+        id: nodeId,
+        type: 'task',
+        title: p.title,
+        description: p.description || '',
+        status: p.status || 'open',
+        priority: p.priority ?? 0,
+        archived: false,
+        created_at: new Date().toISOString(),
+        ...(p.metadata || {}),
+      };
+
+      appendFileSync(graphPath, JSON.stringify(node) + '\n');
+
+      return { node_id: nodeId, status: node.status };
+    }
+
+    case MAP_OPENTASKS_METHODS.UPDATE_STATUS: {
+      const p = params as OpenTasksUpdateStatusParams;
+      if (!p?.node_id || !p?.status) {
+        throw new OpenTasksRequestError(-32602, 'Invalid params: node_id and status are required');
+      }
+      const { localPath } = resolveResource(p, context.agentId);
+      const graphPath = join(localPath, 'graph.jsonl');
+
+      if (!existsSync(graphPath)) {
+        throw new OpenTasksRequestError(-32001, 'Graph file not found');
+      }
+
+      // Read current graph to find the node and its current status
+      const content = readFileSync(graphPath, 'utf-8');
+      const lines = content.split('\n').filter(l => l.trim());
+      let previousStatus: string | null = null;
+
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line);
+          if (obj.id === p.node_id) {
+            previousStatus = obj.status || null;
+          }
+        } catch { /* skip malformed lines */ }
+      }
+
+      // Append a status update entry (JSONL append-only format)
+      const update: Record<string, unknown> = {
+        id: p.node_id,
+        type: 'task',
+        status: p.status,
+        updated_at: new Date().toISOString(),
+      };
+      if (p.result) update.result = p.result;
+      if (p.error) update.error = p.error;
+
+      appendFileSync(graphPath, JSON.stringify(update) + '\n');
+
+      return {
+        node_id: p.node_id,
+        previous_status: previousStatus,
+        new_status: p.status,
       };
     }
 

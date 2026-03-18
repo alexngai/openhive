@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 28;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -201,6 +201,11 @@ CREATE TABLE IF NOT EXISTS syncable_resources (
   -- Scope: how was this resource discovered/registered
   scope TEXT DEFAULT 'manual'
     CHECK (scope IN ('global', 'project', 'agent', 'manual')),
+  -- Sync strategy: how content is acquired and kept current
+  sync_strategy TEXT DEFAULT 'metadata'
+    CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle')),
+  -- Local filesystem path (for local reads or clone location)
+  local_path TEXT,
   -- Resource-specific metadata stored as JSON
   metadata TEXT,
   -- Cross-instance sync origin tracking
@@ -601,6 +606,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(ori
 `;
 
 // Migration V23: Add origin tracking columns to coordination tables for cross-instance idempotency
+// (coordination_tasks ALTER statements kept for upgrading existing DBs; silently ignored if table was already dropped by V28)
 export const MIGRATION_V23_COORDINATION_ORIGIN = `
 ALTER TABLE coordination_tasks ADD COLUMN origin_instance_id TEXT;
 ALTER TABLE coordination_tasks ADD COLUMN origin_task_id TEXT;
@@ -608,6 +614,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_coord_tasks_origin ON coordination_tasks(o
 ALTER TABLE swarm_messages ADD COLUMN origin_instance_id TEXT;
 ALTER TABLE swarm_messages ADD COLUMN origin_message_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_swarm_messages_origin ON swarm_messages(origin_instance_id, origin_message_id);
+`;
+
+// Migration V28: Drop deprecated coordination_tasks table (tasks now route through OpenTasks)
+export const MIGRATION_V28_DROP_COORDINATION_TASKS = `
+DROP TABLE IF EXISTS coordination_tasks;
+`;
+
+// Migration V27: Add sync_strategy and local_path columns to syncable_resources
+export const MIGRATION_V27_SYNC_STRATEGY = `
+ALTER TABLE syncable_resources ADD COLUMN sync_strategy TEXT DEFAULT 'metadata'
+  CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle'));
+ALTER TABLE syncable_resources ADD COLUMN local_path TEXT;
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
 `;
 
 // Migration V18: Add scope column to syncable_resources
@@ -1054,37 +1073,9 @@ CREATE INDEX IF NOT EXISTS idx_event_delivery_log_swarm ON event_delivery_log(sw
 CREATE INDEX IF NOT EXISTS idx_event_delivery_log_created ON event_delivery_log(created_at);
 `;
 
-// Migration V22: Coordination tables — inter-swarm task delegation, messaging, context sharing
+// Migration V22: Coordination tables — messaging and context sharing
+// (coordination_tasks table removed in V28 — tasks now route through OpenTasks)
 export const MIGRATION_V22_COORDINATION = `
--- Coordination tasks (delegated between swarms)
-CREATE TABLE IF NOT EXISTS coordination_tasks (
-  id TEXT PRIMARY KEY,
-  hive_id TEXT NOT NULL REFERENCES hives(id) ON DELETE CASCADE,
-  title TEXT NOT NULL,
-  description TEXT,
-  priority TEXT DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high', 'critical')),
-  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'in_progress', 'completed', 'failed', 'rejected')),
-  assigned_by_agent_id TEXT NOT NULL,
-  assigned_by_swarm_id TEXT REFERENCES map_swarms(id) ON DELETE SET NULL,
-  assigned_to_swarm_id TEXT REFERENCES map_swarms(id) ON DELETE SET NULL,
-  context TEXT,
-  result TEXT,
-  error TEXT,
-  progress INTEGER DEFAULT 0,
-  deadline TEXT,
-  -- Cross-instance sync origin tracking
-  origin_instance_id TEXT,
-  origin_task_id TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now')),
-  completed_at TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_coord_tasks_hive ON coordination_tasks(hive_id);
-CREATE INDEX IF NOT EXISTS idx_coord_tasks_assigned_to ON coordination_tasks(assigned_to_swarm_id);
-CREATE INDEX IF NOT EXISTS idx_coord_tasks_status ON coordination_tasks(status);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_coord_tasks_origin ON coordination_tasks(origin_instance_id, origin_task_id);
-
 -- Swarm messages (direct + broadcast)
 CREATE TABLE IF NOT EXISTS swarm_messages (
   id TEXT PRIMARY KEY,

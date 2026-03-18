@@ -551,6 +551,16 @@ export function useOpenTasksReady(resourceId: string) {
   });
 }
 
+export function useOpenTasksGraph(resourceId: string) {
+  return useQuery({
+    queryKey: ['opentasks-graph', resourceId],
+    queryFn: () => api.get<import('../lib/api').OpenTasksGraphData>(
+      `/resources/${resourceId}/content/opentasks/graph`
+    ),
+    enabled: !!resourceId,
+  });
+}
+
 // ── Event Post Rules ──
 
 export function usePostRules(hiveId?: string) {

@@ -12,7 +12,7 @@ import { homedir } from 'node:os';
 import { listMemoryFiles } from 'minimem/internal';
 import { discoverSkills, hasSkilltreeDir } from 'skill-tree';
 import * as resourcesDAL from '../db/dal/syncable-resources.js';
-import type { ResourceScope, SyncableResourceType } from '../types.js';
+import type { ResourceScope, SyncableResourceType, SyncStrategy } from '../types.js';
 import type { Config } from '../config.js';
 
 // ============================================================================
@@ -183,6 +183,7 @@ function registerDiscovered(
     description: string;
     path: string;
     scope: ResourceScope;
+    syncStrategy?: SyncStrategy;
     metadata?: Record<string, unknown>;
   }
 ): void {
@@ -194,6 +195,8 @@ function registerDiscovered(
     visibility: 'private',
     owner_agent_id: input.ownerAgentId,
     scope: input.scope,
+    sync_strategy: input.syncStrategy || 'local',
+    local_path: input.path,
     metadata: input.metadata,
   });
 
@@ -228,6 +231,8 @@ async function scanDirectory(
     return;
   }
 
+  const discoveryStrategy = config?.resourceSync?.localDiscoveryStrategy || 'local';
+
   // Check for memory bank
   if (await hasMemoryBank(resolvedDir)) {
     registerDiscovered(result, {
@@ -237,6 +242,7 @@ async function scanDirectory(
       description: `Minimem memory bank (${scope} scope) at ${resolvedDir}`,
       path: resolvedDir,
       scope,
+      syncStrategy: discoveryStrategy,
     });
   }
 
@@ -249,6 +255,7 @@ async function scanDirectory(
       description: `Skill-tree skills (${scope} scope) at ${resolvedDir}`,
       path: resolvedDir,
       scope,
+      syncStrategy: discoveryStrategy,
     });
   }
 
@@ -262,6 +269,7 @@ async function scanDirectory(
       description: `Claude skills (${scope} scope) at ${claudeSkillsPath}`,
       path: claudeSkillsPath,
       scope,
+      syncStrategy: discoveryStrategy,
     });
   }
 
@@ -277,6 +285,7 @@ async function scanDirectory(
       description: `OpenTasks store (${scope} scope) at ${opentasksPath}`,
       path: opentasksPath,
       scope,
+      syncStrategy: discoveryStrategy,
       metadata: meta,
     });
   }

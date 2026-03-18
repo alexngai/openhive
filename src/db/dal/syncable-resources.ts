@@ -13,6 +13,7 @@ import type {
   ResourceVisibility,
   ResourcePermission,
   ResourceScope,
+  SyncStrategy,
 } from '../../types.js';
 
 // Generate a webhook secret
@@ -32,6 +33,8 @@ export interface CreateResourceInput {
   visibility?: ResourceVisibility;
   owner_agent_id: string;
   scope?: ResourceScope;
+  sync_strategy?: SyncStrategy;
+  local_path?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -41,8 +44,8 @@ export function createResource(input: CreateResourceInput): SyncableResource {
   const webhookSecret = generateWebhookSecret();
 
   db.prepare(`
-    INSERT INTO syncable_resources (id, resource_type, name, description, git_remote_url, webhook_secret, visibility, owner_agent_id, scope, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO syncable_resources (id, resource_type, name, description, git_remote_url, webhook_secret, visibility, owner_agent_id, scope, sync_strategy, local_path, metadata)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.resource_type,
@@ -53,6 +56,8 @@ export function createResource(input: CreateResourceInput): SyncableResource {
     input.visibility || 'private',
     input.owner_agent_id,
     input.scope || 'manual',
+    input.sync_strategy || 'metadata',
+    input.local_path || null,
     input.metadata ? JSON.stringify(input.metadata) : null
   );
 
@@ -85,12 +90,14 @@ export function upsertDiscoveredResource(input: CreateResourceInput): { resource
     // Update the existing resource
     db.prepare(`
       UPDATE syncable_resources
-      SET git_remote_url = ?, description = ?, scope = ?, metadata = ?, updated_at = datetime('now')
+      SET git_remote_url = ?, description = ?, scope = ?, sync_strategy = COALESCE(?, sync_strategy), local_path = COALESCE(?, local_path), metadata = ?, updated_at = datetime('now')
       WHERE id = ?
     `).run(
       input.git_remote_url,
       input.description || null,
       input.scope || 'manual',
+      input.sync_strategy !== undefined ? input.sync_strategy : null,
+      input.local_path !== undefined ? input.local_path : null,
       input.metadata ? JSON.stringify(input.metadata) : null,
       existing.id
     );
@@ -108,10 +115,7 @@ export function findResourceById(id: string): SyncableResource | null {
 
   if (!row) return null;
 
-  return {
-    ...row,
-    metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
-  } as unknown as SyncableResource;
+  return rowToResource(row);
 }
 
 export function findResourceByWebhookSecret(secret: string): SyncableResource | null {
@@ -120,8 +124,16 @@ export function findResourceByWebhookSecret(secret: string): SyncableResource | 
 
   if (!row) return null;
 
+  return rowToResource(row);
+}
+
+/** Map a raw DB row to a SyncableResource, applying defaults for nullable migration columns. */
+function rowToResource(row: Record<string, unknown>): SyncableResource {
   return {
     ...row,
+    scope: row.scope || 'manual',
+    sync_strategy: row.sync_strategy || 'metadata',
+    local_path: row.local_path ?? null,
     metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
   } as unknown as SyncableResource;
 }
@@ -161,10 +173,7 @@ export function findResourcesByRepoUrl(
 
   return rows
     .filter((row) => normalizeGitUrl(row.git_remote_url as string) === normalizedInput)
-    .map((row) => ({
-      ...row,
-      metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
-    }) as unknown as SyncableResource);
+    .map((row) => rowToResource(row));
 }
 
 /**
@@ -232,10 +241,7 @@ export function findResourceByLocalPath(
       continue;
     }
     if (canonicalPath(storedPath) === normalizedInput) {
-      return {
-        ...row,
-        metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
-      } as unknown as SyncableResource;
+      return rowToResource(row);
     }
   }
 
@@ -276,10 +282,9 @@ export function findResourceByLocationHash(
     try {
       const meta = JSON.parse(row.metadata as string);
       if (meta.location_hash === locationHash) {
-        return {
-          ...row,
-          metadata: meta,
-        } as unknown as SyncableResource;
+        const resource = rowToResource(row);
+        resource.metadata = meta; // already parsed
+        return resource;
       }
     } catch { /* skip malformed metadata */ }
   }
@@ -292,6 +297,8 @@ export interface UpdateResourceInput {
   description?: string;
   git_remote_url?: string;
   visibility?: ResourceVisibility;
+  sync_strategy?: SyncStrategy;
+  local_path?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -316,6 +323,14 @@ export function updateResource(id: string, input: UpdateResourceInput): Syncable
     sets.push('visibility = ?');
     values.push(input.visibility);
   }
+  if (input.sync_strategy !== undefined) {
+    sets.push('sync_strategy = ?');
+    values.push(input.sync_strategy);
+  }
+  if (input.local_path !== undefined) {
+    sets.push('local_path = ?');
+    values.push(input.local_path);
+  }
   if (input.metadata !== undefined) {
     sets.push('metadata = ?');
     values.push(JSON.stringify(input.metadata));
@@ -326,6 +341,20 @@ export function updateResource(id: string, input: UpdateResourceInput): Syncable
   db.prepare(`UPDATE syncable_resources SET ${sets.join(', ')} WHERE id = ?`).run(...values);
 
   return findResourceById(id);
+}
+
+export function updateSyncStrategy(id: string, strategy: SyncStrategy): void {
+  const db = getDatabase();
+  db.prepare(`
+    UPDATE syncable_resources SET sync_strategy = ?, updated_at = datetime('now') WHERE id = ?
+  `).run(strategy, id);
+}
+
+export function updateLocalPath(id: string, localPath: string | null): void {
+  const db = getDatabase();
+  db.prepare(`
+    UPDATE syncable_resources SET local_path = ?, updated_at = datetime('now') WHERE id = ?
+  `).run(localPath, id);
 }
 
 export function updateResourceSyncState(
@@ -415,6 +444,8 @@ export function getResourceWithMeta(id: string, viewerAgentId?: string): Syncabl
     last_push_at: row.last_push_at as string | null,
     owner_agent_id: row.owner_agent_id as string,
     scope: (row.scope as ResourceScope) || 'manual',
+    sync_strategy: (row.sync_strategy as SyncStrategy) || 'metadata',
+    local_path: row.local_path as string | null,
     metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
@@ -528,6 +559,8 @@ export function listAccessibleResources(options: ListResourcesOptions): {
       last_push_at: row.last_push_at as string | null,
       owner_agent_id: row.owner_agent_id as string,
       scope: (row.scope as ResourceScope) || 'manual',
+      sync_strategy: (row.sync_strategy as SyncStrategy) || 'metadata',
+      local_path: row.local_path as string | null,
       metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
       created_at: row.created_at as string,
       updated_at: row.updated_at as string,
@@ -633,6 +666,8 @@ export function discoverPublicResources(options: DiscoverResourcesOptions): {
       last_push_at: row.last_push_at as string | null,
       owner_agent_id: row.owner_agent_id as string,
       scope: (row.scope as ResourceScope) || 'manual',
+      sync_strategy: (row.sync_strategy as SyncStrategy) || 'metadata',
+      local_path: row.local_path as string | null,
       metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
       created_at: row.created_at as string,
       updated_at: row.updated_at as string,
@@ -924,10 +959,7 @@ export function getAgentPollableResources(
 
   const rows = db.prepare(query).all(...params) as Record<string, unknown>[];
 
-  return rows.map((row) => ({
-    ...row,
-    metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
-  }) as unknown as SyncableResource);
+  return rows.map((row) => rowToResource(row));
 }
 
 /**
@@ -962,10 +994,7 @@ export function getAgentPollableResourcesByIds(
 
   const rows = db.prepare(query).all(...params) as Record<string, unknown>[];
 
-  return rows.map((row) => ({
-    ...row,
-    metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
-  }) as unknown as SyncableResource);
+  return rows.map((row) => rowToResource(row));
 }
 
 /**

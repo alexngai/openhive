@@ -7,6 +7,8 @@ import {
   MIGRATION_V16_HOSTED_SWARMS, MIGRATION_V17_BRIDGE, MIGRATION_V18_RESOURCE_SCOPE,
   MIGRATION_V19_EVENT_ROUTING, MIGRATION_V21_RESOURCE_ORIGIN,
   MIGRATION_V22_COORDINATION, MIGRATION_V23_COORDINATION_ORIGIN,
+  MIGRATION_V27_SYNC_STRATEGY,
+  MIGRATION_V28_DROP_COORDINATION_TASKS,
 } from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
@@ -219,6 +221,10 @@ CREATE INDEX IF NOT EXISTS idx_ingest_keys_agent ON ingest_keys(agent_id);
 ALTER TABLE ingest_keys ADD COLUMN key_value TEXT NOT NULL DEFAULT '';
 ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   `,
+  // Version 27: Sync strategy and local_path for configurable resource sync
+  27: MIGRATION_V27_SYNC_STRATEGY,
+  // Version 28: Drop deprecated coordination_tasks table
+  28: MIGRATION_V28_DROP_COORDINATION_TASKS,
 };
 
 /** Get the SQL for a specific migration version.

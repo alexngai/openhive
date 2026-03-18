@@ -1,14 +1,12 @@
 /**
  * Coordination API Routes
  *
- * REST API for inter-swarm coordination: task delegation, context sharing,
- * and direct messaging between swarms.
+ * REST API for inter-swarm coordination: context sharing and direct messaging.
+ * Task endpoints have been removed — use OpenTasks mutation endpoints instead:
+ *   POST /resources/:id/content/opentasks/tasks
+ *   PATCH /resources/:id/content/opentasks/tasks/:nodeId
  *
  * Routes:
- *   POST   /coordination/tasks              - Assign a task
- *   GET    /coordination/tasks              - List tasks
- *   GET    /coordination/tasks/:id          - Get task by ID
- *   PATCH  /coordination/tasks/:id          - Update task status
  *   POST   /coordination/contexts           - Share context
  *   GET    /coordination/contexts           - List contexts
  *   GET    /coordination/contexts/:id       - Get context by ID
@@ -20,30 +18,13 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware } from '../middleware/auth.js';
-import { getCoordinationService } from '../../coordination/index.js';
+import { getMessagingService } from '../../messaging/index.js';
+import { getContextsService } from '../../contexts/index.js';
 import type { Config } from '../../config.js';
 
 // ============================================================================
 // Zod Schemas
 // ============================================================================
-
-const CreateTaskSchema = z.object({
-  hive_id: z.string().min(1),
-  title: z.string().min(1).max(500),
-  description: z.string().max(5000).optional(),
-  priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
-  assigned_to_swarm_id: z.string().min(1),
-  assigned_by_swarm_id: z.string().optional(),
-  context: z.record(z.unknown()).optional(),
-  deadline: z.string().optional(),
-});
-
-const UpdateTaskSchema = z.object({
-  status: z.enum(['accepted', 'in_progress', 'completed', 'failed', 'rejected']).optional(),
-  progress: z.number().int().min(0).max(100).optional(),
-  result: z.record(z.unknown()).optional(),
-  error: z.string().optional(),
-});
 
 const CreateContextSchema = z.object({
   hive_id: z.string().min(1),
@@ -87,99 +68,6 @@ export async function coordinationRoutes(
 ): Promise<void> {
 
   // ==========================================================================
-  // Task Routes
-  // ==========================================================================
-
-  // POST /coordination/tasks -- Assign a task
-  fastify.post('/coordination/tasks', {
-    preHandler: [authMiddleware],
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const body = CreateTaskSchema.parse(request.body);
-      const service = getCoordinationService();
-      const task = service.assignTask(body.hive_id, {
-        title: body.title,
-        description: body.description,
-        priority: body.priority,
-        assigned_by_agent_id: request.agent!.id,
-        assigned_by_swarm_id: body.assigned_by_swarm_id,
-        assigned_to_swarm_id: body.assigned_to_swarm_id,
-        context: body.context,
-        deadline: body.deadline,
-      }, request.agent!);
-      return reply.status(201).send(task);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return reply.status(422).send({
-          error: 'VALIDATION_ERROR',
-          message: 'Invalid request body',
-          details: error.errors,
-        });
-      }
-      throw error;
-    }
-  });
-
-  // GET /coordination/tasks -- List tasks
-  fastify.get<{
-    Querystring: { hive_id?: string; status?: string; swarm_id?: string; limit?: string; offset?: string };
-  }>('/coordination/tasks', {
-    preHandler: [authMiddleware],
-  }, async (request, reply) => {
-    const { hive_id, status, swarm_id, limit, offset } = request.query;
-    const service = getCoordinationService();
-
-    if (!hive_id) {
-      return reply.status(400).send({ error: 'MISSING_PARAM', message: 'hive_id query parameter is required' });
-    }
-
-    const result = service.listTasks(hive_id, {
-      status,
-      swarm_id,
-      limit: parseIntParam(limit, MAX_PAGE_SIZE),
-      offset: parseIntParam(offset),
-    });
-
-    return reply.send(result);
-  });
-
-  // GET /coordination/tasks/:id -- Get task by ID
-  fastify.get<{ Params: { id: string } }>('/coordination/tasks/:id', {
-    preHandler: [authMiddleware],
-  }, async (request, reply) => {
-    const service = getCoordinationService();
-    const task = service.getTask(request.params.id);
-    if (!task) {
-      return reply.status(404).send({ error: 'Not Found', message: 'Task not found' });
-    }
-    return reply.send(task);
-  });
-
-  // PATCH /coordination/tasks/:id -- Update task status
-  fastify.patch<{ Params: { id: string } }>('/coordination/tasks/:id', {
-    preHandler: [authMiddleware],
-  }, async (request, reply) => {
-    try {
-      const body = UpdateTaskSchema.parse(request.body);
-      const service = getCoordinationService();
-      const task = service.updateTaskStatus(request.params.id, body, request.agent!);
-      if (!task) {
-        return reply.status(404).send({ error: 'Not Found', message: 'Task not found' });
-      }
-      return reply.send(task);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return reply.status(422).send({
-          error: 'VALIDATION_ERROR',
-          message: 'Invalid request body',
-          details: error.errors,
-        });
-      }
-      throw error;
-    }
-  });
-
-  // ==========================================================================
   // Context Routes
   // ==========================================================================
 
@@ -189,8 +77,7 @@ export async function coordinationRoutes(
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const body = CreateContextSchema.parse(request.body);
-      const service = getCoordinationService();
-      const ctx = service.shareContext(body.hive_id, {
+      const ctx = getContextsService().shareContext(body.hive_id, {
         source_swarm_id: body.source_swarm_id,
         context_type: body.context_type,
         data: body.data,
@@ -217,13 +104,12 @@ export async function coordinationRoutes(
     preHandler: [authMiddleware],
   }, async (request, reply) => {
     const { hive_id, type, swarm_id, limit, offset } = request.query;
-    const service = getCoordinationService();
 
     if (!hive_id) {
       return reply.status(400).send({ error: 'MISSING_PARAM', message: 'hive_id query parameter is required' });
     }
 
-    const result = service.listContexts(hive_id, {
+    const result = getContextsService().listContexts(hive_id, {
       type,
       swarm_id,
       limit: parseIntParam(limit, MAX_PAGE_SIZE),
@@ -237,8 +123,7 @@ export async function coordinationRoutes(
   fastify.get<{ Params: { id: string } }>('/coordination/contexts/:id', {
     preHandler: [authMiddleware],
   }, async (request, reply) => {
-    const service = getCoordinationService();
-    const ctx = service.getContext(request.params.id);
+    const ctx = getContextsService().getContext(request.params.id);
     if (!ctx) {
       return reply.status(404).send({ error: 'Not Found', message: 'Context not found' });
     }
@@ -255,8 +140,7 @@ export async function coordinationRoutes(
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const body = CreateMessageSchema.parse(request.body);
-      const service = getCoordinationService();
-      const msg = service.sendMessage({
+      const msg = getMessagingService().sendMessage({
         hive_id: body.hive_id,
         from_swarm_id: body.from_swarm_id,
         to_swarm_id: body.to_swarm_id,
@@ -285,13 +169,12 @@ export async function coordinationRoutes(
     preHandler: [authMiddleware],
   }, async (request, reply) => {
     const { swarm_id, hive_id, since, limit, offset } = request.query;
-    const service = getCoordinationService();
 
     if (!swarm_id) {
       return reply.status(400).send({ error: 'MISSING_PARAM', message: 'swarm_id query parameter is required' });
     }
 
-    const result = service.getMessages(swarm_id, {
+    const result = getMessagingService().getMessages(swarm_id, {
       hive_id,
       since,
       limit: parseIntParam(limit, MAX_PAGE_SIZE),
@@ -305,8 +188,7 @@ export async function coordinationRoutes(
   fastify.patch<{ Params: { id: string } }>('/coordination/messages/:id/read', {
     preHandler: [authMiddleware],
   }, async (request, reply) => {
-    const service = getCoordinationService();
-    service.markRead(request.params.id);
+    getMessagingService().markRead(request.params.id);
     return reply.send({ status: 'ok' });
   });
 }

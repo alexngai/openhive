@@ -84,28 +84,8 @@ export function createCoordinationNotification(
 // Domain Models (match DB rows with JSON fields parsed)
 // ============================================================================
 
-export interface CoordinationTask {
-  id: string;
-  hive_id: string;
-  title: string;
-  description: string | null;
-  priority: 'low' | 'medium' | 'high' | 'critical';
-  status: 'pending' | 'accepted' | 'in_progress' | 'completed' | 'failed' | 'rejected';
-  assigned_by_agent_id: string;
-  assigned_by_swarm_id: string | null;
-  assigned_to_swarm_id: string | null;
-  context: Record<string, unknown> | null;
-  result: Record<string, unknown> | null;
-  error: string | null;
-  progress: number;
-  deadline: string | null;
-  /** Cross-instance origin tracking */
-  origin_instance_id: string | null;
-  origin_task_id: string | null;
-  created_at: string;
-  updated_at: string;
-  completed_at: string | null;
-}
+// CoordinationTask removed — tasks now route through OpenTasks graphs.
+// The coordination_tasks table has been dropped (migration V28).
 
 export interface SwarmMessage {
   id: string;
@@ -134,26 +114,7 @@ export interface SharedContext {
 // Input Types (for create/update operations)
 // ============================================================================
 
-export interface CreateTaskInput {
-  title: string;
-  description?: string;
-  priority?: 'low' | 'medium' | 'high' | 'critical';
-  assigned_by_agent_id: string;
-  assigned_by_swarm_id?: string;
-  assigned_to_swarm_id: string;
-  context?: Record<string, unknown>;
-  deadline?: string;
-  /** Cross-instance origin tracking (set by materializer) */
-  origin_instance_id?: string;
-  origin_task_id?: string;
-}
-
-export interface UpdateTaskInput {
-  status?: 'accepted' | 'in_progress' | 'completed' | 'failed' | 'rejected';
-  progress?: number;
-  result?: Record<string, unknown>;
-  error?: string;
-}
+// CreateTaskInput and UpdateTaskInput removed — use OpenTasks mutations instead.
 
 export interface CreateMessageInput {
   hive_id?: string;

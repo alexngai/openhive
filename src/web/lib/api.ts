@@ -357,6 +357,32 @@ export interface OpenTasksReadyResponse {
   daemon_connected: boolean;
 }
 
+export interface OpenTasksGraphNode {
+  id: string;
+  type: string;
+  title?: string;
+  description?: string;
+  status?: string;
+  priority?: number;
+  archived?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface OpenTasksGraphEdge {
+  id?: string;
+  from_id: string;
+  to_id: string;
+  type?: string;
+  [key: string]: unknown;
+}
+
+export interface OpenTasksGraphData {
+  nodes: OpenTasksGraphNode[];
+  edges: OpenTasksGraphEdge[];
+}
+
 export interface OpenTasksStatus {
   daemon_running: boolean;
   graph_file_exists: boolean;

@@ -33,7 +33,8 @@ import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { SwarmHubConnector } from "./swarmhub/connector.js";
 import { normalize, routeEvent } from "./events/index.js";
-import { initCoordinationService } from "./coordination/index.js";
+// Coordination service removed — messaging and contexts are standalone modules
+import { initProviders as initSyncProviders } from "./sync/providers/index.js";
 import { registerHostnameGuard } from "./api/middleware/hostname-guard.js";
 
 export interface HiveServer {
@@ -511,8 +512,11 @@ export async function createHive(
         );
       }
 
-      // Initialize coordination service (must be before MAP sync listener)
-      initCoordinationService();
+      // Initialize sync providers (ls-remote, mirror) with config
+      initSyncProviders(config);
+
+      // Coordination service removed — messaging and contexts are standalone modules
+      // (initialized lazily via getMessagingService() / getContextsService())
 
       // Start MAP sync listener (subscribe to swarm MAP endpoints for sync messages)
       if (config.mapHub.enabled) {

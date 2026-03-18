@@ -263,6 +263,11 @@ export function ResourceDetail() {
       {resource.resource_type === 'task' && (resource.metadata as Record<string, unknown> | null)?.opentasks && (
         <div className="mb-3">
           <OpenTasksSummary resourceId={resource.id} />
+          <div className="mt-2">
+            <Link to={`/tasks/${resource.id}`} className="btn btn-secondary text-xs">
+              View Task Graph
+            </Link>
+          </div>
         </div>
       )}
 

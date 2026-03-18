@@ -265,6 +265,28 @@ export const ConfigSchema = z.object({
     openTasksEnabled: z.boolean().default(true),
   }).default({}),
 
+  // Resource sync: configurable sync strategies for syncable resources
+  resourceSync: z.object({
+    /** Default sync strategy for newly subscribed remote resources */
+    defaultStrategy: z.enum(['metadata', 'local', 'ls-remote', 'mirror', 'bundle']).default('metadata'),
+    /** Sync strategy for filesystem-discovered resources */
+    localDiscoveryStrategy: z.enum(['metadata', 'local', 'ls-remote', 'mirror', 'bundle']).default('local'),
+    /** Seconds before ls-remote re-checks freshness (default: 60) */
+    lsRemoteTtl: z.number().default(60),
+    /** Timeout in ms for mirror git fetch operations (default: 30000) */
+    mirrorFetchTimeout: z.number().default(30000),
+    /** Max bundle size in bytes (default: 10MB) */
+    bundleMaxSize: z.number().default(10 * 1024 * 1024),
+  }).default({}),
+
+  // Resource storage: where cloned resource data lives
+  resourceStorage: z.object({
+    /** Base directory for cloned resource data (default: ./data/resources) */
+    dataDir: z.string().default('./data/resources'),
+    /** Auto-clone federated resources on subscribe (default: true) */
+    autoClone: z.boolean().default(true),
+  }).default({}),
+
   // Channel Bridge: external platform integration (Slack, Discord, Telegram, etc.)
   bridge: z.object({
     enabled: z.boolean().default(false),
