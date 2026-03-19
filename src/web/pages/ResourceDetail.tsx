@@ -5,6 +5,7 @@ import {
   Tag, ChevronDown, ChevronUp, ExternalLink, Shield, Copy, Check,
 } from 'lucide-react';
 import { useResource, useResourceEvents, useCheckUpdates, useMapSwarms } from '../hooks/useApi';
+import { useResourcesRealtime, useSwarmRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { toast } from '../stores/toast';
@@ -162,6 +163,8 @@ export function ResourceDetail() {
   const { data: resource, isLoading } = useResource(id!);
   const { data: eventsData } = useResourceEvents(id!);
   const checkUpdates = useCheckUpdates();
+  useResourcesRealtime();
+  useSwarmRealtime();
   const [showEvents, setShowEvents] = useState(true);
 
   const events = eventsData?.data || [];

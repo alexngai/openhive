@@ -10,6 +10,7 @@ import {
   useHostedSwarms, useSpawnSwarm, useStopSwarm, useRestartSwarm, useRemoveSwarm, useSwarmLogs,
   useMapSwarms, useConnectSwarm, useHives,
 } from '../hooks/useApi';
+import { useSwarmRealtime } from '../hooks/useRealtimeInvalidation';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { HostedStateBadge, MapStatusBadge, SandboxBadge, SectionLabel } from '../components/swarm/StatusBadges';
@@ -844,6 +845,7 @@ export function Swarms() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: hostedSwarms, isLoading: hostedLoading } = useHostedSwarms();
   const { data: mapSwarms, isLoading: mapLoading } = useMapSwarms();
+  useSwarmRealtime();
   const [activeTab, setActiveTab] = useState<Tab>('hosted');
   const [formMode, setFormMode] = useState<FormMode>('none');
 

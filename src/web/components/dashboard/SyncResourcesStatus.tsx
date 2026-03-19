@@ -1,5 +1,6 @@
 import { Database, BookOpen, Wrench, MessageSquare } from 'lucide-react';
 import { useResources, useSyncStatus } from '../../hooks/useApi';
+import { useResourcesRealtime } from '../../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../common/TimeAgo';
 
 const TYPE_ICONS: Record<string, React.ElementType> = {
@@ -28,6 +29,7 @@ function SyncDot({ lastPushAt }: { lastPushAt: string | null }) {
 export function SyncResourcesStatus() {
   const { data: resourcesData } = useResources({ limit: 8 });
   const { data: syncStatus } = useSyncStatus();
+  useResourcesRealtime();
 
   const resources = resourcesData?.data || [];
 

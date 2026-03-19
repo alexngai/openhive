@@ -282,7 +282,6 @@ export function useHostedSwarms(options?: { state?: string; mine?: boolean }) {
       return api.get<{ data: HostedSwarm[]; total: number }>(`/map/hosted?${params}`);
     },
     select: (data) => data.data,
-    refetchInterval: 10000, // Poll every 10s for status updates
   });
 }
 
@@ -366,7 +365,6 @@ export function useMapSwarms() {
     queryKey: ['map-swarms'],
     queryFn: () => api.get<{ data: MapSwarm[]; total: number }>('/map/swarms'),
     select: (data) => data.data,
-    refetchInterval: 15000,
   });
 }
 
@@ -395,7 +393,6 @@ export function useMapStats() {
   return useQuery({
     queryKey: ['map-stats'],
     queryFn: () => api.get<MapStats>('/map/stats'),
-    refetchInterval: 30000,
   });
 }
 
@@ -409,7 +406,6 @@ export function useResources(options?: { type?: string; limit?: number }) {
       if (type) params.set('type', type);
       return api.get<{ data: SyncableResource[]; total: number }>(`/resources?${params}`);
     },
-    refetchInterval: 60000,
   });
 }
 
@@ -417,7 +413,6 @@ export function useSyncStatus() {
   return useQuery({
     queryKey: ['sync-status'],
     queryFn: () => api.get<SyncStatusResponse>('/sync/status'),
-    refetchInterval: 30000,
   });
 }
 
@@ -431,7 +426,6 @@ export function useResourcesByType(type: 'memory_bank' | 'skill' | 'task', optio
       const params = new URLSearchParams({ limit: String(limit), type });
       return api.get<{ data: SyncableResource[]; total: number }>(`/resources?${params}`);
     },
-    refetchInterval: 30000,
   });
 }
 
@@ -452,7 +446,6 @@ export function useResourceEvents(id: string, options?: { limit?: number }) {
       `/resources/${id}/events?limit=${limit}`
     ),
     enabled: !!id,
-    refetchInterval: 30000,
   });
 }
 
@@ -712,7 +705,6 @@ export function useSessionsList(options?: { limit?: number }) {
   return useQuery({
     queryKey: ['sessions-overview', { limit }],
     queryFn: () => api.get<{ data: SessionListItem[]; total: number }>(`/sessions/overview?limit=${limit}`),
-    refetchInterval: 30000,
   });
 }
 
@@ -725,7 +717,6 @@ export function useSessionCheckpoints(id: string, options?: { limit?: number }) 
       `/sessions/${id}/trajectory-checkpoints?limit=${limit}`
     ),
     enabled: !!id,
-    refetchInterval: 30000,
   });
 }
 

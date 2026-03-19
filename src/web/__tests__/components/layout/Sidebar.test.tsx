@@ -32,12 +32,12 @@ function renderSidebar(initialRoute = '/') {
 }
 
 describe('Sidebar Navigation', () => {
-  it('renders Dashboard as the first nav item', () => {
+  it('renders Home as the first nav item', () => {
     renderSidebar();
     const links = screen.getAllByRole('link');
-    const dashboardLink = links.find((l) => l.textContent?.includes('Dashboard'));
-    expect(dashboardLink).toBeDefined();
-    expect(dashboardLink!.getAttribute('href')).toBe('/');
+    const homeLink = links.find((l) => l.textContent?.includes('Home'));
+    expect(homeLink).toBeDefined();
+    expect(homeLink!.getAttribute('href')).toBe('/');
   });
 
   it('renders Swarms nav item linking to /swarms', () => {
@@ -92,19 +92,19 @@ describe('Sidebar Navigation', () => {
     expect(channelsElements.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('marks Dashboard link as active when on /', () => {
+  it('marks Home link as active when on /', () => {
     renderSidebar('/');
     const links = screen.getAllByRole('link');
-    const dashboardLink = links.find((l) => l.textContent?.includes('Dashboard'));
-    expect(dashboardLink!.className).toContain('active');
+    const homeLink = links.find((l) => l.textContent?.includes('Home'));
+    expect(homeLink!.className).toContain('active');
   });
 
-  it('does not have a Home nav item', () => {
+  it('does not have a Dashboard nav item', () => {
     renderSidebar();
     const links = screen.getAllByRole('link');
-    const homeLink = links.find(
-      (l) => l.textContent?.trim() === 'Home' && l.getAttribute('href') === '/'
+    const dashboardLink = links.find(
+      (l) => l.textContent?.trim() === 'Dashboard' && l.getAttribute('href') === '/'
     );
-    expect(homeLink).toBeUndefined();
+    expect(dashboardLink).toBeUndefined();
   });
 });

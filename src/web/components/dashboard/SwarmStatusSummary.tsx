@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Cpu, Globe, ChevronRight } from 'lucide-react';
 import { useHostedSwarms, useMapSwarms } from '../../hooks/useApi';
+import { useSwarmRealtime } from '../../hooks/useRealtimeInvalidation';
 import { HostedStateBadge, MapStatusBadge } from '../swarm/StatusBadges';
 import type { HostedSwarm, MapSwarm } from '../../lib/api';
 
@@ -22,6 +23,7 @@ function getStatusKey(s: UnifiedSwarm): string {
 export function SwarmStatusSummary() {
   const { data: hostedSwarms } = useHostedSwarms();
   const { data: mapSwarms } = useMapSwarms();
+  useSwarmRealtime();
 
   const unified: UnifiedSwarm[] = [
     ...(hostedSwarms || []).map((s): UnifiedSwarm => ({

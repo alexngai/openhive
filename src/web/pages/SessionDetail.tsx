@@ -6,6 +6,7 @@ import {
   MessageSquare, Terminal, User, Wrench,
 } from 'lucide-react';
 import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents } from '../hooks/useApi';
+import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
 import type { TrajectoryCheckpoint, SessionEvent, SessionContentBlock } from '../lib/api';
@@ -581,6 +582,7 @@ export function SessionDetail() {
   const { data: resource, isLoading: resourceLoading } = useResource(id!);
   const { data: checkpointsData, isLoading: checkpointsLoading } = useSessionCheckpoints(id!);
   const { data: stats } = useSessionStats(id!);
+  useSessionsRealtime();
 
   if (resourceLoading) return <PageLoader />;
 
