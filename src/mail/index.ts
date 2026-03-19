@@ -10,12 +10,6 @@
  */
 
 import { EventEmitter } from 'node:events';
-import {
-  InMemoryStorage,
-  MailJsonRpcServer,
-  MessageRouter,
-  TraceabilityLayer,
-} from 'agent-inbox';
 import type { Storage } from 'agent-inbox';
 import { broadcastToChannel } from '../realtime/index.js';
 
@@ -43,28 +37,29 @@ export async function initMail(opts?: {
     return { storage: mailStorage, jsonRpc: mailJsonRpc!, events: mailEvents! };
   }
 
+  const inbox = await import('agent-inbox');
+
   // Storage — co-locate in SQLite if available, otherwise in-memory
   if (opts?.sqliteDb) {
-    const { SqliteStorage } = await import('agent-inbox');
-    mailStorage = new SqliteStorage({
+    mailStorage = new inbox.SqliteStorage({
       db: opts.sqliteDb,
       prefix: opts.sqlitePrefix ?? 'mail_',
     });
   } else {
-    mailStorage = new InMemoryStorage();
+    mailStorage = new inbox.InMemoryStorage();
   }
 
   // Event bus
   mailEvents = new EventEmitter();
 
   // Message router (for traceability auto-conversation creation)
-  const router = new MessageRouter(mailStorage, mailEvents, 'default');
+  const router = new inbox.MessageRouter(mailStorage, mailEvents, 'default');
 
   // Traceability layer — auto-creates conversations/threads from message events
-  new TraceabilityLayer(mailStorage, mailEvents);
+  new inbox.TraceabilityLayer(mailStorage, mailEvents);
 
   // JSON-RPC server — handles all mail/* methods
-  mailJsonRpc = new MailJsonRpcServer(mailStorage, router, mailEvents);
+  mailJsonRpc = new inbox.MailJsonRpcServer(mailStorage, router, mailEvents);
 
   // Forward mail events to OpenHive's WebSocket system
   setupEventForwarding(mailEvents);
