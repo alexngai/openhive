@@ -542,3 +542,50 @@ export interface SyncStatusResponse {
     connected_peers: number;
   }>;
 }
+
+// ── Mail (MAP Agent Inbox) ──
+
+export type MessageContent =
+  | { type: 'text'; text: string }
+  | { type: 'data'; schema?: string; data: unknown }
+  | { type: 'event'; event: string; data?: unknown }
+  | { type: 'reference'; uri: string; label?: string }
+  | { type: string; [key: string]: unknown };
+
+export interface MailParticipant {
+  agent_id: string;
+  role?: string;
+  joined_at: string;
+}
+
+export interface MailConversation {
+  id: string;
+  scope: string;
+  subject?: string;
+  status: 'active' | 'completed' | 'archived';
+  participants: MailParticipant[];
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MailTurn {
+  id: string;
+  conversation_id: string;
+  participant_id: string;
+  source_message_id?: string;
+  content_type: string;
+  content: MessageContent;
+  thread_id?: string;
+  in_reply_to?: string;
+  created_at: string;
+}
+
+export interface MailThread {
+  id: string;
+  conversation_id: string;
+  root_turn_id: string;
+  parent_thread_id?: string;
+  subject?: string;
+  created_at: string;
+}

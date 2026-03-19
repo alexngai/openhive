@@ -29,6 +29,7 @@ import {
   initMapSyncListener,
   stopMapSyncListener,
 } from "./map/sync-listener.js";
+import { initMail } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { SwarmHubConnector } from "./swarmhub/connector.js";
@@ -153,6 +154,18 @@ export async function createHive(
 
   // Setup WebSocket handlers
   setupWebSocket(fastify);
+
+  // Initialize MAP mail module (agent-inbox)
+  // Uses in-memory storage; pass getDatabase() for SQLite co-location
+  if (config.mapHub.enabled) {
+    try {
+      const { getDatabase: getDb } = await import('./db/index.js');
+      await initMail({ sqliteDb: getDb(), sqlitePrefix: 'mail_' });
+    } catch {
+      // Fallback to in-memory if DB isn't available
+      await initMail();
+    }
+  }
 
   // Register MAP inbound WebSocket (/ws/map) for agents connecting to the hub
   if (config.mapHub.enabled) {

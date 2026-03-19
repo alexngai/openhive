@@ -3,7 +3,7 @@ import { Sidebar } from './Sidebar';
 import { ToastContainer } from '../common/Toast';
 
 // Routes that need full-width layout (no max-width constraint)
-const FULL_WIDTH_ROUTES = ['/swarmcraft', '/terminal', '/tasks'];
+const FULL_WIDTH_ROUTES = ['/swarmcraft', '/terminal', '/tasks', '/messages/'];
 
 export function Layout() {
   const location = useLocation();

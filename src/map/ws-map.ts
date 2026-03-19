@@ -26,6 +26,7 @@ import { getMapTaskStore, MAPTaskStoreError } from './task-store.js';
 import { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
 import { MAP_OPENTASKS_METHOD_SET } from './opentasks-types.js';
 import { handleOpenTasksRequest, OpenTasksRequestError } from './opentasks-handler.js';
+import { getMailJsonRpc } from '../mail/index.js';
 import type { Agent } from '../types.js';
 
 const HEARTBEAT_INTERVAL = 30_000;
@@ -228,6 +229,17 @@ export function setupMapWebSocket(fastify: FastifyInstance): void {
             } else {
               sendJsonRpcError(ws, -32603, 'Internal error', parsed.id as string | number);
             }
+          });
+        } else if (isJsonRpcRequest(parsed) && (parsed.method as string).startsWith('mail/')) {
+          // MAP mail protocol — delegate to embedded agent-inbox
+          getMailJsonRpc().handleRequest(parsed as any).then((mailResult) => {
+            if (mailResult.error) {
+              sendJsonRpcError(ws, mailResult.error.code, mailResult.error.message, parsed.id as string | number);
+            } else {
+              sendJsonRpcResponse(ws, parsed.id as string | number, mailResult.result);
+            }
+          }).catch(() => {
+            sendJsonRpcError(ws, -32603, 'Internal mail error', parsed.id as string | number);
           });
         } else if (isMapSyncMessage(parsed)) {
           handleSyncMessage(parsed, swarmId!);

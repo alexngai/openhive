@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
-import type { Agent, HostedSwarm, MapSwarm, MapStats, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse } from '../lib/api';
+import type { Agent, HostedSwarm, MapSwarm, MapStats, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse, MailConversation, MailTurn, MailThread } from '../lib/api';
 
 // Posts
 export function usePosts(options: {
@@ -746,5 +746,77 @@ export function useSessionEvents(id: string, options?: { limit?: number; offset?
       `/sessions/${id}/events?limit=${limit}&offset=${offset}`
     ),
     enabled: !!id && enabled,
+  });
+}
+
+// ── Mail (MAP Agent Inbox) ──
+
+export function useMailConversations(options?: { status?: string }) {
+  const { status } = options || {};
+
+  return useQuery({
+    queryKey: ['mail-conversations', { status }],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      const qs = params.toString();
+      return api.get<{ conversations: MailConversation[] }>(`/mail/conversations${qs ? `?${qs}` : ''}`);
+    },
+    select: (data) => data.conversations,
+  });
+}
+
+export function useMailConversation(id: string) {
+  return useQuery({
+    queryKey: ['mail-conversation', id],
+    queryFn: () => api.get<{
+      conversation: MailConversation;
+      turns: MailTurn[];
+      threads: MailThread[];
+      turn_count: number;
+    }>(`/mail/conversations/${id}`),
+    enabled: !!id,
+  });
+}
+
+export function useMailTurns(conversationId: string, options?: { thread_id?: string }) {
+  const { thread_id } = options || {};
+
+  return useQuery({
+    queryKey: ['mail-turns', conversationId, { thread_id }],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (thread_id) params.set('thread_id', thread_id);
+      const qs = params.toString();
+      return api.get<{ turns: MailTurn[] }>(
+        `/mail/conversations/${conversationId}/turns${qs ? `?${qs}` : ''}`
+      );
+    },
+    select: (data) => data.turns,
+    enabled: !!conversationId,
+  });
+}
+
+export function useSendMailTurn() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ conversationId, content, content_type, thread_id, in_reply_to }: {
+      conversationId: string;
+      content: unknown;
+      content_type?: string;
+      thread_id?: string;
+      in_reply_to?: string;
+    }) => api.post<MailTurn>(`/mail/conversations/${conversationId}/turns`, {
+      content,
+      content_type,
+      thread_id,
+      in_reply_to,
+    }),
+    onSuccess: (_, { conversationId }) => {
+      queryClient.invalidateQueries({ queryKey: ['mail-conversation', conversationId] });
+      queryClient.invalidateQueries({ queryKey: ['mail-turns', conversationId] });
+      queryClient.invalidateQueries({ queryKey: ['mail-conversations'] });
+    },
   });
 }

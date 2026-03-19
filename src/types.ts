@@ -185,7 +185,12 @@ export type WSEventType =
   | 'task.created'
   | 'task.assigned'
   | 'task.status'
-  | 'task.completed';
+  | 'task.completed'
+  // Mail events (MAP agent inbox)
+  | 'mail.created'
+  | 'mail.turn.added'
+  | 'mail.participant.joined'
+  | 'mail.closed';
 
 export interface WSEvent {
   type: WSEventType;

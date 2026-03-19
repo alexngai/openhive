@@ -29,6 +29,8 @@ const Sessions = lazy(() => import('./pages/Sessions').then(m => ({ default: m.S
 const SessionDetail = lazy(() => import('./pages/SessionDetail').then(m => ({ default: m.SessionDetail })));
 const Events = lazy(() => import('./pages/Events').then(m => ({ default: m.Events })));
 const TaskGraph = lazy(() => import('./pages/TaskGraph').then(m => ({ default: m.TaskGraph })));
+const Messages = lazy(() => import('./pages/Messages').then(m => ({ default: m.Messages })));
+const Conversation = lazy(() => import('./pages/Conversation').then(m => ({ default: m.Conversation })));
 
 export default function App() {
   // Initialize WebSocket connection
@@ -69,6 +71,8 @@ export default function App() {
               <Route path="resources/:id" element={<ResourceDetail />} />
               <Route path="swarmcraft" element={<SwarmCraft />} />
               <Route path="terminal/:swarmId" element={<Terminal />} />
+              <Route path="messages" element={<Messages />} />
+              <Route path="messages/:id" element={<Conversation />} />
               <Route path="tasks/:resourceId" element={<TaskGraph />} />
             </Route>
           </Route>
