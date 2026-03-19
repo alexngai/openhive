@@ -138,7 +138,7 @@ function isJsonRpcRequest(data: Record<string, unknown>): boolean {
 export function setupMapWebSocket(fastify: FastifyInstance): void {
   fastify.get('/ws/map', { websocket: true }, async (socket, request) => {
     const ws = socket as unknown as WebSocket;
-    const query = request.query as { token?: string; swarm_id?: string; auto_register?: string };
+    const query = request.query as { token?: string; swarm_id?: string };
 
     // Authenticate
     if (!query.token) {
@@ -154,18 +154,12 @@ export function setupMapWebSocket(fastify: FastifyInstance): void {
       return;
     }
 
-    // Resolve swarm
+    // Resolve swarm — create one automatically if the agent doesn't have one yet
     let swarmId = resolveSwarm(agent.id, query.swarm_id);
 
-    if (!swarmId && query.auto_register === 'true') {
+    if (!swarmId) {
       swarmId = autoRegisterSwarm(agent.id, agent.name);
       console.log(`[ws-map] Auto-registered hub-inbound swarm ${swarmId} for agent ${agent.name}`);
-    }
-
-    if (!swarmId) {
-      sendJsonRpcError(ws, -32001, 'No registered swarm found. Register a swarm first or use ?auto_register=true');
-      ws.close(4002, 'No swarm');
-      return;
     }
 
     // Register inbound connection
