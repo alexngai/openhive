@@ -31,6 +31,7 @@ import {
 } from "./map/sync-listener.js";
 import { initMail } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
+import { initTokenService, loadRevocations, setPersistence } from "./map/token-service.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { SwarmHubConnector } from "./swarmhub/connector.js";
 import { normalize, routeEvent } from "./events/index.js";
@@ -169,7 +170,31 @@ export async function createHive(
 
   // Register MAP inbound WebSocket (/ws/map) for agents connecting to the hub
   if (config.mapHub.enabled) {
-    setupMapWebSocket(fastify);
+    // Initialize agent-iam TokenService for verified mode
+    if (config.mapHub.trustModel === 'verified') {
+      const { getDatabaseConfig } = await import("./db/index.js");
+      const dbConf = getDatabaseConfig();
+      const dataDir = dbConf?.type === 'sqlite' && dbConf.path
+        ? path.dirname(path.dirname(dbConf.path)) // <dataDir>/data/openhive.db → <dataDir>
+        : undefined;
+      initTokenService(config.mapHub.iamSecret, dataDir);
+
+      // Wire up DB persistence for token revocation
+      try {
+        const { addRevokedToken, removeRevokedToken, listRevokedTokens } = await import("./db/dal/map.js");
+        setPersistence({ revoke: addRevokedToken, unrevoke: removeRevokedToken });
+
+        // Load persisted revocations from the database
+        const revoked = listRevokedTokens();
+        if (revoked.length > 0) {
+          loadRevocations(revoked);
+          console.log(`[openhive] Loaded ${revoked.length} persisted token revocation(s)`);
+        }
+      } catch {
+        // Table may not exist yet on first run before migration
+      }
+    }
+    setupMapWebSocket(fastify, config);
   }
 
   // Register terminal WebSocket (native PTY for TUI tunneling)

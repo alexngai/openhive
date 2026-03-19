@@ -97,6 +97,13 @@ export const ConfigSchema = z.object({
     enabled: z.boolean().default(true),
     // Minutes before an unresponsive swarm is marked offline
     staleThresholdMinutes: z.number().default(5),
+    // Trust model for inbound WebSocket connections:
+    //   'open'     — API key is sufficient, swarms can bring their own identity
+    //   'verified' — MAP spec map/connect auth flow with agent-iam tokens
+    trustModel: z.enum(['open', 'verified']).default('open'),
+    // HMAC secret for agent-iam token signing/verification (verified mode).
+    // Auto-generated and persisted to <dataDir>/data/iam-secret.key if not set.
+    iamSecret: z.string().optional(),
   }).default({}),
 
   // GitHub App configuration for automatic webhook handling
@@ -403,6 +410,9 @@ export function loadConfig(configPath?: string): Config {
   }
   if (process.env.OPENHIVE_AUTH_MODE) {
     rawConfig.auth = { ...rawConfig.auth, mode: process.env.OPENHIVE_AUTH_MODE };
+  }
+  if (process.env.OPENHIVE_IAM_SECRET) {
+    rawConfig.mapHub = { ...rawConfig.mapHub, iamSecret: process.env.OPENHIVE_IAM_SECRET };
   }
 
   // SwarmHub connector auto-detection from environment

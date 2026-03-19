@@ -9,6 +9,7 @@ import {
   MIGRATION_V22_COORDINATION, MIGRATION_V23_COORDINATION_ORIGIN,
   MIGRATION_V27_SYNC_STRATEGY,
   MIGRATION_V28_DROP_COORDINATION_TASKS,
+  MIGRATION_V29_MAP_REVOKED_TOKENS,
 } from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
@@ -225,6 +226,8 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   27: MIGRATION_V27_SYNC_STRATEGY,
   // Version 28: Drop deprecated coordination_tasks table
   28: MIGRATION_V28_DROP_COORDINATION_TASKS,
+  // Version 29: Persistent token revocation for MAP hub
+  29: MIGRATION_V29_MAP_REVOKED_TOKENS,
 };
 
 /** Get the SQL for a specific migration version.

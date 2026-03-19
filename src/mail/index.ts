@@ -10,7 +10,7 @@
  */
 
 import { EventEmitter } from 'node:events';
-import type { Storage } from 'agent-inbox';
+import type { Storage, MailJsonRpcServer } from 'agent-inbox';
 import { broadcastToChannel } from '../realtime/index.js';
 
 let mailStorage: Storage | null = null;

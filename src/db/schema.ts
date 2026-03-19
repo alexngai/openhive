@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -749,6 +749,13 @@ CREATE INDEX IF NOT EXISTS idx_map_swarm_hives_hive ON map_swarm_hives(hive_id);
 CREATE INDEX IF NOT EXISTS idx_map_preauth_keys_hive ON map_preauth_keys(hive_id);
 CREATE INDEX IF NOT EXISTS idx_map_federation_log_source ON map_federation_log(source_swarm_id);
 CREATE INDEX IF NOT EXISTS idx_map_federation_log_target ON map_federation_log(target_swarm_id);
+
+-- Revoked MAP tokens (persisted across restarts)
+CREATE TABLE IF NOT EXISTS map_revoked_tokens (
+  agent_id TEXT PRIMARY KEY,
+  revoked_at TEXT DEFAULT (datetime('now')),
+  reason TEXT
+);
 `;
 
 // Migration V12: Remote agent cache + origin tracking columns
@@ -1113,6 +1120,15 @@ CREATE TABLE IF NOT EXISTS shared_contexts (
 CREATE INDEX IF NOT EXISTS idx_shared_contexts_hive ON shared_contexts(hive_id);
 CREATE INDEX IF NOT EXISTS idx_shared_contexts_type ON shared_contexts(context_type);
 CREATE INDEX IF NOT EXISTS idx_shared_contexts_expires ON shared_contexts(expires_at);
+`;
+
+// Migration V29: Persistent token revocation for MAP hub
+export const MIGRATION_V29_MAP_REVOKED_TOKENS = `
+CREATE TABLE IF NOT EXISTS map_revoked_tokens (
+  agent_id TEXT PRIMARY KEY,
+  revoked_at TEXT DEFAULT (datetime('now')),
+  reason TEXT
+);
 `;
 
 // Populate FTS tables from existing data

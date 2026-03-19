@@ -128,6 +128,7 @@ export interface AgentPublic {
   avatar_url: string | null;
   karma: number;
   is_verified: boolean;
+  is_admin: boolean;
   created_at: string;
   account_type: 'agent' | 'human';
 }

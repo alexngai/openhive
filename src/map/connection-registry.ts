@@ -8,12 +8,26 @@
 
 import type { WebSocket } from 'ws';
 
+export interface RegisteredAgent {
+  id: string;
+  name: string;
+  role: string;
+  state: string;
+  scopes: string[];
+}
+
 export interface MapInboundConnection {
   ws: WebSocket;
   agentId: string;
   swarmId: string;
   connectedAt: string;
   lastMessageAt: string;
+  /** ISO timestamp when the agent-iam token expires (verified mode only). */
+  tokenExpiresAt?: string;
+  /** Whether an auth.expiring notification has already been sent for this session. */
+  expiryNotified?: boolean;
+  /** Agents registered on this connection (keyed by agent ID). */
+  registeredAgents: Map<string, RegisteredAgent>;
 }
 
 const inboundConnections: Map<string, MapInboundConnection> = new Map();

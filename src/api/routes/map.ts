@@ -41,6 +41,7 @@ import {
   leaveHive,
   MapHubError,
 } from '../../map/service.js';
+import { createSwarmToken, delegateToken, revokeToken } from '../../map/token-service.js';
 import type { Config } from '../../config.js';
 
 // ============================================================================
@@ -202,7 +203,19 @@ export async function mapRoutes(
     try {
       const body = RegisterSwarmSchema.parse(request.body);
       const result = registerSwarm(request.agent!.id, body);
-      return reply.status(201).send(result);
+
+      // In verified mode, issue an agent-iam token for the new swarm
+      let swarm_token: string | undefined;
+      if (opts.config.mapHub.trustModel === 'verified') {
+        try {
+          const { serialized } = createSwarmToken(result.swarm.id);
+          swarm_token = serialized;
+        } catch {
+          // TokenService not initialized — skip token issuance
+        }
+      }
+
+      return reply.status(201).send({ ...result, swarm_token });
     } catch (error) {
       return handleMapError(error, reply);
     }
@@ -351,6 +364,70 @@ export async function mapRoutes(
         message: `Swarm left hive "${request.params.hiveName}"`,
         hives: mapDal.getSwarmHiveNames(request.params.id),
       });
+    } catch (error) {
+      return handleMapError(error, reply);
+    }
+  });
+
+  // ==========================================================================
+  // Token Routes (verified mode)
+  // ==========================================================================
+
+  // POST /map/swarms/:id/token -- Issue or rotate a token for an existing swarm
+  fastify.post<{ Params: { id: string } }>('/map/swarms/:id/token', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
+    try {
+      if (opts.config.mapHub.trustModel !== 'verified') {
+        return reply.status(400).send({ error: 'Bad Request', message: 'Token issuance requires verified trust model' });
+      }
+      if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
+        throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
+      }
+      const { serialized } = createSwarmToken(request.params.id);
+      return reply.send({ swarm_token: serialized });
+    } catch (error) {
+      return handleMapError(error, reply);
+    }
+  });
+
+  // POST /map/swarms/:id/delegate -- Delegate a narrower token for a child agent
+  fastify.post<{ Params: { id: string }; Body: { parent_token: string; agent_id: string; scopes?: string[]; ttl_minutes?: number } }>('/map/swarms/:id/delegate', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
+    try {
+      if (opts.config.mapHub.trustModel !== 'verified') {
+        return reply.status(400).send({ error: 'Bad Request', message: 'Token delegation requires verified trust model' });
+      }
+      const { parent_token, agent_id, scopes, ttl_minutes } = request.body || {};
+      if (!parent_token || !agent_id) {
+        return reply.status(400).send({ error: 'Bad Request', message: 'parent_token and agent_id are required' });
+      }
+      const { serialized } = delegateToken(parent_token, {
+        agentId: agent_id,
+        scopes,
+        ttlMinutes: ttl_minutes,
+      });
+      return reply.send({ child_token: serialized });
+    } catch (error) {
+      return handleMapError(error, reply);
+    }
+  });
+
+  // POST /map/swarms/:id/revoke — Revoke a swarm's token (admin-only)
+  fastify.post<{ Params: { id: string } }>('/map/swarms/:id/revoke', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
+    try {
+      if (opts.config.mapHub.trustModel !== 'verified') {
+        return reply.status(400).send({ error: 'Bad Request', message: 'Token revocation requires verified trust model' });
+      }
+      const swarm = mapDal.findSwarmById(request.params.id);
+      if (!swarm) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Swarm not found' });
+      }
+      revokeToken(request.params.id);
+      return reply.send({ message: `Token for swarm ${request.params.id} has been revoked` });
     } catch (error) {
       return handleMapError(error, reply);
     }

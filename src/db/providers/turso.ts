@@ -212,6 +212,7 @@ function toPublicAgent(agent: Agent): AgentPublic {
     is_verified: agent.is_verified,
     created_at: agent.created_at,
     account_type: agent.account_type || 'agent',
+    is_admin: agent.is_admin,
   };
 }
 

@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database, Bell, PanelRightOpen, PanelRightClose, User, Search, Activity, MessageSquare } from 'lucide-react';
+import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database, Bell, User, Search, Activity, MessageSquare, ChevronLeft } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import type { MailConversation } from '../../lib/api';
@@ -66,19 +66,35 @@ export function Sidebar() {
 
   const sidebarContent = (
     <>
-      {/* Logo + Brand */}
+      {/* Logo + Brand (toggles sidebar) */}
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className={clsx(
+          'hidden lg:flex items-center border-b shrink-0 cursor-pointer transition-colors duration-80 w-full',
+          collapsed ? 'justify-center gap-1.5 px-2 py-4' : 'gap-2.5 px-4 py-4'
+        )}
+        style={{ borderColor: 'var(--color-border-subtle)' }}
+        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-hover)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+      >
+        <Logo className="h-6 w-6 text-honey-500 shrink-0" />
+        {!collapsed && (
+          <>
+            <span className="text-lg font-bold" style={{ color: 'var(--color-text)' }}>openhive</span>
+            <ChevronLeft className="w-4 h-4 ml-auto shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+          </>
+        )}
+      </button>
+      {/* Mobile: logo links home */}
       <div
         className={clsx(
-          'flex items-center border-b shrink-0',
-          collapsed ? 'justify-center gap-1.5 px-2 py-4' : 'px-4 py-4'
+          'flex lg:hidden items-center border-b shrink-0 px-4 py-4'
         )}
         style={{ borderColor: 'var(--color-border-subtle)' }}
       >
-        <Link to="/" className="flex items-center gap-2.5 min-w-0">
+        <Link to="/" className="flex items-center gap-2.5 min-w-0" onClick={() => setMobileOpen(false)}>
           <Logo className="h-6 w-6 text-honey-500 shrink-0" />
-          {!collapsed && (
-            <span className="text-lg font-bold" style={{ color: 'var(--color-text)' }}>openhive</span>
-          )}
+          <span className="text-lg font-bold" style={{ color: 'var(--color-text)' }}>openhive</span>
         </Link>
       </div>
 
@@ -280,30 +296,6 @@ export function Sidebar() {
           </>
         )}
       </nav>
-
-      {/* Collapse Toggle */}
-      <button
-        onClick={() => setCollapsed(!collapsed)}
-        className={clsx(
-          'hidden lg:flex items-center border-t shrink-0 cursor-pointer transition-colors duration-80',
-          collapsed ? 'justify-center px-2 py-2.5' : 'gap-2 px-4 py-2.5'
-        )}
-        style={{
-          borderColor: 'var(--color-border-subtle)',
-          color: 'var(--color-text-secondary)',
-        }}
-        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-hover)'; e.currentTarget.style.color = 'var(--color-text)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; }}
-      >
-        {collapsed ? (
-          <PanelRightClose className="w-4 h-4" />
-        ) : (
-          <>
-            <PanelRightOpen className="w-4 h-4" />
-            <span className="text-xs">Collapse</span>
-          </>
-        )}
-      </button>
 
       {/* User Profile / Login at bottom */}
       {isAuthenticated ? (

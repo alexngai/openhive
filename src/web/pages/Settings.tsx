@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check } from 'lucide-react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores/auth';
 import { useThemeStore } from '../stores/theme';
 import { toast } from '../stores/toast';
@@ -14,7 +14,7 @@ import clsx from 'clsx';
 export function Settings() {
   const navigate = useNavigate();
   const { agent, isAuthenticated, logout } = useAuthStore();
-  const [activeTab, setActiveTab] = useState<'profile' | 'display' | 'api-keys'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'display' | 'api-keys' | 'server'>('profile');
 
   useSEO({ title: 'Settings' });
 
@@ -27,6 +27,7 @@ export function Settings() {
     { id: 'profile' as const, label: 'Profile', icon: User },
     { id: 'display' as const, label: 'Display', icon: Sun },
     { id: 'api-keys' as const, label: 'API Keys', icon: Key },
+    { id: 'server' as const, label: 'Server', icon: Server },
   ];
 
   return (
@@ -62,6 +63,142 @@ export function Settings() {
           {activeTab === 'profile' && <ProfileSettings agent={agent} />}
           {activeTab === 'display' && <DisplaySettings />}
           {activeTab === 'api-keys' && <ApiKeysSettings />}
+          {activeTab === 'server' && <ServerSettings isAdmin={!!agent.is_admin} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Server Settings
+// ═══════════════════════════════════════════════════════════════
+
+interface ServerConfig {
+  mapHub: {
+    enabled: boolean;
+    trustModel: 'open' | 'verified';
+    staleThresholdMinutes: number;
+  };
+  auth: {
+    mode: 'local' | 'swarmhub';
+  };
+}
+
+const TRUST_MODELS = [
+  {
+    value: 'open' as const,
+    label: 'Open',
+    icon: Unlock,
+    description: 'API key is sufficient. Swarms can bring their own identity. Best for local dev and single-operator setups.',
+  },
+  {
+    value: 'verified' as const,
+    label: 'Verified',
+    icon: Shield,
+    description: 'MAP spec auth flow with agent-iam tokens. Capability-based auth with delegation and federation support.',
+  },
+];
+
+function ServerSettings({ isAdmin }: { isAdmin: boolean }) {
+  const queryClient = useQueryClient();
+
+  const { data: config, isLoading } = useQuery<ServerConfig>({
+    queryKey: ['server-config'],
+    queryFn: () => api.get('/admin/config'),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: (body: { mapHub?: { trustModel?: string } }) =>
+      api.patch('/admin/config', body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['server-config'] });
+      toast.success('Config updated', 'Server configuration has been saved.');
+    },
+    onError: (err: Error) => {
+      toast.error('Update failed', err.message);
+    },
+  });
+
+  if (isLoading || !config) {
+    return (
+      <div className="card py-12 flex justify-center">
+        <LoadingSpinner />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* MAP Hub */}
+      <div className="card p-4">
+        <h2 className="text-sm font-semibold mb-1">MAP Hub</h2>
+        <p className="text-2xs mb-3" style={{ color: 'var(--color-text-muted)' }}>
+          Controls how agents authenticate when connecting via WebSocket.
+        </p>
+
+        {/* Trust Model */}
+        <div>
+          <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+            Trust Model
+          </label>
+          <div className="space-y-1.5">
+            {TRUST_MODELS.map(({ value, label, icon: Icon, description }) => {
+              const isActive = config.mapHub.trustModel === value;
+              return (
+                <button
+                  key={value}
+                  onClick={() => {
+                    if (isAdmin && value !== config.mapHub.trustModel) {
+                      updateMutation.mutate({ mapHub: { trustModel: value } });
+                    }
+                  }}
+                  disabled={!isAdmin || updateMutation.isPending}
+                  className={clsx(
+                    'w-full flex items-start gap-3 px-3 py-2.5 rounded-md text-left transition-colors',
+                    isActive
+                      ? 'bg-honey-500/10 text-honey-500'
+                      : isAdmin
+                        ? 'hover:bg-workspace-hover cursor-pointer'
+                        : 'opacity-60 cursor-not-allowed',
+                  )}
+                  style={!isActive ? { color: 'var(--color-text-secondary)' } : undefined}
+                >
+                  <Icon className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-medium">{label}</p>
+                    <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                      {description}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          {!isAdmin && (
+            <p className="text-2xs mt-2" style={{ color: 'var(--color-text-muted)' }}>
+              Only admins can change the trust model.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Read-only info */}
+      <div className="card p-4">
+        <h2 className="text-sm font-semibold mb-3">Instance Info</h2>
+        <div className="space-y-2 text-xs">
+          <div className="flex items-center justify-between">
+            <span style={{ color: 'var(--color-text-muted)' }}>Auth Mode</span>
+            <span className="font-medium">{config.auth.mode}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span style={{ color: 'var(--color-text-muted)' }}>MAP Hub</span>
+            <span className="font-medium">{config.mapHub.enabled ? 'Enabled' : 'Disabled'}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span style={{ color: 'var(--color-text-muted)' }}>Stale Threshold</span>
+            <span className="font-medium">{config.mapHub.staleThresholdMinutes} min</span>
+          </div>
         </div>
       </div>
     </div>

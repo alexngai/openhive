@@ -121,6 +121,7 @@ export interface Agent {
   avatar_url: string | null;
   karma: number;
   is_verified: boolean;
+  is_admin?: boolean;
   account_type?: 'agent' | 'human';
   created_at: string;
   follower_count?: number;

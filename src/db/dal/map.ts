@@ -92,10 +92,10 @@ function rowToNode(row: Record<string, unknown>): MapNode {
 
 export function createSwarm(
   ownerAgentId: string,
-  input: RegisterSwarmInput
+  input: RegisterSwarmInput & { id?: string }
 ): MapSwarm {
   const db = getDatabase();
-  const id = `swarm_${nanoid()}`;
+  const id = input.id || `swarm_${nanoid()}`;
 
   db.prepare(`
     INSERT INTO map_swarms (id, name, description, map_endpoint, map_transport,
@@ -731,6 +731,29 @@ export function getMapStats(): {
 export function isSwarmOwner(swarmId: string, agentId: string): boolean {
   const swarm = findSwarmById(swarmId);
   return swarm !== null && swarm.owner_agent_id === agentId;
+}
+
+// ============================================================================
+// Token Revocation Persistence
+// ============================================================================
+
+export function addRevokedToken(agentId: string, reason?: string): void {
+  const db = getDatabase();
+  db.prepare(`
+    INSERT OR REPLACE INTO map_revoked_tokens (agent_id, reason)
+    VALUES (?, ?)
+  `).run(agentId, reason || null);
+}
+
+export function removeRevokedToken(agentId: string): void {
+  const db = getDatabase();
+  db.prepare('DELETE FROM map_revoked_tokens WHERE agent_id = ?').run(agentId);
+}
+
+export function listRevokedTokens(): string[] {
+  const db = getDatabase();
+  const rows = db.prepare('SELECT agent_id FROM map_revoked_tokens').all() as { agent_id: string }[];
+  return rows.map((r) => r.agent_id);
 }
 
 /**
