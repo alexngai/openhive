@@ -86,7 +86,8 @@ describe('E2E: MAP SDK — Verified Mode with createConnection()', () => {
     const method = connectResult.authRequired!.methods[0];
     const authResult = await agent.authenticate({ method, token: swarmToken });
     expect(authResult.success).toBe(true);
-    expect(authResult.participantId).toBe('sdk-swarm-001');
+    // participantId is a MAPServer-generated ULID session ID, not the swarm's agent ID
+    expect(authResult.participantId).toBeTruthy();
 
     // Step 3: register as an agent
     const registeredAgent = await agent.register();

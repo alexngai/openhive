@@ -273,10 +273,22 @@ describe('E2E Integration: Verified Mode — full client flow', () => {
 
     expect(authResp.result).toBeDefined();
     expect(authResp.result.success).toBe(true);
-    expect(authResp.result.participantId).toBe('integ-swarm-001');
+    // participantId is a MAPServer-generated ULID session ID
+    expect(authResp.result.participantId).toBeTruthy();
+    // The swarm identity is in principal.id
     expect(authResp.result.principal.id).toBe('integ-swarm-001');
 
-    // Step 4: Verify the connection is fully functional
+    // Step 4: Register an agent (sets up the notification interceptor in verified mode)
+    const regResp = await rpc(ws, 'map/agents/register', {
+      name: 'integ-verify-agent',
+      role: 'worker',
+    });
+    expect(regResp.result.agent).toBeDefined();
+
+    // Small delay for event handler to set up interceptor
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Step 5: Verify the connection is fully functional (ping notification → pong notification)
     const pongPromise = waitNotification(ws);
     ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'ping', params: {} }));
     const pong = await pongPromise;
@@ -296,7 +308,9 @@ describe('E2E Integration: Verified Mode — full client flow', () => {
       method: c1.result.authRequired.methods[0],
       credential: swarmToken,
     });
-    expect(a1.result.participantId).toBe('integ-swarm-001');
+    // participantId is a ULID session ID; identity is in principal.id
+    expect(a1.result.participantId).toBeTruthy();
+    expect(a1.result.principal.id).toBe('integ-swarm-001');
 
     // Swarm 2
     const ws2 = await openWs(`ws://127.0.0.1:${PORT}/ws/map?token=${apiKey}`);
@@ -305,9 +319,15 @@ describe('E2E Integration: Verified Mode — full client flow', () => {
       method: c2.result.authRequired.methods[0],
       credential: token2,
     });
-    expect(a2.result.participantId).toBe('integ-swarm-002');
+    expect(a2.result.participantId).toBeTruthy();
+    expect(a2.result.principal.id).toBe('integ-swarm-002');
 
-    // Both are independently functional
+    // Register agents on both to activate notification interceptors
+    await rpc(ws1, 'map/agents/register', { name: 'swarm1-agent', role: 'worker' });
+    await rpc(ws2, 'map/agents/register', { name: 'swarm2-agent', role: 'worker' });
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Both are independently functional (ping notification → pong notification)
     const p1 = waitNotification(ws1);
     const p2 = waitNotification(ws2);
     ws1.send(JSON.stringify({ jsonrpc: '2.0', method: 'ping', params: {} }));
@@ -342,7 +362,9 @@ describe('E2E Integration: Verified Mode — full client flow', () => {
     });
 
     expect(auth.result.success).toBe(true);
-    expect(auth.result.participantId).toBe('child-worker-001');
+    // participantId is a ULID session ID; identity is in principal.id
+    expect(auth.result.participantId).toBeTruthy();
+    expect(auth.result.principal.id).toBe('child-worker-001');
     expect(auth.result.principal.claims.scopes).toContain('map:observe:*');
     expect(auth.result.principal.claims.scopes).toContain('map:message:*');
     expect(auth.result.principal.claims.delegationDepth).toBeGreaterThan(0);
@@ -363,20 +385,19 @@ describe('E2E Integration: Verified Mode — full client flow', () => {
 
   // ── Issue 1: Disconnect responds before closing ────────────────────
 
-  it('responds to map/disconnect before closing the connection', async () => {
+  it('responds to map/disconnect with success and resumeToken', async () => {
     const ws = await verifiedConnect(swarmToken);
 
     // Send disconnect and expect a response
     const response = await rpc(ws, 'map/disconnect', {});
     expect(response.result).toBeDefined();
     expect(response.result.success).toBe(true);
+    // MAPServer returns a resumeToken for session resumption
+    expect(response.result.resumeToken).toBeTruthy();
 
-    // Connection should close shortly after
-    const closeCode = await new Promise<number>((resolve) => {
-      ws.on('close', (code) => resolve(code));
-      setTimeout(() => resolve(-1), 3000);
-    });
-    expect(closeCode).toBe(1000);
+    // MAPServer marks the session as disconnected but doesn't close the transport.
+    // The client is responsible for closing the WebSocket.
+    ws.close();
   });
 
   // ── Issue 4: Agent lifecycle (register, update, unregister) ────────
@@ -385,17 +406,17 @@ describe('E2E Integration: Verified Mode — full client flow', () => {
     const ws = await verifiedConnect(swarmToken);
 
     const regResp = await rpc(ws, 'map/agents/register', {
-      agentId: 'worker-001',
       name: 'Worker One',
       role: 'executor',
-      scopes: ['swarm:test'],
     });
 
     expect(regResp.result).toBeDefined();
-    expect(regResp.result.agent.id).toBe('worker-001');
+    // agent.id is a MAPServer-generated ULID, not a user-provided ID
+    expect(regResp.result.agent.id).toBeTruthy();
     expect(regResp.result.agent.name).toBe('Worker One');
     expect(regResp.result.agent.role).toBe('executor');
-    expect(regResp.result.agent.state).toBe('active');
+    // MAPServer sets initial state to 'idle', not 'active'
+    expect(regResp.result.agent.state).toBe('idle');
 
     ws.close();
   });
@@ -403,25 +424,25 @@ describe('E2E Integration: Verified Mode — full client flow', () => {
   it('handles agents/update to change agent state', async () => {
     const ws = await verifiedConnect(swarmToken);
 
-    // Register first
-    await rpc(ws, 'map/agents/register', {
-      agentId: 'state-agent',
+    // Register first — get the server-assigned agent ID
+    const regResp = await rpc(ws, 'map/agents/register', {
       name: 'State Agent',
       role: 'worker',
     });
+    const agentId = regResp.result.agent.id;
 
-    // Update state to busy
+    // Update state: idle → busy
     const updateResp = await rpc(ws, 'map/agents/update', {
-      agentId: 'state-agent',
+      agentId,
       state: 'busy',
     });
 
     expect(updateResp.result).toBeDefined();
     expect(updateResp.result.agent.state).toBe('busy');
 
-    // Update state to idle
+    // Update state: busy → idle
     const idleResp = await rpc(ws, 'map/agents/update', {
-      agentId: 'state-agent',
+      agentId,
       state: 'idle',
     });
     expect(idleResp.result.agent.state).toBe('idle');
@@ -438,7 +459,8 @@ describe('E2E Integration: Verified Mode — full client flow', () => {
     });
 
     expect(resp.error).toBeDefined();
-    expect(resp.error.message).toContain('not registered');
+    // MAPServer's AgentRegistry throws "Agent not found: <id>"
+    expect(resp.error.message).toContain('not found');
 
     ws.close();
   });
@@ -446,23 +468,23 @@ describe('E2E Integration: Verified Mode — full client flow', () => {
   it('handles agents/unregister', async () => {
     const ws = await verifiedConnect(swarmToken);
 
-    // Register
-    await rpc(ws, 'map/agents/register', {
-      agentId: 'unreg-agent',
+    // Register — get the server-assigned agent ID
+    const regResp = await rpc(ws, 'map/agents/register', {
       name: 'Temp Agent',
       role: 'worker',
     });
+    const agentId = regResp.result.agent.id;
 
     // Unregister
     const unregResp = await rpc(ws, 'map/agents/unregister', {
-      agentId: 'unreg-agent',
+      agentId,
     });
     expect(unregResp.result).toBeDefined();
     expect(unregResp.result.success).toBe(true);
 
     // Updating after unregister should fail
     const updateResp = await rpc(ws, 'map/agents/update', {
-      agentId: 'unreg-agent',
+      agentId,
       state: 'busy',
     });
     expect(updateResp.error).toBeDefined();
@@ -482,17 +504,15 @@ describe('E2E Integration: Verified Mode — full client flow', () => {
     const ws = await openWs(`ws://127.0.0.1:${PORT}/ws/map?token=${apiKey}`);
     const c = await rpc(ws, 'map/connect', { protocolVersion: 1 });
 
-    // Send authenticate with revoked token
-    const closePromise = new Promise<number>((resolve) => {
-      ws.on('close', (code) => resolve(code));
-      setTimeout(() => resolve(-1), 5000);
+    // MAPServer returns an error response for revoked tokens (not a close)
+    const authResp = await rpc(ws, 'map/authenticate', {
+      method: c.result.authRequired.methods[0],
+      credential: revokableToken,
     });
 
-    ws.send(JSON.stringify({
-      jsonrpc: '2.0', id: nextId(), method: 'map/authenticate',
-      params: { method: c.result.authRequired.methods[0], credential: revokableToken },
-    }));
+    expect(authResp.result).toBeDefined();
+    expect(authResp.result.success).toBe(false);
 
-    expect(await closePromise).toBe(4001);
+    ws.close();
   });
 });
