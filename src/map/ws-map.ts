@@ -32,8 +32,13 @@ import { nanoid } from 'nanoid';
 import type { Agent } from '../types.js';
 import type { Config } from '../config.js';
 
-const HEARTBEAT_INTERVAL = 30_000;
+let HEARTBEAT_INTERVAL = 30_000;
 let heartbeatTimer: NodeJS.Timeout | null = null;
+
+/** Override heartbeat interval (ms). Useful for testing with shorter timeouts. */
+export function setHeartbeatInterval(ms: number): void {
+  HEARTBEAT_INTERVAL = ms;
+}
 
 // ============================================================================
 // Auth (same pattern as src/realtime/index.ts:29-55)
@@ -251,7 +256,53 @@ function setupVerifiedConnection(ws: WebSocket, agent: Agent, bufferedMessages: 
 
       const connectParams = parsed.params || {};
 
-      // Respond with authRequired — server drives the method selection
+      // Check for inline auth (current MAP SDK sends auth in connect params)
+      const inlineAuth = connectParams.auth as { method?: string; token?: string } | undefined;
+      if (inlineAuth?.method === 'x-agent-iam' && inlineAuth?.token) {
+        const result = verifyToken(inlineAuth.token);
+        if (!result.valid || !result.token) {
+          sendJsonRpcError(ws, 1001, `Authentication failed: ${result.error}`, parsed.id);
+          ws.close(4001, 'Auth failed');
+          return;
+        }
+
+        const token = result.token;
+        const swarmId = token.agentId;
+
+        // Find or create swarm
+        const { data: existing } = listSwarms({ owner_agent_id: agent.id, limit: 100 });
+        if (!existing.find((s) => s.id === swarmId)) {
+          createSwarm(agent.id, {
+            id: swarmId,
+            name: (connectParams.name as string) || `${swarmId}-hub`,
+            map_endpoint: 'hub-inbound',
+            map_transport: 'websocket',
+            auth_method: 'none',
+          });
+          console.log(`[ws-map] Auto-registered verified swarm ${swarmId} (inline auth)`);
+        }
+
+        // Respond with session — SDK proceeds to map/agents/register
+        sendJsonRpcResponse(ws, parsed.id, {
+          protocolVersion: 1,
+          sessionId: `session_${nanoid(12)}`,
+          capabilities: {},
+        });
+
+        const now = new Date().toISOString();
+        registerInbound(swarmId, {
+          ws, agentId: agent.id, swarmId, connectedAt: now, lastMessageAt: now,
+          tokenExpiresAt: token.expiresAt || undefined,
+          registeredAgents: new Map(),
+        });
+        heartbeatSwarm(swarmId);
+
+        console.log(`[ws-map] Swarm ${swarmId} connected via inline auth (scopes: ${token.scopes.join(', ')})`);
+        setupMessageHandlers(ws, swarmId, agent.id);
+        return;
+      }
+
+      // No inline auth — respond with authRequired (future SDK split flow)
       sendJsonRpcResponse(ws, parsed.id, {
         protocolVersion: 1,
         authRequired: {
@@ -364,6 +415,18 @@ function setupVerifiedConnection(ws: WebSocket, agent: Agent, bufferedMessages: 
 // ============================================================================
 
 function setupMessageHandlers(ws: WebSocket, swarmId: string, agentId: string): void {
+  // Track protocol-level pong responses for heartbeat liveness.
+  // The ws library responds to ping frames at the transport layer,
+  // so this works for ALL clients including those using the MAP SDK
+  // (which has no application-level ping/pong handling).
+  ws.on('pong', () => {
+    const conn = getAllInbound().get(swarmId);
+    if (conn) {
+      (conn as any).isAlive = true;
+      conn.lastMessageAt = new Date().toISOString();
+    }
+  });
+
   ws.on('message', (data) => {
     try {
       const parsed = JSON.parse(data.toString());
@@ -448,6 +511,28 @@ function setupMessageHandlers(ws: WebSocket, swarmId: string, agentId: string): 
         sendJsonRpcResponse(ws, parsed.id as string | number, {
           agent: registeredAgent,
         });
+      } else if (isJsonRpcRequest(parsed) && parsed.method === 'map/agents/spawn') {
+        // Agent spawn — same as register but with spawn semantics
+        const spawnParams = (parsed.params || {}) as Record<string, unknown>;
+        const spawnedId = (spawnParams.agentId as string) || `agent_${nanoid(8)}`;
+        const spawnedAgent = {
+          id: spawnedId,
+          name: (spawnParams.name as string) || spawnedId,
+          role: (spawnParams.role as string) || 'agent',
+          state: 'active',
+          scopes: (spawnParams.scopes as string[]) || [],
+        };
+
+        const conn = getAllInbound().get(swarmId);
+        if (conn) {
+          conn.registeredAgents.set(spawnedId, spawnedAgent);
+          try { updateSwarm(swarmId, { agent_count: conn.registeredAgents.size }); } catch { /* ignore */ }
+        }
+
+        sendJsonRpcResponse(ws, parsed.id as string | number, { agent: spawnedAgent });
+      } else if (isJsonRpcRequest(parsed) && parsed.method === 'map/send') {
+        // Message send — acknowledge (relay logic can be added later)
+        sendJsonRpcResponse(ws, parsed.id as string | number, { messageId: `msg_${nanoid(8)}` });
       } else if (isJsonRpcRequest(parsed) && parsed.method === 'map/agents/unregister') {
         // Agent unregistration — remove from connection registry
         const unregParams = (parsed.params || {}) as Record<string, unknown>;
@@ -476,6 +561,14 @@ function setupMessageHandlers(ws: WebSocket, swarmId: string, agentId: string): 
         } else {
           sendJsonRpcError(ws, -32602, 'Agent not found', parsed.id as string | number);
         }
+      } else if (isJsonRpcRequest(parsed) && parsed.method === 'map/connect') {
+        // MAP SDK sends map/connect as its first message — respond so the SDK completes its handshake.
+        // In open mode, auth is already done via query param, so just acknowledge.
+        sendJsonRpcResponse(ws, parsed.id as string | number, {
+          protocolVersion: 1,
+          sessionId: `session_${nanoid(12)}`,
+          capabilities: {},
+        });
       } else if (isJsonRpcRequest(parsed) && parsed.method === 'map/authenticate') {
         // Token refresh — re-authenticate mid-session (verified mode)
         const authParams = (parsed.params || {}) as Record<string, unknown>;
@@ -503,6 +596,7 @@ function setupMessageHandlers(ws: WebSocket, swarmId: string, agentId: string): 
       // Update heartbeat on any valid message
       const conn = getAllInbound().get(swarmId);
       if (conn) {
+        (conn as any).isAlive = true;
         conn.lastMessageAt = new Date().toISOString();
       }
       heartbeatSwarm(swarmId);
@@ -545,20 +639,25 @@ function startMapHeartbeat(): void {
 
   heartbeatTimer = setInterval(() => {
     const now = Date.now();
-    const timeout = HEARTBEAT_INTERVAL * 2;
 
     for (const [swarmId, conn] of getAllInbound()) {
-      const lastMsg = new Date(conn.lastMessageAt).getTime();
-      if (now - lastMsg > timeout) {
-        // Client hasn't sent anything — terminate
+      if ((conn as any).isAlive === false) {
+        // No pong received since last ping — connection is dead
         conn.ws.terminate();
         unregisterInbound(swarmId);
         continue;
       }
 
+      // Mark as not-alive; set back to true when pong arrives or a message is received
+      (conn as any).isAlive = false;
+
       if (conn.ws.readyState !== WebSocket.OPEN) continue;
 
-      // Ping
+      // Protocol-level ping — the ws library responds with a pong frame
+      // at the transport layer, so this works for ALL WebSocket clients
+      // (including MAP SDK clients that have no application-level ping handling).
+      conn.ws.ping();
+      // Also send JSON-RPC ping for clients that use application-level keepalive
       sendJsonRpc(conn.ws, 'ping', {});
 
       // Token expiry check (verified mode connections)
