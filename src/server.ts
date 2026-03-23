@@ -155,7 +155,7 @@ export async function createHive(
 
   // Register MAP inbound WebSocket (/ws/map) for agents connecting to the hub
   if (config.mapHub.enabled) {
-    setupMapWebSocket(fastify);
+    setupMapWebSocket(fastify, { authMode: config.auth.mode });
   }
 
   // Register terminal WebSocket (native PTY for TUI tunneling)

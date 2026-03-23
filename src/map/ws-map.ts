@@ -12,7 +12,7 @@
 
 import { FastifyInstance } from 'fastify';
 import { WebSocket } from 'ws';
-import { findAgentById, findAgentByApiKey, findOrCreateSwarmHubAgent } from '../db/dal/agents.js';
+import { findAgentById, findAgentByApiKey, findOrCreateSwarmHubAgent, getOrCreateLocalAgent } from '../db/dal/agents.js';
 import { validateIngestKey } from '../db/dal/ingest-keys.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
 import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm } from '../db/dal/map.js';
@@ -134,21 +134,27 @@ function isJsonRpcRequest(data: Record<string, unknown>): boolean {
 // WebSocket Handler
 // ============================================================================
 
-export function setupMapWebSocket(fastify: FastifyInstance): void {
+export interface MapWebSocketOptions {
+  authMode?: 'local' | 'swarmhub';
+}
+
+export function setupMapWebSocket(fastify: FastifyInstance, opts?: MapWebSocketOptions): void {
+  const isLocalAuth = opts?.authMode === 'local';
+
   fastify.get('/ws/map', { websocket: true }, async (socket, request) => {
     const ws = socket as unknown as WebSocket;
     const query = request.query as { token?: string; swarm_id?: string; auto_register?: string };
 
-    // Authenticate
-    if (!query.token) {
-      sendJsonRpcError(ws, -32000, 'Missing token query parameter');
-      ws.close(4001, 'Unauthorized');
-      return;
+    // Authenticate — local auth mode accepts tokenless connections
+    let agent: Agent | null = null;
+    if (query.token) {
+      agent = await authenticateToken(query.token);
+    } else if (isLocalAuth) {
+      agent = await getOrCreateLocalAgent();
     }
 
-    const agent = await authenticateToken(query.token);
     if (!agent) {
-      sendJsonRpcError(ws, -32000, 'Invalid authentication token');
+      sendJsonRpcError(ws, -32000, query.token ? 'Invalid authentication token' : 'Missing token query parameter');
       ws.close(4001, 'Unauthorized');
       return;
     }
@@ -156,7 +162,7 @@ export function setupMapWebSocket(fastify: FastifyInstance): void {
     // Resolve swarm
     let swarmId = resolveSwarm(agent.id, query.swarm_id);
 
-    if (!swarmId && query.auto_register === 'true') {
+    if (!swarmId && (query.auto_register === 'true' || isLocalAuth)) {
       swarmId = autoRegisterSwarm(agent.id, agent.name);
       console.log(`[ws-map] Auto-registered hub-inbound swarm ${swarmId} for agent ${agent.name}`);
     }
