@@ -23,11 +23,12 @@ import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm } from '../db/dal/
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound } from './connection-registry.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound } from './connection-registry.js';
 import { getMapTaskStore } from './task-store.js';
 import { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
+import { broadcastToChannel } from '../realtime/index.js';
 import type { Agent } from '../types.js';
 import type { Config } from '../config.js';
 
@@ -182,6 +183,40 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     const ws = socket as unknown as WebSocket;
     const query = request.query as { token?: string; swarm_id?: string };
 
+    // Track liveness for heartbeat ping/pong
+    (ws as any).isAlive = true;
+    ws.on('pong', () => { (ws as any).isAlive = true; });
+
+    // Track swarm ID for cleanup on raw socket close
+    let connectedSwarmId: string | null = null;
+    let cleanedUp = false;
+
+    const handleDisconnect = () => {
+      if (cleanedUp || !connectedSwarmId) return;
+      cleanedUp = true;
+      const sid = connectedSwarmId;
+
+      // Only clean up if this WS is still the current connection for this swarm.
+      // A newer connection may have already replaced us via registerInbound.
+      const current = getInbound(sid);
+      if (current && current.ws !== ws) return;
+
+      unregisterInbound(sid);
+      try { getMapTaskStore().removeBySwarm(sid); } catch { /* */ }
+      try {
+        if (!hasOutboundConnection(sid)) {
+          updateSwarm(sid, { status: 'unreachable' });
+          broadcastToChannel('map:discovery', {
+            type: 'swarm_offline',
+            data: { swarm_id: sid },
+          });
+        }
+      } catch { /* */ }
+      console.log(`[ws-map] Swarm ${sid} disconnected`);
+    };
+
+    ws.on('close', handleDisconnect);
+
     // ── Hub access auth (both modes) ──────────────────────────────────
     // Buffer messages during async auth
     const bufferedMessages: (Buffer | string)[] = [];
@@ -260,6 +295,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
           console.log(`[ws-map] Auto-registered verified swarm ${swarmId}`);
         }
 
+        connectedSwarmId = swarmId;
         registerInbound(swarmId, {
           ws, agentId: agent.id, swarmId,
           connectedAt: now, lastMessageAt: now,
@@ -275,17 +311,10 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
         console.log(`[ws-map] Swarm ${swarmId} connected via MAPServer verified auth`);
 
-        // Cleanup on close
+        // Cleanup on close (router.closed as backup — ws 'close' is primary)
         router.closed.then(() => {
           interceptor.cleanup();
-          unregisterInbound(swarmId);
-          try { getMapTaskStore().removeBySwarm(swarmId); } catch { /* */ }
-          try {
-            if (!hasOutboundConnection(swarmId)) {
-              updateSwarm(swarmId, { status: 'offline' });
-            }
-          } catch { /* */ }
-          console.log(`[ws-map] Swarm ${swarmId} disconnected`);
+          handleDisconnect();
         });
       };
 
@@ -310,6 +339,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       console.log(`[ws-map] Auto-registered hub-inbound swarm ${swarmId} for agent ${agent.name}`);
     }
 
+    connectedSwarmId = swarmId;
     const now = new Date().toISOString();
     registerInbound(swarmId, {
       ws, agentId: agent.id, swarmId,
@@ -345,17 +375,10 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
     console.log(`[ws-map] Swarm ${swarmId} connected inbound (agent: ${agent.name})`);
 
-    // Cleanup on close
+    // Cleanup on close (router.closed as backup — ws 'close' is primary)
     router.closed.then(() => {
       interceptor.cleanup();
-      unregisterInbound(swarmId);
-      try { getMapTaskStore().removeBySwarm(swarmId); } catch { /* */ }
-      try {
-        if (!hasOutboundConnection(swarmId)) {
-          updateSwarm(swarmId, { status: 'offline' });
-        }
-      } catch { /* */ }
-      console.log(`[ws-map] Swarm ${swarmId} disconnected`);
+      handleDisconnect();
     });
   });
 
@@ -381,6 +404,15 @@ function startMapHeartbeat(): void {
         // No pong received since last ping — connection is dead
         conn.ws.terminate();
         unregisterInbound(swarmId);
+        try {
+          if (!hasOutboundConnection(swarmId)) {
+            updateSwarm(swarmId, { status: 'unreachable' });
+            broadcastToChannel('map:discovery', {
+              type: 'swarm_offline',
+              data: { swarm_id: swarmId },
+            });
+          }
+        } catch { /* */ }
         continue;
       }
 
@@ -388,6 +420,9 @@ function startMapHeartbeat(): void {
       (conn as any).isAlive = false;
 
       if (conn.ws.readyState !== WebSocket.OPEN) continue;
+
+      // Keep last_seen_at fresh so connected swarms stay "online"
+      heartbeatSwarm(swarmId);
 
       // Protocol-level ping — the ws library responds with a pong frame
       // at the transport layer, so this works for ALL WebSocket clients

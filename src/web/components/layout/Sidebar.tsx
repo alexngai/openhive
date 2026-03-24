@@ -2,7 +2,8 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database, Bell, User, Search, Activity, MessageSquare, ChevronLeft } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
-import type { MailConversation, MapSwarm } from '../../lib/api';
+import type { MailConversation } from '../../lib/api';
+import { useMapSwarms } from '../../hooks/useApi';
 import { useAuthStore } from '../../stores/auth';
 import { useState } from 'react';
 import clsx from 'clsx';
@@ -48,12 +49,8 @@ export function Sidebar() {
     staleTime: 5 * 60 * 1000,
   });
 
-  const { data: onlineSwarmCount } = useQuery({
-    queryKey: ['map-swarms-count'],
-    queryFn: () => api.get<{ data: MapSwarm[]; total: number }>('/map/swarms'),
-    select: (data) => data.data?.filter((s) => s.status === 'online').length ?? 0,
-    refetchInterval: 5000,
-  });
+  const { data: mapSwarms } = useMapSwarms();
+  const onlineSwarmCount = mapSwarms?.filter((s) => s.status === 'online').length ?? 0;
 
   const features = instanceInfo?.features;
 

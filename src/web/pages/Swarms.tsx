@@ -675,7 +675,7 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
             <span className="truncate">{swarm.name}</span>
             {swarm.assigned_port && <><span className="opacity-30">&middot;</span><span>:{swarm.assigned_port}</span></>}
             <span className="opacity-30">&middot;</span>
-            <TimeAgo date={swarm.created_at} />
+            <TimeAgo date={swarm.updated_at > swarm.created_at ? swarm.updated_at : swarm.created_at} />
           </div>
         </div>
 
@@ -802,13 +802,15 @@ function MapSwarmCard({ swarm }: { swarm: MapSwarm }) {
               </>
             )}
             <span className="opacity-30">&middot;</span>
-            <TimeAgo date={swarm.created_at} />
+            <TimeAgo date={swarm.last_seen_at && swarm.last_seen_at > swarm.created_at ? swarm.last_seen_at : swarm.created_at} />
           </div>
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
           {swarm.status === 'online' ? (
             <Wifi className="w-3.5 h-3.5 text-emerald-400" />
+          ) : swarm.status === 'unreachable' ? (
+            <WifiOff className="w-3.5 h-3.5 text-red-400" />
           ) : (
             <WifiOff className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
           )}
@@ -885,9 +887,9 @@ export function Swarms() {
   const [showOffline, setShowOffline] = useState(false);
   const [formMode, setFormMode] = useState<FormMode>('none');
 
-  // Filter registered swarms
-  const onlineSwarms = mapSwarms?.filter((s) => s.status === 'online');
-  const offlineSwarms = mapSwarms?.filter((s) => s.status !== 'online');
+  // Filter registered swarms ('unreachable' = recently disconnected, show with online)
+  const onlineSwarms = mapSwarms?.filter((s) => s.status === 'online' || s.status === 'unreachable');
+  const offlineSwarms = mapSwarms?.filter((s) => s.status === 'offline');
   const visibleMapSwarms = showOffline ? mapSwarms : onlineSwarms;
 
   // Auto-collapse empty sections (only before user has toggled)

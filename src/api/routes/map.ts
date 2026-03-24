@@ -43,6 +43,7 @@ import {
 } from '../../map/service.js';
 import { createSwarmToken, delegateToken, revokeToken } from '../../map/token-service.js';
 import type { Config } from '../../config.js';
+import { broadcastToChannel } from '../../realtime/index.js';
 
 // ============================================================================
 // Zod Schemas
@@ -323,6 +324,10 @@ export async function mapRoutes(
       }
 
       mapDal.heartbeatSwarm(request.params.id);
+      broadcastToChannel('map:discovery', {
+        type: 'swarm_heartbeat',
+        data: { swarm_id: request.params.id },
+      });
       return reply.send({ status: 'ok', timestamp: new Date().toISOString() });
     } catch (error) {
       return handleMapError(error, reply);

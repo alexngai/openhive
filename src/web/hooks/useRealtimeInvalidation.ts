@@ -31,6 +31,7 @@ export function useSwarmRealtime() {
   useWSEvent('swarm_offline', invalidate);
   useWSEvent('swarm_spawned', invalidate);
   useWSEvent('swarm_stopped', invalidate);
+  useWSEvent('swarm_heartbeat', invalidate);
 }
 
 // ── Resources & Sync ──

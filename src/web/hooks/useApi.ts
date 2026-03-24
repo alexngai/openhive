@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tansta
 import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
 import type { Agent, HostedSwarm, MapSwarm, MapStats, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse, MailConversation, MailTurn, MailThread } from '../lib/api';
 
+
 // Posts
 export function usePosts(options: {
   hive?: string;
@@ -282,7 +283,6 @@ export function useHostedSwarms(options?: { state?: string; mine?: boolean }) {
       return api.get<{ data: HostedSwarm[]; total: number }>(`/map/hosted?${params}`);
     },
     select: (data) => data.data,
-    refetchInterval: 5000,
   });
 }
 
@@ -366,7 +366,6 @@ export function useMapSwarms() {
     queryKey: ['map-swarms'],
     queryFn: () => api.get<{ data: MapSwarm[]; total: number }>('/map/swarms'),
     select: (data) => data.data,
-    refetchInterval: 5000,
   });
 }
 

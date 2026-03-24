@@ -9,7 +9,7 @@ import * as fs from "fs";
 import { Config, loadConfig } from "./config.js";
 import { initDatabase, closeDatabase } from "./db/index.js";
 import { registerRoutes } from "./api/index.js";
-import { setupWebSocket, stopHeartbeat } from "./realtime/index.js";
+import { setupWebSocket, stopHeartbeat, broadcastToChannel } from "./realtime/index.js";
 import { generateSkillMd } from "./skill.js";
 import { generateSitemap, generateRobotsTxt } from "./services/sitemap.js";
 import { initializeStorage, type StorageConfig } from "./storage/index.js";
@@ -29,6 +29,7 @@ import {
   initMapSyncListener,
   stopMapSyncListener,
 } from "./map/sync-listener.js";
+import { markStaleSwarms } from "./map/service.js";
 import { initMail } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
 import { initTokenService, loadRevocations, setPersistence } from "./map/token-service.js";
@@ -336,6 +337,9 @@ export async function createHive(
       );
     }
   }
+
+  // Stale swarm sweep timer
+  let staleSweepTimer: NodeJS.Timeout | null = null;
 
   // Initialize swarm hosting manager
   let swarmManager: SwarmManager | null = null;
@@ -661,10 +665,27 @@ export async function createHive(
         /* ignore */
       }
 
+      // Start stale swarm sweep (safety net for swarms that disconnect uncleanly)
+      const sweepMinutes = config.mapHub.staleThresholdMinutes;
+      staleSweepTimer = setInterval(() => {
+        const marked = markStaleSwarms(sweepMinutes);
+        if (marked > 0) {
+          console.log(`[openhive] Marked ${marked} stale swarm(s) as offline`);
+          broadcastToChannel('map:discovery', {
+            type: 'swarm_offline',
+            data: { count: marked },
+          });
+        }
+      }, sweepMinutes * 60 * 1000);
+
       return address;
     },
 
     async stop() {
+      if (staleSweepTimer) {
+        clearInterval(staleSweepTimer);
+        staleSweepTimer = null;
+      }
       stopHeartbeat();
       // Destroy terminal sessions
       const ptyMgr = (

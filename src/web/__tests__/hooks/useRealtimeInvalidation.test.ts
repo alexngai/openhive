@@ -61,6 +61,7 @@ describe('useRealtimeInvalidation', () => {
       expect(registeredEvents).toContain('swarm_offline');
       expect(registeredEvents).toContain('swarm_spawned');
       expect(registeredEvents).toContain('swarm_stopped');
+      expect(registeredEvents).toContain('swarm_heartbeat');
     });
 
     it.each([
@@ -68,6 +69,7 @@ describe('useRealtimeInvalidation', () => {
       'swarm_offline',
       'swarm_spawned',
       'swarm_stopped',
+      'swarm_heartbeat',
     ])('invalidates swarm query keys on %s event', (eventType) => {
       renderHook(() => useSwarmRealtime(), { wrapper: createWrapper() });
       const spy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -86,6 +88,7 @@ describe('useRealtimeInvalidation', () => {
       const spy = vi.spyOn(queryClient, 'invalidateQueries');
 
       eventHandlers.get('swarm_registered')!({});
+      eventHandlers.get('swarm_heartbeat')!({});
 
       const invalidatedKeys = spy.mock.calls.map((call) => (call[0] as { queryKey: string[] }).queryKey);
       expect(invalidatedKeys).not.toContainEqual(['resources']);
