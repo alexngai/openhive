@@ -31,9 +31,14 @@ import { initMapServer, _resetMapServer } from './map-server-setup.js';
 import type { Agent } from '../types.js';
 import type { Config } from '../config.js';
 
-const HEARTBEAT_INTERVAL = 30_000;
+let HEARTBEAT_INTERVAL = 30_000;
 const TOKEN_EXPIRY_WARNING_SECONDS = 300;
 let heartbeatTimer: NodeJS.Timeout | null = null;
+
+/** Override heartbeat interval (ms). Useful for testing with shorter timeouts. */
+export function setHeartbeatInterval(ms: number): void {
+  HEARTBEAT_INTERVAL = ms;
+}
 
 // ============================================================================
 // Auth (hub access — validates API key before MAPServer sees the connection)
@@ -362,7 +367,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 }
 
 // ============================================================================
-// Heartbeat (still needed for connection registry / token expiry)
+// Heartbeat
 // ============================================================================
 
 function startMapHeartbeat(): void {
@@ -370,18 +375,25 @@ function startMapHeartbeat(): void {
 
   heartbeatTimer = setInterval(() => {
     const now = Date.now();
-    const timeout = HEARTBEAT_INTERVAL * 2;
 
     for (const [swarmId, conn] of getAllInbound()) {
-      const lastMsg = new Date(conn.lastMessageAt).getTime();
-      if (now - lastMsg > timeout) {
+      if ((conn as any).isAlive === false) {
+        // No pong received since last ping — connection is dead
         conn.ws.terminate();
         unregisterInbound(swarmId);
         continue;
       }
 
+      // Mark as not-alive; set back to true when pong arrives or a message is received
+      (conn as any).isAlive = false;
+
       if (conn.ws.readyState !== WebSocket.OPEN) continue;
 
+      // Protocol-level ping — the ws library responds with a pong frame
+      // at the transport layer, so this works for ALL WebSocket clients
+      // (including MAP SDK clients that have no application-level ping handling).
+      conn.ws.ping();
+      // Also send JSON-RPC ping for clients that use application-level keepalive
       sendJsonRpc(conn.ws, 'ping', {});
 
       // Token expiry check

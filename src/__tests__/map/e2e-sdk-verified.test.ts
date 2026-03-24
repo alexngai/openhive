@@ -1,12 +1,12 @@
 /**
  * E2E Test: MAP SDK Verified Auth Flow
  *
- * Uses the real @multi-agent-protocol/sdk AgentConnection with the new
- * createConnection() + connectOnly() + authenticate() + register() flow
- * against a live OpenHive server in verified mode.
+ * Uses the real @multi-agent-protocol/sdk AgentConnection against a live
+ * OpenHive server in verified mode.
  *
- * This is the full end-to-end test that proves the sidecar's verified
- * mode path works with the published SDK.
+ * The current SDK (v0.1.x) passes auth inline via the connect() options.
+ * The hub supports both inline auth (current SDK) and the future split
+ * flow (createConnection + connectOnly + authenticate + register).
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -25,7 +25,7 @@ const TEST_ROOT = testRoot('map-e2e-sdk');
 const TEST_DB = testDbPath(TEST_ROOT, 'e2e-sdk.db');
 const PORT = 19680;
 
-describe('E2E: MAP SDK — Verified Mode with createConnection()', () => {
+describe('E2E: MAP SDK — Verified Mode', () => {
   let app: FastifyInstance;
   let apiKey: string;
   let swarmToken: string;
@@ -69,70 +69,63 @@ describe('E2E: MAP SDK — Verified Mode with createConnection()', () => {
     _resetTokenService();
   });
 
-  it('connects using createConnection + connectOnly + authenticate + register', async () => {
-    // API key in URL for hub access, then protocol-level auth for swarm identity
-    const agent = await AgentConnection.createConnection(
+  it('connects using inline auth via AgentConnection.connect()', async () => {
+    // API key in URL for hub access, agent-iam token passed as inline auth
+    const agent = await AgentConnection.connect(
       `ws://127.0.0.1:${PORT}/ws/map?token=${apiKey}`,
-      { name: 'sdk-test-agent', role: 'sidecar', scopes: ['swarm:test'] },
+      {
+        name: 'sdk-test-agent',
+        role: 'sidecar',
+        scopes: ['swarm:test'],
+        auth: { method: 'x-agent-iam', token: swarmToken },
+        connectTimeout: 5000,
+      },
     );
 
-    // Step 1: connectOnly — should get authRequired back
-    const connectResult = await agent.connectOnly();
-    expect(connectResult.authRequired).toBeDefined();
-    expect(connectResult.authRequired!.required).toBe(true);
-    expect(connectResult.authRequired!.methods).toContain('x-agent-iam');
-
-    // Step 2: authenticate with the server's preferred method
-    const method = connectResult.authRequired!.methods[0];
-    const authResult = await agent.authenticate({ method, token: swarmToken });
-    expect(authResult.success).toBe(true);
-    // participantId is a MAPServer-generated ULID session ID, not the swarm's agent ID
-    expect(authResult.participantId).toBeTruthy();
-
-    // Step 3: register as an agent
-    const registeredAgent = await agent.register();
-    expect(registeredAgent).toBeDefined();
+    expect(agent.agentId).toBeDefined();
+    expect(agent.sessionId).toBeDefined();
+    expect(agent.isConnected).toBe(true);
 
     await agent.disconnect();
   });
 
-  it('falls back to standard connect() for open mode (no auth needed)', async () => {
-    // This tests that the standard connect() still works when the server
-    // doesn't require auth (would be open mode — but we're in verified mode
-    // so this should fail with auth error since connect() skips negotiation)
-    try {
-      await AgentConnection.connect(
-        `ws://127.0.0.1:${PORT}/ws/map?token=${apiKey}`,
-        { name: 'standard-connect', role: 'worker', connectTimeout: 3000 },
-      );
-      // If this succeeds, the server accepted without auth (unexpected in verified mode)
-      expect.unreachable('Expected connect() to fail in verified mode');
-    } catch (err) {
-      // Expected — standard connect() sends map/connect + agents/register
-      // but the server responds with authRequired instead of a connect success
-      expect(err).toBeDefined();
-    }
-  });
-
-  it('rejects a revoked token', async () => {
+  it('rejects connection with a revoked token', async () => {
     const { serialized: revokeableToken } = createSwarmToken('revoke-sdk-swarm');
 
     // Revoke before connecting
     revokeToken('revoke-sdk-swarm');
 
-    const agent = await AgentConnection.createConnection(
-      `ws://127.0.0.1:${PORT}/ws/map?token=${apiKey}`,
-      { name: 'revoked-agent', role: 'sidecar' },
-    );
-
-    await agent.connectOnly();
-
     try {
-      const authResult = await agent.authenticate({ method: 'x-agent-iam' as any, token: revokeableToken });
-      // SDK might throw or return error — depends on server response
-      expect(authResult.success).toBe(false);
-    } catch {
+      await AgentConnection.connect(
+        `ws://127.0.0.1:${PORT}/ws/map?token=${apiKey}`,
+        {
+          name: 'revoked-agent',
+          role: 'sidecar',
+          auth: { method: 'x-agent-iam', token: revokeableToken },
+          connectTimeout: 5000,
+        },
+      );
+      expect.unreachable('Expected connection to fail with revoked token');
+    } catch (err) {
       // Expected — server closes connection on revoked token
+      expect(err).toBeDefined();
+    }
+  });
+
+  it('rejects connection without auth in verified mode', async () => {
+    try {
+      await AgentConnection.connect(
+        `ws://127.0.0.1:${PORT}/ws/map?token=${apiKey}`,
+        {
+          name: 'no-auth-agent',
+          role: 'worker',
+          connectTimeout: 3000,
+        },
+      );
+      expect.unreachable('Expected connection to fail without auth in verified mode');
+    } catch (err) {
+      // Expected — server responds with authRequired, SDK can't proceed
+      expect(err).toBeDefined();
     }
   });
 });
