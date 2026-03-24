@@ -282,6 +282,7 @@ export function useHostedSwarms(options?: { state?: string; mine?: boolean }) {
       return api.get<{ data: HostedSwarm[]; total: number }>(`/map/hosted?${params}`);
     },
     select: (data) => data.data,
+    refetchInterval: 5000,
   });
 }
 
@@ -365,6 +366,7 @@ export function useMapSwarms() {
     queryKey: ['map-swarms'],
     queryFn: () => api.get<{ data: MapSwarm[]; total: number }>('/map/swarms'),
     select: (data) => data.data,
+    refetchInterval: 5000,
   });
 }
 

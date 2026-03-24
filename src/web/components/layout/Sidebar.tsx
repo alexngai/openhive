@@ -2,7 +2,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database, Bell, User, Search, Activity, MessageSquare, ChevronLeft } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
-import type { MailConversation } from '../../lib/api';
+import type { MailConversation, MapSwarm } from '../../lib/api';
 import { useAuthStore } from '../../stores/auth';
 import { useState } from 'react';
 import clsx from 'clsx';
@@ -48,11 +48,18 @@ export function Sidebar() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const { data: onlineSwarmCount } = useQuery({
+    queryKey: ['map-swarms-count'],
+    queryFn: () => api.get<{ data: MapSwarm[]; total: number }>('/map/swarms'),
+    select: (data) => data.data?.filter((s) => s.status === 'online').length ?? 0,
+    refetchInterval: 5000,
+  });
+
   const features = instanceInfo?.features;
 
   const navItems = [
     { to: '/', icon: LayoutDashboard, label: 'Home' },
-    { to: '/swarms', icon: Zap, label: 'Swarms' },
+    { to: '/swarms', icon: Zap, label: 'Swarms', badge: onlineSwarmCount || undefined },
     { to: '/sessions', icon: Activity, label: 'Sessions' },
     { to: '/messages', icon: MessageSquare, label: 'Messages' },
     { to: '/events', icon: Bell, label: 'Events' },
@@ -154,7 +161,14 @@ export function Sidebar() {
             <item.icon className={clsx('shrink-0', collapsed ? 'w-5 h-5' : 'w-4 h-4')} />
             {collapsed
               ? <span className="text-2xs leading-tight truncate w-full">{item.label}</span>
-              : <span className="truncate">{item.label}</span>
+              : <>
+                  <span className="truncate">{item.label}</span>
+                  {item.badge != null && (
+                    <span className="ml-auto text-2xs font-medium px-1.5 py-0.5 rounded-full bg-honey-500/15 text-honey-500 leading-none">
+                      {item.badge}
+                    </span>
+                  )}
+                </>
             }
           </Link>
         ))}

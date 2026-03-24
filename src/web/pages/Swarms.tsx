@@ -661,21 +661,19 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium truncate">{swarm.name}</span>
+            <span className="text-sm font-medium font-mono truncate">{swarm.id}</span>
             <HostedStateBadge state={swarm.state} />
             <span className="text-2xs px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
               {swarm.provider === 'local-sandboxed' ? 'local' : swarm.provider}
             </span>
             {swarm.provider === 'local-sandboxed' && <SandboxBadge />}
+            {swarm.endpoint === 'local-hub' && (
+              <span className="text-2xs px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">local</span>
+            )}
           </div>
           <div className="flex items-center gap-2 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-            {swarm.assigned_port && <span>:{swarm.assigned_port}</span>}
-            {swarm.endpoint && (
-              <>
-                <span className="opacity-30">&middot;</span>
-                <span className="truncate max-w-[200px] font-mono">{swarm.endpoint}</span>
-              </>
-            )}
+            <span className="truncate">{swarm.name}</span>
+            {swarm.assigned_port && <><span className="opacity-30">&middot;</span><span>:{swarm.assigned_port}</span></>}
             <span className="opacity-30">&middot;</span>
             <TimeAgo date={swarm.created_at} />
           </div>
@@ -774,14 +772,23 @@ function MapSwarmCard({ swarm }: { swarm: MapSwarm }) {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium truncate">{swarm.name}</span>
+            <span className="text-sm font-medium font-mono truncate">{swarm.id}</span>
             <MapStatusBadge status={swarm.status} />
-            <span className="text-2xs px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
-              {swarm.map_transport}
-            </span>
+            {swarm.map_endpoint === 'hub-inbound' && (
+              <span className="text-2xs px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">inbound</span>
+            )}
+            {swarm.map_endpoint === 'local-hub' && (
+              <span className="text-2xs px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">local</span>
+            )}
           </div>
           <div className="flex items-center gap-2 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-            <span className="truncate max-w-[250px] font-mono">{swarm.map_endpoint}</span>
+            <span className="truncate">{swarm.name}</span>
+            {swarm.map_endpoint !== 'hub-inbound' && swarm.map_endpoint !== 'local-hub' && (
+              <>
+                <span className="opacity-30">&middot;</span>
+                <span className="truncate max-w-[250px] font-mono">{swarm.map_endpoint}</span>
+              </>
+            )}
             {swarm.agent_count > 0 && (
               <>
                 <span className="opacity-30">&middot;</span>
@@ -838,16 +845,54 @@ function MapSwarmCard({ swarm }: { swarm: MapSwarm }) {
 // Main Page
 // =============================================================================
 
-type Tab = 'hosted' | 'registered';
 type FormMode = 'none' | 'spawn' | 'connect';
+
+function SectionHeader({ icon: Icon, label, count, expanded, onToggle }: {
+  icon: React.ElementType;
+  label: string;
+  count?: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      className="flex items-center gap-1.5 w-full text-left py-1.5 px-2 -mx-2 rounded-md text-xs font-medium transition-colors cursor-pointer hover:bg-workspace-hover"
+      style={{ color: 'var(--color-text-secondary)' }}
+    >
+      {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3 -rotate-90" />}
+      <Icon className="w-3.5 h-3.5" />
+      {label}
+      {count !== undefined && (
+        <span
+          className="text-2xs ml-0.5 px-1 py-0 rounded-full"
+          style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
+        >
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
 
 export function Swarms() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: hostedSwarms, isLoading: hostedLoading } = useHostedSwarms();
   const { data: mapSwarms, isLoading: mapLoading } = useMapSwarms();
   useSwarmRealtime();
-  const [activeTab, setActiveTab] = useState<Tab>('hosted');
+  const [showHosted, setShowHosted] = useState<boolean | null>(null);
+  const [showRegistered, setShowRegistered] = useState<boolean | null>(null);
+  const [showOffline, setShowOffline] = useState(false);
   const [formMode, setFormMode] = useState<FormMode>('none');
+
+  // Filter registered swarms
+  const onlineSwarms = mapSwarms?.filter((s) => s.status === 'online');
+  const offlineSwarms = mapSwarms?.filter((s) => s.status !== 'online');
+  const visibleMapSwarms = showOffline ? mapSwarms : onlineSwarms;
+
+  // Auto-collapse empty sections (only before user has toggled)
+  const hostedExpanded = showHosted ?? (hostedLoading || (hostedSwarms != null && hostedSwarms.length > 0));
+  const registeredExpanded = showRegistered ?? (mapLoading || (visibleMapSwarms != null && visibleMapSwarms.length > 0));
 
   // Handle ?action=spawn or ?action=connect from dashboard quick actions
   useEffect(() => {
@@ -857,13 +902,6 @@ export function Swarms() {
       setSearchParams({}, { replace: true });
     }
   }, [searchParams, setSearchParams]);
-
-  const isLoading = activeTab === 'hosted' ? hostedLoading : mapLoading;
-
-  const tabs: { id: Tab; label: string; icon: React.ElementType; count?: number }[] = [
-    { id: 'hosted', label: 'Hosted', icon: Cpu, count: hostedSwarms?.length },
-    { id: 'registered', label: 'Registered', icon: Globe, count: mapSwarms?.length },
-  ];
 
   return (
     <div>
@@ -894,67 +932,95 @@ export function Swarms() {
       {formMode === 'spawn' && <SpawnForm onClose={() => setFormMode('none')} />}
       {formMode === 'connect' && <ConnectForm onClose={() => setFormMode('none')} />}
 
-      {/* Tabs */}
-      <div className="flex items-center gap-1 mb-3">
-        {tabs.map(({ id, label, icon: Icon, count }) => (
-          <button
-            key={id}
-            onClick={() => setActiveTab(id)}
-            className={clsx(
-              'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors',
-              activeTab === id
-                ? 'bg-honey-500/10 text-honey-500'
-                : 'hover:bg-workspace-hover'
-            )}
-            style={activeTab !== id ? { color: 'var(--color-text-secondary)' } : undefined}
-          >
-            <Icon className="w-3.5 h-3.5" />
-            {label}
-            {count !== undefined && (
-              <span
-                className="text-2xs ml-0.5 px-1 py-0 rounded-full"
-                style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
-              >
-                {count}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
-
-      {/* Content */}
-      {isLoading ? (
-        <PageLoader />
-      ) : activeTab === 'hosted' ? (
-        hostedSwarms && hostedSwarms.length > 0 ? (
-          <div className="space-y-1">
+      {/* Hosted section */}
+      <SectionHeader
+        icon={Cpu}
+        label="Hosted"
+        count={hostedSwarms?.length}
+        expanded={hostedExpanded}
+        onToggle={() => setShowHosted(!hostedExpanded)}
+      />
+      {hostedExpanded && (
+        hostedLoading ? (
+          <PageLoader />
+        ) : hostedSwarms && hostedSwarms.length > 0 ? (
+          <div className="space-y-1 mb-4">
             {hostedSwarms.map((swarm) => (
               <HostedSwarmCard key={swarm.id} swarm={swarm} />
             ))}
           </div>
         ) : (
-          <EmptyState
-            icon={Cpu}
-            message="No hosted swarms"
-            action={formMode === 'none' ? () => setFormMode('spawn') : undefined}
-            actionLabel="Spawn your first swarm"
-          />
+          <div className="mb-4">
+            <EmptyState
+              icon={Cpu}
+              message="No hosted swarms"
+              action={formMode === 'none' ? () => setFormMode('spawn') : undefined}
+              actionLabel="Spawn your first swarm"
+            />
+          </div>
         )
-      ) : (
-        mapSwarms && mapSwarms.length > 0 ? (
+      )}
+
+      {/* Registered section */}
+      <SectionHeader
+        icon={Globe}
+        label="Registered"
+        count={onlineSwarms?.length}
+        expanded={registeredExpanded}
+        onToggle={() => setShowRegistered(!registeredExpanded)}
+      />
+      {registeredExpanded && (
+        mapLoading ? (
+          <PageLoader />
+        ) : visibleMapSwarms && visibleMapSwarms.length > 0 ? (
           <div className="space-y-1">
-            {mapSwarms.map((swarm) => (
+            {visibleMapSwarms.map((swarm) => (
               <MapSwarmCard key={swarm.id} swarm={swarm} />
             ))}
           </div>
         ) : (
-          <EmptyState
-            icon={Globe}
-            message="No registered swarms"
-            action={formMode === 'none' ? () => setFormMode('connect') : undefined}
-            actionLabel="Connect an external swarm"
-          />
+          <div className="py-8 text-center">
+            <Globe className="w-8 h-8 mx-auto mb-2 opacity-20" style={{ color: 'var(--color-text-muted)' }} />
+            <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>No online swarms</p>
+            {(offlineSwarms?.length ?? 0) > 0 && (
+              <button
+                onClick={() => setShowOffline(!showOffline)}
+                className="mt-2 inline-flex items-center gap-1 text-xs text-honey-500 hover:text-honey-400 transition-colors"
+              >
+                <WifiOff className="w-3 h-3" />
+                {showOffline ? 'Hide' : 'Show'} {offlineSwarms!.length} offline
+              </button>
+            )}
+            {formMode === 'none' && !(offlineSwarms?.length) && (
+              <button
+                onClick={() => setFormMode('connect')}
+                className="mt-2 text-xs text-honey-500 hover:text-honey-400 transition-colors"
+              >
+                Connect an external swarm
+              </button>
+            )}
+          </div>
         )
+      )}
+      {registeredExpanded && (visibleMapSwarms?.length ?? 0) > 0 && (offlineSwarms?.length ?? 0) > 0 && !showOffline && (
+        <button
+          onClick={() => setShowOffline(true)}
+          className="flex items-center gap-1 mt-2 text-2xs transition-colors"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          <WifiOff className="w-3 h-3" />
+          Show {offlineSwarms!.length} offline
+        </button>
+      )}
+      {registeredExpanded && showOffline && (offlineSwarms?.length ?? 0) > 0 && (
+        <button
+          onClick={() => setShowOffline(false)}
+          className="flex items-center gap-1 mt-2 text-2xs transition-colors"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          <WifiOff className="w-3 h-3" />
+          Hide {offlineSwarms!.length} offline
+        </button>
       )}
     </div>
   );
