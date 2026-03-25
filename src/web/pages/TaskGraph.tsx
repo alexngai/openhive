@@ -10,11 +10,14 @@ import { ArrowLeft, Network } from 'lucide-react';
 import { useResource } from '../hooks/useApi';
 import { useTaskGraph, STATUS_COLORS } from '../components/task-graph/useTaskGraph';
 import { TaskGraphViewer } from '../components/task-graph/TaskGraphViewer';
+import { CreateTaskForm } from '../components/task-graph/CreateTaskForm';
+import { useMapTasksRealtime } from '../hooks/useMapTasks';
 
 export function TaskGraph() {
   const { resourceId } = useParams<{ resourceId: string }>();
   const { data: resource, isLoading: resourceLoading } = useResource(resourceId!);
   const { graph, isLoading: graphLoading, summary } = useTaskGraph(resourceId!);
+  useMapTasksRealtime();
 
   if (resourceLoading || graphLoading) {
     return (
@@ -65,6 +68,7 @@ export function TaskGraph() {
                 {count}
               </span>
             ))}
+            <CreateTaskForm resourceId={resourceId!} />
           </div>
         )}
       </div>
@@ -72,7 +76,7 @@ export function TaskGraph() {
       {/* Graph canvas */}
       <div className="flex-1 min-h-0">
         {graph ? (
-          <TaskGraphViewer graph={graph} />
+          <TaskGraphViewer graph={graph} resourceId={resourceId!} />
         ) : (
           <div className="h-full flex items-center justify-center">
             <div className="text-center space-y-2">

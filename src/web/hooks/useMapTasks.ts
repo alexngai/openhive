@@ -92,12 +92,16 @@ export function useMapTask(taskId: string | undefined) {
 export function useMapTasksRealtime() {
   const queryClient = useQueryClient();
 
-  useSubscribe(['map:tasks']);
+  useSubscribe(['map:tasks', 'map:opentasks']);
 
   const handleTaskEvent = useCallback(
     () => {
       queryClient.invalidateQueries({ queryKey: ['map-tasks'] });
       queryClient.invalidateQueries({ queryKey: ['map-tasks-summary'] });
+      // Also invalidate OpenTasks queries since the bridge syncs both directions
+      queryClient.invalidateQueries({ queryKey: ['opentasks-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['opentasks-ready'] });
+      queryClient.invalidateQueries({ queryKey: ['opentasks-graph'] });
     },
     [queryClient],
   );
