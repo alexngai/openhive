@@ -27,6 +27,8 @@ import type {
 } from './opentasks-types.js';
 import { OpenHiveOpenTasksClient } from '../opentasks-client/index.js';
 import * as resourcesDAL from '../db/dal/syncable-resources.js';
+import { getMapTaskStore } from './task-store.js';
+import { bridgeOpenTasksMutation } from './task-bridge.js';
 import type { SyncableResource } from '../types.js';
 
 // ============================================================================
@@ -343,6 +345,19 @@ export async function handleOpenTasksRequest(
 
       appendFileSync(graphPath, JSON.stringify(node) + '\n');
 
+      // Bridge to MAPTaskStore → broadcasts to connected agents + frontend
+      try {
+        bridgeOpenTasksMutation(getMapTaskStore(), {
+          type: 'create',
+          nodeId,
+          title: p.title,
+          description: p.description,
+          status: node.status as string,
+          metadata: p.metadata,
+          sourceSwarmId: context.swarmId,
+        });
+      } catch { /* best effort — don't fail the primary operation */ }
+
       return { node_id: nodeId, status: node.status };
     }
 
@@ -383,6 +398,18 @@ export async function handleOpenTasksRequest(
       if (p.error) update.error = p.error;
 
       appendFileSync(graphPath, JSON.stringify(update) + '\n');
+
+      // Bridge to MAPTaskStore → broadcasts to connected agents + frontend
+      try {
+        bridgeOpenTasksMutation(getMapTaskStore(), {
+          type: 'update-status',
+          nodeId: p.node_id,
+          status: p.status,
+          previousStatus,
+          metadata: p.result ? { result: p.result } : undefined,
+          sourceSwarmId: context.swarmId,
+        });
+      } catch { /* best effort — don't fail the primary operation */ }
 
       return {
         node_id: p.node_id,

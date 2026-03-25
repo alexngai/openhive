@@ -26,6 +26,7 @@ import { isCoordinationMessage, handleCoordinationMessage } from '../coordinatio
 import { registerInbound, unregisterInbound, getAllInbound, getInbound } from './connection-registry.js';
 import { getMapTaskStore } from './task-store.js';
 import { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
+import { initTaskBridge, stopTaskBridge } from './task-bridge.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
 import { broadcastToChannel } from '../realtime/index.js';
@@ -382,9 +383,11 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     });
   });
 
-  // Start heartbeat and task broadcaster
+  // Start heartbeat, task broadcaster, and bidirectional task bridge
   startMapHeartbeat();
-  initTaskBroadcaster(getMapTaskStore());
+  const taskStore = getMapTaskStore();
+  initTaskBroadcaster(taskStore);
+  initTaskBridge({ store: taskStore });
 
   console.log(`[openhive] MAP WebSocket registered at /ws/map (trust: ${config.mapHub.trustModel})`);
 }
@@ -452,6 +455,7 @@ function startMapHeartbeat(): void {
 // ============================================================================
 
 export function stopMapWebSocket(): void {
+  stopTaskBridge();
   stopTaskBroadcaster();
 
   if (heartbeatTimer) {

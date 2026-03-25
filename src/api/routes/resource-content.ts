@@ -10,6 +10,8 @@ import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { OpenHiveOpenTasksClient } from '../../opentasks-client/index.js';
 import { getSyncOrchestrator } from '../../sync/sync-orchestrator.js';
+import { getMapTaskStore } from '../../map/task-store.js';
+import { bridgeOpenTasksMutation } from '../../map/task-bridge.js';
 import type { SyncableResource } from '../../types.js';
 import type { Config } from '../../config.js';
 
@@ -849,6 +851,19 @@ export async function resourceContentRoutes(
 
     appendFileSync(graphPath, JSON.stringify(node) + '\n');
 
+    // Bridge to MAPTaskStore → broadcasts to connected agents + frontend
+    try {
+      bridgeOpenTasksMutation(getMapTaskStore(), {
+        type: 'create',
+        nodeId,
+        title: body.title,
+        description: body.description,
+        status: node.status as string,
+        metadata: body.metadata,
+        sourceSwarmId: `rest:${request.agent!.id}`,
+      });
+    } catch { /* best effort */ }
+
     return reply.status(201).send({ node_id: nodeId, status: node.status });
   });
 
@@ -909,6 +924,18 @@ export async function resourceContentRoutes(
     if (body.error) update.error = body.error;
 
     appendFileSync(graphPath, JSON.stringify(update) + '\n');
+
+    // Bridge to MAPTaskStore → broadcasts to connected agents + frontend
+    try {
+      bridgeOpenTasksMutation(getMapTaskStore(), {
+        type: 'update-status',
+        nodeId: request.params.nodeId,
+        status: body.status,
+        previousStatus,
+        metadata: body.result ? { result: body.result } : undefined,
+        sourceSwarmId: `rest:${request.agent!.id}`,
+      });
+    } catch { /* best effort */ }
 
     return reply.send({
       node_id: request.params.nodeId,
