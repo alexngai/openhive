@@ -403,7 +403,7 @@ function startMapHeartbeat(): void {
     const now = Date.now();
 
     for (const [swarmId, conn] of getAllInbound()) {
-      if ((conn as any).isAlive === false) {
+      if ((conn.ws as any).isAlive === false) {
         // No pong received since last ping — connection is dead
         conn.ws.terminate();
         unregisterInbound(swarmId);
@@ -420,7 +420,7 @@ function startMapHeartbeat(): void {
       }
 
       // Mark as not-alive; set back to true when pong arrives or a message is received
-      (conn as any).isAlive = false;
+      (conn.ws as any).isAlive = false;
 
       if (conn.ws.readyState !== WebSocket.OPEN) continue;
 

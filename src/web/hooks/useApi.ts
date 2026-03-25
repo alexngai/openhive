@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
-import type { Agent, HostedSwarm, MapSwarm, MapStats, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse, MailConversation, MailTurn, MailThread } from '../lib/api';
+import type { Agent, HostedSwarm, MapSwarm, MapNode, MapStats, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse, MailConversation, MailTurn, MailThread } from '../lib/api';
 
 
 // Posts
@@ -365,6 +365,26 @@ export function useMapSwarms() {
   return useQuery({
     queryKey: ['map-swarms'],
     queryFn: () => api.get<{ data: MapSwarm[]; total: number }>('/map/swarms'),
+    select: (data) => data.data,
+  });
+}
+
+export function useMapSwarm(id: string) {
+  return useQuery({
+    queryKey: ['map-swarm', id],
+    queryFn: () => api.get<MapSwarm>(`/map/swarms/${id}`),
+    enabled: !!id,
+  });
+}
+
+export function useMapNodes(options?: { swarm_id?: string }) {
+  const params = new URLSearchParams();
+  if (options?.swarm_id) params.set('swarm_id', options.swarm_id);
+  const qs = params.toString();
+
+  return useQuery({
+    queryKey: ['map-nodes', options],
+    queryFn: () => api.get<{ data: MapNode[]; total: number }>(`/map/nodes${qs ? `?${qs}` : ''}`),
     select: (data) => data.data,
   });
 }
@@ -738,12 +758,16 @@ export function useDeliveryLog(opts?: { delivery_id?: string; swarm_id?: string;
 
 // ── Sessions / Trajectory ──
 
-export function useSessionsList(options?: { limit?: number }) {
-  const { limit = 50 } = options || {};
+export function useSessionsList(options?: { limit?: number; swarm_id?: string }) {
+  const { limit = 50, swarm_id } = options || {};
+
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  if (swarm_id) params.set('swarm_id', swarm_id);
 
   return useQuery({
-    queryKey: ['sessions-overview', { limit }],
-    queryFn: () => api.get<{ data: SessionListItem[]; total: number }>(`/sessions/overview?limit=${limit}`),
+    queryKey: ['sessions-overview', { limit, swarm_id }],
+    queryFn: () => api.get<{ data: SessionListItem[]; total: number }>(`/sessions/overview?${params.toString()}`),
   });
 }
 

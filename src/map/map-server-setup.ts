@@ -15,6 +15,8 @@ import { handleTaskRequest, MAPTaskRequestError, storeErrorToJsonRpc } from './t
 import { getMapTaskStore, MAPTaskStoreError } from './task-store.js';
 import { MAP_OPENTASKS_METHOD_SET } from './opentasks-types.js';
 import { handleOpenTasksRequest, OpenTasksRequestError } from './opentasks-handler.js';
+import { TRAJECTORY_METHOD_SET } from './trajectory-types.js';
+import { handleTrajectoryRequest, TrajectoryRequestError } from './trajectory-handler.js';
 import type { Config } from '../config.js';
 
 let mapServer: any | null = null;
@@ -98,6 +100,22 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
         return await handleOpenTasksRequest(method, params, { swarmId, agentId });
       } catch (err) {
         if (err instanceof OpenTasksRequestError) {
+          throw Object.assign(new Error(err.message), { code: err.code });
+        }
+        throw err;
+      }
+    };
+  }
+
+  // ── Trajectory Methods ──────────────────────────────────────────
+  for (const method of TRAJECTORY_METHOD_SET) {
+    handlers[method] = async (params: any, ctx: any) => {
+      const swarmId = ctx.session?.metadata?.swarmId;
+      const agentId = ctx.session?.metadata?.agentId || ctx.session?.metadata?.hubAgentId;
+      try {
+        return handleTrajectoryRequest(method, params, { swarmId, agentId });
+      } catch (err) {
+        if (err instanceof TrajectoryRequestError) {
           throw Object.assign(new Error(err.message), { code: err.code });
         }
         throw err;
