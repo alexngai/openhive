@@ -213,6 +213,22 @@ export interface MapSwarm {
   created_at: string;
 }
 
+export interface MapNode {
+  id: string;
+  swarm_id: string;
+  swarm_name: string;
+  map_agent_id: string;
+  name: string | null;
+  description: string | null;
+  role: string | null;
+  state: 'registered' | 'active' | 'busy' | 'idle' | 'suspended' | 'stopped' | 'failed';
+  capabilities: Record<string, unknown> | null;
+  scopes: string[] | null;
+  visibility: 'public' | 'hive-only' | 'swarm-only';
+  tags: string[] | null;
+  created_at: string;
+}
+
 export interface MapStats {
   swarms: { total: number; online: number; offline: number };
   nodes: { total: number; active: number };

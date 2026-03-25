@@ -650,7 +650,7 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
   };
 
   return (
-    <div className="card px-3 py-2.5">
+    <div className="card card-hover px-3 py-2.5 cursor-pointer group" onClick={() => navigate(`/swarms/${swarm.swarm_id || swarm.id}`)}>
       <div className="flex items-center gap-3">
         <div
           className="w-8 h-8 rounded-md flex items-center justify-center shrink-0"
@@ -661,7 +661,7 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium font-mono truncate">{swarm.id}</span>
+            <span className="text-sm font-medium font-mono truncate group-hover:text-honey-500 transition-colors">{swarm.id}</span>
             <HostedStateBadge state={swarm.state} />
             <span className="text-2xs px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
               {swarm.provider === 'local-sandboxed' ? 'local' : swarm.provider}
@@ -679,7 +679,7 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
           </div>
         </div>
 
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
           {canStop && (
             <button
               onClick={handleStop}
@@ -760,8 +760,10 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
 }
 
 function MapSwarmCard({ swarm }: { swarm: MapSwarm }) {
+  const navigate = useNavigate();
+
   return (
-    <div className="card px-3 py-2.5">
+    <div className="card card-hover px-3 py-2.5 cursor-pointer group" onClick={() => navigate(`/swarms/${swarm.id}`)}>
       <div className="flex items-center gap-3">
         <div
           className="w-8 h-8 rounded-md flex items-center justify-center shrink-0"
@@ -772,7 +774,7 @@ function MapSwarmCard({ swarm }: { swarm: MapSwarm }) {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium font-mono truncate">{swarm.id}</span>
+            <span className="text-sm font-medium font-mono truncate group-hover:text-honey-500 transition-colors">{swarm.id}</span>
             <MapStatusBadge status={swarm.status} />
             {swarm.map_endpoint === 'hub-inbound' && (
               <span className="text-2xs px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">inbound</span>

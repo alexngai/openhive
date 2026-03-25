@@ -1139,12 +1139,13 @@ export async function sessionsRoutes(
   // ============================================================================
 
   // List all sessions with trajectory checkpoint stats
-  fastify.get<{ Querystring: { limit?: number; offset?: number } }>(
+  fastify.get<{ Querystring: { limit?: number; offset?: number; swarm_id?: string } }>(
     '/sessions/overview',
     async (request, reply) => {
       const limit = Math.min(Number(request.query.limit) || 50, 100);
       const offset = Number(request.query.offset) || 0;
-      const result = trajectoryDAL.listAllSessions(limit, offset);
+      const swarmId = request.query.swarm_id || undefined;
+      const result = trajectoryDAL.listAllSessions(limit, offset, swarmId);
       return reply.send(result);
     }
   );
