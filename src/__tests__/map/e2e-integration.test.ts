@@ -17,7 +17,8 @@ import websocket from '@fastify/websocket';
 import { WebSocket } from 'ws';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
-import { setupMapWebSocket, stopMapWebSocket } from '../../map/ws-map.js';
+import { setupMapWebSocket, stopMapWebSocket, setHeartbeatInterval } from '../../map/ws-map.js';
+import { getAllInbound } from '../../map/connection-registry.js';
 import { initTokenService, createSwarmToken, _resetTokenService } from '../../map/token-service.js';
 import { generateSecret } from 'agent-iam';
 import { ConfigSchema } from '../../config.js';
@@ -195,6 +196,32 @@ describe('E2E Integration: Open Mode — full client flow', () => {
     ws1.close();
     ws2.close();
   });
+
+  it('connection survives server heartbeat cycles (ping/pong keepalive)', async () => {
+    // Use a short heartbeat interval for fast testing
+    setHeartbeatInterval(500);
+
+    const { ws } = await openModeConnect(`heartbeat-${Date.now()}`);
+
+    // Verify hub tracks the connection
+    expect(getAllInbound().size).toBeGreaterThanOrEqual(1);
+
+    // Wait for 5+ heartbeat cycles (2.5s+)
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Connection should still be alive — ws library auto-responds to pings
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    expect(getAllInbound().size).toBeGreaterThanOrEqual(1);
+
+    // Functional: can still exchange messages
+    const pongPromise = waitNotification(ws, 3000);
+    ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'ping', params: {} }));
+    const pong = await pongPromise;
+    expect(pong.method).toBe('pong');
+
+    ws.close();
+    setHeartbeatInterval(30_000); // restore default
+  }, 15000);
 });
 
 // ============================================================================
