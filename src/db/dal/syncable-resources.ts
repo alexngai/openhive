@@ -109,6 +109,20 @@ export function upsertDiscoveredResource(input: CreateResourceInput): { resource
   return { resource, created: true };
 }
 
+/**
+ * Find a session resource by owner agent and swarm-based name pattern.
+ * Used by the trajectory handler to look up existing session resources
+ * before auto-creating one.
+ */
+export function findSessionResourceBySwarm(ownerAgentId: string, swarmName: string): SyncableResource | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    "SELECT * FROM syncable_resources WHERE owner_agent_id = ? AND resource_type = 'session' AND name = ?"
+  ).get(ownerAgentId, swarmName) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return rowToResource(row);
+}
+
 export function findResourceById(id: string): SyncableResource | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM syncable_resources WHERE id = ?').get(id) as Record<string, unknown> | undefined;
