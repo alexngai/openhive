@@ -421,6 +421,73 @@ describe('MAP Sync Listener', () => {
       expect(stored).toBeUndefined();
     });
 
+    it('should correctly extract cc-swarm sessionlog checkpoint wire format', () => {
+      mockBroadcast.mockClear();
+
+      // This is the exact shape cc-swarm's buildTrajectoryCheckpoint() produces
+      // at "metrics" sync level after the wire format fix.
+      const ccSwarmCheckpoint = {
+        id: 'chk_ccswarm_001',
+        session_id: 'sess-abc-123',
+        agent: 'gsd-sidecar',
+        files_touched: ['src/app.ts', 'src/config.ts', 'tests/app.test.ts'],
+        checkpoints_count: 3,
+        token_usage: {
+          input_tokens: 15000,
+          output_tokens: 4200,
+          cache_creation_tokens: 500,
+          cache_read_tokens: 3000,
+          api_call_count: 7,
+        },
+        metadata: {
+          phase: 'idle',
+          turnId: 'turn-5',
+          startedAt: '2024-06-01T10:00:00Z',
+          label: 'Turn turn-5 (step 12, idle)',
+          stepCount: 12,
+          lastCheckpointID: 'chk_ccswarm_001',
+          turnCheckpointIDs: ['chk_001', 'chk_002', 'chk_ccswarm_001'],
+        },
+      };
+
+      const msg: MapSyncMessage = {
+        jsonrpc: '2.0',
+        method: 'trajectory/checkpoint',
+        params: {
+          resource_id: sessionResourceId,
+          agent_id: agentId,
+          commit_hash: 'ccswarm_wire_hash_001',
+          timestamp: new Date().toISOString(),
+          checkpoint: ccSwarmCheckpoint,
+        } as Record<string, unknown>,
+      } as unknown as MapSyncMessage;
+
+      handleSyncMessage(msg, swarmId);
+
+      const { data: checkpoints } = trajectoryDAL.listCheckpointsForSession(sessionResourceId);
+      const stored = checkpoints.find((c) => c.commit_hash === 'ccswarm_wire_hash_001');
+      expect(stored).toBeDefined();
+
+      // Wire format fields correctly extracted
+      expect(stored!.checkpoint_id).toBe('chk_ccswarm_001');
+      expect(stored!.agent).toBe('gsd-sidecar');
+      expect(stored!.files_touched).toEqual(['src/app.ts', 'src/config.ts', 'tests/app.test.ts']);
+      expect(stored!.checkpoints_count).toBe(3);
+      expect(stored!.token_usage).toEqual({
+        input_tokens: 15000,
+        output_tokens: 4200,
+        cache_creation_tokens: 500,
+        cache_read_tokens: 3000,
+        api_call_count: 7,
+      });
+
+      // Verify stats aggregation includes tokens from this checkpoint
+      const stats = trajectoryDAL.getSessionStats(sessionResourceId);
+      expect(stats.total_input_tokens).toBeGreaterThanOrEqual(15000);
+      expect(stats.total_output_tokens).toBeGreaterThanOrEqual(4200);
+      expect(stats.total_files_touched).toBeGreaterThanOrEqual(3);
+    });
+
     it('should dedup checkpoint metadata on repeated sync', () => {
       mockBroadcast.mockClear();
 
