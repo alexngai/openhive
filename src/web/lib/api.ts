@@ -449,6 +449,45 @@ export interface DeliveryLogEntry {
   created_at: string;
 }
 
+// Coordination types
+
+export interface SwarmMessage {
+  id: string;
+  hive_id: string | null;
+  from_swarm_id: string;
+  to_swarm_id: string | null;
+  content_type: 'text' | 'json' | 'binary_ref';
+  content: string;
+  reply_to: string | null;
+  metadata: Record<string, unknown> | null;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface SharedContext {
+  id: string;
+  hive_id: string;
+  source_swarm_id: string;
+  context_type: string;
+  data: Record<string, unknown>;
+  expires_at: string | null;
+  created_at: string;
+}
+
+export interface SwarmPeer {
+  swarm_id: string;
+  name: string;
+  map_endpoint: string;
+  map_transport: string;
+  auth_method: string;
+  status: 'online' | 'offline' | 'unreachable';
+  agent_count: number;
+  capabilities: Record<string, unknown> | null;
+  shared_hives: string[];
+  tailscale_ips: string[] | null;
+  tailscale_dns_name: string | null;
+}
+
 // Trajectory / Session types
 
 export interface TrajectoryCheckpoint {

@@ -1,18 +1,27 @@
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
-  ArrowLeft, Activity, ChevronRight, Clock, Cpu, FileText, Globe,
+  ArrowLeft, Activity, Bell, ChevronRight, Clock, Cpu, FileText, Globe,
+  Link2, MessageSquare, Network, Share2,
   Square, RotateCw, Terminal, Trash2, User, Wifi, WifiOff,
+  CheckCircle2, XCircle, AlertTriangle, ListTodo,
 } from 'lucide-react';
 import {
   useMapSwarm, useMapNodes, useHostedSwarms, useSessionsList, useSwarmLogs,
   useStopSwarm, useRestartSwarm, useRemoveSwarm,
+  useSwarmMessages, useSwarmPeers,
+  useEventSubscriptions, useDeliveryLog,
 } from '../hooks/useApi';
+import { useMapTasks, useMapTasksRealtime } from '../hooks/useMapTasks';
+import type { MAPTask, MAPTaskStatus } from '../hooks/useMapTasks';
 import { useSwarmRealtime, useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
 import { HostedStateBadge, MapStatusBadge, SandboxBadge } from '../components/swarm/StatusBadges';
 import { toast } from '../stores/toast';
-import type { MapSwarm, MapNode, HostedSwarm, SessionListItem } from '../lib/api';
+import type {
+  MapSwarm, MapNode, HostedSwarm, SessionListItem,
+  SwarmMessage, SwarmPeer, EventSubscription, DeliveryLogEntry,
+} from '../lib/api';
 import { useState } from 'react';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -23,7 +32,31 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-// ─── Info Section ────────────────────────────────────────────────────────────
+function SectionHeading({ icon: Icon, label, count }: {
+  icon: React.ElementType;
+  label: string;
+  count?: number;
+}) {
+  return (
+    <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
+      <Icon className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+      {label}
+      {count != null && count > 0 && (
+        <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>{count}</span>
+      )}
+    </h3>
+  );
+}
+
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div className="card px-4 py-6 text-center" style={{ color: 'var(--color-text-muted)' }}>
+      <p className="text-xs">{message}</p>
+    </div>
+  );
+}
+
+// ─── Swarm Info ──────────────────────────────────────────────────────────────
 
 function SwarmInfo({ swarm }: { swarm: MapSwarm }) {
   return (
@@ -77,7 +110,6 @@ function SwarmInfo({ swarm }: { swarm: MapSwarm }) {
         </div>
       </div>
 
-      {/* Capabilities */}
       {swarm.capabilities && Object.keys(swarm.capabilities).length > 0 && (
         <div className="mt-3 flex items-center gap-1.5 flex-wrap">
           {Object.entries(swarm.capabilities)
@@ -271,14 +303,296 @@ function NodesSection({ swarmId }: { swarmId: string }) {
 
   return (
     <div>
-      <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
-        <User className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
-        Agents
-        <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>{nodes.length}</span>
-      </h3>
+      <SectionHeading icon={User} label="Agents" count={nodes.length} />
       <div className="space-y-1">
         {nodes.map((node) => (
           <NodeCard key={node.id} node={node} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Tasks Section ───────────────────────────────────────────────────────────
+
+const TASK_STATUS_STYLES: Record<string, { bg: string; text: string; icon: React.ElementType }> = {
+  open:        { bg: 'bg-blue-500/10',    text: 'text-blue-400',    icon: ListTodo },
+  in_progress: { bg: 'bg-amber-500/10',   text: 'text-amber-400',  icon: Activity },
+  blocked:     { bg: 'bg-red-500/10',     text: 'text-red-400',     icon: AlertTriangle },
+  completed:   { bg: 'bg-emerald-500/10', text: 'text-emerald-400', icon: CheckCircle2 },
+  failed:      { bg: 'bg-red-500/10',     text: 'text-red-400',     icon: XCircle },
+};
+
+function TaskCard({ task }: { task: MAPTask }) {
+  const status = (task.status || 'open') as MAPTaskStatus;
+  const style = TASK_STATUS_STYLES[status] || TASK_STATUS_STYLES.open;
+
+  return (
+    <Link
+      to={`/tasks/${task.id}`}
+      className="card card-hover px-3 py-2 flex items-center gap-3 group"
+    >
+      <div
+        className="w-7 h-7 rounded flex items-center justify-center shrink-0"
+        style={{ backgroundColor: 'var(--color-elevated)' }}
+      >
+        <ListTodo className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium truncate group-hover:text-honey-500 transition-colors">
+            {task.title || task.id}
+          </span>
+          <span className={`text-2xs px-1.5 py-0.5 rounded font-medium ${style.bg} ${style.text}`}>
+            {status.replace('_', ' ')}
+          </span>
+        </div>
+        {(task.description || task.assignee) && (
+          <div className="flex items-center gap-2 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+            {task.assignee && (
+              <span className="flex items-center gap-1">
+                <User className="w-3 h-3" />
+                {task.assignee}
+              </span>
+            )}
+            {task.description && (
+              <span className="truncate">{task.description}</span>
+            )}
+          </div>
+        )}
+      </div>
+      <ChevronRight
+        className="w-3.5 h-3.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{ color: 'var(--color-text-muted)' }}
+      />
+    </Link>
+  );
+}
+
+function TasksSection({ swarmId }: { swarmId: string }) {
+  const { data, isLoading } = useMapTasks({ swarmId, limit: 20 });
+  useMapTasksRealtime();
+  const tasks = data?.tasks ?? [];
+
+  if (isLoading) return <LoadingSpinner size="sm" />;
+  if (tasks.length === 0) return null;
+
+  return (
+    <div>
+      <SectionHeading icon={ListTodo} label="Tasks" count={tasks.length} />
+      <div className="space-y-1">
+        {tasks.map((task) => (
+          <TaskCard key={task.id} task={task} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Messages Section ────────────────────────────────────────────────────────
+
+function MessageCard({ message, swarmId }: { message: SwarmMessage; swarmId: string }) {
+  const isInbound = message.to_swarm_id === swarmId;
+
+  return (
+    <div className="card px-3 py-2">
+      <div className="flex items-start gap-3">
+        <div
+          className="w-7 h-7 rounded flex items-center justify-center shrink-0"
+          style={{ backgroundColor: 'var(--color-elevated)' }}
+        >
+          <MessageSquare className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className={`text-2xs px-1.5 py-0.5 rounded font-medium ${
+              isInbound ? 'bg-blue-500/10 text-blue-400' : 'bg-purple-500/10 text-purple-400'
+            }`}>
+              {isInbound ? 'in' : 'out'}
+            </span>
+            <span className="text-2xs font-mono truncate" style={{ color: 'var(--color-text-muted)' }}>
+              {isInbound ? message.from_swarm_id : message.to_swarm_id || 'broadcast'}
+            </span>
+            {message.hive_id && (
+              <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+                in {message.hive_id}
+              </span>
+            )}
+            {message.read_at && (
+              <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" title="Read" />
+            )}
+          </div>
+          <p className="text-xs mt-1 line-clamp-2" style={{ color: 'var(--color-text-secondary)' }}>
+            {message.content_type === 'json' ? (
+              <code className="font-mono text-2xs">{message.content.slice(0, 200)}</code>
+            ) : (
+              message.content.slice(0, 200)
+            )}
+          </p>
+          <div className="mt-1 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+            <TimeAgo date={message.created_at} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MessagesSection({ swarmId }: { swarmId: string }) {
+  const { data, isLoading } = useSwarmMessages(swarmId, { limit: 20 });
+  const messages = data?.data ?? [];
+
+  if (isLoading) return <LoadingSpinner size="sm" />;
+  if (messages.length === 0) return null;
+
+  return (
+    <div>
+      <SectionHeading icon={MessageSquare} label="Messages" count={data?.total} />
+      <div className="space-y-1">
+        {messages.map((msg) => (
+          <MessageCard key={msg.id} message={msg} swarmId={swarmId} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Events Section (Subscriptions + Delivery Log) ───────────────────────────
+
+const DELIVERY_STATUS_STYLES: Record<string, { bg: string; text: string }> = {
+  sent:    { bg: 'bg-emerald-500/10', text: 'text-emerald-400' },
+  failed:  { bg: 'bg-red-500/10',     text: 'text-red-400' },
+  offline: { bg: 'bg-gray-500/10',    text: 'text-gray-400' },
+};
+
+function EventsSection({ swarmId }: { swarmId: string }) {
+  const { data: subscriptions, isLoading: subsLoading } = useEventSubscriptions({ swarm_id: swarmId });
+  const { data: deliveryData, isLoading: logLoading } = useDeliveryLog({ swarm_id: swarmId, limit: 10 });
+  const deliveries = deliveryData?.data ?? [];
+
+  if (subsLoading || logLoading) return <LoadingSpinner size="sm" />;
+
+  const subs = subscriptions ?? [];
+  if (subs.length === 0 && deliveries.length === 0) return null;
+
+  return (
+    <div>
+      <SectionHeading icon={Bell} label="Events" count={subs.length} />
+
+      {/* Subscriptions */}
+      {subs.length > 0 && (
+        <div className="space-y-1 mb-3">
+          {subs.map((sub) => (
+            <div key={sub.id} className="card px-3 py-2">
+              <div className="flex items-center gap-3">
+                <div
+                  className="w-7 h-7 rounded flex items-center justify-center shrink-0"
+                  style={{ backgroundColor: 'var(--color-elevated)' }}
+                >
+                  <Bell className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">{sub.source}</span>
+                    {!sub.enabled && (
+                      <span className="text-2xs px-1.5 py-0.5 rounded bg-gray-500/10 text-gray-400">disabled</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                    {sub.event_types.map((t) => (
+                      <span key={t} className="text-2xs px-1 py-0.5 rounded font-mono" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Recent deliveries */}
+      {deliveries.length > 0 && (
+        <>
+          <p className="text-2xs font-medium mb-1.5" style={{ color: 'var(--color-text-muted)' }}>Recent deliveries</p>
+          <div className="space-y-1">
+            {deliveries.map((d) => {
+              const style = DELIVERY_STATUS_STYLES[d.status] || DELIVERY_STATUS_STYLES.offline;
+              return (
+                <div key={d.id} className="card px-3 py-1.5 flex items-center gap-3">
+                  <span className={`text-2xs px-1.5 py-0.5 rounded font-medium ${style.bg} ${style.text}`}>
+                    {d.status}
+                  </span>
+                  <span className="text-xs font-mono truncate" style={{ color: 'var(--color-text-secondary)' }}>
+                    {d.source}/{d.event_type}
+                  </span>
+                  {d.error && (
+                    <span className="text-2xs text-red-400 truncate max-w-[200px]" title={d.error}>
+                      {d.error}
+                    </span>
+                  )}
+                  <span className="ml-auto text-2xs shrink-0" style={{ color: 'var(--color-text-muted)' }}>
+                    <TimeAgo date={d.created_at} />
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Peers Section ───────────────────────────────────────────────────────────
+
+function PeersSection({ swarmId }: { swarmId: string }) {
+  const { data: peers, isLoading, isError } = useSwarmPeers(swarmId);
+
+  if (isLoading) return <LoadingSpinner size="sm" />;
+  if (isError || !Array.isArray(peers) || peers.length === 0) return null;
+
+  return (
+    <div>
+      <SectionHeading icon={Network} label="Peers" count={peers.length} />
+      <div className="space-y-1">
+        {peers.map((peer) => (
+          <Link
+            key={peer.swarm_id}
+            to={`/swarms/${peer.swarm_id}`}
+            className="card card-hover px-3 py-2 flex items-center gap-3 group"
+          >
+            <div
+              className="w-7 h-7 rounded flex items-center justify-center shrink-0"
+              style={{ backgroundColor: 'var(--color-elevated)' }}
+            >
+              <Link2 className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium truncate group-hover:text-honey-500 transition-colors">
+                  {peer.name}
+                </span>
+                <MapStatusBadge status={peer.status} />
+                <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+                  {peer.agent_count} agent{peer.agent_count !== 1 ? 's' : ''}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+                {peer.shared_hives.length > 0 && (
+                  <span>shared: {peer.shared_hives.join(', ')}</span>
+                )}
+                {peer.map_endpoint !== 'hub-inbound' && peer.map_endpoint !== 'local-hub' && (
+                  <span className="font-mono truncate max-w-[200px]">{peer.map_endpoint}</span>
+                )}
+              </div>
+            </div>
+            <ChevronRight
+              className="w-3.5 h-3.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+              style={{ color: 'var(--color-text-muted)' }}
+            />
+          </Link>
         ))}
       </div>
     </div>
@@ -362,14 +676,7 @@ function SessionsSection({ swarmId }: { swarmId: string }) {
 
   return (
     <div>
-      <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
-        <Activity className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
-        Sessions
-        {sessions.length > 0 && (
-          <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>{sessions.length}</span>
-        )}
-      </h3>
-
+      <SectionHeading icon={Activity} label="Sessions" count={sessions.length} />
       {sessions.length > 0 ? (
         <div className="space-y-1">
           {sessions.map((session) => (
@@ -377,12 +684,7 @@ function SessionsSection({ swarmId }: { swarmId: string }) {
           ))}
         </div>
       ) : (
-        <div
-          className="card px-4 py-6 text-center"
-          style={{ color: 'var(--color-text-muted)' }}
-        >
-          <p className="text-xs">No sessions synced from this swarm yet.</p>
-        </div>
+        <EmptyState message="No sessions synced from this swarm yet." />
       )}
     </div>
   );
@@ -442,7 +744,15 @@ export function SwarmDetail() {
 
       <NodesSection swarmId={id!} />
 
+      <TasksSection swarmId={id!} />
+
       <SessionsSection swarmId={id!} />
+
+      <MessagesSection swarmId={id!} />
+
+      <EventsSection swarmId={id!} />
+
+      <PeersSection swarmId={id!} />
     </div>
   );
 }

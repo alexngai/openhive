@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
-import type { Agent, HostedSwarm, MapSwarm, MapNode, MapStats, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse, MailConversation, MailTurn, MailThread } from '../lib/api';
+import type { Agent, HostedSwarm, MapSwarm, MapNode, MapStats, SwarmMessage, SharedContext, SwarmPeer, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse, MailConversation, MailTurn, MailThread } from '../lib/api';
 
 
 // Posts
@@ -715,6 +715,45 @@ export function useDeliveryLog(opts?: { delivery_id?: string; swarm_id?: string;
       const qs = params.toString();
       return api.get<{ data: DeliveryLogEntry[]; total: number }>(`/events/delivery-log${qs ? `?${qs}` : ''}`);
     },
+  });
+}
+
+// ── Coordination (Messages & Contexts) ──
+
+export function useSwarmMessages(swarmId: string, options?: { limit?: number }) {
+  const limit = options?.limit ?? 50;
+
+  return useQuery({
+    queryKey: ['swarm-messages', swarmId, { limit }],
+    queryFn: () => api.get<{ data: SwarmMessage[]; total: number }>(
+      `/coordination/messages?swarm_id=${swarmId}&limit=${limit}`
+    ),
+    enabled: !!swarmId,
+  });
+}
+
+export function useSharedContexts(opts: { hive_id?: string; swarm_id?: string; limit?: number }) {
+  const params = new URLSearchParams();
+  if (opts.hive_id) params.set('hive_id', opts.hive_id);
+  if (opts.swarm_id) params.set('swarm_id', opts.swarm_id);
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+
+  return useQuery({
+    queryKey: ['shared-contexts', opts],
+    queryFn: () => api.get<{ data: SharedContext[]; total: number }>(
+      `/coordination/contexts${qs ? `?${qs}` : ''}`
+    ),
+    enabled: !!opts.hive_id,
+  });
+}
+
+export function useSwarmPeers(swarmId: string) {
+  return useQuery({
+    queryKey: ['swarm-peers', swarmId],
+    queryFn: () => api.get<SwarmPeer[]>(`/map/peers/${swarmId}`),
+    enabled: !!swarmId,
+    retry: false,
   });
 }
 
