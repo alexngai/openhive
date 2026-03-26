@@ -13,6 +13,8 @@ import { setupWebSocket, stopHeartbeat, broadcastToChannel } from "./realtime/in
 import { generateSkillMd } from "./skill.js";
 import { generateSitemap, generateRobotsTxt } from "./services/sitemap.js";
 import { initializeStorage, type StorageConfig } from "./storage/index.js";
+import { initializeLocalSessionStorage, isSessionStorageInitialized } from "./sessions/storage/index.js";
+import { resolveDataDir } from "./data-dir.js";
 import { initJwks } from "./auth/jwks.js";
 import {
   createNetworkProvider,
@@ -105,6 +107,32 @@ export async function createHive(
       if (!fs.existsSync(uploadPath)) {
         fs.mkdirSync(uploadPath, { recursive: true });
       }
+    }
+  }
+
+  // Initialize session storage for trajectory content caching.
+  // Configurable via config.sessions.type: 'local' (default), 's3', or 'none'.
+  if (!isSessionStorageInitialized() && config.sessions.type !== 'none') {
+    if (config.sessions.type === 'local') {
+      const sessionsPath = config.sessions.path
+        ? path.resolve(config.sessions.path)
+        : path.join(resolveDataDir(), 'data', 'sessions');
+      if (!fs.existsSync(sessionsPath)) {
+        fs.mkdirSync(sessionsPath, { recursive: true });
+      }
+      initializeLocalSessionStorage({ type: 'local', basePath: sessionsPath });
+    } else if (config.sessions.type === 's3' && config.sessions.bucket) {
+      // S3 storage — lazy-loaded to avoid requiring @aws-sdk at startup
+      import('./sessions/storage/index.js').then(({ initializeSessionStorage }) => {
+        initializeSessionStorage({
+          type: 's3',
+          bucket: config.sessions.bucket!,
+          region: config.sessions.region || 'us-east-1',
+          prefix: 'sessions/',
+        } as any);
+      }).catch(() => {
+        console.warn('[openhive] Failed to initialize S3 session storage');
+      });
     }
   }
 

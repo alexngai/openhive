@@ -513,23 +513,60 @@ export async function sessionsRoutes(
       let content: string | null = null;
       let formatId = metadata?.format?.id || 'claude-jsonl';
 
-      // Try local storage first
+      // Try local storage first (uploaded sessions use ses_ IDs, cached trajectories use resource ID)
       if (storageBackend && storageBackend !== 'git' && isSessionStorageInitialized()) {
         const storage = getSessionStorage();
         const sessionIdMatch = resource.git_remote_url.match(/ses_[a-zA-Z0-9_-]+/);
-        if (sessionIdMatch) {
-          content = await storage.retrieve(
-            { sessionId: sessionIdMatch[0], agentId: resource.owner_agent_id },
-            'session.jsonl'
-          ) as string | null;
-        }
+        const storageSessionId = sessionIdMatch?.[0] || resource.id;
+        content = await storage.retrieve(
+          { sessionId: storageSessionId, agentId: resource.owner_agent_id },
+          'session.jsonl'
+        ) as string | null;
       }
 
       // Fall back to on-demand fetch from connected swarm
       if (!content) {
         content = await fetchTranscriptFromSwarm(resource.id);
         if (content) {
-          formatId = 'claude_jsonl_v1'; // Swarm-served transcripts are Claude JSONL
+          formatId = 'claude_jsonl_v1';
+
+          // Cache the transcript to session storage for subsequent requests
+          if (isSessionStorageInitialized()) {
+            try {
+              const storage = getSessionStorage();
+              await storage.store(
+                { sessionId: resource.id, agentId: resource.owner_agent_id },
+                [{ path: 'session.jsonl', content }],
+              );
+              resourcesDAL.updateResource(resource.id, {
+                metadata: {
+                  ...(resource.metadata as Record<string, unknown> || {}),
+                  format: { id: 'claude_jsonl_v1' },
+                  storage: { backend: 'local', cachedAt: new Date().toISOString() },
+                  trajectory: { source: 'swarm' },
+                },
+              });
+            } catch {
+              // Non-critical — cache failure doesn't block the response
+            }
+          }
+        }
+      }
+
+      // Last resort: try stale cache on disk (swarm offline, metadata invalidated by checkpoint)
+      if (!content && isSessionStorageInitialized()) {
+        try {
+          const storage = getSessionStorage();
+          const staleContent = await storage.retrieve(
+            { sessionId: resource.id, agentId: resource.owner_agent_id },
+            'session.jsonl'
+          ) as string | null;
+          if (staleContent) {
+            content = staleContent;
+            formatId = 'claude_jsonl_v1';
+          }
+        } catch {
+          // No stale cache available
         }
       }
 

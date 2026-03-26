@@ -25,6 +25,18 @@ const StorageSchema = z.discriminatedUnion('type', [
   S3StorageSchema,
 ]).optional();
 
+// Session storage configuration schema (for trajectory content caching)
+const SessionStorageSchema = z.object({
+  /** Storage backend: 'local' (disk), 's3', or 'none' (disable caching) */
+  type: z.enum(['local', 's3', 'none']).default('local'),
+  /** Custom path for local storage (default: <dataDir>/data/sessions) */
+  path: z.string().optional(),
+  /** S3 bucket for cloud storage */
+  bucket: z.string().optional(),
+  /** S3 region */
+  region: z.string().optional(),
+}).default({});
+
 // Database configuration schema
 const SQLiteDatabaseSchema = z.object({
   type: z.literal('sqlite'),
@@ -80,6 +92,9 @@ export const ConfigSchema = z.object({
     enabled: z.boolean().default(false),
     peers: z.array(z.string().url()).default([]),
   }).default({}),
+
+  // Session storage for trajectory content caching
+  sessions: SessionStorageSchema,
 
   cors: z.object({
     enabled: z.boolean().default(true),

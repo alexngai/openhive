@@ -17,7 +17,7 @@
 import { nanoid } from 'nanoid';
 import { TRAJECTORY_METHODS } from './trajectory-types.js';
 import type { TrajectoryCheckpointParams, TrajectoryCheckpointResult } from './trajectory-types.js';
-import { findResourceById, findSessionResourceBySwarm, upsertDiscoveredResource } from '../db/dal/syncable-resources.js';
+import { findResourceById, findSessionResourceBySwarm, upsertDiscoveredResource, updateResource } from '../db/dal/syncable-resources.js';
 import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
 import { broadcastToChannel } from '../realtime/index.js';
 
@@ -99,6 +99,26 @@ function handleCheckpoint(
     source_swarm_id: swarmId,
     source_agent_id: agentId,
   });
+
+  // ── Invalidate cached trajectory content ────────────────────────────
+  //    New checkpoint means the session has progressed. Clear the storage
+  //    flag so the next /events request re-fetches from the swarm.
+  try {
+    const resource = findResourceById(resourceId);
+    if (resource) {
+      const existingMeta = (resource.metadata as Record<string, unknown>) || {};
+      if (existingMeta.storage && (existingMeta.storage as Record<string, unknown>).backend === 'local') {
+        updateResource(resourceId, {
+          metadata: {
+            ...existingMeta,
+            storage: undefined, // clear storage flag → next request re-fetches
+          },
+        });
+      }
+    }
+  } catch {
+    // Non-critical
+  }
 
   // ── Broadcast to WebSocket channels for UI ───────────────────────────
   try {
