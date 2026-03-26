@@ -486,10 +486,10 @@ function EventBubble({ event }: { event: SessionEvent }) {
   );
 }
 
-function TrajectoryTab({ sessionId, hasLocalStorage }: { sessionId: string; hasLocalStorage: boolean }) {
-  const { data, isLoading, isError, error } = useSessionEvents(sessionId, { enabled: hasLocalStorage });
+function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string; hasTrajectorySupport: boolean }) {
+  const { data, isLoading, isError, error } = useSessionEvents(sessionId, { enabled: hasTrajectorySupport });
 
-  if (!hasLocalStorage) {
+  if (!hasTrajectorySupport) {
     return (
       <div className="card px-6 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
         <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-40" />
@@ -497,8 +497,7 @@ function TrajectoryTab({ sessionId, hasLocalStorage }: { sessionId: string; hasL
           Trajectory not available
         </p>
         <p className="text-xs">
-          Event-level trajectory is only available for sessions with local or cloud storage.
-          Git-backed sessions store content in the remote repository.
+          No trajectory data available. The swarm may be offline or no checkpoints have been recorded yet.
         </p>
       </div>
     );
@@ -578,7 +577,7 @@ function TrajectoryTab({ sessionId, hasLocalStorage }: { sessionId: string; hasL
 
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
-  const [tab, setTab] = useState<DetailTab>('checkpoints');
+  const [tab, setTab] = useState<DetailTab>('trajectory');
   const { data: resource, isLoading: resourceLoading } = useResource(id!);
   const { data: checkpointsData, isLoading: checkpointsLoading } = useSessionCheckpoints(id!);
   const { data: stats } = useSessionStats(id!);
@@ -600,10 +599,11 @@ export function SessionDetail() {
   const checkpoints = checkpointsData?.data ?? [];
   const total = checkpointsData?.total ?? 0;
 
-  // Determine if local/cloud storage is available for event-level trajectory
-  const metadata = resource.metadata as Record<string, unknown> | null;
-  const storageBackend = (metadata?.storage as Record<string, unknown> | undefined)?.backend as string | undefined;
-  const hasLocalStorage = !!storageBackend && storageBackend !== 'git';
+  // Determine if trajectory events can be loaded.
+  // Events are available from: local/cloud storage backends, or on-demand from connected swarms.
+  // The backend handles fallback — if no local storage, it requests from the swarm.
+  // We enable the tab whenever there are checkpoints (indicating a session exists).
+  const hasTrajectorySupport = total > 0;
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-6">
@@ -660,6 +660,21 @@ export function SessionDetail() {
         <button
           className={clsx(
             'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
+            tab === 'trajectory'
+              ? 'border-honey-500 text-honey-500'
+              : 'border-transparent'
+          )}
+          style={tab !== 'trajectory' ? { color: 'var(--color-text-muted)' } : undefined}
+          onClick={() => setTab('trajectory')}
+        >
+          <span className="flex items-center gap-1.5">
+            <MessageSquare className="w-3.5 h-3.5" />
+            Trajectory
+          </span>
+        </button>
+        <button
+          className={clsx(
+            'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
             tab === 'checkpoints'
               ? 'border-honey-500 text-honey-500'
               : 'border-transparent'
@@ -673,24 +688,6 @@ export function SessionDetail() {
             {total > 0 && <span className="text-2xs opacity-70">({total})</span>}
           </span>
         </button>
-        <button
-          className={clsx(
-            'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
-            tab === 'trajectory'
-              ? 'border-honey-500 text-honey-500'
-              : 'border-transparent'
-          )}
-          style={tab !== 'trajectory' ? { color: 'var(--color-text-muted)' } : undefined}
-          onClick={() => setTab('trajectory')}
-        >
-          <span className="flex items-center gap-1.5">
-            <MessageSquare className="w-3.5 h-3.5" />
-            Trajectory
-            {!hasLocalStorage && (
-              <span className="text-2xs opacity-50">(n/a)</span>
-            )}
-          </span>
-        </button>
       </div>
 
       {/* Tab content */}
@@ -698,7 +695,7 @@ export function SessionDetail() {
         <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
       )}
       {tab === 'trajectory' && (
-        <TrajectoryTab sessionId={id!} hasLocalStorage={hasLocalStorage} />
+        <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} />
       )}
     </div>
   );

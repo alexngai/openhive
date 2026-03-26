@@ -11,6 +11,7 @@ import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import * as trajectoryDAL from '../../db/dal/trajectory-checkpoints.js';
 import { getDatabase } from '../../db/index.js';
 import { broadcastToChannel } from '../../realtime/index.js';
+import { fetchTranscriptFromSwarm } from '../../map/trajectory-content.js';
 import {
   detectFormatExtended,
   getSupportedFormats,
@@ -506,49 +507,43 @@ export async function sessionsRoutes(
 
       const metadata = resource.metadata as SessionResourceMetadata | null;
       const storageBackend = metadata?.storage?.backend;
+      const limit = Math.min(Number(request.query.limit) || 100, 500);
+      const offset = Number(request.query.offset) || 0;
 
-      if (!storageBackend || storageBackend === 'git') {
-        return reply.status(400).send({
-          error: 'Bad Request',
-          message: 'Event parsing is only available for locally stored sessions',
-        });
+      let content: string | null = null;
+      let formatId = metadata?.format?.id || 'claude-jsonl';
+
+      // Try local storage first
+      if (storageBackend && storageBackend !== 'git' && isSessionStorageInitialized()) {
+        const storage = getSessionStorage();
+        const sessionIdMatch = resource.git_remote_url.match(/ses_[a-zA-Z0-9_-]+/);
+        if (sessionIdMatch) {
+          content = await storage.retrieve(
+            { sessionId: sessionIdMatch[0], agentId: resource.owner_agent_id },
+            'session.jsonl'
+          ) as string | null;
+        }
       }
 
-      if (!isSessionStorageInitialized()) {
-        return reply.status(503).send({
-          error: 'Service Unavailable',
-          message: 'Session storage is not configured',
-        });
+      // Fall back to on-demand fetch from connected swarm
+      if (!content) {
+        content = await fetchTranscriptFromSwarm(resource.id);
+        if (content) {
+          formatId = 'claude_jsonl_v1'; // Swarm-served transcripts are Claude JSONL
+        }
       }
-
-      const storage = getSessionStorage();
-      const sessionIdMatch = resource.git_remote_url.match(/ses_[a-zA-Z0-9_-]+/);
-      if (!sessionIdMatch) {
-        return reply.status(500).send({
-          error: 'Internal Error',
-          message: 'Could not determine session storage location',
-        });
-      }
-
-      const content = await storage.retrieve(
-        { sessionId: sessionIdMatch[0], agentId: resource.owner_agent_id },
-        'session.jsonl'
-      );
 
       if (!content) {
-        return reply.status(404).send({
-          error: 'Not Found',
-          message: 'Session content not found',
+        return reply.status(503).send({
+          error: 'Service Unavailable',
+          message: 'Session content not available. The swarm may be offline.',
         });
       }
 
       // Convert to ACP events
-      const formatId = metadata?.format?.id || 'raw';
-      const { events } = toAcpEvents(content as string, formatId);
+      const { events } = toAcpEvents(content, formatId);
 
       // Apply pagination
-      const limit = Math.min(Number(request.query.limit) || 100, 500);
-      const offset = Number(request.query.offset) || 0;
       const paginatedEvents = events.slice(offset, offset + limit);
 
       return reply.send({

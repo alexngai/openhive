@@ -21,9 +21,10 @@ import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as trajectoryDAL from '../../db/dal/trajectory-checkpoints.js';
 import { setupMapWebSocket, stopMapWebSocket, setHeartbeatInterval } from '../../map/ws-map.js';
-import { getAllInbound } from '../../map/connection-registry.js';
+import { getAllInbound, getInbound } from '../../map/connection-registry.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import { sessionsRoutes } from '../../api/routes/sessions.js';
+import { setLocalAgent } from '../../api/middleware/auth.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 // cc-swarm real function
@@ -107,6 +108,8 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
 
     const result = await agentsDAL.createAgent({ name: 'traj-e2e-agent' });
     apiKey = result.apiKey;
+    // Set local agent for auth middleware (allows unauthenticated inject calls)
+    setLocalAgent(result.agent);
 
     const config = ConfigSchema.parse({
       port: PORT,
@@ -133,6 +136,7 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
   afterAll(async () => {
     try { ws?.close(); } catch {}
     stopMapWebSocket();
+    setLocalAgent(null);
     await new Promise(r => setTimeout(r, 100));
     await app?.close();
     closeDatabase();
@@ -340,5 +344,72 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
   it('GET /sessions/:id/trajectory-checkpoints returns 404 for unknown resource', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/sessions/res_nonexistent/trajectory-checkpoints' });
     expect(res.statusCode).toBe(404);
+  });
+
+  // ── 8. Trajectory content on-demand (capability check) ─────────
+
+  it('GET /sessions/:id/events returns 503 when swarm lacks canServeContent capability', async () => {
+    // The connected swarm has no capabilities set (raw WS client, no MAP agent registration)
+    const conn = getInbound(swarmId);
+    expect(conn).toBeDefined();
+    expect(conn!.capabilities).toBeUndefined(); // raw WS client has no capabilities
+
+    const res = await app.inject({ method: 'GET', url: `/api/v1/sessions/${resourceId}/events` });
+    // Should return 503 because fetchTranscriptFromSwarm checks canServeContent
+    expect(res.statusCode).toBe(503);
+  });
+
+  // ── 9. Trajectory content on-demand (with capability + mock sidecar) ──
+
+  it('GET /sessions/:id/events returns events when swarm serves content', async () => {
+    // Set canServeContent capability on the connection
+    const conn = getInbound(swarmId);
+    expect(conn).toBeDefined();
+    conn!.capabilities = { trajectory: { canReport: true, canServeContent: true } };
+
+    // Simulate sidecar: listen for content requests and respond with a mock transcript
+    const mockTranscript = [
+      JSON.stringify({ type: 'user', message: { content: 'Hello, fix the bug in app.ts' } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'I\'ll look at the bug.' }], usage: { input_tokens: 100, output_tokens: 50 } } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: 'src/app.ts' } }] } }),
+    ].join('\n');
+
+    // Listen on the raw WebSocket for content request and respond
+    const contentHandler = (data: Buffer | string) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.method === 'trajectory/content.request' && msg.params?.request_id) {
+          // Respond with mock transcript as a raw JSON-RPC notification
+          ws.send(JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'trajectory/content.response',
+            params: {
+              request_id: msg.params.request_id,
+              transcript: mockTranscript,
+              metadata: { source: 'test' },
+              prompts: 'Hello, fix the bug in app.ts',
+              context: 'Test session',
+            },
+          }));
+        }
+      } catch { /* ignore */ }
+    };
+    ws.on('message', contentHandler);
+
+    try {
+      const res = await app.inject({ method: 'GET', url: `/api/v1/sessions/${resourceId}/events?limit=10` });
+      expect(res.statusCode).toBe(200);
+
+      const body = JSON.parse(res.body);
+      expect(body.format_id).toBe('claude_jsonl_v1');
+      expect(body.total).toBeGreaterThan(0);
+      expect(body.events.length).toBeGreaterThan(0);
+
+      // Verify event types from the mock transcript
+      const types = body.events.map((e: any) => e.type);
+      expect(types).toContain('user_message');
+    } finally {
+      ws.removeListener('message', contentHandler);
+    }
   });
 });

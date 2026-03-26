@@ -25,6 +25,7 @@ import { isMapSyncMessage } from './sync-listener.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
 import { registerInbound, unregisterInbound, getAllInbound, getInbound } from './connection-registry.js';
 import { getMapTaskStore } from './task-store.js';
+import { handleContentResponse } from './trajectory-content.js';
 import { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
@@ -150,6 +151,9 @@ function createNotificationInterceptor(
         handleCoordinationMessage(msg, swarmId);
       } else if (msg.method === 'ping') {
         sendJsonRpc(ws, 'pong', {});
+      } else if (msg.method === 'trajectory/content.response') {
+        // Content response from swarm — resolve pending content request
+        handleContentResponse(msg.params as Record<string, unknown>);
       } else if (typeof msg.method === 'string' && msg.method.startsWith('mail/')) {
         // Mail notifications — fire and forget
         try { getMailJsonRpc().handleRequest(msg as any); } catch { /* ignore */ }
@@ -373,10 +377,31 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
     router.start();
 
+    // Capture agent capabilities when the agent registers via MAP protocol
+    const onAgentRegistered = (event: any) => {
+      const registeredAgent = event.data?.agent ?? event.data;
+      if (!registeredAgent) return;
+
+      // Only capture for our session
+      try {
+        const session = router.session;
+        if (!session || session.id !== registeredAgent.sessionId) return;
+      } catch {
+        return;
+      }
+
+      const conn = getInbound(swarmId);
+      if (conn && registeredAgent.capabilities) {
+        conn.capabilities = registeredAgent.capabilities;
+      }
+    };
+    const unsubRegistered = mapServer.eventBus.on('agent.registered', onAgentRegistered);
+
     console.log(`[ws-map] Swarm ${swarmId} connected inbound (agent: ${agent.name})`);
 
     // Cleanup on close (router.closed as backup — ws 'close' is primary)
     router.closed.then(() => {
+      unsubRegistered();
       interceptor.cleanup();
       handleDisconnect();
     });
