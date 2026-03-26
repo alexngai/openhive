@@ -18,7 +18,7 @@ import { nanoid } from 'nanoid';
 import { getInbound } from './connection-registry.js';
 import { listCheckpointsForSession } from '../db/dal/trajectory-checkpoints.js';
 
-const CONTENT_REQUEST_TIMEOUT_MS = 30_000;
+const CONTENT_REQUEST_TIMEOUT_MS = 10_000;
 
 // Pending content requests waiting for responses
 const pendingRequests = new Map<string, {
