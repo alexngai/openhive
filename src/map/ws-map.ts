@@ -392,8 +392,19 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       }
 
       const conn = getInbound(swarmId);
-      if (conn && registeredAgent.capabilities) {
-        conn.capabilities = registeredAgent.capabilities;
+      if (conn) {
+        if (registeredAgent.capabilities) {
+          conn.capabilities = registeredAgent.capabilities;
+        }
+        // Track registered agent on this connection
+        const agentEntry = {
+          id: registeredAgent.id || registeredAgent.name || 'unknown',
+          name: registeredAgent.name || 'unknown',
+          role: registeredAgent.role || 'agent',
+          state: 'registered',
+          scopes: registeredAgent.scopes || [],
+        };
+        conn.registeredAgents.set(agentEntry.id, agentEntry);
       }
 
       // Enrich swarm record with agent metadata (project, branch, template)
