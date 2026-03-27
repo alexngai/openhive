@@ -28,6 +28,8 @@ export interface MapInboundConnection {
   expiryNotified?: boolean;
   /** Agents registered on this connection (keyed by agent ID). */
   registeredAgents: Map<string, RegisteredAgent>;
+  /** Agent capabilities declared during MAP registration. */
+  capabilities?: Record<string, unknown>;
 }
 
 const inboundConnections: Map<string, MapInboundConnection> = new Map();

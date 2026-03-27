@@ -110,15 +110,16 @@ export function upsertDiscoveredResource(input: CreateResourceInput): { resource
 }
 
 /**
- * Find a session resource by owner agent and swarm-based name pattern.
- * Used by the trajectory handler to look up existing session resources
- * before auto-creating one.
+ * Find a session resource by owner agent and swarm ID.
+ * Looks up by git_remote_url pattern (map://trajectory/{swarmId}) which
+ * stays stable even when the display name is updated with project context.
  */
-export function findSessionResourceBySwarm(ownerAgentId: string, swarmName: string): SyncableResource | null {
+export function findSessionResourceBySwarm(ownerAgentId: string, swarmId: string): SyncableResource | null {
   const db = getDatabase();
+  const remoteUrl = `map://trajectory/${swarmId}`;
   const row = db.prepare(
-    "SELECT * FROM syncable_resources WHERE owner_agent_id = ? AND resource_type = 'session' AND name = ?"
-  ).get(ownerAgentId, swarmName) as Record<string, unknown> | undefined;
+    "SELECT * FROM syncable_resources WHERE owner_agent_id = ? AND resource_type = 'session' AND git_remote_url = ?"
+  ).get(ownerAgentId, remoteUrl) as Record<string, unknown> | undefined;
   if (!row) return null;
   return rowToResource(row);
 }

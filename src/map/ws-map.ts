@@ -25,6 +25,7 @@ import { isMapSyncMessage } from './sync-listener.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
 import { registerInbound, unregisterInbound, getAllInbound, getInbound } from './connection-registry.js';
 import { getMapTaskStore } from './task-store.js';
+import { handleContentResponse } from './trajectory-content.js';
 import { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
 import { initTaskBridge, stopTaskBridge } from './task-bridge.js';
 import { getMailJsonRpc } from '../mail/index.js';
@@ -151,6 +152,9 @@ function createNotificationInterceptor(
         handleCoordinationMessage(msg, swarmId);
       } else if (msg.method === 'ping') {
         sendJsonRpc(ws, 'pong', {});
+      } else if (msg.method === 'trajectory/content.response') {
+        // Content response from swarm — resolve pending content request
+        handleContentResponse(msg.params as Record<string, unknown>);
       } else if (typeof msg.method === 'string' && msg.method.startsWith('mail/')) {
         // Mail notifications — fire and forget
         try { getMailJsonRpc().handleRequest(msg as any); } catch { /* ignore */ }
@@ -374,10 +378,62 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
     router.start();
 
+    // Capture agent capabilities and metadata when the agent registers via MAP protocol
+    const onAgentRegistered = (event: any) => {
+      const registeredAgent = event.data?.agent ?? event.data;
+      if (!registeredAgent) return;
+
+      // In open mode, match by session ID if available, otherwise accept any registration
+      // on our router (we know the swarmId is correct because this handler is scoped to it)
+      try {
+        const session = router.session;
+        if (session?.id && registeredAgent.sessionId && session.id !== registeredAgent.sessionId) return;
+      } catch {
+        // router.session may not be available — continue anyway in open mode
+      }
+
+      const conn = getInbound(swarmId);
+      if (conn) {
+        if (registeredAgent.capabilities) {
+          conn.capabilities = registeredAgent.capabilities;
+        }
+        // Track registered agent on this connection
+        const agentEntry = {
+          id: registeredAgent.id || registeredAgent.name || 'unknown',
+          name: registeredAgent.name || 'unknown',
+          role: registeredAgent.role || 'agent',
+          state: 'registered',
+          scopes: registeredAgent.scopes || [],
+        };
+        conn.registeredAgents.set(agentEntry.id, agentEntry);
+      }
+
+      // Enrich swarm record with agent metadata (project, branch, template)
+      if (registeredAgent.metadata) {
+        const meta = registeredAgent.metadata as Record<string, unknown>;
+        const project = meta.project as string | undefined;
+        const branch = meta.branch as string | undefined;
+        const template = meta.template as string | undefined;
+
+        if (project) {
+          const displayName = branch ? `${project} (${branch})` : project;
+          try {
+            updateSwarm(swarmId, {
+              name: displayName,
+              capabilities: registeredAgent.capabilities || undefined,
+              metadata: meta,
+            });
+          } catch { /* non-critical */ }
+        }
+      }
+    };
+    const unsubRegistered = mapServer.eventBus.on('agent.registered', onAgentRegistered);
+
     console.log(`[ws-map] Swarm ${swarmId} connected inbound (agent: ${agent.name})`);
 
     // Cleanup on close (router.closed as backup — ws 'close' is primary)
     router.closed.then(() => {
+      unsubRegistered();
       interceptor.cleanup();
       handleDisconnect();
     });

@@ -16,6 +16,7 @@ import * as agentsDAL from '../../db/dal/agents.js';
 import * as trajectoryDAL from '../../db/dal/trajectory-checkpoints.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { handleTrajectoryRequest, TrajectoryRequestError } from '../../map/trajectory-handler.js';
+import * as mapDAL from '../../db/dal/map.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 // Mock broadcastToChannel
@@ -217,6 +218,164 @@ describe('Trajectory Handler', () => {
       expect(stats.total_input_tokens).toBe(20000);
       expect(stats.total_output_tokens).toBe(6000);
       expect(stats.total_files_touched).toBe(2);
+    });
+  });
+
+  describe('enriched session context', () => {
+    it('uses project and branch for session resource name', () => {
+      const result = handleTrajectoryRequest(
+        'trajectory/checkpoint',
+        {
+          checkpoint: {
+            id: 'enrich-001',
+            agent: 'default-sidecar',
+            branch: 'main',
+            metadata: { project: 'my-app', template: 'gsd' },
+          },
+        },
+        { swarmId: 'swarm-enrich-test', agentId },
+      );
+
+      const resource = resourcesDAL.findResourceById(result.resource_id);
+      expect(resource).toBeDefined();
+      expect(resource!.name).toBe('my-app (main)');
+    });
+
+    it('uses firstPrompt as session description', () => {
+      const result = handleTrajectoryRequest(
+        'trajectory/checkpoint',
+        {
+          checkpoint: {
+            id: 'enrich-002',
+            agent: 'default-sidecar',
+            metadata: { project: 'my-app', firstPrompt: 'add JWT authentication' },
+          },
+        },
+        { swarmId: 'swarm-enrich-desc', agentId },
+      );
+
+      const resource = resourcesDAL.findResourceById(result.resource_id);
+      expect(resource!.description).toBe('add JWT authentication');
+    });
+
+    it('updates description when firstPrompt arrives on subsequent checkpoint', () => {
+      // First checkpoint — no firstPrompt
+      const r1 = handleTrajectoryRequest(
+        'trajectory/checkpoint',
+        {
+          checkpoint: { id: 'enrich-003a', agent: 'sidecar', metadata: { project: 'proj' } },
+        },
+        { swarmId: 'swarm-enrich-update', agentId },
+      );
+
+      const before = resourcesDAL.findResourceById(r1.resource_id);
+      expect(before!.description).not.toContain('fix the bug');
+
+      // Second checkpoint — with firstPrompt
+      handleTrajectoryRequest(
+        'trajectory/checkpoint',
+        {
+          checkpoint: {
+            id: 'enrich-003b', agent: 'sidecar',
+            metadata: { project: 'proj', firstPrompt: 'fix the bug in auth' },
+          },
+        },
+        { swarmId: 'swarm-enrich-update', agentId },
+      );
+
+      const after = resourcesDAL.findResourceById(r1.resource_id);
+      expect(after!.description).toBe('fix the bug in auth');
+    });
+
+    it('falls back to session:swarmId name when no project context', () => {
+      const result = handleTrajectoryRequest(
+        'trajectory/checkpoint',
+        {
+          checkpoint: { id: 'enrich-004', agent: 'sidecar' },
+        },
+        { swarmId: 'swarm-no-project', agentId },
+      );
+
+      const resource = resourcesDAL.findResourceById(result.resource_id);
+      expect(resource!.name).toBe('session:swarm-no-project');
+    });
+
+    it('looks up existing resource by git_remote_url even after name change', () => {
+      // Create with project name
+      const r1 = handleTrajectoryRequest(
+        'trajectory/checkpoint',
+        {
+          checkpoint: { id: 'lookup-001', agent: 'sidecar', metadata: { project: 'renamed-app' } },
+        },
+        { swarmId: 'swarm-lookup-test', agentId },
+      );
+      expect(r1.created).toBe(true);
+
+      // Second checkpoint — same swarm, should find by git_remote_url
+      const r2 = handleTrajectoryRequest(
+        'trajectory/checkpoint',
+        {
+          checkpoint: { id: 'lookup-002', agent: 'sidecar', metadata: { project: 'renamed-app' } },
+        },
+        { swarmId: 'swarm-lookup-test', agentId },
+      );
+      expect(r2.created).toBe(false);
+      expect(r2.resource_id).toBe(r1.resource_id);
+    });
+  });
+
+  describe('swarm enrichment', () => {
+    it('updates swarm name with project context from checkpoint', () => {
+      const swarm = mapDAL.createSwarm(agentId, {
+        name: 'local-hub',
+        map_endpoint: 'ws://localhost:9999',
+        map_transport: 'websocket',
+      });
+      mapDAL.updateSwarm(swarm.id, { status: 'online' });
+
+      handleTrajectoryRequest(
+        'trajectory/checkpoint',
+        {
+          checkpoint: {
+            id: 'swarm-enrich-001', agent: 'default-sidecar', branch: 'feature',
+            metadata: { project: 'cool-project', template: 'gsd' },
+          },
+        },
+        { swarmId: swarm.id, agentId },
+      );
+
+      const updated = mapDAL.findSwarmById(swarm.id);
+      expect(updated!.name).toBe('cool-project (feature)');
+    });
+  });
+
+  describe('cache invalidation', () => {
+    it('clears storage metadata on new checkpoint', () => {
+      // Create session with cached storage
+      const r1 = handleTrajectoryRequest(
+        'trajectory/checkpoint',
+        { checkpoint: { id: 'cache-001', agent: 'sidecar' } },
+        { swarmId: 'swarm-cache-test', agentId },
+      );
+
+      // Simulate cache by setting storage metadata
+      resourcesDAL.updateResource(r1.resource_id, {
+        metadata: { storage: { backend: 'local', cachedAt: '2026-01-01' } },
+      });
+
+      // Verify cache is set
+      const before = resourcesDAL.findResourceById(r1.resource_id);
+      expect((before!.metadata as any)?.storage?.backend).toBe('local');
+
+      // New checkpoint should invalidate
+      handleTrajectoryRequest(
+        'trajectory/checkpoint',
+        { checkpoint: { id: 'cache-002', agent: 'sidecar' } },
+        { swarmId: 'swarm-cache-test', agentId },
+      );
+
+      const after = resourcesDAL.findResourceById(r1.resource_id);
+      expect((after!.metadata as any)?.storage).toBeUndefined();
     });
   });
 
