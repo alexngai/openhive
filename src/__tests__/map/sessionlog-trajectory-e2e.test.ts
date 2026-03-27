@@ -17,14 +17,19 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import { WebSocket } from 'ws';
+import * as fs from 'fs';
+import * as path from 'path';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as trajectoryDAL from '../../db/dal/trajectory-checkpoints.js';
+import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { setupMapWebSocket, stopMapWebSocket, setHeartbeatInterval } from '../../map/ws-map.js';
 import { getAllInbound, getInbound } from '../../map/connection-registry.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import { sessionsRoutes } from '../../api/routes/sessions.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
+import { initializeLocalSessionStorage, isSessionStorageInitialized } from '../../sessions/storage/index.js';
+import { handleTrajectoryRequest } from '../../map/trajectory-handler.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 // cc-swarm real function
@@ -96,6 +101,7 @@ const PORT = 19680;
 describe('Sessionlog Trajectory E2E: full server flow', () => {
   let app: FastifyInstance;
   let apiKey: string;
+  let agentId: string;
 
   // Shared state across ordered tests
   let ws: WebSocket;
@@ -106,8 +112,14 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
     cleanTestRoot(TEST_ROOT);
     initDatabase(TEST_DB_PATH);
 
+    // Initialize session storage for caching tests
+    const sessionsPath = path.join(TEST_ROOT, 'sessions');
+    fs.mkdirSync(sessionsPath, { recursive: true });
+    initializeLocalSessionStorage({ type: 'local', basePath: sessionsPath });
+
     const result = await agentsDAL.createAgent({ name: 'traj-e2e-agent' });
     apiKey = result.apiKey;
+    agentId = result.agent.id;
     // Set local agent for auth middleware (allows unauthenticated inject calls)
     setLocalAgent(result.agent);
 
@@ -346,40 +358,20 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
     expect(res.statusCode).toBe(404);
   });
 
-  // ── 8. Trajectory content on-demand (capability check) ─────────
+  // ── 8-12. Five-tier trajectory content resolution ──────────────
 
-  it('GET /sessions/:id/events returns 503 when swarm lacks canServeContent capability', async () => {
-    // The connected swarm has no capabilities set (raw WS client, no MAP agent registration)
-    const conn = getInbound(swarmId);
-    expect(conn).toBeDefined();
-    expect(conn!.capabilities).toBeUndefined(); // raw WS client has no capabilities
+  // Helper: mock transcript
+  const mockTranscript = [
+    JSON.stringify({ type: 'user', message: { content: 'Hello, fix the bug in app.ts' } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Looking at the bug.' }], usage: { input_tokens: 100, output_tokens: 50 } } }),
+  ].join('\n');
 
-    const res = await app.inject({ method: 'GET', url: `/api/v1/sessions/${resourceId}/events` });
-    // Should return 503 because fetchTranscriptFromSwarm checks canServeContent
-    expect(res.statusCode).toBe(503);
-  });
-
-  // ── 9. Trajectory content on-demand (with capability + mock sidecar) ──
-
-  it('GET /sessions/:id/events returns events when swarm serves content', async () => {
-    // Set canServeContent capability on the connection
-    const conn = getInbound(swarmId);
-    expect(conn).toBeDefined();
-    conn!.capabilities = { trajectory: { canReport: true, canServeContent: true } };
-
-    // Simulate sidecar: listen for content requests and respond with a mock transcript
-    const mockTranscript = [
-      JSON.stringify({ type: 'user', message: { content: 'Hello, fix the bug in app.ts' } }),
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'I\'ll look at the bug.' }], usage: { input_tokens: 100, output_tokens: 50 } } }),
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: 'src/app.ts' } }] } }),
-    ].join('\n');
-
-    // Listen on the raw WebSocket for content request and respond
-    const contentHandler = (data: Buffer | string) => {
+  // Helper: content handler for mock sidecar
+  function attachContentHandler() {
+    const handler = (data: Buffer | string) => {
       try {
         const msg = JSON.parse(data.toString());
         if (msg.method === 'trajectory/content.request' && msg.params?.request_id) {
-          // Respond with mock transcript as a raw JSON-RPC notification
           ws.send(JSON.stringify({
             jsonrpc: '2.0',
             method: 'trajectory/content.response',
@@ -387,14 +379,22 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
               request_id: msg.params.request_id,
               transcript: mockTranscript,
               metadata: { source: 'test' },
-              prompts: 'Hello, fix the bug in app.ts',
-              context: 'Test session',
+              prompts: '',
+              context: '',
             },
           }));
         }
       } catch { /* ignore */ }
     };
-    ws.on('message', contentHandler);
+    ws.on('message', handler);
+    return () => ws.removeListener('message', handler);
+  }
+
+  it('Tier 2: fetches from swarm on-demand and caches result', async () => {
+    // Set canServeContent on connection
+    const conn = getInbound(swarmId);
+    conn!.capabilities = { trajectory: { canReport: true, canServeContent: true } };
+    const cleanup = attachContentHandler();
 
     try {
       const res = await app.inject({ method: 'GET', url: `/api/v1/sessions/${resourceId}/events?limit=10` });
@@ -402,14 +402,112 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
 
       const body = JSON.parse(res.body);
       expect(body.format_id).toBe('claude_jsonl_v1');
-      expect(body.total).toBeGreaterThan(0);
       expect(body.events.length).toBeGreaterThan(0);
+      expect(body.events.map((e: any) => e.type)).toContain('user_message');
 
-      // Verify event types from the mock transcript
-      const types = body.events.map((e: any) => e.type);
-      expect(types).toContain('user_message');
+      // Verify cache was written (resource metadata should have storage.backend)
+      const resource = resourcesDAL.findResourceById(resourceId);
+      const meta = resource?.metadata as Record<string, unknown> | null;
+      expect((meta?.storage as any)?.backend).toBe('local');
     } finally {
-      ws.removeListener('message', contentHandler);
+      cleanup();
     }
+  });
+
+  it('Tier 1: serves from fresh cache (no swarm contact)', async () => {
+    // Cache was written by Tier 2 test above — resource has storage.backend = 'local'
+    // Remove capability so swarm can't be contacted (proves cache is used)
+    const conn = getInbound(swarmId);
+    conn!.capabilities = undefined;
+
+    const res = await app.inject({ method: 'GET', url: `/api/v1/sessions/${resourceId}/events?limit=10` });
+    expect(res.statusCode).toBe(200);
+
+    const body = JSON.parse(res.body);
+    expect(body.events.length).toBeGreaterThan(0);
+    expect(body.events.map((e: any) => e.type)).toContain('user_message');
+  });
+
+  it('Tier 4: serves stale cache after invalidation when swarm is offline', async () => {
+    // Invalidate cache by clearing storage metadata (simulates new checkpoint)
+    resourcesDAL.updateResource(resourceId, {
+      metadata: { format: { id: 'claude_jsonl_v1' } }, // storage cleared
+    });
+
+    // Swarm has no capability — can't fetch on-demand
+    const conn = getInbound(swarmId);
+    conn!.capabilities = undefined;
+
+    // Should fall through to stale cache (file still on disk)
+    const res = await app.inject({ method: 'GET', url: `/api/v1/sessions/${resourceId}/events?limit=10` });
+    expect(res.statusCode).toBe(200);
+
+    const body = JSON.parse(res.body);
+    expect(body.events.length).toBeGreaterThan(0);
+  });
+
+  it('Tier 3: reads from local sessionlog transcript when available', async () => {
+    // Create a new session resource with a known checkpoint ID
+    const sessionId = 'local-sessionlog-test-123';
+    const r = handleTrajectoryRequest(
+      'trajectory/checkpoint',
+      {
+        checkpoint: {
+          id: `${sessionId}-step1`,
+          agent: 'test-sidecar',
+          metadata: { project: 'test' },
+        },
+      },
+      { swarmId: 'swarm-local-sessionlog', agentId }, // use apiKey as agentId placeholder
+    );
+
+    // Clear any storage metadata
+    resourcesDAL.updateResource(r.resource_id, { metadata: {} });
+
+    // Create mock sessionlog state file + transcript
+    const sessionlogDir = path.join(process.cwd(), '.git', 'sessionlog-sessions');
+    const transcriptDir = path.join(TEST_ROOT, 'transcripts');
+    const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+
+    fs.mkdirSync(sessionlogDir, { recursive: true });
+    fs.mkdirSync(transcriptDir, { recursive: true });
+    fs.writeFileSync(transcriptPath, mockTranscript);
+    fs.writeFileSync(
+      path.join(sessionlogDir, `${sessionId}.json`),
+      JSON.stringify({ sessionID: sessionId, phase: 'active', transcriptPath }),
+    );
+
+    try {
+      const res = await app.inject({ method: 'GET', url: `/api/v1/sessions/${r.resource_id}/events?limit=10` });
+      expect(res.statusCode).toBe(200);
+
+      const body = JSON.parse(res.body);
+      expect(body.events.length).toBeGreaterThan(0);
+      expect(body.events.map((e: any) => e.type)).toContain('user_message');
+    } finally {
+      // Clean up sessionlog state
+      try { fs.unlinkSync(path.join(sessionlogDir, `${sessionId}.json`)); } catch {}
+      try { fs.unlinkSync(transcriptPath); } catch {}
+    }
+  });
+
+  it('Tier 5: returns 503 when nothing is available', async () => {
+    // Create a session with no cache, no swarm, no local sessionlog
+    const r = handleTrajectoryRequest(
+      'trajectory/checkpoint',
+      {
+        checkpoint: { id: 'tier5-orphan-001', agent: 'ghost-agent' },
+      },
+      { swarmId: 'swarm-tier5-offline', agentId },
+    );
+
+    // Clear metadata
+    resourcesDAL.updateResource(r.resource_id, { metadata: {} });
+
+    const res = await app.inject({ method: 'GET', url: `/api/v1/sessions/${r.resource_id}/events` });
+    expect(res.statusCode).toBe(503);
+
+    const body = JSON.parse(res.body);
+    expect(body.message).toContain('not available');
   });
 });

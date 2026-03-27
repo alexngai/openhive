@@ -377,22 +377,42 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
     router.start();
 
-    // Capture agent capabilities when the agent registers via MAP protocol
+    // Capture agent capabilities and metadata when the agent registers via MAP protocol
     const onAgentRegistered = (event: any) => {
       const registeredAgent = event.data?.agent ?? event.data;
       if (!registeredAgent) return;
 
-      // Only capture for our session
+      // In open mode, match by session ID if available, otherwise accept any registration
+      // on our router (we know the swarmId is correct because this handler is scoped to it)
       try {
         const session = router.session;
-        if (!session || session.id !== registeredAgent.sessionId) return;
+        if (session?.id && registeredAgent.sessionId && session.id !== registeredAgent.sessionId) return;
       } catch {
-        return;
+        // router.session may not be available — continue anyway in open mode
       }
 
       const conn = getInbound(swarmId);
       if (conn && registeredAgent.capabilities) {
         conn.capabilities = registeredAgent.capabilities;
+      }
+
+      // Enrich swarm record with agent metadata (project, branch, template)
+      if (registeredAgent.metadata) {
+        const meta = registeredAgent.metadata as Record<string, unknown>;
+        const project = meta.project as string | undefined;
+        const branch = meta.branch as string | undefined;
+        const template = meta.template as string | undefined;
+
+        if (project) {
+          const displayName = branch ? `${project} (${branch})` : project;
+          try {
+            updateSwarm(swarmId, {
+              name: displayName,
+              capabilities: registeredAgent.capabilities || undefined,
+              metadata: meta,
+            });
+          } catch { /* non-critical */ }
+        }
       }
     };
     const unsubRegistered = mapServer.eventBus.on('agent.registered', onAgentRegistered);

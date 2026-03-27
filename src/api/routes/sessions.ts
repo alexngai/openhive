@@ -6,6 +6,8 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
+import * as fs from 'fs';
+import * as path from 'path';
 import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import * as trajectoryDAL from '../../db/dal/trajectory-checkpoints.js';
@@ -88,6 +90,47 @@ const QuerySessionsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
+
+// ============================================================================
+// Local Sessionlog Transcript Lookup
+// ============================================================================
+
+/**
+ * Try to read a session transcript directly from sessionlog's local state.
+ * Works when OpenHive runs on the same machine as the Claude Code agent.
+ *
+ * Extracts the session ID from checkpoint data, finds the sessionlog state
+ * file at .git/sessionlog-sessions/<sessionID>.json, reads the transcriptPath,
+ * and returns the raw JSONL content.
+ *
+ * @returns transcript string or null if not available locally
+ */
+function readLocalSessionlogTranscript(sessionResourceId: string): string | null {
+  try {
+    // Get session_id from the latest checkpoint's checkpoint_id
+    // Checkpoint IDs are formatted as: {sessionID}-step{N} or just {sessionID}
+    const { data: checkpoints } = trajectoryDAL.listCheckpointsForSession(sessionResourceId, 1, 0);
+    if (checkpoints.length === 0) return null;
+
+    const checkpointId = checkpoints[0].checkpoint_id;
+    // Extract session ID: either everything before -step, or the whole ID
+    const sessionId = checkpointId.replace(/-step\d+$/, '');
+    if (!sessionId) return null;
+
+    // Look for sessionlog state in common locations
+    const sessionlogDir = path.join(process.cwd(), '.git', 'sessionlog-sessions');
+    const statePath = path.join(sessionlogDir, `${sessionId}.json`);
+    if (!fs.existsSync(statePath)) return null;
+
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+    const transcriptPath = state.transcriptPath;
+    if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
+
+    return fs.readFileSync(transcriptPath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
 
 // ============================================================================
 // Routes
@@ -511,7 +554,7 @@ export async function sessionsRoutes(
       const offset = Number(request.query.offset) || 0;
 
       let content: string | null = null;
-      let formatId = metadata?.format?.id || 'claude-jsonl';
+      let formatId = metadata?.format?.id || 'claude_jsonl_v1';
 
       // Try local storage first (uploaded sessions use ses_ IDs, cached trajectories use resource ID)
       if (storageBackend && storageBackend !== 'git' && isSessionStorageInitialized()) {
@@ -550,6 +593,17 @@ export async function sessionsRoutes(
               // Non-critical — cache failure doesn't block the response
             }
           }
+        }
+      }
+
+      // Try reading transcript directly from sessionlog on local disk.
+      // Works when OpenHive runs on the same machine as the Claude Code agent.
+      // Uses the session_id from checkpoint metadata to find the sessionlog state,
+      // which contains the transcriptPath to the Claude Code JSONL file.
+      if (!content) {
+        content = readLocalSessionlogTranscript(resource.id);
+        if (content) {
+          formatId = 'claude_jsonl_v1';
         }
       }
 

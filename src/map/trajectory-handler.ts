@@ -20,6 +20,7 @@ import type { TrajectoryCheckpointParams, TrajectoryCheckpointResult } from './t
 import { findResourceById, findSessionResourceBySwarm, upsertDiscoveredResource, updateResource } from '../db/dal/syncable-resources.js';
 import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
 import { broadcastToChannel } from '../realtime/index.js';
+import { updateSwarm } from '../db/dal/map.js';
 
 // ============================================================================
 // Types
@@ -99,6 +100,21 @@ function handleCheckpoint(
     source_swarm_id: swarmId,
     source_agent_id: agentId,
   });
+
+  // ── Enrich swarm record with project context ────────────────────────
+  const meta = checkpoint.metadata as Record<string, unknown> | undefined;
+  const project = meta?.project as string | undefined;
+  if (project && swarmId) {
+    try {
+      const branch = checkpoint.branch as string | undefined;
+      const template = meta?.template as string | undefined;
+      const swarmName = branch ? `${project} (${branch})` : project;
+      updateSwarm(swarmId, {
+        name: swarmName,
+        metadata: { project, branch, template, type: (checkpoint.agent as string) || 'sidecar' },
+      });
+    } catch { /* non-critical */ }
+  }
 
   // ── Invalidate cached trajectory content ────────────────────────────
   //    New checkpoint means the session has progressed. Clear the storage
@@ -186,22 +202,57 @@ function resolveSessionResource(
     return { resourceId: params.resource_id, created: false };
   }
 
-  // 2. Look up by swarm pattern
+  // Extract context from checkpoint metadata for display
+  const meta = checkpoint.metadata as Record<string, unknown> | undefined;
+  const project = meta?.project as string | undefined;
+  const branch = checkpoint.branch as string | undefined;
+  const firstPrompt = meta?.firstPrompt as string | undefined;
+  const template = meta?.template as string | undefined;
+
+  // Build a human-readable session name and description
   const sessionName = `session:${swarmId}`;
-  const existing = findSessionResourceBySwarm(agentId, sessionName);
+  const displayName = project
+    ? (branch ? `${project} (${branch})` : project)
+    : sessionName;
+  const description = firstPrompt
+    ? firstPrompt.slice(0, 200)
+    : `Trajectory session for ${(checkpoint.agent as string) || swarmId}`;
+
+  // 2. Look up by swarm (via git_remote_url pattern)
+  const existing = findSessionResourceBySwarm(agentId, swarmId);
   if (existing) {
+    // Update name/description with latest context (first prompt, branch may arrive after creation)
+    const existingMeta = (existing.metadata as Record<string, unknown>) || {};
+    const needsUpdate = existing.name === sessionName
+      || !existingMeta.project
+      || (firstPrompt && !existingMeta.firstPrompt);
+    if (needsUpdate) {
+      try {
+        updateResource(existing.id, {
+          name: displayName,
+          description,
+          metadata: {
+            ...existingMeta,
+            project,
+            branch,
+            template,
+            firstPrompt: firstPrompt?.slice(0, 200),
+          },
+        });
+      } catch { /* non-critical */ }
+    }
     return { resourceId: existing.id, created: false };
   }
 
-  // 3. Auto-create
-  const agentLabel = (checkpoint.agent as string) || swarmId;
+  // 3. Auto-create with enriched context
   const { resource, created } = upsertDiscoveredResource({
     resource_type: 'session',
-    name: sessionName,
-    description: `Trajectory session for ${agentLabel}`,
+    name: displayName,
+    description,
     git_remote_url: `map://trajectory/${swarmId}`,
     owner_agent_id: agentId,
     scope: 'manual',
+    metadata: { project, branch, template, firstPrompt: firstPrompt?.slice(0, 200) },
   });
 
   return { resourceId: resource.id, created };
