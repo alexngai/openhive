@@ -328,10 +328,7 @@ function TaskCard({ task }: { task: MAPTask }) {
   const style = TASK_STATUS_STYLES[status] || TASK_STATUS_STYLES.open;
 
   return (
-    <Link
-      to={`/tasks/${task.id}`}
-      className="card card-hover px-3 py-2 flex items-center gap-3 group"
-    >
+    <div className="card px-3 py-2 flex items-center gap-3">
       <div
         className="w-7 h-7 rounded flex items-center justify-center shrink-0"
         style={{ backgroundColor: 'var(--color-elevated)' }}
@@ -340,7 +337,7 @@ function TaskCard({ task }: { task: MAPTask }) {
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium truncate group-hover:text-honey-500 transition-colors">
+          <span className="text-sm font-medium truncate">
             {task.title || task.id}
           </span>
           <span className={`text-2xs px-1.5 py-0.5 rounded font-medium ${style.bg} ${style.text}`}>
@@ -361,11 +358,7 @@ function TaskCard({ task }: { task: MAPTask }) {
           </div>
         )}
       </div>
-      <ChevronRight
-        className="w-3.5 h-3.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{ color: 'var(--color-text-muted)' }}
-      />
-    </Link>
+    </div>
   );
 }
 

@@ -5,15 +5,71 @@ import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { parseFrontmatter } from 'minimem/session';
 import { listMemoryFiles } from 'minimem/internal';
-import { createSkillBank, discoverSkills } from 'skill-tree';
+// Minimem is imported lazily via createRequire to avoid ESM resolution issues
+// with the experimental node:sqlite dependency
+import { createRequire } from 'node:module';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _MinimemClass: any = null;
+function loadMinimemSync() {
+  if (!_MinimemClass) {
+    try {
+      const require = createRequire(import.meta.url);
+      const mod = require('minimem');
+      _MinimemClass = mod.Minimem;
+    } catch {
+      // minimem not available — will fall back to substring search
+    }
+  }
+  return _MinimemClass;
+}
+import { FilesystemStorageAdapter, discoverSkills } from 'skill-tree';
 import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { OpenHiveOpenTasksClient } from '../../opentasks-client/index.js';
 import { getSyncOrchestrator } from '../../sync/sync-orchestrator.js';
-import { getMapTaskStore } from '../../map/task-store.js';
-import { bridgeOpenTasksMutation } from '../../map/task-bridge.js';
 import type { SyncableResource } from '../../types.js';
 import type { Config } from '../../config.js';
+
+// ============================================================================
+// Minimem Instance Cache
+// ============================================================================
+
+// Cache Minimem instances per memory directory to avoid reopening the SQLite index on each request.
+// OpenHive is read-only — the agent's minimem maintains the index.
+// Instances auto-expire after 5 minutes of inactivity.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const minimemCache = new Map<string, { instance: any; timer: ReturnType<typeof setTimeout> }>();
+const MINIMEM_CACHE_TTL = 5 * 60 * 1000;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getMinimemInstance(memoryDir: string): Promise<any> {
+  const cached = minimemCache.get(memoryDir);
+  if (cached) {
+    clearTimeout(cached.timer);
+    cached.timer = setTimeout(() => evictMinimem(memoryDir), MINIMEM_CACHE_TTL);
+    return cached.instance;
+  }
+
+  const Minimem = loadMinimemSync();
+  if (!Minimem) throw new Error('minimem not available');
+  const instance = await Minimem.create({
+    memoryDir,
+    embedding: { provider: 'none' }, // BM25-only for server-side search
+  });
+
+  const timer = setTimeout(() => evictMinimem(memoryDir), MINIMEM_CACHE_TTL);
+  minimemCache.set(memoryDir, { instance, timer });
+  return instance;
+}
+
+function evictMinimem(memoryDir: string): void {
+  const cached = minimemCache.get(memoryDir);
+  if (cached) {
+    cached.instance.close().catch(() => {});
+    clearTimeout(cached.timer);
+    minimemCache.delete(memoryDir);
+  }
+}
 
 // ============================================================================
 // Helpers
@@ -252,49 +308,56 @@ export async function resourceContentRoutes(
     }
 
     const limit = Math.min(Math.max(request.query.limit || 20, 1), 100);
-    const queryLower = query.toLowerCase();
-    const memoryFiles = await listMemoryFiles(localPath);
 
-    const results: Array<{
-      path: string;
-      line: number;
-      snippet: string;
-      score: number;
-    }> = [];
+    try {
+      // Query minimem's existing index (maintained by the agent's minimem instance).
+      // No sync() — OpenHive reads the index, the agent writes it.
+      const mem = await getMinimemInstance(localPath);
+      const searchResults = await mem.search(query, { maxResults: limit, minScore: 0.1 });
 
-    for (const filePath of memoryFiles) {
-      const content = readFileSync(filePath, 'utf-8');
-      const lines = content.split('\n');
-      const relPath = relative(localPath, filePath);
+      const results = searchResults.map((r: { path: string; startLine: number; endLine: number; score: number; snippet: string; heading?: string }) => ({
+        path: r.path.startsWith('/') ? relative(localPath, r.path) : r.path,
+        line: r.startLine,
+        end_line: r.endLine,
+        snippet: r.snippet,
+        score: r.score,
+        heading: r.heading ?? null,
+      }));
 
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].toLowerCase().includes(queryLower)) {
-          // Build a context snippet: the matching line plus up to 1 line before/after
-          const snippetLines: string[] = [];
-          if (i > 0) snippetLines.push(lines[i - 1]);
-          snippetLines.push(lines[i]);
-          if (i < lines.length - 1) snippetLines.push(lines[i + 1]);
+      return reply.send({ results, total: results.length, engine: 'minimem' });
+    } catch {
+      // Fallback: naive substring search if minimem fails
+      const queryLower = query.toLowerCase();
+      const memoryFiles = await listMemoryFiles(localPath);
 
-          // Simple relevance score: count occurrences in the line
-          const occurrences = lines[i].toLowerCase().split(queryLower).length - 1;
+      const results: Array<{
+        path: string;
+        line: number;
+        snippet: string;
+        score: number;
+      }> = [];
 
-          results.push({
-            path: relPath,
-            line: i + 1,
-            snippet: snippetLines.join('\n'),
-            score: occurrences,
-          });
+      for (const filePath of memoryFiles) {
+        const content = readFileSync(filePath, 'utf-8');
+        const lines = content.split('\n');
+        const relPath = relative(localPath, filePath);
+
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].toLowerCase().includes(queryLower)) {
+            const snippetLines: string[] = [];
+            if (i > 0) snippetLines.push(lines[i - 1]);
+            snippetLines.push(lines[i]);
+            if (i < lines.length - 1) snippetLines.push(lines[i + 1]);
+            const occurrences = lines[i].toLowerCase().split(queryLower).length - 1;
+            results.push({ path: relPath, line: i + 1, snippet: snippetLines.join('\n'), score: occurrences });
+          }
         }
       }
+
+      results.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.line - b.line);
+      const total = results.length;
+      return reply.send({ results: results.slice(0, limit), total, engine: 'fallback' });
     }
-
-    // Sort by score descending, then by file path and line number
-    results.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.line - b.line);
-
-    const total = results.length;
-    const trimmed = results.slice(0, limit);
-
-    return reply.send({ results: trimmed, total });
   });
 
   // ============================================================================
@@ -457,6 +520,7 @@ export async function resourceContentRoutes(
 
     // BFS traversal
     const visited = new Set<string>();
+    const visitedEdges = new Set<string>();
     const edges: Array<{
       from: string;
       to: string;
@@ -477,7 +541,11 @@ export async function resourceContentRoutes(
           if (note) {
             for (const link of note.links) {
               if (relation && link.relation !== relation) continue;
-              edges.push({ from: currentId, to: link.target, relation: link.relation, layer: link.layer, depth });
+              const edgeKey = `${currentId}→${link.target}:${link.relation}`;
+              if (!visitedEdges.has(edgeKey)) {
+                visitedEdges.add(edgeKey);
+                edges.push({ from: currentId, to: link.target, relation: link.relation, layer: link.layer, depth });
+              }
               if (!visited.has(link.target)) {
                 visited.add(link.target);
                 nextFrontier.push(link.target);
@@ -494,7 +562,11 @@ export async function resourceContentRoutes(
             for (const link of sourceNote.links) {
               if (link.target !== currentId) continue;
               if (relation && link.relation !== relation) continue;
-              edges.push({ from: sourceId, to: currentId, relation: link.relation, layer: link.layer, depth });
+              const edgeKey = `${sourceId}→${currentId}:${link.relation}`;
+              if (!visitedEdges.has(edgeKey)) {
+                visitedEdges.add(edgeKey);
+                edges.push({ from: sourceId, to: currentId, relation: link.relation, layer: link.layer, depth });
+              }
               if (!visited.has(sourceId)) {
                 visited.add(sourceId);
                 nextFrontier.push(sourceId);
@@ -547,15 +619,15 @@ export async function resourceContentRoutes(
       });
     }
 
-    const bank = createSkillBank({ storage: { basePath: localPath } });
-    await bank.initialize();
-    const allSkills = await bank.listSkills();
+    const adapter = new FilesystemStorageAdapter({ basePath: localPath });
+    await adapter.initialize();
+    const allSkills = await adapter.listSkills();
 
     // Get file paths via discovery for the path field
     const discovered = await discoverSkills(localPath);
     const pathMap = new Map(discovered.map(d => [d.id, relative(localPath, d.filePath)]));
 
-    const skills = allSkills.map((skill: import('skill-tree').Skill) => ({
+    const skills = allSkills.map(skill => ({
       id: skill.id,
       name: skill.name || null,
       version: skill.version || null,
@@ -594,9 +666,9 @@ export async function resourceContentRoutes(
       });
     }
 
-    const bank = createSkillBank({ storage: { basePath: localPath } });
-    await bank.initialize();
-    const skill = await bank.getSkill(skillId);
+    const adapter = new FilesystemStorageAdapter({ basePath: localPath });
+    await adapter.initialize();
+    const skill = await adapter.getSkill(skillId);
 
     if (!skill) {
       return reply.status(404).send({
@@ -618,8 +690,12 @@ export async function resourceContentRoutes(
       description: skill.description || null,
       tags: skill.tags,
       author: skill.author || null,
-      instructions: skill.instructions || null,
-      related: skill.related || [],
+      problem: skill.problem || null,
+      triggerConditions: skill.triggerConditions,
+      solution: skill.solution || null,
+      verification: skill.verification || null,
+      examples: skill.examples,
+      notes: skill.notes || null,
       raw,
     });
   });
@@ -847,19 +923,6 @@ export async function resourceContentRoutes(
 
     appendFileSync(graphPath, JSON.stringify(node) + '\n');
 
-    // Bridge to MAPTaskStore → broadcasts to connected agents + frontend
-    try {
-      bridgeOpenTasksMutation(getMapTaskStore(), {
-        type: 'create',
-        nodeId,
-        title: body.title,
-        description: body.description,
-        status: node.status as string,
-        metadata: body.metadata,
-        sourceSwarmId: `rest:${request.agent!.id}`,
-      });
-    } catch { /* best effort */ }
-
     return reply.status(201).send({ node_id: nodeId, status: node.status });
   });
 
@@ -920,18 +983,6 @@ export async function resourceContentRoutes(
     if (body.error) update.error = body.error;
 
     appendFileSync(graphPath, JSON.stringify(update) + '\n');
-
-    // Bridge to MAPTaskStore → broadcasts to connected agents + frontend
-    try {
-      bridgeOpenTasksMutation(getMapTaskStore(), {
-        type: 'update-status',
-        nodeId: request.params.nodeId,
-        status: body.status,
-        previousStatus,
-        metadata: body.result ? { result: body.result } : undefined,
-        sourceSwarmId: `rest:${request.agent!.id}`,
-      });
-    } catch { /* best effort */ }
 
     return reply.send({
       node_id: request.params.nodeId,
