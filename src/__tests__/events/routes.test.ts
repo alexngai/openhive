@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
-import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
+import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as eventsDAL from '../../db/dal/events.js';
 import { eventsRoutes } from '../../api/routes/events.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';

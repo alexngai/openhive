@@ -16,6 +16,9 @@ export const MAP_OPENTASKS_METHODS = {
   READY: 'map/opentasks/ready',
   QUERY: 'map/opentasks/query',
   STATUS: 'map/opentasks/status',
+  // Mutation methods
+  CREATE_TASK: 'map/opentasks/create-task',
+  UPDATE_STATUS: 'map/opentasks/update-status',
 } as const;
 
 export type MAPOpenTasksMethod = (typeof MAP_OPENTASKS_METHODS)[keyof typeof MAP_OPENTASKS_METHODS];
@@ -110,4 +113,37 @@ export interface OpenTasksStatusResult {
   daemon_running: boolean;
   graph_file_exists: boolean;
   graph_last_modified: string | null;
+}
+
+// ============================================================================
+// Mutation Types
+// ============================================================================
+
+export interface OpenTasksCreateTaskParams extends OpenTasksResourceTarget {
+  title: string;
+  description?: string;
+  status?: string;
+  priority?: number;
+  /** Metadata to attach to the task node (e.g., assigned_to, context) */
+  metadata?: Record<string, unknown>;
+}
+
+export interface OpenTasksCreateTaskResult {
+  node_id: string;
+  status: string;
+}
+
+export interface OpenTasksUpdateStatusParams extends OpenTasksResourceTarget {
+  node_id: string;
+  status: string;
+  /** Optional result data (for completed tasks) */
+  result?: Record<string, unknown>;
+  /** Optional error message (for failed tasks) */
+  error?: string;
+}
+
+export interface OpenTasksUpdateStatusResult {
+  node_id: string;
+  previous_status: string | null;
+  new_status: string;
 }

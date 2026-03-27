@@ -19,8 +19,11 @@ import type {
 /**
  * Claude Code session.jsonl line types
  */
+/** Claude Code conversation content types that get full event rendering */
+const CONTENT_TYPES = new Set(['user', 'assistant', 'result', 'summary']);
+
 interface ClaudeSessionLine {
-  type: 'user' | 'assistant' | 'result' | 'summary';
+  type: 'user' | 'assistant' | 'result' | 'summary' | string;
   sessionId?: string;
   timestamp?: string;
   uuid?: string;
@@ -195,14 +198,59 @@ export class ClaudeSessionAdapter implements SessionAdapter {
           sequence: sequence++,
         };
 
-        switch (line.type) {
-          case 'user':
+        // Aggregate consecutive non-content entries into single summary events.
+        // Any type that isn't user/assistant/result/summary gets collapsed.
+        if (!CONTENT_TYPES.has(line.type)) {
+          const lastEvent = events[events.length - 1];
+          if (lastEvent?.type === 'custom' && lastEvent.eventType === `claude_${line.type}`) {
+            (lastEvent as any)._count = ((lastEvent as any)._count || 1) + 1;
+            lastEvent.data = { type: line.type, count: (lastEvent as any)._count };
+          } else {
             events.push({
               ...baseEvent,
-              type: 'user_message',
-              content: this.convertClaudeContent(line.message?.content),
-            });
+              type: 'custom',
+              eventType: `claude_${line.type}`,
+              data: { type: line.type, count: 1 },
+              _count: 1,
+            } as SessionEvent & { _count: number });
+          }
+          continue;
+        }
+
+        switch (line.type) {
+          case 'user': {
+            // Check if this is a tool_result delivery (user message with only tool_result blocks)
+            const userContent = line.message?.content;
+            const isToolResult = Array.isArray(userContent)
+              && userContent.length > 0
+              && userContent.every((b) => b.type === 'tool_result');
+
+            if (isToolResult) {
+              // Convert each tool_result block to a tool_result event
+              for (const block of userContent as ClaudeContentBlock[]) {
+                events.push({
+                  ...baseEvent,
+                  id: `${baseEvent.id}_${block.tool_use_id || 'result'}`,
+                  type: 'tool_result',
+                  toolCallId: block.tool_use_id || 'unknown',
+                  content: [{
+                    type: 'text',
+                    text: typeof block.content === 'string'
+                      ? block.content
+                      : JSON.stringify(block.content),
+                  } as TextContent],
+                  isError: block.is_error,
+                });
+              }
+            } else {
+              events.push({
+                ...baseEvent,
+                type: 'user_message',
+                content: this.convertClaudeContent(userContent),
+              });
+            }
             break;
+          }
 
           case 'assistant':
             // Check for thinking blocks
@@ -258,14 +306,8 @@ export class ClaudeSessionAdapter implements SessionAdapter {
             break;
 
           default:
-            // Store unknown types as custom events
-            events.push({
-              ...baseEvent,
-              type: 'custom',
-              eventType: `claude_${line.type}`,
-              data: line,
-              _original: line,
-            });
+            // All non-content types are handled by the aggregation above
+            break;
         }
       } catch {
         // Skip malformed lines
@@ -273,7 +315,47 @@ export class ClaudeSessionAdapter implements SessionAdapter {
       }
     }
 
-    return events;
+    // Post-process: pair tool_result events with their matching tool_call content blocks
+    return this.pairToolResults(events);
+  }
+
+  /**
+   * Merge tool_result events into the tool_call content blocks they belong to.
+   * This pairs each result with its call so the UI can show them together.
+   * Standalone tool_result events are removed after merging.
+   */
+  private pairToolResults(events: SessionEvent[]): SessionEvent[] {
+    // Build a map of toolCallId → tool_call content block for quick lookup
+    const toolCallBlocks = new Map<string, ToolCallContent>();
+    for (const event of events) {
+      if (event.type === 'assistant_message' && event.content) {
+        for (const block of event.content) {
+          if (block.type === 'tool_call' && (block as ToolCallContent).toolCallId) {
+            toolCallBlocks.set((block as ToolCallContent).toolCallId, block as ToolCallContent);
+          }
+        }
+      }
+    }
+
+    // Merge results into their matching calls
+    const mergedIds = new Set<string>();
+    for (const event of events) {
+      if (event.type === 'tool_result' && event.toolCallId) {
+        const call = toolCallBlocks.get(event.toolCallId);
+        if (call) {
+          // Attach result info to the tool_call block
+          call.status = event.isError ? 'failed' : 'completed';
+          call.output = event.content
+            ?.filter((c): c is TextContent => c.type === 'text')
+            .map((c) => c.text)
+            .join('\n');
+          mergedIds.add(event.id);
+        }
+      }
+    }
+
+    // Filter out merged tool_result events
+    return events.filter((e) => !mergedIds.has(e.id));
   }
 
   fromAcpEvents(events: SessionEvent[]): string {

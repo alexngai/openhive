@@ -5,6 +5,7 @@ import {
   Tag, ChevronDown, ChevronUp, ExternalLink, Shield, Copy, Check,
 } from 'lucide-react';
 import { useResource, useResourceEvents, useCheckUpdates, useMapSwarms } from '../hooks/useApi';
+import { useResourcesRealtime, useSwarmRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { toast } from '../stores/toast';
@@ -162,6 +163,8 @@ export function ResourceDetail() {
   const { data: resource, isLoading } = useResource(id!);
   const { data: eventsData } = useResourceEvents(id!);
   const checkUpdates = useCheckUpdates();
+  useResourcesRealtime();
+  useSwarmRealtime();
   const [showEvents, setShowEvents] = useState(true);
 
   const events = eventsData?.data || [];
@@ -263,6 +266,11 @@ export function ResourceDetail() {
       {resource.resource_type === 'task' && (resource.metadata as Record<string, unknown> | null)?.opentasks && (
         <div className="mb-3">
           <OpenTasksSummary resourceId={resource.id} />
+          <div className="mt-2">
+            <Link to={`/tasks/${resource.id}`} className="btn btn-secondary text-xs">
+              View Task Graph
+            </Link>
+          </div>
         </div>
       )}
 

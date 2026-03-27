@@ -196,12 +196,17 @@ export function getSessionStats(sessionResourceId: string): SessionStats {
 /**
  * List all session resources with checkpoint stats, for the sessions list page.
  */
-export function listAllSessions(limit = 50, offset = 0): { data: SessionListItem[]; total: number } {
+export function listAllSessions(limit = 50, offset = 0, swarmId?: string): { data: SessionListItem[]; total: number } {
   const db = getDatabase();
 
+  const swarmFilter = swarmId
+    ? " AND r.id IN (SELECT DISTINCT session_resource_id FROM trajectory_checkpoints WHERE source_swarm_id = ?)"
+    : "";
+  const swarmParams = swarmId ? [swarmId] : [];
+
   const total = (db.prepare(
-    "SELECT COUNT(*) as count FROM syncable_resources WHERE resource_type = 'session'"
-  ).get() as { count: number }).count;
+    `SELECT COUNT(*) as count FROM syncable_resources r WHERE r.resource_type = 'session'${swarmFilter}`
+  ).get(...swarmParams) as { count: number }).count;
 
   const rows = db.prepare(`
     SELECT
@@ -211,11 +216,11 @@ export function listAllSessions(limit = 50, offset = 0): { data: SessionListItem
       MAX(tc.synced_at) as last_synced_at
     FROM syncable_resources r
     LEFT JOIN trajectory_checkpoints tc ON tc.session_resource_id = r.id
-    WHERE r.resource_type = 'session'
+    WHERE r.resource_type = 'session'${swarmFilter}
     GROUP BY r.id
     ORDER BY COALESCE(tc.synced_at, r.created_at) DESC
     LIMIT ? OFFSET ?
-  `).all(limit, offset) as Record<string, unknown>[];
+  `).all(...swarmParams, limit, offset) as Record<string, unknown>[];
 
   const data: SessionListItem[] = rows.map((row) => {
     // Get latest agent and token totals for each session

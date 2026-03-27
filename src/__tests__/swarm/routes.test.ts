@@ -6,7 +6,6 @@ import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import { swarmHostingRoutes } from '../../api/routes/swarm-hosting.js';
 import { SwarmManager } from '../../swarm/manager.js';
-import * as dal from '../../swarm/dal.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
@@ -35,22 +34,6 @@ function createTestConfig(): Config {
       max_health_failures: 3,
     },
   });
-}
-
-// Auth middleware that reads Bearer token
-function createAuthPreHandler(agents: Map<string, { id: string; name: string }>) {
-  return async function authMiddleware(request: any, reply: any) {
-    const auth = request.headers.authorization;
-    if (!auth || !auth.startsWith('Bearer ')) {
-      return reply.status(401).send({ error: 'Unauthorized' });
-    }
-    const token = auth.slice(7);
-    const agent = agents.get(token);
-    if (!agent) {
-      return reply.status(401).send({ error: 'Invalid token' });
-    }
-    request.agent = agent;
-  };
 }
 
 describe('Swarm Hosting API Routes', () => {
@@ -101,7 +84,7 @@ describe('Swarm Hosting API Routes', () => {
     app.decorateRequest('agent', null);
 
     // Add auth hook for all routes
-    app.addHook('preHandler', async (request: any, reply: any) => {
+    app.addHook('preHandler', async (request: any, _reply: any) => {
       const auth = request.headers.authorization;
       if (auth && auth.startsWith('Bearer ')) {
         const token = auth.slice(7);

@@ -147,7 +147,7 @@ export async function syncProtocolRoutes(fastify: FastifyInstance): Promise<void
     }
 
     // NEW-3: Only allow a peer to remove itself — match authenticated identity
-    const peerId = (request as Record<string, unknown>).syncPeerId as string | undefined;
+    const peerId = (request as unknown as Record<string, unknown>).syncPeerId as string | undefined;
     if (peerId) {
       // Find this peer's own record — must match the authenticated syncPeerId
       const peer = syncPeersDAL.findSyncPeerById(peerId);

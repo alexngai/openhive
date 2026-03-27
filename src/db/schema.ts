@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 29;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -201,6 +201,11 @@ CREATE TABLE IF NOT EXISTS syncable_resources (
   -- Scope: how was this resource discovered/registered
   scope TEXT DEFAULT 'manual'
     CHECK (scope IN ('global', 'project', 'agent', 'manual')),
+  -- Sync strategy: how content is acquired and kept current
+  sync_strategy TEXT DEFAULT 'metadata'
+    CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle')),
+  -- Local filesystem path (for local reads or clone location)
+  local_path TEXT,
   -- Resource-specific metadata stored as JSON
   metadata TEXT,
   -- Cross-instance sync origin tracking
@@ -601,6 +606,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(ori
 `;
 
 // Migration V23: Add origin tracking columns to coordination tables for cross-instance idempotency
+// (coordination_tasks ALTER statements kept for upgrading existing DBs; silently ignored if table was already dropped by V28)
 export const MIGRATION_V23_COORDINATION_ORIGIN = `
 ALTER TABLE coordination_tasks ADD COLUMN origin_instance_id TEXT;
 ALTER TABLE coordination_tasks ADD COLUMN origin_task_id TEXT;
@@ -610,11 +616,519 @@ ALTER TABLE swarm_messages ADD COLUMN origin_message_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_swarm_messages_origin ON swarm_messages(origin_instance_id, origin_message_id);
 `;
 
+// Migration V28: Drop deprecated coordination_tasks table (tasks now route through OpenTasks)
+export const MIGRATION_V28_DROP_COORDINATION_TASKS = `
+DROP TABLE IF EXISTS coordination_tasks;
+`;
+
+// Migration V27: Add sync_strategy and local_path columns to syncable_resources
+export const MIGRATION_V27_SYNC_STRATEGY = `
+ALTER TABLE syncable_resources ADD COLUMN sync_strategy TEXT DEFAULT 'metadata'
+  CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle'));
+ALTER TABLE syncable_resources ADD COLUMN local_path TEXT;
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
+`;
+
 // Migration V18: Add scope column to syncable_resources
 export const MIGRATION_V18_RESOURCE_SCOPE = `
 ALTER TABLE syncable_resources ADD COLUMN scope TEXT DEFAULT 'manual'
   CHECK (scope IN ('global', 'project', 'agent', 'manual'));
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
+`;
+
+// ============================================================================
+// Subsystem Migration Schemas
+// All migration SQL is consolidated here so the DB layer is self-contained.
+// ============================================================================
+
+// Migration V11: MAP Hub tables (headscale-style swarm coordination)
+export const MIGRATION_V11_MAP = `
+-- MAP swarms: registered MAP systems (analogous to headscale machines)
+CREATE TABLE IF NOT EXISTS map_swarms (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  -- Connection info
+  map_endpoint TEXT NOT NULL,
+  map_transport TEXT DEFAULT 'websocket'
+    CHECK (map_transport IN ('websocket', 'http-sse', 'ndjson')),
+  -- Ownership
+  owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  -- State
+  status TEXT DEFAULT 'online'
+    CHECK (status IN ('online', 'offline', 'unreachable')),
+  last_seen_at TEXT DEFAULT (datetime('now')),
+  -- Capabilities (JSON)
+  capabilities TEXT,
+  -- Auth for federation
+  auth_method TEXT DEFAULT 'bearer'
+    CHECK (auth_method IN ('bearer', 'api-key', 'mtls', 'none')),
+  auth_token_hash TEXT,
+  -- Stats
+  agent_count INTEGER DEFAULT 0,
+  scope_count INTEGER DEFAULT 0,
+  -- Headscale/Tailscale network info (populated after host joins tailnet)
+  headscale_node_id TEXT,
+  tailscale_ips TEXT,            -- JSON array of assigned Tailscale IPs
+  tailscale_dns_name TEXT,       -- MagicDNS hostname
+  -- Metadata (JSON)
+  metadata TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- MAP agent nodes within swarms (analogous to individual tailscale nodes)
+CREATE TABLE IF NOT EXISTS map_nodes (
+  id TEXT PRIMARY KEY,
+  swarm_id TEXT NOT NULL REFERENCES map_swarms(id) ON DELETE CASCADE,
+  -- MAP agent identity
+  map_agent_id TEXT NOT NULL,
+  name TEXT,
+  description TEXT,
+  role TEXT,
+  -- State (mirrors MAP agent states)
+  state TEXT DEFAULT 'registered'
+    CHECK (state IN ('registered', 'active', 'busy', 'idle', 'suspended', 'stopped', 'failed')),
+  -- Discovery info (JSON)
+  capabilities TEXT,
+  scopes TEXT,
+  visibility TEXT DEFAULT 'public'
+    CHECK (visibility IN ('public', 'hive-only', 'swarm-only')),
+  -- Metadata
+  metadata TEXT,
+  tags TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(swarm_id, map_agent_id)
+);
+
+-- Swarm-to-hive membership (which hives a swarm has joined for discoverability)
+CREATE TABLE IF NOT EXISTS map_swarm_hives (
+  id TEXT PRIMARY KEY,
+  swarm_id TEXT NOT NULL REFERENCES map_swarms(id) ON DELETE CASCADE,
+  hive_id TEXT NOT NULL REFERENCES hives(id) ON DELETE CASCADE,
+  joined_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(swarm_id, hive_id)
+);
+
+-- Pre-auth keys for automated swarm registration (analogous to headscale pre-auth keys)
+CREATE TABLE IF NOT EXISTS map_preauth_keys (
+  id TEXT PRIMARY KEY,
+  key_hash TEXT UNIQUE NOT NULL,
+  -- Scope: if set, auto-join this hive on registration
+  hive_id TEXT REFERENCES hives(id) ON DELETE CASCADE,
+  -- Limits
+  uses_left INTEGER DEFAULT 1,
+  expires_at TEXT,
+  -- Tracking
+  created_by TEXT REFERENCES agents(id) ON DELETE SET NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  last_used_at TEXT
+);
+
+-- Federation connection log (tracks MAP federation/connect events between swarms)
+CREATE TABLE IF NOT EXISTS map_federation_log (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT REFERENCES map_swarms(id) ON DELETE SET NULL,
+  target_swarm_id TEXT REFERENCES map_swarms(id) ON DELETE SET NULL,
+  status TEXT DEFAULT 'initiated'
+    CHECK (status IN ('initiated', 'connected', 'failed', 'disconnected')),
+  error TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Indexes for MAP tables
+CREATE INDEX IF NOT EXISTS idx_map_swarms_owner ON map_swarms(owner_agent_id);
+CREATE INDEX IF NOT EXISTS idx_map_swarms_status ON map_swarms(status);
+CREATE INDEX IF NOT EXISTS idx_map_nodes_swarm ON map_nodes(swarm_id);
+CREATE INDEX IF NOT EXISTS idx_map_nodes_role ON map_nodes(role);
+CREATE INDEX IF NOT EXISTS idx_map_nodes_state ON map_nodes(state);
+CREATE INDEX IF NOT EXISTS idx_map_nodes_visibility ON map_nodes(visibility);
+CREATE INDEX IF NOT EXISTS idx_map_swarm_hives_swarm ON map_swarm_hives(swarm_id);
+CREATE INDEX IF NOT EXISTS idx_map_swarm_hives_hive ON map_swarm_hives(hive_id);
+CREATE INDEX IF NOT EXISTS idx_map_preauth_keys_hive ON map_preauth_keys(hive_id);
+CREATE INDEX IF NOT EXISTS idx_map_federation_log_source ON map_federation_log(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_map_federation_log_target ON map_federation_log(target_swarm_id);
+
+-- Revoked MAP tokens (persisted across restarts)
+CREATE TABLE IF NOT EXISTS map_revoked_tokens (
+  agent_id TEXT PRIMARY KEY,
+  revoked_at TEXT DEFAULT (datetime('now')),
+  reason TEXT
+);
+`;
+
+// Migration V12: Remote agent cache + origin tracking columns
+export const MIGRATION_V12_SYNC = `
+-- Remote agent display cache (lightweight, no auth, no local API key)
+CREATE TABLE IF NOT EXISTS remote_agents_cache (
+  id TEXT PRIMARY KEY,
+  origin_instance_id TEXT NOT NULL,
+  origin_agent_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  avatar_url TEXT,
+  last_seen_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(origin_instance_id, origin_agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_agents_origin
+  ON remote_agents_cache(origin_instance_id);
+
+-- Posts: origin tracking
+ALTER TABLE posts ADD COLUMN sync_event_id TEXT;
+ALTER TABLE posts ADD COLUMN origin_instance_id TEXT;
+ALTER TABLE posts ADD COLUMN origin_post_id TEXT;
+ALTER TABLE posts ADD COLUMN remote_author_id TEXT
+  REFERENCES remote_agents_cache(id);
+
+-- Comments: origin tracking
+ALTER TABLE comments ADD COLUMN sync_event_id TEXT;
+ALTER TABLE comments ADD COLUMN origin_instance_id TEXT;
+ALTER TABLE comments ADD COLUMN origin_comment_id TEXT;
+ALTER TABLE comments ADD COLUMN remote_author_id TEXT
+  REFERENCES remote_agents_cache(id);
+
+-- Votes: origin tracking
+ALTER TABLE votes ADD COLUMN sync_event_id TEXT;
+ALTER TABLE votes ADD COLUMN origin_instance_id TEXT;
+
+-- Dedup indexes for synced content
+CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_origin
+  ON posts(origin_instance_id, origin_post_id) WHERE origin_instance_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_comments_origin
+  ON comments(origin_instance_id, origin_comment_id) WHERE origin_instance_id IS NOT NULL;
+`;
+
+// Migration V13: Sync groups, peers, events, pending queue
+export const MIGRATION_V13_SYNC = `
+-- Hive sync groups (sync identity for a hive across instances)
+CREATE TABLE IF NOT EXISTS hive_sync_groups (
+  id TEXT PRIMARY KEY,
+  hive_id TEXT NOT NULL REFERENCES hives(id) ON DELETE CASCADE,
+  sync_group_name TEXT NOT NULL,
+  created_by_instance_id TEXT,
+  instance_signing_key TEXT NOT NULL,
+  instance_signing_key_private TEXT NOT NULL,
+  seq INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(hive_id),
+  UNIQUE(sync_group_name)
+);
+
+-- Peer sync state
+CREATE TABLE IF NOT EXISTS hive_sync_peers (
+  id TEXT PRIMARY KEY,
+  sync_group_id TEXT NOT NULL REFERENCES hive_sync_groups(id) ON DELETE CASCADE,
+  peer_swarm_id TEXT NOT NULL,
+  peer_endpoint TEXT NOT NULL,
+  peer_signing_key TEXT,
+  sync_token TEXT,
+  last_seq_sent INTEGER DEFAULT 0,
+  last_seq_received INTEGER DEFAULT 0,
+  last_sync_at TEXT,
+  status TEXT DEFAULT 'active'
+    CHECK (status IN ('active', 'paused', 'error', 'backfilling')),
+  last_error TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(sync_group_id, peer_swarm_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hive_sync_peers_group ON hive_sync_peers(sync_group_id);
+CREATE INDEX IF NOT EXISTS idx_hive_sync_peers_status ON hive_sync_peers(status);
+
+-- Append-only event log
+CREATE TABLE IF NOT EXISTS hive_events (
+  id TEXT PRIMARY KEY,
+  sync_group_id TEXT NOT NULL REFERENCES hive_sync_groups(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  origin_instance_id TEXT NOT NULL,
+  origin_ts INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  received_at TEXT DEFAULT (datetime('now')),
+  is_local INTEGER DEFAULT 0,
+  UNIQUE(sync_group_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hive_events_group_seq ON hive_events(sync_group_id, seq);
+CREATE INDEX IF NOT EXISTS idx_hive_events_type ON hive_events(sync_group_id, event_type);
+CREATE INDEX IF NOT EXISTS idx_hive_events_origin ON hive_events(origin_instance_id);
+CREATE INDEX IF NOT EXISTS idx_hive_events_origin_ts ON hive_events(origin_ts);
+
+-- Causal ordering queue (events waiting on dependencies)
+CREATE TABLE IF NOT EXISTS hive_events_pending (
+  id TEXT PRIMARY KEY,
+  sync_group_id TEXT NOT NULL,
+  event_json TEXT NOT NULL,
+  depends_on TEXT NOT NULL,
+  received_at TEXT DEFAULT (datetime('now'))
+);
+`;
+
+// Migration V14: Manual/cached peer configs
+export const MIGRATION_V14_SYNC = `
+-- Manual/cached peer configs
+CREATE TABLE IF NOT EXISTS sync_peer_configs (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  sync_endpoint TEXT NOT NULL,
+  shared_hives TEXT NOT NULL,
+  signing_key TEXT,
+  sync_token TEXT,
+  is_manual INTEGER DEFAULT 1,
+  source TEXT DEFAULT 'manual'
+    CHECK (source IN ('manual', 'hub', 'gossip')),
+  status TEXT DEFAULT 'pending'
+    CHECK (status IN ('pending', 'active', 'error', 'unreachable')),
+  last_heartbeat_at TEXT,
+  last_error TEXT,
+  gossip_ttl INTEGER DEFAULT 0,
+  failure_count INTEGER DEFAULT 0,
+  discovered_via TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(sync_endpoint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_peer_configs_status ON sync_peer_configs(status);
+CREATE INDEX IF NOT EXISTS idx_sync_peer_configs_source ON sync_peer_configs(source);
+`;
+
+// Migration V15: Key rotation support — versioned signing keys
+export const MIGRATION_V15_SYNC = `
+-- Add key version tracking to sync groups
+ALTER TABLE hive_sync_groups ADD COLUMN key_version INTEGER DEFAULT 1;
+ALTER TABLE hive_sync_groups ADD COLUMN previous_signing_key TEXT;
+ALTER TABLE hive_sync_groups ADD COLUMN previous_signing_key_private TEXT;
+ALTER TABLE hive_sync_groups ADD COLUMN key_rotated_at TEXT;
+
+-- Add key version to events for multi-key verification during transition
+ALTER TABLE hive_events ADD COLUMN key_version INTEGER DEFAULT 1;
+
+-- Add key version to peer state for tracking which key version a peer knows about
+ALTER TABLE hive_sync_peers ADD COLUMN peer_key_version INTEGER DEFAULT 1;
+`;
+
+// Migration V16: Hosted swarms — spawn and manage OpenSwarm instances
+export const MIGRATION_V16_HOSTED_SWARMS = `
+-- Hosted swarms: OpenSwarm instances spawned and managed by this OpenHive instance
+CREATE TABLE IF NOT EXISTS hosted_swarms (
+  id TEXT PRIMARY KEY,
+  -- Links to the MAP hub swarm record (NULL until the swarm registers)
+  swarm_id TEXT REFERENCES map_swarms(id) ON DELETE SET NULL,
+  -- Hosting info
+  provider TEXT NOT NULL CHECK (provider IN ('local', 'docker', 'fly', 'ssh', 'k8s')),
+  state TEXT NOT NULL DEFAULT 'provisioning'
+    CHECK (state IN ('provisioning', 'starting', 'running', 'unhealthy', 'stopping', 'stopped', 'failed')),
+  -- Provider-specific identifiers
+  pid INTEGER,
+  container_id TEXT,
+  deployment_id TEXT,
+  -- Bootstrap correlation
+  bootstrap_token_hash TEXT,
+  -- Network
+  assigned_port INTEGER,
+  endpoint TEXT,
+  -- Config snapshot (JSON)
+  config TEXT,
+  -- Error tracking
+  error TEXT,
+  -- Ownership
+  spawned_by TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_swarm_id ON hosted_swarms(swarm_id);
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_state ON hosted_swarms(state);
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_spawned_by ON hosted_swarms(spawned_by);
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_bootstrap ON hosted_swarms(bootstrap_token_hash);
+`;
+
+// Migration V17: Channel Bridge — external platform integration
+export const MIGRATION_V17_BRIDGE = `
+-- Bridge configurations (one per external platform connection)
+CREATE TABLE IF NOT EXISTS bridge_configs (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  platform TEXT NOT NULL
+    CHECK (platform IN ('slack', 'discord', 'telegram', 'whatsapp', 'matrix')),
+  transport_mode TEXT NOT NULL
+    CHECK (transport_mode IN ('outbound', 'webhook')),
+  credentials_encrypted TEXT NOT NULL,
+  status TEXT DEFAULT 'inactive'
+    CHECK (status IN ('active', 'inactive', 'error')),
+  error_message TEXT,
+  owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Channel mappings (platform channel -> OpenHive hive)
+CREATE TABLE IF NOT EXISTS bridge_channel_mappings (
+  id TEXT PRIMARY KEY,
+  bridge_id TEXT NOT NULL REFERENCES bridge_configs(id) ON DELETE CASCADE,
+  platform_channel_id TEXT NOT NULL,
+  platform_channel_name TEXT,
+  hive_name TEXT NOT NULL,
+  direction TEXT DEFAULT 'bidirectional'
+    CHECK (direction IN ('inbound', 'outbound', 'bidirectional')),
+  thread_mode TEXT DEFAULT 'post_per_message'
+    CHECK (thread_mode IN ('post_per_message', 'single_thread', 'explicit_only')),
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(bridge_id, platform_channel_id)
+);
+
+-- Proxy agents (external user -> OpenHive agent mapping)
+CREATE TABLE IF NOT EXISTS bridge_proxy_agents (
+  id TEXT PRIMARY KEY,
+  bridge_id TEXT NOT NULL REFERENCES bridge_configs(id) ON DELETE CASCADE,
+  platform_user_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  platform_display_name TEXT,
+  platform_avatar_url TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(bridge_id, platform_user_id)
+);
+
+-- Message mappings (platform message -> post/comment for thread tracking)
+CREATE TABLE IF NOT EXISTS bridge_message_mappings (
+  id TEXT PRIMARY KEY,
+  bridge_id TEXT NOT NULL REFERENCES bridge_configs(id) ON DELETE CASCADE,
+  platform_message_id TEXT NOT NULL,
+  platform_channel_id TEXT NOT NULL,
+  post_id TEXT REFERENCES posts(id) ON DELETE CASCADE,
+  comment_id TEXT REFERENCES comments(id) ON DELETE CASCADE,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(bridge_id, platform_message_id)
+);
+
+-- Indexes for bridge tables
+CREATE INDEX IF NOT EXISTS idx_bridge_configs_owner ON bridge_configs(owner_agent_id);
+CREATE INDEX IF NOT EXISTS idx_bridge_configs_status ON bridge_configs(status);
+CREATE INDEX IF NOT EXISTS idx_bridge_configs_platform ON bridge_configs(platform);
+CREATE INDEX IF NOT EXISTS idx_bridge_channel_mappings_bridge ON bridge_channel_mappings(bridge_id);
+CREATE INDEX IF NOT EXISTS idx_bridge_channel_mappings_hive ON bridge_channel_mappings(hive_name);
+CREATE INDEX IF NOT EXISTS idx_bridge_proxy_agents_bridge ON bridge_proxy_agents(bridge_id);
+CREATE INDEX IF NOT EXISTS idx_bridge_proxy_agents_agent ON bridge_proxy_agents(agent_id);
+CREATE INDEX IF NOT EXISTS idx_bridge_message_mappings_bridge ON bridge_message_mappings(bridge_id);
+CREATE INDEX IF NOT EXISTS idx_bridge_message_mappings_post ON bridge_message_mappings(post_id);
+CREATE INDEX IF NOT EXISTS idx_bridge_message_mappings_channel ON bridge_message_mappings(bridge_id, platform_channel_id);
+`;
+
+// Migration V19: Event routing — post rules, subscriptions, delivery log
+export const MIGRATION_V19_EVENT_ROUTING = `
+-- Which events become posts in which hive
+CREATE TABLE IF NOT EXISTS event_post_rules (
+  id TEXT PRIMARY KEY,
+  hive_id TEXT NOT NULL REFERENCES hives(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  event_types TEXT NOT NULL,
+  filters TEXT,
+  normalizer TEXT NOT NULL DEFAULT 'default',
+  thread_mode TEXT DEFAULT 'post_per_event'
+    CHECK (thread_mode IN ('post_per_event', 'single_thread', 'skip')),
+  priority INTEGER DEFAULT 100,
+  enabled INTEGER DEFAULT 1,
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_post_rules_hive ON event_post_rules(hive_id);
+CREATE INDEX IF NOT EXISTS idx_event_post_rules_source ON event_post_rules(source);
+
+-- Which swarms receive which events via MAP
+CREATE TABLE IF NOT EXISTS event_subscriptions (
+  id TEXT PRIMARY KEY,
+  hive_id TEXT NOT NULL REFERENCES hives(id) ON DELETE CASCADE,
+  swarm_id TEXT REFERENCES map_swarms(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  event_types TEXT NOT NULL,
+  filters TEXT,
+  priority INTEGER DEFAULT 100,
+  enabled INTEGER DEFAULT 1,
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_subs_hive ON event_subscriptions(hive_id);
+CREATE INDEX IF NOT EXISTS idx_event_subs_swarm ON event_subscriptions(swarm_id);
+CREATE INDEX IF NOT EXISTS idx_event_subs_source ON event_subscriptions(source);
+
+-- Delivery log for observability
+CREATE TABLE IF NOT EXISTS event_delivery_log (
+  id TEXT PRIMARY KEY,
+  delivery_id TEXT NOT NULL,
+  subscription_id TEXT,
+  swarm_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  status TEXT DEFAULT 'sent' CHECK (status IN ('sent', 'failed', 'offline')),
+  error TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_delivery_log_delivery ON event_delivery_log(delivery_id);
+CREATE INDEX IF NOT EXISTS idx_event_delivery_log_swarm ON event_delivery_log(swarm_id);
+CREATE INDEX IF NOT EXISTS idx_event_delivery_log_created ON event_delivery_log(created_at);
+`;
+
+// Migration V22: Coordination tables — messaging and context sharing
+// (coordination_tasks table removed in V28 — tasks now route through OpenTasks)
+export const MIGRATION_V22_COORDINATION = `
+-- Swarm messages (direct + broadcast)
+CREATE TABLE IF NOT EXISTS swarm_messages (
+  id TEXT PRIMARY KEY,
+  hive_id TEXT REFERENCES hives(id) ON DELETE CASCADE,
+  from_swarm_id TEXT NOT NULL REFERENCES map_swarms(id) ON DELETE CASCADE,
+  to_swarm_id TEXT REFERENCES map_swarms(id) ON DELETE SET NULL,
+  content_type TEXT DEFAULT 'text' CHECK (content_type IN ('text', 'json', 'binary_ref')),
+  content TEXT NOT NULL,
+  reply_to TEXT REFERENCES swarm_messages(id) ON DELETE SET NULL,
+  metadata TEXT,
+  read_at TEXT,
+  -- Cross-instance sync origin tracking
+  origin_instance_id TEXT,
+  origin_message_id TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_swarm_messages_hive ON swarm_messages(hive_id);
+CREATE INDEX IF NOT EXISTS idx_swarm_messages_to ON swarm_messages(to_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_swarm_messages_from ON swarm_messages(from_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_swarm_messages_reply ON swarm_messages(reply_to);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_swarm_messages_origin ON swarm_messages(origin_instance_id, origin_message_id);
+
+-- Shared contexts (ephemeral, with TTL)
+CREATE TABLE IF NOT EXISTS shared_contexts (
+  id TEXT PRIMARY KEY,
+  hive_id TEXT NOT NULL REFERENCES hives(id) ON DELETE CASCADE,
+  source_swarm_id TEXT NOT NULL REFERENCES map_swarms(id) ON DELETE CASCADE,
+  context_type TEXT NOT NULL,
+  data TEXT NOT NULL,
+  expires_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_shared_contexts_hive ON shared_contexts(hive_id);
+CREATE INDEX IF NOT EXISTS idx_shared_contexts_type ON shared_contexts(context_type);
+CREATE INDEX IF NOT EXISTS idx_shared_contexts_expires ON shared_contexts(expires_at);
+`;
+
+// Migration V29: Persistent token revocation for MAP hub
+export const MIGRATION_V29_MAP_REVOKED_TOKENS = `
+CREATE TABLE IF NOT EXISTS map_revoked_tokens (
+  agent_id TEXT PRIMARY KEY,
+  revoked_at TEXT DEFAULT (datetime('now')),
+  reason TEXT
+);
 `;
 
 // Populate FTS tables from existing data

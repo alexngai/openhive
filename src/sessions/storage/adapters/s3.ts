@@ -9,7 +9,6 @@ import {
   GetObjectCommand,
   DeleteObjectsCommand,
   ListObjectsV2Command,
-  HeadObjectCommand,
 } from '@aws-sdk/client-s3';
 import { Readable } from 'stream';
 import type {

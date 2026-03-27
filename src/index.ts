@@ -214,6 +214,7 @@ export type {
   // Syncable resource types (generic resource system)
   SyncableResource,
   SyncableResourceType,
+  SyncStrategy,
   SyncableResourceWithMeta,
   ResourceSubscription,
   ResourceSubscriptionWithAgent,

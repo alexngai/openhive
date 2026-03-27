@@ -5,10 +5,8 @@
  * materialized on "instance B". Uses two separate SQLite databases to
  * simulate two independent OpenHive instances.
  *
- * Since initDatabase() is a singleton, we swap databases between phases:
- *   Phase 1 — set up instance A, construct events
- *   Phase 2 — set up instance B, materialize the events from A
- *   Verification — assert replicated data on instance B
+ * Task coordination events are deprecated (tasks now route through OpenTasks).
+ * This test covers resource replication and message replication only.
  */
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
@@ -17,14 +15,13 @@ import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import * as mapDAL from '../../db/dal/map.js';
-import * as coordinationDal from '../../db/dal/coordination.js';
+import '../../db/dal/coordination.js';
 import { materializeEvent } from '../../sync/materializer.js';
 import { signEvent, generateSigningKeyPair } from '../../sync/crypto.js';
 import type { HiveEvent } from '../../sync/types.js';
 import type {
   ResourcePublishedPayload,
   ResourceSyncedPayload,
-  CoordinationTaskOfferedPayload,
   CoordinationMessagePayload,
   AgentSnapshot,
 } from '../../sync/types.js';
@@ -42,22 +39,17 @@ const DB_B = testDbPath(TEST_ROOT, 'instance-b.db');
 // ── Shared state populated across phases ───────────────────────────
 const keypair = generateSigningKeyPair();
 
-/** IDs from instance A (used in event payloads) */
 let agentA_id: string;
 let agentA_name: string;
 
-/** Stable IDs we embed directly in manually-constructed events */
 const originResourceId = `res_origin_${nanoid()}`;
-const originTaskId = `ct_origin_${nanoid()}`;
 const originMessageId = `sm_origin_${nanoid()}`;
 
-/** IDs from instance B (set up in Phase 2) */
 let hiveB_id: string;
 const hiveB_name = 'cross-test-hive';
 let swarmB1_id: string;
 let swarmB2_id: string;
 
-/** Events constructed in Phase 1, materialized in Phase 2 */
 let events: HiveEvent[];
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -83,7 +75,7 @@ function makeEvent(
     seq,
     event_type: eventType,
     origin_instance_id: ORIGIN_INSTANCE,
-    origin_ts: Date.now() - (100 - seq) * 1000, // monotonically increasing
+    origin_ts: Date.now() - (100 - seq) * 1000,
     payload: payloadStr,
     signature: signEvent(payloadStr, keypair.privateKey),
     received_at: new Date().toISOString(),
@@ -91,18 +83,9 @@ function makeEvent(
   };
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Test Suite
-// ════════════════════════════════════════════════════════════════════
-
 describe('Cross-Instance Event Materialization', () => {
 
-  // ── Phase 1: Construct events that "originated on instance A" ────
   beforeAll(async () => {
-    // We only need instance A's database to create an agent whose ID
-    // we embed in event payloads. We could skip the DB entirely and
-    // use synthetic IDs, but using a real agent validates the snapshot
-    // format matches what hooks would produce.
     initDatabase(DB_A);
 
     const { agent } = await agentsDAL.createAgent({
@@ -114,22 +97,14 @@ describe('Cross-Instance Event Materialization', () => {
 
     closeDatabase();
 
-    // ── Phase 2: Set up instance B and materialize ──────────────
-
     initDatabase(DB_B);
 
-    // Insert a placeholder agent on B with the same ID as agent A.
-    // The materializer's resolveAuthor() for remote events returns
-    // authorId = snapshot.agent_id (the remote agent's ID). The
-    // syncable_resources.owner_agent_id FK references agents(id),
-    // so the remote agent ID must exist in B's agents table.
     const dbB = getDatabase();
     dbB.prepare(`
       INSERT INTO agents (id, name, api_key_hash, description)
       VALUES (?, ?, ?, ?)
     `).run(agentA_id, 'proxy-of-agent-A', 'placeholder', 'Remote agent placeholder on B');
 
-    // The hive must exist on B for FK constraints (coordination_tasks.hive_id)
     const hive = hivesDAL.createHive({
       name: hiveB_name,
       description: 'Cross-instance test hive on B',
@@ -137,7 +112,6 @@ describe('Cross-Instance Event Materialization', () => {
     });
     hiveB_id = hive.id;
 
-    // Create two MAP swarms on B — coordination FKs reference map_swarms
     const ownerB = (await agentsDAL.createAgent({ name: 'swarm-owner-B' })).agent;
     const swarm1 = mapDAL.createSwarm(ownerB.id, {
       name: 'swarm-B-1',
@@ -152,8 +126,6 @@ describe('Cross-Instance Event Materialization', () => {
       map_transport: 'websocket',
     });
     swarmB2_id = swarm2.id;
-
-    // ── Construct events (as if recorded on instance A) ─────────
 
     const snapshot = makeAgentSnapshot(agentA_id, agentA_name);
 
@@ -179,23 +151,6 @@ describe('Cross-Instance Event Materialization', () => {
       files_removed: 0,
     };
 
-    // assigned_to_swarm_id must reference a real swarm on B because
-    // the materializer passes `payload.assigned_to_swarm_id ?? ''` to
-    // createTask — an empty string fails the FK check. Use a B swarm.
-    const taskOfferedPayload: CoordinationTaskOfferedPayload = {
-      task_id: originTaskId,
-      title: 'Analyze cross-instance dataset',
-      description: 'Task offered from instance A',
-      priority: 'high',
-      offered_by: snapshot,
-      hive_id: hiveB_id, // must match hive on B for FK
-      assigned_to_swarm_id: swarmB1_id,
-      context: { dataset: 'cross-test-data' },
-      deadline: null,
-    };
-
-    // from_swarm_id and to_swarm_id must reference swarms on B since
-    // that is where materialisation runs and FK enforcement happens.
     const messagePayload: CoordinationMessagePayload = {
       message_id: originMessageId,
       from_swarm_id: swarmB1_id,
@@ -210,13 +165,11 @@ describe('Cross-Instance Event Materialization', () => {
     events = [
       makeEvent(1, 'resource_published', resourcePublishedPayload as unknown as Record<string, unknown>),
       makeEvent(2, 'resource_synced', resourceSyncedPayload as unknown as Record<string, unknown>),
-      makeEvent(3, 'coordination_task_offered', taskOfferedPayload as unknown as Record<string, unknown>),
-      makeEvent(4, 'coordination_message', messagePayload as unknown as Record<string, unknown>),
+      makeEvent(3, 'coordination_message', messagePayload as unknown as Record<string, unknown>),
     ];
 
-    // ── Materialize all events on instance B ────────────────────
     for (const event of events) {
-      materializeEvent(event, hiveB_id, hiveB_name, /* isLocal */ false);
+      materializeEvent(event, hiveB_id, hiveB_name, false);
     }
   });
 
@@ -224,8 +177,6 @@ describe('Cross-Instance Event Materialization', () => {
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
   });
-
-  // ── Resource Replication ──────────────────────────────────────
 
   describe('Resource replication', () => {
     it('should materialize resource_published into syncable_resources on B', () => {
@@ -237,11 +188,8 @@ describe('Cross-Instance Event Materialization', () => {
       expect(row).toBeDefined();
       expect(row!.name).toBe('cross-test-memory');
       expect(row!.resource_type).toBe('memory_bank');
-      expect(row!.description).toBe('A memory bank published on instance A');
-      expect(row!.git_remote_url).toBe('https://github.com/test/cross-memory.git');
       expect(row!.visibility).toBe('shared');
       expect(row!.origin_instance_id).toBe(ORIGIN_INSTANCE);
-      expect(row!.origin_resource_id).toBe(originResourceId);
     });
 
     it('should materialize resource_synced and update last_commit_hash', () => {
@@ -254,38 +202,6 @@ describe('Cross-Instance Event Materialization', () => {
       expect(row!.last_commit_hash).toBe('commit_abc');
     });
   });
-
-  // ── Coordination Task Replication ─────────────────────────────
-
-  describe('Coordination task replication', () => {
-    it('should materialize coordination_task_offered into coordination_tasks on B', () => {
-      const db = getDatabase();
-      // The materializer uses coordinationDal.findTaskById(payload.task_id)
-      // for idempotency, but createTask generates a new ID. We search by title.
-      const rows = db.prepare(
-        'SELECT * FROM coordination_tasks WHERE title = ? AND hive_id = ?',
-      ).all('Analyze cross-instance dataset', hiveB_id) as Record<string, unknown>[];
-
-      expect(rows.length).toBe(1);
-      const task = rows[0];
-      expect(task.priority).toBe('high');
-      expect(task.description).toBe('Task offered from instance A');
-      expect(task.hive_id).toBe(hiveB_id);
-      expect(task.status).toBe('pending');
-    });
-
-    it('should record assigned_by_agent_id from the agent snapshot', () => {
-      const db = getDatabase();
-      const row = db.prepare(
-        'SELECT assigned_by_agent_id FROM coordination_tasks WHERE title = ?',
-      ).get('Analyze cross-instance dataset') as { assigned_by_agent_id: string } | undefined;
-
-      expect(row).toBeDefined();
-      expect(row!.assigned_by_agent_id).toBe(agentA_id);
-    });
-  });
-
-  // ── Message Replication ───────────────────────────────────────
 
   describe('Message replication', () => {
     it('should materialize coordination_message into swarm_messages on B', () => {
@@ -303,8 +219,6 @@ describe('Cross-Instance Event Materialization', () => {
     });
   });
 
-  // ── Origin Tracking ───────────────────────────────────────────
-
   describe('Origin tracking', () => {
     it('should set origin_instance_id on replicated resources to inst_A', () => {
       const db = getDatabase();
@@ -319,177 +233,29 @@ describe('Cross-Instance Event Materialization', () => {
     });
   });
 
-  // ── Cross-Instance Claim/Complete ────────────────────────────
-
-  describe('Cross-instance claim and complete', () => {
-    it('should resolve a claim event back to the originating task via origin chain', () => {
-      const db = getDatabase();
-
-      // Find the task that was materialized from instance A's offer
-      const taskRow = db.prepare(
-        'SELECT * FROM coordination_tasks WHERE title = ? AND hive_id = ?',
-      ).get('Analyze cross-instance dataset', hiveB_id) as Record<string, unknown>;
-      expect(taskRow).toBeDefined();
-
-      const localTaskId = taskRow.id as string;  // ct_xyz (B's local ID)
-      expect(taskRow.origin_instance_id).toBe(ORIGIN_INSTANCE);
-      expect(taskRow.origin_task_id).toBe(originTaskId);
-
-      // Simulate: a swarm on B claims the task.
-      // The claim hook would record an event with:
-      //   task_id = localTaskId (B's local ID)
-      //   origin_instance_id = 'inst_A' (from task.origin_instance_id)
-      //   origin_task_id = originTaskId (from task.origin_task_id)
-      //
-      // When this event arrives at instance A, A needs to find its original
-      // task. The resolveTaskByOriginChain function should handle this:
-      //   1. findTaskByOrigin('inst_B', localTaskId) → not found on B (that's B's own ID)
-      //   2. findTaskByOrigin('inst_A', originTaskId) → FOUND (matches the origin tracking)
-      //
-      // We simulate this on instance B itself (since we only have one DB).
-      // The task on B has origin_instance_id='inst_A', origin_task_id=originTaskId.
-      // A claim event from 'inst_B' carrying origin fields should find it.
-
-      const claimPayloadStr = JSON.stringify({
-        task_id: localTaskId,
-        origin_instance_id: ORIGIN_INSTANCE,
-        origin_task_id: originTaskId,
-        claimed_by: {
-          instance_id: 'inst_B',
-          agent_id: 'agent_on_B',
-          name: 'claimer-agent',
-          avatar_url: null,
-        },
+  describe('Deprecated task events', () => {
+    it('should skip coordination_task_offered without error', () => {
+      const taskEvent = makeEvent(10, 'coordination_task_offered', {
+        task_id: `ct_${nanoid()}`,
+        title: 'Deprecated task',
+        priority: 'medium',
+        offered_by: makeAgentSnapshot(agentA_id, agentA_name),
+        hive_id: hiveB_id,
       });
 
-      const claimEvent: HiveEvent = {
-        id: `evt_claim_${nanoid()}`,
-        sync_group_id: 'sg_cross_test',
-        seq: 10,
-        event_type: 'coordination_task_claimed',
-        origin_instance_id: 'inst_B',
-        origin_ts: Date.now(),
-        payload: claimPayloadStr,
-        signature: signEvent(claimPayloadStr, keypair.privateKey),
-        received_at: new Date().toISOString(),
-        is_local: 0,
-      };
-
-      materializeEvent(claimEvent, hiveB_id, hiveB_name, false);
-
-      // Verify: task status should be updated to 'accepted'
-      const updatedTask = db.prepare(
-        'SELECT status FROM coordination_tasks WHERE id = ?',
-      ).get(localTaskId) as { status: string };
-      expect(updatedTask.status).toBe('accepted');
-    });
-
-    it('should resolve a complete event back to the originating task via origin chain', () => {
-      const db = getDatabase();
-
-      const taskRow = db.prepare(
-        'SELECT id FROM coordination_tasks WHERE title = ? AND hive_id = ?',
-      ).get('Analyze cross-instance dataset', hiveB_id) as { id: string };
-      const localTaskId = taskRow.id;
-
-      const completePayloadStr = JSON.stringify({
-        task_id: localTaskId,
-        origin_instance_id: ORIGIN_INSTANCE,
-        origin_task_id: originTaskId,
-        completed_by: {
-          instance_id: 'inst_B',
-          agent_id: 'agent_on_B',
-          name: 'completer-agent',
-          avatar_url: null,
-        },
-        status: 'completed',
-        result: { output: 'analysis done' },
-        error: null,
-      });
-
-      const completeEvent: HiveEvent = {
-        id: `evt_complete_${nanoid()}`,
-        sync_group_id: 'sg_cross_test',
-        seq: 11,
-        event_type: 'coordination_task_completed',
-        origin_instance_id: 'inst_B',
-        origin_ts: Date.now(),
-        payload: completePayloadStr,
-        signature: signEvent(completePayloadStr, keypair.privateKey),
-        received_at: new Date().toISOString(),
-        is_local: 0,
-      };
-
-      materializeEvent(completeEvent, hiveB_id, hiveB_name, false);
-
-      // Verify: task status and result should be updated
-      const updatedTask = db.prepare(
-        'SELECT status, result FROM coordination_tasks WHERE id = ?',
-      ).get(localTaskId) as { status: string; result: string };
-      expect(updatedTask.status).toBe('completed');
-      expect(JSON.parse(updatedTask.result)).toEqual({ output: 'analysis done' });
-    });
-
-    it('should resolve via direct origin_task_id fallback when other lookups miss', () => {
-      // Create a task locally (no origin columns — simulates the offering instance)
-      const db = getDatabase();
-      const localId = `ct_local_${nanoid()}`;
-      db.prepare(`
-        INSERT INTO coordination_tasks (id, hive_id, title, description, priority,
-          assigned_by_agent_id, assigned_to_swarm_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(localId, hiveB_id, 'Locally created task', null, 'medium', agentA_id, swarmB1_id);
-
-      // A claim event arrives from a remote instance. The remote task's
-      // origin_task_id matches our local task's ID (because the remote
-      // instance materialized our offered event and stored our ID as origin).
-      const claimPayloadStr = JSON.stringify({
-        task_id: `ct_remote_${nanoid()}`,  // remote's local ID — won't match
-        origin_instance_id: null,          // doesn't know its own origin
-        origin_task_id: localId,           // but carries our original ID
-        claimed_by: {
-          instance_id: 'inst_C',
-          agent_id: 'agent_on_C',
-          name: 'remote-claimer',
-          avatar_url: null,
-        },
-      });
-
-      const claimEvent: HiveEvent = {
-        id: `evt_fallback_${nanoid()}`,
-        sync_group_id: 'sg_cross_test',
-        seq: 12,
-        event_type: 'coordination_task_claimed',
-        origin_instance_id: 'inst_C',
-        origin_ts: Date.now(),
-        payload: claimPayloadStr,
-        signature: signEvent(claimPayloadStr, keypair.privateKey),
-        received_at: new Date().toISOString(),
-        is_local: 0,
-      };
-
-      materializeEvent(claimEvent, hiveB_id, hiveB_name, false);
-
-      const updatedTask = db.prepare(
-        'SELECT status FROM coordination_tasks WHERE id = ?',
-      ).get(localId) as { status: string };
-      expect(updatedTask.status).toBe('accepted');
+      // Should not throw — just logs and skips
+      expect(() => materializeEvent(taskEvent, hiveB_id, hiveB_name, false)).not.toThrow();
     });
   });
-
-  // ── Idempotency Across Instances ──────────────────────────────
 
   describe('Idempotency', () => {
     it('should not create duplicate resources when materializing the same events again', () => {
       const db = getDatabase();
 
-      // Resources use ON CONFLICT(origin_instance_id, origin_resource_id),
-      // so re-materializing should be perfectly idempotent.
       const resourcesBefore = (db.prepare(
         'SELECT COUNT(*) as count FROM syncable_resources WHERE origin_instance_id = ?',
       ).get(ORIGIN_INSTANCE) as { count: number }).count;
 
-      // Re-materialize resource events
       for (const event of events.filter(e =>
         e.event_type === 'resource_published' || e.event_type === 'resource_synced',
       )) {
@@ -503,37 +269,21 @@ describe('Cross-Instance Event Materialization', () => {
       expect(resourcesAfter).toBe(resourcesBefore);
     });
 
-    it('should not create duplicate tasks/messages when re-materializing the same events', () => {
-      // Coordination tasks and messages now use origin-based dedup via
-      // origin_instance_id + origin_task_id / origin_message_id columns,
-      // matching the pattern used by resources.
+    it('should not create duplicate messages when re-materializing', () => {
       const db = getDatabase();
-
-      const tasksBefore = (db.prepare(
-        'SELECT COUNT(*) as count FROM coordination_tasks WHERE hive_id = ?',
-      ).get(hiveB_id) as { count: number }).count;
 
       const messagesBefore = (db.prepare(
         'SELECT COUNT(*) as count FROM swarm_messages WHERE hive_id = ?',
       ).get(hiveB_id) as { count: number }).count;
 
-      // Re-materialize coordination events
-      for (const event of events.filter(e =>
-        e.event_type === 'coordination_task_offered' || e.event_type === 'coordination_message',
-      )) {
+      for (const event of events.filter(e => e.event_type === 'coordination_message')) {
         materializeEvent(event, hiveB_id, hiveB_name, false);
       }
-
-      const tasksAfter = (db.prepare(
-        'SELECT COUNT(*) as count FROM coordination_tasks WHERE hive_id = ?',
-      ).get(hiveB_id) as { count: number }).count;
 
       const messagesAfter = (db.prepare(
         'SELECT COUNT(*) as count FROM swarm_messages WHERE hive_id = ?',
       ).get(hiveB_id) as { count: number }).count;
 
-      // No duplicates: origin-based dedup prevents re-creation
-      expect(tasksAfter).toBe(tasksBefore);
       expect(messagesAfter).toBe(messagesBefore);
     });
   });

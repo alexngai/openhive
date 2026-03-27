@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Database, Wrench, ListChecks, RefreshCw, ChevronRight, GitCommit, Eye, Users, Tag, Clock, Zap, Network } from 'lucide-react';
 import { useResourcesByType, useBatchCheckUpdates, useSyncStatus, useMapSwarms } from '../hooks/useApi';
+import { useResourcesRealtime, useSwarmRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { toast } from '../stores/toast';
@@ -169,6 +170,8 @@ export function Resources() {
   const [activeTab, setActiveTab] = useState<ResourceTab>('memory_bank');
   const { data: resourcesData, isLoading } = useResourcesByType(activeTab);
   const batchCheck = useBatchCheckUpdates();
+  useResourcesRealtime();
+  useSwarmRealtime();
 
   const resources = resourcesData?.data || [];
   const total = resourcesData?.total || 0;

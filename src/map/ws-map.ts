@@ -1,17 +1,21 @@
 /**
  * MAP Inbound WebSocket Endpoint (/ws/map)
  *
- * Allows MAP-compatible agents to connect INTO the hub via WebSocket and
- * send/receive JSON-RPC 2.0 messages. The hub stores, tracks, and routes
- * messages to other connected agents (both inbound and outbound).
+ * Routes inbound MAP agent connections through the SDK's MAPServer for standard
+ * protocol methods (connect, authenticate, agents/*, send, subscribe, disconnect)
+ * while intercepting OpenHive-specific notifications (sync, coordination) at the
+ * WebSocket level before they reach the MAPServer's stream.
  *
- * This is the complement to sync-listener.ts (which connects OUT to swarms).
- * Once a message arrives, it flows through the same handleSyncMessage() and
- * handleCoordinationMessage() handlers that process outbound-connected messages.
+ * Two layers of auth:
+ *   1. Hub access: API key via ?token= query param (both modes)
+ *   2. Swarm identity:
+ *      - Open mode: ?swarm_id= query param → immediate welcome + MAPServer session
+ *      - Verified mode: MAPServer handles map/connect → authRequired → map/authenticate
  */
 
 import { FastifyInstance } from 'fastify';
 import { WebSocket } from 'ws';
+import { websocketStream } from '@multi-agent-protocol/sdk';
 import { findAgentById, findAgentByApiKey, findOrCreateSwarmHubAgent, getOrCreateLocalAgent } from '../db/dal/agents.js';
 import { validateIngestKey } from '../db/dal/ingest-keys.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
@@ -19,37 +23,39 @@ import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm } from '../db/dal/
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound } from './connection-registry.js';
-import { MAP_TASK_METHOD_SET } from './task-types.js';
-import { handleTaskRequest, MAPTaskRequestError, storeErrorToJsonRpc } from './task-handler.js';
-import { getMapTaskStore, MAPTaskStoreError } from './task-store.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound } from './connection-registry.js';
+import { getMapTaskStore } from './task-store.js';
+import { handleContentResponse } from './trajectory-content.js';
 import { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
-import { MAP_OPENTASKS_METHOD_SET } from './opentasks-types.js';
-import { handleOpenTasksRequest, OpenTasksRequestError } from './opentasks-handler.js';
+import { getMailJsonRpc } from '../mail/index.js';
+import { initMapServer, _resetMapServer } from './map-server-setup.js';
+import { broadcastToChannel } from '../realtime/index.js';
 import type { Agent } from '../types.js';
+import type { Config } from '../config.js';
 
-const HEARTBEAT_INTERVAL = 30_000;
+let HEARTBEAT_INTERVAL = 30_000;
+const TOKEN_EXPIRY_WARNING_SECONDS = 300;
 let heartbeatTimer: NodeJS.Timeout | null = null;
 
+/** Override heartbeat interval (ms). Useful for testing with shorter timeouts. */
+export function setHeartbeatInterval(ms: number): void {
+  HEARTBEAT_INTERVAL = ms;
+}
+
 // ============================================================================
-// Auth (same pattern as src/realtime/index.ts:29-55)
+// Auth (hub access — validates API key before MAPServer sees the connection)
 // ============================================================================
 
 async function authenticateToken(token: string): Promise<Agent | null> {
-  // Try ingest key first (ohk_ prefix, SHA-256 O(1) lookup)
   if (token.startsWith('ohk_')) {
     const ingestKey = validateIngestKey(token);
-    if (ingestKey) {
-      return findAgentById(ingestKey.agent_id) ?? null;
-    }
+    if (ingestKey) return findAgentById(ingestKey.agent_id) ?? null;
     return null;
   }
 
-  // Try API key (bcrypt)
   const agent = await findAgentByApiKey(token);
   if (agent) return agent;
 
-  // Try SwarmHub JWT
   if (isJwksInitialized()) {
     const payload = await validateSwarmHubToken(token);
     if (payload?.sub) {
@@ -66,33 +72,32 @@ async function authenticateToken(token: string): Promise<Agent | null> {
 }
 
 // ============================================================================
-// Swarm Resolution
+// Swarm Resolution (open mode)
 // ============================================================================
 
-function resolveSwarm(agentId: string, swarmIdHint?: string): string | null {
+function resolveSwarmOpen(agentId: string, agentName: string, swarmIdHint?: string): { swarmId: string; created: boolean } {
   if (swarmIdHint) {
-    // Verify the hint — agent must own the swarm
     const { data: swarms } = listSwarms({ owner_agent_id: agentId, limit: 100 });
     const match = swarms.find((s) => s.id === swarmIdHint);
-    return match ? match.id : null;
+    if (match) return { swarmId: match.id, created: false };
+
+    const swarm = createSwarm(agentId, {
+      id: swarmIdHint,
+      name: `${agentName}-hub`,
+      map_endpoint: 'hub-inbound',
+      map_transport: 'websocket',
+      auth_method: 'none',
+    });
+    return { swarmId: swarm.id, created: true };
   }
 
-  // Pick the first swarm owned by this agent (prefer online)
-  const { data: swarms } = listSwarms({ owner_agent_id: agentId, limit: 10 });
-  if (swarms.length === 0) return null;
-
-  const online = swarms.find((s) => s.status === 'online');
-  return online ? online.id : swarms[0].id;
-}
-
-function autoRegisterSwarm(agentId: string, agentName: string): string {
   const swarm = createSwarm(agentId, {
     name: `${agentName}-hub`,
     map_endpoint: 'hub-inbound',
     map_transport: 'websocket',
     auth_method: 'none',
   });
-  return swarm.id;
+  return { swarmId: swarm.id, created: true };
 }
 
 // ============================================================================
@@ -107,172 +112,329 @@ function sendJsonRpc(ws: WebSocket, method: string, params: Record<string, unkno
 
 function sendJsonRpcError(ws: WebSocket, code: number, message: string, id?: string | number | null): void {
   if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      jsonrpc: '2.0',
-      id: id ?? null,
-      error: { code, message },
-    }));
+    ws.send(JSON.stringify({ jsonrpc: '2.0', id: id ?? null, error: { code, message } }));
   }
 }
 
-function sendJsonRpcResponse(ws: WebSocket, id: string | number, result: unknown): void {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      jsonrpc: '2.0',
-      id,
-      result,
-    }));
-  }
-}
 
-/** Type guard: is this a JSON-RPC request (has id + method)? */
-function isJsonRpcRequest(data: Record<string, unknown>): boolean {
-  return data.jsonrpc === '2.0' && typeof data.method === 'string' && data.id != null;
+// ============================================================================
+// Notification Interceptor
+//
+// Sync and coordination messages are JSON-RPC notifications (no `id`).
+// The MAPServer's router only processes requests. We intercept notifications
+// at the WebSocket level and handle them directly, forwarding everything else
+// to the MAPServer via the stream.
+// ============================================================================
+
+/**
+ * Create a WebSocket message interceptor that handles OpenHive-specific
+ * notifications (sync, coordination, mail notifications) and forwards
+ * everything else to the MAPServer stream.
+ *
+ * Returns a modified WebSocket-like object that the MAPServer sees
+ * (with notifications pre-filtered out).
+ */
+function createNotificationInterceptor(
+  ws: WebSocket,
+  swarmId: string,
+): { cleanup: () => void } {
+  const handler = (data: Buffer | string) => {
+    try {
+      const msg = JSON.parse(data.toString());
+
+      // Only intercept notifications (no `id` field) that are OpenHive-specific
+      if (msg.id != null) return; // Let requests pass through to MAPServer
+
+      if (isMapSyncMessage(msg)) {
+        handleSyncMessage(msg, swarmId);
+      } else if (isCoordinationMessage(msg)) {
+        handleCoordinationMessage(msg, swarmId);
+      } else if (msg.method === 'ping') {
+        sendJsonRpc(ws, 'pong', {});
+      } else if (msg.method === 'trajectory/content.response') {
+        // Content response from swarm — resolve pending content request
+        handleContentResponse(msg.params as Record<string, unknown>);
+      } else if (typeof msg.method === 'string' && msg.method.startsWith('mail/')) {
+        // Mail notifications — fire and forget
+        try { getMailJsonRpc().handleRequest(msg as any); } catch { /* ignore */ }
+      }
+      // Other notifications pass through to MAPServer (it will ignore unknown ones)
+
+      // Update heartbeat on any message
+      const conn = getAllInbound().get(swarmId);
+      if (conn) {
+        conn.lastMessageAt = new Date().toISOString();
+      }
+      heartbeatSwarm(swarmId);
+    } catch {
+      // Non-JSON — ignore
+    }
+  };
+
+  ws.on('message', handler);
+  return { cleanup: () => ws.removeListener('message', handler) };
 }
 
 // ============================================================================
 // WebSocket Handler
 // ============================================================================
 
-export interface MapWebSocketOptions {
-  authMode?: 'local' | 'swarmhub';
-}
-
-export function setupMapWebSocket(fastify: FastifyInstance, opts?: MapWebSocketOptions): void {
-  const isLocalAuth = opts?.authMode === 'local';
+export function setupMapWebSocket(fastify: FastifyInstance, config: Config): void {
+  const mapServer = initMapServer(config);
 
   fastify.get('/ws/map', { websocket: true }, async (socket, request) => {
+    const trustModel = config.mapHub.trustModel;
     const ws = socket as unknown as WebSocket;
-    const query = request.query as { token?: string; swarm_id?: string; auto_register?: string };
+    const query = request.query as { token?: string; swarm_id?: string };
 
-    // Authenticate — local auth mode accepts tokenless connections
+    // Track liveness for heartbeat ping/pong
+    (ws as any).isAlive = true;
+    ws.on('pong', () => { (ws as any).isAlive = true; });
+
+    // Track swarm ID for cleanup on raw socket close
+    let connectedSwarmId: string | null = null;
+    let cleanedUp = false;
+
+    const handleDisconnect = () => {
+      if (cleanedUp || !connectedSwarmId) return;
+      cleanedUp = true;
+      const sid = connectedSwarmId;
+
+      // Only clean up if this WS is still the current connection for this swarm.
+      // A newer connection may have already replaced us via registerInbound.
+      const current = getInbound(sid);
+      if (current && current.ws !== ws) return;
+
+      unregisterInbound(sid);
+      try { getMapTaskStore().removeBySwarm(sid); } catch { /* */ }
+      try {
+        if (!hasOutboundConnection(sid)) {
+          updateSwarm(sid, { status: 'unreachable' });
+          broadcastToChannel('map:discovery', {
+            type: 'swarm_offline',
+            data: { swarm_id: sid },
+          });
+        }
+      } catch { /* */ }
+      console.log(`[ws-map] Swarm ${sid} disconnected`);
+    };
+
+    ws.on('close', handleDisconnect);
+
+    // ── Hub access auth (both modes) ──────────────────────────────────
+    // Buffer messages during async auth
+    const bufferedMessages: (Buffer | string)[] = [];
+    const bufferHandler = (data: Buffer) => { bufferedMessages.push(data); };
+    ws.on('message', bufferHandler);
+
     let agent: Agent | null = null;
     if (query.token) {
       agent = await authenticateToken(query.token);
-    } else if (isLocalAuth) {
+    }
+
+    // Local mode fallback: no token → use the local agent (same as HTTP auth middleware)
+    if (!agent && config.auth.mode === 'local') {
       agent = await getOrCreateLocalAgent();
     }
 
+    ws.removeListener('message', bufferHandler);
+
     if (!agent) {
-      sendJsonRpcError(ws, -32000, query.token ? 'Invalid authentication token' : 'Missing token query parameter');
+      sendJsonRpcError(ws, -32000, 'Missing or invalid authentication token');
       ws.close(4001, 'Unauthorized');
       return;
     }
 
-    // Resolve swarm
-    let swarmId = resolveSwarm(agent.id, query.swarm_id);
+    if (trustModel === 'verified') {
+      // ── Verified mode ────────────────────────────────────────────────
+      // MAPServer handles the full map/connect → authRequired → authenticate flow.
+      // We create the stream and let the MAPServer process everything.
+      // The swarmId will be determined after auth (from the token's agentId).
+      //
+      // We don't know the swarmId yet, so we use a placeholder and update
+      // the registry after auth completes (via MAPServer event hooks).
 
-    if (!swarmId && (query.auto_register === 'true' || isLocalAuth)) {
-      swarmId = autoRegisterSwarm(agent.id, agent.name);
-      console.log(`[ws-map] Auto-registered hub-inbound swarm ${swarmId} for agent ${agent.name}`);
-    }
+      const stream = websocketStream(ws as unknown as globalThis.WebSocket);
+      const router = mapServer.accept(stream, {
+        role: 'agent',
+        transportType: 'websocket',
+        metadata: { hubAgentId: agent.id, hubAgentName: agent.name },
+      });
 
-    if (!swarmId) {
-      sendJsonRpcError(ws, -32001, 'No registered swarm found. Register a swarm first or use ?auto_register=true');
-      ws.close(4002, 'No swarm');
+      // Replay buffered messages into the stream
+      for (const msg of bufferedMessages) {
+        ws.emit('message', msg);
+      }
+
+      router.start();
+
+      // Track the connection once the agent registers
+      // The MAPServer emits agent.registered when map/agents/register succeeds
+      const onRegistered = (event: any) => {
+        // Event data shape: { agent: { id, name, sessionId, ... } }
+        const registeredAgent = event.data?.agent ?? event.data;
+        if (!registeredAgent?.sessionId) return;
+
+        // Check if this event is for our session
+        try {
+          const session = router.session;
+          if (!session || session.id !== registeredAgent.sessionId) return;
+        } catch {
+          return;
+        }
+
+        const swarmId = registeredAgent.id;
+        const now = new Date().toISOString();
+
+        // Resolve/create swarm record
+        const { data: existing } = listSwarms({ owner_agent_id: agent.id, limit: 100 });
+        if (!existing.find((s) => s.id === swarmId)) {
+          createSwarm(agent.id, {
+            id: swarmId,
+            name: registeredAgent.name || `${swarmId}-hub`,
+            map_endpoint: 'hub-inbound',
+            map_transport: 'websocket',
+            auth_method: 'none',
+          });
+          console.log(`[ws-map] Auto-registered verified swarm ${swarmId}`);
+        }
+
+        connectedSwarmId = swarmId;
+        registerInbound(swarmId, {
+          ws, agentId: agent.id, swarmId,
+          connectedAt: now, lastMessageAt: now,
+          tokenExpiresAt: router.session?.principal?.expiresAt
+            ? new Date(router.session.principal.expiresAt).toISOString()
+            : undefined,
+          registeredAgents: new Map(),
+        });
+        heartbeatSwarm(swarmId);
+
+        // Set up notification interceptor now that we know the swarmId
+        const interceptor = createNotificationInterceptor(ws, swarmId);
+
+        console.log(`[ws-map] Swarm ${swarmId} connected via MAPServer verified auth`);
+
+        // Cleanup on close (router.closed as backup — ws 'close' is primary)
+        router.closed.then(() => {
+          interceptor.cleanup();
+          handleDisconnect();
+        });
+      };
+
+      const unsubRegistered = mapServer.eventBus.on('agent.registered', onRegistered);
+
+      // If no agent registers within 30s, clean up
+      const regTimeout = setTimeout(() => {
+        unsubRegistered();
+      }, 30_000);
+
+      router.closed.then(() => {
+        clearTimeout(regTimeout);
+        unsubRegistered();
+      });
+
       return;
     }
 
-    // Register inbound connection
+    // ── Open mode ────────────────────────────────────────────────────────
+    const { swarmId, created } = resolveSwarmOpen(agent.id, agent.name, query.swarm_id);
+    if (created) {
+      console.log(`[ws-map] Auto-registered hub-inbound swarm ${swarmId} for agent ${agent.name}`);
+    }
+
+    connectedSwarmId = swarmId;
     const now = new Date().toISOString();
     registerInbound(swarmId, {
-      ws,
-      agentId: agent.id,
-      swarmId,
-      connectedAt: now,
-      lastMessageAt: now,
+      ws, agentId: agent.id, swarmId,
+      connectedAt: now, lastMessageAt: now,
+      registeredAgents: new Map(),
     });
-
-    // Mark swarm online
     heartbeatSwarm(swarmId);
 
-    // Send welcome
+    // Send hub/welcome (open mode clients expect this)
     sendJsonRpc(ws, 'hub/welcome', {
       swarm_id: swarmId,
       agent_id: agent.id,
       agent_name: agent.name,
     });
 
+    // Set up notification interceptor for sync/coordination
+    const interceptor = createNotificationInterceptor(ws, swarmId);
+
+    // Route JSON-RPC requests through MAPServer
+    const stream = websocketStream(ws as unknown as globalThis.WebSocket);
+    const router = mapServer.accept(stream, {
+      role: 'agent',
+      transportType: 'websocket',
+      metadata: { swarmId, hubAgentId: agent.id },
+    });
+
+    // Replay buffered messages
+    for (const msg of bufferedMessages) {
+      ws.emit('message', msg);
+    }
+
+    router.start();
+
+    // Capture agent capabilities and metadata when the agent registers via MAP protocol
+    const onAgentRegistered = (event: any) => {
+      const registeredAgent = event.data?.agent ?? event.data;
+      if (!registeredAgent) return;
+
+      // In open mode, match by session ID if available, otherwise accept any registration
+      // on our router (we know the swarmId is correct because this handler is scoped to it)
+      try {
+        const session = router.session;
+        if (session?.id && registeredAgent.sessionId && session.id !== registeredAgent.sessionId) return;
+      } catch {
+        // router.session may not be available — continue anyway in open mode
+      }
+
+      const conn = getInbound(swarmId);
+      if (conn) {
+        if (registeredAgent.capabilities) {
+          conn.capabilities = registeredAgent.capabilities;
+        }
+        // Track registered agent on this connection
+        const agentEntry = {
+          id: registeredAgent.id || registeredAgent.name || 'unknown',
+          name: registeredAgent.name || 'unknown',
+          role: registeredAgent.role || 'agent',
+          state: 'registered',
+          scopes: registeredAgent.scopes || [],
+        };
+        conn.registeredAgents.set(agentEntry.id, agentEntry);
+      }
+
+      // Enrich swarm record with agent metadata (project, branch, template)
+      if (registeredAgent.metadata) {
+        const meta = registeredAgent.metadata as Record<string, unknown>;
+        const project = meta.project as string | undefined;
+        const branch = meta.branch as string | undefined;
+        const template = meta.template as string | undefined;
+
+        if (project) {
+          const displayName = branch ? `${project} (${branch})` : project;
+          try {
+            updateSwarm(swarmId, {
+              name: displayName,
+              capabilities: registeredAgent.capabilities || undefined,
+              metadata: meta,
+            });
+          } catch { /* non-critical */ }
+        }
+      }
+    };
+    const unsubRegistered = mapServer.eventBus.on('agent.registered', onAgentRegistered);
+
     console.log(`[ws-map] Swarm ${swarmId} connected inbound (agent: ${agent.name})`);
 
-    // Handle messages
-    ws.on('message', (data) => {
-      try {
-        const parsed = JSON.parse(data.toString());
-
-        if (isJsonRpcRequest(parsed) && MAP_TASK_METHOD_SET.has(parsed.method as string)) {
-          // MAP task request (needs a response)
-          try {
-            const result = handleTaskRequest(
-              parsed.method as string,
-              parsed.params,
-              { swarmId: swarmId!, agentId: agent.id },
-              getMapTaskStore(),
-            );
-            sendJsonRpcResponse(ws, parsed.id as string | number, result);
-          } catch (err) {
-            if (err instanceof MAPTaskRequestError) {
-              sendJsonRpcError(ws, err.code, err.message, parsed.id as string | number);
-            } else if (err instanceof MAPTaskStoreError) {
-              const rpcErr = storeErrorToJsonRpc(err);
-              sendJsonRpcError(ws, rpcErr.code, rpcErr.message, parsed.id as string | number);
-            } else {
-              sendJsonRpcError(ws, -32603, 'Internal error', parsed.id as string | number);
-            }
-          }
-        } else if (isJsonRpcRequest(parsed) && MAP_OPENTASKS_METHOD_SET.has(parsed.method as string)) {
-          // MAP OpenTasks request (async — proxies to local OpenTasks daemon)
-          handleOpenTasksRequest(
-            parsed.method as string,
-            parsed.params,
-            { swarmId: swarmId!, agentId: agent.id },
-          ).then((result) => {
-            sendJsonRpcResponse(ws, parsed.id as string | number, result);
-          }).catch((err) => {
-            if (err instanceof OpenTasksRequestError) {
-              sendJsonRpcError(ws, err.code, err.message, parsed.id as string | number);
-            } else {
-              sendJsonRpcError(ws, -32603, 'Internal error', parsed.id as string | number);
-            }
-          });
-        } else if (isMapSyncMessage(parsed)) {
-          handleSyncMessage(parsed, swarmId!);
-        } else if (isCoordinationMessage(parsed)) {
-          handleCoordinationMessage(parsed, swarmId!);
-        } else if (parsed.method === 'ping') {
-          sendJsonRpc(ws, 'pong', {});
-        }
-        // Unknown methods silently ignored (JSON-RPC 2.0 semantics)
-
-        // Update heartbeat on any valid message
-        const conn = getAllInbound().get(swarmId!);
-        if (conn) {
-          conn.lastMessageAt = new Date().toISOString();
-        }
-        heartbeatSwarm(swarmId!);
-      } catch {
-        // Ignore non-JSON messages
-      }
-    });
-
-    // Handle close
-    ws.on('close', () => {
-      unregisterInbound(swarmId!);
-
-      // Clean up MAP tasks owned by this swarm
-      getMapTaskStore().removeBySwarm(swarmId!);
-
-      console.log(`[ws-map] Swarm ${swarmId} disconnected`);
-
-      // Mark swarm offline if no outbound connection exists either
-      if (!hasOutboundConnection(swarmId!)) {
-        updateSwarm(swarmId!, { status: 'offline' });
-      }
-    });
-
-    // Handle errors
-    ws.on('error', (err) => {
-      console.warn(`[ws-map] WebSocket error for swarm ${swarmId}: ${err.message}`);
+    // Cleanup on close (router.closed as backup — ws 'close' is primary)
+    router.closed.then(() => {
+      unsubRegistered();
+      interceptor.cleanup();
+      handleDisconnect();
     });
   });
 
@@ -280,7 +442,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, opts?: MapWebSocketO
   startMapHeartbeat();
   initTaskBroadcaster(getMapTaskStore());
 
-  console.log('[openhive] MAP WebSocket registered at /ws/map');
+  console.log(`[openhive] MAP WebSocket registered at /ws/map (trust: ${config.mapHub.trustModel})`);
 }
 
 // ============================================================================
@@ -292,16 +454,50 @@ function startMapHeartbeat(): void {
 
   heartbeatTimer = setInterval(() => {
     const now = Date.now();
-    const timeout = HEARTBEAT_INTERVAL * 2;
 
     for (const [swarmId, conn] of getAllInbound()) {
-      const lastMsg = new Date(conn.lastMessageAt).getTime();
-      if (now - lastMsg > timeout) {
-        // Client hasn't sent anything — terminate
+      if ((conn.ws as any).isAlive === false) {
+        // No pong received since last ping — connection is dead
         conn.ws.terminate();
         unregisterInbound(swarmId);
-      } else if (conn.ws.readyState === WebSocket.OPEN) {
-        sendJsonRpc(conn.ws, 'ping', {});
+        try {
+          if (!hasOutboundConnection(swarmId)) {
+            updateSwarm(swarmId, { status: 'unreachable' });
+            broadcastToChannel('map:discovery', {
+              type: 'swarm_offline',
+              data: { swarm_id: swarmId },
+            });
+          }
+        } catch { /* */ }
+        continue;
+      }
+
+      // Mark as not-alive; set back to true when pong arrives or a message is received
+      (conn.ws as any).isAlive = false;
+
+      if (conn.ws.readyState !== WebSocket.OPEN) continue;
+
+      // Keep last_seen_at fresh so connected swarms stay "online"
+      heartbeatSwarm(swarmId);
+
+      // Protocol-level ping — the ws library responds with a pong frame
+      // at the transport layer, so this works for ALL WebSocket clients
+      // (including MAP SDK clients that have no application-level ping handling).
+      conn.ws.ping();
+      // Also send JSON-RPC ping for clients that use application-level keepalive
+      sendJsonRpc(conn.ws, 'ping', {});
+
+      // Token expiry check
+      if (conn.tokenExpiresAt && !conn.expiryNotified) {
+        const expiresAt = new Date(conn.tokenExpiresAt).getTime();
+        const secondsLeft = Math.floor((expiresAt - now) / 1000);
+        if (secondsLeft <= TOKEN_EXPIRY_WARNING_SECONDS) {
+          sendJsonRpc(conn.ws, 'map/auth.expiring', {
+            expiresIn: Math.max(0, secondsLeft),
+            reason: 'token_expiring',
+          });
+          conn.expiryNotified = true;
+        }
       }
     }
   }, HEARTBEAT_INTERVAL);
@@ -319,11 +515,12 @@ export function stopMapWebSocket(): void {
     heartbeatTimer = null;
   }
 
-  // Close all inbound connections
   for (const [swarmId, conn] of getAllInbound()) {
     try { conn.ws.close(); } catch { /* ignore */ }
     unregisterInbound(swarmId);
   }
+
+  _resetMapServer();
 
   console.log('[ws-map] MAP WebSocket stopped');
 }

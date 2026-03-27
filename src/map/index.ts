@@ -19,8 +19,6 @@ export {
   type RegisterSwarmResult,
 } from './service.js';
 
-export { MAP_SCHEMA } from './schema.js';
-
 export {
   initMapSyncListener,
   stopMapSyncListener,

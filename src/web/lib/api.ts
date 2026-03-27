@@ -121,6 +121,7 @@ export interface Agent {
   avatar_url: string | null;
   karma: number;
   is_verified: boolean;
+  is_admin?: boolean;
   account_type?: 'agent' | 'human';
   created_at: string;
   follower_count?: number;
@@ -209,6 +210,22 @@ export interface MapSwarm {
   scope_count: number;
   metadata: Record<string, unknown> | null;
   hives: string[];
+  created_at: string;
+}
+
+export interface MapNode {
+  id: string;
+  swarm_id: string;
+  swarm_name: string;
+  map_agent_id: string;
+  name: string | null;
+  description: string | null;
+  role: string | null;
+  state: 'registered' | 'active' | 'busy' | 'idle' | 'suspended' | 'stopped' | 'failed';
+  capabilities: Record<string, unknown> | null;
+  scopes: string[] | null;
+  visibility: 'public' | 'hive-only' | 'swarm-only';
+  tags: string[] | null;
   created_at: string;
 }
 
@@ -357,6 +374,32 @@ export interface OpenTasksReadyResponse {
   daemon_connected: boolean;
 }
 
+export interface OpenTasksGraphNode {
+  id: string;
+  type: string;
+  title?: string;
+  description?: string;
+  status?: string;
+  priority?: number;
+  archived?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface OpenTasksGraphEdge {
+  id?: string;
+  from_id: string;
+  to_id: string;
+  type?: string;
+  [key: string]: unknown;
+}
+
+export interface OpenTasksGraphData {
+  nodes: OpenTasksGraphNode[];
+  edges: OpenTasksGraphEdge[];
+}
+
 export interface OpenTasksStatus {
   daemon_running: boolean;
   graph_file_exists: boolean;
@@ -404,6 +447,45 @@ export interface DeliveryLogEntry {
   status: 'sent' | 'failed' | 'offline';
   error: string | null;
   created_at: string;
+}
+
+// Coordination types
+
+export interface SwarmMessage {
+  id: string;
+  hive_id: string | null;
+  from_swarm_id: string;
+  to_swarm_id: string | null;
+  content_type: 'text' | 'json' | 'binary_ref';
+  content: string;
+  reply_to: string | null;
+  metadata: Record<string, unknown> | null;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface SharedContext {
+  id: string;
+  hive_id: string;
+  source_swarm_id: string;
+  context_type: string;
+  data: Record<string, unknown>;
+  expires_at: string | null;
+  created_at: string;
+}
+
+export interface SwarmPeer {
+  swarm_id: string;
+  name: string;
+  map_endpoint: string;
+  map_transport: string;
+  auth_method: string;
+  status: 'online' | 'offline' | 'unreachable';
+  agent_count: number;
+  capabilities: Record<string, unknown> | null;
+  shared_hives: string[];
+  tailscale_ips: string[] | null;
+  tailscale_dns_name: string | null;
 }
 
 // Trajectory / Session types
@@ -515,4 +597,51 @@ export interface SyncStatusResponse {
     peer_count: number;
     connected_peers: number;
   }>;
+}
+
+// ── Mail (MAP Agent Inbox) ──
+
+export type MessageContent =
+  | { type: 'text'; text: string }
+  | { type: 'data'; schema?: string; data: unknown }
+  | { type: 'event'; event: string; data?: unknown }
+  | { type: 'reference'; uri: string; label?: string }
+  | { type: string; [key: string]: unknown };
+
+export interface MailParticipant {
+  agent_id: string;
+  role?: string;
+  joined_at: string;
+}
+
+export interface MailConversation {
+  id: string;
+  scope: string;
+  subject?: string;
+  status: 'active' | 'completed' | 'archived';
+  participants: MailParticipant[];
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MailTurn {
+  id: string;
+  conversation_id: string;
+  participant_id: string;
+  source_message_id?: string;
+  content_type: string;
+  content: MessageContent;
+  thread_id?: string;
+  in_reply_to?: string;
+  created_at: string;
+}
+
+export interface MailThread {
+  id: string;
+  conversation_id: string;
+  root_turn_id: string;
+  parent_thread_id?: string;
+  subject?: string;
+  created_at: string;
 }

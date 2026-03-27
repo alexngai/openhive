@@ -1,13 +1,16 @@
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
-import { CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE, MIGRATION_V18_RESOURCE_SCOPE, MIGRATION_V21_RESOURCE_ORIGIN, MIGRATION_V23_COORDINATION_ORIGIN } from './schema.js';
-import { MAP_SCHEMA } from '../map/schema.js';
-import { SYNC_SCHEMA_V12, SYNC_SCHEMA_V13, SYNC_SCHEMA_V14, SYNC_SCHEMA_V15 } from '../sync/schema.js';
-import { HOSTED_SWARM_SCHEMA } from '../swarm/schema.js';
-import { BRIDGE_SCHEMA } from '../bridge/schema.js';
-import { EVENT_ROUTING_SCHEMA } from '../events/schema.js';
-import { COORDINATION_SCHEMA } from '../coordination/schema.js';
+import {
+  CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE,
+  MIGRATION_V11_MAP, MIGRATION_V12_SYNC, MIGRATION_V13_SYNC, MIGRATION_V14_SYNC, MIGRATION_V15_SYNC,
+  MIGRATION_V16_HOSTED_SWARMS, MIGRATION_V17_BRIDGE, MIGRATION_V18_RESOURCE_SCOPE,
+  MIGRATION_V19_EVENT_ROUTING, MIGRATION_V21_RESOURCE_ORIGIN,
+  MIGRATION_V22_COORDINATION, MIGRATION_V23_COORDINATION_ORIGIN,
+  MIGRATION_V27_SYNC_STRATEGY,
+  MIGRATION_V28_DROP_COORDINATION_TASKS,
+  MIGRATION_V29_MAP_REVOKED_TOKENS,
+} from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
 
@@ -91,15 +94,15 @@ export function initDatabase(config: string | DatabaseConfig): Database.Database
     // Create FTS tables
     db.exec(FTS_SCHEMA);
     // Create MAP Hub tables
-    db.exec(MAP_SCHEMA);
+    db.exec(MIGRATION_V11_MAP);
     // Create hosted swarms table
-    db.exec(HOSTED_SWARM_SCHEMA);
+    db.exec(MIGRATION_V16_HOSTED_SWARMS);
     // Create bridge tables
-    db.exec(BRIDGE_SCHEMA);
+    db.exec(MIGRATION_V17_BRIDGE);
     // Create event routing tables
-    db.exec(EVENT_ROUTING_SCHEMA);
+    db.exec(MIGRATION_V19_EVENT_ROUTING);
     // Create coordination tables
-    db.exec(COORDINATION_SCHEMA);
+    db.exec(MIGRATION_V22_COORDINATION);
     // Seed default data
     db.exec(SEED_DATA);
   } else if (versionRow.version < SCHEMA_VERSION) {
@@ -149,29 +152,29 @@ const MIGRATION_REGISTRY: Record<number, string> = {
   // Versions 7-10: handled in CREATE_TABLES
   7: '', 8: '', 9: '', 10: '',
   // Version 11: MAP Hub tables (headscale-style swarm coordination)
-  11: MAP_SCHEMA,
+  11: MIGRATION_V11_MAP,
   // Version 12: Remote agent cache + origin tracking columns
-  12: SYNC_SCHEMA_V12,
+  12: MIGRATION_V12_SYNC,
   // Version 13: Sync groups, peers, events, pending queue
-  13: SYNC_SCHEMA_V13,
+  13: MIGRATION_V13_SYNC,
   // Version 14: Manual/cached peer configs
-  14: SYNC_SCHEMA_V14,
+  14: MIGRATION_V14_SYNC,
   // Version 15: Key rotation support — versioned signing keys
-  15: SYNC_SCHEMA_V15,
+  15: MIGRATION_V15_SYNC,
   // Version 16: Hosted swarms — spawn and manage OpenSwarm instances
-  16: HOSTED_SWARM_SCHEMA,
+  16: MIGRATION_V16_HOSTED_SWARMS,
   // Version 17: Channel Bridge — external platform integration
-  17: BRIDGE_SCHEMA,
+  17: MIGRATION_V17_BRIDGE,
   // Version 18: Resource scope column for discovery
   18: MIGRATION_V18_RESOURCE_SCOPE,
   // Version 19: Event routing — post rules, subscriptions, delivery log
-  19: EVENT_ROUTING_SCHEMA,
+  19: MIGRATION_V19_EVENT_ROUTING,
   // Version 20: SwarmHub OAuth — add swarmhub_user_id for linked accounts
   20: `ALTER TABLE agents ADD COLUMN swarmhub_user_id TEXT UNIQUE;`,
   // Version 21: Resource origin tracking for cross-instance sync
   21: MIGRATION_V21_RESOURCE_ORIGIN,
   // Version 22: Coordination tables — inter-swarm task delegation, messaging, context sharing
-  22: COORDINATION_SCHEMA,
+  22: MIGRATION_V22_COORDINATION,
   // Version 23: Origin tracking for coordination tables (cross-instance idempotency)
   23: MIGRATION_V23_COORDINATION_ORIGIN,
   // Version 24: Trajectory checkpoints table (stored from trajectory/checkpoint sync notifications)
@@ -219,6 +222,12 @@ CREATE INDEX IF NOT EXISTS idx_ingest_keys_agent ON ingest_keys(agent_id);
 ALTER TABLE ingest_keys ADD COLUMN key_value TEXT NOT NULL DEFAULT '';
 ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   `,
+  // Version 27: Sync strategy and local_path for configurable resource sync
+  27: MIGRATION_V27_SYNC_STRATEGY,
+  // Version 28: Drop deprecated coordination_tasks table
+  28: MIGRATION_V28_DROP_COORDINATION_TASKS,
+  // Version 29: Persistent token revocation for MAP hub
+  29: MIGRATION_V29_MAP_REVOKED_TOKENS,
 };
 
 /** Get the SQL for a specific migration version.

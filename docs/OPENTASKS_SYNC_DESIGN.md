@@ -8,6 +8,20 @@ This document describes the integration between OpenHive and [OpenTasks](https:/
 
 ---
 
+## Key Design Decisions
+
+The following decisions were resolved during design review and inform every section of this document:
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| D1 | **Direct git for sync** — use native git operations (clone, fetch, push) rather than a custom transport layer | Git is already the source of truth for OpenTasks graphs. The `opentasks` npm package provides a merge resolution utility for handling concurrent modifications; we leverage it rather than reinventing conflict handling. |
+| D2 | **One resource = one graph** — each `syncable_resource` maps to exactly one OpenTasks graph | Simplifies identity, sync, and access control. A multi-graph repo registers multiple resources (one per `.opentasks/` directory). |
+| D3 | **Task graph UI via sigma.js** — expand the frontend to display OpenTasks graphs visually | Follows the SwarmCraft embed pattern (`swarmcraft/ui/embed`). Task graph viewer is a self-contained React component using sigma.js for DAG rendering. |
+| D4 | **Pluggable SyncProvider interface** — strategy pattern for content acquisition | Each sync strategy (`local`, `ls-remote`, `mirror`, `bundle`) implements a common interface. New strategies can be added without touching the sync orchestrator. |
+| D5 | **Everything routes to OpenTasks** — deprecate `src/coordination/` task system | The coordination module's task delegation, context sharing, and messaging functionality will be migrated to OpenTasks graphs. This removes the ambiguity of having two parallel task systems. |
+
+---
+
 ## Background
 
 ### What is OpenTasks?
@@ -19,7 +33,7 @@ OpenTasks is a task graph system for AI agents. Each agent maintains a `.opentas
 
 The graph is a DAG of typed nodes (tasks, milestones, notes) connected by dependency edges. Nodes have statuses (`open`, `in_progress`, `blocked`, `completed`, `failed`) and the graph tracks blocking relationships — a task is "ready" when all its dependencies are satisfied.
 
-OpenTasks provides a daemon (IPC over Unix socket, JSON-RPC 2.0) for live queries, and falls back to direct JSONL parsing when the daemon is unavailable.
+OpenTasks provides a daemon (IPC over Unix socket, JSON-RPC 2.0) for live queries, and falls back to direct JSONL parsing when the daemon is unavailable. The `opentasks` npm package also exposes a **merge resolution utility** for reconciling concurrent graph modifications — this is critical for the `mirror` sync strategy where multiple instances may push to the same graph.
 
 ### Problem Statement
 
@@ -32,6 +46,8 @@ OpenTasks graphs can exist in multiple contexts:
 
 Each context has different requirements for how the graph is accessed and kept current. A local agent reading its own graph doesn't need a git clone. An instance receiving task updates from a peer needs either clone access or bundled content. The current system tracks metadata (commit hashes, file counts) but never fetches actual graph content from remote sources.
 
+Additionally, the codebase has **two overlapping task systems** — the coordination module (`src/coordination/`) with its own DB-backed `coordination_tasks` table, and the OpenTasks graph system. This creates ambiguity about which system is authoritative. Decision D5 resolves this: OpenTasks is the single task system going forward.
+
 ### Design Principles
 
 1. **Git remains source of truth** — OpenHive coordinates; it doesn't replace the git workflow
@@ -39,6 +55,7 @@ Each context has different requirements for how the graph is accessed and kept c
 3. **Configurable per-resource** — sync strategy is set at the resource level, not globally
 4. **Progressive enhancement** — start with metadata-only (current behavior), opt into richer sync
 5. **Leverage existing primitives** — build on the resource system, MAP events, and sync protocol already in place
+6. **One task system** — all task functionality routes through OpenTasks; the coordination module is deprecated
 
 ---
 
@@ -164,7 +181,28 @@ POST /api/v1/resources/:id/check-updates
   → Broadcasts via WebSocket
 ```
 
-### 7. Test Coverage
+### 7. Coordination Module (`src/coordination/`) — TO BE DEPRECATED
+
+The coordination module provides DB-backed inter-swarm task delegation, messaging, and context sharing. It is deeply integrated:
+
+| Component | Files |
+|-----------|-------|
+| Service | `src/coordination/service.ts` (singleton `CoordinationService`) |
+| Types | `src/coordination/types.ts` (wire format + domain models) |
+| Listener | `src/coordination/listener.ts` (JSON-RPC dispatch) |
+| Schema | `src/coordination/schema.ts` (3 tables: `coordination_tasks`, `swarm_messages`, `shared_contexts`) |
+| DAL | `src/db/dal/coordination.ts` (CRUD operations) |
+| Routes | `src/api/routes/coordination.ts` (10 REST endpoints) |
+| Sync hooks | `src/sync/coordination-hooks.ts` (cross-instance sync) |
+| MAP handlers | `src/map/ws-map.ts`, `src/map/sync-listener.ts` |
+| SDK client | `src/map/sync-client.ts` (emit/handle methods) |
+| Shared types | `src/shared/types/map-coordination.ts`, `packages/openhive-types/src/map-coordination.ts` |
+
+**Why deprecate**: The coordination task system (`coordination_tasks` table) and the OpenTasks graph system solve overlapping problems — task assignment, status tracking, and cross-swarm delegation. Having both creates ambiguity about which system is authoritative. OpenTasks is the richer, more capable system (DAG dependencies, git-backed persistence, merge resolution), so all task functionality should route through it.
+
+**What to preserve**: The messaging (`swarm_messages`) and context sharing (`shared_contexts`) functionality from the coordination module does not overlap with OpenTasks and will be retained as standalone modules.
+
+### 8. Test Coverage
 
 | Test File | Coverage |
 |-----------|----------|
@@ -173,6 +211,9 @@ POST /api/v1/resources/:id/check-updates
 | `src/__tests__/discovery.test.ts` | `.opentasks/` detection, metadata extraction, scopes, idempotency (~284 lines) |
 | `src/__tests__/map/opentasks-handler.test.ts` | MAP method dispatch, access control, error handling |
 | `src/__tests__/routes/opentasks-content.test.ts` | Content endpoint response shapes, query params, JSONL fallback |
+| `src/__tests__/coordination/coordination.test.ts` | Coordination service, listeners, notifications |
+| `src/__tests__/coordination/e2e.test.ts` | End-to-end coordination flows |
+| `src/__tests__/coordination/cross-instance.test.ts` | Cross-instance coordination sync |
 
 ---
 
@@ -216,61 +257,165 @@ Each `syncable_resource` gets a `sync_strategy` field that determines how conten
 
 ### Data Model Changes
 
-Add `sync_strategy` to `syncable_resources`:
+Add columns to `syncable_resources`:
 
 ```sql
 ALTER TABLE syncable_resources
   ADD COLUMN sync_strategy TEXT DEFAULT 'metadata'
     CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle'));
 
--- For local strategy: filesystem path to read from directly
--- Stored in metadata JSON: { "local_path": "/path/to/.opentasks" }
-
--- For ls-remote/mirror: local clone path
--- Stored in metadata JSON: { "clone_path": "/var/openhive/clones/{resource_id}" }
+ALTER TABLE syncable_resources ADD COLUMN local_path TEXT;
 ```
 
-No new tables needed. Clone paths and local paths stored in the existing `metadata` JSON column.
+- `sync_strategy` determines content acquisition behavior
+- `local_path` points to the local filesystem clone/read path
+  - For locally-discovered resources: stays `NULL` (they already have `git_remote_url` pointing at the local filesystem)
+  - For federated resources that get cloned: absolute path to the clone directory
+
+Clone paths and local metadata stored in the existing `metadata` JSON column where needed.
+
+### Storage Layout
+
+Cloned resources live under a managed data directory:
+
+```
+./data/resources/<resource_id>/    ← git repo root = opentasks dir
+├── .git/
+├── graph.jsonl
+├── config.json
+└── daemon.sock                    ← never exists for clones (no local daemon)
+```
+
+Using `resource_id` as the directory name because:
+- Unique per instance (no collision)
+- Maps directly to existing DAL lookups
+- Cleanup on unsubscribe/unpublish is straightforward
+
+### SyncProvider Interface (Decision D4)
+
+New module: `src/sync/providers/`
+
+```typescript
+/**
+ * Common interface for all sync strategies.
+ * Each strategy implements this interface; the sync orchestrator
+ * dispatches to the appropriate provider based on resource.sync_strategy.
+ */
+export interface SyncProvider {
+  readonly strategy: SyncStrategy;
+
+  /**
+   * Called when a resource_synced event arrives for a resource using this strategy.
+   * Returns true if local content was updated.
+   */
+  onSyncEvent(resource: SyncableResource, commitHash: string): Promise<boolean>;
+
+  /**
+   * Ensure content is available locally for reading.
+   * For eager strategies (mirror), this is a no-op.
+   * For lazy strategies (ls-remote), this triggers clone/fetch if stale.
+   * For metadata-only, this returns null (content not available).
+   */
+  ensureContent(resource: SyncableResource): Promise<string | null>;
+
+  /**
+   * Resolve the local filesystem path to the graph content.
+   * Returns null if content is not available locally.
+   */
+  resolveGraphPath(resource: SyncableResource): Promise<string | null>;
+
+  /**
+   * Clean up any local state (clones, caches) for this resource.
+   */
+  cleanup(resource: SyncableResource): Promise<void>;
+}
+
+export type SyncStrategy = 'metadata' | 'local' | 'ls-remote' | 'mirror' | 'bundle';
+```
+
+**Provider implementations:**
+
+| File | Strategy | Key Behavior |
+|------|----------|-------------|
+| `src/sync/providers/metadata.ts` | `metadata` | No-op for content; returns null from `ensureContent()` |
+| `src/sync/providers/local.ts` | `local` | Reads directly from `local_path`; compares mtime/HEAD on heartbeat |
+| `src/sync/providers/ls-remote.ts` | `ls-remote` | Lazy clone on first `ensureContent()`; staleness via `git ls-remote` |
+| `src/sync/providers/mirror.ts` | `mirror` | Eager fetch on `onSyncEvent()`; always-fresh reads |
+| `src/sync/providers/bundle.ts` | `bundle` | Receive/apply git bundles via JSON-RPC; no shared remote needed |
+| `src/sync/providers/index.ts` | — | Registry: `getProvider(strategy) → SyncProvider` |
+
+The **sync orchestrator** (`src/sync/sync-orchestrator.ts`) replaces direct git calls in the materializer and content API:
+
+```typescript
+export class SyncOrchestrator {
+  private providers: Map<SyncStrategy, SyncProvider>;
+
+  /** Called by materializer when resource_synced arrives */
+  async handleSyncEvent(resource: SyncableResource, commitHash: string): Promise<void> {
+    const provider = this.getProvider(resource.sync_strategy);
+    const updated = await provider.onSyncEvent(resource, commitHash);
+    if (updated) {
+      broadcastToChannel(`resource:task:${resource.id}`, { type: 'content_updated' });
+    }
+  }
+
+  /** Called by content API before reading graph data */
+  async ensureContent(resource: SyncableResource): Promise<string | null> {
+    const provider = this.getProvider(resource.sync_strategy);
+    return provider.ensureContent(resource);
+  }
+
+  /** Called on unsubscribe/unpublish */
+  async cleanup(resource: SyncableResource): Promise<void> {
+    const provider = this.getProvider(resource.sync_strategy);
+    return provider.cleanup(resource);
+  }
+}
+```
 
 ### Git Operations Layer
 
-New module: `src/sync/git-content.ts`
+Each provider that needs git uses a shared utility: `src/sync/git-content.ts`
 
 ```typescript
-interface GitContentManager {
-  // Check if remote has new commits (cheap, no disk I/O)
+export interface GitContentManager {
+  /** Check if remote has new commits (cheap, no disk I/O) */
   checkFreshness(resource: SyncableResource): Promise<{
     stale: boolean;
     remoteHead: string | null;
     localHead: string | null;
   }>;
 
-  // Clone or fetch depending on whether local clone exists
+  /** Clone or fetch depending on whether local clone exists */
   ensureClone(resource: SyncableResource): Promise<string>; // returns clone path
 
-  // Fetch latest from remote into existing clone
+  /** Fetch latest from remote into existing clone */
   fetchLatest(resource: SyncableResource): Promise<{
     previousHead: string;
     newHead: string;
     changed: boolean;
   }>;
 
-  // Apply a received git bundle to local clone
+  /** Apply a received git bundle to local clone */
   applyBundle(resource: SyncableResource, bundleBytes: Buffer): Promise<{
     previousHead: string;
     newHead: string;
   }>;
 
-  // Create a delta bundle for sending to peers
+  /** Create a delta bundle for sending to peers */
   createBundle(resource: SyncableResource, sinceCommit: string): Promise<Buffer>;
 
-  // Read file content from clone or local path (strategy-aware)
+  /** Read file content from clone or local path (strategy-aware) */
   readFile(resource: SyncableResource, filePath: string): Promise<string | null>;
 
-  // Get the effective graph.jsonl path for an OpenTasks resource
+  /** Get the effective graph.jsonl path for an OpenTasks resource */
   resolveGraphPath(resource: SyncableResource): Promise<string | null>;
 }
 ```
+
+Implementation uses `child_process.execFile('git', [...])` — same approach as the existing `src/utils/git-remote.ts`.
+
+**Conflict resolution**: When `mirror` strategy encounters concurrent modifications (e.g., two instances both push to the same graph), the `opentasks` package's merge resolution utility is used. JSONL append-only format makes conflicts unlikely in practice, but when they occur, the utility handles 3-way merge at the graph semantic level rather than raw text merge.
 
 ### Strategy Behavior Matrix
 
@@ -351,32 +496,31 @@ Swarm pushes to git remote
   → updateResourceSyncState(resource_id, commit_hash, agent_id)
   → createSyncEvent() — audit trail
   │
-  ├─ [strategy = mirror]
-  │    → gitContent.fetchLatest(resource)
-  │    → If changed: update graph cache, notify daemon
-  │
-  ├─ [strategy = ls-remote]
-  │    → Mark clone as stale (set stale_since timestamp in metadata)
-  │    → No fetch until next query
-  │
-  ├─ [strategy = bundle]
-  │    → gitContent.createBundle(resource, peer_last_hash)
-  │    → Attach bundle reference to sync event
-  │
-  ├─ [strategy = local]
-  │    → No action (filesystem is source of truth)
-  │
-  └─ [strategy = metadata]
-       → No action (current behavior)
+  → syncOrchestrator.handleSyncEvent(resource, commitHash)
+      │
+      ├─ [MetadataProvider]  → no-op (current behavior)
+      ├─ [LocalProvider]     → no-op (filesystem is source of truth)
+      ├─ [LsRemoteProvider]  → mark stale (set stale_since in metadata)
+      ├─ [MirrorProvider]    → gitContent.fetchLatest(resource) + merge if needed
+      └─ [BundleProvider]    → gitContent.createBundle() + attach to sync event
   │
   → onResourceSynced() — mesh sync to peers
   → broadcastToChannel() — WebSocket to frontend
   → relaySyncMessage() — forward to subscribed swarms
 ```
 
+### Clone-on-Subscribe Hook
+
+When an agent subscribes to a federated `task` resource that has a remote `git_remote_url` and no `local_path`:
+1. Trigger an async clone via the sync provider
+2. On success, update the resource's `local_path` in the DB
+3. The content API endpoints now work because `resolveLocalPath()` finds the `local_path`
+
+This is **async / non-blocking** — the subscribe response returns immediately, and the clone happens in the background. A `resource_cloning` → `resource_cloned` event pair on WebSocket lets the agent know when it's ready.
+
 ### MAP Heartbeat Integration
 
-The MAP heartbeat (periodic health check in `src/sync/service.ts`) can drive staleness detection for `local` strategy resources:
+The MAP heartbeat (periodic health check in `src/sync/service.ts`) drives staleness detection for `local` strategy resources:
 
 ```
 Heartbeat fires (configurable interval, default 30s)
@@ -389,21 +533,15 @@ Heartbeat fires (configurable interval, default 30s)
       → Broadcast to subscribers
 ```
 
-This replaces the need for filesystem watchers (inotify) with a simpler polling approach that piggybacks on existing infrastructure.
-
 ### Swarm Notification: Push vs Poll
 
-Two options for notifying MAP-connected swarms about graph changes:
+**Option A: Relay via existing `relaySyncMessage()`** (recommended for Phase 1)
 
-**Option A: Relay via existing `relaySyncMessage()`** (recommended)
+Already implemented. When `resource_synced` fires, `relaySyncMessage()` forwards to all subscribed swarms. Zero new protocol surface.
 
-Already implemented. When `resource_synced` fires, `relaySyncMessage()` forwards to all subscribed swarms via their WebSocket connections. Swarms receive a JSON-RPC notification and can re-query via `map/opentasks/summary` or `map/opentasks/ready`.
+**Option B: New `map/opentasks/changed` notification** (Phase 5)
 
-No new protocol needed. Swarms already handle these relay messages.
-
-**Option B: New `map/opentasks/changed` notification**
-
-Add a dedicated notification type that includes a diff summary:
+Richer notification with diff summary — avoids round-trip of swarms querying back:
 
 ```jsonc
 {
@@ -417,15 +555,13 @@ Add a dedicated notification type that includes a diff summary:
       "tasks_added": 2,
       "tasks_completed": 1,
       "tasks_blocked": 0,
-      "ready_count": 5       // current ready count after change
+      "ready_count": 5
     }
   }
 }
 ```
 
-This avoids the round-trip of the swarm having to query back after receiving a generic relay. However, computing the diff requires reading the graph content — which is only possible for `local`, `mirror`, and `bundle` strategies.
-
-**Recommendation**: Start with Option A (zero new protocol surface). Add Option B later if swarms need richer change notifications.
+Requires content access (only possible for `local`, `mirror`, and `bundle` strategies).
 
 ### Using `git ls-remote` for Lightweight Polling
 
@@ -435,11 +571,7 @@ The existing `checkRemoteForUpdates()` in `src/utils/git-remote.ts` already impl
 2. **GitLab API** — `GET /api/v4/projects/{id}/repository/commits` (~100ms)
 3. **`git ls-remote`** — fallback for any git host (~50ms, no disk I/O)
 
-For `ls-remote` strategy resources, this is the staleness check. Wire it to:
-
-- **Content API queries**: Check before reading from clone. If stale, fetch first.
-- **Batch polling endpoint**: `POST /api/v1/resources/check-updates` already supports this.
-- **MAP heartbeat**: For `local` strategy resources, compare `git rev-parse HEAD` against stored hash.
+For `ls-remote` strategy resources, this is the staleness check.
 
 ### Git Bundle for Mesh Transport
 
@@ -450,25 +582,137 @@ For `bundle` strategy, content flows through the existing sync protocol without 
 git bundle create delta.bundle <last_known_peer_hash>..HEAD -- .opentasks/
 ```
 
-**Transport options:**
+**Transport** (recommended: out-of-band transfer):
+```jsonc
+// Receiving instance → source instance
+{ "method": "sync/resource_bundle", "params": { "resource_id": "res_abc", "since_commit": "def456" } }
 
-1. **Inline in sync event** — Base64-encode bundle bytes in the `resource_synced` payload. Simple but bloats `hive_events` table (append-only, never cleaned).
-
-2. **Out-of-band transfer** (recommended) — Sync event references a bundle hash. Receiving instance requests bundle via new JSON-RPC method:
-   ```jsonc
-   // Receiving instance → source instance
-   { "method": "sync/resource_bundle", "params": { "resource_id": "res_abc", "since_commit": "def456" } }
-
-   // Source instance → receiving instance
-   { "result": { "bundle_base64": "...", "from_commit": "def456", "to_commit": "abc123" } }
-   ```
-
-3. **HTTP endpoint** — `GET /api/v1/resources/:id/bundle?since=<commit>` returns raw bundle bytes. Simpler for instances with HTTP connectivity but doesn't work over pure WebSocket mesh.
+// Source instance → receiving instance
+{ "result": { "bundle_base64": "...", "from_commit": "def456", "to_commit": "abc123" } }
+```
 
 **Receiving instance:**
 ```bash
 git bundle unbundle delta.bundle  # applies to local bare repo
 ```
+
+---
+
+## Task Graph UI (Decision D3)
+
+### Approach
+
+Follow the SwarmCraft embed pattern: a self-contained React component using **sigma.js** with **graphology** for DAG rendering. The component is embedded in the OpenHive frontend the same way SwarmCraft is — as a page-level embed with its own config derivation.
+
+### Component Architecture
+
+```
+src/web/
+├── pages/
+│   └── TaskGraph.tsx              ← Page wrapper (like SwarmCraft.tsx)
+├── components/
+│   └── task-graph/
+│       ├── TaskGraphViewer.tsx     ← Main component: sigma.js canvas + controls
+│       ├── TaskGraphLayout.tsx     ← DAG layout computation (dagre/elk)
+│       ├── TaskNodeRenderer.tsx    ← Custom node rendering (status colors, icons)
+│       ├── TaskEdgeRenderer.tsx    ← Dependency edge rendering
+│       ├── TaskGraphFilters.tsx    ← Filter panel (status, type, search)
+│       ├── TaskGraphSidebar.tsx    ← Node detail panel (click to inspect)
+│       └── useTaskGraph.ts         ← Hook: fetch graph data, WebSocket updates
+```
+
+### Data Flow
+
+```
+Content API: GET /api/v1/resources/:id/content/opentasks/tasks
+  → Returns all nodes + edges
+  → useTaskGraph() transforms to graphology Graph instance
+  → sigma.js renders with custom node/edge programs
+
+WebSocket: resource:task:{id} channel
+  → On content_updated event → re-fetch and diff
+  → Animate node/edge additions/removals
+```
+
+### Visual Design
+
+| Node Status | Color | Shape |
+|-------------|-------|-------|
+| `open` | Gray | Circle |
+| `in_progress` | Blue | Circle (pulsing) |
+| `blocked` | Red | Circle (dashed border) |
+| `completed` | Green | Circle (checkmark) |
+| `failed` | Red | Circle (X mark) |
+
+| Node Type | Icon |
+|-----------|------|
+| `task` | Checkbox |
+| `milestone` | Diamond |
+| `note` | Document |
+
+Edges show dependency direction. Hover reveals edge label (dependency type). Click a node to open the sidebar with full details, status history, and blocking relationships.
+
+### Route Registration
+
+```typescript
+// src/web/router.tsx
+{ path: '/tasks/:resourceId', element: <TaskGraph /> }
+```
+
+The Resources page links to this view for any resource with `metadata.opentasks: true`.
+
+---
+
+## Coordination Module Deprecation Plan (Decision D5)
+
+### What Gets Deprecated
+
+The **task delegation** functionality in `src/coordination/`:
+
+| Current (Coordination) | Replacement (OpenTasks) |
+|------------------------|------------------------|
+| `coordination_tasks` table | OpenTasks `graph.jsonl` nodes |
+| `x-openhive/task.assign` wire method | `map/opentasks/assign` (new) |
+| `x-openhive/task.status` wire method | `map/opentasks/status-update` (new) |
+| `CoordinationService.assignTask()` | OpenTasks graph mutation via daemon or JSONL append |
+| `CoordinationService.updateTaskStatus()` | OpenTasks node status update |
+| REST `POST /coordination/tasks` | `POST /resources/:id/content/opentasks/tasks` (new mutation endpoint) |
+| REST `PATCH /coordination/tasks/:id` | `PATCH /resources/:id/content/opentasks/tasks/:nodeId` (new) |
+
+### What Gets Preserved (moved to standalone modules)
+
+| Module | Current Location | New Location |
+|--------|-----------------|-------------|
+| Swarm messaging | `src/coordination/` (messages) | `src/messaging/` (new module) |
+| Shared contexts | `src/coordination/` (contexts) | `src/contexts/` (new module) |
+| `swarm_messages` table | `src/coordination/schema.ts` | `src/messaging/schema.ts` |
+| `shared_contexts` table | `src/coordination/schema.ts` | `src/contexts/schema.ts` |
+
+### Migration Strategy
+
+The deprecation is **incremental**, not a flag-day replacement:
+
+1. **Phase 1**: Add `@deprecated` JSDoc annotations to all coordination task methods. Add deprecation warnings to REST endpoints.
+2. **Phase 2**: Implement OpenTasks mutation endpoints (assign, status update) that write to `graph.jsonl` instead of `coordination_tasks`.
+3. **Phase 3**: Add a compatibility shim that translates `x-openhive/task.assign` wire messages into OpenTasks graph mutations. Existing swarms continue to work without changes.
+4. **Phase 4**: Extract messaging and contexts into standalone modules. Update all imports.
+5. **Phase 5**: Remove `coordination_tasks` table, `CoordinationService` task methods, and coordination task REST endpoints. Remove compatibility shim.
+
+### Cross-Instance Task Delegation via OpenTasks
+
+Currently, coordination tasks sync across instances via `coordination-hooks.ts` → `onCoordinationTaskOffered()` → sync events. The replacement:
+
+```
+Agent A assigns task to Swarm B:
+  → Append task node to graph.jsonl with assigned_to metadata
+  → Git commit + push
+  → resource_synced event propagates via mesh sync
+  → Instance B's mirror/ls-remote provider fetches updated graph
+  → Instance B sees new assigned task via content API or MAP query
+  → Swarm B picks it up via map/opentasks/ready
+```
+
+This is simpler than the current flow (no separate DB table, no separate wire protocol, no separate sync hooks) and naturally leverages the sync strategy infrastructure.
 
 ---
 
@@ -505,63 +749,147 @@ resourceSync: {
   bundleMaxSize: 10 * 1024 * 1024,      // 10MB max bundle size
   lsRemoteTtl: 60,                      // seconds before ls-remote re-check
   mirrorFetchTimeout: 30000,            // ms timeout for mirror git fetch
-}
+},
+
+resourceStorage: {
+  dataDir: './data/resources',           // base directory for cloned resource data
+  autoClone: true,                       // auto-clone federated resources on subscribe
+},
 ```
 
 ---
 
 ## Implementation Plan
 
-### Phase 1: Schema + Local Strategy (minimal, unblocks local reads)
+### Phase 1: Schema + Local Strategy + SyncProvider Foundation
 
-1. Add `sync_strategy` column to `syncable_resources` (default: `metadata`)
-2. Update discovery to set `sync_strategy: 'local'` + `metadata.local_path` for discovered resources
-3. Update content API to use `local_path` directly when strategy is `local`
-4. Update MAP handler to resolve graph path via strategy
+**Goal**: Unblock local reads, establish the provider pattern, consolidate content API.
 
-### Phase 2: ls-remote Strategy (lazy clone)
+| Step | File(s) | Description |
+|------|---------|-------------|
+| 1.1 | `src/db/schema.ts` | Add migration: `sync_strategy` and `local_path` columns on `syncable_resources` |
+| 1.2 | `src/types.ts` | Add `sync_strategy` and `local_path` to `SyncableResource` type |
+| 1.3 | `src/db/dal/syncable-resources.ts` | Read/write `sync_strategy` and `local_path`; add `updateLocalPath()`, `updateSyncStrategy()` |
+| 1.4 | `src/config.ts` | Add `resourceSync` and `resourceStorage` config sections |
+| 1.5 | `src/sync/providers/types.ts` | `SyncProvider` interface + `SyncStrategy` type |
+| 1.6 | `src/sync/providers/metadata.ts` | MetadataProvider (no-op content, current behavior) |
+| 1.7 | `src/sync/providers/local.ts` | LocalProvider (direct filesystem reads) |
+| 1.8 | `src/sync/providers/index.ts` | Provider registry |
+| 1.9 | `src/sync/sync-orchestrator.ts` | SyncOrchestrator dispatching to providers |
+| 1.10 | `src/discovery/index.ts` | Set `sync_strategy: 'local'` + `local_path` for discovered resources |
+| 1.11 | `src/api/routes/resource-content.ts` | Update `resolveLocalPath()` to use `local_path` field first, then fall back to `git_remote_url` |
+| 1.12 | Tests | Unit tests for providers, orchestrator, updated content API |
 
-1. Implement `GitContentManager.ensureClone()` and `fetchLatest()`
-2. Add staleness check to content API (check before read)
-3. Add `clone_path` tracking in metadata
-4. Clone lifecycle management (cleanup on unsubscribe)
+### Phase 2: ls-remote + mirror Strategies (federated content)
 
-### Phase 3: Mirror Strategy (eager clone)
+**Goal**: Make federated task resources queryable via lazy or eager clone.
 
-1. Hook `fetchLatest()` into `handleSyncMessage()` for mirror-strategy resources
-2. Wire to `resource_synced` event in materializer
-3. Add clone initialization on subscription
+| Step | File(s) | Description |
+|------|---------|-------------|
+| 2.1 | `src/sync/git-content.ts` | GitContentManager: `ensureClone()`, `fetchLatest()`, `checkFreshness()`, `resolveGraphPath()` |
+| 2.2 | `src/sync/providers/ls-remote.ts` | LsRemoteProvider: lazy clone on `ensureContent()`, staleness tracking |
+| 2.3 | `src/sync/providers/mirror.ts` | MirrorProvider: eager fetch on `onSyncEvent()`, always-fresh reads |
+| 2.4 | `src/sync/materializer.ts` | Hook `syncOrchestrator.handleSyncEvent()` into `materializeResourceSynced()` |
+| 2.5 | `src/api/routes/resources.ts` | Clone-on-subscribe hook (async, non-blocking) |
+| 2.6 | `src/sync/service.ts` | MAP heartbeat integration for local strategy staleness detection |
+| 2.7 | Cleanup | `materializeResourceUnpublished()` calls `syncOrchestrator.cleanup()` |
+| 2.8 | Tests | Integration tests: clone lifecycle, staleness, subscribe-triggers-clone |
 
-### Phase 4: Bundle Strategy (mesh-native content sync)
+### Phase 3: Coordination Deprecation — Task Migration
 
-1. Implement `createBundle()` and `applyBundle()`
-2. Add `sync/resource_bundle` JSON-RPC method
-3. Hook into materializer for automatic bundle requests
-4. Out-of-band bundle transfer protocol
+**Goal**: Route all task functionality through OpenTasks; deprecate coordination tasks.
 
-### Phase 5: MAP Notifications (Option B)
+| Step | File(s) | Description |
+|------|---------|-------------|
+| 3.1 | `src/coordination/service.ts` | Add `@deprecated` to `assignTask()`, `updateTaskStatus()`, `getTask()`, `listTasks()` |
+| 3.2 | `src/api/routes/coordination.ts` | Add deprecation warning headers to task endpoints |
+| 3.3 | `src/api/routes/resource-content.ts` | Add mutation endpoints: `POST .../opentasks/tasks` (create node), `PATCH .../opentasks/tasks/:nodeId` (update status) |
+| 3.4 | `src/map/opentasks-handler.ts` | Add `map/opentasks/assign` and `map/opentasks/status-update` methods |
+| 3.5 | `src/coordination/compat.ts` | Compatibility shim: translate `x-openhive/task.assign` → OpenTasks mutation |
+| 3.6 | Tests | Migration tests: verify old wire format still works via shim |
 
-1. Implement `map/opentasks/changed` notification with diff summary
-2. Compute diff from graph content (requires local/mirror/bundle strategy)
-3. Selective notification based on subscriber interest
+### Phase 4: Coordination Deprecation — Extract Messaging + Contexts
+
+**Goal**: Preserve messaging and contexts as standalone modules; remove coordination task code.
+
+| Step | File(s) | Description |
+|------|---------|-------------|
+| 4.1 | `src/messaging/` | Extract `SwarmMessage` types, DAL, service methods, routes from coordination |
+| 4.2 | `src/contexts/` | Extract `SharedContext` types, DAL, service methods, routes from coordination |
+| 4.3 | `src/coordination/` | Remove task-related code (keep as thin re-export shim during transition) |
+| 4.4 | Update imports | All files importing coordination task types → import from OpenTasks or messaging/contexts |
+| 4.5 | `src/db/schema.ts` | Migration to drop `coordination_tasks` table |
+| 4.6 | Tests | Update all coordination tests to use new module locations |
+
+### Phase 5: Task Graph UI
+
+**Goal**: Visual task graph viewer in the frontend.
+
+| Step | File(s) | Description |
+|------|---------|-------------|
+| 5.1 | `package.json` | Add `sigma`, `graphology`, `graphology-layout-dagre` dependencies |
+| 5.2 | `src/web/components/task-graph/useTaskGraph.ts` | Hook: fetch graph data from content API, WebSocket subscription |
+| 5.3 | `src/web/components/task-graph/TaskGraphViewer.tsx` | Main sigma.js canvas + controls |
+| 5.4 | `src/web/components/task-graph/TaskGraphLayout.tsx` | DAG layout computation |
+| 5.5 | `src/web/components/task-graph/TaskNodeRenderer.tsx` | Custom node rendering (status colors) |
+| 5.6 | `src/web/components/task-graph/TaskGraphSidebar.tsx` | Node detail panel |
+| 5.7 | `src/web/pages/TaskGraph.tsx` | Page wrapper (follows SwarmCraft pattern) |
+| 5.8 | `src/web/router.tsx` | Add `/tasks/:resourceId` route |
+| 5.9 | Tests | Component tests for graph rendering, filter interactions |
+
+### Phase 6: Bundle Strategy + Rich Notifications
+
+**Goal**: Mesh-native content transport, richer swarm notifications.
+
+| Step | File(s) | Description |
+|------|---------|-------------|
+| 6.1 | `src/sync/git-content.ts` | Add `createBundle()` and `applyBundle()` |
+| 6.2 | `src/sync/providers/bundle.ts` | BundleProvider implementation |
+| 6.3 | Sync protocol | Add `sync/resource_bundle` JSON-RPC method |
+| 6.4 | `src/map/opentasks-handler.ts` | Add `map/opentasks/changed` notification with diff summary |
+| 6.5 | Tests | Bundle round-trip tests, notification tests |
+
+---
+
+## Federated Sync Sequence Diagram
+
+```
+Instance A                          Instance B
+    |                                   |
+    |-- resource_published (task) ----->|
+    |                                   | materializeResourcePublished()
+    |                                   |   → creates syncable_resources row
+    |                                   |     (origin_instance_id = A, sync_strategy = 'metadata')
+    |                                   |
+    |                          Agent Y subscribes to resource
+    |                                   |
+    |                                   | POST /resources/:id/subscribe
+    |                                   |   → strategy upgrade: metadata → ls-remote (or mirror)
+    |                                   |   → triggers async clone via SyncOrchestrator
+    |                                   |
+    |<--- git clone (from A's URL) ----|
+    |                                   |
+    |                                   | Clone complete:
+    |                                   |   → local_path = ./data/resources/res_xyz/
+    |                                   |   → WS: resource_cloned event
+    |                                   |
+    |                          Agent Y queries tasks:
+    |                          GET /resources/:id/content/opentasks/tasks
+    |                                   |   → SyncOrchestrator.ensureContent()
+    |                                   |   → LsRemoteProvider returns clone path
+    |                                   |   → OpenHiveOpenTasksClient reads local graph.jsonl
+    |                                   |
+    |-- resource_synced (new commit) -->|
+    |                                   | materializeResourceSynced()
+    |                                   |   → SyncOrchestrator.handleSyncEvent()
+    |                                   |   → [mirror] fetchLatest() + merge
+    |                                   |   → [ls-remote] mark stale
+    |                                   |   → WS: resource_updated / content_updated
+```
 
 ---
 
 ## Relationship to Existing Systems
-
-### OpenTasks Graph vs. Coordination Tasks
-
-These are distinct systems that can reference each other:
-
-| | OpenTasks Graph | Coordination Tasks |
-|-|-----------------|-------------------|
-| **Storage** | `.opentasks/graph.jsonl` (file-backed) | `coordination_tasks` table (DB-backed) |
-| **Scope** | Single agent's work breakdown | Inter-swarm delegation |
-| **Lifecycle** | Persistent, versioned in git | Ephemeral, deleted on completion |
-| **Identity** | Node IDs within graph | `ct_*` IDs in database |
-| **Cross-instance** | Via resource sync (metadata or content) | Via coordination sync hooks |
-
-A coordination task can reference an OpenTasks node (e.g., "this coordination task delegates OpenTasks node X to swarm Y"), but they are not the same entity.
 
 ### OpenTasks Graph vs. MAP Task Store
 
@@ -572,7 +900,7 @@ A coordination task can reference an OpenTasks node (e.g., "this coordination ta
 | **Purpose** | Agent's own task tracking | Real-time swarm coordination |
 | **Query** | Via daemon IPC or JSONL parse | Via MAP JSON-RPC methods |
 
-The MAP task store is intentionally ephemeral — it's for "right now" coordination. The OpenTasks graph is the durable record.
+The MAP task store remains as ephemeral "right now" coordination. The OpenTasks graph is the durable record.
 
 ### Resource Sync Protocol
 
@@ -583,24 +911,59 @@ OpenTasks resources use the same `syncable_resources` infrastructure as memory b
 - Same WebSocket broadcast channels (`resource:task:{id}`)
 - Same cross-instance materialization path
 
-The only OpenTasks-specific additions are:
+The OpenTasks-specific additions are:
 1. Content API endpoints (`/content/opentasks/*`)
 2. MAP handler methods (`map/opentasks/*`)
 3. Discovery integration (`.opentasks/` directory detection)
-4. The sync strategy layer proposed in this document
+4. The sync strategy / SyncProvider layer
+5. Task graph UI (sigma.js viewer)
 
 ---
 
-## Open Questions
+## Resolved Open Questions
 
-1. **Clone storage limits** — Should there be a per-instance cap on total clone storage? Auto-eviction policy for stale clones?
+1. **Clone storage limits** — Deferred. Start without caps; add `maxTotalBytes` / `maxPerResourceBytes` config when usage data is available. JSONL graphs are small; this is unlikely to be a problem in practice.
 
-2. **Bundle size limits** — Large OpenTasks graphs could produce large bundles. Should bundles be paginated or compressed? gzip is natural since git objects are already compressed.
+2. **Bundle size limits** — 10MB default cap (`resourceSync.bundleMaxSize`). Git objects are already compressed; gzip on top adds minimal benefit. Paginated bundles are out of scope.
 
-3. **Daemon affinity** — When a `mirror` or `ls-remote` clone exists, should OpenHive start an OpenTasks daemon instance against it? Or always fall back to JSONL parsing for cloned content?
+3. **Daemon affinity** — No. Cloned resources always use JSONL parsing fallback. The `OpenHiveOpenTasksClient` already handles this gracefully. Starting a daemon per clone adds complexity with little benefit.
 
-4. **Partial sync** — Should `bundle` strategy support syncing only specific subtrees of the graph (e.g., only tasks matching a filter)? This would require OpenTasks-aware diffing rather than raw git bundles.
+4. **Partial sync** — No. Bundle strategy syncs the full `.opentasks/` directory. OpenTasks-aware filtering would require tight coupling to the graph schema.
 
-5. **Conflict resolution** — If two instances both have `mirror` clones and both receive pushes, how are concurrent modifications handled? Git's merge semantics apply at the file level, but JSONL append-only format means conflicts are unlikely in practice.
+5. **Conflict resolution** — Use the `opentasks` npm package's merge resolution utility. JSONL append-only format makes conflicts rare; when they occur, graph-level semantic merge is applied. This is handled inside the MirrorProvider.
 
-6. **Strategy upgrade notifications** — When a `metadata`-only subscriber upgrades to `mirror`, should the system notify the resource owner? This could be relevant for access control auditing.
+6. **Strategy upgrade notifications** — Deferred. Not needed for initial release; can be added as an audit log entry later.
+
+7. **Coordination module overlap** — Resolved: deprecate coordination tasks (D5). Messaging and contexts are extracted to standalone modules.
+
+---
+
+## Future Work (beyond current phases)
+
+### Git Endpoint for Serving Repos
+
+For fully self-contained instances with no external git host:
+- **Option A: Smart HTTP git transport** — Implement git-upload-pack/git-receive-pack. Complex but self-contained.
+- **Option B: Redirect to actual git remote** — Simpler; requires the git host to be accessible from the receiving instance.
+
+Recommendation: Option B first, Option A as enhancement.
+
+### Auth for Cloning
+
+- Public repos: no auth needed
+- GitHub/Gitea PAT: embedded in resource metadata or provided via config
+- Instance-served repos: use sync group pre-auth keys
+
+### Write-Back
+
+When Agent Y on Instance B modifies a cloned task graph, push options:
+- **Direct git push**: simpler but bypasses Instance A's access control
+- **Route through Instance A's API**: respects access control but requires mutation API
+
+### Read-Only Daemon for Clones
+
+Optional: start a read-only OpenTasks daemon for cloned resources to enable richer queries. The client already supports both modes, so this would be transparent.
+
+### Clone All Resource Types
+
+The SyncProvider design works for memory banks and skills too — extending to other types is a config flag, not an architecture change.

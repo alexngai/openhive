@@ -2,10 +2,13 @@
  * Coordination Listener
  *
  * Handles inbound coordination JSON-RPC 2.0 messages from swarm WebSocket
- * connections. Dispatches to CoordinationService based on method name.
+ * connections. Dispatches to standalone messaging/contexts modules.
+ * Task wire messages are handled by the compat shim → OpenTasks.
  */
 
-import { getCoordinationService } from './index.js';
+import { getMessagingService } from '../messaging/index.js';
+import { getContextsService } from '../contexts/index.js';
+import { shimTaskAssign, shimTaskStatus } from './compat.js';
 import type { MapCoordinationMessage, TaskAssignParams, TaskStatusParams, ContextShareParams, MessageSendParams } from './types.js';
 
 /** Set of valid coordination method names for fast validation */
@@ -27,43 +30,35 @@ export function isCoordinationMessage(data: unknown): data is MapCoordinationMes
 
 /**
  * Process an incoming coordination notification from a swarm.
- * Dispatches to the appropriate CoordinationService method.
+ * Tasks → compat shim (OpenTasks). Contexts/Messages → standalone modules.
  */
 export function handleCoordinationMessage(msg: MapCoordinationMessage, sourceSwarmId: string): void {
-  const service = getCoordinationService();
-
   switch (msg.method) {
     case 'x-openhive/task.assign': {
       const p = msg.params as TaskAssignParams;
-      service.assignTask(p.hive_id, {
-        title: p.title,
-        description: p.description,
-        priority: p.priority,
-        assigned_by_agent_id: p.assigned_by,
-        assigned_by_swarm_id: sourceSwarmId,
-        assigned_to_swarm_id: p.assigned_to_swarm,
-        context: p.context,
-        deadline: p.deadline,
-      });
-      console.log(`[coordination] Received task.assign "${p.title}" from swarm ${sourceSwarmId}`);
+      const shimNodeId = shimTaskAssign(p, p.assigned_by);
+      if (shimNodeId) {
+        console.log(`[coordination] Shimmed task.assign "${p.title}" → OpenTasks node ${shimNodeId}`);
+      } else {
+        console.log(`[coordination] task.assign "${p.title}" from swarm ${sourceSwarmId} — no OpenTasks resource found, dropped`);
+      }
       break;
     }
 
     case 'x-openhive/task.status': {
       const p = msg.params as TaskStatusParams;
-      service.updateTaskStatus(p.task_id, {
-        status: p.status,
-        progress: p.progress,
-        result: p.result,
-        error: p.error,
-      });
-      console.log(`[coordination] Received task.status ${p.status} for ${p.task_id} from swarm ${sourceSwarmId}`);
+      const shimHandled = shimTaskStatus(p, p.task_id);
+      if (shimHandled) {
+        console.log(`[coordination] Shimmed task.status ${p.status} for ${p.task_id}`);
+      } else {
+        console.log(`[coordination] task.status ${p.status} for ${p.task_id} — no OpenTasks resource found, dropped`);
+      }
       break;
     }
 
     case 'x-openhive/context.share': {
       const p = msg.params as ContextShareParams;
-      service.shareContext(p.hive_id, {
+      getContextsService().shareContext(p.hive_id, {
         source_swarm_id: p.source_swarm_id,
         context_type: p.context_type,
         data: p.data,
@@ -76,7 +71,7 @@ export function handleCoordinationMessage(msg: MapCoordinationMessage, sourceSwa
 
     case 'x-openhive/message.send': {
       const p = msg.params as MessageSendParams;
-      service.sendMessage({
+      getMessagingService().sendMessage({
         hive_id: p.hive_id,
         from_swarm_id: p.from_swarm_id,
         to_swarm_id: p.to_swarm_id,

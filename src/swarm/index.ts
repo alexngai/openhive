@@ -7,7 +7,6 @@
  */
 
 export { SwarmManager, SwarmHostingError, type SwarmHostingErrorCode } from './manager.js';
-export { HOSTED_SWARM_SCHEMA } from './schema.js';
 
 export type {
   // Provider interface

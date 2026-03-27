@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
-import type { Agent, HostedSwarm, MapSwarm, MapStats, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse } from '../lib/api';
+import type { Agent, HostedSwarm, MapSwarm, MapNode, MapStats, SwarmMessage, SharedContext, SwarmPeer, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse, MailConversation, MailTurn, MailThread } from '../lib/api';
+
 
 // Posts
 export function usePosts(options: {
@@ -282,7 +283,6 @@ export function useHostedSwarms(options?: { state?: string; mine?: boolean }) {
       return api.get<{ data: HostedSwarm[]; total: number }>(`/map/hosted?${params}`);
     },
     select: (data) => data.data,
-    refetchInterval: 10000, // Poll every 10s for status updates
   });
 }
 
@@ -366,7 +366,26 @@ export function useMapSwarms() {
     queryKey: ['map-swarms'],
     queryFn: () => api.get<{ data: MapSwarm[]; total: number }>('/map/swarms'),
     select: (data) => data.data,
-    refetchInterval: 15000,
+  });
+}
+
+export function useMapSwarm(id: string) {
+  return useQuery({
+    queryKey: ['map-swarm', id],
+    queryFn: () => api.get<MapSwarm>(`/map/swarms/${id}`),
+    enabled: !!id,
+  });
+}
+
+export function useMapNodes(options?: { swarm_id?: string }) {
+  const params = new URLSearchParams();
+  if (options?.swarm_id) params.set('swarm_id', options.swarm_id);
+  const qs = params.toString();
+
+  return useQuery({
+    queryKey: ['map-nodes', options],
+    queryFn: () => api.get<{ data: MapNode[]; total: number }>(`/map/nodes${qs ? `?${qs}` : ''}`),
+    select: (data) => data.data,
   });
 }
 
@@ -395,7 +414,6 @@ export function useMapStats() {
   return useQuery({
     queryKey: ['map-stats'],
     queryFn: () => api.get<MapStats>('/map/stats'),
-    refetchInterval: 30000,
   });
 }
 
@@ -409,7 +427,6 @@ export function useResources(options?: { type?: string; limit?: number }) {
       if (type) params.set('type', type);
       return api.get<{ data: SyncableResource[]; total: number }>(`/resources?${params}`);
     },
-    refetchInterval: 60000,
   });
 }
 
@@ -417,7 +434,6 @@ export function useSyncStatus() {
   return useQuery({
     queryKey: ['sync-status'],
     queryFn: () => api.get<SyncStatusResponse>('/sync/status'),
-    refetchInterval: 30000,
   });
 }
 
@@ -431,7 +447,6 @@ export function useResourcesByType(type: 'memory_bank' | 'skill' | 'task', optio
       const params = new URLSearchParams({ limit: String(limit), type });
       return api.get<{ data: SyncableResource[]; total: number }>(`/resources?${params}`);
     },
-    refetchInterval: 30000,
   });
 }
 
@@ -452,7 +467,6 @@ export function useResourceEvents(id: string, options?: { limit?: number }) {
       `/resources/${id}/events?limit=${limit}`
     ),
     enabled: !!id,
-    refetchInterval: 30000,
   });
 }
 
@@ -546,6 +560,16 @@ export function useOpenTasksReady(resourceId: string) {
     queryKey: ['opentasks-ready', resourceId],
     queryFn: () => api.get<import('../lib/api').OpenTasksReadyResponse>(
       `/resources/${resourceId}/content/opentasks/ready`
+    ),
+    enabled: !!resourceId,
+  });
+}
+
+export function useOpenTasksGraph(resourceId: string) {
+  return useQuery({
+    queryKey: ['opentasks-graph', resourceId],
+    queryFn: () => api.get<import('../lib/api').OpenTasksGraphData>(
+      `/resources/${resourceId}/content/opentasks/graph`
     ),
     enabled: !!resourceId,
   });
@@ -694,15 +718,57 @@ export function useDeliveryLog(opts?: { delivery_id?: string; swarm_id?: string;
   });
 }
 
-// ── Sessions / Trajectory ──
+// ── Coordination (Messages & Contexts) ──
 
-export function useSessionsList(options?: { limit?: number }) {
-  const { limit = 50 } = options || {};
+export function useSwarmMessages(swarmId: string, options?: { limit?: number }) {
+  const limit = options?.limit ?? 50;
 
   return useQuery({
-    queryKey: ['sessions-overview', { limit }],
-    queryFn: () => api.get<{ data: SessionListItem[]; total: number }>(`/sessions/overview?limit=${limit}`),
-    refetchInterval: 30000,
+    queryKey: ['swarm-messages', swarmId, { limit }],
+    queryFn: () => api.get<{ data: SwarmMessage[]; total: number }>(
+      `/coordination/messages?swarm_id=${swarmId}&limit=${limit}`
+    ),
+    enabled: !!swarmId,
+  });
+}
+
+export function useSharedContexts(opts: { hive_id?: string; swarm_id?: string; limit?: number }) {
+  const params = new URLSearchParams();
+  if (opts.hive_id) params.set('hive_id', opts.hive_id);
+  if (opts.swarm_id) params.set('swarm_id', opts.swarm_id);
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+
+  return useQuery({
+    queryKey: ['shared-contexts', opts],
+    queryFn: () => api.get<{ data: SharedContext[]; total: number }>(
+      `/coordination/contexts${qs ? `?${qs}` : ''}`
+    ),
+    enabled: !!opts.hive_id,
+  });
+}
+
+export function useSwarmPeers(swarmId: string) {
+  return useQuery({
+    queryKey: ['swarm-peers', swarmId],
+    queryFn: () => api.get<SwarmPeer[]>(`/map/peers/${swarmId}`),
+    enabled: !!swarmId,
+    retry: false,
+  });
+}
+
+// ── Sessions / Trajectory ──
+
+export function useSessionsList(options?: { limit?: number; swarm_id?: string }) {
+  const { limit = 50, swarm_id } = options || {};
+
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  if (swarm_id) params.set('swarm_id', swarm_id);
+
+  return useQuery({
+    queryKey: ['sessions-overview', { limit, swarm_id }],
+    queryFn: () => api.get<{ data: SessionListItem[]; total: number }>(`/sessions/overview?${params.toString()}`),
   });
 }
 
@@ -715,7 +781,6 @@ export function useSessionCheckpoints(id: string, options?: { limit?: number }) 
       `/sessions/${id}/trajectory-checkpoints?limit=${limit}`
     ),
     enabled: !!id,
-    refetchInterval: 30000,
   });
 }
 
@@ -736,5 +801,77 @@ export function useSessionEvents(id: string, options?: { limit?: number; offset?
       `/sessions/${id}/events?limit=${limit}&offset=${offset}`
     ),
     enabled: !!id && enabled,
+  });
+}
+
+// ── Mail (MAP Agent Inbox) ──
+
+export function useMailConversations(options?: { status?: string }) {
+  const { status } = options || {};
+
+  return useQuery({
+    queryKey: ['mail-conversations', { status }],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      const qs = params.toString();
+      return api.get<{ conversations: MailConversation[] }>(`/mail/conversations${qs ? `?${qs}` : ''}`);
+    },
+    select: (data) => data.conversations,
+  });
+}
+
+export function useMailConversation(id: string) {
+  return useQuery({
+    queryKey: ['mail-conversation', id],
+    queryFn: () => api.get<{
+      conversation: MailConversation;
+      turns: MailTurn[];
+      threads: MailThread[];
+      turn_count: number;
+    }>(`/mail/conversations/${id}`),
+    enabled: !!id,
+  });
+}
+
+export function useMailTurns(conversationId: string, options?: { thread_id?: string }) {
+  const { thread_id } = options || {};
+
+  return useQuery({
+    queryKey: ['mail-turns', conversationId, { thread_id }],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (thread_id) params.set('thread_id', thread_id);
+      const qs = params.toString();
+      return api.get<{ turns: MailTurn[] }>(
+        `/mail/conversations/${conversationId}/turns${qs ? `?${qs}` : ''}`
+      );
+    },
+    select: (data) => data.turns,
+    enabled: !!conversationId,
+  });
+}
+
+export function useSendMailTurn() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ conversationId, content, content_type, thread_id, in_reply_to }: {
+      conversationId: string;
+      content: unknown;
+      content_type?: string;
+      thread_id?: string;
+      in_reply_to?: string;
+    }) => api.post<MailTurn>(`/mail/conversations/${conversationId}/turns`, {
+      content,
+      content_type,
+      thread_id,
+      in_reply_to,
+    }),
+    onSuccess: (_, { conversationId }) => {
+      queryClient.invalidateQueries({ queryKey: ['mail-conversation', conversationId] });
+      queryClient.invalidateQueries({ queryKey: ['mail-turns', conversationId] });
+      queryClient.invalidateQueries({ queryKey: ['mail-conversations'] });
+    },
   });
 }

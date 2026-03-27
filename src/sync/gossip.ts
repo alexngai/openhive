@@ -6,7 +6,7 @@
  */
 
 import * as peerConfigsDAL from '../db/dal/sync-peer-configs.js';
-import type { SyncPeer, GossipPeerInfo, SyncPeerConfig } from './types.js';
+import type { SyncPeer, GossipPeerInfo } from './types.js';
 
 export interface GossipConfig {
   enabled: boolean;

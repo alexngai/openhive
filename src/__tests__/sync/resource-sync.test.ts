@@ -11,14 +11,13 @@
  *    onTaskAssigned, onTaskStatus, onContextShared, onMessage
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from 'vitest';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import * as syncGroupsDAL from '../../db/dal/sync-groups.js';
 import * as mapDAL from '../../db/dal/map.js';
-import * as coordinationDal from '../../db/dal/coordination.js';
-import { signEvent, generateSigningKeyPair } from '../../sync/crypto.js';
+import { signEvent } from '../../sync/crypto.js';
 import { materializeEvent } from '../../sync/materializer.js';
 import { getMaterializerRepo } from '../../sync/materializer-repo.js';
 import type { HiveEvent } from '../../sync/types.js';
@@ -553,298 +552,26 @@ describe('Resource Sync System', () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Materializer — coordination_task_offered
+  // Materializer — deprecated task events (skipped)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  describe('materializeCoordinationTaskOffered', () => {
-    it('creates a task in coordination_tasks table', () => {
-      mockBroadcast.mockClear();
-
+  describe('deprecated coordination task events', () => {
+    it('skips coordination_task_offered without error', () => {
       const payload = JSON.stringify({
         task_id: 'ct_offered_1',
         title: 'Analyze dataset',
-        description: 'Process the Q4 metrics dataset',
         priority: 'high',
-        offered_by: {
-          instance_id: REMOTE_INSTANCE,
-          agent_id: testAgentId,
-          name: 'Remote Coordinator',
-        },
+        offered_by: { instance_id: REMOTE_INSTANCE, agent_id: testAgentId, name: 'Remote' },
         hive_id: testHiveId,
         assigned_to_swarm_id: swarm1Id,
-        context: { dataset_url: 'https://data.example.com/q4.csv' },
-        deadline: '2026-03-15T00:00:00Z',
       });
-
       const event = makeEvent({ event_type: 'coordination_task_offered', payload });
-      materializeEvent(event, testHiveId, testHiveName, false);
-
-      // Verify task was created
-      const db = getDatabase();
-      const tasks = db.prepare(
-        'SELECT * FROM coordination_tasks WHERE hive_id = ?'
-      ).all(testHiveId) as Record<string, unknown>[];
-      expect(tasks.length).toBeGreaterThanOrEqual(1);
-
-      const task = tasks.find(t => t.title === 'Analyze dataset');
-      expect(task).toBeDefined();
-      expect(task!.priority).toBe('high');
-      expect(task!.status).toBe('pending');
-
-      // Verify broadcast
-      expect(mockBroadcast).toHaveBeenCalledWith(
-        `coordination:${testHiveId}`,
-        expect.objectContaining({
-          type: 'task_assigned',
-          data: expect.objectContaining({
-            title: 'Analyze dataset',
-            priority: 'high',
-          }),
-        }),
-      );
-    });
-
-    it('is idempotent — duplicate task_id does not create again', () => {
-      const db = getDatabase();
-      const countBefore = (db.prepare(
-        'SELECT COUNT(*) as count FROM coordination_tasks WHERE hive_id = ?'
-      ).get(testHiveId) as { count: number }).count;
-
-      const payload = JSON.stringify({
-        task_id: 'ct_offered_1', // same task_id
-        title: 'Duplicate Task',
-        description: 'Should be ignored',
-        priority: 'low',
-        offered_by: {
-          instance_id: REMOTE_INSTANCE,
-          agent_id: testAgentId,
-          name: 'Remote Coordinator',
-        },
-        hive_id: testHiveId,
-        assigned_to_swarm_id: swarm2Id,
-        context: null,
-        deadline: null,
-      });
-
-      const event = makeEvent({
-        id: 'evt_dup_task',
-        event_type: 'coordination_task_offered',
-        payload,
-      });
-
-      // The materializer checks findTaskById first; if it exists, it returns early.
-      // However, findTaskById looks up by the auto-generated `ct_xxx` ID, not the
-      // payload task_id. The coordination DAL generates its own ID. So the
-      // idempotency depends on the materializer's logic. Let's verify:
-      // According to the materializer code, it calls coordinationDal.findTaskById(payload.task_id).
-      // Since coordinationDal.createTask generates its own ID (ct_xxx), the
-      // findTaskById(payload.task_id) will return null because the stored ID
-      // is different from payload.task_id. This means duplicates may be created.
-      // We still test the behavior to document it.
-      materializeEvent(event, testHiveId, testHiveName, false);
-
-      const countAfter = (db.prepare(
-        'SELECT COUNT(*) as count FROM coordination_tasks WHERE hive_id = ?'
-      ).get(testHiveId) as { count: number }).count;
-
-      // Note: The current materializer creates tasks with auto-generated IDs,
-      // so findTaskById(payload.task_id) won't match the stored ID unless
-      // the DAL uses the payload task_id. A second task may be created.
-      // This test documents the actual behavior.
-      expect(countAfter).toBeGreaterThanOrEqual(countBefore);
-    });
-
-    it('creates a second task with different task_id', () => {
-      const payload = JSON.stringify({
-        task_id: 'ct_offered_2',
-        title: 'Summarize findings',
-        description: null,
-        priority: 'medium',
-        offered_by: {
-          instance_id: REMOTE_INSTANCE,
-          agent_id: testAgentId,
-          name: 'Remote Coordinator',
-        },
-        hive_id: testHiveId,
-        assigned_to_swarm_id: swarm2Id,
-        context: null,
-        deadline: null,
-      });
-
-      const event = makeEvent({ event_type: 'coordination_task_offered', payload });
-      materializeEvent(event, testHiveId, testHiveName, false);
-
-      const db = getDatabase();
-      const tasks = db.prepare(
-        "SELECT * FROM coordination_tasks WHERE title = 'Summarize findings'"
-      ).all() as Record<string, unknown>[];
-      expect(tasks.length).toBeGreaterThanOrEqual(1);
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Materializer — coordination_task_claimed
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  describe('materializeCoordinationTaskClaimed', () => {
-    let knownTaskId: string;
-
-    beforeAll(() => {
-      // Get a task we know exists
-      const db = getDatabase();
-      const task = db.prepare(
-        "SELECT id FROM coordination_tasks WHERE title = 'Analyze dataset' LIMIT 1"
-      ).get() as { id: string };
-      knownTaskId = task.id;
-    });
-
-    it('updates task status to accepted', () => {
-      mockBroadcast.mockClear();
-
-      const payload = JSON.stringify({
-        task_id: knownTaskId,
-        claimed_by: {
-          instance_id: REMOTE_INSTANCE,
-          agent_id: 'agent_worker_1',
-          name: 'Worker Alpha',
-        },
-      });
-
-      const event = makeEvent({ event_type: 'coordination_task_claimed', payload });
-      materializeEvent(event, testHiveId, testHiveName, false);
-
-      const task = coordinationDal.findTaskById(knownTaskId);
-      expect(task).not.toBeNull();
-      expect(task!.status).toBe('accepted');
-
-      // Verify broadcast
-      expect(mockBroadcast).toHaveBeenCalledWith(
-        `coordination:${testHiveId}`,
-        expect.objectContaining({
-          type: 'task_status_updated',
-          data: expect.objectContaining({
-            task_id: knownTaskId,
-            status: 'accepted',
-          }),
-        }),
-      );
-    });
-
-    it('skips unknown task IDs gracefully', () => {
-      const payload = JSON.stringify({
-        task_id: 'ct_nonexistent_xyz',
-        claimed_by: {
-          instance_id: REMOTE_INSTANCE,
-          agent_id: 'agent_worker_1',
-          name: 'Worker Alpha',
-        },
-      });
-
-      const event = makeEvent({ event_type: 'coordination_task_claimed', payload });
       expect(() => materializeEvent(event, testHiveId, testHiveName, false)).not.toThrow();
     });
   });
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Materializer — coordination_task_completed
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  describe('materializeCoordinationTaskCompleted', () => {
-    let completableTaskId: string;
-
-    beforeAll(() => {
-      const db = getDatabase();
-      const task = db.prepare(
-        "SELECT id FROM coordination_tasks WHERE title = 'Analyze dataset' LIMIT 1"
-      ).get() as { id: string };
-      completableTaskId = task.id;
-    });
-
-    it('updates task status to completed with result', () => {
-      mockBroadcast.mockClear();
-
-      const payload = JSON.stringify({
-        task_id: completableTaskId,
-        completed_by: {
-          instance_id: REMOTE_INSTANCE,
-          agent_id: 'agent_worker_1',
-          name: 'Worker Alpha',
-        },
-        status: 'completed',
-        result: { summary: 'Q4 metrics look great', rows_processed: 10000 },
-        error: null,
-      });
-
-      const event = makeEvent({ event_type: 'coordination_task_completed', payload });
-      materializeEvent(event, testHiveId, testHiveName, false);
-
-      const task = coordinationDal.findTaskById(completableTaskId);
-      expect(task).not.toBeNull();
-      expect(task!.status).toBe('completed');
-      expect(task!.result).toEqual({ summary: 'Q4 metrics look great', rows_processed: 10000 });
-      expect(task!.completed_at).not.toBeNull();
-
-      // Verify broadcast
-      expect(mockBroadcast).toHaveBeenCalledWith(
-        `coordination:${testHiveId}`,
-        expect.objectContaining({
-          type: 'task_status_updated',
-          data: expect.objectContaining({
-            task_id: completableTaskId,
-            status: 'completed',
-          }),
-        }),
-      );
-    });
-
-    it('updates task status to failed with error', () => {
-      // Create a fresh task for failure test
-      const freshTask = coordinationDal.createTask(testHiveId, {
-        title: 'Doomed Task',
-        priority: 'low',
-        assigned_by_agent_id: testAgentId,
-        assigned_to_swarm_id: swarm1Id,
-      });
-
-      const payload = JSON.stringify({
-        task_id: freshTask.id,
-        completed_by: {
-          instance_id: REMOTE_INSTANCE,
-          agent_id: 'agent_worker_2',
-          name: 'Worker Beta',
-        },
-        status: 'failed',
-        result: null,
-        error: 'Out of memory while processing',
-      });
-
-      const event = makeEvent({ event_type: 'coordination_task_completed', payload });
-      materializeEvent(event, testHiveId, testHiveName, false);
-
-      const task = coordinationDal.findTaskById(freshTask.id);
-      expect(task).not.toBeNull();
-      expect(task!.status).toBe('failed');
-      expect(task!.error).toBe('Out of memory while processing');
-      expect(task!.completed_at).not.toBeNull();
-    });
-
-    it('skips unknown task IDs gracefully', () => {
-      const payload = JSON.stringify({
-        task_id: 'ct_completely_unknown',
-        completed_by: {
-          instance_id: REMOTE_INSTANCE,
-          agent_id: 'agent_worker_1',
-          name: 'Worker Alpha',
-        },
-        status: 'completed',
-        result: null,
-        error: null,
-      });
-
-      const event = makeEvent({ event_type: 'coordination_task_completed', payload });
-      expect(() => materializeEvent(event, testHiveId, testHiveName, false)).not.toThrow();
-    });
-  });
+  // Task claimed/completed events are now deprecated and skipped by the materializer.
+  // See 'deprecated coordination task events' describe block above.
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Materializer — coordination_message
@@ -1188,8 +915,8 @@ describe('MapSyncClient — Coordination Extension', () => {
       expect(ws.sentMessages.length).toBe(1);
       const msg = JSON.parse(ws.sentMessages[0]) as MapCoordinationMessage;
       expect(msg.method).toBe('x-openhive/message.send');
-      expect((msg.params as Record<string, unknown>).message_id).toBe('sm_minimal');
-      expect((msg.params as Record<string, unknown>).content_type).toBe('json');
+      expect((msg.params as unknown as Record<string, unknown>).message_id).toBe('sm_minimal');
+      expect((msg.params as unknown as Record<string, unknown>).content_type).toBe('json');
     });
   });
 

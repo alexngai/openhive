@@ -7,6 +7,7 @@ import { checkRemoteForUpdates, checkRemotesBatch } from '../../utils/git-remote
 import { discoverLocalResources } from '../../discovery/index.js';
 import type { SyncableResourceType, ResourceVisibility, ResourceScope } from '../../types.js';
 import { onResourcePublished, onResourceUpdated, onResourceUnpublished } from '../../sync/resource-hooks.js';
+import { getSyncOrchestrator } from '../../sync/sync-orchestrator.js';
 import type { Config } from '../../config.js';
 
 // Valid resource types
@@ -456,6 +457,19 @@ export async function resourcesRoutes(
         resource.id,
         'read'
       );
+
+      // Async clone-on-subscribe: if resource has a remote git URL and autoClone is enabled,
+      // trigger content acquisition in the background (non-blocking)
+      if (
+        resource.git_remote_url &&
+        !resource.local_path &&
+        config.resourceStorage.autoClone &&
+        (resource.sync_strategy === 'ls-remote' || resource.sync_strategy === 'mirror')
+      ) {
+        getSyncOrchestrator().ensureContent(resource).catch(() => {
+          // Clone failure is non-fatal — subscriber can still see metadata
+        });
+      }
 
       return reply.status(201).send(subscription);
     }

@@ -21,6 +21,7 @@ const Login = lazy(() => import('./pages/Login').then(m => ({ default: m.Login }
 const AuthCallback = lazy(() => import('./pages/AuthCallback').then(m => ({ default: m.AuthCallback })));
 const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })));
 const Swarms = lazy(() => import('./pages/Swarms').then(m => ({ default: m.Swarms })));
+const SwarmDetail = lazy(() => import('./pages/SwarmDetail').then(m => ({ default: m.SwarmDetail })));
 const SwarmCraft = lazy(() => import('./pages/SwarmCraft').then(m => ({ default: m.SwarmCraft })));
 const Terminal = lazy(() => import('./pages/Terminal').then(m => ({ default: m.Terminal })));
 const Resources = lazy(() => import('./pages/Resources').then(m => ({ default: m.Resources })));
@@ -28,6 +29,9 @@ const ResourceDetail = lazy(() => import('./pages/ResourceDetail').then(m => ({ 
 const Sessions = lazy(() => import('./pages/Sessions').then(m => ({ default: m.Sessions })));
 const SessionDetail = lazy(() => import('./pages/SessionDetail').then(m => ({ default: m.SessionDetail })));
 const Events = lazy(() => import('./pages/Events').then(m => ({ default: m.Events })));
+const TaskGraph = lazy(() => import('./pages/TaskGraph').then(m => ({ default: m.TaskGraph })));
+const Messages = lazy(() => import('./pages/Messages').then(m => ({ default: m.Messages })));
+const Conversation = lazy(() => import('./pages/Conversation').then(m => ({ default: m.Conversation })));
 
 export default function App() {
   // Initialize WebSocket connection
@@ -61,6 +65,7 @@ export default function App() {
               <Route path="about" element={<About />} />
               <Route path="settings" element={<Settings />} />
               <Route path="swarms" element={<Swarms />} />
+              <Route path="swarms/:id" element={<SwarmDetail />} />
               <Route path="sessions" element={<Sessions />} />
               <Route path="sessions/:id" element={<SessionDetail />} />
               <Route path="events" element={<Events />} />
@@ -68,6 +73,9 @@ export default function App() {
               <Route path="resources/:id" element={<ResourceDetail />} />
               <Route path="swarmcraft" element={<SwarmCraft />} />
               <Route path="terminal/:swarmId" element={<Terminal />} />
+              <Route path="messages" element={<Messages />} />
+              <Route path="messages/:id" element={<Conversation />} />
+              <Route path="tasks/:resourceId" element={<TaskGraph />} />
             </Route>
           </Route>
         </Routes>

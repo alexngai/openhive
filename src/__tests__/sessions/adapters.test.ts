@@ -519,6 +519,6 @@ not valid json
     const nestedContent = `{"type":"assistant","sessionId":"ses_1","message":{"role":"assistant","content":[{"type":"text","text":"Part 1"},{"type":"text","text":"Part 2"}]}}`;
     const events = claudeAdapter.toAcpEvents(nestedContent);
     expect(events.length).toBe(1);
-    expect(events[0].content.length).toBe(2);
+    expect((events[0] as { content: unknown[] }).content.length).toBe(2);
   });
 });

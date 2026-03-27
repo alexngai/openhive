@@ -10,7 +10,7 @@ import * as hivesDAL from '../../db/dal/hives.js';
 import { getSyncService } from '../../sync/service.js';
 import type { Config } from '../../config.js';
 
-export async function syncRoutes(fastify: FastifyInstance, opts: { config: Config }): Promise<void> {
+export async function syncRoutes(fastify: FastifyInstance, _opts: { config: Config }): Promise<void> {
   // ── Sync Group Management ─────────────────────────────────────
 
   // Create sync group for a hive
@@ -44,7 +44,7 @@ export async function syncRoutes(fastify: FastifyInstance, opts: { config: Confi
   });
 
   // List sync groups
-  fastify.get('/sync/groups', { preHandler: authMiddleware }, async (request, reply) => {
+  fastify.get('/sync/groups', { preHandler: authMiddleware }, async (_request, reply) => {
     const groups = syncGroupsDAL.listSyncGroups();
     return reply.send({
       data: groups.map(g => {
@@ -132,7 +132,7 @@ export async function syncRoutes(fastify: FastifyInstance, opts: { config: Confi
 
   // ── Sync Health ────────────────────────────────────────────────
 
-  fastify.get('/sync/status', { preHandler: authMiddleware }, async (request, reply) => {
+  fastify.get('/sync/status', { preHandler: authMiddleware }, async (_request, reply) => {
     const syncService = getSyncService();
     if (!syncService) {
       return reply.send({ enabled: false, groups: [] });

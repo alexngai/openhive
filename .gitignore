@@ -12,3 +12,4 @@ logs/
 .openhive/
 .dev-port
 test-data/
+.swarm/

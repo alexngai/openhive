@@ -9,10 +9,12 @@ import * as fs from "fs";
 import { Config, loadConfig } from "./config.js";
 import { initDatabase, closeDatabase } from "./db/index.js";
 import { registerRoutes } from "./api/index.js";
-import { setupWebSocket, stopHeartbeat } from "./realtime/index.js";
+import { setupWebSocket, stopHeartbeat, broadcastToChannel } from "./realtime/index.js";
 import { generateSkillMd } from "./skill.js";
 import { generateSitemap, generateRobotsTxt } from "./services/sitemap.js";
 import { initializeStorage, type StorageConfig } from "./storage/index.js";
+import { initializeLocalSessionStorage, isSessionStorageInitialized } from "./sessions/storage/index.js";
+import { resolveDataDir } from "./data-dir.js";
 import { initJwks } from "./auth/jwks.js";
 import {
   createNetworkProvider,
@@ -29,11 +31,15 @@ import {
   initMapSyncListener,
   stopMapSyncListener,
 } from "./map/sync-listener.js";
+import { markStaleSwarms } from "./map/service.js";
+import { initMail } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
+import { initTokenService, loadRevocations, setPersistence } from "./map/token-service.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { SwarmHubConnector } from "./swarmhub/connector.js";
 import { normalize, routeEvent } from "./events/index.js";
-import { initCoordinationService } from "./coordination/index.js";
+// Coordination service removed — messaging and contexts are standalone modules
+import { initProviders as initSyncProviders } from "./sync/providers/index.js";
 import { registerHostnameGuard } from "./api/middleware/hostname-guard.js";
 
 export interface HiveServer {
@@ -104,6 +110,32 @@ export async function createHive(
     }
   }
 
+  // Initialize session storage for trajectory content caching.
+  // Configurable via config.sessions.type: 'local' (default), 's3', or 'none'.
+  if (!isSessionStorageInitialized() && config.sessions.type !== 'none') {
+    if (config.sessions.type === 'local') {
+      const sessionsPath = config.sessions.path
+        ? path.resolve(config.sessions.path)
+        : path.join(resolveDataDir(), 'data', 'sessions');
+      if (!fs.existsSync(sessionsPath)) {
+        fs.mkdirSync(sessionsPath, { recursive: true });
+      }
+      initializeLocalSessionStorage({ type: 'local', basePath: sessionsPath });
+    } else if (config.sessions.type === 's3' && config.sessions.bucket) {
+      // S3 storage — lazy-loaded to avoid requiring @aws-sdk at startup
+      import('./sessions/storage/index.js').then(({ initializeSessionStorage }) => {
+        initializeSessionStorage({
+          type: 's3',
+          bucket: config.sessions.bucket!,
+          region: config.sessions.region || 'us-east-1',
+          prefix: 'sessions/',
+        } as any);
+      }).catch(() => {
+        console.warn('[openhive] Failed to initialize S3 session storage');
+      });
+    }
+  }
+
   // Create Fastify instance
   const fastify = Fastify({
     logger: {
@@ -153,9 +185,45 @@ export async function createHive(
   // Setup WebSocket handlers
   setupWebSocket(fastify);
 
+  // Initialize MAP mail module (agent-inbox)
+  // Uses in-memory storage; pass getDatabase() for SQLite co-location
+  if (config.mapHub.enabled) {
+    try {
+      const { getDatabase: getDb } = await import('./db/index.js');
+      await initMail({ sqliteDb: getDb(), sqlitePrefix: 'mail_' });
+    } catch {
+      // Fallback to in-memory if DB isn't available
+      await initMail();
+    }
+  }
+
   // Register MAP inbound WebSocket (/ws/map) for agents connecting to the hub
   if (config.mapHub.enabled) {
-    setupMapWebSocket(fastify, { authMode: config.auth.mode });
+    // Initialize agent-iam TokenService for verified mode
+    if (config.mapHub.trustModel === 'verified') {
+      const { getDatabaseConfig } = await import("./db/index.js");
+      const dbConf = getDatabaseConfig();
+      const dataDir = dbConf?.type === 'sqlite' && dbConf.path
+        ? path.dirname(path.dirname(dbConf.path)) // <dataDir>/data/openhive.db → <dataDir>
+        : undefined;
+      initTokenService(config.mapHub.iamSecret, dataDir);
+
+      // Wire up DB persistence for token revocation
+      try {
+        const { addRevokedToken, removeRevokedToken, listRevokedTokens } = await import("./db/dal/map.js");
+        setPersistence({ revoke: addRevokedToken, unrevoke: removeRevokedToken });
+
+        // Load persisted revocations from the database
+        const revoked = listRevokedTokens();
+        if (revoked.length > 0) {
+          loadRevocations(revoked);
+          console.log(`[openhive] Loaded ${revoked.length} persisted token revocation(s)`);
+        }
+      } catch {
+        // Table may not exist yet on first run before migration
+      }
+    }
+    setupMapWebSocket(fastify, config);
   }
 
   // Register terminal WebSocket (native PTY for TUI tunneling)
@@ -297,6 +365,9 @@ export async function createHive(
       );
     }
   }
+
+  // Stale swarm sweep timer
+  let staleSweepTimer: NodeJS.Timeout | null = null;
 
   // Initialize swarm hosting manager
   let swarmManager: SwarmManager | null = null;
@@ -511,8 +582,11 @@ export async function createHive(
         );
       }
 
-      // Initialize coordination service (must be before MAP sync listener)
-      initCoordinationService();
+      // Initialize sync providers (ls-remote, mirror) with config
+      initSyncProviders(config);
+
+      // Coordination service removed — messaging and contexts are standalone modules
+      // (initialized lazily via getMessagingService() / getContextsService())
 
       // Start MAP sync listener (subscribe to swarm MAP endpoints for sync messages)
       if (config.mapHub.enabled) {
@@ -619,10 +693,27 @@ export async function createHive(
         /* ignore */
       }
 
+      // Start stale swarm sweep (safety net for swarms that disconnect uncleanly)
+      const sweepMinutes = config.mapHub.staleThresholdMinutes;
+      staleSweepTimer = setInterval(() => {
+        const marked = markStaleSwarms(sweepMinutes);
+        if (marked > 0) {
+          console.log(`[openhive] Marked ${marked} stale swarm(s) as offline`);
+          broadcastToChannel('map:discovery', {
+            type: 'swarm_offline',
+            data: { count: marked },
+          });
+        }
+      }, sweepMinutes * 60 * 1000);
+
       return address;
     },
 
     async stop() {
+      if (staleSweepTimer) {
+        clearInterval(staleSweepTimer);
+        staleSweepTimer = null;
+      }
       stopHeartbeat();
       // Destroy terminal sessions
       const ptyMgr = (

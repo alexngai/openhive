@@ -1,12 +1,15 @@
 import { FastifyInstance } from 'fastify';
-import { readFileSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, statSync, existsSync, appendFileSync } from 'node:fs';
 import { resolve, join, relative, extname } from 'node:path';
+import { nanoid } from 'nanoid';
+import { z } from 'zod';
 import { parseFrontmatter } from 'minimem/session';
 import { listMemoryFiles } from 'minimem/internal';
 import { FilesystemStorageAdapter, discoverSkills } from 'skill-tree';
 import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { OpenHiveOpenTasksClient } from '../../opentasks-client/index.js';
+import { getSyncOrchestrator } from '../../sync/sync-orchestrator.js';
 import type { SyncableResource } from '../../types.js';
 import type { Config } from '../../config.js';
 
@@ -17,10 +20,18 @@ import type { Config } from '../../config.js';
 const REMOTE_URL_PREFIXES = ['http', 'git://', 'ssh://'];
 
 /**
- * Determine whether a resource's git_remote_url points to a local filesystem path.
- * Returns the resolved absolute path, or null if the URL is a remote.
+ * Determine the local filesystem path for a resource.
+ * Checks local_path field first (set by discovery and sync providers),
+ * then falls back to git_remote_url if it's a local path.
+ * Returns null if the resource only has a remote URL.
  */
 function resolveLocalPath(resource: SyncableResource): string | null {
+  // Prefer explicit local_path (set by discovery or sync orchestrator)
+  if (resource.local_path) {
+    return resolve(resource.local_path);
+  }
+
+  // Fall back to git_remote_url if it's a local filesystem path
   const url = resource.git_remote_url;
   for (const prefix of REMOTE_URL_PREFIXES) {
     if (url.startsWith(prefix)) {
@@ -96,7 +107,20 @@ export async function resourceContentRoutes(
       return null;
     }
 
-    const localPath = resolveLocalPath(resource);
+    let localPath = resolveLocalPath(resource);
+
+    // For federated resources without a local path, try the sync orchestrator
+    // to trigger lazy clone (ls-remote) or verify eager clone (mirror)
+    if (!localPath && (resource.sync_strategy === 'ls-remote' || resource.sync_strategy === 'mirror')) {
+      try {
+        const contentPath = await getSyncOrchestrator().ensureContent(resource);
+        if (contentPath) {
+          localPath = contentPath;
+        }
+      } catch {
+        // Clone failed — fall through to error below
+      }
+    }
 
     if (!localPath) {
       reply.status(400).send({
@@ -722,6 +746,174 @@ export async function resourceContentRoutes(
       graph_file_exists: graphExists,
       graph_last_modified: graphModified,
       socket_path: join(localPath, 'daemon.sock'),
+    });
+  });
+
+  // 10. OpenTasks full graph data (nodes + edges from JSONL)
+  fastify.get<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/graph', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const graphPath = join(localPath, 'graph.jsonl');
+    if (!existsSync(graphPath)) {
+      return reply.send({ nodes: [], edges: [] });
+    }
+
+    const content = readFileSync(graphPath, 'utf-8');
+    const lines = content.split('\n').filter(l => l.trim());
+    const nodes: Record<string, unknown>[] = [];
+    const edges: Record<string, unknown>[] = [];
+
+    // Track latest state per node ID (JSONL is append-only, later entries override)
+    const nodeMap = new Map<string, Record<string, unknown>>();
+
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        if (obj.from_id && obj.to_id) {
+          edges.push(obj);
+        } else if (obj.id) {
+          // Merge with existing node state (later entries win)
+          const existing = nodeMap.get(obj.id);
+          nodeMap.set(obj.id, existing ? { ...existing, ...obj } : obj);
+        }
+      } catch { /* skip malformed lines */ }
+    }
+
+    for (const node of nodeMap.values()) {
+      nodes.push(node);
+    }
+
+    return reply.send({ nodes, edges });
+  });
+
+  // ============================================================================
+  // OpenTasks Mutation Endpoints
+  // ============================================================================
+
+  const CreateTaskNodeSchema = z.object({
+    title: z.string().min(1).max(500),
+    description: z.string().max(5000).optional(),
+    status: z.string().optional(),
+    priority: z.number().int().min(0).max(10).optional(),
+    metadata: z.record(z.unknown()).optional(),
+  });
+
+  const UpdateTaskStatusSchema = z.object({
+    status: z.string().min(1),
+    result: z.record(z.unknown()).optional(),
+    error: z.string().optional(),
+  });
+
+  // POST /resources/:id/content/opentasks/tasks — Create a new task node
+  fastify.post<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/tasks', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    let body;
+    try {
+      body = CreateTaskNodeSchema.parse(request.body);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return reply.status(422).send({
+          error: 'VALIDATION_ERROR',
+          message: 'Invalid request body',
+          details: error.errors,
+        });
+      }
+      throw error;
+    }
+
+    const graphPath = join(localPath, 'graph.jsonl');
+    const nodeId = `task_${nanoid()}`;
+    const node = {
+      id: nodeId,
+      type: 'task',
+      title: body.title,
+      description: body.description || '',
+      status: body.status || 'open',
+      priority: body.priority ?? 0,
+      archived: false,
+      created_at: new Date().toISOString(),
+      ...(body.metadata || {}),
+    };
+
+    appendFileSync(graphPath, JSON.stringify(node) + '\n');
+
+    return reply.status(201).send({ node_id: nodeId, status: node.status });
+  });
+
+  // PATCH /resources/:id/content/opentasks/tasks/:nodeId — Update task status
+  fastify.patch<{
+    Params: { id: string; nodeId: string };
+  }>('/resources/:id/content/opentasks/tasks/:nodeId', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    let body;
+    try {
+      body = UpdateTaskStatusSchema.parse(request.body);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return reply.status(422).send({
+          error: 'VALIDATION_ERROR',
+          message: 'Invalid request body',
+          details: error.errors,
+        });
+      }
+      throw error;
+    }
+
+    const graphPath = join(localPath, 'graph.jsonl');
+    if (!existsSync(graphPath)) {
+      return reply.status(404).send({
+        error: 'Not Found',
+        message: 'Graph file not found',
+      });
+    }
+
+    // Read current graph to find previous status
+    const content = readFileSync(graphPath, 'utf-8');
+    const lines = content.split('\n').filter(l => l.trim());
+    let previousStatus: string | null = null;
+
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        if (obj.id === request.params.nodeId) {
+          previousStatus = obj.status || null;
+        }
+      } catch { /* skip malformed lines */ }
+    }
+
+    // Append status update
+    const update: Record<string, unknown> = {
+      id: request.params.nodeId,
+      type: 'task',
+      status: body.status,
+      updated_at: new Date().toISOString(),
+    };
+    if (body.result) update.result = body.result;
+    if (body.error) update.error = body.error;
+
+    appendFileSync(graphPath, JSON.stringify(update) + '\n');
+
+    return reply.send({
+      node_id: request.params.nodeId,
+      previous_status: previousStatus,
+      new_status: body.status,
     });
   });
 }

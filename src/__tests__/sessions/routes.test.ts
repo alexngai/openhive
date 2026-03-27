@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 import * as path from 'path';
-import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
+import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import { sessionsRoutes } from '../../api/routes/sessions.js';
 import { initializeLocalSessionStorage } from '../../sessions/storage/index.js';

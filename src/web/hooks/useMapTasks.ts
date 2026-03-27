@@ -63,7 +63,6 @@ export function useMapTasks(options?: {
   return useQuery({
     queryKey: ['map-tasks', options],
     queryFn: () => api.get<TasksListResponse>(`/map/tasks${qs ? `?${qs}` : ''}`),
-    refetchInterval: 10_000,
   });
 }
 
@@ -71,7 +70,6 @@ export function useMapTasksSummary() {
   return useQuery({
     queryKey: ['map-tasks-summary'],
     queryFn: () => api.get<TasksSummaryResponse>('/map/tasks/summary'),
-    refetchInterval: 10_000,
   });
 }
 

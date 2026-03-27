@@ -1,5 +1,6 @@
 import { Cpu, Wifi, Users, Hash } from 'lucide-react';
 import { useMapStats } from '../../hooks/useApi';
+import { useSwarmRealtime } from '../../hooks/useRealtimeInvalidation';
 
 const stats = [
   { key: 'swarms', label: 'Total Swarms', icon: Cpu, getValue: (d: ReturnType<typeof useMapStats>['data']) => d?.swarms.total ?? 0 },
@@ -10,6 +11,7 @@ const stats = [
 
 export function StatsOverview() {
   const { data, isLoading } = useMapStats();
+  useSwarmRealtime();
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-2">

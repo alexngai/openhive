@@ -121,10 +121,10 @@ export function getNamedSessionStorage(name: string): SessionStorageAdapter | nu
  * Get or create storage for a specific backend type
  * Useful when sessions specify their storage backend
  */
-export function getStorageByType(
+export async function getStorageByType(
   type: 'local' | 's3' | 'gcs',
   fallbackConfig?: SessionStorageConfig
-): SessionStorageAdapter | null {
+): Promise<SessionStorageAdapter | null> {
   // Check named instances first
   for (const [, adapter] of storageInstances) {
     if (adapter.type === type) {
@@ -139,7 +139,7 @@ export function getStorageByType(
 
   // Create from fallback config if provided
   if (fallbackConfig && fallbackConfig.type === type) {
-    return createSessionStorage(fallbackConfig);
+    return await createSessionStorage(fallbackConfig);
   }
 
   return null;

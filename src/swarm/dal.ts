@@ -140,6 +140,7 @@ export interface UpdateHostedSwarmInput {
   swarm_id?: string | null;
   state?: HostedSwarmState;
   pid?: number | null;
+  assigned_port?: number | null;
   container_id?: string | null;
   deployment_id?: string | null;
   endpoint?: string | null;
@@ -162,6 +163,10 @@ export function updateHostedSwarm(id: string, input: UpdateHostedSwarmInput): Ho
   if (input.pid !== undefined) {
     sets.push('pid = ?');
     params.push(input.pid);
+  }
+  if (input.assigned_port !== undefined) {
+    sets.push('assigned_port = ?');
+    params.push(input.assigned_port);
   }
   if (input.container_id !== undefined) {
     sets.push('container_id = ?');

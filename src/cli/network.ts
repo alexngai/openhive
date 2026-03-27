@@ -13,7 +13,7 @@ import { Command } from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
-import { createNetworkProvider, type NetworkProvider } from '../network/index.js';
+import { createNetworkProvider } from '../network/index.js';
 import type { NetworkConfig } from '../network/factory.js';
 
 // ============================================================================

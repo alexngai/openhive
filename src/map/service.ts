@@ -256,6 +256,7 @@ export function leaveHive(swarmId: string, hiveName: string): boolean {
 
 /**
  * Mark stale swarms as offline.
+ * Sweeps both 'online' (missed heartbeats) and 'unreachable' (disconnected but not yet offline).
  * Call this periodically (e.g. via setInterval or cron).
  */
 export function markStaleSwarms(staleThresholdMinutes: number = 5): number {
@@ -263,7 +264,7 @@ export function markStaleSwarms(staleThresholdMinutes: number = 5): number {
   const result = db.prepare(`
     UPDATE map_swarms
     SET status = 'offline', updated_at = datetime('now')
-    WHERE status = 'online'
+    WHERE status IN ('online', 'unreachable')
       AND last_seen_at < datetime('now', ?)
   `).run(`-${staleThresholdMinutes} minutes`);
 

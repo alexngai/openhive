@@ -6,6 +6,7 @@ import {
   MessageSquare, Terminal, User, Wrench,
 } from 'lucide-react';
 import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents } from '../hooks/useApi';
+import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
 import type { TrajectoryCheckpoint, SessionEvent, SessionContentBlock } from '../lib/api';
@@ -248,6 +249,109 @@ function CheckpointsTab({ checkpoints, total, isLoading }: {
 // Trajectory Viewer
 // ============================================================================
 
+// ============================================================================
+// JSON Viewer
+// ============================================================================
+
+import JsonView from 'react18-json-view';
+import 'react18-json-view/src/style.css';
+
+const jsonViewTheme = {
+  keyColor: '#c084fc',
+  indexColor: '#9ca3af',
+  numberColor: '#60a5fa',
+  stringColor: '#34d399',
+  booleanColor: '#fbbf24',
+  nullColor: '#9ca3af',
+};
+
+function OutputBlock({ output, status }: { output: string; status?: string }) {
+  // Try to parse as JSON for structured rendering
+  let parsed: unknown = null;
+  try {
+    const trimmed = output.trim();
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      parsed = JSON.parse(trimmed);
+    }
+  } catch {
+    // Not JSON — render as text
+  }
+
+  const borderClass = status === 'failed' ? 'border-red-400/30' : 'border-emerald-400/30';
+
+  if (parsed) {
+    return (
+      <div
+        className={clsx('text-2xs rounded px-2 py-1.5 overflow-x-auto border-l-2', borderClass)}
+        style={{ backgroundColor: 'var(--color-elevated)' }}
+      >
+        <JsonView src={parsed} collapsed={2} theme="a11y" dark collapseStringsAfterLength={120} style={{ fontSize: '10px', backgroundColor: 'transparent' }} />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={clsx('text-2xs rounded px-2 py-1.5 overflow-x-auto font-mono border-l-2 whitespace-pre-wrap break-words', borderClass)}
+      style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+    >
+      {truncate(output, 2000)}
+    </div>
+  );
+}
+
+function ToolCallBlock({ block }: { block: SessionContentBlock }) {
+  const [expanded, setExpanded] = useState(false);
+  const tc = block as SessionContentBlock & { toolCallId?: string; toolName?: string; status?: string; output?: string; input?: Record<string, unknown> };
+  const hasOutput = !!tc.output;
+  const hasInput = tc.input && Object.keys(tc.input).length > 0;
+  const isExpandable = hasOutput || hasInput;
+
+  return (
+    <div>
+      <div
+        className={clsx(
+          'text-2xs px-2 py-1 rounded flex items-center gap-1.5',
+          isExpandable && 'cursor-pointer',
+        )}
+        style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+        onClick={isExpandable ? () => setExpanded(!expanded) : undefined}
+      >
+        <Wrench className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+        <span className="font-mono">{tc.toolName}</span>
+        {tc.status && (
+          <span className={clsx(
+            'text-2xs px-1 rounded',
+            tc.status === 'completed' ? 'text-emerald-400' : tc.status === 'failed' ? 'text-red-400' : ''
+          )}>
+            {tc.status}
+          </span>
+        )}
+        {isExpandable && (
+          <span className="ml-auto">
+            {expanded ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
+          </span>
+        )}
+      </div>
+      {expanded && (
+        <div className="mt-1 space-y-1">
+          {hasInput && (
+            <div
+              className="text-2xs rounded px-2 py-1.5 overflow-x-auto"
+              style={{ backgroundColor: 'var(--color-elevated)' }}
+            >
+              <JsonView src={tc.input} collapsed={2} theme="a11y" dark collapseStringsAfterLength={120} style={{ fontSize: '10px', backgroundColor: 'transparent' }} />
+            </div>
+          )}
+          {hasOutput && (
+            <OutputBlock output={tc.output!} status={tc.status} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EventBubble({ event }: { event: SessionEvent }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -324,22 +428,7 @@ function EventBubble({ event }: { event: SessionEvent }) {
           {toolCalls.length > 0 && (
             <div className="mt-1.5 space-y-1">
               {toolCalls.map((tc, i) => (
-                <div
-                  key={tc.toolCallId || i}
-                  className="text-2xs px-2 py-1 rounded flex items-center gap-1.5"
-                  style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
-                >
-                  <Wrench className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
-                  <span className="font-mono">{tc.toolName}</span>
-                  {tc.status && (
-                    <span className={clsx(
-                      'text-2xs px-1 rounded',
-                      tc.status === 'completed' ? 'text-emerald-400' : tc.status === 'failed' ? 'text-red-400' : ''
-                    )}>
-                      {tc.status}
-                    </span>
-                  )}
-                </div>
+                <ToolCallBlock key={tc.toolCallId || i} block={tc} />
               ))}
             </div>
           )}
@@ -384,7 +473,6 @@ function EventBubble({ event }: { event: SessionEvent }) {
   }
 
   if (event.type === 'tool_call') {
-    const inputStr = event.input ? JSON.stringify(event.input, null, 2) : '';
     return (
       <div className="flex gap-2.5 items-start">
         <div
@@ -401,13 +489,13 @@ function EventBubble({ event }: { event: SessionEvent }) {
             <span className="text-2xs font-mono text-blue-400">{event.toolName}</span>
             {expanded ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
           </button>
-          {expanded && inputStr && (
-            <pre
-              className="mt-1 text-2xs rounded-lg px-3 py-2 max-w-[85%] overflow-x-auto font-mono"
-              style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+          {expanded && event.input && (
+            <div
+              className="mt-1 max-w-[85%] text-2xs rounded-lg px-3 py-2 overflow-x-auto"
+              style={{ backgroundColor: 'var(--color-elevated)' }}
             >
-              {truncate(inputStr, 2000)}
-            </pre>
+              <JsonView src={event.input} collapsed={2} theme="a11y" dark collapseStringsAfterLength={120} style={{ fontSize: '10px', backgroundColor: 'transparent' }} />
+            </div>
           )}
         </div>
       </div>
@@ -475,20 +563,47 @@ function EventBubble({ event }: { event: SessionEvent }) {
     );
   }
 
-  // Fallback for custom/unknown events
+  // Fallback for custom/unknown events — show aggregated count if available
+  const count = (event.data as Record<string, unknown>)?.count as number | undefined;
   return (
     <div className="flex justify-center py-0.5">
       <span className="text-2xs px-2 py-0.5 rounded-full" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
-        {event.type}{event.eventType ? `: ${event.eventType}` : ''}
+        {event.eventType || event.type}{count && count > 1 ? ` (${count})` : ''}
       </span>
     </div>
   );
 }
 
-function TrajectoryTab({ sessionId, hasLocalStorage }: { sessionId: string; hasLocalStorage: boolean }) {
-  const { data, isLoading, isError, error } = useSessionEvents(sessionId, { enabled: hasLocalStorage });
+/**
+ * Group consecutive custom events into arrays for inline badge rendering.
+ * Non-custom events pass through as individual items.
+ */
+function groupConsecutiveCustomEvents(events: SessionEvent[]): (SessionEvent | SessionEvent[])[] {
+  const result: (SessionEvent | SessionEvent[])[] = [];
+  let currentGroup: SessionEvent[] = [];
 
-  if (!hasLocalStorage) {
+  for (const event of events) {
+    if (event.type === 'custom') {
+      currentGroup.push(event);
+    } else {
+      if (currentGroup.length > 0) {
+        result.push(currentGroup);
+        currentGroup = [];
+      }
+      result.push(event);
+    }
+  }
+  if (currentGroup.length > 0) {
+    result.push(currentGroup);
+  }
+
+  return result;
+}
+
+function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string; hasTrajectorySupport: boolean }) {
+  const { data, isLoading, isError, error } = useSessionEvents(sessionId, { enabled: hasTrajectorySupport });
+
+  if (!hasTrajectorySupport) {
     return (
       <div className="card px-6 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
         <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-40" />
@@ -496,8 +611,7 @@ function TrajectoryTab({ sessionId, hasLocalStorage }: { sessionId: string; hasL
           Trajectory not available
         </p>
         <p className="text-xs">
-          Event-level trajectory is only available for sessions with local or cloud storage.
-          Git-backed sessions store content in the remote repository.
+          No trajectory data available. The swarm may be offline or no checkpoints have been recorded yet.
         </p>
       </div>
     );
@@ -555,9 +669,28 @@ function TrajectoryTab({ sessionId, hasLocalStorage }: { sessionId: string; hasL
       </div>
 
       <div className="space-y-3">
-        {events.map((event) => (
-          <EventBubble key={event.id} event={event} />
-        ))}
+        {groupConsecutiveCustomEvents(events).map((item, i) => {
+          if (Array.isArray(item)) {
+            // Group of consecutive custom events — render inline as badges
+            return (
+              <div key={`group-${i}`} className="flex flex-wrap gap-1 py-0.5">
+                {item.map((event) => {
+                  const count = (event.data as Record<string, unknown>)?.count as number | undefined;
+                  return (
+                    <span
+                      key={event.id}
+                      className="text-2xs px-2 py-0.5 rounded-full"
+                      style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
+                    >
+                      {event.eventType || event.type}{count && count > 1 ? ` (${count})` : ''}
+                    </span>
+                  );
+                })}
+              </div>
+            );
+          }
+          return <EventBubble key={item.id} event={item} />;
+        })}
       </div>
 
       {data && data.total > data.events.length && (
@@ -577,10 +710,11 @@ function TrajectoryTab({ sessionId, hasLocalStorage }: { sessionId: string; hasL
 
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
-  const [tab, setTab] = useState<DetailTab>('checkpoints');
+  const [tab, setTab] = useState<DetailTab>('trajectory');
   const { data: resource, isLoading: resourceLoading } = useResource(id!);
   const { data: checkpointsData, isLoading: checkpointsLoading } = useSessionCheckpoints(id!);
   const { data: stats } = useSessionStats(id!);
+  useSessionsRealtime();
 
   if (resourceLoading) return <PageLoader />;
 
@@ -598,10 +732,11 @@ export function SessionDetail() {
   const checkpoints = checkpointsData?.data ?? [];
   const total = checkpointsData?.total ?? 0;
 
-  // Determine if local/cloud storage is available for event-level trajectory
-  const metadata = resource.metadata as Record<string, unknown> | null;
-  const storageBackend = (metadata?.storage as Record<string, unknown> | undefined)?.backend as string | undefined;
-  const hasLocalStorage = !!storageBackend && storageBackend !== 'git';
+  // Determine if trajectory events can be loaded.
+  // Events are available from: local/cloud storage backends, or on-demand from connected swarms.
+  // The backend handles fallback — if no local storage, it requests from the swarm.
+  // We enable the tab whenever there are checkpoints (indicating a session exists).
+  const hasTrajectorySupport = total > 0;
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-6">
@@ -658,6 +793,21 @@ export function SessionDetail() {
         <button
           className={clsx(
             'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
+            tab === 'trajectory'
+              ? 'border-honey-500 text-honey-500'
+              : 'border-transparent'
+          )}
+          style={tab !== 'trajectory' ? { color: 'var(--color-text-muted)' } : undefined}
+          onClick={() => setTab('trajectory')}
+        >
+          <span className="flex items-center gap-1.5">
+            <MessageSquare className="w-3.5 h-3.5" />
+            Trajectory
+          </span>
+        </button>
+        <button
+          className={clsx(
+            'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
             tab === 'checkpoints'
               ? 'border-honey-500 text-honey-500'
               : 'border-transparent'
@@ -671,24 +821,6 @@ export function SessionDetail() {
             {total > 0 && <span className="text-2xs opacity-70">({total})</span>}
           </span>
         </button>
-        <button
-          className={clsx(
-            'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
-            tab === 'trajectory'
-              ? 'border-honey-500 text-honey-500'
-              : 'border-transparent'
-          )}
-          style={tab !== 'trajectory' ? { color: 'var(--color-text-muted)' } : undefined}
-          onClick={() => setTab('trajectory')}
-        >
-          <span className="flex items-center gap-1.5">
-            <MessageSquare className="w-3.5 h-3.5" />
-            Trajectory
-            {!hasLocalStorage && (
-              <span className="text-2xs opacity-50">(n/a)</span>
-            )}
-          </span>
-        </button>
       </div>
 
       {/* Tab content */}
@@ -696,7 +828,7 @@ export function SessionDetail() {
         <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
       )}
       {tab === 'trajectory' && (
-        <TrajectoryTab sessionId={id!} hasLocalStorage={hasLocalStorage} />
+        <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} />
       )}
     </div>
   );

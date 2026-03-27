@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
+import { initDatabase, closeDatabase } from '../../db/index.js';
 import { normalize } from '../../events/normalizers/index.js';
 import { routeEvent } from '../../events/router.js';
 import * as eventsDAL from '../../db/dal/events.js';
@@ -360,13 +360,10 @@ describe('Event System E2E', () => {
         sender: { login: 'alice' },
       });
 
-      const result1 = routeEvent(wrongRepo);
+      routeEvent(wrongRepo);
 
       // The filtered post rule should not match 'other/repo'
       // (Other wildcard rules from previous tests may still match)
-      const filteredDeliveries = result1.deliveries.filter(
-        (d) => d.swarm_id === 'swarm_e2e_1',
-      );
       // The filtered subscription requires repos: ['filtered/repo'], this is 'other/repo'
       // so swarm_e2e_1 should NOT receive from this subscription
 
@@ -513,9 +510,6 @@ describe('Event System E2E', () => {
       const result = routeEvent(event);
 
       // No delivery for this specific event type (disabled)
-      const matched = result.deliveries.filter(
-        (d) => d.swarm_id === 'swarm_e2e_1',
-      );
       // The disabled subscription should not match, but other subs might
       // At minimum, this specific event type sub is disabled
       expect(result.deliveries.filter(

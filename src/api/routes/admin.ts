@@ -363,4 +363,52 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
       return reply.status(204).send();
     },
   );
+
+  // ============================================================================
+  // Server Configuration
+  // ============================================================================
+
+  // GET /admin/config — public read of safe server configuration
+  fastify.get('/admin/config', { preHandler: authMiddleware }, async (_request, reply) => {
+    return reply.send({
+      mapHub: {
+        enabled: options.config.mapHub.enabled,
+        trustModel: options.config.mapHub.trustModel,
+        staleThresholdMinutes: options.config.mapHub.staleThresholdMinutes,
+      },
+      auth: {
+        mode: options.config.auth.mode,
+      },
+    });
+  });
+
+  // PATCH /admin/config — admin-only update of runtime configuration
+  fastify.patch<{ Body: { mapHub?: { trustModel?: string } } }>(
+    '/admin/config',
+    { preHandler: adminAuth },
+    async (request, reply) => {
+      const { mapHub } = request.body || {};
+
+      if (mapHub?.trustModel) {
+        if (mapHub.trustModel !== 'open' && mapHub.trustModel !== 'verified') {
+          return reply.status(400).send({
+            error: 'Bad Request',
+            message: 'trustModel must be "open" or "verified"',
+          });
+        }
+        (options.config.mapHub as any).trustModel = mapHub.trustModel;
+      }
+
+      return reply.send({
+        mapHub: {
+          enabled: options.config.mapHub.enabled,
+          trustModel: options.config.mapHub.trustModel,
+          staleThresholdMinutes: options.config.mapHub.staleThresholdMinutes,
+        },
+        auth: {
+          mode: options.config.auth.mode,
+        },
+      });
+    },
+  );
 }

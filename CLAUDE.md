@@ -57,6 +57,8 @@ src/
 - **Config loading**: `src/config.ts` validates all config with Zod. Access config via the validated object, not raw env vars.
 - **Event-driven**: State changes emit events through `src/events/dispatch.ts`. WebSocket and sync both consume these events.
 - **Pluggable providers**: Network providers (Tailscale, Headscale) and swarm providers (local, sandboxed) follow a common interface pattern in their respective directories.
+- **Realtime invalidation**: Frontend React Query caches are invalidated via WebSocket events (`src/web/hooks/useRealtimeInvalidation.ts`) rather than polling. Server broadcasts to channels like `map:discovery`, and per-domain hooks (`useSwarmRealtime`, `useResourcesRealtime`, `useSessionsRealtime`) subscribe and invalidate the relevant query keys.
+- **Swarm lifecycle**: Connected swarms follow the status progression `online` → `unreachable` → `offline`. The server pings WS clients every 30s, refreshing `last_seen_at`. On disconnect, status moves to `unreachable`; a periodic sweep (`markStaleSwarms`) demotes stale swarms to `offline` after `staleThresholdMinutes` (default 5 min).
 
 ## Development
 

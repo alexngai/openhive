@@ -6,11 +6,14 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
+import * as fs from 'fs';
+import * as path from 'path';
 import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import * as trajectoryDAL from '../../db/dal/trajectory-checkpoints.js';
 import { getDatabase } from '../../db/index.js';
 import { broadcastToChannel } from '../../realtime/index.js';
+import { fetchTranscriptFromSwarm } from '../../map/trajectory-content.js';
 import {
   detectFormatExtended,
   getSupportedFormats,
@@ -87,6 +90,47 @@ const QuerySessionsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
+
+// ============================================================================
+// Local Sessionlog Transcript Lookup
+// ============================================================================
+
+/**
+ * Try to read a session transcript directly from sessionlog's local state.
+ * Works when OpenHive runs on the same machine as the Claude Code agent.
+ *
+ * Extracts the session ID from checkpoint data, finds the sessionlog state
+ * file at .git/sessionlog-sessions/<sessionID>.json, reads the transcriptPath,
+ * and returns the raw JSONL content.
+ *
+ * @returns transcript string or null if not available locally
+ */
+function readLocalSessionlogTranscript(sessionResourceId: string): string | null {
+  try {
+    // Get session_id from the latest checkpoint's checkpoint_id
+    // Checkpoint IDs are formatted as: {sessionID}-step{N} or just {sessionID}
+    const { data: checkpoints } = trajectoryDAL.listCheckpointsForSession(sessionResourceId, 1, 0);
+    if (checkpoints.length === 0) return null;
+
+    const checkpointId = checkpoints[0].checkpoint_id;
+    // Extract session ID: either everything before -step, or the whole ID
+    const sessionId = checkpointId.replace(/-step\d+$/, '');
+    if (!sessionId) return null;
+
+    // Look for sessionlog state in common locations
+    const sessionlogDir = path.join(process.cwd(), '.git', 'sessionlog-sessions');
+    const statePath = path.join(sessionlogDir, `${sessionId}.json`);
+    if (!fs.existsSync(statePath)) return null;
+
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+    const transcriptPath = state.transcriptPath;
+    if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
+
+    return fs.readFileSync(transcriptPath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
 
 // ============================================================================
 // Routes
@@ -506,49 +550,91 @@ export async function sessionsRoutes(
 
       const metadata = resource.metadata as SessionResourceMetadata | null;
       const storageBackend = metadata?.storage?.backend;
+      const limit = Math.min(Number(request.query.limit) || 100, 500);
+      const offset = Number(request.query.offset) || 0;
 
-      if (!storageBackend || storageBackend === 'git') {
-        return reply.status(400).send({
-          error: 'Bad Request',
-          message: 'Event parsing is only available for locally stored sessions',
-        });
+      let content: string | null = null;
+      let formatId = metadata?.format?.id || 'claude_jsonl_v1';
+
+      // Try local storage first (uploaded sessions use ses_ IDs, cached trajectories use resource ID)
+      if (storageBackend && storageBackend !== 'git' && isSessionStorageInitialized()) {
+        const storage = getSessionStorage();
+        const sessionIdMatch = resource.git_remote_url.match(/ses_[a-zA-Z0-9_-]+/);
+        const storageSessionId = sessionIdMatch?.[0] || resource.id;
+        content = await storage.retrieve(
+          { sessionId: storageSessionId, agentId: resource.owner_agent_id },
+          'session.jsonl'
+        ) as string | null;
       }
 
-      if (!isSessionStorageInitialized()) {
-        return reply.status(503).send({
-          error: 'Service Unavailable',
-          message: 'Session storage is not configured',
-        });
+      // Fall back to on-demand fetch from connected swarm
+      if (!content) {
+        content = await fetchTranscriptFromSwarm(resource.id);
+        if (content) {
+          formatId = 'claude_jsonl_v1';
+
+          // Cache the transcript to session storage for subsequent requests
+          if (isSessionStorageInitialized()) {
+            try {
+              const storage = getSessionStorage();
+              await storage.store(
+                { sessionId: resource.id, agentId: resource.owner_agent_id },
+                [{ path: 'session.jsonl', content }],
+              );
+              resourcesDAL.updateResource(resource.id, {
+                metadata: {
+                  ...(resource.metadata as Record<string, unknown> || {}),
+                  format: { id: 'claude_jsonl_v1' },
+                  storage: { backend: 'local', cachedAt: new Date().toISOString() },
+                  trajectory: { source: 'swarm' },
+                },
+              });
+            } catch {
+              // Non-critical — cache failure doesn't block the response
+            }
+          }
+        }
       }
 
-      const storage = getSessionStorage();
-      const sessionIdMatch = resource.git_remote_url.match(/ses_[a-zA-Z0-9_-]+/);
-      if (!sessionIdMatch) {
-        return reply.status(500).send({
-          error: 'Internal Error',
-          message: 'Could not determine session storage location',
-        });
+      // Try reading transcript directly from sessionlog on local disk.
+      // Works when OpenHive runs on the same machine as the Claude Code agent.
+      // Uses the session_id from checkpoint metadata to find the sessionlog state,
+      // which contains the transcriptPath to the Claude Code JSONL file.
+      if (!content) {
+        content = readLocalSessionlogTranscript(resource.id);
+        if (content) {
+          formatId = 'claude_jsonl_v1';
+        }
       }
 
-      const content = await storage.retrieve(
-        { sessionId: sessionIdMatch[0], agentId: resource.owner_agent_id },
-        'session.jsonl'
-      );
+      // Last resort: try stale cache on disk (swarm offline, metadata invalidated by checkpoint)
+      if (!content && isSessionStorageInitialized()) {
+        try {
+          const storage = getSessionStorage();
+          const staleContent = await storage.retrieve(
+            { sessionId: resource.id, agentId: resource.owner_agent_id },
+            'session.jsonl'
+          ) as string | null;
+          if (staleContent) {
+            content = staleContent;
+            formatId = 'claude_jsonl_v1';
+          }
+        } catch {
+          // No stale cache available
+        }
+      }
 
       if (!content) {
-        return reply.status(404).send({
-          error: 'Not Found',
-          message: 'Session content not found',
+        return reply.status(503).send({
+          error: 'Service Unavailable',
+          message: 'Session content not available. The swarm may be offline.',
         });
       }
 
       // Convert to ACP events
-      const formatId = metadata?.format?.id || 'raw';
-      const { events } = toAcpEvents(content as string, formatId);
+      const { events } = toAcpEvents(content, formatId);
 
       // Apply pagination
-      const limit = Math.min(Number(request.query.limit) || 100, 500);
-      const offset = Number(request.query.offset) || 0;
       const paginatedEvents = events.slice(offset, offset + limit);
 
       return reply.send({
@@ -1139,12 +1225,13 @@ export async function sessionsRoutes(
   // ============================================================================
 
   // List all sessions with trajectory checkpoint stats
-  fastify.get<{ Querystring: { limit?: number; offset?: number } }>(
+  fastify.get<{ Querystring: { limit?: number; offset?: number; swarm_id?: string } }>(
     '/sessions/overview',
     async (request, reply) => {
       const limit = Math.min(Number(request.query.limit) || 50, 100);
       const offset = Number(request.query.offset) || 0;
-      const result = trajectoryDAL.listAllSessions(limit, offset);
+      const swarmId = request.query.swarm_id || undefined;
+      const result = trajectoryDAL.listAllSessions(limit, offset, swarmId);
       return reply.send(result);
     }
   );

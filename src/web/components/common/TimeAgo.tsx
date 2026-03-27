@@ -6,7 +6,8 @@ interface TimeAgoProps {
 }
 
 export function TimeAgo({ date, className }: TimeAgoProps) {
-  const parsed = parseISO(date);
+  const normalized = date.endsWith('Z') || date.includes('+') || date.includes('T') && date.match(/[+-]\d{2}:\d{2}$/) ? date : date + 'Z';
+  const parsed = parseISO(normalized);
   const formatted = formatDistanceToNow(parsed, { addSuffix: true });
 
   return (

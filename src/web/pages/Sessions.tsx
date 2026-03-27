@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Activity, ChevronRight, Clock, Cpu, FileText, User } from 'lucide-react';
 import { useSessionsList } from '../hooks/useApi';
+import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import type { SessionListItem } from '../lib/api';
@@ -85,6 +86,7 @@ function SessionCard({ session }: { session: SessionListItem }) {
 
 export function Sessions() {
   const { data, isLoading } = useSessionsList();
+  useSessionsRealtime();
   const sessions = data?.data ?? [];
   const total = data?.total ?? 0;
 

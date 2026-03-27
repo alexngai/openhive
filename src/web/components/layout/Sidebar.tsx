@@ -1,7 +1,9 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database, Bell, PanelRightOpen, PanelRightClose, User, Search, Activity } from 'lucide-react';
+import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database, Bell, User, Search, Activity, MessageSquare, ChevronLeft } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
+import type { MailConversation } from '../../lib/api';
+import { useMapSwarms } from '../../hooks/useApi';
 import { useAuthStore } from '../../stores/auth';
 import { useState } from 'react';
 import clsx from 'clsx';
@@ -34,18 +36,29 @@ export function Sidebar() {
     select: (data) => data.data?.slice(0, 5) || [],
   });
 
+  const { data: activeThreads } = useQuery<{ conversations: MailConversation[] }>({
+    queryKey: ['mail-conversations-sidebar'],
+    queryFn: () => api.get('/mail/conversations?status=active'),
+    select: (data) => ({ conversations: (data.conversations ?? []).slice(0, 5) }),
+    staleTime: 15_000,
+  });
+
   const { data: instanceInfo } = useQuery<{ features?: { swarm_hosting?: boolean; swarmcraft?: boolean } }>({
     queryKey: ['instance-info'],
     queryFn: () => fetch('/.well-known/openhive.json').then((r) => r.json()),
     staleTime: 5 * 60 * 1000,
   });
 
+  const { data: mapSwarms } = useMapSwarms();
+  const onlineSwarmCount = mapSwarms?.filter((s) => s.status === 'online').length ?? 0;
+
   const features = instanceInfo?.features;
 
   const navItems = [
     { to: '/', icon: LayoutDashboard, label: 'Home' },
-    { to: '/swarms', icon: Zap, label: 'Swarms' },
+    { to: '/swarms', icon: Zap, label: 'Swarms', badge: onlineSwarmCount || undefined },
     { to: '/sessions', icon: Activity, label: 'Sessions' },
+    { to: '/messages', icon: MessageSquare, label: 'Messages' },
     { to: '/events', icon: Bell, label: 'Events' },
     { to: '/resources', icon: Database, label: 'Assets' },
     { to: '/explore', icon: Compass, label: 'Explore' },
@@ -57,19 +70,35 @@ export function Sidebar() {
 
   const sidebarContent = (
     <>
-      {/* Logo + Brand */}
+      {/* Logo + Brand (toggles sidebar) */}
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className={clsx(
+          'hidden lg:flex items-center border-b shrink-0 cursor-pointer transition-colors duration-80 w-full',
+          collapsed ? 'justify-center gap-1.5 px-2 py-4' : 'gap-2.5 px-4 py-4'
+        )}
+        style={{ borderColor: 'var(--color-border-subtle)' }}
+        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-hover)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+      >
+        <Logo className="h-6 w-6 text-honey-500 shrink-0" />
+        {!collapsed && (
+          <>
+            <span className="text-lg font-bold" style={{ color: 'var(--color-text)' }}>openhive</span>
+            <ChevronLeft className="w-4 h-4 ml-auto shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+          </>
+        )}
+      </button>
+      {/* Mobile: logo links home */}
       <div
         className={clsx(
-          'flex items-center border-b shrink-0',
-          collapsed ? 'justify-center gap-1.5 px-2 py-4' : 'px-4 py-4'
+          'flex lg:hidden items-center border-b shrink-0 px-4 py-4'
         )}
         style={{ borderColor: 'var(--color-border-subtle)' }}
       >
-        <Link to="/" className="flex items-center gap-2.5 min-w-0">
+        <Link to="/" className="flex items-center gap-2.5 min-w-0" onClick={() => setMobileOpen(false)}>
           <Logo className="h-6 w-6 text-honey-500 shrink-0" />
-          {!collapsed && (
-            <span className="text-lg font-bold" style={{ color: 'var(--color-text)' }}>openhive</span>
-          )}
+          <span className="text-lg font-bold" style={{ color: 'var(--color-text)' }}>openhive</span>
         </Link>
       </div>
 
@@ -129,7 +158,14 @@ export function Sidebar() {
             <item.icon className={clsx('shrink-0', collapsed ? 'w-5 h-5' : 'w-4 h-4')} />
             {collapsed
               ? <span className="text-2xs leading-tight truncate w-full">{item.label}</span>
-              : <span className="truncate">{item.label}</span>
+              : <>
+                  <span className="truncate">{item.label}</span>
+                  {item.badge != null && (
+                    <span className="ml-auto text-2xs font-medium px-1.5 py-0.5 rounded-full bg-honey-500/15 text-honey-500 leading-none">
+                      {item.badge}
+                    </span>
+                  )}
+                </>
             }
           </Link>
         ))}
@@ -189,6 +225,46 @@ export function Sidebar() {
 
             <div className="divider mx-1" />
 
+            {/* Threads (active mail conversations) */}
+            {activeThreads?.conversations && activeThreads.conversations.length > 0 && (
+              <>
+                <div className="py-1">
+                  <div className="sidebar-section flex items-center gap-1.5">
+                    <MessageSquare className="w-3 h-3" />
+                    <span>Threads</span>
+                  </div>
+                  {activeThreads.conversations.map((conv) => (
+                    <Link
+                      key={conv.id}
+                      to={`/messages/${conv.id}`}
+                      onClick={() => setMobileOpen(false)}
+                      className={clsx(
+                        'sidebar-item flex-col items-start gap-0 py-1.5',
+                        location.pathname === `/messages/${conv.id}` && 'active'
+                      )}
+                    >
+                      <span className="text-xs line-clamp-1 w-full">
+                        {conv.subject || conv.participants.map((p) => p.agent_id).join(', ') || 'Untitled'}
+                      </span>
+                      <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+                        {conv.participants.length} participant{conv.participants.length !== 1 ? 's' : ''}
+                      </span>
+                    </Link>
+                  ))}
+                  <Link
+                    to="/messages"
+                    onClick={() => setMobileOpen(false)}
+                    className="sidebar-item text-xs"
+                    style={{ color: 'var(--color-text-muted)' }}
+                  >
+                    View all
+                  </Link>
+                </div>
+
+                <div className="divider mx-1" />
+              </>
+            )}
+
             {/* Trending */}
             <div className="py-1 flex-1 min-h-0 overflow-y-auto">
               <div className="sidebar-section flex items-center gap-1.5">
@@ -231,30 +307,6 @@ export function Sidebar() {
           </>
         )}
       </nav>
-
-      {/* Collapse Toggle */}
-      <button
-        onClick={() => setCollapsed(!collapsed)}
-        className={clsx(
-          'hidden lg:flex items-center border-t shrink-0 cursor-pointer transition-colors duration-80',
-          collapsed ? 'justify-center px-2 py-2.5' : 'gap-2 px-4 py-2.5'
-        )}
-        style={{
-          borderColor: 'var(--color-border-subtle)',
-          color: 'var(--color-text-secondary)',
-        }}
-        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-hover)'; e.currentTarget.style.color = 'var(--color-text)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; }}
-      >
-        {collapsed ? (
-          <PanelRightClose className="w-4 h-4" />
-        ) : (
-          <>
-            <PanelRightOpen className="w-4 h-4" />
-            <span className="text-xs">Collapse</span>
-          </>
-        )}
-      </button>
 
       {/* User Profile / Login at bottom */}
       {isAuthenticated ? (

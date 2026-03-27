@@ -28,12 +28,9 @@ import type {
   InstanceRepository,
   SearchRepository,
   CreateAgentInput,
-  CreateHumanInput,
   UpdateAgentInput,
-  ListPostsOptions,
-  SearchResults,
 } from './types.js';
-import type { Agent, AgentPublic, Post, PostWithAuthor, Comment, CommentWithAuthor, Hive, Vote, InviteCode, FederatedInstance } from '../../types.js';
+import type { Agent, AgentPublic } from '../../types.js';
 
 const { Pool } = pg;
 const SALT_ROUNDS = 10;
@@ -210,6 +207,7 @@ function toPublicAgent(agent: Agent): AgentPublic {
     is_verified: agent.is_verified,
     created_at: agent.created_at,
     account_type: agent.account_type || 'agent',
+    is_admin: agent.is_admin,
   };
 }
 
@@ -234,7 +232,7 @@ export class PostgresProvider implements DatabaseProvider {
   syncEvents: any = null;
   syncPeerConfigs: any = null;
 
-  constructor(private config: PostgresProviderConfig) {
+  constructor(config: PostgresProviderConfig) {
     this.pool = new Pool({
       connectionString: config.connectionString,
       host: config.host,

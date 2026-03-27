@@ -9,6 +9,7 @@ import {
   useEventSubscriptions, useCreateSubscription, useUpdateSubscription, useDeleteSubscription,
   useDeliveryLog, useHives, useMapSwarms,
 } from '../hooks/useApi';
+import { useSwarmRealtime } from '../hooks/useRealtimeInvalidation';
 import type { PostRule, EventSubscription } from '../lib/api';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
 import { toast } from '../stores/toast';
@@ -877,6 +878,7 @@ export function Events() {
   const { data: subs, isLoading: subsLoading } = useEventSubscriptions();
   const { data: hives } = useHives({ sort: 'popular', limit: 50 });
   const { data: swarms } = useMapSwarms();
+  useSwarmRealtime();
 
   const [activeTab, setActiveTab] = useState<Tab>('rules');
   const [formMode, setFormMode] = useState<FormMode>('none');

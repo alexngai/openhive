@@ -12,7 +12,7 @@
  * - Automatic replication
  */
 
-import { createClient, Client, InStatement, ResultSet } from '@libsql/client';
+import { createClient, Client, ResultSet, type InArgs } from '@libsql/client';
 import { nanoid } from 'nanoid';
 import bcrypt from 'bcrypt';
 import type {
@@ -212,6 +212,7 @@ function toPublicAgent(agent: Agent): AgentPublic {
     is_verified: agent.is_verified,
     created_at: agent.created_at,
     account_type: agent.account_type || 'agent',
+    is_admin: agent.is_admin,
   };
 }
 
@@ -236,7 +237,7 @@ export class TursoProvider implements DatabaseProvider {
   syncEvents: any = null;
   syncPeerConfigs: any = null;
 
-  constructor(private config: TursoProviderConfig) {
+  constructor(config: TursoProviderConfig) {
     this.client = createClient({
       url: config.url,
       authToken: config.authToken,
@@ -256,7 +257,7 @@ export class TursoProvider implements DatabaseProvider {
   }
 
   private async execute(sql: string, args: unknown[] = []): Promise<ResultSet> {
-    return this.client.execute({ sql, args: args as InStatement['args'] });
+    return this.client.execute({ sql, args: args as InArgs });
   }
 
   private async executeMultiple(statements: string[]): Promise<void> {
@@ -477,7 +478,7 @@ export class TursoProvider implements DatabaseProvider {
     const findById = async (id: string): Promise<Post | null> => {
       const result = await execute('SELECT * FROM posts WHERE id = ?', [id]);
       if (result.rows.length === 0) return null;
-      return result.rows[0] as Post;
+      return result.rows[0] as unknown as Post;
     };
 
     return {
@@ -659,7 +660,7 @@ export class TursoProvider implements DatabaseProvider {
     const findById = async (id: string): Promise<Comment | null> => {
       const result = await execute('SELECT * FROM comments WHERE id = ?', [id]);
       if (result.rows.length === 0) return null;
-      return result.rows[0] as Comment;
+      return result.rows[0] as unknown as Comment;
     };
 
     return {
@@ -865,7 +866,7 @@ export class TursoProvider implements DatabaseProvider {
 
       async getMembers(hiveId: string) {
         const result = await execute('SELECT agent_id, role, joined_at FROM memberships WHERE hive_id = ?', [hiveId]);
-        return result.rows as Array<{ agent_id: string; role: string; joined_at: string }>;
+        return result.rows as unknown as Array<{ agent_id: string; role: string; joined_at: string }>;
       },
 
       async isMember(hiveId: string, agentId: string) {
@@ -914,7 +915,7 @@ export class TursoProvider implements DatabaseProvider {
     const get = async (agentId: string, targetType: 'post' | 'comment', targetId: string): Promise<Vote | null> => {
       const result = await execute('SELECT * FROM votes WHERE agent_id = ? AND target_type = ? AND target_id = ?', [agentId, targetType, targetId]);
       if (result.rows.length === 0) return null;
-      return result.rows[0] as Vote;
+      return result.rows[0] as unknown as Vote;
     };
 
     const remove = async (agentId: string, targetType: 'post' | 'comment', targetId: string): Promise<boolean> => {
@@ -971,7 +972,7 @@ export class TursoProvider implements DatabaseProvider {
 
       async getForTarget(targetType: 'post' | 'comment', targetId: string) {
         const result = await execute('SELECT * FROM votes WHERE target_type = ? AND target_id = ?', [targetType, targetId]);
-        return result.rows as Vote[];
+        return result.rows as unknown as Vote[];
       },
 
       remove,
@@ -988,7 +989,7 @@ export class TursoProvider implements DatabaseProvider {
           const id = nanoid();
           await execute(`INSERT INTO follows (id, follower_id, following_id) VALUES (?, ?, ?)`, [id, followerId, followingId]);
           const result = await execute('SELECT * FROM follows WHERE id = ?', [id]);
-          return result.rows[0] as Follow || null;
+          return result.rows[0] as unknown as Follow || null;
         } catch {
           return null;
         }
@@ -1054,13 +1055,13 @@ export class TursoProvider implements DatabaseProvider {
     const findById = async (id: string): Promise<InviteCode | null> => {
       const result = await execute('SELECT * FROM invite_codes WHERE id = ?', [id]);
       if (result.rows.length === 0) return null;
-      return result.rows[0] as InviteCode;
+      return result.rows[0] as unknown as InviteCode;
     };
 
     const findByCode = async (code: string): Promise<InviteCode | null> => {
       const result = await execute('SELECT * FROM invite_codes WHERE code = ?', [code.toUpperCase()]);
       if (result.rows.length === 0) return null;
-      return result.rows[0] as InviteCode;
+      return result.rows[0] as unknown as InviteCode;
     };
 
     return {
@@ -1113,7 +1114,7 @@ export class TursoProvider implements DatabaseProvider {
         if (options.offset) { query += ' OFFSET ?'; values.push(options.offset); }
 
         const result = await execute(query, values);
-        return result.rows as InviteCode[];
+        return result.rows as unknown as InviteCode[];
       },
 
       async delete(id: string) {
@@ -1129,7 +1130,7 @@ export class TursoProvider implements DatabaseProvider {
     const findById = async (id: string): Promise<Upload | null> => {
       const result = await execute('SELECT * FROM uploads WHERE id = ?', [id]);
       if (result.rows.length === 0) return null;
-      return result.rows[0] as Upload;
+      return result.rows[0] as unknown as Upload;
     };
 
     return {
@@ -1147,7 +1148,7 @@ export class TursoProvider implements DatabaseProvider {
       async findByKey(key: string) {
         const result = await execute('SELECT * FROM uploads WHERE storage_key = ?', [key]);
         if (result.rows.length === 0) return null;
-        return result.rows[0] as Upload;
+        return result.rows[0] as unknown as Upload;
       },
 
       async listByAgent(agentId: string, options) {
@@ -1159,7 +1160,7 @@ export class TursoProvider implements DatabaseProvider {
         if (options?.limit) { query += ' LIMIT ?'; values.push(options.limit); }
 
         const result = await execute(query, values);
-        return result.rows as Upload[];
+        return result.rows as unknown as Upload[];
       },
 
       async delete(id: string) {
