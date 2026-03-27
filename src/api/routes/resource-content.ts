@@ -5,7 +5,7 @@ import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { parseFrontmatter } from 'minimem/session';
 import { listMemoryFiles } from 'minimem/internal';
-import { FilesystemStorageAdapter, discoverSkills } from 'skill-tree';
+import { createSkillBank, discoverSkills } from 'skill-tree';
 import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { OpenHiveOpenTasksClient } from '../../opentasks-client/index.js';
@@ -547,15 +547,15 @@ export async function resourceContentRoutes(
       });
     }
 
-    const adapter = new FilesystemStorageAdapter({ basePath: localPath });
-    await adapter.initialize();
-    const allSkills = await adapter.listSkills();
+    const bank = createSkillBank({ storage: { basePath: localPath } });
+    await bank.initialize();
+    const allSkills = await bank.listSkills();
 
     // Get file paths via discovery for the path field
     const discovered = await discoverSkills(localPath);
     const pathMap = new Map(discovered.map(d => [d.id, relative(localPath, d.filePath)]));
 
-    const skills = allSkills.map(skill => ({
+    const skills = allSkills.map((skill: import('skill-tree').Skill) => ({
       id: skill.id,
       name: skill.name || null,
       version: skill.version || null,
@@ -594,9 +594,9 @@ export async function resourceContentRoutes(
       });
     }
 
-    const adapter = new FilesystemStorageAdapter({ basePath: localPath });
-    await adapter.initialize();
-    const skill = await adapter.getSkill(skillId);
+    const bank = createSkillBank({ storage: { basePath: localPath } });
+    await bank.initialize();
+    const skill = await bank.getSkill(skillId);
 
     if (!skill) {
       return reply.status(404).send({
@@ -618,12 +618,8 @@ export async function resourceContentRoutes(
       description: skill.description || null,
       tags: skill.tags,
       author: skill.author || null,
-      problem: skill.problem || null,
-      triggerConditions: skill.triggerConditions,
-      solution: skill.solution || null,
-      verification: skill.verification || null,
-      examples: skill.examples,
-      notes: skill.notes || null,
+      instructions: skill.instructions || null,
+      related: skill.related || [],
       raw,
     });
   });

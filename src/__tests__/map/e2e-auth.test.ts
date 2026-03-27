@@ -18,8 +18,7 @@ import { WebSocket } from 'ws';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import { setupMapWebSocket, stopMapWebSocket } from '../../map/ws-map.js';
-import { initTokenService, createSwarmToken, _resetTokenService } from '../../map/token-service.js';
-import { generateSecret } from 'agent-iam';
+import { _resetTokenService } from '../../map/token-service.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
@@ -46,32 +45,6 @@ function createTestConfig(trustModel: 'open' | 'verified'): Config {
     rateLimit: { enabled: false },
     cors: { enabled: false },
     mapHub: { enabled: true, trustModel },
-  });
-}
-
-/** Send a JSON-RPC message and wait for a response with matching id. */
-function sendAndReceive(
-  ws: WebSocket,
-  msg: Record<string, unknown>,
-  timeoutMs = 5000,
-): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Response timeout')), timeoutMs);
-    // Listen before sending to avoid race conditions
-    const handler = (data: Buffer | string) => {
-      try {
-        const parsed = JSON.parse(data.toString());
-        // Match by id, or accept any response/notification
-        if (parsed.id === msg.id) {
-          clearTimeout(timer);
-          ws.removeListener('message', handler);
-          resolve(parsed);
-        }
-      } catch { /* ignore non-JSON */ }
-    };
-    ws.on('message', handler);
-    // Small delay to ensure listener is registered before send
-    setTimeout(() => ws.send(JSON.stringify(msg)), 10);
   });
 }
 

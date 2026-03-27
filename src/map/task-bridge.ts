@@ -17,8 +17,8 @@
  * to the frontend and agents when graph mutations happen.
  */
 
-import { createMAPEventBridge } from 'opentasks';
-import type { MAPEventBridge } from 'opentasks';
+// opentasks is ESM-only — use dynamic import to avoid CJS resolution failure
+type MAPEventBridge = import('opentasks').MAPEventBridge;
 import type { MAPTaskStore } from './task-store.js';
 import type { MAPTaskEvent, MAPTaskStatus } from './task-types.js';
 import { sendToSwarm } from './sync-listener.js';
@@ -209,10 +209,13 @@ function handleStoreEvent(event: MAPTaskEvent, sourceSwarmId: string): void {
  * - Creates an opentasks MAPEventBridge for structured outbound events
  * - Subscribes to MAPTaskStore events for inbound bridging
  */
-export function initTaskBridge(config: TaskBridgeConfig): void {
+export async function initTaskBridge(config: TaskBridgeConfig): Promise<void> {
   if (unsubscribeStore) return; // Already initialized
 
   const { store } = config;
+
+  // Dynamic import — opentasks is ESM-only and cannot be require()'d
+  const { createMAPEventBridge } = await import('opentasks');
 
   // Create the opentasks event bridge for outbound events.
   // We use the `send` function pattern — the bridge emits events which

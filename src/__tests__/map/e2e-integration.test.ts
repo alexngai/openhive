@@ -78,21 +78,6 @@ function waitNotification(ws: WebSocket, timeoutMs = 3000): Promise<any> {
   });
 }
 
-/** Collect all messages for a duration. */
-function collectMessages(ws: WebSocket, durationMs: number): Promise<any[]> {
-  return new Promise((resolve) => {
-    const messages: any[] = [];
-    const handler = (data: Buffer | string) => {
-      try { messages.push(JSON.parse(data.toString())); } catch {}
-    };
-    ws.on('message', handler);
-    setTimeout(() => {
-      ws.removeListener('message', handler);
-      resolve(messages);
-    }, durationMs);
-  });
-}
-
 // ============================================================================
 // Open Mode Integration
 // ============================================================================

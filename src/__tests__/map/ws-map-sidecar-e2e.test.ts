@@ -17,7 +17,7 @@ import Fastify, { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+// os import removed — not currently used
 import * as net from 'net';
 import { spawn, ChildProcess } from 'child_process';
 import { initDatabase, closeDatabase } from '../../db/index.js';

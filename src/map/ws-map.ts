@@ -413,8 +413,6 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         const meta = registeredAgent.metadata as Record<string, unknown>;
         const project = meta.project as string | undefined;
         const branch = meta.branch as string | undefined;
-        const template = meta.template as string | undefined;
-
         if (project) {
           const displayName = branch ? `${project} (${branch})` : project;
           try {
@@ -443,7 +441,9 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
   startMapHeartbeat();
   const taskStore = getMapTaskStore();
   initTaskBroadcaster(taskStore);
-  initTaskBridge({ store: taskStore });
+  initTaskBridge({ store: taskStore }).catch(err =>
+    console.error('[task-bridge] Failed to initialize:', err),
+  );
 
   console.log(`[openhive] MAP WebSocket registered at /ws/map (trust: ${config.mapHub.trustModel})`);
 }

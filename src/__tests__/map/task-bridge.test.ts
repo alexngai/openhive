@@ -34,7 +34,7 @@ vi.mock('../../map/connection-registry.js', () => ({
 const mockEventBridgeSend = vi.fn();
 const mockEventBridgeStop = vi.fn();
 vi.mock('opentasks', () => ({
-  createMAPEventBridge: vi.fn((config: { send: Function }) => {
+  createMAPEventBridge: vi.fn((config: { send: (...args: any[]) => any }) => {
     // Capture the send function so we can verify calls
     mockEventBridgeSend.mockImplementation(config.send);
     return {
@@ -165,8 +165,8 @@ describe('Task Bridge', () => {
   // ==========================================================================
 
   describe('inbound store events → broadcast', () => {
-    it('broadcasts MAPTaskStore events to map:opentasks channel', () => {
-      initTaskBridge({ store });
+    it('broadcasts MAPTaskStore events to map:opentasks channel', async () => {
+      await initTaskBridge({ store });
 
       // Simulate a task creation via MAPTaskStore (as if from cc-swarm)
       store.create(
@@ -187,7 +187,7 @@ describe('Task Bridge', () => {
     });
 
     it('does not broadcast events from bridged mutations (echo prevention)', async () => {
-      initTaskBridge({ store });
+      await initTaskBridge({ store });
 
       // Clear any calls from init
       vi.clearAllMocks();
@@ -215,11 +215,11 @@ describe('Task Bridge', () => {
   // ==========================================================================
 
   describe('opentasks event bridge', () => {
-    it('initializes the event bridge and sends to connected agents', () => {
+    it('initializes the event bridge and sends to connected agents', async () => {
       // Add a mock connected agent
       mockConnections.set('swarm-A', { ws: {} });
 
-      initTaskBridge({ store });
+      await initTaskBridge({ store });
 
       // Trigger the event bridge send function
       mockEventBridgeSend('task.created', { task: { id: 't-1' } });
@@ -236,11 +236,11 @@ describe('Task Bridge', () => {
       );
     });
 
-    it('skips sending to the originating swarm', () => {
+    it('skips sending to the originating swarm', async () => {
       mockConnections.set('swarm-origin', { ws: {} });
       mockConnections.set('swarm-other', { ws: {} });
 
-      initTaskBridge({ store });
+      await initTaskBridge({ store });
 
       mockEventBridgeSend('task.status', { _origin: 'swarm-origin', taskId: 't-1' });
 
@@ -257,17 +257,17 @@ describe('Task Bridge', () => {
   // ==========================================================================
 
   describe('lifecycle', () => {
-    it('does not double-initialize', () => {
-      initTaskBridge({ store });
-      initTaskBridge({ store }); // second call should be no-op
+    it('does not double-initialize', async () => {
+      await initTaskBridge({ store });
+      await initTaskBridge({ store }); // second call should be no-op
 
       // Verify event bridge stop works
       stopTaskBridge();
       expect(mockEventBridgeStop).toHaveBeenCalledTimes(1);
     });
 
-    it('cleans up on stop', () => {
-      initTaskBridge({ store });
+    it('cleans up on stop', async () => {
+      await initTaskBridge({ store });
       stopTaskBridge();
 
       expect(mockEventBridgeStop).toHaveBeenCalled();
