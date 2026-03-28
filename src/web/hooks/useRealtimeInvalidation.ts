@@ -56,6 +56,28 @@ export function useResourcesRealtime() {
   useWSEvent('resource_synced', invalidate);
 }
 
+// ── Memory Content ──
+
+/**
+ * Invalidates memory content queries (files, search, knowledge)
+ * when memory:sync events arrive for a specific resource.
+ * Subscribe to the resource-specific channel for targeted updates.
+ */
+export function useMemoryRealtime(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  useSubscribe([`resource:memory_bank:${resourceId}`]);
+
+  const invalidate = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['memory-files', resourceId] });
+    queryClient.invalidateQueries({ queryKey: ['memory-search', resourceId] });
+    queryClient.invalidateQueries({ queryKey: ['memory-file', resourceId] });
+    queryClient.invalidateQueries({ queryKey: ['knowledge', resourceId] });
+  }, [queryClient, resourceId]);
+
+  useWSEvent('memory:sync', invalidate);
+}
+
 // ── Sessions ──
 
 /**

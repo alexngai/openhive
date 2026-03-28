@@ -5,6 +5,7 @@ import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { broadcast, broadcastToChannel } from '../../realtime/index.js';
 import { checkRemoteForUpdates, checkRemotesBatch } from '../../utils/git-remote.js';
 import { discoverLocalResources } from '../../discovery/index.js';
+import { watchNewResource } from '../../sync/local-resource-watcher.js';
 import type { SyncableResourceType, ResourceVisibility, ResourceScope } from '../../types.js';
 import { onResourcePublished, onResourceUpdated, onResourceUnpublished } from '../../sync/resource-hooks.js';
 import { getSyncOrchestrator } from '../../sync/sync-orchestrator.js';
@@ -159,6 +160,12 @@ export async function resourcesRoutes(
       scopes: body.scopes as ResourceScope[],
       agentWorkDir: body.agent_work_dir,
     });
+
+    // Start file watchers for newly discovered local resources
+    for (const entry of result.created) {
+      const resource = resourcesDAL.findResourceById(entry.id);
+      if (resource) watchNewResource(resource);
+    }
 
     return reply.send({
       created: result.created,
