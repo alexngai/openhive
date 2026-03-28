@@ -438,7 +438,7 @@ export async function resourceContentRoutes(
       return reply.status(400).send({ error: 'Bad Request', message: 'This endpoint is only available for skill resources' });
     }
 
-    const adapter = createSkillBank({ storage: { type: 'filesystem', basePath: localPath } });
+    const adapter = createSkillBank({ storage: { basePath: localPath } });
     await adapter.initialize();
     const allSkills = await adapter.listSkills();
 
@@ -475,7 +475,7 @@ export async function resourceContentRoutes(
       return reply.status(400).send({ error: 'Bad Request', message: 'Invalid skill ID' });
     }
 
-    const adapter = createSkillBank({ storage: { type: 'filesystem', basePath: localPath } });
+    const adapter = createSkillBank({ storage: { basePath: localPath } });
     await adapter.initialize();
     const skill = await adapter.getSkill(skillId);
 
@@ -490,10 +490,8 @@ export async function resourceContentRoutes(
     return reply.send({
       id: skill.id, name: skill.name || null, version: skill.version || null,
       status: skill.status || null, description: skill.description || null,
-      tags: skill.tags, author: skill.author || null, problem: skill.problem || null,
-      triggerConditions: skill.triggerConditions, solution: skill.solution || null,
-      verification: skill.verification || null, examples: skill.examples,
-      notes: skill.notes || null, raw,
+      tags: skill.tags, author: skill.author || null,
+      instructions: skill.instructions || null, related: skill.related || [], raw,
     });
   });
 
