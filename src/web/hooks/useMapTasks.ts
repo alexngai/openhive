@@ -1,8 +1,8 @@
 /**
  * MAP Tasks Hooks
  *
- * React Query hooks for fetching MAP task state from connected agents,
- * plus real-time subscriptions for live task updates.
+ * React Query hooks for fetching task state, plus real-time
+ * subscriptions for live task updates via WebSocket.
  */
 
 import { useQuery } from '@tanstack/react-query';
@@ -48,12 +48,14 @@ interface TaskDetailResponse {
 // ============================================================================
 
 export function useMapTasks(options?: {
+  resourceId?: string;
   status?: string;
   assignee?: string;
   swarmId?: string;
   limit?: number;
 }) {
   const params = new URLSearchParams();
+  if (options?.resourceId) params.set('resource_id', options.resourceId);
   if (options?.status) params.set('status', options.status);
   if (options?.assignee) params.set('assignee', options.assignee);
   if (options?.swarmId) params.set('swarm_id', options.swarmId);
@@ -66,10 +68,14 @@ export function useMapTasks(options?: {
   });
 }
 
-export function useMapTasksSummary() {
+export function useMapTasksSummary(resourceId?: string) {
+  const params = new URLSearchParams();
+  if (resourceId) params.set('resource_id', resourceId);
+  const qs = params.toString();
+
   return useQuery({
-    queryKey: ['map-tasks-summary'],
-    queryFn: () => api.get<TasksSummaryResponse>('/map/tasks/summary'),
+    queryKey: ['map-tasks-summary', resourceId],
+    queryFn: () => api.get<TasksSummaryResponse>(`/map/tasks/summary${qs ? `?${qs}` : ''}`),
   });
 }
 
@@ -86,19 +92,18 @@ export function useMapTask(taskId: string | undefined) {
 // ============================================================================
 
 /**
- * Subscribe to live MAP task events via WebSocket.
+ * Subscribe to live task events via WebSocket.
  * Automatically invalidates React Query caches on task changes.
  */
 export function useMapTasksRealtime() {
   const queryClient = useQueryClient();
 
-  useSubscribe(['map:tasks', 'map:opentasks']);
+  useSubscribe(['map:tasks']);
 
   const handleTaskEvent = useCallback(
     () => {
       queryClient.invalidateQueries({ queryKey: ['map-tasks'] });
       queryClient.invalidateQueries({ queryKey: ['map-tasks-summary'] });
-      // Also invalidate OpenTasks queries since the bridge syncs both directions
       queryClient.invalidateQueries({ queryKey: ['opentasks-summary'] });
       queryClient.invalidateQueries({ queryKey: ['opentasks-ready'] });
       queryClient.invalidateQueries({ queryKey: ['opentasks-graph'] });

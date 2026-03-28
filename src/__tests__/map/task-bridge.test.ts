@@ -1,15 +1,14 @@
 /**
- * Tests for the bidirectional task bridge:
- * - Outbound: OpenTasks mutations → MAPTaskStore + event bridge
- * - Inbound: MAPTaskStore events → frontend broadcast
- * - Echo loop prevention
- * - Lifecycle (init/stop)
+ * Tests for the task event bridge.
+ *
+ * The bridge manages the opentasks MAPEventBridge for structured
+ * agent notifications. Store event → frontend broadcasting is
+ * handled by task-broadcaster (separate concern).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MAPTaskStore } from '../../map/task-store.js';
 import {
-  bridgeOpenTasksMutation,
   initTaskBridge,
   stopTaskBridge,
 } from '../../map/task-bridge.js';
@@ -31,26 +30,19 @@ vi.mock('../../map/connection-registry.js', () => ({
 }));
 
 // Mock opentasks createMAPEventBridge
-const mockEventBridgeSend = vi.fn();
 const mockEventBridgeStop = vi.fn();
-vi.mock('opentasks', () => ({
-  createMAPEventBridge: vi.fn((config: { send: (...args: any[]) => any }) => {
-    // Capture the send function so we can verify calls
-    mockEventBridgeSend.mockImplementation(config.send);
-    return {
-      emitTaskCreated: vi.fn(),
-      emitTaskStatus: vi.fn(),
-      emitTaskAssigned: vi.fn(),
-      emitTaskCompleted: vi.fn(),
-      handleProviderChange: vi.fn(),
-      stop: mockEventBridgeStop,
-      active: true,
-    };
-  }),
+const mockCreateMAPEventBridge = vi.fn((_config?: unknown) => ({
+  emitTaskCreated: vi.fn(),
+  emitTaskStatus: vi.fn(),
+  emitTaskAssigned: vi.fn(),
+  emitTaskCompleted: vi.fn(),
+  handleProviderChange: vi.fn(),
+  stop: mockEventBridgeStop,
+  active: true,
 }));
-
-import { broadcastToChannel } from '../../realtime/index.js';
-import { sendToSwarm } from '../../map/sync-listener.js';
+vi.mock('opentasks', () => ({
+  createMAPEventBridge: (config: any) => mockCreateMAPEventBridge(config),
+}));
 
 describe('Task Bridge', () => {
   let store: MAPTaskStore;
@@ -65,224 +57,46 @@ describe('Task Bridge', () => {
     stopTaskBridge();
   });
 
-  // ==========================================================================
-  // Outbound: OpenTasks mutations → MAPTaskStore
-  // ==========================================================================
-
-  describe('bridgeOpenTasksMutation (outbound)', () => {
-    it('creates a task in MAPTaskStore when OpenTasks creates one', () => {
-      bridgeOpenTasksMutation(store, {
-        type: 'create',
-        nodeId: 'task_abc123',
-        title: 'Fix the bug',
-        description: 'A critical bug needs fixing',
-        status: 'open',
-        sourceSwarmId: 'swarm-1',
-      });
-
-      const task = store.get('task_abc123');
-      expect(task).toBeDefined();
-      expect(task!.title).toBe('Fix the bug');
-      expect(task!.status).toBe('open');
-      expect(task!.meta?._source).toBe('opentasks');
-    });
-
-    it('updates task status in MAPTaskStore when OpenTasks updates one', () => {
-      // First create the task
-      store.create(
-        { task: { id: 'task_xyz', title: 'Existing task', status: 'open' } },
-        'swarm-1',
-      );
-
-      bridgeOpenTasksMutation(store, {
-        type: 'update-status',
-        nodeId: 'task_xyz',
-        status: 'in_progress',
-        previousStatus: 'open',
-        sourceSwarmId: 'swarm-1',
-      });
-
-      const task = store.get('task_xyz');
-      expect(task).toBeDefined();
-      expect(task!.status).toBe('in_progress');
-    });
-
-    it('creates task on update-status if not already in store', () => {
-      bridgeOpenTasksMutation(store, {
-        type: 'update-status',
-        nodeId: 'task_new',
-        title: 'New task from update',
-        status: 'completed',
-        previousStatus: 'in_progress',
-        sourceSwarmId: 'swarm-2',
-      });
-
-      const task = store.get('task_new');
-      expect(task).toBeDefined();
-      expect(task!.status).toBe('completed');
-    });
-
-    it('maps OpenTasks "closed" status to MAP "completed"', () => {
-      bridgeOpenTasksMutation(store, {
-        type: 'create',
-        nodeId: 'task_closed',
-        title: 'Closed task',
-        status: 'closed',
-        sourceSwarmId: 'swarm-1',
-      });
-
-      const task = store.get('task_closed');
-      expect(task!.status).toBe('completed');
-    });
-
-    it('is idempotent — does not duplicate task on repeated create', () => {
-      bridgeOpenTasksMutation(store, {
-        type: 'create',
-        nodeId: 'task_idem',
-        title: 'First create',
-        status: 'open',
-        sourceSwarmId: 'swarm-1',
-      });
-
-      bridgeOpenTasksMutation(store, {
-        type: 'create',
-        nodeId: 'task_idem',
-        title: 'Second create',
-        status: 'open',
-        sourceSwarmId: 'swarm-1',
-      });
-
-      // Should only have one task
-      const list = store.list();
-      const matching = list.tasks.filter((t) => t.id === 'task_idem');
-      expect(matching).toHaveLength(1);
-      expect(matching[0].title).toBe('First create'); // first wins
-    });
-  });
-
-  // ==========================================================================
-  // Inbound: MAPTaskStore events → broadcast
-  // ==========================================================================
-
-  describe('inbound store events → broadcast', () => {
-    it('broadcasts MAPTaskStore events to map:opentasks channel', async () => {
+  describe('MAPEventBridge initialization', () => {
+    it('creates the opentasks MAPEventBridge on init', async () => {
       await initTaskBridge({ store });
 
-      // Simulate a task creation via MAPTaskStore (as if from cc-swarm)
-      store.create(
-        { task: { id: 'task_from_agent', title: 'Agent task', status: 'open' } },
-        'swarm-agent',
-      );
-
-      expect(broadcastToChannel).toHaveBeenCalledWith(
-        'map:opentasks',
+      expect(mockCreateMAPEventBridge).toHaveBeenCalledTimes(1);
+      expect(mockCreateMAPEventBridge).toHaveBeenCalledWith(
         expect.objectContaining({
-          type: 'task.created',
-          data: expect.objectContaining({
-            _sourceSwarm: 'swarm-agent',
-            _bridged: true,
-          }),
+          agentId: 'openhive-bridge',
+          send: expect.any(Function),
         }),
       );
     });
 
-    it('does not broadcast events from bridged mutations (echo prevention)', async () => {
-      await initTaskBridge({ store });
-
-      // Clear any calls from init
-      vi.clearAllMocks();
-
-      // Bridge a mutation (this should suppress the store event broadcast)
-      bridgeOpenTasksMutation(store, {
-        type: 'create',
-        nodeId: 'task_bridged',
-        title: 'Bridged task',
-        status: 'open',
-        sourceSwarmId: 'swarm-1',
-      });
-
-      // The broadcastToChannel should NOT have been called from handleStoreEvent
-      // because the task is in the bridging set
-      const opentasksCalls = (broadcastToChannel as any).mock.calls.filter(
-        ([ch]: [string]) => ch === 'map:opentasks',
-      );
-      expect(opentasksCalls).toHaveLength(0);
-    });
-  });
-
-  // ==========================================================================
-  // Event bridge integration
-  // ==========================================================================
-
-  describe('opentasks event bridge', () => {
-    it('initializes the event bridge and sends to connected agents', async () => {
-      // Add a mock connected agent
-      mockConnections.set('swarm-A', { ws: {} });
-
-      await initTaskBridge({ store });
-
-      // Trigger the event bridge send function
-      mockEventBridgeSend('task.created', { task: { id: 't-1' } });
-
-      expect(sendToSwarm).toHaveBeenCalledWith(
-        'swarm-A',
-        expect.objectContaining({
-          jsonrpc: '2.0',
-          method: 'map/event',
-          params: expect.objectContaining({
-            type: 'task.created',
-          }),
-        }),
-      );
-    });
-
-    it('skips sending to the originating swarm', async () => {
-      mockConnections.set('swarm-origin', { ws: {} });
-      mockConnections.set('swarm-other', { ws: {} });
-
-      await initTaskBridge({ store });
-
-      mockEventBridgeSend('task.status', { _origin: 'swarm-origin', taskId: 't-1' });
-
-      // Should NOT send to swarm-origin
-      const calls = (sendToSwarm as any).mock.calls;
-      const recipients = calls.map(([sid]: [string]) => sid);
-      expect(recipients).not.toContain('swarm-origin');
-      expect(recipients).toContain('swarm-other');
-    });
-  });
-
-  // ==========================================================================
-  // Lifecycle
-  // ==========================================================================
-
-  describe('lifecycle', () => {
     it('does not double-initialize', async () => {
       await initTaskBridge({ store });
-      await initTaskBridge({ store }); // second call should be no-op
+      await initTaskBridge({ store }); // no-op
 
-      // Verify event bridge stop works
-      stopTaskBridge();
-      expect(mockEventBridgeStop).toHaveBeenCalledTimes(1);
+      expect(mockCreateMAPEventBridge).toHaveBeenCalledTimes(1);
     });
+  });
 
+  describe('lifecycle', () => {
     it('cleans up on stop', async () => {
       await initTaskBridge({ store });
       stopTaskBridge();
 
       expect(mockEventBridgeStop).toHaveBeenCalled();
+    });
 
-      // After stop, store events should not trigger broadcasts
+    it('stop is safe to call without init', () => {
+      expect(() => stopTaskBridge()).not.toThrow();
+    });
+
+    it('can re-initialize after stop', async () => {
+      await initTaskBridge({ store });
+      stopTaskBridge();
       vi.clearAllMocks();
-      store.create(
-        { task: { id: 'task_after_stop', title: 'After stop', status: 'open' } },
-        'swarm-1',
-      );
 
-      const opentasksCalls = (broadcastToChannel as any).mock.calls.filter(
-        ([ch]: [string]) => ch === 'map:opentasks',
-      );
-      expect(opentasksCalls).toHaveLength(0);
+      await initTaskBridge({ store });
+      expect(mockCreateMAPEventBridge).toHaveBeenCalledTimes(1);
     });
   });
 });

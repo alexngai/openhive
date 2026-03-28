@@ -7,6 +7,7 @@
  */
 import chokidar, { type FSWatcher } from 'chokidar';
 import { broadcastToChannel } from '../realtime/index.js';
+import { evictMinimem } from '../api/routes/resource-content.js';
 import { getDatabase } from '../db/index.js';
 import type { SyncableResource } from '../types.js';
 
@@ -21,12 +22,17 @@ const watchers = new Map<string, WatchedResource>();
 const DEBOUNCE_MS = 1000;
 const pendingBroadcasts = new Map<string, ReturnType<typeof setTimeout>>();
 
-function debouncedBroadcast(resourceId: string, resourceType: string): void {
+function debouncedBroadcast(resourceId: string, resourceType: string, localPath: string): void {
   const existing = pendingBroadcasts.get(resourceId);
   if (existing) clearTimeout(existing);
 
   pendingBroadcasts.set(resourceId, setTimeout(() => {
     pendingBroadcasts.delete(resourceId);
+
+    // Evict cached Minimem instance so the agent's fresh index is used on next query
+    if (resourceType === 'memory_bank') {
+      evictMinimem(localPath);
+    }
 
     const eventType = resourceType === 'memory_bank' ? 'memory:sync' : 'skill:sync';
     broadcastToChannel(`resource:${resourceType}:${resourceId}`, {
@@ -60,9 +66,10 @@ function watchResource(resource: SyncableResource): void {
     depth: 3,
   });
 
-  watcher.on('add', () => debouncedBroadcast(resource.id, resource.resource_type));
-  watcher.on('change', () => debouncedBroadcast(resource.id, resource.resource_type));
-  watcher.on('unlink', () => debouncedBroadcast(resource.id, resource.resource_type));
+  const localPath = resource.local_path!;
+  watcher.on('add', () => debouncedBroadcast(resource.id, resource.resource_type, localPath));
+  watcher.on('change', () => debouncedBroadcast(resource.id, resource.resource_type, localPath));
+  watcher.on('unlink', () => debouncedBroadcast(resource.id, resource.resource_type, localPath));
 
   watchers.set(resource.id, { resource, watcher });
 }

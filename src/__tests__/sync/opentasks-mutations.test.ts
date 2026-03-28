@@ -379,7 +379,9 @@ describe('OpenTasks Mutations & Compatibility Shim', () => {
       await app.close();
     });
 
-    it('should create a task node via POST', async () => {
+    it('should return 503 when daemon is not running for POST', async () => {
+      // REST task mutations now route through the OpenTasks daemon.
+      // Without a running daemon, the endpoint returns 503.
       const response = await app.inject({
         method: 'POST',
         url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
@@ -387,10 +389,9 @@ describe('OpenTasks Mutations & Compatibility Shim', () => {
         payload: { title: 'REST created task', priority: 2 },
       });
 
-      expect(response.statusCode).toBe(201);
+      expect(response.statusCode).toBe(503);
       const body = JSON.parse(response.body);
-      expect(body.node_id).toBeTruthy();
-      expect(body.status).toBe('open');
+      expect(body.error).toBe('Service Unavailable');
     });
 
     it('should reject POST without title', async () => {
@@ -404,29 +405,19 @@ describe('OpenTasks Mutations & Compatibility Shim', () => {
       expect(response.statusCode).toBe(422);
     });
 
-    it('should update task status via PATCH', async () => {
-      // First create
-      const createResponse = await app.inject({
-        method: 'POST',
-        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
-        headers: { Authorization: `Bearer ${apiKey}` },
-        payload: { title: 'Task to patch' },
-      });
-      const { node_id } = JSON.parse(createResponse.body);
-
-      // Then update
+    it('should return 503 when daemon is not running for PATCH', async () => {
+      // REST task mutations now route through the OpenTasks daemon.
+      // Without a running daemon, the endpoint returns 503.
       const response = await app.inject({
         method: 'PATCH',
-        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${node_id}`,
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/task_fake`,
         headers: { Authorization: `Bearer ${apiKey}` },
         payload: { status: 'in_progress' },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(503);
       const body = JSON.parse(response.body);
-      expect(body.node_id).toBe(node_id);
-      expect(body.previous_status).toBe('open');
-      expect(body.new_status).toBe('in_progress');
+      expect(body.error).toBe('Service Unavailable');
     });
 
     it('should reject PATCH without status', async () => {

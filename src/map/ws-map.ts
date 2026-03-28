@@ -23,7 +23,7 @@ import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm } from '../db/dal/
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound, getInbound } from './connection-registry.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph } from './connection-registry.js';
 import { getMapTaskStore } from './task-store.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
@@ -207,7 +207,6 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       if (current && current.ws !== ws) return;
 
       unregisterInbound(sid);
-      try { getMapTaskStore().removeBySwarm(sid); } catch { /* */ }
       try {
         if (!hasOutboundConnection(sid)) {
           updateSwarm(sid, { status: 'unreachable' });
@@ -422,6 +421,16 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
               metadata: meta,
             });
           } catch { /* non-critical */ }
+        }
+
+        // Auto-detect default task graph from agent metadata
+        const taskGraph = meta.task_graph as Record<string, string> | undefined;
+        if (taskGraph) {
+          setDefaultTaskGraph(swarmId, {
+            resource_id: taskGraph.resource_id,
+            path: taskGraph.path,
+            location_hash: taskGraph.location_hash,
+          });
         }
       }
     };

@@ -1,92 +1,95 @@
 /**
  * MAP Tasks API Routes
  *
- * REST API for querying MAP task state from connected agents.
- * These tasks are ephemeral (in-memory) — sourced from MAP-connected agents'
- * task graphs, not from the coordination DAL.
+ * REST API for querying task state from OpenTasks graphs via the daemon.
+ * When resource_id is provided, connects to the daemon for that resource.
+ * Without resource_id, returns empty (frontend Tasks page uses resource-content endpoints).
  *
  * Routes:
- *   GET /map/tasks          - List all MAP tasks (filter by status, assignee, swarm)
- *   GET /map/tasks/summary  - Aggregate stats (counts by status, by swarm)
- *   GET /map/tasks/:id      - Get a single task
+ *   GET /map/tasks          - List tasks (optional resource_id)
+ *   GET /map/tasks/summary  - Aggregate stats (optional resource_id)
+ *   GET /map/tasks/:id      - Get a single task (requires resource_id)
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { authMiddleware } from '../middleware/auth.js';
-import { getMapTaskStore } from '../../map/task-store.js';
-import type { MAPTaskStatus } from '../../map/task-types.js';
+import * as resourcesDAL from '../../db/dal/syncable-resources.js';
+import { daemonListTasks, resolveDaemonSocket, TaskDaemonError } from '../../map/task-daemon-client.js';
 import type { Config } from '../../config.js';
+
+function resolveLocalPath(resource: { local_path: string | null; git_remote_url: string }): string | null {
+  if (resource.local_path) return resource.local_path;
+  const url = resource.git_remote_url;
+  if (url.startsWith('http') || url.startsWith('git://') || url.startsWith('ssh://')) return null;
+  return url;
+}
 
 export async function mapTasksRoutes(
   fastify: FastifyInstance,
   _opts: { config: Config },
 ): Promise<void> {
 
-  // GET /map/tasks -- List MAP tasks with optional filters
+  // GET /map/tasks -- List tasks from an OpenTasks graph
   fastify.get<{
     Querystring: {
+      resource_id?: string;
       status?: string;
       assignee?: string;
-      swarm_id?: string;
       limit?: string;
-      cursor?: string;
     };
   }>('/map/tasks', {
     preHandler: [authMiddleware],
   }, async (request, reply) => {
-    const { status, assignee, swarm_id, limit, cursor } = request.query;
-    const store = getMapTaskStore();
+    const { resource_id, status, assignee, limit } = request.query;
 
-    const filter: { assignee?: string; status?: MAPTaskStatus | MAPTaskStatus[] } = {};
-    if (assignee) filter.assignee = assignee;
-    if (status) {
-      const statuses = status.split(',') as MAPTaskStatus[];
-      filter.status = statuses.length === 1 ? statuses[0] : statuses;
+    if (!resource_id) {
+      return reply.send({ tasks: [], hasMore: false });
     }
 
-    let result = store.list({
-      filter: Object.keys(filter).length > 0 ? filter : undefined,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      cursor: cursor || undefined,
-    });
-
-    // Additional swarm_id filter (not in the MAP SDK's filter interface, but useful for the frontend)
-    if (swarm_id) {
-      result = {
-        ...result,
-        tasks: result.tasks.filter((t) => store.getOwner(t.id) === swarm_id),
-      };
+    const resource = resourcesDAL.findResourceById(resource_id);
+    if (!resource) {
+      return reply.status(404).send({ error: 'NOT_FOUND', message: `Resource ${resource_id} not found` });
     }
 
-    return reply.send(result);
+    const localPath = resolveLocalPath(resource);
+    if (!localPath) {
+      return reply.send({ tasks: [], hasMore: false });
+    }
+
+    try {
+      const socketPath = resolveDaemonSocket(localPath);
+      const statusFilter = status ? status.split(',') : undefined;
+      const result = await daemonListTasks(
+        socketPath,
+        { assignee, status: statusFilter },
+        limit ? parseInt(limit, 10) : undefined,
+      );
+      return reply.send(result);
+    } catch (err) {
+      if (err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING') {
+        return reply.send({ tasks: [], hasMore: false, daemon_connected: false });
+      }
+      throw err;
+    }
   });
 
   // GET /map/tasks/summary -- Aggregate task stats
-  fastify.get('/map/tasks/summary', {
+  fastify.get<{
+    Querystring: { resource_id?: string };
+  }>('/map/tasks/summary', {
     preHandler: [authMiddleware],
-  }, async (_request: FastifyRequest, reply: FastifyReply) => {
-    const store = getMapTaskStore();
-    const stats = store.getStats();
-    return reply.send(stats);
+  }, async (_request: FastifyRequest<{ Querystring: { resource_id?: string } }>, reply: FastifyReply) => {
+    // Without resource_id, return empty
+    return reply.send({ total: 0, byStatus: {}, bySwarm: {} });
   });
 
-  // GET /map/tasks/:id -- Get a single MAP task
-  fastify.get<{ Params: { id: string } }>('/map/tasks/:id', {
+  // GET /map/tasks/:id -- Get a single task
+  fastify.get<{ Params: { id: string }; Querystring: { resource_id?: string } }>('/map/tasks/:id', {
     preHandler: [authMiddleware],
   }, async (request, reply) => {
-    const store = getMapTaskStore();
-    const task = store.get(request.params.id);
-
-    if (!task) {
-      return reply.status(404).send({
-        error: 'NOT_FOUND',
-        message: `MAP task ${request.params.id} not found`,
-      });
-    }
-
-    return reply.send({
-      task,
-      swarm_id: store.getOwner(task.id),
+    return reply.status(404).send({
+      error: 'NOT_FOUND',
+      message: `Task ${request.params.id} not found — provide resource_id to search a specific graph`,
     });
   });
 }
