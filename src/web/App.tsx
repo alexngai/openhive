@@ -29,6 +29,7 @@ const ResourceDetail = lazy(() => import('./pages/ResourceDetail').then(m => ({ 
 const Sessions = lazy(() => import('./pages/Sessions').then(m => ({ default: m.Sessions })));
 const SessionDetail = lazy(() => import('./pages/SessionDetail').then(m => ({ default: m.SessionDetail })));
 const Events = lazy(() => import('./pages/Events').then(m => ({ default: m.Events })));
+const Tasks = lazy(() => import('./pages/Tasks').then(m => ({ default: m.Tasks })));
 const TaskGraph = lazy(() => import('./pages/TaskGraph').then(m => ({ default: m.TaskGraph })));
 const Messages = lazy(() => import('./pages/Messages').then(m => ({ default: m.Messages })));
 const Conversation = lazy(() => import('./pages/Conversation').then(m => ({ default: m.Conversation })));
@@ -75,6 +76,7 @@ export default function App() {
               <Route path="terminal/:swarmId" element={<Terminal />} />
               <Route path="messages" element={<Messages />} />
               <Route path="messages/:id" element={<Conversation />} />
+              <Route path="tasks" element={<Tasks />} />
               <Route path="tasks/:resourceId" element={<TaskGraph />} />
             </Route>
           </Route>

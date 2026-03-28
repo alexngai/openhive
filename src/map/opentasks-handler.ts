@@ -27,6 +27,7 @@ import type {
 } from './opentasks-types.js';
 import { OpenHiveOpenTasksClient } from '../opentasks-client/index.js';
 import * as resourcesDAL from '../db/dal/syncable-resources.js';
+import { getMapTaskStore } from './task-store.js';
 import type { SyncableResource } from '../types.js';
 
 // ============================================================================
@@ -343,6 +344,14 @@ export async function handleOpenTasksRequest(
 
       appendFileSync(graphPath, JSON.stringify(node) + '\n');
 
+      // Emit event for WebSocket broadcasting
+      try {
+        getMapTaskStore().emit(
+          { type: 'task.created', data: { task: { id: nodeId, title: p.title, status: node.status } } },
+          context.swarmId,
+        );
+      } catch { /* best effort */ }
+
       return { node_id: nodeId, status: node.status };
     }
 
@@ -383,6 +392,14 @@ export async function handleOpenTasksRequest(
       if (p.error) update.error = p.error;
 
       appendFileSync(graphPath, JSON.stringify(update) + '\n');
+
+      // Emit event for WebSocket broadcasting
+      try {
+        getMapTaskStore().emit(
+          { type: 'task.status', data: { taskId: p.node_id, previous: previousStatus, current: p.status } },
+          context.swarmId,
+        );
+      } catch { /* best effort */ }
 
       return {
         node_id: p.node_id,

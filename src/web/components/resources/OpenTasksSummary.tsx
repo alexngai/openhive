@@ -1,5 +1,7 @@
 import { Circle, CheckCircle2, PlayCircle, AlertTriangle, XCircle, Network, FileText, MessageSquare, Zap } from 'lucide-react';
-import { useOpenTasksSummary, useOpenTasksReady } from '../../hooks/useApi';
+import { useOpenTasksSummary, useOpenTasksReady, useUpdateOpenTaskStatus } from '../../hooks/useApi';
+import { useMapTasksRealtime } from '../../hooks/useMapTasks';
+import { CreateTaskForm } from '../task-graph/CreateTaskForm';
 import clsx from 'clsx';
 
 function StatusPill({ label, count, color }: { label: string; count: number; color: string }) {
@@ -30,9 +32,56 @@ function StatCard({ icon: Icon, label, value }: { icon: React.ElementType; label
   );
 }
 
+function ReadyTaskRow({ task, resourceId }: { task: { id: string; title: string; status?: string; priority?: number }; resourceId: string }) {
+  const updateStatus = useUpdateOpenTaskStatus(resourceId);
+
+  return (
+    <div className="flex items-center gap-2 text-xs group">
+      {task.status === 'open' ? (
+        <PlayCircle className="w-3 h-3 text-blue-400 shrink-0" />
+      ) : task.status === 'blocked' ? (
+        <AlertTriangle className="w-3 h-3 text-red-400 shrink-0" />
+      ) : (
+        <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+      )}
+      <span className="truncate flex-1">{task.title}</span>
+      {task.priority != null && task.priority <= 1 && (
+        <span className="text-2xs px-1 py-0.5 rounded bg-red-500/10 text-red-400 shrink-0">
+          P{task.priority}
+        </span>
+      )}
+      {/* Inline status actions — visible on hover */}
+      <span className="hidden group-hover:flex items-center gap-1 shrink-0">
+        {task.status === 'open' && (
+          <button
+            onClick={() => updateStatus.mutate({ nodeId: task.id, status: 'in_progress' })}
+            className="btn-ghost text-2xs px-1 py-0.5 text-blue-400"
+            title="Start"
+          >
+            Start
+          </button>
+        )}
+        {(task.status === 'open' || task.status === 'in_progress') && (
+          <button
+            onClick={() => updateStatus.mutate({ nodeId: task.id, status: 'closed' })}
+            className="btn-ghost text-2xs px-1 py-0.5 text-emerald-400"
+            title="Complete"
+          >
+            Done
+          </button>
+        )}
+      </span>
+      <span className="text-2xs font-mono ml-auto shrink-0 group-hover:hidden" style={{ color: 'var(--color-text-muted)' }}>
+        {task.id}
+      </span>
+    </div>
+  );
+}
+
 export function OpenTasksSummary({ resourceId }: { resourceId: string }) {
   const { data: summary, isLoading: summaryLoading } = useOpenTasksSummary(resourceId);
   const { data: readyData, isLoading: readyLoading } = useOpenTasksReady(resourceId);
+  useMapTasksRealtime();
 
   if (summaryLoading) {
     return (
@@ -106,24 +155,7 @@ export function OpenTasksSummary({ resourceId }: { resourceId: string }) {
           </div>
           <div className="space-y-1.5">
             {readyItems.slice(0, 10).map((task) => (
-              <div key={task.id} className="flex items-center gap-2 text-xs">
-                {task.status === 'open' ? (
-                  <PlayCircle className="w-3 h-3 text-blue-400 shrink-0" />
-                ) : task.status === 'blocked' ? (
-                  <AlertTriangle className="w-3 h-3 text-red-400 shrink-0" />
-                ) : (
-                  <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-                )}
-                <span className="truncate">{task.title}</span>
-                {task.priority != null && task.priority <= 1 && (
-                  <span className="text-2xs px-1 py-0.5 rounded bg-red-500/10 text-red-400 shrink-0">
-                    P{task.priority}
-                  </span>
-                )}
-                <span className="text-2xs font-mono ml-auto shrink-0" style={{ color: 'var(--color-text-muted)' }}>
-                  {task.id}
-                </span>
-              </div>
+              <ReadyTaskRow key={task.id} task={task} resourceId={resourceId} />
             ))}
             {readyItems.length > 10 && (
               <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
@@ -133,6 +165,9 @@ export function OpenTasksSummary({ resourceId }: { resourceId: string }) {
           </div>
         </div>
       )}
+
+      {/* Create task form */}
+      <CreateTaskForm resourceId={resourceId} />
     </div>
   );
 }

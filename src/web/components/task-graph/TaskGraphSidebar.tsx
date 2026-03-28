@@ -1,9 +1,11 @@
 /**
  * TaskGraphSidebar — Node detail panel shown when a graph node is clicked.
+ * Includes status transition buttons for task nodes.
  */
 
 import { X, CheckCircle2, PlayCircle, AlertTriangle, XCircle, Circle } from 'lucide-react';
 import clsx from 'clsx';
+import { useUpdateOpenTaskStatus } from '../../hooks/useApi';
 import type { OpenTasksGraphNode } from '../../lib/api';
 
 const STATUS_ICONS: Record<string, React.ElementType> = {
@@ -11,6 +13,7 @@ const STATUS_ICONS: Record<string, React.ElementType> = {
   in_progress: PlayCircle,
   blocked: AlertTriangle,
   completed: CheckCircle2,
+  closed: CheckCircle2,
   failed: XCircle,
 };
 
@@ -19,19 +22,54 @@ const STATUS_STYLES: Record<string, string> = {
   in_progress: 'text-blue-400',
   blocked: 'text-red-400',
   completed: 'text-emerald-400',
+  closed: 'text-emerald-400',
   failed: 'text-red-400',
+};
+
+/** Valid transitions from each status */
+const STATUS_ACTIONS: Record<string, Array<{ label: string; target: string; color: string }>> = {
+  open: [
+    { label: 'Start', target: 'in_progress', color: 'text-blue-400' },
+    { label: 'Block', target: 'blocked', color: 'text-red-400' },
+    { label: 'Close', target: 'closed', color: 'text-emerald-400' },
+  ],
+  in_progress: [
+    { label: 'Complete', target: 'closed', color: 'text-emerald-400' },
+    { label: 'Block', target: 'blocked', color: 'text-red-400' },
+  ],
+  blocked: [
+    { label: 'Reopen', target: 'open', color: 'text-gray-400' },
+    { label: 'Close', target: 'closed', color: 'text-emerald-400' },
+  ],
+  closed: [
+    { label: 'Reopen', target: 'open', color: 'text-gray-400' },
+  ],
+  completed: [
+    { label: 'Reopen', target: 'open', color: 'text-gray-400' },
+  ],
+  failed: [
+    { label: 'Reopen', target: 'open', color: 'text-gray-400' },
+  ],
 };
 
 interface Props {
   node: OpenTasksGraphNode | null;
+  resourceId: string;
   onClose: () => void;
 }
 
-export function TaskGraphSidebar({ node, onClose }: Props) {
+export function TaskGraphSidebar({ node, resourceId, onClose }: Props) {
+  const updateStatus = useUpdateOpenTaskStatus(resourceId);
+
   if (!node) return null;
 
   const status = node.status || 'open';
   const StatusIcon = STATUS_ICONS[status] || Circle;
+  const actions = node.type === 'task' ? (STATUS_ACTIONS[status] || []) : [];
+
+  const handleStatusChange = (targetStatus: string) => {
+    updateStatus.mutate({ nodeId: node.id, status: targetStatus });
+  };
 
   return (
     <div
@@ -57,6 +95,36 @@ export function TaskGraphSidebar({ node, onClose }: Props) {
             </span>
           )}
         </div>
+
+        {/* Status actions */}
+        {actions.length > 0 && (
+          <div>
+            <div className="text-2xs font-medium mb-1.5" style={{ color: 'var(--color-text-muted)' }}>
+              Actions
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {actions.map((action) => (
+                <button
+                  key={action.target}
+                  onClick={() => handleStatusChange(action.target)}
+                  disabled={updateStatus.isPending}
+                  className={clsx(
+                    'btn-ghost text-2xs px-2 py-1 rounded border',
+                    action.color,
+                  )}
+                  style={{ borderColor: 'var(--color-border)' }}
+                >
+                  {updateStatus.isPending ? '...' : action.label}
+                </button>
+              ))}
+            </div>
+            {updateStatus.isError && (
+              <p className="text-2xs text-red-400 mt-1">
+                {updateStatus.error instanceof Error ? updateStatus.error.message : 'Update failed'}
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Description */}
         {node.description && (

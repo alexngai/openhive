@@ -1,11 +1,10 @@
 import { FastifyInstance } from 'fastify';
-import { readFileSync, statSync, existsSync, appendFileSync } from 'node:fs';
+import { readFileSync, statSync, existsSync } from 'node:fs';
 import { resolve, join, relative, extname } from 'node:path';
-import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { parseFrontmatter } from 'minimem/session';
 import { listMemoryFiles } from 'minimem/internal';
-import { FilesystemStorageAdapter, discoverSkills } from 'skill-tree';
+import { createSkillBank, discoverSkills } from 'skill-tree';
 import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { OpenHiveOpenTasksClient } from '../../opentasks-client/index.js';
@@ -439,14 +438,14 @@ export async function resourceContentRoutes(
       return reply.status(400).send({ error: 'Bad Request', message: 'This endpoint is only available for skill resources' });
     }
 
-    const adapter = new FilesystemStorageAdapter({ basePath: localPath });
+    const adapter = createSkillBank({ storage: { type: 'filesystem', basePath: localPath } });
     await adapter.initialize();
     const allSkills = await adapter.listSkills();
 
     const discovered = await discoverSkills(localPath);
     const pathMap = new Map(discovered.map(d => [d.id, relative(localPath, d.filePath)]));
 
-    const skills = allSkills.map(skill => ({
+    const skills = allSkills.map((skill: { id: string; name?: string; version?: string; status?: string; description?: string; tags?: string[]; author?: string }) => ({
       id: skill.id,
       name: skill.name || null,
       version: skill.version || null,
@@ -476,7 +475,7 @@ export async function resourceContentRoutes(
       return reply.status(400).send({ error: 'Bad Request', message: 'Invalid skill ID' });
     }
 
-    const adapter = new FilesystemStorageAdapter({ basePath: localPath });
+    const adapter = createSkillBank({ storage: { type: 'filesystem', basePath: localPath } });
     await adapter.initialize();
     const skill = await adapter.getSkill(skillId);
 
@@ -659,14 +658,18 @@ export async function resourceContentRoutes(
       throw error;
     }
 
-    const graphPath = join(localPath, 'graph.jsonl');
-    const nodeId = `task_${nanoid()}`;
-    const node = { id: nodeId, type: 'task', title: body.title, description: body.description || '', status: body.status || 'open', priority: body.priority ?? 0, archived: false, created_at: new Date().toISOString(), ...(body.metadata || {}) };
-    appendFileSync(graphPath, JSON.stringify(node) + '\n');
-
-    return reply.status(201).send({ node_id: nodeId, status: node.status });
+    // Route through the OpenTasks daemon for persistence
+    const { daemonCreateTask: createFn, resolveDaemonSocket: resolveSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveSocket(localPath);
+    try {
+      const task = await createFn(socketPath, { title: body.title, description: body.description, status: body.status || 'open', priority: body.priority });
+      try { const { getMapTaskStore } = await import('../../map/task-store.js'); getMapTaskStore().emit({ type: 'task.created', data: { task: { id: task.id, title: task.title, status: task.status } } }, 'rest-api'); } catch { /* best effort */ }
+      return reply.status(201).send({ node_id: task.id, status: task.status });
+    } catch (err) {
+      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
+      throw err;
+    }
   });
-
   fastify.patch<{
     Params: { id: string; nodeId: string };
   }>('/resources/:id/content/opentasks/tasks/:nodeId', { preHandler: authMiddleware }, async (request, reply) => {
@@ -682,21 +685,15 @@ export async function resourceContentRoutes(
       throw error;
     }
 
-    const graphPath = join(localPath, 'graph.jsonl');
-    if (!existsSync(graphPath)) return reply.status(404).send({ error: 'Not Found', message: 'Graph file not found' });
-
-    const content = readFileSync(graphPath, 'utf-8');
-    const lines = content.split('\n').filter(l => l.trim());
-    let previousStatus: string | null = null;
-    for (const line of lines) {
-      try { const obj = JSON.parse(line); if (obj.id === request.params.nodeId) previousStatus = obj.status || null; } catch { /* skip */ }
+    const { daemonUpdateTask: updateFn, resolveDaemonSocket: resolveSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveSocket(localPath);
+    try {
+      await updateFn(socketPath, request.params.nodeId, { status: body.status });
+      try { const { getMapTaskStore } = await import('../../map/task-store.js'); getMapTaskStore().emit({ type: 'task.status', data: { taskId: request.params.nodeId, current: body.status } }, 'rest-api'); } catch { /* best effort */ }
+      return reply.send({ node_id: request.params.nodeId, previous_status: null, new_status: body.status });
+    } catch (err) {
+      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
+      throw err;
     }
-
-    const update: Record<string, unknown> = { id: request.params.nodeId, type: 'task', status: body.status, updated_at: new Date().toISOString() };
-    if (body.result) update.result = body.result;
-    if (body.error) update.error = body.error;
-    appendFileSync(graphPath, JSON.stringify(update) + '\n');
-
-    return reply.send({ node_id: request.params.nodeId, previous_status: previousStatus, new_status: body.status });
   });
 }

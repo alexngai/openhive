@@ -137,6 +137,7 @@ describe('MAP Inbound WebSocket', () => {
         swarmId: 'swarm_1',
         connectedAt: new Date().toISOString(),
         lastMessageAt: new Date().toISOString(),
+        registeredAgents: new Map(),
       });
 
       const conn = getInbound('swarm_1');
@@ -157,6 +158,7 @@ describe('MAP Inbound WebSocket', () => {
         swarmId: 'swarm_1',
         connectedAt: new Date().toISOString(),
         lastMessageAt: new Date().toISOString(),
+        registeredAgents: new Map(),
       });
 
       unregisterInbound('swarm_1');
@@ -174,6 +176,7 @@ describe('MAP Inbound WebSocket', () => {
         swarmId: 'swarm_1',
         connectedAt: new Date().toISOString(),
         lastMessageAt: new Date().toISOString(),
+        registeredAgents: new Map(),
       });
 
       registerInbound('swarm_1', {
@@ -182,6 +185,7 @@ describe('MAP Inbound WebSocket', () => {
         swarmId: 'swarm_1',
         connectedAt: new Date().toISOString(),
         lastMessageAt: new Date().toISOString(),
+        registeredAgents: new Map(),
       });
 
       expect(getInbound('swarm_1')!.ws).toBe(ws2);
@@ -192,8 +196,8 @@ describe('MAP Inbound WebSocket', () => {
     it('should track count correctly', () => {
       expect(getInboundCount()).toBe(0);
 
-      registerInbound('s1', { ws: createMockWs(), agentId: 'a1', swarmId: 's1', connectedAt: '', lastMessageAt: '' });
-      registerInbound('s2', { ws: createMockWs(), agentId: 'a2', swarmId: 's2', connectedAt: '', lastMessageAt: '' });
+      registerInbound('s1', { ws: createMockWs(), agentId: 'a1', swarmId: 's1', connectedAt: '', lastMessageAt: '', registeredAgents: new Map() });
+      registerInbound('s2', { ws: createMockWs(), agentId: 'a2', swarmId: 's2', connectedAt: '', lastMessageAt: '', registeredAgents: new Map() });
       expect(getInboundCount()).toBe(2);
 
       unregisterInbound('s1');
@@ -266,6 +270,7 @@ describe('MAP Inbound WebSocket', () => {
         swarmId,
         connectedAt: new Date().toISOString(),
         lastMessageAt: new Date().toISOString(),
+        registeredAgents: new Map(),
       });
 
       const result = sendToSwarm(swarmId, { jsonrpc: '2.0', method: 'test', params: {} });
@@ -288,6 +293,7 @@ describe('MAP Inbound WebSocket', () => {
         swarmId,
         connectedAt: new Date().toISOString(),
         lastMessageAt: new Date().toISOString(),
+        registeredAgents: new Map(),
       });
 
       // No outbound connection either, so this should return false

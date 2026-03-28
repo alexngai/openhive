@@ -18,7 +18,7 @@ const TEST_ROOT = testRoot('mail-routes');
 const TEST_DB_PATH = testDbPath(TEST_ROOT, 'mail-routes-test.db');
 
 // Mock the mail module with in-memory agent-inbox components
-const { InMemoryStorage, MailJsonRpcServer, MessageRouter, TraceabilityLayer } = await import('agent-inbox');
+import { InMemoryStorage, MailJsonRpcServer, MessageRouter, TraceabilityLayer } from 'agent-inbox';
 import { EventEmitter } from 'node:events';
 
 let mockStorage: InstanceType<typeof InMemoryStorage>;
@@ -131,11 +131,10 @@ describe('Mail API Routes', () => {
     });
 
     it('filters by status', async () => {
-      const createRes = await mockJsonRpc.handleRequest({
+      await mockJsonRpc.handleRequest({
         jsonrpc: '2.0', id: '1', method: 'mail/create',
         params: { subject: 'Active conv' },
       });
-      const convId = (createRes.result as any).id;
 
       await mockJsonRpc.handleRequest({
         jsonrpc: '2.0', id: '2', method: 'mail/create',

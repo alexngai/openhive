@@ -23,10 +23,11 @@ import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm } from '../db/dal/
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound, getInbound } from './connection-registry.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph } from './connection-registry.js';
 import { getMapTaskStore } from './task-store.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
+import { initTaskBridge, stopTaskBridge } from './task-bridge.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
 import { broadcastToChannel } from '../realtime/index.js';
@@ -206,7 +207,6 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       if (current && current.ws !== ws) return;
 
       unregisterInbound(sid);
-      try { getMapTaskStore().removeBySwarm(sid); } catch { /* */ }
       try {
         if (!hasOutboundConnection(sid)) {
           updateSwarm(sid, { status: 'unreachable' });
@@ -412,8 +412,6 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         const meta = registeredAgent.metadata as Record<string, unknown>;
         const project = meta.project as string | undefined;
         const branch = meta.branch as string | undefined;
-        const template = meta.template as string | undefined;
-
         if (project) {
           const displayName = branch ? `${project} (${branch})` : project;
           try {
@@ -423,6 +421,16 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
               metadata: meta,
             });
           } catch { /* non-critical */ }
+        }
+
+        // Auto-detect default task graph from agent metadata
+        const taskGraph = meta.task_graph as Record<string, string> | undefined;
+        if (taskGraph) {
+          setDefaultTaskGraph(swarmId, {
+            resource_id: taskGraph.resource_id,
+            path: taskGraph.path,
+            location_hash: taskGraph.location_hash,
+          });
         }
       }
     };
@@ -438,9 +446,13 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     });
   });
 
-  // Start heartbeat and task broadcaster
+  // Start heartbeat, task broadcaster, and bidirectional task bridge
   startMapHeartbeat();
-  initTaskBroadcaster(getMapTaskStore());
+  const taskStore = getMapTaskStore();
+  initTaskBroadcaster(taskStore);
+  initTaskBridge({ store: taskStore }).catch(err =>
+    console.error('[task-bridge] Failed to initialize:', err),
+  );
 
   console.log(`[openhive] MAP WebSocket registered at /ws/map (trust: ${config.mapHub.trustModel})`);
 }
@@ -508,6 +520,7 @@ function startMapHeartbeat(): void {
 // ============================================================================
 
 export function stopMapWebSocket(): void {
+  stopTaskBridge();
   stopTaskBroadcaster();
 
   if (heartbeatTimer) {

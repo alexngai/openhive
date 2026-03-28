@@ -8,7 +8,7 @@
  *   - Error handling for uninitialized service and invalid tokens
  */
 
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { generateSecret } from 'agent-iam';

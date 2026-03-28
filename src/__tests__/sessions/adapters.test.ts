@@ -134,12 +134,19 @@ describe('ClaudeSessionAdapter', () => {
       expect(assistantMessages.length).toBe(2);
     });
 
-    it('should convert tool results', () => {
+    it('should merge tool results into their matching tool_call blocks', () => {
       const events = adapter.toAcpEvents(CLAUDE_SESSION_CONTENT);
+      // tool_result events are merged into tool_call blocks by pairToolResults
       const toolResults = events.filter((e) => e.type === 'tool_result');
-      expect(toolResults.length).toBe(1);
-      expect(toolResults[0].toolCallId).toBe('tool_001');
-      expect(toolResults[0].isError).toBe(false);
+      expect(toolResults.length).toBe(0);
+
+      // The tool_call block should have the result merged in
+      const assistantMessages = events.filter((e) => e.type === 'assistant_message');
+      const toolCall = assistantMessages
+        .flatMap((m) => m.content)
+        .find((c) => c.type === 'tool_call' && c.toolCallId === 'tool_001');
+      expect(toolCall).toBeDefined();
+      expect((toolCall as any).status).toBe('completed');
     });
 
     it('should convert tool calls in assistant messages', () => {

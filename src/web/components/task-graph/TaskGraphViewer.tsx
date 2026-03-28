@@ -17,10 +17,11 @@ import type { OpenTasksGraphNode } from '../../lib/api';
 
 interface Props {
   graph: Graph;
+  resourceId: string;
   onNodeSelect?: (node: OpenTasksGraphNode | null) => void;
 }
 
-export function TaskGraphViewer({ graph, onNodeSelect }: Props) {
+export function TaskGraphViewer({ graph, resourceId, onNodeSelect }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const [selectedNode, setSelectedNode] = useState<OpenTasksGraphNode | null>(null);
@@ -148,7 +149,7 @@ export function TaskGraphViewer({ graph, onNodeSelect }: Props) {
       </div>
 
       {/* Sidebar */}
-      <TaskGraphSidebar node={selectedNode} onClose={handleCloseSidebar} />
+      <TaskGraphSidebar node={selectedNode} resourceId={resourceId} onClose={handleCloseSidebar} />
     </div>
   );
 }

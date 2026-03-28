@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import * as path from 'path';
+// path import removed — not currently used
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as mapDAL from '../../db/dal/map.js';

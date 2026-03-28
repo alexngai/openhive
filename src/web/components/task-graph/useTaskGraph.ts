@@ -5,7 +5,7 @@
  * instance for rendering with sigma.js.
  */
 
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import Graph from 'graphology';
 import { useOpenTasksGraph, useOpenTasksSummary } from '../../hooks/useApi';
 import { useWSEvent } from '../../hooks/useWebSocket';
@@ -51,12 +51,13 @@ export function useTaskGraph(resourceId: string): TaskGraphState {
   const queryClient = useQueryClient();
 
   // Invalidate on WebSocket updates
-  useWSEvent<{ resource_id: string }>('resource_synced', (data) => {
+  const handleResourceSynced = useCallback((data: { resource_id: string }) => {
     if (data.resource_id === resourceId) {
       queryClient.invalidateQueries({ queryKey: ['opentasks-graph', resourceId] });
       queryClient.invalidateQueries({ queryKey: ['opentasks-summary', resourceId] });
     }
-  });
+  }, [resourceId, queryClient]);
+  useWSEvent('resource_synced', handleResourceSynced);
 
   const graph = useMemo(() => {
     if (!graphData?.nodes?.length) return null;
@@ -71,7 +72,9 @@ export function useTaskGraph(resourceId: string): TaskGraphState {
         label: node.title || node.id,
         size: TYPE_SIZES[node.type] || 6,
         color: STATUS_COLORS[status] || STATUS_COLORS.open,
-        type: node.type,
+        // Note: sigma reserves "type" for the node renderer program name,
+        // so we use "nodeType" to store the OpenTasks node type.
+        nodeType: node.type,
         status,
         priority: node.priority,
         // Initial random position (will be laid out)

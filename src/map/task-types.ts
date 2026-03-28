@@ -38,19 +38,32 @@ export type MAPTaskMethod = (typeof MAP_TASK_METHODS)[keyof typeof MAP_TASK_METH
 export const MAP_TASK_METHOD_SET = new Set<string>(Object.values(MAP_TASK_METHODS));
 
 // ============================================================================
+// Graph Targeting (optional on every request — falls back to connection default)
+// ============================================================================
+
+export interface TaskGraphTarget {
+  /** OpenHive resource ID (e.g. "res_abc123") */
+  resource_id?: string;
+  /** Filesystem path to the .opentasks directory */
+  path?: string;
+  /** Stable OpenTasks location hash from config.json */
+  location_hash?: string;
+}
+
+// ============================================================================
 // Request Parameter Types
 // ============================================================================
 
-export interface TasksCreateParams {
+export interface TasksCreateParams extends TaskGraphTarget {
   task: Omit<MAPTask, 'id'> & { id?: string };
 }
 
-export interface TasksAssignParams {
+export interface TasksAssignParams extends TaskGraphTarget {
   taskId: string;
   agentId: string;
 }
 
-export interface TasksUpdateParams {
+export interface TasksUpdateParams extends TaskGraphTarget {
   taskId: string;
   status?: MAPTaskStatus;
   title?: string;
@@ -59,7 +72,7 @@ export interface TasksUpdateParams {
   meta?: Record<string, unknown>;
 }
 
-export interface TasksListParams {
+export interface TasksListParams extends TaskGraphTarget {
   filter?: {
     assignee?: string;
     status?: MAPTaskStatus | MAPTaskStatus[];

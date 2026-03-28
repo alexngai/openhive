@@ -163,6 +163,7 @@ export type WSEventType =
   | 'swarm_offline'
   | 'node_registered'
   | 'node_state_changed'
+  | 'swarm_heartbeat'
   | 'swarm_joined_hive'
   | 'swarm_left_hive'
   // Swarm hosting events
