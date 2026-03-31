@@ -15,7 +15,7 @@ import { useTaskGraph, STATUS_COLORS } from '../components/task-graph/useTaskGra
 import { TaskGraphViewer } from '../components/task-graph/TaskGraphViewer';
 import { TaskKanban } from '../components/task-graph/TaskKanban';
 import { CreateTaskForm } from '../components/task-graph/CreateTaskForm';
-import { useMapTasksRealtime } from '../hooks/useMapTasks';
+import { useTasksRealtime } from '../hooks/useMapTasks';
 
 type ViewMode = 'graph' | 'board';
 
@@ -24,7 +24,7 @@ export function TaskGraph() {
   const [view, setView] = useState<ViewMode>('board');
   const { data: resource, isLoading: resourceLoading } = useResource(resourceId!);
   const { graph, isLoading: graphLoading, summary } = useTaskGraph(resourceId!);
-  useMapTasksRealtime();
+  useTasksRealtime();
 
   if (resourceLoading || graphLoading) {
     return (

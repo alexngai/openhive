@@ -24,10 +24,8 @@ import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
 import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph } from './connection-registry.js';
-import { getMapTaskStore } from './task-store.js';
 import { handleContentResponse } from './trajectory-content.js';
-import { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
-import { initTaskBridge, stopTaskBridge } from './task-bridge.js';
+import { handleOpenTasksResponse } from './opentasks-remote.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
 import { broadcastToChannel } from '../realtime/index.js';
@@ -155,6 +153,9 @@ function createNotificationInterceptor(
       } else if (msg.method === 'trajectory/content.response') {
         // Content response from swarm — resolve pending content request
         handleContentResponse(msg.params as Record<string, unknown>);
+      } else if (typeof msg.method === 'string' && msg.method.startsWith('opentasks/') && msg.method.endsWith('.response')) {
+        // OpenTasks response from swarm — resolve pending remote query
+        handleOpenTasksResponse(msg.params as Record<string, unknown>);
       } else if (typeof msg.method === 'string' && msg.method.startsWith('mail/')) {
         // Mail notifications — fire and forget
         try { getMailJsonRpc().handleRequest(msg as any); } catch { /* ignore */ }
@@ -446,13 +447,8 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     });
   });
 
-  // Start heartbeat, task broadcaster, and bidirectional task bridge
+  // Start heartbeat
   startMapHeartbeat();
-  const taskStore = getMapTaskStore();
-  initTaskBroadcaster(taskStore);
-  initTaskBridge({ store: taskStore }).catch(err =>
-    console.error('[task-bridge] Failed to initialize:', err),
-  );
 
   console.log(`[openhive] MAP WebSocket registered at /ws/map (trust: ${config.mapHub.trustModel})`);
 }
@@ -520,9 +516,6 @@ function startMapHeartbeat(): void {
 // ============================================================================
 
 export function stopMapWebSocket(): void {
-  stopTaskBridge();
-  stopTaskBroadcaster();
-
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;

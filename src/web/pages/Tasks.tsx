@@ -1,16 +1,14 @@
 /**
- * Tasks Page — Lists all OpenTasks resources with summaries, plus
- * a live view of ephemeral MAP tasks from connected swarms.
+ * Tasks Page — Lists all OpenTasks resources with summaries.
  */
 
 import { Link } from 'react-router-dom';
 import {
   ListTodo, Network, ChevronRight, Clock, AlertTriangle,
-  CheckCircle2, Activity, XCircle, Zap, User,
+  CheckCircle2, Activity, XCircle, Zap,
 } from 'lucide-react';
 import { useResourcesByType, useOpenTasksSummary } from '../hooks/useApi';
-import { useMapTasks, useMapTasksSummary, useMapTasksRealtime } from '../hooks/useMapTasks';
-import type { MAPTask, MAPTaskStatus } from '../hooks/useMapTasks';
+import { useTasksRealtime } from '../hooks/useMapTasks';
 import { useResourcesRealtime } from '../hooks/useRealtimeInvalidation';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -118,34 +116,6 @@ function TaskResourceCard({ resource }: { resource: SyncableResource }) {
 }
 
 // ============================================================================
-// Live MAP Task Card (ephemeral swarm tasks)
-// ============================================================================
-
-function LiveTaskCard({ task }: { task: MAPTask }) {
-  const status = (task.status || 'open') as MAPTaskStatus;
-  const style = TASK_STATUS_STYLES[status] ?? TASK_STATUS_STYLES.open;
-  const Icon = style.icon;
-
-  return (
-    <div className="flex items-center gap-3 px-3 py-2 rounded-lg" style={{ backgroundColor: 'var(--color-elevated)' }}>
-      <Icon className={`w-3.5 h-3.5 shrink-0 ${style.text}`} />
-      <div className="flex-1 min-w-0">
-        <span className="text-sm truncate block">{task.title || task.id}</span>
-        {task.assignee && (
-          <span className="text-2xs flex items-center gap-1 mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-            <User className="w-3 h-3" />
-            {task.assignee}
-          </span>
-        )}
-      </div>
-      <span className={`text-2xs px-1.5 py-0.5 rounded font-medium ${style.bg} ${style.text}`}>
-        {status.replace('_', ' ')}
-      </span>
-    </div>
-  );
-}
-
-// ============================================================================
 // Tasks Page
 // ============================================================================
 
@@ -153,16 +123,9 @@ export function Tasks() {
   // Persistent OpenTasks resources
   const { data: resourcesData, isLoading: resourcesLoading } = useResourcesByType('task');
   useResourcesRealtime();
-
-  // Ephemeral MAP tasks from connected swarms
-  const { data: mapSummary } = useMapTasksSummary();
-  const { data: mapTasksData } = useMapTasks({ limit: 20 });
-  useMapTasksRealtime();
+  useTasksRealtime();
 
   const resources = resourcesData?.data || [];
-  const mapTasks = mapTasksData?.tasks || [];
-  const mapTotal = mapSummary?.total ?? 0;
-  const byStatus = mapSummary?.byStatus ?? {};
 
   if (resourcesLoading) return <PageLoader />;
 
@@ -172,41 +135,9 @@ export function Tasks() {
       <div>
         <h1 className="text-lg font-bold">Tasks</h1>
         <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
-          Task graphs from OpenTasks resources and live coordination tasks from connected swarms.
+          Task graphs from OpenTasks resources.
         </p>
       </div>
-
-      {/* Live MAP tasks section */}
-      {mapTotal > 0 && (
-        <section>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold flex items-center gap-2">
-              <Activity className="w-4 h-4 text-honey-500" />
-              Live Tasks
-              <span className="text-2xs font-normal px-1.5 py-0.5 rounded-full bg-honey-500/15 text-honey-500">
-                {mapTotal}
-              </span>
-            </h2>
-            <div className="flex items-center gap-3">
-              {Object.entries(byStatus).map(([status, count]) => {
-                const config = TASK_STATUS_STYLES[status] ?? TASK_STATUS_STYLES.open;
-                const StatusIcon = config.icon;
-                return (
-                  <span key={status} className="flex items-center gap-1 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-                    <StatusIcon className={`w-3 h-3 ${config.text}`} />
-                    {count}
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-          <div className="space-y-1">
-            {mapTasks.map((task) => (
-              <LiveTaskCard key={task.id} task={task} />
-            ))}
-          </div>
-        </section>
-      )}
 
       {/* OpenTasks resources section */}
       <section>

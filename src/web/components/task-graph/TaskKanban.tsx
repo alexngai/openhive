@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useOpenTasksGraph, useUpdateOpenTaskStatus } from '../../hooks/useApi';
-import { useMapTasksRealtime } from '../../hooks/useMapTasks';
+import { useTasksRealtime } from '../../hooks/useMapTasks';
 import type { OpenTasksGraphNode } from '../../lib/api';
 
 // ============================================================================
@@ -272,7 +272,7 @@ interface TaskKanbanProps {
 export function TaskKanban({ resourceId }: TaskKanbanProps) {
   const { data: graphData, isLoading } = useOpenTasksGraph(resourceId);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  useMapTasksRealtime();
+  useTasksRealtime();
 
   const nodes = (graphData?.nodes || []).filter(
     (n) => n.type === 'task' && !n.archived,

@@ -7,7 +7,6 @@ import { listMemoryFiles } from 'minimem/internal';
 import { createSkillBank, discoverSkills } from 'skill-tree';
 import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
-import { OpenHiveOpenTasksClient } from '../../opentasks-client/index.js';
 import { getSyncOrchestrator } from '../../sync/sync-orchestrator.js';
 import type { SyncableResource } from '../../types.js';
 import type { Config } from '../../config.js';
@@ -153,6 +152,39 @@ export async function resourceContentRoutes(
     }
 
     return { resource, localPath, isCloned: resource.sync_strategy === 'ls-remote' || resource.sync_strategy === 'mirror' };
+  }
+
+  /**
+   * Resolve resource with optional local path — for opentasks endpoints that
+   * can fall back to remote queries when the graph isn't local.
+   */
+  async function resolveResourceForOpenTasks(
+    request: { params: { id: string }; agent?: { id: string } },
+    reply: { status: (code: number) => { send: (body: unknown) => unknown } },
+  ): Promise<{ resource: SyncableResource; localPath: string | null } | null> {
+    const resource = resourcesDAL.findResourceById(request.params.id);
+    if (!resource) {
+      reply.status(404).send({ error: 'Not Found', message: 'Resource not found' });
+      return null;
+    }
+    if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
+      reply.status(403).send({ error: 'Forbidden', message: 'You do not have access to this resource' });
+      return null;
+    }
+
+    let localPath = resolveLocalPath(resource);
+    if (!localPath && (resource.sync_strategy === 'ls-remote' || resource.sync_strategy === 'mirror')) {
+      try {
+        const contentPath = await getSyncOrchestrator().ensureContent(resource);
+        if (contentPath) localPath = contentPath;
+      } catch { /* clone failed */ }
+    }
+
+    if (localPath && (!existsSync(localPath) || !statSync(localPath).isDirectory())) {
+      localPath = null;
+    }
+
+    return { resource, localPath };
   }
 
   // ============================================================================
@@ -514,19 +546,32 @@ export async function resourceContentRoutes(
   fastify.get<{
     Params: { id: string };
   }>('/resources/:id/content/opentasks/summary', { preHandler: authMiddleware }, async (request, reply) => {
-    const ctx = await resolveResourceAndPath(request, reply);
+    const ctx = await resolveResourceForOpenTasks(request, reply);
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
 
-    const client = new OpenHiveOpenTasksClient(localPath);
-    await client.connectDaemon();
-    try {
-      const summary = await client.getGraphSummary();
-      return reply.send({ ...summary, daemon_connected: client.connected });
-    } finally {
-      client.disconnect();
+    // Local daemon path
+    if (localPath) {
+      const { daemonGetSummary, resolveDaemonSocket, TaskDaemonError } = await import('../../map/task-daemon-client.js');
+      const socketPath = resolveDaemonSocket(localPath);
+      try {
+        return reply.send(await daemonGetSummary(socketPath, localPath));
+      } catch (err) {
+        if (!(err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING')) throw err;
+        // Fall through to remote
+      }
     }
+
+    // Remote swarm path
+    const { findSwarmForResource, remoteGetSummary } = await import('../../map/opentasks-remote.js');
+    const swarmId = findSwarmForResource(resource);
+    if (swarmId) {
+      const summary = await remoteGetSummary(swarmId);
+      if (summary) return reply.send(summary);
+    }
+
+    return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks graph is not available locally or via connected swarm' });
   });
 
   fastify.get<{
@@ -539,13 +584,14 @@ export async function resourceContentRoutes(
     if (!validateOpenTasksResource(resource, reply)) return;
 
     const limit = Math.min(Math.max(request.query.limit || 50, 1), 200);
-    const client = new OpenHiveOpenTasksClient(localPath);
-    await client.connectDaemon();
+    const { daemonGetReady, resolveDaemonSocket, TaskDaemonError } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
     try {
-      const ready = await client.getReady({ limit });
-      return reply.send({ items: ready, total: ready.length, daemon_connected: client.connected });
-    } finally {
-      client.disconnect();
+      const ready = await daemonGetReady(socketPath, limit, localPath);
+      return reply.send(ready);
+    } catch (err) {
+      if (err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
+      throw err;
     }
   });
 
@@ -558,23 +604,27 @@ export async function resourceContentRoutes(
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
 
-    const client = new OpenHiveOpenTasksClient(localPath);
-    const connected = await client.connectDaemon();
+    const { daemonQueryNodes, daemonGetSummary, resolveDaemonSocket, TaskDaemonError } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
     try {
-      if (!connected) {
-        const summary = await client.getGraphSummary();
-        return reply.send({ daemon_connected: false, message: 'Daemon not running; returning summary only', task_counts: summary.task_counts });
-      }
-
-      const result = await client.queryNodes({
+      const result = await daemonQueryNodes(socketPath, {
         type: 'task', status: request.query.status, archived: false,
         limit: Math.min(Math.max(request.query.limit || 50, 1), 200),
         offset: request.query.offset || 0,
-      });
+      }, localPath);
 
-      return reply.send({ items: result?.items || [], daemon_connected: true });
-    } finally {
-      client.disconnect();
+      return reply.send({ items: result.items || [], daemon_connected: true });
+    } catch (err) {
+      if (err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING') {
+        // Fallback: try to get summary without daemon
+        try {
+          const summary = await daemonGetSummary(socketPath, localPath);
+          return reply.send({ daemon_connected: false, message: 'Daemon not running; returning summary only', task_counts: summary.task_counts });
+        } catch {
+          return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
+        }
+      }
+      throw err;
     }
   });
 
@@ -586,43 +636,41 @@ export async function resourceContentRoutes(
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
 
-    const client = new OpenHiveOpenTasksClient(localPath);
-    const daemonRunning = await client.isDaemonRunning();
-    const graphPath = join(localPath, 'graph.jsonl');
-    const graphExists = existsSync(graphPath);
-    const graphModified = graphExists ? statSync(graphPath).mtime.toISOString() : null;
-
-    return reply.send({ daemon_running: daemonRunning, graph_file_exists: graphExists, graph_last_modified: graphModified, socket_path: join(localPath, 'daemon.sock') });
+    const { daemonGetStatus, resolveDaemonSocket } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    const status = await daemonGetStatus(socketPath, localPath);
+    return reply.send(status);
   });
 
   fastify.get<{
     Params: { id: string };
   }>('/resources/:id/content/opentasks/graph', { preHandler: authMiddleware }, async (request, reply) => {
-    const ctx = await resolveResourceAndPath(request, reply);
+    const ctx = await resolveResourceForOpenTasks(request, reply);
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
 
-    const graphPath = join(localPath, 'graph.jsonl');
-    if (!existsSync(graphPath)) return reply.send({ nodes: [], edges: [] });
-
-    const content = readFileSync(graphPath, 'utf-8');
-    const lines = content.split('\n').filter(l => l.trim());
-    const edges: Record<string, unknown>[] = [];
-    const nodeMap = new Map<string, Record<string, unknown>>();
-
-    for (const line of lines) {
+    // Local daemon path
+    if (localPath) {
+      const { daemonGetGraph, resolveDaemonSocket, TaskDaemonError } = await import('../../map/task-daemon-client.js');
+      const socketPath = resolveDaemonSocket(localPath);
       try {
-        const obj = JSON.parse(line);
-        if (obj.from_id && obj.to_id) edges.push(obj);
-        else if (obj.id) {
-          const existing = nodeMap.get(obj.id);
-          nodeMap.set(obj.id, existing ? { ...existing, ...obj } : obj);
-        }
-      } catch { /* skip malformed */ }
+        return reply.send(await daemonGetGraph(socketPath, localPath));
+      } catch (err) {
+        if (!(err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING')) throw err;
+        // Fall through to remote
+      }
     }
 
-    return reply.send({ nodes: [...nodeMap.values()], edges });
+    // Remote swarm path
+    const { findSwarmForResource, remoteGetGraph } = await import('../../map/opentasks-remote.js');
+    const swarmId = findSwarmForResource(resource);
+    if (swarmId) {
+      const graph = await remoteGetGraph(swarmId);
+      if (graph) return reply.send(graph);
+    }
+
+    return reply.send({ nodes: [], edges: [] });
   });
 
   // OpenTasks mutations
@@ -660,8 +708,8 @@ export async function resourceContentRoutes(
     const { daemonCreateTask: createFn, resolveDaemonSocket: resolveSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
     const socketPath = resolveSocket(localPath);
     try {
-      const task = await createFn(socketPath, { title: body.title, description: body.description, status: body.status || 'open', priority: body.priority });
-      try { const { getMapTaskStore } = await import('../../map/task-store.js'); getMapTaskStore().emit({ type: 'task.created', data: { task: { id: task.id, title: task.title, status: task.status } } }, 'rest-api'); } catch { /* best effort */ }
+      const task = await createFn(socketPath, { title: body.title, description: body.description, status: body.status || 'open', priority: body.priority }, localPath);
+      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.created', data: { task: { id: task.id, title: task.title, status: task.status } } }); } catch { /* best effort */ }
       return reply.status(201).send({ node_id: task.id, status: task.status });
     } catch (err) {
       if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
@@ -686,8 +734,8 @@ export async function resourceContentRoutes(
     const { daemonUpdateTask: updateFn, resolveDaemonSocket: resolveSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
     const socketPath = resolveSocket(localPath);
     try {
-      await updateFn(socketPath, request.params.nodeId, { status: body.status });
-      try { const { getMapTaskStore } = await import('../../map/task-store.js'); getMapTaskStore().emit({ type: 'task.status', data: { taskId: request.params.nodeId, current: body.status } }, 'rest-api'); } catch { /* best effort */ }
+      await updateFn(socketPath, request.params.nodeId, { status: body.status }, localPath);
+      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.status', data: { taskId: request.params.nodeId, current: body.status } }); } catch { /* best effort */ }
       return reply.send({ node_id: request.params.nodeId, previous_status: null, new_status: body.status });
     } catch (err) {
       if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });

@@ -4,18 +4,13 @@
  * Initializes and configures the MAPServer singleton from @multi-agent-protocol/sdk.
  * The MAPServer handles standard MAP protocol methods (connect, authenticate,
  * agents/register, etc.) while OpenHive-specific handlers (sync, coordination,
- * tasks, mail, opentasks) are registered as additionalHandlers.
+ * trajectory, mail) are registered as additionalHandlers.
  */
 
 // @ts-expect-error — server subpath export has no .d.ts in SDK v0.1.7
 import { MAPServer } from '@multi-agent-protocol/sdk/server';
 import { verifyToken } from './token-service.js';
-import { MAP_TASK_METHOD_SET } from './task-types.js';
-import { handleTaskRequest, MAPTaskRequestError } from './task-handler.js';
-import { getMapTaskStore } from './task-store.js';
-import { MAP_OPENTASKS_METHOD_SET } from './opentasks-types.js';
-import { handleOpenTasksRequest, OpenTasksRequestError } from './opentasks-handler.js';
-import { TaskDaemonError } from './task-daemon-client.js';
+import { MAP_TASK_METHOD_SET, handleTaskRequest, MAPTaskRequestError, TaskDaemonError } from './task-handler.js';
 import { TRAJECTORY_METHOD_SET } from './trajectory-types.js';
 import { handleTrajectoryRequest, TrajectoryRequestError } from './trajectory-handler.js';
 import type { Config } from '../config.js';
@@ -73,13 +68,13 @@ class OpenHiveIAMAuthenticator {
 function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Promise<any>> {
   const handlers: Record<string, (params: any, ctx: any) => Promise<any>> = {};
 
-  // ── MAP Task Methods ─────────────────────────────────────────────
+  // ── MAP Task Methods (standard MAP spec) ────────────────────────
   for (const method of MAP_TASK_METHOD_SET) {
     handlers[method] = async (params: any, ctx: any) => {
       const swarmId = ctx.session?.metadata?.swarmId;
       const agentId = ctx.session?.metadata?.agentId;
       try {
-        return await handleTaskRequest(method, params, { swarmId, agentId }, getMapTaskStore());
+        return await handleTaskRequest(method, params, { swarmId, agentId });
       } catch (err) {
         if (err instanceof MAPTaskRequestError) {
           throw Object.assign(new Error(err.message), { code: err.code });
@@ -91,51 +86,6 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
         throw err;
       }
     };
-  }
-
-  // ── MAP OpenTasks Methods ────────────────────────────────────────
-  // Mutation methods delegate to the unified map/tasks/* handler.
-  // Read-only methods (summary, ready, query, status) keep original handler.
-  const opentasksMethodMap: Record<string, string> = {
-    'map/opentasks/create-task': 'map/tasks/create',
-    'map/opentasks/update-status': 'map/tasks/update',
-  };
-  for (const method of MAP_OPENTASKS_METHOD_SET) {
-    const mappedMethod = opentasksMethodMap[method];
-    if (mappedMethod) {
-      // Mutation methods → delegate to unified handler
-      handlers[method] = async (params: any, ctx: any) => {
-        console.warn(`[DEPRECATED] ${method} — use ${mappedMethod} instead`);
-        const swarmId = ctx.session?.metadata?.swarmId;
-        const agentId = ctx.session?.metadata?.agentId;
-        try {
-          return await handleTaskRequest(mappedMethod, params, { swarmId, agentId }, getMapTaskStore());
-        } catch (err) {
-          if (err instanceof MAPTaskRequestError) {
-            throw Object.assign(new Error(err.message), { code: err.code });
-          } else if (err instanceof TaskDaemonError) {
-            const codeMap: Record<string, number> = { DAEMON_NOT_RUNNING: -32003, NOT_FOUND: -32001, OPERATION_FAILED: -32000 };
-          const code = codeMap[err.code] ?? -32000;
-            throw Object.assign(new Error(err.message), { code });
-          }
-          throw err;
-        }
-      };
-    } else {
-      // Read-only methods → keep original opentasks handler
-      handlers[method] = async (params: any, ctx: any) => {
-        const swarmId = ctx.session?.metadata?.swarmId;
-        const agentId = ctx.session?.metadata?.agentId;
-        try {
-          return await handleOpenTasksRequest(method, params, { swarmId, agentId });
-        } catch (err) {
-          if (err instanceof OpenTasksRequestError) {
-            throw Object.assign(new Error(err.message), { code: err.code });
-          }
-          throw err;
-        }
-      };
-    }
   }
 
   // ── Trajectory Methods ──────────────────────────────────────────
