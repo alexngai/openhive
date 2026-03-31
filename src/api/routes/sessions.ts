@@ -105,7 +105,7 @@ const QuerySessionsSchema = z.object({
  *
  * @returns transcript string or null if not available locally
  */
-function readLocalSessionlogTranscript(sessionResourceId: string): string | null {
+function readLocalSessionlogTranscript(sessionResourceId: string, config?: Config): string | null {
   try {
     // Get session_id from the latest checkpoint's checkpoint_id
     // Checkpoint IDs are formatted as: {sessionID}-step{N} or just {sessionID}
@@ -117,16 +117,26 @@ function readLocalSessionlogTranscript(sessionResourceId: string): string | null
     const sessionId = checkpointId.replace(/-step\d+$/, '');
     if (!sessionId) return null;
 
-    // Look for sessionlog state in common locations
-    const sessionlogDir = path.join(process.cwd(), '.git', 'sessionlog-sessions');
-    const statePath = path.join(sessionlogDir, `${sessionId}.json`);
-    if (!fs.existsSync(statePath)) return null;
+    // Build list of directories to search for sessionlog state files.
+    // Configured paths are checked first (supports separate session repos),
+    // then fall back to the default .git/sessionlog-sessions/ location.
+    const searchDirs: string[] = [
+      ...(config?.sessionlog?.sessionDirs ?? []),
+      path.join(process.cwd(), '.git', 'sessionlog-sessions'),
+    ];
 
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    const transcriptPath = state.transcriptPath;
-    if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
+    for (const sessionlogDir of searchDirs) {
+      const statePath = path.join(sessionlogDir, `${sessionId}.json`);
+      if (!fs.existsSync(statePath)) continue;
 
-    return fs.readFileSync(transcriptPath, 'utf-8');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      const transcriptPath = state.transcriptPath;
+      if (!transcriptPath || !fs.existsSync(transcriptPath)) continue;
+
+      return fs.readFileSync(transcriptPath, 'utf-8');
+    }
+
+    return null;
   } catch {
     return null;
   }
@@ -601,7 +611,7 @@ export async function sessionsRoutes(
       // Uses the session_id from checkpoint metadata to find the sessionlog state,
       // which contains the transcriptPath to the Claude Code JSONL file.
       if (!content) {
-        content = readLocalSessionlogTranscript(resource.id);
+        content = readLocalSessionlogTranscript(resource.id, _options.config);
         if (content) {
           formatId = 'claude_jsonl_v1';
         }

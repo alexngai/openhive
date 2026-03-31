@@ -109,6 +109,78 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
   // (see ws-map.ts), but also register individual methods if the mail module
   // exposes them. For now, mail is handled at the ws-map notification level.
 
+  // ── Resource Sync Methods (x-openhive/memory.sync, x-openhive/skill.sync) ──
+  // These are vendor-prefixed JSON-RPC methods used by swarms to notify
+  // the hub that a memory bank or skill resource has been updated.
+  // If no resource_id is provided, auto-resolves or creates the resource.
+  const SYNC_RESOURCE_TYPES: Record<string, 'memory_bank' | 'skill'> = {
+    'x-openhive/memory.sync': 'memory_bank',
+    'x-openhive/skill.sync': 'skill',
+  };
+  const syncMethods = ['x-openhive/memory.sync', 'x-openhive/skill.sync'] as const;
+  for (const method of syncMethods) {
+    handlers[method] = async (params: any, ctx: any) => {
+      const swarmId = ctx.session?.metadata?.swarmId || '';
+      const agentId = ctx.session?.metadata?.agentId || ctx.session?.metadata?.hubAgentId || '';
+      const resourceType = SYNC_RESOURCE_TYPES[method];
+
+      // Resolve resource_id following the same pattern as opentasks task-handler:
+      //   1. Explicit resource_id → use directly
+      //   2. By path → findResourceByLocalPath (if path provided by sidecar)
+      //   3. By agent ownership → find existing resource owned by this agent
+      //   4. Auto-create with local path if available
+      let resourceId = params.resource_id;
+      if (!resourceId) {
+        const dal = await import('../db/dal/syncable-resources.js');
+        const resourcePath = params.path || '';
+
+        // 2. By path — if the sidecar sent the memory directory path
+        if (resourcePath) {
+          const existing = dal.findResourceByLocalPath(resourcePath, agentId, resourceType);
+          if (existing) {
+            resourceId = existing.id;
+          }
+        }
+
+        // 3. By agent ownership — find any resource of this type owned by the agent
+        if (!resourceId && agentId) {
+          const { data: owned } = dal.listAccessibleResources({ agentId, resourceType, owned: true, limit: 1, offset: 0 });
+          if (owned.length > 0) {
+            resourceId = owned[0].id;
+          }
+        }
+
+        // 4. Auto-create with the best available metadata
+        //    Only set sync_strategy='local' if the path actually exists on this machine.
+        //    Remote swarms send their local path which won't be reachable here.
+        if (!resourceId) {
+          const { existsSync } = await import('node:fs');
+          const { resolve } = await import('node:path');
+          const typeName = resourceType === 'memory_bank' ? 'minimem-memory' : 'skilltree';
+          const isLocallyReachable = resourcePath && existsSync(resolve(resourcePath));
+          const { resource } = dal.upsertDiscoveredResource({
+            resource_type: resourceType,
+            name: `swarm/${swarmId || 'unknown'}/${typeName}`,
+            description: `Auto-created from ${method} sync notification`,
+            git_remote_url: isLocallyReachable ? resourcePath : `map://${resourceType}/${swarmId || 'unknown'}`,
+            owner_agent_id: agentId || 'system',
+            scope: isLocallyReachable ? 'agent' : 'manual',
+            sync_strategy: isLocallyReachable ? 'local' : 'metadata',
+            local_path: isLocallyReachable ? resolve(resourcePath) : undefined,
+            metadata: resourceType === 'memory_bank' ? { minimem: true } : undefined,
+          });
+          resourceId = resource.id;
+        }
+      }
+
+      // Dispatch to sync listener with resolved resource_id
+      params.resource_id = resourceId;
+      const { handleSyncMessage } = await import('./sync-listener.js');
+      handleSyncMessage({ jsonrpc: '2.0', method, params }, swarmId);
+      return { ok: true, resource_id: resourceId };
+    };
+  }
+
   // ── Ping/Pong ────────────────────────────────────────────────────
   // Ping is a notification (no id), handled in the notification interceptor.
   // But if sent as a request, handle it here.

@@ -96,6 +96,16 @@ export const ConfigSchema = z.object({
   // Session storage for trajectory content caching
   sessions: SessionStorageSchema,
 
+  // Sessionlog configuration (for local Tier 3 transcript lookup)
+  sessionlog: z.object({
+    /** Path(s) to sessionlog session state directories.
+     *  When a separate session repo is used, point this to the repo's
+     *  sessionlog-sessions directory (e.g. '/path/to/session-repo/sessionlog-sessions').
+     *  Supports multiple paths for multi-project setups.
+     *  Falls back to .git/sessionlog-sessions/ in the working directory if not set. */
+    sessionDirs: z.array(z.string()).default([]),
+  }).default({}),
+
   cors: z.object({
     enabled: z.boolean().default(true),
     origin: z.union([z.string(), z.array(z.string()), z.boolean()]).default(true),
