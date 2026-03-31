@@ -17,6 +17,7 @@ function getBackendPort(): number {
 }
 
 const backendPort = getBackendPort();
+const devPort = parseInt(process.env.VITE_DEV_PORT || "5173", 10);
 
 export default defineConfig({
   plugins: [react()],
@@ -54,7 +55,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: devPort,
     // Allow serving files from SwarmCraft source + node_modules
     fs: {
       allow: ["../.."],

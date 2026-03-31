@@ -314,6 +314,48 @@ export interface MemorySearchResult {
   score: number;
 }
 
+export interface MemoryEntry {
+  path: string;
+  timestamp: string;
+  type: string | null;
+  agentId: string | null;
+  body: string;
+  frontmatter: Record<string, unknown> | null;
+  domains: string[];
+  entities: string[];
+  confidence: number | null;
+  knowledgeId: string | null;
+}
+
+export interface KnowledgeGraphNode {
+  id: string;
+  path: string | null;
+  type: string | null;
+  confidence: number | null;
+}
+
+export interface KnowledgeGraphEdge {
+  from: string;
+  to: string;
+  relation: string;
+  layer?: string;
+  depth: number;
+}
+
+export interface KnowledgeGraphData {
+  root: string;
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+}
+
+export interface KnowledgeSearchResult {
+  path: string;
+  frontmatter: Record<string, unknown> | null;
+  snippet: string;
+  score?: number;
+  knowledge_type: string | null;
+}
+
 export interface SkillSummary {
   id: string;
   name: string | null;

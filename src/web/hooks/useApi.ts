@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
-import type { Agent, HostedSwarm, MapSwarm, MapNode, MapStats, SwarmMessage, SharedContext, SwarmPeer, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse, MailConversation, MailTurn, MailThread } from '../lib/api';
+import type { Agent, HostedSwarm, MapSwarm, MapNode, MapStats, SwarmMessage, SharedContext, SwarmPeer, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, MemoryEntry, KnowledgeGraphData, KnowledgeSearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse, MailConversation, MailTurn, MailThread } from '../lib/api';
 
 
 // Posts
@@ -522,6 +522,35 @@ export function useMemorySearch(resourceId: string, query: string) {
       `/resources/${resourceId}/content/search?q=${encodeURIComponent(query)}&limit=30`
     ),
     enabled: !!resourceId && query.length >= 2,
+  });
+}
+
+export function useMemoryEntries(resourceId: string) {
+  return useQuery({
+    queryKey: ['memory-entries', resourceId],
+    queryFn: () => api.get<{ entries: MemoryEntry[] }>(`/resources/${resourceId}/content/entries`),
+    select: (data) => data.entries,
+    enabled: !!resourceId,
+  });
+}
+
+export function useKnowledgeGraph(resourceId: string, noteId: string | null, depth = 2) {
+  return useQuery({
+    queryKey: ['knowledge-graph', resourceId, noteId, depth],
+    queryFn: () => api.get<KnowledgeGraphData>(
+      `/resources/${resourceId}/content/knowledge/graph?note_id=${encodeURIComponent(noteId!)}&depth=${depth}&direction=both`
+    ),
+    enabled: !!resourceId && !!noteId,
+  });
+}
+
+export function useKnowledgeGraphFull(resourceId: string) {
+  return useQuery({
+    queryKey: ['knowledge', resourceId, 'full'],
+    queryFn: () => api.get<{ results: KnowledgeSearchResult[]; total: number }>(
+      `/resources/${resourceId}/content/knowledge`
+    ),
+    enabled: !!resourceId,
   });
 }
 

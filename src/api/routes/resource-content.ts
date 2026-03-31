@@ -191,6 +191,141 @@ export async function resourceContentRoutes(
   // Memory Bank Endpoints (powered by minimem)
   // ============================================================================
 
+  // Timeline entries — parsed from daily logs and knowledge notes
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { limit?: number; type?: string; domain?: string };
+  }>('/resources/:id/content/entries', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+
+    if (resource.resource_type !== 'memory_bank') {
+      return reply.status(400).send({ error: 'Bad Request', message: 'This endpoint is only available for memory_bank resources' });
+    }
+
+    const limit = Math.min(Math.max(request.query.limit || 100, 1), 500);
+    const typeFilter = request.query.type;
+    const domainFilter = request.query.domain;
+    const memoryFiles = await listMemoryFiles(localPath);
+
+    interface Entry {
+      path: string;
+      timestamp: string;
+      type: string | null;
+      agentId: string | null;
+      body: string;
+      frontmatter: Record<string, unknown> | null;
+      domains: string[];
+      entities: string[];
+      confidence: number | null;
+      knowledgeId: string | null;
+    }
+
+    const entries: Entry[] = [];
+
+    for (const filePath of memoryFiles) {
+      const content = readFileSync(filePath, 'utf-8');
+      const relPath = relative(localPath, filePath);
+      const { frontmatter, body } = parseFrontmatter(content);
+
+      // Knowledge notes (have id in frontmatter) → single entry
+      if (frontmatter?.id) {
+        const domains = Array.isArray(frontmatter.domain) ? frontmatter.domain as string[] : [];
+        const entitiesList = Array.isArray(frontmatter.entities) ? frontmatter.entities as string[] : [];
+        const entryType = (frontmatter.type as string) || 'note';
+        const agentId = (frontmatter.source as Record<string, unknown>)?.agentId as string | null ?? null;
+        const timestamp = (frontmatter.created as string) || (frontmatter.updated as string) || '';
+
+        if (typeFilter && entryType !== typeFilter) continue;
+        if (domainFilter && !domains.some(d => d.toLowerCase() === domainFilter.toLowerCase())) continue;
+
+        entries.push({
+          path: relPath,
+          timestamp,
+          type: entryType,
+          agentId,
+          body: body.trim(),
+          frontmatter,
+          domains,
+          entities: entitiesList,
+          confidence: (frontmatter.confidence as number) ?? null,
+          knowledgeId: frontmatter.id as string,
+        });
+        continue;
+      }
+
+      // Daily logs — split by ### headings
+      const dateMatch = relPath.match(/(\d{4}-\d{2}-\d{2})/);
+      const fileDate = dateMatch ? dateMatch[1] : '';
+
+      const sections = body.split(/^### /m).filter(s => s.trim());
+      for (const section of sections) {
+        const lines = section.split('\n');
+        const heading = lines[0]?.trim() || '';
+        const sectionBody = lines.slice(1).join('\n').trim();
+        if (!sectionBody) continue;
+
+        // Parse timestamp from heading (e.g., "2026-03-26 14:32")
+        const timeMatch = heading.match(/(\d{4}-\d{2}-\d{2})?\s*(\d{1,2}:\d{2})/);
+        let timestamp = '';
+        if (timeMatch) {
+          const date = timeMatch[1] || fileDate;
+          const time = timeMatch[2];
+          timestamp = date && time ? `${date}T${time}:00Z` : '';
+        } else if (fileDate) {
+          timestamp = `${fileDate}T00:00:00Z`;
+        }
+
+        // Parse type from <!-- type: X --> comment
+        const typeMatch = sectionBody.match(/<!--\s*type:\s*(\w+)\s*-->/);
+        const entryType = typeMatch ? typeMatch[1] : 'note';
+        const cleanBody = sectionBody.replace(/<!--\s*type:\s*\w+\s*-->\n?/, '').trim();
+
+        if (typeFilter && entryType !== typeFilter) continue;
+
+        entries.push({
+          path: relPath,
+          timestamp,
+          type: entryType,
+          agentId: null,
+          body: cleanBody,
+          frontmatter: null,
+          domains: [],
+          entities: [],
+          confidence: null,
+          knowledgeId: null,
+        });
+      }
+
+      // Files without ### sections — single entry for the whole file
+      if (sections.length === 0 && body.trim() && relPath !== 'MEMORY.md') {
+        entries.push({
+          path: relPath,
+          timestamp: fileDate ? `${fileDate}T00:00:00Z` : '',
+          type: 'note',
+          agentId: null,
+          body: body.trim(),
+          frontmatter: null,
+          domains: [],
+          entities: [],
+          confidence: null,
+          knowledgeId: null,
+        });
+      }
+    }
+
+    // Sort by timestamp descending
+    entries.sort((a, b) => {
+      if (!a.timestamp && !b.timestamp) return 0;
+      if (!a.timestamp) return 1;
+      if (!b.timestamp) return -1;
+      return b.timestamp.localeCompare(a.timestamp);
+    });
+
+    return reply.send({ entries: entries.slice(0, limit) });
+  });
+
   fastify.get<{
     Params: { id: string };
   }>('/resources/:id/content/files', { preHandler: authMiddleware }, async (request, reply) => {
