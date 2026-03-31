@@ -83,9 +83,12 @@ export function findSwarmForResource(resource: SyncableResource): string | null 
     }
   }
 
-  // Fallback: match by owner_agent_id (the swarm's hub agent matches the resource owner)
+  // Fallback: match by owner_agent_id, but only if the swarm declared a task graph.
+  // Without this guard, in local mode every swarm matches every resource (same agent),
+  // causing 10-second request timeouts to swarms that don't support opentasks.
   for (const [swarmId, conn] of getAllInbound()) {
     if (conn.ws.readyState !== 1) continue;
+    if (!conn.defaultTaskGraph) continue;
     if (conn.agentId === resource.owner_agent_id) {
       return swarmId;
     }

@@ -364,5 +364,14 @@ export function resolveDaemonSocket(opentasksDir: string): string {
     } catch { /* fall through */ }
   }
 
-  return join(opentasksDir, 'daemon.sock');
+  // Standard location: daemon.sock directly in the .opentasks directory
+  const directSocket = join(opentasksDir, 'daemon.sock');
+  if (existsSync(directSocket)) return directSocket;
+
+  // Fallback: nested .opentasks/daemon.sock (created when daemon was previously
+  // started with cwd inside the .opentasks dir instead of the project root)
+  const nestedSocket = join(opentasksDir, '.opentasks', 'daemon.sock');
+  if (existsSync(nestedSocket)) return nestedSocket;
+
+  return directSocket;
 }
