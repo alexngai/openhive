@@ -69,13 +69,17 @@ describe('Learning API Routes', () => {
   });
 
   describe('GET /learning/health', () => {
-    it('should return available=true when Atlas is running', async () => {
+    it('should return detailed status when Atlas is running', async () => {
       const res = await app.inject({ method: 'GET', url: '/api/v1/learning/health' });
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
       expect(body.available).toBe(true);
       expect(body).toHaveProperty('trajectories_processed');
       expect(body).toHaveProperty('playbook_count');
+      expect(body).toHaveProperty('session_banks');
+      expect(body).toHaveProperty('maintenance');
+      expect(Array.isArray(body.session_banks)).toBe(true);
+      expect(body.maintenance).toHaveProperty('scheduled');
     });
   });
 

@@ -1,4 +1,4 @@
-import { EntireTrajectorySource, SessionBank } from 'cognitive-core';
+import { EntireTrajectorySource } from 'cognitive-core';
 import type { AtlasService } from './atlas-service.js';
 
 type Logger = {
@@ -24,67 +24,55 @@ export function triggerIngestion(
 
   ingestionQueue = ingestionQueue.then(async () => {
     try {
-      await ingestSwarmSessions(atlasService, swarmId, log);
+      await ingestFromAllBanks(atlasService, swarmId, log);
     } catch (err) {
       log.warn(`Ingestion failed for swarm ${swarmId}:`, (err as Error).message);
     }
   });
 }
 
-async function ingestSwarmSessions(
+/**
+ * Scan all configured SessionBanks for unprocessed sessions and process them.
+ */
+async function ingestFromAllBanks(
   atlasService: AtlasService,
   swarmId: string,
   log: Logger,
 ): Promise<void> {
-  const atlas = atlasService.getAtlas();
-  if (!atlas) return;
-
-  // Get the learning pipeline's session bank
-  // SessionBank is configured during Atlas init via sessionBank config
-  const learning = atlasService.getLearning();
-  if (!learning) {
-    log.warn(`No learning pipeline available, skipping ingestion for swarm ${swarmId}`);
+  const sessionBanks = atlasService.getSessionBanks();
+  if (sessionBanks.length === 0) {
+    log.warn(`No SessionBanks configured, skipping ingestion for swarm ${swarmId}`);
     return;
   }
 
-  // Access the session bank from the learning pipeline's trajectory sources
-  // For now, create a standalone SessionBank to scan for unprocessed sessions
-  // This will be refined as we better understand the Atlas ↔ SessionBank wiring
-  const baseDir = atlasService.getBaseDir();
+  for (let i = 0; i < sessionBanks.length; i++) {
+    const sessionBank = sessionBanks[i];
+    if (!sessionBank.isAvailable()) continue;
 
-  let sessionBank: SessionBank;
-  try {
-    sessionBank = new SessionBank({ stateDir: baseDir, cache: true });
-    await sessionBank.init();
-  } catch (err) {
-    log.warn(`SessionBank init failed for swarm ${swarmId}:`, (err as Error).message);
-    return;
-  }
-
-  if (!sessionBank.isAvailable()) {
-    log.warn(`SessionBank not available (no git repo found), skipping ingestion for swarm ${swarmId}`);
-    return;
-  }
-
-  // Query unprocessed sessions
-  const { sessions } = await sessionBank.query({ unprocessedOnly: true });
-  if (sessions.length === 0) return;
-
-  log.info(`Processing ${sessions.length} unprocessed session(s) from swarm ${swarmId}`);
-
-  const source = new EntireTrajectorySource(sessionBank, { outcomeStrategy: 'heuristic' });
-
-  for (const session of sessions) {
     try {
-      const trajectory = source.synthesize(session);
-      await atlasService.processTrajectory(trajectory);
-      await sessionBank.markProcessed(session.sessionId);
-      log.info(`Processed session ${session.sessionId}`);
+      // Invalidate cache so we pick up new checkpoints
+      sessionBank.invalidateCache();
+
+      const { sessions } = await sessionBank.query({ unprocessedOnly: true });
+      if (sessions.length === 0) continue;
+
+      log.info(`Processing ${sessions.length} unprocessed session(s) from bank ${i} (swarm ${swarmId})`);
+
+      const source = new EntireTrajectorySource(sessionBank, { outcomeStrategy: 'heuristic' });
+
+      for (const session of sessions) {
+        try {
+          const trajectory = source.synthesize(session);
+          await atlasService.processTrajectory(trajectory);
+          await sessionBank.markProcessed(session.sessionId);
+          log.info(`Processed session ${session.sessionId}`);
+        } catch (err) {
+          log.warn(`Failed to process session ${session.sessionId}:`, (err as Error).message);
+          // Skip and continue
+        }
+      }
     } catch (err) {
-      log.warn(`Failed to process session ${session.sessionId}:`, (err as Error).message);
-      // Skip and continue with next session
+      log.warn(`SessionBank ${i} scan failed:`, (err as Error).message);
     }
   }
-
-  await sessionBank.close();
 }

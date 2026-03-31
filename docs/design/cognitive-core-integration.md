@@ -77,7 +77,7 @@ OpenHive server
 │   │   │   ├── InstantLoop (per-trajectory, <200ms)
 │   │   │   ├── Heuristic batch (pattern matching, clustering, compression)
 │   │   │   └── Maintenance (healing, defrag, meta-strategies)
-│   │   ├── SessionBank (reads sessionlog data directly)
+│   │   ├── SessionBank[] (multi-project, reads from config.sessionlog.sessionDirs)
 │   │   ├── SkillPublisher → .skilltree/
 │   │   └── KnowledgeBank → markdown files
 │   ├── cognitive-core.db (local SQLite persistence)
@@ -503,79 +503,65 @@ MAP messages are only used for the optional agentic layer (dispatching workspace
 
 ## Migration & Rollout
 
-### Phase 1: Programmatic Learning (no swarm needed)
+### Phase 1: Programmatic Learning — IMPLEMENTED
 
-**1. Foundation**
-- [ ] Add `cognitive-core` as a full dependency in `package.json`
-- [ ] Add `learning` config section (Zod schema in `src/config.ts`)
-  - [ ] `learning.enabled`, `learning.atlas`, `learning.ingestion`, `learning.maintenance`
-  - [ ] Stub `compute`, `sync`, `distributed` sections with defaults (Phase 1.5+)
+**1. Foundation** ✅
+- [x] `cognitive-core@0.1.2` added as dependency
+- [x] `learning` config section with Zod schema (`enabled`, `atlas`, `ingestion`, `compute`, `sync`, `distributed`, `maintenance`)
+- [x] `OPENHIVE_LEARNING_ENABLED` env var override
+- [x] `learning:instant`, `learning:batch`, `learning:maintenance` WS event types
 
-**2. Atlas service plugin** (`src/learning/atlas-service.ts`)
-- [ ] Atlas lifecycle (init on startup after DB ready, close on shutdown)
-- [ ] Decorate onto Fastify instance as `server.atlas` (follows `server.swarmManager` pattern)
-- [ ] Configure SessionBank with local sessionlog repo path(s)
-  - [ ] Default project path from `learning` config for initial startup
-  - [ ] Lazy-init additional SessionBank instances when first checkpoint arrives from new project (keyed by `metadata.project` from trajectory checkpoint)
-- [ ] Configure SkillPublisher + KnowledgeBank under `{dataDir}/cognitive-core/`
-  - [ ] Ensure directory structure is created on init
-- [ ] `taskRunner` NOT set → fully programmatic, heuristic fallbacks
-- [ ] Graceful degradation: catch Atlas init errors, log warning, disable learning
-  - [ ] Rest of OpenHive continues to function if learning init fails
-  - [ ] `server.atlas` is `null` when disabled; routes return 503
-  - [ ] If `cognitive-core.db` is corrupted, log error and attempt re-init with fresh state (don't crash server)
-- [ ] Logging: pipe cognitive-core operations through OpenHive's Fastify logger
-  - [ ] Check if cognitive-core supports injecting a custom logger; if not, wrap key Atlas calls with OpenHive log statements
+**2. Atlas service plugin** (`src/learning/atlas-service.ts`) ✅
+- [x] Atlas lifecycle (init on startup after DB ready, close on shutdown)
+- [x] Decorated onto Fastify as `server.atlasService`
+- [x] Multi-project SessionBank support via `config.sessionlog.sessionDirs`
+  - [x] Resolves repo paths from sessionDir paths (handles `.git/sessionlog-sessions/` and standalone repos)
+  - [x] Falls back to cwd when no sessionDirs configured
+  - [x] Multiple SessionBanks for multi-project hives
+- [x] SkillPublisher + KnowledgeBank under `{dataDir}/cognitive-core/`
+- [x] `taskRunner` NOT set → fully programmatic
+- [x] Graceful degradation (init errors caught, routes return 503, server continues)
+- [x] Configurable logger
+- [x] Maintenance scheduler (hourly check, runs at configured cron hour, max once/day)
+- [x] `getDetailedStatus()` for monitoring (session banks, maintenance state, counts)
 
-**3. Trajectory ingestion** (`src/learning/ingestion.ts`)
-- [ ] Hook into swarm `online → offline` transition (connection registry status change)
-- [ ] On swarm disconnect: look up active session resources for that swarm
-- [ ] Async queue: process sessions in background, don't block the disconnect handler
-  - [ ] SessionBank scan + `processTrajectory()` for each unprocessed session
-  - [ ] Broadcast `learning:instant` WS event after each trajectory processed
-- [ ] Error handling: log and skip individual trajectory failures, don't halt ingestion queue
+**3. Trajectory ingestion** (`src/learning/ingestion.ts`) ✅
+- [x] Hook via `mapHubEvents.swarm_offline` (emitted on WS disconnect, heartbeat timeout, stale sweep)
+- [x] Async queue (sequential, non-blocking)
+- [x] Scans all configured SessionBanks for unprocessed sessions
+- [x] `EntireTrajectorySource.synthesize()` → `atlas.processTrajectory()`
+- [x] Per-session error handling (skip and continue)
+- [x] WS event broadcast after each trajectory
 
-**4. Learning API routes** (`src/api/routes/learning.ts`)
-- [ ] GET `/stats` → `atlas.getStats()`
-- [ ] GET `/playbooks` → paginated, filterable by domain, sortable by confidence/recency
-- [ ] GET `/playbooks/:id` → playbook detail with evolution history
-- [ ] GET `/knowledge` → paginated, filterable by type/domain, searchable
-- [ ] GET `/knowledge/:id` → knowledge note detail
-- [ ] GET `/experiences` → recent experiences, paginated
-- [ ] POST `/batch` → `atlas.runBatchLearning()` (admin only)
-- [ ] POST `/maintenance` → trigger maintenance cycle (admin only)
-- [ ] All routes return 503 if Atlas is disabled/unavailable
-- [ ] Zod schemas for query params (pagination, filters, sort)
+**4. Learning API routes** (`src/api/routes/learning.ts`) ✅
+- [x] GET `/stats`, `/playbooks` (paginated/filtered/sorted), `/playbooks/:id`
+- [x] GET `/knowledge` (searchable), `/knowledge/:id`
+- [x] GET `/experiences` (paginated/filterable)
+- [x] POST `/batch`, `/maintenance`
+- [x] GET `/health` — detailed monitoring (session banks, maintenance, agentic compute)
+- [x] All return 503 when disabled, Zod schemas for query params
 
-**5. Resource registration**
-- [ ] On Atlas init, register `{dataDir}/cognitive-core/.skilltree/` as `skill` resource via `upsertDiscoveredResource()`
-- [ ] On Atlas init, register `{dataDir}/cognitive-core/knowledge/` as `memory_bank` resource
-- [ ] Resources appear in existing resource UI and are available for sync
+**5. Resource registration** ✅
+- [x] `.skilltree/` registered as `skill` resource
+- [x] `knowledge/` registered as `memory_bank` resource
 
-**6. WebSocket events**
-- [ ] `learning:instant` — broadcast after each `processTrajectory()` returns `ImmediateResult`
-- [ ] `learning:batch` — broadcast after `runBatchLearning()` completes
-- [ ] `learning:maintenance` — broadcast after maintenance cycle completes
-- [ ] Events emitted from ingestion layer / Atlas call wrappers (Atlas pipeline doesn't emit events natively)
+**6. WebSocket events** ✅
+- [x] `learning:instant`, `learning:batch`, `learning:maintenance` broadcast via `broadcastToChannel`
 
-**7. Testing**
-- [ ] Integration test: init Atlas → feed a test trajectory → verify experience stored + playbook confidence updated
-- [ ] Integration test: feed N trajectories → trigger batch → verify playbook extracted + skill published
-- [ ] Integration test: Atlas init failure → verify server still starts, routes return 503
-- [ ] Integration test: ingestion on swarm disconnect → verify sessions processed
-- [ ] API route tests: pagination, filtering, 503 when disabled
+**7. Testing** ✅
+- [x] 8 atlas-service tests (init, disable, directories, stats, trajectory processing, batch, graceful degradation)
+- [x] 12 route tests (all endpoints enabled, 503 disabled, trajectory data flow)
 
-### Phase 1.5: Agentic Analysis (swarm borrowing)
+### Phase 1.5: Agentic Analysis (swarm borrowing) — IMPLEMENTED
 
-- [ ] Implement `SwarmAgentBackend` (`src/learning/swarm-agent-backend.ts`)
-  - [ ] Swarm resolution (preferred → available → spawn ephemeral)
-  - [ ] `x-openhive/learning.workspace.execute` / `.result` MAP messages
-  - [ ] Timeout + error handling
-- [ ] Implement MAP handler for workspace results (`src/map/learning-handler.ts`)
-- [ ] Wire `SwarmAgentBackend` into Atlas as `AgenticTaskRunner`
-  - [ ] Conditional: only set when `learning.compute.enabled` and a swarm is available
-- [ ] Add `compute` config section
-- [ ] `/health` route includes swarm backend status
+- [x] `SwarmAgentBackend` (`src/learning/swarm-agent-backend.ts`)
+  - [x] Swarm resolution (preferred → LRU → spawn ephemeral)
+  - [x] `x-openhive/learning.workspace.execute` / `.result` MAP messages
+  - [x] 5-minute timeout, error handling
+- [x] Notification interceptor in `ws-map.ts` for `workspace.result`
+- [x] `atlas.setAgentManager([backend])` wiring in server.ts
+  - [x] Conditional: only when `learning.compute.enabled` and a swarm is available
+- [x] `/health` route includes `agentic_compute` status
 
 ### Phase 2: UI & Observability
 

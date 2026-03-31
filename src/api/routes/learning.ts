@@ -218,34 +218,18 @@ export async function learningRoutes(
     return reply.send(result);
   });
 
-  // GET /learning/health
+  // GET /learning/health — detailed monitoring endpoint
   fastify.get('/learning/health', async (_request, reply) => {
     const svc = (fastify as unknown as { atlasService?: AtlasService }).atlasService;
-    const available = svc?.isAvailable() ?? false;
-
-    if (!available) {
+    if (!svc) {
       return reply.send({
         available: false,
-        reason: svc ? 'Atlas initialization failed' : 'Learning engine disabled',
+        reason: 'Learning engine disabled',
+        session_banks: [],
+        maintenance: { scheduled: false },
       });
     }
-
-    const stats = await svc!.getStats() as {
-      learning?: { trajectoriesProcessed?: number; pendingTrajectories?: number };
-      memory?: { experienceCount?: number; playbookCount?: number };
-    };
-
-    // Check if agentic compute is enabled
-    const atlas = svc!.getAtlas();
-    const hasAgentExecution = atlas ? atlas.hasAgentExecution() : false;
-
-    return reply.send({
-      available: true,
-      agentic_compute: hasAgentExecution,
-      trajectories_processed: stats.learning?.trajectoriesProcessed ?? 0,
-      pending_trajectories: stats.learning?.pendingTrajectories ?? 0,
-      experience_count: stats.memory?.experienceCount ?? 0,
-      playbook_count: stats.memory?.playbookCount ?? 0,
-    });
+    const status = await svc.getDetailedStatus();
+    return reply.send(status);
   });
 }
