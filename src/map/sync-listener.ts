@@ -21,6 +21,8 @@ import { listSwarms, findSwarmById, findSwarmsByOwnerAgentIds } from '../db/dal/
 import { findResourceById, updateResourceSyncState, createSyncEvent, getResourceSubscribers } from '../db/dal/syncable-resources.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import { onResourceSynced } from '../sync/resource-hooks.js';
+import { getSyncOrchestrator } from '../sync/sync-orchestrator.js';
+import { evictMinimem } from '../api/routes/resource-content.js';
 import type { MapSyncMessage, MapTransport } from './types.js';
 import { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE } from './types.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
@@ -125,12 +127,21 @@ export function handleSyncMessage(msg: MapSyncMessage, sourceSwarmId: string): v
     }
   }
 
-  // 4. Record cross-instance sync event for peers
+  // 4. Dispatch to sync orchestrator (triggers fetch for mirror, marks stale for ls-remote)
+  //    and evict cached search indexes so they rebuild from fresh content
+  getSyncOrchestrator().handleSyncEvent(resource, commit_hash).catch(() => {
+    // Non-fatal — provider fetch may fail but we still want to broadcast
+  });
+  if (resource.resource_type === 'memory_bank' && resource.local_path) {
+    evictMinimem(resource.local_path);
+  }
+
+  // 5. Record cross-instance sync event for peers
   if (resource.visibility !== 'private') {
     onResourceSynced(resource_id, commit_hash, null, agent_id, 0, 0, 0);
   }
 
-  // 5. Broadcast to local WebSocket channels for UI/non-MAP clients
+  // 6. Broadcast to local WebSocket channels for UI/non-MAP clients
   //    Convert JSON-RPC method back to internal WSEventType for local broadcast
   const wsEventType =
     msg.method === 'x-openhive/memory.sync' ? 'memory:sync'

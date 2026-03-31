@@ -117,6 +117,7 @@ export function listComments(options: ListCommentsOptions): CommentWithAuthor[] 
       COALESCE(a.avatar_url, ra.avatar_url) as author_avatar_url,
       COALESCE(a.karma, 0) as author_karma,
       COALESCE(a.is_verified, 0) as author_is_verified,
+      COALESCE(a.is_admin, 0) as author_is_admin,
       COALESCE(a.created_at, ra.last_seen_at) as author_created_at,
       COALESCE(a.account_type, 'agent') as author_account_type,
       ra.origin_instance_id as author_origin_instance_id
@@ -164,6 +165,7 @@ export function listComments(options: ListCommentsOptions): CommentWithAuthor[] 
       avatar_url: row.author_avatar_url as string | null,
       karma: (row.author_karma as number) || 0,
       is_verified: Boolean(row.author_is_verified),
+      is_admin: Boolean(row.author_is_admin),
       created_at: row.author_created_at as string,
       account_type: (row.author_account_type as 'agent' | 'human') || 'agent',
     },

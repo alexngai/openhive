@@ -575,6 +575,40 @@ export function useOpenTasksGraph(resourceId: string) {
   });
 }
 
+export function useCreateOpenTask(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: { title: string; description?: string; status?: string; priority?: number; metadata?: Record<string, unknown> }) =>
+      api.post<{ node_id: string; status: string }>(
+        `/resources/${resourceId}/content/opentasks/tasks`,
+        data,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['opentasks-summary', resourceId] });
+      queryClient.invalidateQueries({ queryKey: ['opentasks-ready', resourceId] });
+      queryClient.invalidateQueries({ queryKey: ['opentasks-graph', resourceId] });
+    },
+  });
+}
+
+export function useUpdateOpenTaskStatus(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ nodeId, status, result, error }: { nodeId: string; status: string; result?: Record<string, unknown>; error?: string }) =>
+      api.patch<{ node_id: string; previous_status: string | null; new_status: string }>(
+        `/resources/${resourceId}/content/opentasks/tasks/${nodeId}`,
+        { status, result, error },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['opentasks-summary', resourceId] });
+      queryClient.invalidateQueries({ queryKey: ['opentasks-ready', resourceId] });
+      queryClient.invalidateQueries({ queryKey: ['opentasks-graph', resourceId] });
+    },
+  });
+}
+
 // ── Event Post Rules ──
 
 export function usePostRules(hiveId?: string) {

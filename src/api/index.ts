@@ -20,7 +20,6 @@ import { syncRoutes } from './routes/sync.js';
 import { bridgesRoutes } from './routes/bridges.js';
 import { eventsRoutes } from './routes/events.js';
 import { coordinationRoutes } from './routes/coordination.js';
-import { mapTasksRoutes } from './routes/map-tasks.js';
 import { mailRoutes } from './routes/mail.js';
 import type { Config } from '../config.js';
 import type { BridgeManager } from '../bridge/manager.js';
@@ -56,7 +55,6 @@ export async function registerRoutes(fastify: FastifyInstance, config: Config, b
       await api.register(bridgesRoutes, { config, bridgeManager });
       await api.register(eventsRoutes);
       await api.register(coordinationRoutes, { config });
-      await api.register(mapTasksRoutes, { config });
       await api.register(mailRoutes, { config });
       if (swarmhubConnector) {
         const { swarmhubRoutes, swarmhubWebhookRoutes } = await import('../swarmhub/routes.js');

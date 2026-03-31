@@ -418,6 +418,7 @@ export function getResourceWithMeta(id: string, viewerAgentId?: string): Syncabl
       a.avatar_url as owner_avatar_url,
       a.karma as owner_karma,
       a.is_verified as owner_is_verified,
+      a.is_admin as owner_is_admin,
       a.created_at as owner_created_at,
       a.account_type as owner_account_type,
       (SELECT COUNT(*) FROM resource_subscriptions WHERE resource_id = r.id) as subscriber_count
@@ -471,6 +472,7 @@ export function getResourceWithMeta(id: string, viewerAgentId?: string): Syncabl
       avatar_url: row.owner_avatar_url as string | null,
       karma: row.owner_karma as number,
       is_verified: Boolean(row.owner_is_verified),
+      is_admin: Boolean(row.owner_is_admin),
       created_at: row.owner_created_at as string,
       account_type: row.owner_account_type as 'agent' | 'human',
     },
@@ -547,6 +549,7 @@ export function listAccessibleResources(options: ListResourcesOptions): {
       a.avatar_url as owner_avatar_url,
       a.karma as owner_karma,
       a.is_verified as owner_is_verified,
+      a.is_admin as owner_is_admin,
       a.created_at as owner_created_at,
       a.account_type as owner_account_type,
       (SELECT COUNT(*) FROM resource_subscriptions WHERE resource_id = r.id) as subscriber_count,
@@ -586,6 +589,7 @@ export function listAccessibleResources(options: ListResourcesOptions): {
         avatar_url: row.owner_avatar_url as string | null,
         karma: row.owner_karma as number,
         is_verified: Boolean(row.owner_is_verified),
+        is_admin: Boolean(row.owner_is_admin),
         created_at: row.owner_created_at as string,
         account_type: row.owner_account_type as 'agent' | 'human',
       },
@@ -655,6 +659,7 @@ export function discoverPublicResources(options: DiscoverResourcesOptions): {
       a.avatar_url as owner_avatar_url,
       a.karma as owner_karma,
       a.is_verified as owner_is_verified,
+      a.is_admin as owner_is_admin,
       a.created_at as owner_created_at,
       a.account_type as owner_account_type,
       (SELECT COUNT(*) FROM resource_subscriptions WHERE resource_id = r.id) as subscriber_count
@@ -693,6 +698,7 @@ export function discoverPublicResources(options: DiscoverResourcesOptions): {
         avatar_url: row.owner_avatar_url as string | null,
         karma: row.owner_karma as number,
         is_verified: Boolean(row.owner_is_verified),
+        is_admin: Boolean(row.owner_is_admin),
         created_at: row.owner_created_at as string,
         account_type: row.owner_account_type as 'agent' | 'human',
       },
@@ -788,6 +794,7 @@ export function getResourceSubscribers(
       a.avatar_url as agent_avatar_url,
       a.karma as agent_karma,
       a.is_verified as agent_is_verified,
+      a.is_admin as agent_is_admin,
       a.created_at as agent_created_at,
       a.account_type as agent_account_type
     FROM resource_subscriptions rs
@@ -810,6 +817,7 @@ export function getResourceSubscribers(
       avatar_url: row.agent_avatar_url as string | null,
       karma: row.agent_karma as number,
       is_verified: Boolean(row.agent_is_verified),
+      is_admin: Boolean(row.agent_is_admin),
       created_at: row.agent_created_at as string,
       account_type: row.agent_account_type as 'agent' | 'human',
     },

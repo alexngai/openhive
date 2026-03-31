@@ -15,8 +15,6 @@ import Fastify from 'fastify';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
-import { handleOpenTasksRequest } from '../../map/opentasks-handler.js';
-import { MAP_OPENTASKS_METHODS, MAP_OPENTASKS_METHOD_SET } from '../../map/opentasks-types.js';
 import { shimTaskAssign, shimTaskStatus } from '../../coordination/compat.js';
 import { resourceContentRoutes } from '../../api/routes/resource-content.js';
 import { ConfigSchema } from '../../config.js';
@@ -62,157 +60,6 @@ describe('OpenTasks Mutations & Compatibility Shim', () => {
   afterAll(() => {
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
-  });
-
-  // ============================================================================
-  // Method Constants Tests
-  // ============================================================================
-
-  describe('MAP Method Constants', () => {
-    it('should have create-task and update-status methods defined', () => {
-      expect(MAP_OPENTASKS_METHODS.CREATE_TASK).toBe('map/opentasks/create-task');
-      expect(MAP_OPENTASKS_METHODS.UPDATE_STATUS).toBe('map/opentasks/update-status');
-    });
-
-    it('should include new methods in METHOD_SET', () => {
-      expect(MAP_OPENTASKS_METHOD_SET.has('map/opentasks/create-task')).toBe(true);
-      expect(MAP_OPENTASKS_METHOD_SET.has('map/opentasks/update-status')).toBe(true);
-    });
-  });
-
-  // ============================================================================
-  // MAP Handler Mutation Tests
-  // ============================================================================
-
-  describe('MAP OpenTasks Mutations', () => {
-    let otDir: string;
-    let resourceId: string;
-
-    beforeAll(() => {
-      otDir = createOpenTasksDir(`map-mutations-${Date.now()}`);
-      const resource = resourcesDAL.createResource({
-        resource_type: 'task',
-        name: 'map-mutation-test',
-        git_remote_url: otDir,
-        owner_agent_id: agentId,
-        sync_strategy: 'local',
-        local_path: otDir,
-        metadata: { opentasks: true },
-      });
-      resourceId = resource.id;
-    });
-
-    it('should create a task node via MAP', async () => {
-      const result = await handleOpenTasksRequest(
-        MAP_OPENTASKS_METHODS.CREATE_TASK,
-        { resource_id: resourceId, title: 'New MAP task', priority: 3 },
-        { swarmId: 'swarm_1', agentId },
-      );
-
-      expect(result).toHaveProperty('node_id');
-      expect(result).toHaveProperty('status', 'open');
-
-      // Verify JSONL was appended
-      const graphPath = path.join(otDir, 'graph.jsonl');
-      const lines = readGraphLines(graphPath);
-      const newNode = lines.find(l => l.title === 'New MAP task');
-      expect(newNode).toBeDefined();
-      expect(newNode!.type).toBe('task');
-      expect(newNode!.priority).toBe(3);
-      expect(newNode!.created_at).toBeDefined();
-    });
-
-    it('should reject create-task without title', async () => {
-      await expect(
-        handleOpenTasksRequest(
-          MAP_OPENTASKS_METHODS.CREATE_TASK,
-          { resource_id: resourceId },
-          { swarmId: 'swarm_1', agentId },
-        )
-      ).rejects.toThrow('title is required');
-    });
-
-    it('should update task status via MAP', async () => {
-      // First create a task
-      const createResult = await handleOpenTasksRequest(
-        MAP_OPENTASKS_METHODS.CREATE_TASK,
-        { resource_id: resourceId, title: 'Task to update' },
-        { swarmId: 'swarm_1', agentId },
-      ) as { node_id: string };
-
-      // Then update its status
-      const updateResult = await handleOpenTasksRequest(
-        MAP_OPENTASKS_METHODS.UPDATE_STATUS,
-        { resource_id: resourceId, node_id: createResult.node_id, status: 'completed' },
-        { swarmId: 'swarm_1', agentId },
-      ) as { node_id: string; previous_status: string | null; new_status: string };
-
-      expect(updateResult.node_id).toBe(createResult.node_id);
-      expect(updateResult.previous_status).toBe('open');
-      expect(updateResult.new_status).toBe('completed');
-
-      // Verify JSONL has the update appended
-      const graphPath = path.join(otDir, 'graph.jsonl');
-      const lines = readGraphLines(graphPath);
-      const updates = lines.filter(l => l.id === createResult.node_id);
-      expect(updates.length).toBeGreaterThanOrEqual(2); // create + status update
-      expect(updates[updates.length - 1].status).toBe('completed');
-    });
-
-    it('should reject update-status without node_id', async () => {
-      await expect(
-        handleOpenTasksRequest(
-          MAP_OPENTASKS_METHODS.UPDATE_STATUS,
-          { resource_id: resourceId, status: 'completed' },
-          { swarmId: 'swarm_1', agentId },
-        )
-      ).rejects.toThrow('node_id and status are required');
-    });
-
-    it('should include metadata in created task node', async () => {
-      const result = await handleOpenTasksRequest(
-        MAP_OPENTASKS_METHODS.CREATE_TASK,
-        {
-          resource_id: resourceId,
-          title: 'Task with metadata',
-          metadata: { assigned_to: 'swarm_2', context: { project: 'test' } },
-        },
-        { swarmId: 'swarm_1', agentId },
-      ) as { node_id: string };
-
-      const graphPath = path.join(otDir, 'graph.jsonl');
-      const lines = readGraphLines(graphPath);
-      const node = lines.find(l => l.id === result.node_id);
-      expect(node!.assigned_to).toBe('swarm_2');
-      expect((node!.context as Record<string, unknown>).project).toBe('test');
-    });
-
-    it('should include result and error in status update', async () => {
-      const createResult = await handleOpenTasksRequest(
-        MAP_OPENTASKS_METHODS.CREATE_TASK,
-        { resource_id: resourceId, title: 'Task with result' },
-        { swarmId: 'swarm_1', agentId },
-      ) as { node_id: string };
-
-      await handleOpenTasksRequest(
-        MAP_OPENTASKS_METHODS.UPDATE_STATUS,
-        {
-          resource_id: resourceId,
-          node_id: createResult.node_id,
-          status: 'failed',
-          error: 'Something went wrong',
-          result: { partial: true },
-        },
-        { swarmId: 'swarm_1', agentId },
-      );
-
-      const graphPath = path.join(otDir, 'graph.jsonl');
-      const lines = readGraphLines(graphPath);
-      const lastUpdate = lines.filter(l => l.id === createResult.node_id).pop();
-      expect(lastUpdate!.status).toBe('failed');
-      expect(lastUpdate!.error).toBe('Something went wrong');
-      expect((lastUpdate!.result as Record<string, unknown>).partial).toBe(true);
-    });
   });
 
   // ============================================================================
@@ -379,7 +226,9 @@ describe('OpenTasks Mutations & Compatibility Shim', () => {
       await app.close();
     });
 
-    it('should create a task node via POST', async () => {
+    it('should return 503 when daemon is not running for POST', async () => {
+      // REST task mutations now route through the OpenTasks daemon.
+      // Without a running daemon, the endpoint returns 503.
       const response = await app.inject({
         method: 'POST',
         url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
@@ -387,10 +236,9 @@ describe('OpenTasks Mutations & Compatibility Shim', () => {
         payload: { title: 'REST created task', priority: 2 },
       });
 
-      expect(response.statusCode).toBe(201);
+      expect(response.statusCode).toBe(503);
       const body = JSON.parse(response.body);
-      expect(body.node_id).toBeTruthy();
-      expect(body.status).toBe('open');
+      expect(body.error).toBe('Service Unavailable');
     });
 
     it('should reject POST without title', async () => {
@@ -404,29 +252,19 @@ describe('OpenTasks Mutations & Compatibility Shim', () => {
       expect(response.statusCode).toBe(422);
     });
 
-    it('should update task status via PATCH', async () => {
-      // First create
-      const createResponse = await app.inject({
-        method: 'POST',
-        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
-        headers: { Authorization: `Bearer ${apiKey}` },
-        payload: { title: 'Task to patch' },
-      });
-      const { node_id } = JSON.parse(createResponse.body);
-
-      // Then update
+    it('should return 503 when daemon is not running for PATCH', async () => {
+      // REST task mutations now route through the OpenTasks daemon.
+      // Without a running daemon, the endpoint returns 503.
       const response = await app.inject({
         method: 'PATCH',
-        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${node_id}`,
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/task_fake`,
         headers: { Authorization: `Bearer ${apiKey}` },
         payload: { status: 'in_progress' },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(503);
       const body = JSON.parse(response.body);
-      expect(body.node_id).toBe(node_id);
-      expect(body.previous_status).toBe('open');
-      expect(body.new_status).toBe('in_progress');
+      expect(body.error).toBe('Service Unavailable');
     });
 
     it('should reject PATCH without status', async () => {

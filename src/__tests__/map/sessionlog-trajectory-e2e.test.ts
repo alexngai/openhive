@@ -25,10 +25,10 @@ import * as trajectoryDAL from '../../db/dal/trajectory-checkpoints.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { setupMapWebSocket, stopMapWebSocket, setHeartbeatInterval } from '../../map/ws-map.js';
 import { getAllInbound, getInbound } from '../../map/connection-registry.js';
-import { ConfigSchema, type Config } from '../../config.js';
+import { ConfigSchema } from '../../config.js';
 import { sessionsRoutes } from '../../api/routes/sessions.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
-import { initializeLocalSessionStorage, isSessionStorageInitialized } from '../../sessions/storage/index.js';
+import { initializeLocalSessionStorage } from '../../sessions/storage/index.js';
 import { handleTrajectoryRequest } from '../../map/trajectory-handler.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 

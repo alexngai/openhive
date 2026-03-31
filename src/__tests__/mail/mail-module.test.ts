@@ -6,7 +6,7 @@
  * the embedded agent-inbox instance.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { InMemoryStorage, MailJsonRpcServer, MessageRouter, TraceabilityLayer } from 'agent-inbox';
 import type { Storage } from 'agent-inbox';

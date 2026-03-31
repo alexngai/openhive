@@ -12,7 +12,7 @@ import { WebSocket } from 'ws';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import { setupMapWebSocket, stopMapWebSocket } from '../../map/ws-map.js';
-import { initTokenService, createSwarmToken, _resetTokenService, verifyToken } from '../../map/token-service.js';
+import { initTokenService, createSwarmToken, _resetTokenService } from '../../map/token-service.js';
 import { generateSecret } from 'agent-iam';
 import { ConfigSchema } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';

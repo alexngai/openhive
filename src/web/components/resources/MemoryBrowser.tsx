@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Search, FileText, Clock, ChevronRight, Tag, Hash, Brain, ArrowLeft } from 'lucide-react';
 import { useMemoryFiles, useMemoryFile, useMemorySearch } from '../../hooks/useApi';
+import { useMemoryRealtime } from '../../hooks/useRealtimeInvalidation';
 import { Markdown } from '../common/Markdown';
 import { TimeAgo } from '../common/TimeAgo';
 import clsx from 'clsx';
@@ -91,10 +92,13 @@ function SearchResults({ resourceId, query }: { resourceId: string; query: strin
 
   return (
     <div className="space-y-1">
-      <div className="text-2xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
-        {data.total} result{data.total !== 1 ? 's' : ''}
+      <div className="text-2xs mb-2 flex items-center gap-2" style={{ color: 'var(--color-text-muted)' }}>
+        <span>{data.total} result{data.total !== 1 ? 's' : ''}</span>
+        {data.engine === 'minimem' && (
+          <span className="px-1.5 py-0.5 rounded text-2xs" style={{ backgroundColor: 'var(--color-elevated)' }}>semantic</span>
+        )}
       </div>
-      {data.results.map((result, i) => (
+      {data.results.map((result: { path: string; line: number; snippet: string; score: number; heading?: string }, i: number) => (
         <div
           key={`${result.path}:${result.line}:${i}`}
           className="rounded-md p-2.5"
@@ -102,7 +106,15 @@ function SearchResults({ resourceId, query }: { resourceId: string; query: strin
         >
           <div className="flex items-center gap-2 mb-1">
             <span className="text-xs font-mono font-medium">{result.path}</span>
+            {result.heading && (
+              <span className="text-2xs" style={{ color: 'var(--color-accent)' }}>{result.heading}</span>
+            )}
             <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>line {result.line}</span>
+            {result.score > 0 && result.score <= 1 && (
+              <span className="text-2xs font-mono" style={{ color: 'var(--color-text-muted)' }}>
+                {(result.score * 100).toFixed(0)}%
+              </span>
+            )}
           </div>
           <pre className="text-xs whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
             {result.snippet}
@@ -114,6 +126,7 @@ function SearchResults({ resourceId, query }: { resourceId: string; query: strin
 }
 
 export function MemoryBrowser({ resourceId }: { resourceId: string }) {
+  useMemoryRealtime(resourceId);
   const { data: files, isLoading } = useMemoryFiles(resourceId);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');

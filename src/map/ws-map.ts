@@ -23,10 +23,9 @@ import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm } from '../db/dal/
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound, getInbound } from './connection-registry.js';
-import { getMapTaskStore } from './task-store.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph } from './connection-registry.js';
 import { handleContentResponse } from './trajectory-content.js';
-import { initTaskBroadcaster, stopTaskBroadcaster } from './task-broadcaster.js';
+import { handleOpenTasksResponse } from './opentasks-remote.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
 import { broadcastToChannel } from '../realtime/index.js';
@@ -154,6 +153,9 @@ function createNotificationInterceptor(
       } else if (msg.method === 'trajectory/content.response') {
         // Content response from swarm — resolve pending content request
         handleContentResponse(msg.params as Record<string, unknown>);
+      } else if (typeof msg.method === 'string' && msg.method.startsWith('opentasks/') && msg.method.endsWith('.response')) {
+        // OpenTasks response from swarm — resolve pending remote query
+        handleOpenTasksResponse(msg.params as Record<string, unknown>);
       } else if (typeof msg.method === 'string' && msg.method.startsWith('mail/')) {
         // Mail notifications — fire and forget
         try { getMailJsonRpc().handleRequest(msg as any); } catch { /* ignore */ }
@@ -206,7 +208,6 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       if (current && current.ws !== ws) return;
 
       unregisterInbound(sid);
-      try { getMapTaskStore().removeBySwarm(sid); } catch { /* */ }
       try {
         if (!hasOutboundConnection(sid)) {
           updateSwarm(sid, { status: 'unreachable' });
@@ -412,8 +413,6 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         const meta = registeredAgent.metadata as Record<string, unknown>;
         const project = meta.project as string | undefined;
         const branch = meta.branch as string | undefined;
-        const template = meta.template as string | undefined;
-
         if (project) {
           const displayName = branch ? `${project} (${branch})` : project;
           try {
@@ -423,6 +422,16 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
               metadata: meta,
             });
           } catch { /* non-critical */ }
+        }
+
+        // Auto-detect default task graph from agent metadata
+        const taskGraph = meta.task_graph as Record<string, string> | undefined;
+        if (taskGraph) {
+          setDefaultTaskGraph(swarmId, {
+            resource_id: taskGraph.resource_id,
+            path: taskGraph.path,
+            location_hash: taskGraph.location_hash,
+          });
         }
       }
     };
@@ -438,9 +447,8 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     });
   });
 
-  // Start heartbeat and task broadcaster
+  // Start heartbeat
   startMapHeartbeat();
-  initTaskBroadcaster(getMapTaskStore());
 
   console.log(`[openhive] MAP WebSocket registered at /ws/map (trust: ${config.mapHub.trustModel})`);
 }
@@ -508,8 +516,6 @@ function startMapHeartbeat(): void {
 // ============================================================================
 
 export function stopMapWebSocket(): void {
-  stopTaskBroadcaster();
-
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;

@@ -86,7 +86,7 @@ function handleCheckpoint(
   // ── Store the checkpoint ─────────────────────────────────────────────
   const checkpointId = (checkpoint.id as string) || commitHash;
 
-  const stored = createTrajectoryCheckpoint({
+  createTrajectoryCheckpoint({
     session_resource_id: resourceId,
     checkpoint_id: checkpointId,
     commit_hash: commitHash,

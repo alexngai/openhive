@@ -176,6 +176,7 @@ graph TB
 
 - **Swarm hosting**: spawns OpenSwarm processes locally, monitors health, auto-restarts, injects credentials
 - **Resource sync**: memory banks, skills, tasks, and sessions from the `minimem` / `skill-tree` / `opentasks` ecosystem
+- **Session trajectories**: view agent session transcripts (user messages, assistant responses, tool calls) synced from Claude Code via sessionlog and the MAP trajectory protocol. Sessions show project name, git branch, and first prompt. Transcript content is fetched on-demand from connected agents or served from local cache.
 - **Platform bridges**: connect a hive to Slack or Discord
 - **Mesh networking**: Tailscale Cloud or self-hosted Headscale for secure inter-swarm L3 connectivity
 - **Terminal access**: PTY tunneling to hosted swarms via WebSocket (`/ws/terminal`)
@@ -231,6 +232,22 @@ mapHub: {
   staleThresholdMinutes: 5,
 },
 ```
+
+### Sessions
+
+Session trajectory content from connected agents is cached locally by default. Configure the storage backend:
+
+```js
+sessions: {
+  type: 'local',          // 'local' | 's3' | 'none' (disable caching)
+  path: '/custom/path',   // default: <dataDir>/data/sessions
+  // S3 options (when type: 's3'):
+  bucket: 'my-bucket',
+  region: 'us-east-1',
+},
+```
+
+Set `type: 'none'` to disable caching — trajectory content is always fetched on-demand from connected agents.
 
 ### Cross-instance sync
 
@@ -419,6 +436,24 @@ curl http://localhost:3000/api/v1/map/peers/swarm_01HXY4K2M9P3R7TQ \
   -H 'Authorization: Bearer ohk_...'
 # => {"peers": [{"id": "swarm_...", "name": "...", "map_endpoint": "..."}]}
 ```
+
+### Sessions / Trajectories
+
+```bash
+# List all sessions with checkpoint stats
+curl http://localhost:3000/api/v1/sessions/overview
+
+# Get checkpoints for a session
+curl http://localhost:3000/api/v1/sessions/res_abc123/trajectory-checkpoints
+
+# Get aggregated stats
+curl http://localhost:3000/api/v1/sessions/res_abc123/trajectory-stats
+
+# Get trajectory events (on-demand from connected agent, cached, or local sessionlog)
+curl http://localhost:3000/api/v1/sessions/res_abc123/events?limit=100
+```
+
+Session resources are auto-created when the first `trajectory/checkpoint` arrives from a connected agent. The session name is enriched with the agent's project name and git branch. The description is set to the user's first prompt.
 
 ### Cross-Instance Sync
 

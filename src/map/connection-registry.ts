@@ -30,6 +30,8 @@ export interface MapInboundConnection {
   registeredAgents: Map<string, RegisteredAgent>;
   /** Agent capabilities declared during MAP registration. */
   capabilities?: Record<string, unknown>;
+  /** Default OpenTasks graph for this connection (set via metadata.task_graph on registration). */
+  defaultTaskGraph?: { resource_id?: string; path?: string; location_hash?: string };
 }
 
 const inboundConnections: Map<string, MapInboundConnection> = new Map();
@@ -57,4 +59,13 @@ export function getAllInbound(): Map<string, MapInboundConnection> {
 
 export function getInboundCount(): number {
   return inboundConnections.size;
+}
+
+export function setDefaultTaskGraph(swarmId: string, target: { resource_id?: string; path?: string; location_hash?: string }): void {
+  const conn = inboundConnections.get(swarmId);
+  if (conn) conn.defaultTaskGraph = target;
+}
+
+export function getDefaultTaskGraph(swarmId: string): { resource_id?: string; path?: string; location_hash?: string } | undefined {
+  return inboundConnections.get(swarmId)?.defaultTaskGraph;
 }

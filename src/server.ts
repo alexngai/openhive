@@ -31,6 +31,10 @@ import {
   initMapSyncListener,
   stopMapSyncListener,
 } from "./map/sync-listener.js";
+import {
+  startLocalResourceWatchers,
+  stopLocalResourceWatchers,
+} from "./sync/local-resource-watcher.js";
 import { markStaleSwarms } from "./map/service.js";
 import { initMail } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
@@ -593,6 +597,13 @@ export async function createHive(
         initMapSyncListener();
       }
 
+      // Start local resource file watchers (for memory banks and skills with local paths)
+      startLocalResourceWatchers().then(() => {
+        console.log('[openhive] Local resource file watchers started');
+      }).catch(() => {
+        // Non-fatal — watchers enhance UX but aren't required
+      });
+
       // Start swarm hosting health monitor
       if (swarmManager) {
         swarmManager.startHealthMonitor();
@@ -738,6 +749,8 @@ export async function createHive(
       stopMapWebSocket();
       // Stop MAP sync listener (outbound connections)
       stopMapSyncListener();
+      // Stop local resource file watchers
+      stopLocalResourceWatchers();
       // Stop sync service
       if (syncService) {
         syncService.stop();
