@@ -7,7 +7,7 @@
 
 import * as net from 'node:net';
 import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { join, basename, dirname } from 'node:path';
 import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
@@ -23,7 +23,17 @@ function resolveDaemonSocket(opentasksDir: string): string {
       if (config.daemon?.socketPath) return config.daemon.socketPath;
     } catch { /* fall through */ }
   }
-  return join(opentasksDir, 'daemon.sock');
+
+  // Standard location: daemon.sock directly in the .opentasks directory
+  const directSocket = join(opentasksDir, 'daemon.sock');
+  if (existsSync(directSocket)) return directSocket;
+
+  // Fallback: nested .opentasks/daemon.sock (created when daemon was previously
+  // started with cwd inside the .opentasks dir instead of the project root)
+  const nestedSocket = join(opentasksDir, '.opentasks', 'daemon.sock');
+  if (existsSync(nestedSocket)) return nestedSocket;
+
+  return directSocket;
 }
 
 /**
@@ -86,8 +96,15 @@ export async function ensureDaemon(opentasksDir: string): Promise<boolean> {
   try {
     mkdirSync(opentasksDir, { recursive: true });
 
+    // The opentasks daemon expects to run from the project root (parent of .opentasks/).
+    // If opentasksDir IS the .opentasks directory, use its parent as cwd so the daemon
+    // finds the existing .opentasks/ and places its socket there (not in a nested subdir).
+    const daemonCwd = basename(opentasksDir) === '.opentasks'
+      ? dirname(opentasksDir)
+      : opentasksDir;
+
     const child = spawn('opentasks', ['daemon', 'start'], {
-      cwd: opentasksDir,
+      cwd: daemonCwd,
       detached: true,
       stdio: ['ignore', 'ignore', 'pipe'],
       env: { ...process.env },
