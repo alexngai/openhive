@@ -21,6 +21,8 @@ vi.mock('../../hooks/useWebSocket', () => ({
 import {
   useSwarmRealtime,
   useResourcesRealtime,
+  useMemoryRealtime,
+  useSkillRealtime,
   useSessionsRealtime,
 } from '../../hooks/useRealtimeInvalidation';
 
@@ -179,6 +181,88 @@ describe('useRealtimeInvalidation', () => {
       const invalidatedKeys = spy.mock.calls.map((call) => (call[0] as { queryKey: string[] }).queryKey);
       expect(invalidatedKeys).not.toContainEqual(['hosted-swarms']);
       expect(invalidatedKeys).not.toContainEqual(['resources']);
+    });
+  });
+
+  // ── useMemoryRealtime ──
+
+  describe('useMemoryRealtime', () => {
+    const resourceId = 'res-mem-123';
+
+    it('subscribes to the resource-specific memory channel', () => {
+      renderHook(() => useMemoryRealtime(resourceId), { wrapper: createWrapper() });
+      expect(mockUseSubscribe).toHaveBeenCalledWith([`resource:memory_bank:${resourceId}`]);
+    });
+
+    it('registers handler for memory:sync event', () => {
+      renderHook(() => useMemoryRealtime(resourceId), { wrapper: createWrapper() });
+      const registeredEvents = mockUseWSEvent.mock.calls.map((call) => call[0]);
+      expect(registeredEvents).toContain('memory:sync');
+    });
+
+    it('invalidates all memory content query keys on memory:sync', () => {
+      renderHook(() => useMemoryRealtime(resourceId), { wrapper: createWrapper() });
+      const spy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      const handler = eventHandlers.get('memory:sync');
+      expect(handler).toBeDefined();
+      handler!({});
+
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['memory-files', resourceId] });
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['memory-search', resourceId] });
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['memory-file', resourceId] });
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['knowledge', resourceId] });
+    });
+
+    it('does not invalidate skill or session query keys', () => {
+      renderHook(() => useMemoryRealtime(resourceId), { wrapper: createWrapper() });
+      const spy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      eventHandlers.get('memory:sync')!({});
+
+      const invalidatedKeys = spy.mock.calls.map((call) => (call[0] as { queryKey: string[] }).queryKey);
+      expect(invalidatedKeys).not.toContainEqual(['skills-list', resourceId]);
+      expect(invalidatedKeys).not.toContainEqual(['sessions-overview']);
+    });
+  });
+
+  // ── useSkillRealtime ──
+
+  describe('useSkillRealtime', () => {
+    const resourceId = 'res-skill-456';
+
+    it('subscribes to the resource-specific skill channel', () => {
+      renderHook(() => useSkillRealtime(resourceId), { wrapper: createWrapper() });
+      expect(mockUseSubscribe).toHaveBeenCalledWith([`resource:skill:${resourceId}`]);
+    });
+
+    it('registers handler for skill:sync event', () => {
+      renderHook(() => useSkillRealtime(resourceId), { wrapper: createWrapper() });
+      const registeredEvents = mockUseWSEvent.mock.calls.map((call) => call[0]);
+      expect(registeredEvents).toContain('skill:sync');
+    });
+
+    it('invalidates skill query keys on skill:sync', () => {
+      renderHook(() => useSkillRealtime(resourceId), { wrapper: createWrapper() });
+      const spy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      const handler = eventHandlers.get('skill:sync');
+      expect(handler).toBeDefined();
+      handler!({});
+
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['skills-list', resourceId] });
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['skill-detail', resourceId] });
+    });
+
+    it('does not invalidate memory or session query keys', () => {
+      renderHook(() => useSkillRealtime(resourceId), { wrapper: createWrapper() });
+      const spy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      eventHandlers.get('skill:sync')!({});
+
+      const invalidatedKeys = spy.mock.calls.map((call) => (call[0] as { queryKey: string[] }).queryKey);
+      expect(invalidatedKeys).not.toContainEqual(['memory-files', resourceId]);
+      expect(invalidatedKeys).not.toContainEqual(['sessions-overview']);
     });
   });
 });

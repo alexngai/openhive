@@ -365,23 +365,56 @@ export interface SkillSummary {
   tags: string[];
   author: string | null;
   path: string;
+  related?: string[];
+  relationships?: SkillRelationship[];
+  taxonomy?: { primaryPath: string[]; secondaryPaths?: string[][]; confidence?: number } | null;
+  parentVersion?: string | null;
+  derivedFrom?: string[];
+  forks?: string[];
 }
 
-export interface SkillDetail {
-  id: string;
-  name: string | null;
-  version: string | null;
-  status: string | null;
-  description: string | null;
-  tags: string[];
-  author: string | null;
-  problem: string | null;
-  triggerConditions: string | null;
-  solution: string | null;
-  verification: string | null;
-  examples: string | null;
-  notes: string | null;
+export interface SkillRelationship {
+  targetId: string;
+  type: 'depends_on' | 'extends' | 'alternative' | 'related';
+  confidence: number;
+}
+
+export interface SkillDetail extends SkillSummary {
+  instructions: string | null;
+  metrics: Record<string, unknown> | null;
+  serving: Record<string, unknown> | null;
+  namespace: Record<string, unknown> | null;
   raw: string;
+}
+
+export interface SkillGraphNode {
+  id: string;
+  name: string;
+  status: string;
+  version: string | null;
+  tags: string[];
+  taxonomy: { primaryPath: string[] } | null;
+  description: string | null;
+}
+
+export interface SkillGraphEdge {
+  from: string;
+  to: string;
+  type: string;
+  confidence?: number;
+}
+
+export interface SkillVersion {
+  version: string;
+  changelog: string | null;
+  createdAt: string | null;
+  status: string | null;
+}
+
+export interface SkillLineage {
+  rootId: string;
+  versions: SkillVersion[];
+  forks: Array<{ forkedFrom: string; forkId: string; version: string }>;
 }
 
 // OpenTasks content types

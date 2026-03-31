@@ -612,15 +612,23 @@ export async function resourceContentRoutes(
     const discovered = await discoverSkills(localPath);
     const pathMap = new Map(discovered.map(d => [d.id, relative(localPath, d.filePath)]));
 
-    const skills = allSkills.map((skill: { id: string; name?: string; version?: string; status?: string; description?: string; tags?: string[]; author?: string }) => ({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const skills = allSkills.map((skill: any) => ({
       id: skill.id,
       name: skill.name || null,
       version: skill.version || null,
       status: skill.status || null,
       description: skill.description || null,
-      tags: skill.tags,
+      tags: skill.tags || [],
       author: skill.author || null,
       path: pathMap.get(skill.id) || join('.skilltree', 'skills', skill.id, 'SKILL.md'),
+      related: skill.related || [],
+      relationships: skill.relationships || [],
+      taxonomy: skill.taxonomy || null,
+      namespace: skill.namespace || null,
+      parentVersion: skill.parentVersion || null,
+      derivedFrom: skill.derivedFrom || [],
+      forks: skill.forks || [],
     }));
 
     return reply.send({ skills });
@@ -657,9 +665,213 @@ export async function resourceContentRoutes(
     return reply.send({
       id: skill.id, name: skill.name || null, version: skill.version || null,
       status: skill.status || null, description: skill.description || null,
-      tags: skill.tags, author: skill.author || null,
-      instructions: skill.instructions || null, related: skill.related || [], raw,
+      tags: skill.tags || [], author: skill.author || null,
+      instructions: skill.instructions || null, related: skill.related || [],
+      relationships: skill.relationships || [],
+      taxonomy: skill.taxonomy || null,
+      namespace: skill.namespace || null,
+      parentVersion: skill.parentVersion || null,
+      derivedFrom: skill.derivedFrom || [],
+      forks: skill.forks || [],
+      metrics: skill.metrics || null,
+      serving: skill.serving || null,
+      raw,
     });
+  });
+
+  // Skill search
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { q: string; limit?: number };
+  }>('/resources/:id/content/skills/search', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+
+    if (resource.resource_type !== 'skill') {
+      return reply.status(400).send({ error: 'Bad Request', message: 'This endpoint is only available for skill resources' });
+    }
+
+    const query = request.query.q;
+    if (!query || query.trim().length === 0) {
+      return reply.status(400).send({ error: 'Bad Request', message: 'Query parameter "q" is required' });
+    }
+
+    const limit = Math.min(Math.max(request.query.limit || 20, 1), 100);
+    const bank = createSkillBank({ storage: { basePath: localPath } });
+    await bank.initialize();
+
+    try {
+      const results = await bank.searchSkills(query);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const skills = results.slice(0, limit).map((skill: any) => ({
+        id: skill.id,
+        name: skill.name || null,
+        version: skill.version || null,
+        status: skill.status || null,
+        description: skill.description || null,
+        tags: skill.tags || [],
+        score: skill._score ?? null,
+      }));
+      return reply.send({ results: skills, total: results.length });
+    } finally {
+      await bank.shutdown();
+    }
+  });
+
+  // Skill version history
+  fastify.get<{
+    Params: { id: string; skillId: string };
+  }>('/resources/:id/content/skills/:skillId/versions', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+
+    if (resource.resource_type !== 'skill') {
+      return reply.status(400).send({ error: 'Bad Request', message: 'This endpoint is only available for skill resources' });
+    }
+
+    const { skillId } = request.params;
+    if (!skillId || skillId.includes('..') || skillId.includes('/')) {
+      return reply.status(400).send({ error: 'Bad Request', message: 'Invalid skill ID' });
+    }
+
+    const bank = createSkillBank({ storage: { basePath: localPath } });
+    await bank.initialize();
+
+    try {
+      const history = await bank.getVersionHistory(skillId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const versions = (history || []).map((v: any) => ({
+        version: v.version,
+        changelog: v.changelog || null,
+        createdAt: v.skill?.createdAt || v.createdAt || null,
+        status: v.skill?.status || null,
+      }));
+      return reply.send({ skillId, versions });
+    } finally {
+      await bank.shutdown();
+    }
+  });
+
+  // Skill lineage (version tree + forks)
+  fastify.get<{
+    Params: { id: string; skillId: string };
+  }>('/resources/:id/content/skills/:skillId/lineage', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+
+    if (resource.resource_type !== 'skill') {
+      return reply.status(400).send({ error: 'Bad Request', message: 'This endpoint is only available for skill resources' });
+    }
+
+    const { skillId } = request.params;
+    if (!skillId || skillId.includes('..') || skillId.includes('/')) {
+      return reply.status(400).send({ error: 'Bad Request', message: 'Invalid skill ID' });
+    }
+
+    const bank = createSkillBank({ storage: { basePath: localPath } });
+    await bank.initialize();
+
+    try {
+      const lineage = await bank.getLineage(skillId);
+      return reply.send(lineage || { rootId: skillId, versions: [], forks: [] });
+    } finally {
+      await bank.shutdown();
+    }
+  });
+
+  // Skill relationship graph — all skills with their relationships
+  fastify.get<{
+    Params: { id: string };
+  }>('/resources/:id/content/skills/graph', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+
+    if (resource.resource_type !== 'skill') {
+      return reply.status(400).send({ error: 'Bad Request', message: 'This endpoint is only available for skill resources' });
+    }
+
+    const bank = createSkillBank({ storage: { basePath: localPath } });
+    await bank.initialize();
+
+    try {
+      const allSkills = await bank.listSkills();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const nodes = allSkills.map((s: any) => ({
+        id: s.id,
+        name: s.name || s.id,
+        status: s.status || 'draft',
+        version: s.version || null,
+        tags: s.tags || [],
+        taxonomy: s.taxonomy || null,
+        description: s.description || null,
+      }));
+
+      // Build edges from relationships + related + derivedFrom/forks
+      const edges: Array<{ from: string; to: string; type: string; confidence?: number }> = [];
+      const skillIds = new Set(allSkills.map((s: { id: string }) => s.id));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const skill of allSkills as any[]) {
+        if (skill.relationships) {
+          for (const rel of skill.relationships) {
+            if (rel.targetId && skillIds.has(rel.targetId)) {
+              edges.push({ from: skill.id, to: rel.targetId, type: rel.type, confidence: rel.confidence });
+            }
+          }
+        }
+        if (skill.related) {
+          for (const relId of skill.related) {
+            if (skillIds.has(relId)) {
+              edges.push({ from: skill.id, to: relId, type: 'related' });
+            }
+          }
+        }
+        if (skill.derivedFrom) {
+          for (const parentId of skill.derivedFrom) {
+            if (skillIds.has(parentId)) {
+              edges.push({ from: parentId, to: skill.id, type: 'derived_from' });
+            }
+          }
+        }
+        if (skill.forks) {
+          for (const forkId of skill.forks) {
+            if (skillIds.has(forkId)) {
+              edges.push({ from: skill.id, to: forkId, type: 'fork' });
+            }
+          }
+        }
+      }
+
+      return reply.send({ nodes, edges });
+    } finally {
+      await bank.shutdown();
+    }
+  });
+
+  // Skill bank stats
+  fastify.get<{
+    Params: { id: string };
+  }>('/resources/:id/content/skills/stats', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+
+    if (resource.resource_type !== 'skill') {
+      return reply.status(400).send({ error: 'Bad Request', message: 'This endpoint is only available for skill resources' });
+    }
+
+    const bank = createSkillBank({ storage: { basePath: localPath } });
+    await bank.initialize();
+
+    try {
+      const stats = await bank.getStats();
+      return reply.send(stats);
+    } finally {
+      await bank.shutdown();
+    }
   });
 
   // ============================================================================

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
-import type { Agent, HostedSwarm, MapSwarm, MapNode, MapStats, SwarmMessage, SharedContext, SwarmPeer, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, MemoryEntry, KnowledgeGraphData, KnowledgeSearchResult, SkillSummary, SkillDetail, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse, MailConversation, MailTurn, MailThread } from '../lib/api';
+import type { Agent, HostedSwarm, MapSwarm, MapNode, MapStats, SwarmMessage, SharedContext, SwarmPeer, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, MemoryEntry, KnowledgeGraphData, KnowledgeSearchResult, SkillSummary, SkillDetail, SkillGraphNode, SkillGraphEdge, SkillVersion, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse, MailConversation, MailTurn, MailThread } from '../lib/api';
 
 
 // Posts
@@ -569,6 +569,32 @@ export function useSkillDetail(resourceId: string, skillId: string | null) {
     queryKey: ['skill-detail', resourceId, skillId],
     queryFn: () => api.get<SkillDetail>(`/resources/${resourceId}/content/skills/${skillId}`),
     enabled: !!resourceId && !!skillId,
+  });
+}
+
+export function useSkillGraph(resourceId: string) {
+  return useQuery({
+    queryKey: ['skill-graph', resourceId],
+    queryFn: () => api.get<{ nodes: SkillGraphNode[]; edges: SkillGraphEdge[] }>(`/resources/${resourceId}/content/skills/graph`),
+    enabled: !!resourceId,
+  });
+}
+
+export function useSkillVersions(resourceId: string, skillId: string | null) {
+  return useQuery({
+    queryKey: ['skill-versions', resourceId, skillId],
+    queryFn: () => api.get<{ skillId: string; versions: SkillVersion[] }>(`/resources/${resourceId}/content/skills/${skillId}/versions`),
+    enabled: !!resourceId && !!skillId,
+  });
+}
+
+export function useSkillSearch(resourceId: string, query: string) {
+  return useQuery({
+    queryKey: ['skill-search', resourceId, query],
+    queryFn: () => api.get<{ results: Array<{ id: string; name: string | null; description: string | null; score: number | null }>; total: number }>(
+      `/resources/${resourceId}/content/skills/search?q=${encodeURIComponent(query)}&limit=20`
+    ),
+    enabled: !!resourceId && query.length >= 2,
   });
 }
 
