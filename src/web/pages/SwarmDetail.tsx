@@ -3,7 +3,7 @@ import {
   ArrowLeft, Activity, Bell, ChevronRight, Clock, Cpu, FileText, Globe,
   Link2, MessageSquare, Network, Share2,
   Square, RotateCw, Terminal, Trash2, User, Wifi, WifiOff,
-  CheckCircle2, XCircle, AlertTriangle, ListTodo,
+  CheckCircle2,
 } from 'lucide-react';
 import {
   useMapSwarm, useMapNodes, useHostedSwarms, useSessionsList, useSwarmLogs,
@@ -11,8 +11,6 @@ import {
   useSwarmMessages, useSwarmPeers,
   useEventSubscriptions, useDeliveryLog,
 } from '../hooks/useApi';
-import { useMapTasks, useMapTasksRealtime } from '../hooks/useMapTasks';
-import type { MAPTask, MAPTaskStatus } from '../hooks/useMapTasks';
 import { useSwarmRealtime, useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
@@ -307,75 +305,6 @@ function NodesSection({ swarmId }: { swarmId: string }) {
       <div className="space-y-1">
         {nodes.map((node) => (
           <NodeCard key={node.id} node={node} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ─── Tasks Section ───────────────────────────────────────────────────────────
-
-const TASK_STATUS_STYLES: Record<string, { bg: string; text: string; icon: React.ElementType }> = {
-  open:        { bg: 'bg-blue-500/10',    text: 'text-blue-400',    icon: ListTodo },
-  in_progress: { bg: 'bg-amber-500/10',   text: 'text-amber-400',  icon: Activity },
-  blocked:     { bg: 'bg-red-500/10',     text: 'text-red-400',     icon: AlertTriangle },
-  completed:   { bg: 'bg-emerald-500/10', text: 'text-emerald-400', icon: CheckCircle2 },
-  failed:      { bg: 'bg-red-500/10',     text: 'text-red-400',     icon: XCircle },
-};
-
-function TaskCard({ task }: { task: MAPTask }) {
-  const status = (task.status || 'open') as MAPTaskStatus;
-  const style = TASK_STATUS_STYLES[status] || TASK_STATUS_STYLES.open;
-
-  return (
-    <div className="card px-3 py-2 flex items-center gap-3">
-      <div
-        className="w-7 h-7 rounded flex items-center justify-center shrink-0"
-        style={{ backgroundColor: 'var(--color-elevated)' }}
-      >
-        <ListTodo className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium truncate">
-            {task.title || task.id}
-          </span>
-          <span className={`text-2xs px-1.5 py-0.5 rounded font-medium ${style.bg} ${style.text}`}>
-            {status.replace('_', ' ')}
-          </span>
-        </div>
-        {(task.description || task.assignee) && (
-          <div className="flex items-center gap-2 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-            {task.assignee && (
-              <span className="flex items-center gap-1">
-                <User className="w-3 h-3" />
-                {task.assignee}
-              </span>
-            )}
-            {task.description && (
-              <span className="truncate">{task.description}</span>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function TasksSection({ swarmId }: { swarmId: string }) {
-  const { data, isLoading } = useMapTasks({ swarmId, limit: 20 });
-  useMapTasksRealtime();
-  const tasks = data?.tasks ?? [];
-
-  if (isLoading) return <LoadingSpinner size="sm" />;
-  if (tasks.length === 0) return null;
-
-  return (
-    <div>
-      <SectionHeading icon={ListTodo} label="Tasks" count={tasks.length} />
-      <div className="space-y-1">
-        {tasks.map((task) => (
-          <TaskCard key={task.id} task={task} />
         ))}
       </div>
     </div>
@@ -736,8 +665,6 @@ export function SwarmDetail() {
       {hosted && <HostedInfo hosted={hosted} />}
 
       <NodesSection swarmId={id!} />
-
-      <TasksSection swarmId={id!} />
 
       <SessionsSection swarmId={id!} />
 

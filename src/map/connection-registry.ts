@@ -16,12 +16,6 @@ export interface RegisteredAgent {
   scopes: string[];
 }
 
-export interface TaskGraphTarget {
-  resource_id?: string;
-  path?: string;
-  location_hash?: string;
-}
-
 export interface MapInboundConnection {
   ws: WebSocket;
   agentId: string;
@@ -37,7 +31,7 @@ export interface MapInboundConnection {
   /** Agent capabilities declared during MAP registration. */
   capabilities?: Record<string, unknown>;
   /** Default OpenTasks graph for this connection (set via metadata.task_graph on registration). */
-  defaultTaskGraph?: TaskGraphTarget;
+  defaultTaskGraph?: { resource_id?: string; path?: string; location_hash?: string };
 }
 
 const inboundConnections: Map<string, MapInboundConnection> = new Map();
@@ -67,13 +61,11 @@ export function getInboundCount(): number {
   return inboundConnections.size;
 }
 
-export function setDefaultTaskGraph(swarmId: string, target: TaskGraphTarget): void {
+export function setDefaultTaskGraph(swarmId: string, target: { resource_id?: string; path?: string; location_hash?: string }): void {
   const conn = inboundConnections.get(swarmId);
-  if (conn) {
-    conn.defaultTaskGraph = target;
-  }
+  if (conn) conn.defaultTaskGraph = target;
 }
 
-export function getDefaultTaskGraph(swarmId: string): TaskGraphTarget | undefined {
+export function getDefaultTaskGraph(swarmId: string): { resource_id?: string; path?: string; location_hash?: string } | undefined {
   return inboundConnections.get(swarmId)?.defaultTaskGraph;
 }

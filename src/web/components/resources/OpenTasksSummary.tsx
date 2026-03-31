@@ -1,6 +1,6 @@
 import { Circle, CheckCircle2, PlayCircle, AlertTriangle, XCircle, Network, FileText, MessageSquare, Zap } from 'lucide-react';
 import { useOpenTasksSummary, useOpenTasksReady, useUpdateOpenTaskStatus } from '../../hooks/useApi';
-import { useMapTasksRealtime } from '../../hooks/useMapTasks';
+import { useTasksRealtime } from '../../hooks/useMapTasks';
 import { CreateTaskForm } from '../task-graph/CreateTaskForm';
 import clsx from 'clsx';
 
@@ -81,7 +81,7 @@ function ReadyTaskRow({ task, resourceId }: { task: { id: string; title: string;
 export function OpenTasksSummary({ resourceId }: { resourceId: string }) {
   const { data: summary, isLoading: summaryLoading } = useOpenTasksSummary(resourceId);
   const { data: readyData, isLoading: readyLoading } = useOpenTasksReady(resourceId);
-  useMapTasksRealtime();
+  useTasksRealtime();
 
   if (summaryLoading) {
     return (

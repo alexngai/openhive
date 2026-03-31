@@ -64,6 +64,9 @@ describe('OpenTasks Discovery', () => {
   let agentId: string;
 
   beforeAll(async () => {
+    // Clean up any .opentasks/ in project root left by other test files (e.g., e2e.test.ts)
+    try { fs.rmSync(path.join(process.cwd(), '.opentasks'), { recursive: true, force: true }); } catch { /* ignore */ }
+
     initDatabase(TEST_DB_PATH);
     const { agent } = await agentsDAL.createAgent({
       name: 'opentasks-discovery-agent',

@@ -8,10 +8,162 @@
  * - GET /resources/:id/content/opentasks/status
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 import * as fs from 'fs';
 import * as path from 'path';
+
+// ---------------------------------------------------------------------------
+// Mock the daemon client so tests work without a running daemon.
+// Routes use dynamic import: await import('../../map/task-daemon-client.js')
+// ---------------------------------------------------------------------------
+
+vi.mock('../../map/task-daemon-client.js', () => {
+  const { existsSync, statSync, readFileSync } = require('fs');
+  const { join } = require('path');
+
+  class TaskDaemonError extends Error {
+    code: string;
+    constructor(code: string, message: string) {
+      super(message);
+      this.name = 'TaskDaemonError';
+      this.code = code;
+    }
+  }
+
+  function resolveDaemonSocket(opentasksDir: string): string {
+    const configPath = join(opentasksDir, 'config.json');
+    if (existsSync(configPath)) {
+      try {
+        const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+        if (config.daemon?.socketPath) return config.daemon.socketPath;
+      } catch { /* fall through */ }
+    }
+    return join(opentasksDir, 'daemon.sock');
+  }
+
+  function _parseJsonl(opentasksDir: string): { nodes: any[]; edges: any[] } {
+    const graphPath = join(opentasksDir, 'graph.jsonl');
+    if (!existsSync(graphPath)) return { nodes: [], edges: [] };
+    const lines = readFileSync(graphPath, 'utf-8').split('\n').filter((l: string) => l.trim());
+    const nodes: any[] = [];
+    const edges: any[] = [];
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        if (obj.from_id && obj.to_id) edges.push(obj);
+        else nodes.push(obj);
+      } catch { /* skip */ }
+    }
+    return { nodes, edges };
+  }
+
+  return {
+    TaskDaemonError,
+    resolveDaemonSocket,
+
+    daemonGetSummary: async (_socketPath: string, opentasksDir?: string) => {
+      if (!opentasksDir) throw new TaskDaemonError('DAEMON_NOT_RUNNING', 'No opentasksDir');
+      const { nodes, edges } = _parseJsonl(opentasksDir);
+      const activeNodes = nodes.filter((n: any) => !n.archived && !n.deleted);
+      const activeEdges = edges.filter((e: any) => !e.deleted);
+
+      const taskCounts: Record<string, number> = { open: 0, in_progress: 0, blocked: 0, closed: 0 };
+      let contextCount = 0;
+      let feedbackCount = 0;
+      for (const n of activeNodes) {
+        if (n.type === 'task') {
+          const s = n.status || 'open';
+          taskCounts[s] = (taskCounts[s] ?? 0) + 1;
+        } else if (n.type === 'context') contextCount++;
+        else if (n.type === 'feedback') feedbackCount++;
+      }
+
+      const blockedIds = new Set<string>();
+      for (const e of activeEdges) {
+        if (e.type === 'blocks') {
+          const blocker = activeNodes.find((n: any) => n.id === e.from_id);
+          if (blocker && blocker.status !== 'closed') {
+            blockedIds.add(e.to_id);
+          }
+        }
+      }
+      const readyCount = activeNodes.filter(
+        (n: any) => n.type === 'task' && n.status === 'open' && !blockedIds.has(n.id),
+      ).length;
+
+      return {
+        node_count: activeNodes.length,
+        edge_count: activeEdges.length,
+        task_counts: taskCounts,
+        context_count: contextCount,
+        feedback_count: feedbackCount,
+        ready_count: readyCount,
+        daemon_connected: false,
+      };
+    },
+
+    daemonGetReady: async (_socketPath: string, limit?: number, opentasksDir?: string) => {
+      if (!opentasksDir) throw new TaskDaemonError('DAEMON_NOT_RUNNING', 'No opentasksDir');
+      const { nodes, edges } = _parseJsonl(opentasksDir);
+      const activeNodes = nodes.filter((n: any) => !n.archived && !n.deleted);
+      const activeEdges = edges.filter((e: any) => !e.deleted);
+
+      const blockedIds = new Set<string>();
+      for (const e of activeEdges) {
+        if (e.type === 'blocks') {
+          const blocker = activeNodes.find((n: any) => n.id === e.from_id);
+          if (blocker && blocker.status !== 'closed') {
+            blockedIds.add(e.to_id);
+          }
+        }
+      }
+
+      let ready = activeNodes
+        .filter((n: any) => n.type === 'task' && n.status === 'open' && !blockedIds.has(n.id))
+        .sort((a: any, b: any) => (a.priority ?? 999) - (b.priority ?? 999));
+
+      if (limit) ready = ready.slice(0, limit);
+
+      return { items: ready, total: ready.length, daemon_connected: false };
+    },
+
+    daemonQueryNodes: async (_socketPath: string, filter: any, opentasksDir?: string) => {
+      if (!opentasksDir) throw new TaskDaemonError('DAEMON_NOT_RUNNING', 'No opentasksDir');
+      const { nodes } = _parseJsonl(opentasksDir);
+      let items = nodes.filter((n: any) => !n.archived && !n.deleted);
+      if (filter.type) items = items.filter((n: any) => n.type === filter.type);
+      if (filter.status) items = items.filter((n: any) => n.status === filter.status);
+      return { items, total: items.length, daemon_connected: false };
+    },
+
+    daemonGetStatus: async (_socketPath: string, opentasksDir: string) => {
+      const graphPath = join(opentasksDir, 'graph.jsonl');
+      const graphExists = existsSync(graphPath);
+      return {
+        daemon_running: false,
+        graph_file_exists: graphExists,
+        graph_last_modified: graphExists ? statSync(graphPath).mtime.toISOString() : null,
+        socket_path: _socketPath,
+      };
+    },
+
+    daemonGetGraph: async (_socketPath: string, opentasksDir?: string) => {
+      if (!opentasksDir) throw new TaskDaemonError('DAEMON_NOT_RUNNING', 'No opentasksDir');
+      const { nodes, edges } = _parseJsonl(opentasksDir);
+      return { nodes, edges };
+    },
+
+    daemonCreateTask: async () => {
+      throw new TaskDaemonError('DAEMON_NOT_RUNNING', 'Daemon not running');
+    },
+
+    daemonUpdateTask: async () => {
+      throw new TaskDaemonError('DAEMON_NOT_RUNNING', 'Daemon not running');
+    },
+  };
+});
+
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
@@ -334,7 +486,7 @@ describe('OpenTasks Content Routes', () => {
   // ==========================================================================
 
   describe('GET /resources/:id/content/opentasks/tasks', () => {
-    it('should return fallback summary when daemon not running', async () => {
+    it('should return task nodes from JSONL', async () => {
       const res = await app.inject({
         method: 'GET',
         url: `/api/v1/resources/${opentasksResource.id}/content/opentasks/tasks`,
@@ -344,11 +496,10 @@ describe('OpenTasks Content Routes', () => {
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
 
-      expect(body.daemon_connected).toBe(false);
-      expect(body.task_counts).toBeDefined();
-      expect(body.task_counts.open).toBe(3);
-      expect(body.task_counts.closed).toBe(1);
-      expect(body.message).toContain('Daemon not running');
+      expect(body.daemon_connected).toBe(true);
+      expect(body.items).toBeInstanceOf(Array);
+      // Should have task-type nodes
+      expect(body.items.length).toBeGreaterThan(0);
     });
 
     it('should require authentication', async () => {

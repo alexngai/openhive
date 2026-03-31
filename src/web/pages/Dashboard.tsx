@@ -4,7 +4,6 @@ import { StatsOverview } from '../components/dashboard/StatsOverview';
 import { SwarmStatusSummary } from '../components/dashboard/SwarmStatusSummary';
 import { SyncResourcesStatus } from '../components/dashboard/SyncResourcesStatus';
 import { RecentActivity } from '../components/dashboard/RecentActivity';
-import { MapTasksSummary } from '../components/dashboard/MapTasksSummary';
 
 export function Dashboard() {
   return (
@@ -31,11 +30,6 @@ export function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
         <SwarmStatusSummary />
         <SyncResourcesStatus />
-      </div>
-
-      {/* MAP Tasks from connected agents */}
-      <div className="mt-2">
-        <MapTasksSummary />
       </div>
 
       {/* Recent Activity */}

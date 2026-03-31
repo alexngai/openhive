@@ -1,20 +1,33 @@
 /**
  * Task Daemon Client
  *
- * Wraps the OpenTasks client to provide typed task operations for the
- * unified map/tasks/* handler. Each call connects to the OpenTasks daemon
- * via Unix socket IPC, performs the operation, and disconnects.
+ * Unified OpenTasks daemon client for both reads and writes.
+ * Each call connects to the daemon via Unix socket IPC, performs
+ * the operation, and disconnects. Auto-starts the daemon if needed.
  *
  * OpenHive does NOT write to graph.jsonl directly — the daemon owns persistence.
  */
 
 import { join } from 'node:path';
-import { readFileSync, existsSync } from 'node:fs';
-import type { MAPTask, MAPTaskStatus } from './task-types.js';
+import { readFileSync, existsSync, statSync } from 'node:fs';
+/** Task status values used throughout the daemon client. */
+export type MAPTaskStatus = 'open' | 'in_progress' | 'blocked' | 'completed' | 'failed';
+
+/** Lightweight task representation returned by daemon client functions. */
+export interface MAPTask {
+  id: string;
+  title?: string;
+  status?: MAPTaskStatus;
+  description?: string;
+  assignee?: string | null;
+  meta?: Record<string, unknown>;
+}
+import { ensureDaemon } from './task-daemon-lifecycle.js';
 
 // Dynamic import — opentasks is ESM-only
 type OpenTasksClientType = import('opentasks').OpenTasksClient;
 type NodeSummary = import('opentasks').NodeSummary;
+type EdgeSummary = import('opentasks').EdgeSummary;
 type QueryResult = import('opentasks').QueryResult;
 
 export class TaskDaemonError extends Error {
@@ -28,19 +41,33 @@ export class TaskDaemonError extends Error {
 }
 
 /**
- * Connect to the OpenTasks daemon at the given socket path, run `fn`, then disconnect.
+ * Connect to the OpenTasks daemon, run `fn`, then disconnect.
+ * Auto-starts the daemon if not running (for local resources).
  */
-async function withDaemon<T>(socketPath: string, fn: (client: OpenTasksClientType) => Promise<T>): Promise<T> {
+async function withDaemon<T>(socketPath: string, fn: (client: OpenTasksClientType) => Promise<T>, opentasksDir?: string): Promise<T> {
   const { createClient } = await import('opentasks');
   const client = createClient({ socketPath, autoConnect: false, timeout: 10_000 });
+
   try {
     await client.connect();
   } catch {
-    throw new TaskDaemonError(
-      'DAEMON_NOT_RUNNING',
-      `OpenTasks daemon is not running (socket: ${socketPath})`,
-    );
+    // Auto-start: try to start daemon, then retry
+    if (opentasksDir) {
+      const started = await ensureDaemon(opentasksDir);
+      if (started) {
+        try {
+          await client.connect();
+        } catch {
+          throw new TaskDaemonError('DAEMON_NOT_RUNNING', `OpenTasks daemon failed to start (socket: ${socketPath})`);
+        }
+      } else {
+        throw new TaskDaemonError('DAEMON_NOT_RUNNING', `OpenTasks daemon is not running and auto-start failed (socket: ${socketPath})`);
+      }
+    } else {
+      throw new TaskDaemonError('DAEMON_NOT_RUNNING', `OpenTasks daemon is not running (socket: ${socketPath})`);
+    }
   }
+
   try {
     return await fn(client);
   } finally {
@@ -62,12 +89,13 @@ function nodeToTask(node: NodeSummary): MAPTask {
 }
 
 // ============================================================================
-// Task Operations
+// Write Operations
 // ============================================================================
 
 export async function daemonCreateTask(
   socketPath: string,
   params: { title?: string; description?: string; status?: string; priority?: number; assignee?: string; meta?: Record<string, unknown> },
+  opentasksDir?: string,
 ): Promise<MAPTask> {
   return withDaemon(socketPath, async (client) => {
     const node = await client.createNode({
@@ -87,24 +115,20 @@ export async function daemonCreateTask(
       assignee: (n.assignee as string) || params.assignee || null,
       meta: params.meta,
     };
-  });
+  }, opentasksDir);
 }
 
 export async function daemonUpdateTask(
   socketPath: string,
   taskId: string,
   updates: { status?: string; title?: string; description?: string; assignee?: string | null; meta?: Record<string, unknown> },
+  opentasksDir?: string,
 ): Promise<MAPTask> {
   return withDaemon(socketPath, async (client) => {
-    // If status change, use the task tool's semantic transition when possible
     if (updates.status) {
       const actionMap: Record<string, string> = {
-        in_progress: 'start',
-        completed: 'complete',
-        closed: 'close',
-        blocked: 'block',
-        open: 'reopen',
-        failed: 'close',
+        in_progress: 'start', completed: 'complete', closed: 'close',
+        blocked: 'block', open: 'reopen', failed: 'close',
       };
       const action = actionMap[updates.status];
       if (action) {
@@ -117,7 +141,6 @@ export async function daemonUpdateTask(
           }
         } catch (err) {
           if (err instanceof TaskDaemonError) throw err;
-          // Fall back to direct update if transition fails
           await client.updateNode(taskId, { status: updates.status });
         }
       } else {
@@ -125,7 +148,6 @@ export async function daemonUpdateTask(
       }
     }
 
-    // Apply non-status updates
     const nodeUpdates: Record<string, unknown> = {};
     if (updates.title !== undefined) nodeUpdates.title = updates.title;
     if (updates.description !== undefined) nodeUpdates.content = updates.description;
@@ -134,7 +156,6 @@ export async function daemonUpdateTask(
       await client.updateNode(taskId, nodeUpdates);
     }
 
-    // Return updated task shape
     return {
       id: taskId,
       title: updates.title,
@@ -143,13 +164,14 @@ export async function daemonUpdateTask(
       assignee: updates.assignee ?? null,
       meta: updates.meta,
     };
-  });
+  }, opentasksDir);
 }
 
 export async function daemonAssignTask(
   socketPath: string,
   taskId: string,
   agentId: string,
+  opentasksDir?: string,
 ): Promise<MAPTask> {
   return withDaemon(socketPath, async (client) => {
     const result = await client.task({
@@ -166,13 +188,18 @@ export async function daemonAssignTask(
       status: (node?.status as MAPTaskStatus) ?? 'in_progress',
       assignee: agentId,
     };
-  });
+  }, opentasksDir);
 }
+
+// ============================================================================
+// Read Operations
+// ============================================================================
 
 export async function daemonListTasks(
   socketPath: string,
   filter?: { assignee?: string; status?: string | string[] },
   limit?: number,
+  opentasksDir?: string,
 ): Promise<{ tasks: MAPTask[]; hasMore: boolean }> {
   return withDaemon(socketPath, async (client) => {
     const result: QueryResult = await client.query({
@@ -186,7 +213,138 @@ export async function daemonListTasks(
     });
     const tasks = (result.items as NodeSummary[]).map(nodeToTask);
     return { tasks, hasMore: result.hasMore };
-  });
+  }, opentasksDir);
+}
+
+/**
+ * Get full graph data (nodes + edges) from daemon.
+ * Used by the frontend graph and kanban views.
+ */
+export async function daemonGetGraph(
+  socketPath: string,
+  opentasksDir?: string,
+): Promise<{ nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] }> {
+  return withDaemon(socketPath, async (client) => {
+    const nodesResult = await client.query({ nodes: { archived: false }, limit: 5000, verbose: true });
+    const edgesResult = await client.query({ edges: {}, limit: 10000 });
+
+    const nodes = (nodesResult.items as unknown as Record<string, unknown>[]).map((n) => ({
+      id: n.id,
+      type: n.type,
+      title: n.title,
+      description: n.content ?? n.description,
+      status: n.status,
+      priority: n.priority,
+      archived: n.archived,
+      assignee: n.assignee,
+      created_at: n.created_at ?? n.createdAt,
+      updated_at: n.updated_at ?? n.updatedAt,
+    }));
+
+    const edges = (edgesResult.items as EdgeSummary[]).map((e) => ({
+      id: e.id,
+      from_id: e.fromId,
+      to_id: e.toId,
+      type: e.type,
+    }));
+
+    return { nodes, edges };
+  }, opentasksDir);
+}
+
+/**
+ * Get graph summary (node/edge counts, status breakdown).
+ */
+export async function daemonGetSummary(
+  socketPath: string,
+  opentasksDir?: string,
+): Promise<{
+  node_count: number;
+  edge_count: number;
+  task_counts: Record<string, number>;
+  context_count: number;
+  feedback_count: number;
+  ready_count: number;
+  daemon_connected: boolean;
+}> {
+  return withDaemon(socketPath, async (client) => {
+    const nodesResult = await client.query({ nodes: { archived: false }, limit: 5000 });
+    const edgesResult = await client.query({ edges: {}, limit: 1 });
+    const readyResult = await client.ready({ limit: 1000 });
+
+    const items = nodesResult.items as NodeSummary[];
+    const taskCounts: Record<string, number> = {};
+    let contextCount = 0;
+    let feedbackCount = 0;
+
+    for (const node of items) {
+      if (node.type === 'task') {
+        const s = node.status || 'open';
+        taskCounts[s] = (taskCounts[s] ?? 0) + 1;
+      } else if (node.type === 'context') {
+        contextCount++;
+      } else if (node.type === 'feedback') {
+        feedbackCount++;
+      }
+    }
+
+    return {
+      node_count: items.length,
+      edge_count: edgesResult.total ?? 0,
+      task_counts: taskCounts,
+      context_count: contextCount,
+      feedback_count: feedbackCount,
+      ready_count: readyResult.length,
+      daemon_connected: true,
+    };
+  }, opentasksDir);
+}
+
+/**
+ * Get ready (unblocked) tasks from daemon.
+ */
+export async function daemonGetReady(
+  socketPath: string,
+  limit?: number,
+  opentasksDir?: string,
+): Promise<{ items: NodeSummary[]; total: number; daemon_connected: boolean }> {
+  return withDaemon(socketPath, async (client) => {
+    const items = await client.ready({ limit: limit ?? 50 });
+    return { items, total: items.length, daemon_connected: true };
+  }, opentasksDir);
+}
+
+/**
+ * Query nodes with arbitrary filters.
+ */
+export async function daemonQueryNodes(
+  socketPath: string,
+  filter: Record<string, unknown>,
+  opentasksDir?: string,
+): Promise<{ items: NodeSummary[]; total?: number; daemon_connected: boolean }> {
+  return withDaemon(socketPath, async (client) => {
+    const result = await client.query({ nodes: filter as any });
+    return { items: result.items as NodeSummary[], total: result.total, daemon_connected: true };
+  }, opentasksDir);
+}
+
+/**
+ * Check if daemon is alive + return graph file status.
+ */
+export async function daemonGetStatus(
+  socketPath: string,
+  opentasksDir: string,
+): Promise<{ daemon_running: boolean; graph_file_exists: boolean; graph_last_modified: string | null; socket_path: string }> {
+  const { isDaemonAlive } = await import('./task-daemon-lifecycle.js');
+  const graphPath = join(opentasksDir, 'graph.jsonl');
+  const graphExists = existsSync(graphPath);
+
+  return {
+    daemon_running: await isDaemonAlive(socketPath),
+    graph_file_exists: graphExists,
+    graph_last_modified: graphExists ? statSync(graphPath).mtime.toISOString() : null,
+    socket_path: socketPath,
+  };
 }
 
 // ============================================================================

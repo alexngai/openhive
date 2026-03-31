@@ -1,12 +1,12 @@
 /**
  * E2E Routing Tests: WebSocket Message Routing Through MAPServer
  *
- * Verifies that sync, coordination, task, opentasks, and mail messages
+ * Verifies that sync, coordination, tasks, and mail messages
  * are correctly routed through the MAPServer-based WebSocket handler.
  *
  * Routing paths:
  *   - Notifications (no `id`): notification interceptor handles sync, coordination, ping, mail
- *   - Requests (with `id`): MAPServer's additionalHandlers handle tasks, opentasks, ping
+ *   - Requests (with `id`): MAPServer's additionalHandlers handle tasks, ping
  *   - Mail requests (with `id`): MAPServer returns method-not-found (mail is notification-only)
  */
 
@@ -255,65 +255,6 @@ describe('E2E Routing: Open Mode — notification and request routing', () => {
     ws.close();
   });
 
-  // ── Task request routing (through MAPServer additionalHandlers) ──
-
-  it('routes task requests through MAPServer additionalHandlers', async () => {
-    const ws = await openModeConnect(`task-open-${Date.now()}`);
-
-    // Send map/tasks/list as a JSON-RPC request (with id).
-    // The handler may return an empty list or an error — either proves routing works.
-    const resp = await rpc(ws, 'map/tasks/list', {});
-
-    // We expect either a result (empty tasks list) or an error (routing still worked)
-    expect(resp.jsonrpc).toBe('2.0');
-    expect(resp.result !== undefined || resp.error !== undefined).toBe(true);
-
-    ws.close();
-  });
-
-  it('routes task create requests through MAPServer additionalHandlers', async () => {
-    const ws = await openModeConnect(`task-create-open-${Date.now()}`);
-
-    const resp = await rpc(ws, 'map/tasks/create', {
-      task: { title: 'Test task from e2e', status: 'open' },
-    });
-
-    expect(resp.jsonrpc).toBe('2.0');
-    // Either a created task or an error — both prove routing
-    expect(resp.result !== undefined || resp.error !== undefined).toBe(true);
-
-    ws.close();
-  });
-
-  // ── OpenTasks request routing ────────────────────────────────────
-
-  it('routes opentasks requests through MAPServer additionalHandlers', async () => {
-    const ws = await openModeConnect(`opentasks-open-${Date.now()}`);
-
-    // Send map/opentasks/status with no resource target — will error with
-    // "missing resource_id, path, or location_hash" which proves the handler was reached.
-    const resp = await rpc(ws, 'map/opentasks/status', {});
-
-    expect(resp.jsonrpc).toBe('2.0');
-    // Expect an error because no resource_id/path/location_hash provided
-    expect(resp.error).toBeDefined();
-    expect(resp.error.message).toContain('resource_id');
-
-    ws.close();
-  });
-
-  it('routes opentasks summary requests through MAPServer', async () => {
-    const ws = await openModeConnect(`opentasks-summary-open-${Date.now()}`);
-
-    const resp = await rpc(ws, 'map/opentasks/summary', {});
-
-    expect(resp.jsonrpc).toBe('2.0');
-    expect(resp.error).toBeDefined();
-    // The error proves the handler was reached and validated params
-    expect(resp.error.message).toContain('resource_id');
-
-    ws.close();
-  });
 });
 
 // ============================================================================
@@ -398,140 +339,6 @@ describe('E2E Routing: Verified Mode — notification and request routing', () =
 
     return ws;
   }
-
-  // ── Task method routing (MAPServer additionalHandlers) ───────────
-
-  it('routes map/tasks/list through MAPServer additionalHandlers after auth', async () => {
-    const ws = await verifiedConnectAndRegister();
-
-    const resp = await rpc(ws, 'map/tasks/list', {});
-
-    expect(resp.jsonrpc).toBe('2.0');
-    // Either result or error — both prove routing worked
-    expect(resp.result !== undefined || resp.error !== undefined).toBe(true);
-
-    ws.close();
-  });
-
-  it('routes map/tasks/create through MAPServer additionalHandlers', async () => {
-    const ws = await verifiedConnectAndRegister();
-
-    const resp = await rpc(ws, 'map/tasks/create', {
-      task: { title: 'Verified mode task', status: 'open' },
-    });
-
-    expect(resp.jsonrpc).toBe('2.0');
-    expect(resp.result !== undefined || resp.error !== undefined).toBe(true);
-
-    ws.close();
-  });
-
-  it('routes map/tasks/assign through MAPServer additionalHandlers', async () => {
-    const ws = await verifiedConnectAndRegister();
-
-    const resp = await rpc(ws, 'map/tasks/assign', {
-      taskId: 'nonexistent-task-id',
-      agentId: 'some-agent',
-    });
-
-    expect(resp.jsonrpc).toBe('2.0');
-    // Will error because task doesn't exist, but routing worked
-    expect(resp.error).toBeDefined();
-
-    ws.close();
-  });
-
-  it('routes map/tasks/update through MAPServer additionalHandlers', async () => {
-    const ws = await verifiedConnectAndRegister();
-
-    const resp = await rpc(ws, 'map/tasks/update', {
-      taskId: 'nonexistent-task-id',
-      status: 'completed',
-    });
-
-    expect(resp.jsonrpc).toBe('2.0');
-    expect(resp.error).toBeDefined();
-
-    ws.close();
-  });
-
-  // ── OpenTasks method routing (MAPServer additionalHandlers) ──────
-
-  it('routes map/opentasks/status through MAPServer', async () => {
-    const ws = await verifiedConnectAndRegister();
-
-    const resp = await rpc(ws, 'map/opentasks/status', {});
-
-    expect(resp.jsonrpc).toBe('2.0');
-    expect(resp.error).toBeDefined();
-    expect(resp.error.message).toContain('resource_id');
-
-    ws.close();
-  });
-
-  it('routes map/opentasks/summary through MAPServer', async () => {
-    const ws = await verifiedConnectAndRegister();
-
-    const resp = await rpc(ws, 'map/opentasks/summary', {});
-
-    expect(resp.jsonrpc).toBe('2.0');
-    expect(resp.error).toBeDefined();
-    expect(resp.error.message).toContain('resource_id');
-
-    ws.close();
-  });
-
-  it('routes map/opentasks/ready through MAPServer', async () => {
-    const ws = await verifiedConnectAndRegister();
-
-    const resp = await rpc(ws, 'map/opentasks/ready', {});
-
-    expect(resp.jsonrpc).toBe('2.0');
-    expect(resp.error).toBeDefined();
-    expect(resp.error.message).toContain('resource_id');
-
-    ws.close();
-  });
-
-  it('routes map/opentasks/query through MAPServer', async () => {
-    const ws = await verifiedConnectAndRegister();
-
-    const resp = await rpc(ws, 'map/opentasks/query', {});
-
-    expect(resp.jsonrpc).toBe('2.0');
-    expect(resp.error).toBeDefined();
-    expect(resp.error.message).toContain('resource_id');
-
-    ws.close();
-  });
-
-  it('routes map/opentasks/create-task through MAPServer', async () => {
-    const ws = await verifiedConnectAndRegister();
-
-    const resp = await rpc(ws, 'map/opentasks/create-task', {
-      title: 'Test task',
-    });
-
-    expect(resp.jsonrpc).toBe('2.0');
-    // Error because no resource_id/path/location_hash — proves routing
-    expect(resp.error).toBeDefined();
-
-    ws.close();
-  });
-
-  it('routes map/opentasks/update-status through MAPServer', async () => {
-    const ws = await verifiedConnectAndRegister();
-
-    const resp = await rpc(ws, 'map/opentasks/update-status', {
-      node_id: 'task_nonexistent',
-      status: 'closed',
-    });
-
-    expect(resp.jsonrpc).toBe('2.0');
-    expect(resp.error).toBeDefined();
-
-    ws.close();
-  });
 
   // ── Mail request routing ─────────────────────────────────────────
 

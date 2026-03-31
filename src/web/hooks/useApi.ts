@@ -588,8 +588,6 @@ export function useCreateOpenTask(resourceId: string) {
       queryClient.invalidateQueries({ queryKey: ['opentasks-summary', resourceId] });
       queryClient.invalidateQueries({ queryKey: ['opentasks-ready', resourceId] });
       queryClient.invalidateQueries({ queryKey: ['opentasks-graph', resourceId] });
-      queryClient.invalidateQueries({ queryKey: ['map-tasks'] });
-      queryClient.invalidateQueries({ queryKey: ['map-tasks-summary'] });
     },
   });
 }
@@ -607,8 +605,6 @@ export function useUpdateOpenTaskStatus(resourceId: string) {
       queryClient.invalidateQueries({ queryKey: ['opentasks-summary', resourceId] });
       queryClient.invalidateQueries({ queryKey: ['opentasks-ready', resourceId] });
       queryClient.invalidateQueries({ queryKey: ['opentasks-graph', resourceId] });
-      queryClient.invalidateQueries({ queryKey: ['map-tasks'] });
-      queryClient.invalidateQueries({ queryKey: ['map-tasks-summary'] });
     },
   });
 }
