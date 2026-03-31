@@ -39,7 +39,14 @@ vi.mock('../../map/task-daemon-client.js', () => {
         if (config.daemon?.socketPath) return config.daemon.socketPath;
       } catch { /* fall through */ }
     }
-    return join(opentasksDir, 'daemon.sock');
+
+    const directSocket = join(opentasksDir, 'daemon.sock');
+    if (existsSync(directSocket)) return directSocket;
+
+    const nestedSocket = join(opentasksDir, '.opentasks', 'daemon.sock');
+    if (existsSync(nestedSocket)) return nestedSocket;
+
+    return directSocket;
   }
 
   function _parseJsonl(opentasksDir: string): { nodes: any[]; edges: any[] } {
