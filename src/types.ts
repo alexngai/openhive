@@ -192,7 +192,11 @@ export type WSEventType =
   | 'mail.created'
   | 'mail.turn.added'
   | 'mail.participant.joined'
-  | 'mail.closed';
+  | 'mail.closed'
+  // Learning engine events
+  | 'learning:instant'
+  | 'learning:batch'
+  | 'learning:maintenance';
 
 export interface WSEvent {
   type: WSEventType;

@@ -389,6 +389,24 @@ export async function createHive(
     console.log("[openhive] Swarm hosting enabled");
   }
 
+  // Initialize learning engine (cognitive-core Atlas)
+  let atlasService: import('./learning/atlas-service.js').AtlasService | null = null;
+  if (config.learning.enabled) {
+    const { AtlasService } = await import('./learning/atlas-service.js');
+    // Use local agent as owner for learning resources
+    const localAgent = await getOrCreateLocalAgent();
+    atlasService = new AtlasService(config, localAgent.id);
+    try {
+      await atlasService.init();
+      (fastify as unknown as { atlasService: typeof atlasService }).atlasService = atlasService;
+      console.log("[openhive] Learning engine (Atlas) initialized");
+    } catch (err) {
+      console.warn(`[openhive] Learning engine failed to initialize: ${(err as Error).message}`);
+      console.warn("[openhive] Learning features will be unavailable");
+      atlasService = null;
+    }
+  }
+
   // Serve skill.md
   fastify.get("/skill.md", async (_request, reply) => {
     const skillMd = generateSkillMd(config);
@@ -610,6 +628,13 @@ export async function createHive(
         console.log("[openhive] Swarm hosting health monitor started");
       }
 
+      // Enable agentic learning compute if configured and swarm infrastructure is available
+      if (atlasService?.isAvailable() && config.learning.compute.enabled) {
+        const { SwarmAgentBackend } = await import('./learning/swarm-agent-backend.js');
+        const backend = new SwarmAgentBackend(config, swarmManager);
+        atlasService.enableAgenticCompute(backend);
+      }
+
       // Connect to SwarmHub
       if (swarmhubConnector) {
         try {
@@ -740,6 +765,10 @@ export async function createHive(
       // Stop all bridges
       if (bridgeManager) {
         await bridgeManager.stopAll();
+      }
+      // Stop learning engine
+      if (atlasService) {
+        await atlasService.close();
       }
       // Stop hosted swarms
       if (swarmManager) {

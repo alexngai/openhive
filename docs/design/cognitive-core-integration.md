@@ -1,7 +1,7 @@
 # Cognitive-Core Integration Design
 
 > Living design doc for integrating cognitive-core's learning engine with OpenHive.
-> Last updated: 2025-03-30
+> Last updated: 2026-03-31
 
 ## Status: Draft
 
@@ -9,36 +9,41 @@
 
 - [Overview](#overview)
 - [Goals](#goals)
+- [Architecture](#architecture)
+- [Programmatic vs Agentic Split](#programmatic-vs-agentic-split)
 - [Integration Points](#integration-points)
-  - [1. Trajectory Ingestion Pipeline](#1-trajectory-ingestion-pipeline)
-  - [2. Learning Engine Hosting](#2-learning-engine-hosting)
-  - [3. Learning UI & Observability](#3-learning-ui--observability)
-  - [4. Cross-Hive Knowledge Sync](#4-cross-hive-knowledge-sync)
-  - [5. Hive-as-Compute for Learning](#5-hive-as-compute-for-learning)
+  - [1. Atlas Service (Programmatic Layer)](#1-atlas-service-programmatic-layer)
+  - [2. Swarm Agent Backend (Agentic Layer)](#2-swarm-agent-backend-agentic-layer)
+  - [3. Trajectory Ingestion](#3-trajectory-ingestion)
+  - [4. Learning UI & Observability](#4-learning-ui--observability)
+  - [5. Cross-Hive Knowledge Sync](#5-cross-hive-knowledge-sync)
+  - [6. Hive-as-Compute for Learning](#6-hive-as-compute-for-learning)
 - [Data Flow](#data-flow)
-- [Resource Types](#resource-types)
 - [API Surface](#api-surface)
 - [Configuration](#configuration)
 - [Migration & Rollout](#migration--rollout)
+- [Design Decisions](#design-decisions)
 - [Open Questions](#open-questions)
 
 ---
 
 ## Overview
 
-cognitive-core is a three-speed learning engine that processes agent trajectories into reusable playbooks, knowledge notes, and causal models. OpenHive already collects trajectory data from connected swarms via MAP and has resource infrastructure for memory banks, skills, and tasks. This integration closes the loop: trajectories flow in, learning runs, and the resulting playbooks/knowledge flow back out to agents and across hives.
+cognitive-core is a three-speed learning engine that processes agent trajectories into reusable playbooks, knowledge notes, and causal models. OpenHive already collects trajectory data from connected swarms via MAP and has resource infrastructure for memory banks, skills, and tasks.
+
+This integration embeds cognitive-core's **programmatic Atlas service** directly in OpenHive (~90% of the learning pipeline — no LLM needed). For the optional agentic analysis tasks (~10% — LLM-assisted playbook extraction, efficacy audits), OpenHive **borrows agents from hosted/connected swarms**. OpenHive owns all learning persistence and provides direct API access — no proxy layer needed.
 
 ### What cognitive-core produces
 
-| Speed | Trigger | Output | Latency |
-|-------|---------|--------|---------|
-| Instant | Every trajectory | Experience record, playbook confidence bumps, knowledge notes, causal edges, reflexions | <200ms |
-| Batch | Energy threshold or N trajectories | New playbooks, playbook refinements, temporal compression, experience clustering, meta-learning | Seconds–minutes |
-| Maintenance | Circadian gate / manual | Healing, knowledge defrag, meta-strategies, health reports | Minutes |
+| Speed | Trigger | Output | Latency | Requires LLM? |
+|-------|---------|--------|---------|---------------|
+| Instant | Every trajectory | Experience record, playbook confidence bumps, knowledge notes, causal edges, reflexions | <200ms | No |
+| Batch (heuristic) | Energy threshold or N trajectories | Playbook extraction, temporal compression, clustering, meta-learning | Seconds | No |
+| Batch (agentic) | Complexity > threshold | LLM-assisted playbook extraction, knowledge extraction | Minutes | Yes (optional) |
+| Maintenance (core) | Circadian gate / manual | Healing, knowledge defrag, meta-strategies | Seconds | No |
+| Maintenance (efficacy) | Periodic / manual | Playbook efficacy audit, lifecycle review | Minutes | Yes (optional) |
 
 ### Existing integration surface
-
-OpenHive already integrates with cognitive-core's satellite packages:
 
 | Package | OpenHive integration | cognitive-core role |
 |---------|---------------------|-------------------|
@@ -60,156 +65,247 @@ The gap: no code currently instantiates cognitive-core's `Atlas` or feeds it tra
 
 ---
 
+## Architecture
+
+```
+OpenHive server
+│
+├── Atlas Service (programmatic, no LLM)
+│   ├── cognitive-core Atlas instance
+│   │   ├── MemorySystem (experiences, playbooks, knowledge)
+│   │   ├── UnifiedLearningPipeline
+│   │   │   ├── InstantLoop (per-trajectory, <200ms)
+│   │   │   ├── Heuristic batch (pattern matching, clustering, compression)
+│   │   │   └── Maintenance (healing, defrag, meta-strategies)
+│   │   ├── SessionBank (reads sessionlog data directly)
+│   │   ├── SkillPublisher → .skilltree/
+│   │   └── KnowledgeBank → markdown files
+│   ├── cognitive-core.db (local SQLite persistence)
+│   └── AgenticTaskRunner with SwarmAgentBackend
+│       └── When complexity > heuristic threshold:
+│           dispatches workspace template to borrowed swarm agent
+│
+├── Learning API routes (direct Atlas access — no proxy)
+│   ├── /api/v1/learning/stats → atlas.getStats()
+│   ├── /api/v1/learning/playbooks → memory.queryPlaybooks()
+│   ├── /api/v1/learning/batch → atlas.runBatchLearning()
+│   └── etc.
+│
+├── Resource registration
+│   ├── .skilltree/ registered as skill resource
+│   └── knowledge/ registered as memory_bank resource
+│
+└── SwarmAgentBackend (bridges to swarms for agentic tasks)
+    ├── Resolves swarm: preferred → available → spawn ephemeral
+    ├── Sends workspace template task via MAP
+    ├── Swarm spawns worker, executes, returns result
+    └── Result fed back to Atlas pipeline
+
+Hosted/connected swarm (macro-agent)
+├── Receives workspace template tasks from OpenHive
+├── Spawns worker agent to execute (isolated worktree)
+├── Returns structured results (extracted playbooks, knowledge, analysis)
+└── No cognitive-core dependency — just executes tasks
+```
+
+**Key principle**: OpenHive owns Atlas (persistence, pipeline, API). Swarms are just compute — they receive well-defined tasks and return structured results. Any capable swarm works.
+
+---
+
+## Programmatic vs Agentic Split
+
+cognitive-core's pipeline is ~90% programmatic. The `if (this.taskRunner)` guard in the UnifiedLearningPipeline determines whether agentic workspace templates are used. Without a taskRunner, everything falls back to heuristic execution.
+
+### Programmatic (runs in OpenHive, no LLM)
+
+| Component | What it does |
+|-----------|-------------|
+| InstantLoop | Store experience, bump playbook confidence, extract knowledge (regex/rules), causal edges, reflexion |
+| Analyzer | Credit assignment via exponential decay — pure math |
+| PlaybookExtractor (heuristic) | Pattern matching on action sequences, text normalization |
+| KnowledgeExtractor (heuristic) | Error pattern regex, config fact detection, causal chain inference, entity identification |
+| TemporalCompressor | Hot → warm → cold → evicted tier promotion/demotion |
+| ReasoningBank | K-means++ clustering of experiences |
+| MetaLearner | Routing strategy generation from success/failure patterns |
+| EnergyEvaluator | Batch trigger decision (count/time thresholds, domain novelty) |
+| HealingOrchestrator | Anomaly detection (drift, bloat, Z-score) + repair strategies |
+| KnowledgeDefrag | Deduplication via text similarity |
+| MaintenanceScheduler | Circadian gating, cycle orchestration |
+| SkillPublisher | Playbook → skill-tree format conversion |
+| SessionBank | Reads sessionlog orphan branch, tracks processing state |
+
+### Agentic (dispatched to borrowed swarm agents, optional)
+
+| Component | When triggered | What the agent does |
+|-----------|---------------|-------------------|
+| Trajectory analysis template | Batch, if complexity ≥ 'standard' | Semantic analysis of complex/failed trajectories |
+| Playbook extraction template | Batch, if batch > 3 trajectories | Semantic pattern identification across trajectory clusters |
+| Knowledge extraction template | Batch, if complexity ≥ 'standard' | Rich knowledge extraction from complex trajectories |
+| Playbook efficacy audit | Maintenance, if enabled | Reviews playbook effectiveness, usage patterns |
+| Playbook lifecycle review | Maintenance, periodic | Identifies stale/redundant playbooks, recommends retirement |
+
+**Phase 1 runs fully programmatic** — `taskRunner` is unset, all agentic templates fall back to heuristics. Swarm borrowing is Phase 2.
+
+---
+
 ## Integration Points
 
-### 1. Trajectory Ingestion Pipeline
+### 1. Atlas Service (Programmatic Layer)
 
-**Goal**: When a trajectory checkpoint arrives via MAP, feed the full transcript into cognitive-core.
+**Goal**: Run cognitive-core's Atlas as a Fastify plugin within OpenHive.
 
-**Current flow**:
-```
-Agent → MAP trajectory/checkpoint → trajectory-handler.ts
-  → stores checkpoint in trajectory_checkpoints table
-  → auto-creates session resource
-  → broadcasts trajectory:sync WS event
-```
-
-**Proposed extension**:
-```
-Agent → MAP trajectory/checkpoint → trajectory-handler.ts
-  → stores checkpoint (existing)
-  → resolves full transcript (5-tier resolution, existing)
-  → synthesizes Trajectory object from transcript
-  → atlas.processTrajectory(trajectory)
-  → instant results stored/broadcast
-  → batch triggered if energy threshold met
-```
-
-**Key design decisions**:
-
-- **Synthesis adapter**: We need a `MapTrajectorySource` that converts OpenHive's session transcript (Claude JSONL → ACP events) into cognitive-core's `Trajectory` format (ReAct steps). This is similar to cognitive-core's existing `SessionTrajectorySource` but operates on ACP events rather than raw sessionlog records.
-
-- **Async vs sync**: The instant loop (<200ms) can run synchronously on checkpoint arrival. Batch learning should be async (queued, not blocking the MAP handler). Maintenance should be scheduled or manually triggered.
-
-- **Transcript availability**: Full transcripts aren't always available at checkpoint time (the session may still be active). Options:
-  - **Eager**: Fetch transcript on every checkpoint, process immediately. High freshness, high load.
-  - **Deferred**: Queue for processing after session ends (detect via swarm disconnect or explicit session close). Lower load, delayed learning.
-  - **Hybrid**: Run instant loop on checkpoint metadata only (no transcript needed for experience storage + playbook confidence bumps), defer full trajectory synthesis until transcript is available.
-
-  **Recommendation**: Hybrid. The instant loop's experience storage and playbook matching work from checkpoint metadata. Full trajectory synthesis (which needs the transcript for step extraction) runs when the session completes or content becomes available.
-
-**Files to create/modify**:
-- `src/learning/` — New directory for learning engine integration
-- `src/learning/atlas-manager.ts` — Atlas lifecycle (init, config, shutdown)
-- `src/learning/trajectory-adapter.ts` — ACP events → cognitive-core Trajectory conversion
-- `src/learning/ingestion.ts` — Orchestrates checkpoint → learning pipeline
-- `src/map/trajectory-handler.ts` — Hook into learning pipeline after checkpoint storage
-
-### 2. Learning Engine Hosting
-
-**Goal**: Manage a cognitive-core Atlas instance as part of the OpenHive server lifecycle.
-
-**Atlas lifecycle**:
 ```typescript
-// Server startup
-const atlas = createAtlasWithAgents([swarmBackend], {
+// src/learning/atlas-service.ts — Fastify plugin
+const atlas = createAtlas({
   storage: { baseDir: config.dataDir + '/cognitive-core', persistenceEnabled: true },
   learning: { creditStrategy: 'simple', minTrajectories: 5 },
   knowledgeBank: { enabled: true, minimemAware: true },
   skillTree: { enabled: true },
-  sessionBank: { enabled: false }, // OpenHive manages trajectory ingestion directly
-  embedding: { provider: 'none' }, // BM25/text-similarity, no API keys needed
+  sessionBank: { enabled: true, autoIngest: false },
+  embedding: { provider: 'none' },
   features: { instantLoop: true, reflexion: true, causalExtraction: true },
+  // taskRunner NOT set in Phase 1 → fully programmatic
 });
 await atlas.init();
-
-// Server shutdown
-await atlas.close();
 ```
 
-**Key decisions**:
+**Lifecycle**: Initialized on server startup (after database ready), closed on shutdown. Decorated onto the Fastify instance as `server.atlas` following the pattern of `server.swarmManager` and `server.syncService`.
 
-- **Single Atlas per hive**: One Atlas instance manages all learning for the hive. Trajectories from all connected swarms feed into the same learning engine, partitioned by domain.
+**SessionBank config**: Reads sessionlog data directly — OpenHive runs on the same machine as the agents producing sessions. SessionBank configured with the project repo path(s) and orphan branch name. Supports multiple repos via sessionlog's own configuration.
 
-- **Agent backend → connected swarms**: Atlas is initialized with an `AgentBackend` that dispatches to connected/hosted swarms via MAP or SwarmManager. Batch learning workspace templates execute on swarm agents, not on the hive server. This keeps the hive lightweight and leverages existing compute. Heuristic-only extraction (no LLM) runs locally as fallback when no swarms are available.
-
-- **Storage location**: cognitive-core's SQLite DB (`cognitive-core.db`) and knowledge files live under `{dataDir}/cognitive-core/`. This keeps them co-located with other OpenHive data and included in backups.
-
-- **Knowledge bank ↔ minimem**: cognitive-core's KnowledgeBank writes markdown files. If `minimemAware: true`, it delegates search to minimem. OpenHive already serves minimem content via resource-content routes. The knowledge bank directory can be registered as a `memory_bank` resource for full UI access.
-
-- **Playbooks manifest as skills**: cognitive-core's SkillPublisher converts playbooks to skill-tree format and writes to `skills.db`. Agents consume playbooks through standard skill-tree discovery (`.skilltree/` directory), not through a custom injection protocol. OpenHive registers the published skills directory as a `skill` resource.
+**Persistence**: `cognitive-core.db` lives under `{dataDir}/cognitive-core/`. Knowledge files and `.skilltree/` also under this directory. All co-located with OpenHive data, included in backups.
 
 **Files to create/modify**:
-- `src/learning/atlas-manager.ts` — Atlas singleton, config from `openhive.config.js`
-- `src/server.ts` — Init/close Atlas with server lifecycle
+- `src/learning/atlas-service.ts` — Atlas Fastify plugin (lifecycle, config, decoration)
 - `src/config.ts` — Add `learning` config section
+- `src/server.ts` — Register atlas-service plugin
 
-### 3. Learning UI & Observability
+### 2. Swarm Agent Backend (Agentic Layer)
+
+**Goal**: When Atlas needs LLM-assisted analysis, borrow agents from a hosted/connected swarm.
+
+cognitive-core's `AgenticTaskRunner` calls `AgentBackend.spawn(config)` with a workspace template task. OpenHive implements `SwarmAgentBackend` that dispatches this to a swarm:
+
+```typescript
+// src/learning/swarm-agent-backend.ts
+class SwarmAgentBackend implements AgentBackend {
+  readonly name = 'openhive-swarm';
+  readonly supportedTypes = ['claude-code'];
+
+  async spawn(config: AgentSpawnConfig): Promise<AgentSession> {
+    // 1. Resolve a swarm (preferred → available → spawn ephemeral)
+    const swarmId = await this.resolveSwarm();
+
+    // 2. Send workspace template task to swarm
+    //    Task is self-contained: description + input data + expected output format
+    const requestId = nanoid();
+    sendToSwarm(swarmId, {
+      jsonrpc: '2.0',
+      method: 'x-openhive/learning.workspace.execute',
+      params: {
+        request_id: requestId,
+        task: {
+          description: config.task.description,
+          domain: config.task.domain,
+          context: config.task.context,
+        },
+        injected_knowledge: config.systemPromptAdditions,
+        timeout: config.timeout,
+      },
+    });
+
+    // 3. Wait for result via response notification
+    const result = await this.waitForResult(requestId);
+    return this.buildSession(config, result);
+  }
+}
+```
+
+**Swarm resolution**:
+1. **Preferred swarm** — `learning.compute.preferredSwarmId` if configured and online
+2. **Available connected swarm** — LRU among connected swarms
+3. **Spawn ephemeral** — Via SwarmManager if `spawnIfNoneAvailable: true`
+
+**Swarm-side handling**: The swarm (macro-agent) receives `x-openhive/learning.workspace.execute` as a task. It spawns a worker agent in an isolated worktree, the agent executes the task (which is just a well-defined analysis prompt), and returns structured JSON output. The swarm doesn't need cognitive-core — it's executing a generic task.
+
+**Protocol**: Single MAP extension method for the agentic layer:
+
+| Method | Direction | Description |
+|--------|-----------|-------------|
+| `x-openhive/learning.workspace.execute` | Hive → Swarm | Send workspace template task for agent execution |
+| `x-openhive/learning.workspace.result` | Swarm → Hive | Return structured analysis results |
+
+**Phase 2**: Wire `SwarmAgentBackend` into Atlas as the `AgenticTaskRunner`. Set on Atlas after a swarm is available.
+
+**Files to create**:
+- `src/learning/swarm-agent-backend.ts` — AgentBackend implementation
+- `src/map/learning-handler.ts` — MAP handler for workspace result notifications
+
+### 3. Trajectory Ingestion
+
+**Goal**: Feed sessionlog trajectory data into Atlas.
+
+OpenHive reads sessionlog directly — no injection into a separate swarm needed. SessionBank is configured with the project repo path and reads the orphan branch natively.
+
+**Deferred processing (Phase 1)**: When a session closes (swarm goes `online → offline`), OpenHive triggers ingestion:
+
+```typescript
+// src/learning/ingestion.ts
+async function onSessionClose(sessionResourceId: string) {
+  const sessionBank = server.atlas.getSessionBank();
+  const sessions = await sessionBank.query({ unprocessedOnly: true });
+  for (const session of sessions.sessions) {
+    const trajectory = trajectorySource.synthesize(session);
+    await server.atlas.processTrajectory(trajectory);
+    await sessionBank.markProcessed(session.sessionId);
+  }
+}
+```
+
+**Session close detection**: Hook into the swarm lifecycle status change (`online → unreachable → offline`) which OpenHive already tracks. When a swarm goes offline, trigger ingestion for its active sessions.
+
+**Files to create/modify**:
+- `src/learning/ingestion.ts` — Session close detection + ingestion trigger
+- `src/map/trajectory-handler.ts` — Hook ingestion into existing checkpoint handler
+
+### 4. Learning UI & Observability
 
 **Goal**: Dashboard for inspecting and controlling the learning engine.
 
-#### 3a. Learning Dashboard Page
+All routes read directly from Atlas — no MAP proxy needed.
 
-New page at `/learning` with sections:
-
-**Stats Overview** (from `atlas.getStats()`):
-- Experience count, playbook count, meta-observation count
-- Trajectories processed, pending trajectories
-- Skill library counts (core, domain)
-
-**Playbook Library**:
-- List all playbooks with name, domain, confidence, success rate, last used
-- Detail view: applicability, guidance, verification, evolution history
-- Filter by domain, sort by confidence/usage
-- Actions: trigger batch learning, view source trajectories
-
-**Knowledge Graph**:
-- Knowledge notes list with type (observation/entity/domain-summary), domain, confidence
-- Graph visualization (semantic/temporal/causal/entity layers)
-- Search (delegated to minimem if available)
-
-**Learning Activity**:
-- Timeline of learning events (instant results, batch runs, maintenance cycles)
-- Energy level indicator (how close to batch trigger)
-- Batch/maintenance cycle results
-
-**Controls**:
-- Trigger batch learning manually
-- Trigger maintenance cycle
-- Configure learning parameters (domain routing, batch thresholds)
-
-#### 3b. Session Detail Enhancement
-
-Extend the existing session detail page with a "Learning" tab:
-- Show what the learning engine extracted from this session's trajectories
-- Linked experiences, playbook updates, knowledge notes produced
-- Playbooks that were injected (if the session was routed through Atlas)
-
-#### 3c. API Routes
+#### API Routes
 
 ```
-GET    /api/v1/learning/stats           — Atlas stats
-GET    /api/v1/learning/playbooks       — List playbooks (filterable)
-GET    /api/v1/learning/playbooks/:id   — Playbook detail
-GET    /api/v1/learning/knowledge       — Knowledge notes (filterable)
-GET    /api/v1/learning/knowledge/:id   — Knowledge note detail
-GET    /api/v1/learning/experiences     — Recent experiences
-GET    /api/v1/learning/activity        — Learning event timeline
-POST   /api/v1/learning/batch           — Trigger batch learning
-POST   /api/v1/learning/maintenance     — Trigger maintenance cycle
-GET    /api/v1/learning/config          — Current learning config
-PATCH  /api/v1/learning/config          — Update learning config
+GET    /api/v1/learning/stats           — atlas.getStats()
+GET    /api/v1/learning/playbooks       — memory.queryPlaybooks()
+GET    /api/v1/learning/playbooks/:id   — memory.getPlaybook(id)
+GET    /api/v1/learning/knowledge       — knowledgeBank.search()
+GET    /api/v1/learning/knowledge/:id   — knowledgeBank.getNote(id)
+GET    /api/v1/learning/experiences     — memory.queryExperiences()
+GET    /api/v1/learning/activity        — pipeline event log
+POST   /api/v1/learning/batch           — atlas.runBatchLearning()
+POST   /api/v1/learning/maintenance     — maintenance scheduler trigger
+GET    /api/v1/learning/config          — current learning config
+PATCH  /api/v1/learning/config          — atlas.updateConfig()
+GET    /api/v1/learning/health          — pipeline stats + swarm backend health
 ```
 
-#### 3d. WebSocket Events
+#### WebSocket Events
 
 ```
-learning:instant    — Fired after each instant loop (experience stored, playbooks bumped)
-learning:batch      — Fired when batch learning completes (new playbooks, compression stats)
-learning:maintenance — Fired when maintenance cycle completes
+learning:instant      — After each instant loop
+learning:batch        — When batch learning completes
+learning:maintenance  — When maintenance cycle completes
 ```
 
-These feed real-time updates to the learning dashboard via existing WS infrastructure.
+#### Dashboard Sections
+
+- **Stats Overview**: Experience count, playbook count, trajectories processed, skill library counts
+- **Playbook Library**: List with domain/confidence/success rate, detail view with evolution history
+- **Knowledge Notes**: List + search (minimem-backed if available), filterable by type/domain
+- **Learning Activity**: Timeline of learning events, energy level indicator
+- **Controls**: Trigger batch/maintenance, configure parameters
 
 **Files to create**:
 - `src/api/routes/learning.ts` — Learning API routes
@@ -217,7 +313,7 @@ These feed real-time updates to the learning dashboard via existing WS infrastru
 - `src/web/pages/LearningPlaybookDetail.tsx` — Playbook detail view
 - `src/web/components/learning/` — Dashboard components
 
-### 4. Cross-Hive Knowledge Sync
+### 5. Cross-Hive Knowledge Sync
 
 **Goal**: Federate playbooks and knowledge across hive instances.
 
@@ -228,92 +324,34 @@ These feed real-time updates to the learning dashboard via existing WS infrastru
 | Playbooks | JSON (Playbook schema) | `resource_published` / `resource_synced` events via mesh sync |
 | Knowledge notes | Markdown + YAML frontmatter | `resource_synced` events (file-level changes) |
 | Skills (derived) | skill-tree format | Already syncable as `skill` resources |
-| Experiences | Not synced (too voluminous, instance-specific) |
-| Meta-learning | Not synced (instance-specific routing optimization) |
+| Experiences | Not synced (instance-specific) | — |
+| Meta-learning | Not synced (instance-specific) | — |
 
 #### New Resource Type: `playbook`
-
-Extend `SyncableResourceType` to include `'playbook'`:
 
 ```typescript
 type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session' | 'playbook'
 ```
 
-A hive's playbook library is registered as a syncable resource. When batch learning produces new playbooks, a `resource_synced` event is emitted to the mesh. Peer hives materialize incoming playbooks by merging them into their local Atlas:
-
-```
-Hive A: batch learning → new playbook extracted
-  → resource_synced event (playbook payload)
-  → mesh sync → Hive B receives event
-  → materializer imports playbook into Hive B's Atlas
-  → playbook available for Hive B's routing
-```
-
-**Conflict resolution**: Playbooks have semantic versioning and confidence scores. On import:
-- If the playbook is new (no local match by name+domain): import directly
-- If a local version exists: merge using higher confidence, union of refinements, keep both evolution histories
-- Imported playbooks get `provenance.origin = 'imported'` with source hive ID
-
-#### Knowledge Sync via Memory Bank
-
-Knowledge notes are already markdown files compatible with minimem. They can be synced as a `memory_bank` resource using the existing resource sync infrastructure (git-backed or file-level sync). No special handling needed beyond registering the knowledge bank directory as a syncable resource.
+**Conflict resolution**: Higher confidence wins, union of refinements, keep both evolution histories. Imported playbooks get `provenance.origin = 'imported'`.
 
 **Files to modify**:
 - `src/types.ts` — Add `'playbook'` to SyncableResourceType
 - `src/sync/materializer.ts` — Handle playbook materialization
-- `src/learning/sync.ts` — Emit sync events on learning output, import remote playbooks
-- `src/db/dal/syncable-resources.ts` — Playbook resource CRUD
+- `src/learning/sync.ts` — Emit sync events, import remote playbooks
 
-### 5. Hive-as-Compute for Learning
+### 6. Hive-as-Compute for Learning
 
 **Goal**: Distribute batch and maintenance learning across hive instances.
 
-This is the most ambitious integration point. Two modes:
+Two modes:
 
-#### 5a. Centralized Learning Hive
+**Centralized**: One hive runs Atlas for a cluster. Peer hives sync sessionlog data to it. Results propagate via mesh sync.
 
-One hive is designated as the "learning hive" that runs batch/maintenance cycles for a cluster:
-
-```
-Hive A (collector) → trajectories → Hive L (learning hive)
-Hive B (collector) → trajectories → Hive L (learning hive)
-Hive L: runs batch learning on pooled trajectories
-  → publishes playbooks/knowledge back via mesh sync
-```
-
-**Implementation**: Hives forward trajectory data to the learning hive via a new MAP extension method (`learning/trajectory.submit`). The learning hive processes them through its Atlas. Results propagate back via normal mesh sync.
-
-#### 5b. Domain-Partitioned Learning
-
-Different hives specialize in different domains:
-
-```
-Hive A: learns "deployment" domain playbooks
-Hive B: learns "debugging" domain playbooks
-Hive C: learns "testing" domain playbooks
-All hives: sync playbooks to each other via mesh
-```
-
-**Implementation**: Configure domain→hive routing in the learning config. When a trajectory arrives, the hive checks the domain and either processes locally or forwards to the designated domain hive.
-
-#### Compute Coordination Protocol
-
-New MAP extension methods:
-
-```
-learning/trajectory.submit    — Forward trajectory to compute hive
-learning/batch.request        — Request a hive to run batch learning
-learning/batch.result         — Return batch learning results
-learning/maintenance.request  — Request maintenance cycle
-learning/maintenance.result   — Return maintenance results
-learning/stats                — Query a hive's learning stats
-```
-
-These use the existing MAP notification pattern (JSON-RPC 2.0 over WebSocket), similar to `trajectory/content.request`/`response`.
+**Domain-partitioned**: Different hives specialize in different domains. Each hive's Atlas is configured with domain filtering.
 
 **Files to create**:
-- `src/learning/compute.ts` — Compute coordination (forward/receive trajectories, batch requests)
-- `src/map/learning-handler.ts` — MAP handler for learning/* methods
+- `src/learning/distributed.ts` — Cross-hive learning coordination
 
 ---
 
@@ -322,70 +360,58 @@ These use the existing MAP notification pattern (JSON-RPC 2.0 over WebSocket), s
 ### End-to-End: Trajectory → Learning → Sync
 
 ```
-┌─────────────┐    MAP checkpoint     ┌──────────────────────────────┐
-│ Agent/Swarm  │ ──────────────────── │ OpenHive                     │
-│ (cc-swarm)   │                      │                              │
-└─────────────┘                      │  trajectory-handler.ts        │
-                                      │    ├─ store checkpoint (DB)   │
-                                      │    ├─ broadcast WS event      │
-                                      │    └─ queue for learning      │
-                                      │                              │
-                                      │  ingestion.ts                │
-                                      │    ├─ resolve transcript      │
-                                      │    ├─ synthesize Trajectory   │
-                                      │    └─ atlas.processTrajectory │
-                                      │         │                    │
-                                      │         ├─ Instant loop      │
-                                      │         │  ├─ store experience│
-                                      │         │  ├─ bump playbooks │
-                                      │         │  ├─ extract knowledge│
-                                      │         │  └─ broadcast WS   │
-                                      │         │                    │
-                                      │         └─ (if triggered)    │
-                                      │            Batch learning    │
-                                      │            ├─ extract playbooks│
-                                      │            ├─ compress memory │
-                                      │            ├─ publish skills  │
-                                      │            └─ emit sync event │
-                                      │                  │           │
-                                      │  mesh sync ──────┘           │
-                                      │    → peer hives receive      │
-                                      │    → materialize playbooks   │
-                                      └──────────────────────────────┘
+┌─────────────┐                       ┌──────────────────────────────────────┐
+│ Agent/Swarm  │  sessionlog hooks     │ OpenHive                             │
+│ (cc-swarm)   │ ──────────────────┐  │                                      │
+└─────────────┘                    │  │  trajectory-handler.ts                │
+       │ MAP checkpoint            │  │    ├─ store checkpoint (DB)           │
+       └───────────────────────────┼─▶│    ├─ broadcast WS event              │
+                                   │  │    └─ detect session close             │
+                                   │  │                                        │
+                                   │  │  Atlas Service (programmatic)          │
+                                   │  │    ├─ SessionBank reads sessionlog     │
+                                   ▼  │    ├─ processTrajectory()              │
+                              sessionlog   │    │                              │
+                              orphan branch│    ├─ Instant loop                │
+                                   │  │    │   ├─ store experience             │
+                                   │  │    │   ├─ bump playbooks               │
+                                   │  │    │   ├─ extract knowledge            │
+                                   │  │    │   └─ broadcast learning:instant   │
+                                   │  │    │                                   │
+                                   │  │    └─ (if energy triggered) Batch      │
+                                   │  │       ├─ heuristic extraction (local)  │
+                                   │  │       ├─ OR agentic → borrow swarm ────┼──┐
+                                   │  │       ├─ publish to .skilltree/        │  │
+                                   │  │       ├─ write knowledge notes         │  │
+                                   │  │       └─ broadcast learning:batch      │  │
+                                   │  │                                        │  │
+                                   │  │  Resource registration                 │  │
+                                   │  │    ├─ .skilltree/ → skill resource     │  │
+                                   │  │    └─ knowledge/ → memory_bank         │  │
+                                   │  │                                        │  │
+                                   │  │  mesh sync → peer hives               │  │
+                                   │  └──────────────────────────────────────┘  │
+                                   │                                            │
+                                   │  ┌────────────────────────────────────┐    │
+                                   │  │ Swarm (borrowed for agentic tasks) │◄───┘
+                                   │  │  ├─ receives workspace template    │
+                                   │  │  ├─ spawns worker agent            │
+                                   │  │  ├─ returns structured results     │
+                                   │  │  └─ no cognitive-core dependency   │
+                                   │  └────────────────────────────────────┘
 ```
 
 ### Learning Dashboard Data Flow
 
 ```
-┌──────────────┐   GET /learning/*   ┌──────────────────┐
-│ React UI     │ ◄────────────────── │ learning.ts      │
-│ Learning.tsx │                      │ (API routes)     │
-│              │   WS learning:*     │                  │
-│              │ ◄────────────────── │ atlas.getStats() │
-└──────────────┘                      │ memory.query()   │
-                                      │ pipeline.getStats│
-                                      └──────────────────┘
+┌──────────────┐   GET /learning/*   ┌──────────────────────────────┐
+│ React UI     │ ◄────────────────── │ OpenHive learning routes      │
+│ Learning.tsx │                      │  ├─ direct Atlas access       │
+│              │   WS learning:*     │  │  atlas.getStats()          │
+│              │ ◄────────────────── │  │  memory.queryPlaybooks()   │
+└──────────────┘                      │  └─ no proxy, no MAP msgs    │
+                                      └──────────────────────────────┘
 ```
-
----
-
-## Resource Types
-
-### Playbook Resource
-
-```typescript
-interface PlaybookResourceMetadata {
-  playbook_count: number;
-  domains: string[];
-  avg_confidence: number;
-  last_batch_at?: string;        // ISO 8601
-  source_hive_id?: string;       // if imported
-}
-```
-
-### Learning Resource (cognitive-core state)
-
-The cognitive-core data directory is not itself a syncable resource — it contains instance-specific state (experiences, meta-learning weights) that shouldn't be federated. Only playbooks and knowledge are sync targets.
 
 ---
 
@@ -400,7 +426,6 @@ The cognitive-core data directory is not itself a syncable resource — it conta
 | GET | `/playbooks/:id` | Playbook detail with evolution | Bearer |
 | GET | `/knowledge` | Knowledge notes with search | Bearer |
 | GET | `/knowledge/:id` | Knowledge note detail | Bearer |
-| GET | `/knowledge/graph` | Knowledge graph edges | Bearer |
 | GET | `/experiences` | Recent experiences | Bearer |
 | GET | `/experiences/:id` | Experience detail | Bearer |
 | GET | `/activity` | Learning event timeline | Bearer |
@@ -408,16 +433,16 @@ The cognitive-core data directory is not itself a syncable resource — it conta
 | POST | `/maintenance` | Trigger maintenance cycle | Admin |
 | GET | `/config` | Current learning config | Admin |
 | PATCH | `/config` | Update learning config | Admin |
-| GET | `/health` | Learning engine health report | Bearer |
+| GET | `/health` | Learning engine + swarm backend health | Bearer |
 
-### MAP Extension Methods
+### MAP Extension Methods (Agentic Layer Only)
 
 | Method | Direction | Description |
 |--------|-----------|-------------|
-| `learning/trajectory.submit` | Hive → Hive | Forward trajectory for remote processing |
-| `learning/batch.request` | Hive → Hive | Request batch learning on remote hive |
-| `learning/batch.result` | Hive → Hive | Return batch results |
-| `learning/stats` | Hive → Hive | Query remote learning stats |
+| `x-openhive/learning.workspace.execute` | Hive → Swarm | Send workspace template task for agent execution |
+| `x-openhive/learning.workspace.result` | Swarm → Hive | Return structured analysis results |
+
+MAP messages are only used for the optional agentic layer (dispatching workspace templates to swarms). All other learning operations (stats, batch trigger, maintenance, ingestion) are direct function calls within OpenHive.
 
 ---
 
@@ -429,60 +454,45 @@ The cognitive-core data directory is not itself a syncable resource — it conta
   learning: {
     enabled: true,                    // Master toggle
 
-    // Atlas config passthrough
+    // Atlas config
     atlas: {
       creditStrategy: 'simple',       // 'simple' | 'causal'
       minTrajectories: 5,             // Batch trigger threshold
       maxExperiences: 4,              // Per-query memory limit
       maxContextTokens: 4000,
-      embedding: { provider: 'none' },// Default: BM25/text-similarity, no API keys
+      embedding: { provider: 'none' },// Default: BM25/text-similarity
     },
 
     // Ingestion behavior
     ingestion: {
-      mode: 'hybrid',                // 'eager' | 'deferred' | 'hybrid'
-      processOnCheckpoint: true,     // Run instant loop on checkpoint arrival
-      processOnSessionClose: true,   // Full trajectory synthesis on session end
+      mode: 'deferred',             // 'deferred' (Phase 1) | 'hybrid' (future)
     },
 
-    // Knowledge bank
-    knowledge: {
-      enabled: true,
-      minimemAware: true,            // Use minimem for search if available
-      registerAsResource: true,      // Auto-register as memory_bank resource
-    },
-
-    // Skill publishing
-    skills: {
-      enabled: true,
-      registerAsResource: true,      // Auto-register as skill resource
+    // Agentic compute (Phase 2+)
+    compute: {
+      enabled: false,                // Enable agentic workspace templates
+      preferredSwarmId: null,        // Specific swarm, or null for auto-select
+      spawnIfNoneAvailable: true,    // Spawn ephemeral swarm if needed
+      spawnProvider: 'local',        // 'local' | 'sandboxed'
     },
 
     // Cross-hive sync
     sync: {
-      publishPlaybooks: true,        // Emit sync events for new playbooks
-      importPlaybooks: true,         // Materialize incoming playbooks
+      publishPlaybooks: true,
+      importPlaybooks: true,
       conflictStrategy: 'merge',     // 'merge' | 'local-wins' | 'remote-wins'
     },
 
-    // Compute: where batch/maintenance learning runs
-    compute: {
-      agentBackend: 'swarm',         // 'swarm' | 'local-heuristic'
-      preferredSwarmId: null,        // Specific swarm for learning, or null for auto-select
-      spawnIfNoneAvailable: true,    // Auto-spawn hosted swarm when no connected swarms
-      spawnProvider: 'local',        // 'local' | 'sandboxed' (SwarmManager provider)
-    },
-
-    // Distributed compute (cross-hive)
+    // Distributed compute (Phase 4)
     distributed: {
       mode: 'local',                 // 'local' | 'centralized' | 'domain-partitioned'
-      learningHiveUrl: null,         // For centralized mode
-      domainRouting: {},             // For domain-partitioned: { domain: hiveUrl }
+      learningHiveUrl: null,
+      domainRouting: {},
     },
 
     // Scheduling
     maintenance: {
-      schedule: '0 3 * * *',        // Cron for maintenance cycle (3 AM daily)
+      schedule: '0 3 * * *',        // Cron for maintenance cycle
       autoRun: true,
     },
   }
@@ -493,39 +503,99 @@ The cognitive-core data directory is not itself a syncable resource — it conta
 
 ## Migration & Rollout
 
-### Phase 1: Foundation (Learning Engine Hosting + Ingestion)
+### Phase 1: Programmatic Learning (no swarm needed)
 
-- [ ] Add `cognitive-core` dependency
-- [ ] Implement `AtlasManager` (lifecycle, config, shutdown)
-- [ ] Implement swarm `AgentBackend` adapter (dispatch learning tasks to connected swarms via MAP, spawn via SwarmManager if none available)
-- [ ] Implement trajectory adapter (ACP events → cognitive-core Trajectory)
-- [ ] Wire ingestion into trajectory-handler (hybrid mode: instant on checkpoint, full on session close)
-- [ ] Add `learning` config section to `openhive.config.js`
-- [ ] Basic `/learning/stats` route
-- [ ] Auto-register knowledge bank as `memory_bank` resource
-- [ ] Auto-register published skills as `skill` resource (skill-tree discovery)
+**1. Foundation**
+- [ ] Add `cognitive-core` as a full dependency in `package.json`
+- [ ] Add `learning` config section (Zod schema in `src/config.ts`)
+  - [ ] `learning.enabled`, `learning.atlas`, `learning.ingestion`, `learning.maintenance`
+  - [ ] Stub `compute`, `sync`, `distributed` sections with defaults (Phase 1.5+)
+
+**2. Atlas service plugin** (`src/learning/atlas-service.ts`)
+- [ ] Atlas lifecycle (init on startup after DB ready, close on shutdown)
+- [ ] Decorate onto Fastify instance as `server.atlas` (follows `server.swarmManager` pattern)
+- [ ] Configure SessionBank with local sessionlog repo path(s)
+  - [ ] Default project path from `learning` config for initial startup
+  - [ ] Lazy-init additional SessionBank instances when first checkpoint arrives from new project (keyed by `metadata.project` from trajectory checkpoint)
+- [ ] Configure SkillPublisher + KnowledgeBank under `{dataDir}/cognitive-core/`
+  - [ ] Ensure directory structure is created on init
+- [ ] `taskRunner` NOT set → fully programmatic, heuristic fallbacks
+- [ ] Graceful degradation: catch Atlas init errors, log warning, disable learning
+  - [ ] Rest of OpenHive continues to function if learning init fails
+  - [ ] `server.atlas` is `null` when disabled; routes return 503
+  - [ ] If `cognitive-core.db` is corrupted, log error and attempt re-init with fresh state (don't crash server)
+- [ ] Logging: pipe cognitive-core operations through OpenHive's Fastify logger
+  - [ ] Check if cognitive-core supports injecting a custom logger; if not, wrap key Atlas calls with OpenHive log statements
+
+**3. Trajectory ingestion** (`src/learning/ingestion.ts`)
+- [ ] Hook into swarm `online → offline` transition (connection registry status change)
+- [ ] On swarm disconnect: look up active session resources for that swarm
+- [ ] Async queue: process sessions in background, don't block the disconnect handler
+  - [ ] SessionBank scan + `processTrajectory()` for each unprocessed session
+  - [ ] Broadcast `learning:instant` WS event after each trajectory processed
+- [ ] Error handling: log and skip individual trajectory failures, don't halt ingestion queue
+
+**4. Learning API routes** (`src/api/routes/learning.ts`)
+- [ ] GET `/stats` → `atlas.getStats()`
+- [ ] GET `/playbooks` → paginated, filterable by domain, sortable by confidence/recency
+- [ ] GET `/playbooks/:id` → playbook detail with evolution history
+- [ ] GET `/knowledge` → paginated, filterable by type/domain, searchable
+- [ ] GET `/knowledge/:id` → knowledge note detail
+- [ ] GET `/experiences` → recent experiences, paginated
+- [ ] POST `/batch` → `atlas.runBatchLearning()` (admin only)
+- [ ] POST `/maintenance` → trigger maintenance cycle (admin only)
+- [ ] All routes return 503 if Atlas is disabled/unavailable
+- [ ] Zod schemas for query params (pagination, filters, sort)
+
+**5. Resource registration**
+- [ ] On Atlas init, register `{dataDir}/cognitive-core/.skilltree/` as `skill` resource via `upsertDiscoveredResource()`
+- [ ] On Atlas init, register `{dataDir}/cognitive-core/knowledge/` as `memory_bank` resource
+- [ ] Resources appear in existing resource UI and are available for sync
+
+**6. WebSocket events**
+- [ ] `learning:instant` — broadcast after each `processTrajectory()` returns `ImmediateResult`
+- [ ] `learning:batch` — broadcast after `runBatchLearning()` completes
+- [ ] `learning:maintenance` — broadcast after maintenance cycle completes
+- [ ] Events emitted from ingestion layer / Atlas call wrappers (Atlas pipeline doesn't emit events natively)
+
+**7. Testing**
+- [ ] Integration test: init Atlas → feed a test trajectory → verify experience stored + playbook confidence updated
+- [ ] Integration test: feed N trajectories → trigger batch → verify playbook extracted + skill published
+- [ ] Integration test: Atlas init failure → verify server still starts, routes return 503
+- [ ] Integration test: ingestion on swarm disconnect → verify sessions processed
+- [ ] API route tests: pagination, filtering, 503 when disabled
+
+### Phase 1.5: Agentic Analysis (swarm borrowing)
+
+- [ ] Implement `SwarmAgentBackend` (`src/learning/swarm-agent-backend.ts`)
+  - [ ] Swarm resolution (preferred → available → spawn ephemeral)
+  - [ ] `x-openhive/learning.workspace.execute` / `.result` MAP messages
+  - [ ] Timeout + error handling
+- [ ] Implement MAP handler for workspace results (`src/map/learning-handler.ts`)
+- [ ] Wire `SwarmAgentBackend` into Atlas as `AgenticTaskRunner`
+  - [ ] Conditional: only set when `learning.compute.enabled` and a swarm is available
+- [ ] Add `compute` config section
+- [ ] `/health` route includes swarm backend status
 
 ### Phase 2: UI & Observability
 
 - [ ] Learning dashboard page (`/learning`)
-- [ ] Playbook list + detail views (observability, not agent-facing)
+- [ ] Playbook list + detail views
 - [ ] Knowledge notes browser with search
-- [ ] Learning activity timeline (instant/batch/maintenance events)
-- [ ] WebSocket events (`learning:instant`, `learning:batch`, `learning:maintenance`)
-- [ ] Session detail "Learning" tab (what was extracted from this session)
+- [ ] Learning activity timeline
+- [ ] Session detail "Learning" tab
 - [ ] Batch/maintenance trigger controls (admin)
 
 ### Phase 3: Cross-Hive Sync
 
 - [ ] Add `playbook` resource type to SyncableResourceType
-- [ ] Emit `resource_synced` events on skill-tree publish (new playbooks → skills)
+- [ ] Emit `resource_synced` events on skill-tree publish
 - [ ] Materialize incoming playbook/skill resources from peer hives
-- [ ] Conflict resolution (merge strategy for duplicate playbooks)
-- [ ] Knowledge sync via `memory_bank` resource (existing infrastructure)
+- [ ] Conflict resolution (merge strategy)
+- [ ] Knowledge sync via `memory_bank` resource
 
 ### Phase 4: Distributed Compute
 
-- [ ] MAP `learning/*` extension methods
 - [ ] Centralized learning hive mode
 - [ ] Domain-partitioned routing
 - [ ] Compute health monitoring
@@ -535,11 +605,10 @@ The cognitive-core data directory is not itself a syncable resource — it conta
 - [ ] Team trajectory synthesis from correlated sessions (sessionlog + openteams)
 - [ ] `atlas.processTeamTrajectory()` integration
 - [ ] Team playbook extraction (role composition, handoff patterns)
-- [ ] Team skill publishing
 
 ### Future: opentasks Enrichment (Design Objective)
 
-- [ ] Task metadata enrichment for trajectories (task description, domain, dependencies from opentasks)
+- [ ] Task metadata enrichment for trajectories (task description, domain, dependencies)
 - [ ] Scoped trajectory analysis (task + trajectory combos)
 - [ ] Task-level learning insights (effort estimates, playbook suggestions)
 
@@ -547,89 +616,105 @@ The cognitive-core data directory is not itself a syncable resource — it conta
 
 ## Design Decisions
 
-Resolved questions that shape the architecture.
-
 ### 1. Embedding provider → Default `none`
 
-Default to `none` (BM25/text-similarity fallback). Users opt into vector search via Atlas config. When minimem is available, it brings its own embedding config for knowledge search. No OpenHive-level global embedding setting needed.
+Default to `none` (BM25/text-similarity fallback). Users opt into vector search via Atlas config. When minimem is available, it brings its own embedding config for knowledge search.
 
-### 2. Batch learning execution → Dispatch to connected/hosted swarms
+### 2. Atlas location → Embedded in OpenHive (programmatic service)
 
-Batch learning does **not** run inline on the hive server. cognitive-core's workspace templates are structured to use agents in agent workspaces. OpenHive dispatches batch learning work to connected or hosted swarms — the hive acts as orchestrator, agents do the LLM-heavy analysis.
+Atlas runs directly in OpenHive as a Fastify plugin. cognitive-core's pipeline is ~90% programmatic (no LLM) — there's no reason to push it into a separate swarm process.
 
-This means:
-- The hive's `AtlasManager` configures cognitive-core with an `AgentBackend` that routes to a connected swarm (via MAP) or a hosted swarm (via SwarmManager)
-- Swarm resolution: preferred swarm → LRU among connected → spawn ephemeral hosted swarm (see Decision #8)
-- Batch learning triggers spawn a learning task on the resolved swarm
-- The swarm's agent executes the workspace template and returns results
-- Heuristic-only extraction (no LLM) still runs locally as a fallback when `agentBackend: 'local-heuristic'`
+**Why this changed from "dedicated learning swarm"**: Analysis of cognitive-core's codebase revealed that the `UnifiedLearningPipeline` is almost entirely heuristic/code-based. The `if (this.taskRunner)` guard means everything falls back to programmatic execution when no agent runner is configured. Only workspace templates (complex batch analysis, efficacy audits) need LLM agents.
 
-### 3. Team learning → Deferred (design objective)
+**Benefits**:
+- Direct API access — no MAP message proxying for stats, playbooks, batch triggers
+- OpenHive owns persistence — `cognitive-core.db`, knowledge, skills all local
+- Phase 1 needs zero swarm infrastructure — fully programmatic
+- Simpler debugging and observability — everything in one process
+- SessionBank reads sessionlog directly — no resource injection needed
 
-Included as a design objective but deferred past Phase 4. Team learning requires `TeamTrajectory` synthesis from correlated individual sessions. The data source will be sessionlog with openteams topology information — tracking role attribution, handoff patterns, and team composition across sessions.
+**For agentic tasks**: OpenHive implements `SwarmAgentBackend` that dispatches workspace template tasks to borrowed swarm agents. The scope is narrow (well-defined input/output) and optional.
 
-**Prerequisites**: Stable single-agent learning pipeline, openteams integration in sessionlog, team trajectory synthesis adapter.
+### 3. Swarm borrowing for agentic tasks
+
+When Atlas's pipeline decides a workspace template needs LLM analysis, `SwarmAgentBackend` dispatches to a hosted/connected swarm. The swarm receives a self-contained task (description + input data + expected output format) and returns structured results. The swarm doesn't need cognitive-core — it's executing a generic analysis task.
+
+**Protocol**: Two MAP extension methods (`workspace.execute` / `workspace.result`) — request-response pattern similar to `trajectory/content.request` / `trajectory/content.response`.
+
+**Swarm resolution**: Preferred → LRU among connected → spawn ephemeral via SwarmManager.
 
 ### 4. Playbook manifestation → skill-tree
 
-Playbooks manifest as **skills** published via skill-tree's `SkillPublisher` → `SqliteStorageAdapter`. Agents load them through skill-tree's standard discovery mechanism (`.skilltree/` directory). OpenHive already discovers and serves skill-tree content via resource-content routes.
+Playbooks manifest as skills via SkillPublisher → `.skilltree/`. Agents load them through standard skill-tree discovery. The `/api/v1/learning/playbooks` routes are for observability, not agent consumption.
 
-This means:
-- No custom playbook injection protocol needed
-- No routing layer intercepting tasks
-- Agents get playbooks the same way they get any other skill — via skill-tree
-- OpenHive's role is to run learning, publish skills, and serve the skill resource
-- The `/api/v1/learning/playbooks` routes are for **observability** (inspecting what was learned), not for agent consumption
+### 5. Team learning → Deferred (design objective)
 
-Flow: `Trajectory → Learning → Playbook → SkillPublisher → skills.db → .skilltree/ → Agent loads via skill-tree`
+Deferred past Phase 4. Requires `TeamTrajectory` synthesis from correlated sessions via sessionlog + openteams.
 
-### 5. opentasks integration → Deferred (design objective)
+### 6. opentasks integration → Deferred (design objective)
 
-opentasks provides scoped trajectories for analysis: task + trajectory combos give cognitive-core bounded problem-solving records to learn from. This is a natural fit for trajectory source enrichment — when a trajectory is associated with an opentasks task, the task metadata (description, dependencies, domain) enriches the Trajectory object fed into the learning pipeline.
+opentasks provides scoped trajectories (task + trajectory combos). Deferred to Phase 3+.
 
-**Deferred to Phase 3+**. Noted in the trajectory adapter design as a future enrichment source.
+### 7. Storage isolation → Fully independent per hive
 
-### 6. Storage isolation → Fully independent per hive
+Each hive's `cognitive-core.db` and knowledge files are fully isolated. Cross-hive sharing through sync layer only.
 
-Each hive's `cognitive-core.db` and knowledge files are fully isolated. Cross-hive sharing happens exclusively through the sync layer (playbooks as skills, knowledge as memory_bank resources). No shared storage mode.
+### 8. Retention policy → cognitive-core owns it, config exposed
 
-### 7. Retention policy → cognitive-core owns it, config exposed
+cognitive-core's temporal compression handles retention. OpenHive exposes config knobs via `learning.atlas` but doesn't add hive-level policies.
 
-cognitive-core's temporal compression (hot → warm → cold → evicted) handles retention internally. OpenHive exposes the relevant config knobs (`maxExperiences`, compression thresholds) through the `learning.atlas` config section but does **not** add hive-level retention policies on top. The two systems remain independent.
+### 9. Skill-tree publish frequency → Immediate, configurable via cognitive-core
+
+Publish after each batch run. Imported playbooks not re-published (prevents mesh echo).
+
+### 10. Knowledge graph UI → Deferred
+
+List + search in Phase 2. Interactive graph visualization deferred.
+
+### 11. Coordination protocol → Direct for programmatic, MAP for agentic only
+
+All programmatic learning operations (ingestion, batch trigger, stats, maintenance) are direct function calls within OpenHive. MAP extension messages are only used for the optional agentic layer — dispatching workspace template tasks to swarms and receiving results. This replaces the previous design which used MAP messages for all control plane communication.
 
 ---
 
-### 8. Swarm selection for batch learning → Delegate or spawn
+### 12. cognitive-core dependency → Full dependency
 
-When batch learning triggers, the hive resolves a swarm for execution:
+cognitive-core is a regular `dependencies` entry in `package.json`. The `learning.enabled` config flag gates all learning functionality at runtime — when disabled, Atlas is never initialized and the dependency is inert. No dynamic loading or optional dependency complexity.
 
-1. **Preferred swarm** — If `compute.preferredSwarmId` is configured and online, use it
-2. **Least-recently-used** — Among connected swarms, pick the one least recently used for learning
-3. **Spawn hosted swarm** — If no connected swarms are available, spawn a temporary hosted swarm via SwarmManager, run the batch, tear it down
+### 13. SessionBank multi-project → Single SessionBank initially, designed for multi-project expansion
 
-This makes learning self-sufficient — a hive with no persistent swarms can still run batch learning by spinning up ephemeral compute. The spawn path uses existing SwarmManager infrastructure (local or sandboxed providers).
+Phase 1: Single `SessionBank` configured with one project repo path. Covers the common case (one developer, one project).
 
-Config:
-```javascript
-learning: {
-  compute: {
-    agentBackend: 'swarm',
-    preferredSwarmId: null,
-    spawnIfNoneAvailable: true,   // Auto-spawn hosted swarm for learning
-    spawnProvider: 'local',       // 'local' | 'sandboxed' (SwarmManager provider)
+The design accommodates multiple SessionBanks later — when multiple agents from different projects connect, OpenHive can lazily create a SessionBank per project (keyed by project path from trajectory checkpoint metadata). Each SessionBank scans its own orphan branch independently. Trajectories from different projects get different `domain` tags, so playbook extraction partitions naturally.
+
+### 14. Workspace template task format → Serialize cognitive-core template prompts
+
+`x-openhive/learning.workspace.execute` sends the cognitive-core workspace template prompt as the task description. The swarm agent receives it as a standard analysis task — the prompt is self-contained with all input data embedded. The swarm has no cognitive-core awareness; it just runs the prompt and returns structured JSON.
+
+```typescript
+// SwarmAgentBackend serializes the template:
+{
+  method: 'x-openhive/learning.workspace.execute',
+  params: {
+    request_id: string,
+    task: {
+      description: string,        // Full workspace template prompt from cognitive-core
+      domain: string,
+      context: {
+        trajectories: Trajectory[],  // Serialized input data
+        existing_playbooks: PlaybookSummary[],
+      },
+    },
+    expected_output_schema: {     // JSON schema for structured output
+      type: 'playbook_extraction' | 'trajectory_analysis' | 'knowledge_extraction' | 'efficacy_audit',
+      schema: JSONSchema,
+    },
+    timeout: number,
   }
 }
 ```
 
-### 9. Skill-tree publish frequency → Immediate, configurable via cognitive-core
-
-Publish immediately after each batch run. Batch runs are already infrequent (energy-threshold gated). Only locally-extracted playbooks are published — imported playbooks from peer hives are not re-published (prevents echo/amplification in the mesh).
-
-Publish behavior is configurable through cognitive-core's `skillTree` config (publish thresholds, confidence gates). OpenHive passes this through via `learning.atlas.skillTree` rather than adding its own publish frequency knob.
-
-### 10. Knowledge graph UI → Deferred
-
-Start with list + search for knowledge notes in Phase 2. Interactive graph visualization deferred — the list view covers the primary use case (browsing and searching learned knowledge). Graph visualization can be revisited when there's concrete user demand.
+cognitive-core controls the analysis quality through its template prompts. The swarm is pure LLM compute. Output is validated against the schema before being fed back to Atlas.
 
 ---
 

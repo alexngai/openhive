@@ -261,12 +261,27 @@ export function leaveHive(swarmId: string, hiveName: string): boolean {
  */
 export function markStaleSwarms(staleThresholdMinutes: number = 5): number {
   const db = getDatabase();
+
+  // Find which swarms will be marked stale (for event emission)
+  const stale = db.prepare(`
+    SELECT id FROM map_swarms
+    WHERE status IN ('online', 'unreachable')
+      AND last_seen_at < datetime('now', ?)
+  `).all(`-${staleThresholdMinutes} minutes`) as { id: string }[];
+
+  if (stale.length === 0) return 0;
+
   const result = db.prepare(`
     UPDATE map_swarms
     SET status = 'offline', updated_at = datetime('now')
     WHERE status IN ('online', 'unreachable')
       AND last_seen_at < datetime('now', ?)
   `).run(`-${staleThresholdMinutes} minutes`);
+
+  // Emit swarm_offline events for learning engine ingestion
+  for (const s of stale) {
+    mapHubEvents.emit('swarm_offline', { swarm_id: s.id });
+  }
 
   return result.changes;
 }
