@@ -78,6 +78,24 @@ export function useMemoryRealtime(resourceId: string) {
   useWSEvent('memory:sync', invalidate);
 }
 
+// ── Skill Content ──
+
+/**
+ * Invalidates skill content queries when skill:sync events arrive.
+ */
+export function useSkillRealtime(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  useSubscribe([`resource:skill:${resourceId}`]);
+
+  const invalidate = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['skills-list', resourceId] });
+    queryClient.invalidateQueries({ queryKey: ['skill-detail', resourceId] });
+  }, [queryClient, resourceId]);
+
+  useWSEvent('skill:sync', invalidate);
+}
+
 // ── Sessions ──
 
 /**

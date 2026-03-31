@@ -13,6 +13,7 @@ import type { Config } from '../../config.js';
 
 // Valid resource types
 const RESOURCE_TYPES = ['memory_bank', 'task', 'skill', 'session'] as const;
+const SYNC_STRATEGIES = ['metadata', 'local', 'ls-remote', 'mirror'] as const;
 
 // Validation schemas
 const CreateResourceSchema = z.object({
@@ -25,6 +26,7 @@ const CreateResourceSchema = z.object({
   description: z.string().max(500).optional(),
   git_remote_url: z.string().min(1).max(500),
   visibility: z.enum(['private', 'shared', 'public']).default('private'),
+  sync_strategy: z.enum(SYNC_STRATEGIES).optional(),
   tags: z.array(z.string().max(50)).max(10).optional(),
   metadata: z.record(z.unknown()).optional(),
 });
@@ -39,6 +41,7 @@ const UpdateResourceSchema = z.object({
   description: z.string().max(500).optional().nullable(),
   git_remote_url: z.string().min(1).max(500).optional(),
   visibility: z.enum(['private', 'shared', 'public']).optional(),
+  sync_strategy: z.enum(SYNC_STRATEGIES).optional(),
   metadata: z.record(z.unknown()).optional(),
 });
 
@@ -189,7 +192,7 @@ export async function resourcesRoutes(
       });
     }
 
-    const { resource_type, name, description, git_remote_url, visibility, tags, metadata } = parseResult.data;
+    const { resource_type, name, description, git_remote_url, visibility, sync_strategy, tags, metadata } = parseResult.data;
 
     try {
       const resource = resourcesDAL.createResource({
@@ -198,6 +201,7 @@ export async function resourcesRoutes(
         description,
         git_remote_url,
         visibility,
+        sync_strategy,
         owner_agent_id: request.agent!.id,
         metadata,
       });
