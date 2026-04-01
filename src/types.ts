@@ -192,7 +192,11 @@ export type WSEventType =
   | 'mail.created'
   | 'mail.turn.added'
   | 'mail.participant.joined'
-  | 'mail.closed';
+  | 'mail.closed'
+  // Learning engine events
+  | 'learning:instant'
+  | 'learning:batch'
+  | 'learning:maintenance';
 
 export interface WSEvent {
   type: WSEventType;
@@ -288,7 +292,7 @@ export interface MemoryBankSubscriptionWithAgent extends MemoryBankSubscription 
 // Syncable Resources Types (generic resource system)
 // ============================================================================
 
-export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session';
+export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session' | 'playbook';
 export type ResourceVisibility = 'private' | 'shared' | 'public';
 export type ResourcePermission = 'read' | 'write' | 'admin';
 export type ResourceScope = 'global' | 'project' | 'agent' | 'manual';
@@ -368,6 +372,22 @@ export interface SkillResourceMetadata {
   skill_format?: string;
   supported_frameworks?: string[];
   entry_point?: string;
+}
+
+// Playbook-specific metadata (learning engine output)
+export interface PlaybookResourceMetadata {
+  /** Number of playbooks in this resource */
+  playbook_count?: number;
+  /** Domains covered by playbooks */
+  domains?: string[];
+  /** Average confidence across playbooks */
+  avg_confidence?: number;
+  /** When the last batch learning run produced playbooks */
+  last_batch_at?: string;
+  /** Source hive instance ID if imported via sync */
+  source_hive_id?: string;
+  /** Provenance: 'local' if extracted locally, 'imported' if from peer hive */
+  provenance?: 'local' | 'imported';
 }
 
 // Session-specific metadata

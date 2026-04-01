@@ -117,7 +117,7 @@ export interface ModeratorChangedPayload {
 
 export interface ResourcePublishedPayload {
   resource_id: string;
-  resource_type: 'memory_bank' | 'task' | 'skill' | 'session';
+  resource_type: 'memory_bank' | 'task' | 'skill' | 'session' | 'playbook';
   name: string;
   description: string | null;
   git_remote_url: string;
