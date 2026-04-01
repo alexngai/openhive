@@ -31,6 +31,28 @@ function useTasksOverride() {
   }), [openTasks.tasks, openTasks.createTask, openTasks.assignTask]);
 }
 
+function BridgeLinks() {
+  const { data: mapSwarms } = useMapSwarms();
+  const { data: sessions } = useSessionsList();
+
+  const onlineSwarms = mapSwarms?.filter(s => s.status === 'online').length ?? 0;
+  const totalSwarms = mapSwarms?.length ?? 0;
+  const sessionCount = sessions?.total ?? 0;
+
+  return (
+    <div className="flex items-center gap-3 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+      <Link to="/swarms" className="flex items-center gap-1 hover:text-honey-500 transition-colors">
+        <Zap className="w-3 h-3" />
+        <span>{onlineSwarms}/{totalSwarms} swarms</span>
+      </Link>
+      <Link to="/sessions" className="flex items-center gap-1 hover:text-honey-500 transition-colors">
+        <Activity className="w-3 h-3" />
+        <span>{sessionCount} sessions</span>
+      </Link>
+    </div>
+  );
+}
+
 function BridgeStatusBar() {
   const { data: mapSwarms } = useMapSwarms();
   const { data: sessions } = useSessionsList();
@@ -142,34 +164,42 @@ function SwarmCraftView() {
   const tasksOverride = useTasksOverride();
   const [showStats, setShowStats] = useState(false);
 
+  const headerLeft = <BridgeLinks />;
+  const headerRight = (
+    <div className="flex items-center gap-1.5 ml-2">
+      <button
+        onClick={() => setShowStats(true)}
+        className="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-medium transition-colors hover:bg-workspace-hover"
+        style={{ color: 'var(--color-text-secondary)' }}
+      >
+        <BarChart3 className="w-3.5 h-3.5" />
+        Stats
+      </button>
+      <Link to="/swarms?action=spawn" className="btn btn-primary flex items-center gap-1 text-xs py-1.5 px-2.5">
+        <Zap className="w-3 h-3" />
+        Spawn
+      </Link>
+      <Link to="/swarms?action=connect" className="btn btn-secondary flex items-center gap-1 text-xs py-1.5 px-2.5">
+        <Link2 className="w-3 h-3" />
+        Connect
+      </Link>
+    </div>
+  );
+
   return (
-    <>
-      <BridgeStatusBar />
-      <div className="flex-1 min-h-0 relative">
-        <SwarmCraftApp
-          config={config}
-          autoConnect
-          defaultPanelOpen={false}
-          tasksOverride={tasksOverride}
-        />
-        {showStats && <StatsOverlay onClose={() => setShowStats(false)} />}
-        {/* Floating stats toggle */}
-        {!showStats && (
-          <button
-            onClick={() => setShowStats(true)}
-            className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors hover:bg-workspace-hover"
-            style={{
-              backgroundColor: 'var(--color-bg)',
-              borderColor: 'var(--color-border-subtle)',
-              color: 'var(--color-text-secondary)',
-            }}
-          >
-            <BarChart3 className="w-3.5 h-3.5" />
-            Stats
-          </button>
-        )}
-      </div>
-    </>
+    <div className="flex-1 min-h-0 relative">
+      <SwarmCraftApp
+        config={config}
+        autoConnect
+        initialViewMode="exploring"
+        defaultPanelOpen={false}
+        tasksOverride={tasksOverride}
+        embedded
+        headerLeftContent={headerLeft}
+        headerRightContent={headerRight}
+      />
+      {showStats && <StatsOverlay onClose={() => setShowStats(false)} />}
+    </div>
   );
 }
 
@@ -191,9 +221,17 @@ function StatsDashboard() {
 export function Dashboard() {
   const features = useInstanceFeatures();
 
+  if (features?.swarmcraft) {
+    return (
+      <div className="flex flex-col h-full">
+        <SwarmCraftView />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
+      {/* Header (only for non-SwarmCraft fallback) */}
       <div
         className="flex items-center justify-between px-4 py-3 border-b shrink-0"
         style={{ borderColor: 'var(--color-border-subtle)' }}
@@ -210,8 +248,7 @@ export function Dashboard() {
           </Link>
         </div>
       </div>
-
-      {features?.swarmcraft ? <SwarmCraftView /> : <StatsDashboard />}
+      <StatsDashboard />
     </div>
   );
 }
