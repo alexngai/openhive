@@ -24,6 +24,7 @@ export interface Playbook {
   name: string;
   confidence: number;
   complexity: string;
+  estimatedEffort?: number;
   applicability: {
     situations: string[];
     triggers: string[];
@@ -93,6 +94,18 @@ export interface LearningHealth {
     scheduled: boolean;
     schedule?: string;
     auto_run?: boolean;
+  };
+  distributed?: {
+    mode: 'local' | 'centralized' | 'domain-partitioned';
+    local_processing: boolean;
+    forwarding_to?: string;
+    domain_routing?: Record<string, string>;
+    health: {
+      local_atlas_available: boolean;
+      remote_hive_reachable?: boolean;
+      last_forward_at?: string;
+      last_forward_error?: string;
+    };
   };
 }
 

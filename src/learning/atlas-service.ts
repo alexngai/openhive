@@ -5,15 +5,11 @@ import { upsertDiscoveredResource } from '../db/dal/syncable-resources.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import { mapHubEvents } from '../map/service.js';
 import { triggerIngestion } from './ingestion.js';
+import { DistributedLearningCoordinator } from './distributed.js';
 import type { Config } from '../config.js';
 import { emitBatchSyncEvents } from './sync.js';
 import { type Atlas, createAtlas, type ProcessResult, type BatchResult, SessionBank } from 'cognitive-core';
-
-type Logger = {
-  info: (...args: unknown[]) => void;
-  warn: (...args: unknown[]) => void;
-  error: (...args: unknown[]) => void;
-};
+import { type LearningLogger, defaultLogger } from './types.js';
 
 /** A learning activity event for the timeline */
 export interface LearningActivity {
@@ -33,21 +29,19 @@ export class AtlasService {
   private activityLog: LearningActivity[] = [];
   private skillResourceId: string | null = null;
   private knowledgeResourceId: string | null = null;
+  private coordinator: DistributedLearningCoordinator | null = null;
+  private swarmOfflineHandler: (({ swarm_id }: { swarm_id: string }) => void) | null = null;
   private config: Config;
   private baseDir: string;
   private ownerAgentId: string;
   private maintenanceTimer: ReturnType<typeof setInterval> | null = null;
-  private log: Logger;
+  private log: LearningLogger;
 
-  constructor(config: Config, ownerAgentId: string, logger?: Logger) {
+  constructor(config: Config, ownerAgentId: string, logger?: LearningLogger) {
     this.config = config;
     this.ownerAgentId = ownerAgentId;
     this.baseDir = path.join(resolveDataDir(), 'data', 'cognitive-core');
-    this.log = logger || {
-      info: (...args: unknown[]) => console.log('[learning]', ...args),
-      warn: (...args: unknown[]) => console.warn('[learning]', ...args),
-      error: (...args: unknown[]) => console.error('[learning]', ...args),
-    };
+    this.log = logger || defaultLogger;
   }
 
   /**
@@ -74,10 +68,17 @@ export class AtlasService {
       // Register output directories as discoverable resources
       this.registerLearningResources();
 
+      // Initialize distributed learning coordinator
+      if (this.config.learning.distributed.mode !== 'local') {
+        this.coordinator = new DistributedLearningCoordinator(this.config, this, this.log);
+        this.log.info(`Distributed learning mode: ${this.config.learning.distributed.mode}`);
+      }
+
       // Listen for swarm offline events to trigger ingestion
-      mapHubEvents.on('swarm_offline', ({ swarm_id }: { swarm_id: string }) => {
-        triggerIngestion(this, swarm_id, this.log);
-      });
+      this.swarmOfflineHandler = ({ swarm_id }: { swarm_id: string }) => {
+        triggerIngestion(this, swarm_id, this.log, this.coordinator || undefined);
+      };
+      mapHubEvents.on('swarm_offline', this.swarmOfflineHandler);
 
       // Start maintenance scheduler
       this.startMaintenanceScheduler();
@@ -217,6 +218,11 @@ export class AtlasService {
     return this.atlas?.getLearning() ?? null;
   }
 
+  /** Get the distributed learning coordinator (null if mode is 'local'). */
+  getCoordinator(): DistributedLearningCoordinator | null {
+    return this.coordinator;
+  }
+
   /**
    * Get a detailed status snapshot for monitoring.
    */
@@ -252,6 +258,9 @@ export class AtlasService {
         schedule: this.config.learning.maintenance.schedule,
         auto_run: this.config.learning.maintenance.autoRun,
       },
+      distributed: this.coordinator
+        ? await this.coordinator.getStatus()
+        : { mode: 'local' as const, local_processing: true, health: { local_atlas_available: this.isAvailable() } },
     };
   }
 
@@ -276,6 +285,12 @@ export class AtlasService {
 
   /** Graceful shutdown */
   async close(): Promise<void> {
+    // Remove event listener
+    if (this.swarmOfflineHandler) {
+      mapHubEvents.removeListener('swarm_offline', this.swarmOfflineHandler);
+      this.swarmOfflineHandler = null;
+    }
+
     // Stop maintenance scheduler
     if (this.maintenanceTimer) {
       clearInterval(this.maintenanceTimer);
@@ -289,6 +304,9 @@ export class AtlasService {
       } catch { /* non-critical */ }
     }
     this.sessionBanks = [];
+
+    // Reset coordinator
+    this.coordinator = null;
 
     // Close Atlas
     if (this.atlas) {
@@ -562,5 +580,17 @@ export interface LearningStatus {
     scheduled: boolean;
     schedule?: string;
     auto_run?: boolean;
+  };
+  distributed?: {
+    mode: 'local' | 'centralized' | 'domain-partitioned';
+    local_processing: boolean;
+    forwarding_to?: string;
+    domain_routing?: Record<string, string>;
+    health: {
+      local_atlas_available: boolean;
+      remote_hive_reachable?: boolean;
+      last_forward_at?: string;
+      last_forward_error?: string;
+    };
   };
 }

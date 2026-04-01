@@ -365,10 +365,12 @@ export const ConfigSchema = z.object({
       conflictStrategy: z.enum(['merge', 'local-wins', 'remote-wins']).default('merge'),
     }).default({}),
 
-    /** Distributed compute — Phase 4 (stubbed) */
+    /** Distributed compute — Phase 4 */
     distributed: z.object({
       mode: z.enum(['local', 'centralized', 'domain-partitioned']).default('local'),
       learningHiveUrl: z.string().nullable().default(null),
+      /** API key for authenticating with the remote learning hive */
+      learningHiveApiKey: z.string().optional(),
       domainRouting: z.record(z.string(), z.string()).default({}),
     }).default({}),
 

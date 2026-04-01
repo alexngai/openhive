@@ -201,6 +201,50 @@ export async function learningRoutes(
     return reply.send({ data, total, limit: params.limit, offset: params.offset });
   });
 
+  // GET /learning/experiences/:id
+  fastify.get('/learning/experiences/:id', { preHandler: authMiddleware }, async (request, reply) => {
+    const svc = getAtlasService();
+    const { id } = request.params as { id: string };
+    const memory = svc.getMemory();
+    if (!memory) {
+      return reply.status(404).send({ error: 'Experience not found' });
+    }
+    const all = await memory.experiences.getAll();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const exp = (all as any[]).find(e => e.id === id);
+    if (!exp) {
+      return reply.status(404).send({ error: 'Experience not found' });
+    }
+    return reply.send(exp);
+  });
+
+  // GET /learning/config (admin only)
+  fastify.get('/learning/config', { preHandler: adminAuth }, async (_request, reply) => {
+    const svc = getAtlasService();
+    const atlas = svc.getAtlas()!;
+    // Return the learning config section from OpenHive config
+    // plus any runtime Atlas config
+    try {
+      const runtimeConfig = (atlas as any).getConfig?.() ?? {};
+      return reply.send(runtimeConfig);
+    } catch {
+      return reply.send({});
+    }
+  });
+
+  // PATCH /learning/config (admin only)
+  fastify.patch('/learning/config', { preHandler: adminAuth }, async (request, reply) => {
+    const svc = getAtlasService();
+    const atlas = svc.getAtlas()!;
+    const updates = request.body as Record<string, unknown>;
+    try {
+      atlas.updateConfig(updates as any);
+      return reply.send({ ok: true, applied: updates });
+    } catch (err) {
+      return reply.status(400).send({ error: (err as Error).message });
+    }
+  });
+
   // GET /learning/activity — learning event timeline
   fastify.get('/learning/activity', { preHandler: authMiddleware }, async (request, reply) => {
     const svc = getAtlasService();
@@ -209,11 +253,30 @@ export async function learningRoutes(
     return reply.send({ data, total, limit: params.limit, offset: params.offset });
   });
 
+  // POST /learning/ingest — receive forwarded trajectories from peer hives
+  fastify.post('/learning/ingest', { preHandler: authMiddleware }, async (request, reply) => {
+    const svc = getAtlasService();
+    const body = request.body as Record<string, unknown> | null;
+    if (!body || typeof body !== 'object' || !body.trajectory || typeof body.trajectory !== 'object') {
+      return reply.status(400).send({ error: 'Request body must include a trajectory object' });
+    }
+    try {
+      const result = await svc.processTrajectory(body.trajectory as any);
+      return reply.send({ ok: true, result });
+    } catch (err) {
+      return reply.status(422).send({ error: `Trajectory processing failed: ${(err as Error).message}` });
+    }
+  });
+
   // POST /learning/batch (admin only)
   fastify.post('/learning/batch', { preHandler: adminAuth }, async (_request, reply) => {
     const svc = getAtlasService();
-    const result = await svc.runBatchLearning();
-    return reply.send(result);
+    try {
+      const result = await svc.runBatchLearning();
+      return reply.send(result);
+    } catch (err) {
+      return reply.status(500).send({ error: `Batch learning failed: ${(err as Error).message}` });
+    }
   });
 
   // POST /learning/maintenance (admin only)
@@ -231,14 +294,18 @@ export async function learningRoutes(
       return reply.status(501).send({ error: 'Maintenance not supported' });
     }
 
-    const result = await pipeline.runMaintenance();
+    try {
+      const result = await pipeline.runMaintenance();
 
-    broadcastToChannel('learning', {
-      type: 'learning:maintenance',
-      data: result,
-    });
+      broadcastToChannel('learning', {
+        type: 'learning:maintenance',
+        data: result,
+      });
 
-    return reply.send(result);
+      return reply.send(result);
+    } catch (err) {
+      return reply.status(500).send({ error: `Maintenance failed: ${(err as Error).message}` });
+    }
   });
 
   // GET /learning/health — detailed monitoring endpoint

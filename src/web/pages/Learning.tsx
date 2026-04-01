@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Brain, BookOpen, Lightbulb, Activity, Zap, Settings, ChevronRight, AlertCircle, CheckCircle2, Clock, Database, Wrench, RefreshCw } from 'lucide-react';
 import {
@@ -171,31 +171,45 @@ function OverviewTab({ health, stats }: { health: any; stats: any }) {
       </div>
 
       {/* Controls */}
-      <div className="flex gap-2">
-        <button
-          className="btn btn-secondary text-xs"
-          onClick={() => triggerBatch.mutate()}
-          disabled={triggerBatch.isPending}
-        >
-          {triggerBatch.isPending ? (
-            <RefreshCw className="w-3 h-3 animate-spin mr-1.5" />
-          ) : (
-            <Zap className="w-3 h-3 mr-1.5" />
-          )}
-          Run Batch Learning
-        </button>
-        <button
-          className="btn btn-secondary text-xs"
-          onClick={() => triggerMaintenance.mutate()}
-          disabled={triggerMaintenance.isPending}
-        >
-          {triggerMaintenance.isPending ? (
-            <RefreshCw className="w-3 h-3 animate-spin mr-1.5" />
-          ) : (
-            <Wrench className="w-3 h-3 mr-1.5" />
-          )}
-          Run Maintenance
-        </button>
+      <div className="flex flex-col gap-2">
+        <div className="flex gap-2">
+          <button
+            className="btn btn-secondary text-xs"
+            onClick={() => triggerBatch.mutate()}
+            disabled={triggerBatch.isPending}
+          >
+            {triggerBatch.isPending ? (
+              <RefreshCw className="w-3 h-3 animate-spin mr-1.5" />
+            ) : (
+              <Zap className="w-3 h-3 mr-1.5" />
+            )}
+            Run Batch Learning
+          </button>
+          <button
+            className="btn btn-secondary text-xs"
+            onClick={() => triggerMaintenance.mutate()}
+            disabled={triggerMaintenance.isPending}
+          >
+            {triggerMaintenance.isPending ? (
+              <RefreshCw className="w-3 h-3 animate-spin mr-1.5" />
+            ) : (
+              <Wrench className="w-3 h-3 mr-1.5" />
+            )}
+            Run Maintenance
+          </button>
+        </div>
+        {triggerBatch.isError && (
+          <p className="text-2xs text-red-400">Batch learning failed: {(triggerBatch.error as Error)?.message || 'Unknown error'}</p>
+        )}
+        {triggerMaintenance.isError && (
+          <p className="text-2xs text-red-400">Maintenance failed: {(triggerMaintenance.error as Error)?.message || 'Unknown error'}</p>
+        )}
+        {triggerBatch.isSuccess && (
+          <p className="text-2xs text-green-400">Batch learning completed</p>
+        )}
+        {triggerMaintenance.isSuccess && (
+          <p className="text-2xs text-green-400">Maintenance completed</p>
+        )}
       </div>
 
       {/* Activity Timeline */}
@@ -344,7 +358,7 @@ function PlaybookCard({ playbook }: { playbook: Playbook }) {
     : null;
 
   return (
-    <Link to={`/learning/playbooks/${playbook.id}`} className="card card-hover px-3 py-2.5 flex items-start gap-3">
+    <Link to={`/learning/playbooks/${playbook.id}`} className="group card card-hover px-3 py-2.5 flex items-start gap-3">
       <div className="w-7 h-7 rounded-md bg-honey-500/10 flex items-center justify-center flex-shrink-0 mt-0.5">
         <BookOpen className="w-3.5 h-3.5 text-honey-500" />
       </div>
@@ -377,7 +391,15 @@ function PlaybookCard({ playbook }: { playbook: Playbook }) {
 
 function KnowledgeTab() {
   const [search, setSearch] = useState('');
-  const { data, isLoading } = useLearningKnowledge({ search: search || undefined });
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    debounceRef.current = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(debounceRef.current);
+  }, [search]);
+
+  const { data, isLoading } = useLearningKnowledge({ search: debouncedSearch || undefined });
 
   if (isLoading) return <LoadingPlaceholder />;
 

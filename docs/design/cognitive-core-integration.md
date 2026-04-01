@@ -586,11 +586,21 @@ MAP messages are only used for the optional agentic layer (dispatching workspace
 - [x] Materializer handles incoming playbook resources generically (existing `resource_published` flow)
 - [x] 6 sync-specific tests
 
-### Phase 4: Distributed Compute
+### Phase 4: Distributed Compute — IMPLEMENTED
 
-- [ ] Centralized learning hive mode
-- [ ] Domain-partitioned routing
-- [ ] Compute health monitoring
+- [x] `DistributedLearningCoordinator` (`src/learning/distributed.ts`)
+  - [x] Three modes: `local`, `centralized`, `domain-partitioned`
+  - [x] `resolveTarget(domain)` → 'local' or remote hive URL
+  - [x] `forwardTrajectory()` — HTTP POST to remote hive's `/learning/ingest`
+  - [x] `checkRemoteHealth()` — pings remote `/learning/health`
+  - [x] `getStatus()` — full distributed status for monitoring
+- [x] Centralized learning hive mode: all trajectories forwarded to `learningHiveUrl`
+- [x] Domain-partitioned routing: per-domain hive URLs via `domainRouting` config
+- [x] Fallback to local processing when forwarding fails or no URL configured
+- [x] Ingestion flow respects distributed routing (forwards or processes locally per trajectory)
+- [x] `POST /learning/ingest` endpoint — receives forwarded trajectories from peer hives
+- [x] Health monitoring: distributed status included in `/learning/health` response
+- [x] 11 distributed-specific tests (local/centralized/domain-partitioned routing, status, forwarding, Atlas integration)
 
 ### Future: Team Learning (Design Objective)
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   Activity, AlertTriangle, ArrowLeft, Bot, Brain, ChevronDown, ChevronRight,
@@ -866,26 +866,29 @@ function SessionLearningTab({ sessionId }: { sessionId: string }) {
   const [loading, setLoading] = useState(true);
 
   // Fetch learning data on mount
-  useState(() => {
+  useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         const { api } = await import('../lib/api');
         const health = await api.get<{ available: boolean }>('/learning/health');
+        if (cancelled) return;
         setLearningAvailable(health.available);
 
         if (health.available) {
-          // Fetch experiences that might be related to this session
           const experiences = await api.get<{ data: any[]; total: number }>('/learning/experiences?limit=100');
           const stats = await api.get<any>('/learning/stats');
+          if (cancelled) return;
           setLearningData({ experiences: experiences.data, stats });
         }
       } catch {
-        setLearningAvailable(false);
+        if (!cancelled) setLearningAvailable(false);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-  });
+    return () => { cancelled = true; };
+  }, [sessionId]);
 
   if (loading) {
     return (

@@ -9,6 +9,7 @@
 
 import { onResourceSynced } from '../sync/resource-hooks.js';
 import { findResourceById } from '../db/dal/syncable-resources.js';
+import { defaultLogger } from './types.js';
 
 /**
  * Emit sync events after batch learning completes.
@@ -57,6 +58,6 @@ export function emitBatchSyncEvents(
       }
     }
   } catch (err) {
-    console.warn('[learning-sync] Failed to emit sync events:', (err as Error).message);
+    defaultLogger.warn('Failed to emit sync events:', (err as Error).message);
   }
 }
