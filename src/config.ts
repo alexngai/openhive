@@ -96,6 +96,16 @@ export const ConfigSchema = z.object({
   // Session storage for trajectory content caching
   sessions: SessionStorageSchema,
 
+  // Sessionlog configuration (for local Tier 3 transcript lookup)
+  sessionlog: z.object({
+    /** Path(s) to sessionlog session state directories.
+     *  When a separate session repo is used, point this to the repo's
+     *  sessionlog-sessions directory (e.g. '/path/to/session-repo/sessionlog-sessions').
+     *  Supports multiple paths for multi-project setups.
+     *  Falls back to .git/sessionlog-sessions/ in the working directory if not set. */
+    sessionDirs: z.array(z.string()).default([]),
+  }).default({}),
+
   cors: z.object({
     enabled: z.boolean().default(true),
     origin: z.union([z.string(), z.array(z.string()), z.boolean()]).default(true),
@@ -317,6 +327,60 @@ export const ConfigSchema = z.object({
     webhookBaseUrl: z.string().optional(),
   }).default({ enabled: false }),
 
+  // Learning engine: cognitive-core Atlas integration
+  learning: z.object({
+    /** Master toggle — when false, Atlas is never initialized */
+    enabled: z.boolean().default(false),
+
+    /** Atlas engine configuration (passed through to cognitive-core) */
+    atlas: z.object({
+      creditStrategy: z.enum(['simple', 'causal']).default('simple'),
+      minTrajectories: z.number().default(5),
+      maxExperiences: z.number().default(4),
+      maxContextTokens: z.number().default(4000),
+      embedding: z.object({
+        provider: z.enum(['none', 'openai', 'voyage', 'local']).default('none'),
+        apiKey: z.string().optional(),
+        model: z.string().optional(),
+      }).default({}),
+    }).default({}),
+
+    /** Ingestion behavior */
+    ingestion: z.object({
+      mode: z.enum(['deferred']).default('deferred'),
+    }).default({}),
+
+    /** Agentic compute — Phase 2+ (stubbed) */
+    compute: z.object({
+      enabled: z.boolean().default(false),
+      preferredSwarmId: z.string().nullable().default(null),
+      spawnIfNoneAvailable: z.boolean().default(true),
+      spawnProvider: z.enum(['local', 'sandboxed']).default('local'),
+    }).default({}),
+
+    /** Cross-hive sync — Phase 3 (stubbed) */
+    sync: z.object({
+      publishPlaybooks: z.boolean().default(true),
+      importPlaybooks: z.boolean().default(true),
+      conflictStrategy: z.enum(['merge', 'local-wins', 'remote-wins']).default('merge'),
+    }).default({}),
+
+    /** Distributed compute — Phase 4 */
+    distributed: z.object({
+      mode: z.enum(['local', 'centralized', 'domain-partitioned']).default('local'),
+      learningHiveUrl: z.string().nullable().default(null),
+      /** API key for authenticating with the remote learning hive */
+      learningHiveApiKey: z.string().optional(),
+      domainRouting: z.record(z.string(), z.string()).default({}),
+    }).default({}),
+
+    /** Maintenance scheduling */
+    maintenance: z.object({
+      schedule: z.string().default('0 3 * * *'),
+      autoRun: z.boolean().default(true),
+    }).default({}),
+  }).default({ enabled: false }),
+
   // Mesh networking for MAP swarm hosts (pluggable provider)
   network: z.object({
     /** Provider: 'tailscale-cloud' | 'headscale-sidecar' | 'headscale-external' | 'none' */
@@ -428,6 +492,11 @@ export function loadConfig(configPath?: string): Config {
   }
   if (process.env.OPENHIVE_IAM_SECRET) {
     rawConfig.mapHub = { ...rawConfig.mapHub, iamSecret: process.env.OPENHIVE_IAM_SECRET };
+  }
+
+  // Learning engine toggle from environment
+  if (process.env.OPENHIVE_LEARNING_ENABLED === 'true') {
+    rawConfig.learning = { ...rawConfig.learning, enabled: true };
   }
 
   // SwarmHub connector auto-detection from environment

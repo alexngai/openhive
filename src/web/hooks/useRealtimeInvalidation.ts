@@ -114,3 +114,35 @@ export function useSessionsRealtime() {
 
   useWSEvent('trajectory:sync', invalidate);
 }
+
+// ── Learning Engine ──
+
+/**
+ * Invalidates learning-related queries when learning events arrive.
+ * Subscribes to the `learning` channel for instant/batch/maintenance events.
+ */
+export function useLearningRealtime() {
+  const queryClient = useQueryClient();
+
+  useSubscribe(['learning']);
+
+  const invalidateAll = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['learning-stats'] });
+    queryClient.invalidateQueries({ queryKey: ['learning-health'] });
+    queryClient.invalidateQueries({ queryKey: ['learning-playbooks'] });
+    queryClient.invalidateQueries({ queryKey: ['learning-experiences'] });
+    queryClient.invalidateQueries({ queryKey: ['learning-knowledge'] });
+    queryClient.invalidateQueries({ queryKey: ['learning-activity'] });
+  }, [queryClient]);
+
+  const invalidateStats = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['learning-stats'] });
+    queryClient.invalidateQueries({ queryKey: ['learning-health'] });
+    queryClient.invalidateQueries({ queryKey: ['learning-experiences'] });
+    queryClient.invalidateQueries({ queryKey: ['learning-activity'] });
+  }, [queryClient]);
+
+  useWSEvent('learning:instant', invalidateStats);
+  useWSEvent('learning:batch', invalidateAll);
+  useWSEvent('learning:maintenance', invalidateAll);
+}

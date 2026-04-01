@@ -26,9 +26,11 @@ import { isCoordinationMessage, handleCoordinationMessage } from '../coordinatio
 import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph } from './connection-registry.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
+import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
 import { broadcastToChannel } from '../realtime/index.js';
+import { mapHubEvents } from './service.js';
 import type { Agent } from '../types.js';
 import type { Config } from '../config.js';
 
@@ -153,6 +155,9 @@ function createNotificationInterceptor(
       } else if (msg.method === 'trajectory/content.response') {
         // Content response from swarm — resolve pending content request
         handleContentResponse(msg.params as Record<string, unknown>);
+      } else if (msg.method === 'x-openhive/learning.workspace.result') {
+        // Workspace execution result from swarm — resolve pending learning task
+        handleWorkspaceResult(msg.params as Record<string, unknown>);
       } else if (typeof msg.method === 'string' && msg.method.startsWith('opentasks/') && msg.method.endsWith('.response')) {
         // OpenTasks response from swarm — resolve pending remote query
         handleOpenTasksResponse(msg.params as Record<string, unknown>);
@@ -215,6 +220,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
             type: 'swarm_offline',
             data: { swarm_id: sid },
           });
+          mapHubEvents.emit('swarm_offline', { swarm_id: sid });
         }
       } catch { /* */ }
       console.log(`[ws-map] Swarm ${sid} disconnected`);
@@ -475,6 +481,7 @@ function startMapHeartbeat(): void {
               type: 'swarm_offline',
               data: { swarm_id: swarmId },
             });
+            mapHubEvents.emit('swarm_offline', { swarm_id: swarmId });
           }
         } catch { /* */ }
         continue;

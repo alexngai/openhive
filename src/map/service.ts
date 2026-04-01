@@ -271,12 +271,15 @@ export function leaveHive(swarmId: string, hiveName: string): boolean {
  */
 export function markStaleSwarms(staleThresholdMinutes: number = 5): number {
   const db = getDatabase();
-  // Collect IDs of swarms about to go offline (for SwarmCraft bridge)
+
+  // Collect IDs of swarms about to go offline (for SwarmCraft bridge + learning engine)
   const staleRows = db.prepare(`
     SELECT id FROM map_swarms
     WHERE status IN ('online', 'unreachable')
       AND last_seen_at < datetime('now', ?)
   `).all(`-${staleThresholdMinutes} minutes`) as { id: string }[];
+
+  if (staleRows.length === 0) return 0;
 
   const result = db.prepare(`
     UPDATE map_swarms
@@ -285,7 +288,7 @@ export function markStaleSwarms(staleThresholdMinutes: number = 5): number {
       AND last_seen_at < datetime('now', ?)
   `).run(`-${staleThresholdMinutes} minutes`);
 
-  // Emit for SwarmCraft bridge
+  // Emit for SwarmCraft bridge and learning engine ingestion
   for (const row of staleRows) {
     mapHubEvents.emit('swarm_offline', { swarm_id: row.id });
   }

@@ -1,30 +1,72 @@
-import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
-import { api, Post, Comment, Hive, PaginatedResponse } from '../lib/api';
-import type { Agent, HostedSwarm, MapSwarm, MapNode, MapStats, SwarmMessage, SharedContext, SwarmPeer, SyncableResource, SyncStatusResponse, ResourceSyncEvent, CheckUpdatesResult, BatchCheckResult, MemoryFile, MemoryFileContent, MemorySearchResult, MemoryEntry, KnowledgeGraphData, KnowledgeSearchResult, SkillSummary, SkillDetail, SkillGraphNode, SkillGraphEdge, SkillVersion, PostRule, EventSubscription, DeliveryLogEntry, TrajectoryCheckpoint, SessionStats, SessionListItem, SessionEventsResponse, MailConversation, MailTurn, MailThread } from '../lib/api';
-
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+  useInfiniteQuery,
+} from "@tanstack/react-query";
+import { api, Post, Comment, Hive, PaginatedResponse } from "../lib/api";
+import type {
+  Agent,
+  HostedSwarm,
+  MapSwarm,
+  MapNode,
+  MapStats,
+  SwarmMessage,
+  SharedContext,
+  SwarmPeer,
+  SyncableResource,
+  SyncStatusResponse,
+  ResourceSyncEvent,
+  CheckUpdatesResult,
+  BatchCheckResult,
+  MemoryFile,
+  MemoryFileContent,
+  MemorySearchResult,
+  MemoryEntry,
+  KnowledgeGraphData,
+  KnowledgeSearchResult,
+  SkillGraphNode,
+  SkillGraphEdge,
+  SkillVersion,
+  SkillSummary,
+  SkillDetail,
+  PostRule,
+  EventSubscription,
+  DeliveryLogEntry,
+  TrajectoryCheckpoint,
+  SessionStats,
+  SessionListItem,
+  SessionEventsResponse,
+  MailConversation,
+  MailTurn,
+  MailThread,
+} from "../lib/api";
 
 // Posts
 export function usePosts(options: {
   hive?: string;
-  sort?: 'hot' | 'new' | 'top';
+  sort?: "hot" | "new" | "top";
   limit?: number;
 }) {
-  const { hive, sort = 'hot', limit = 25 } = options;
+  const { hive, sort = "hot", limit = 25 } = options;
 
   return useInfiniteQuery({
-    queryKey: ['posts', { hive, sort }],
+    queryKey: ["posts", { hive, sort }],
     queryFn: async ({ pageParam = 0 }) => {
       const params = new URLSearchParams({
         sort,
         limit: String(limit),
         offset: String(pageParam),
       });
-      if (hive) params.set('hive', hive);
+      if (hive) params.set("hive", hive);
 
       return api.get<PaginatedResponse<Post>>(`/posts?${params}`);
     },
     getNextPageParam: (lastPage, allPages) => {
-      const totalFetched = allPages.reduce((sum, page) => sum + page.data.length, 0);
+      const totalFetched = allPages.reduce(
+        (sum, page) => sum + page.data.length,
+        0,
+      );
       return lastPage.data.length === limit ? totalFetched : undefined;
     },
     initialPageParam: 0,
@@ -33,7 +75,7 @@ export function usePosts(options: {
 
 export function usePost(postId: string) {
   return useQuery({
-    queryKey: ['post', postId],
+    queryKey: ["post", postId],
     queryFn: () => api.get<{ data: Post }>(`/posts/${postId}`),
     select: (data) => data.data,
     enabled: !!postId,
@@ -44,10 +86,14 @@ export function useCreatePost() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (data: { hive: string; title: string; content?: string; url?: string }) =>
-      api.post<{ data: Post }>('/posts', data),
+    mutationFn: (data: {
+      hive: string;
+      title: string;
+      content?: string;
+      url?: string;
+    }) => api.post<{ data: Post }>("/posts", data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['posts'] });
+      queryClient.invalidateQueries({ queryKey: ["posts"] });
     },
   });
 }
@@ -56,26 +102,36 @@ export function useVote() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ targetType, targetId, value }: { targetType: 'post' | 'comment'; targetId: string; value: 1 | -1 | 0 }) =>
-      api.post(`/${targetType}s/${targetId}/vote`, { value }),
+    mutationFn: ({
+      targetType,
+      targetId,
+      value,
+    }: {
+      targetType: "post" | "comment";
+      targetId: string;
+      value: 1 | -1 | 0;
+    }) => api.post(`/${targetType}s/${targetId}/vote`, { value }),
     onMutate: async ({ targetType, targetId, value }) => {
       // Optimistic update
       await queryClient.cancelQueries({ queryKey: [targetType, targetId] });
       const previousData = queryClient.getQueryData([targetType, targetId]);
 
-      queryClient.setQueryData([targetType, targetId], (old: { data: Post | Comment } | undefined) => {
-        if (!old) return old;
-        const item = old.data;
-        const prevVote = item.user_vote || 0;
-        const scoreDelta = value - prevVote;
-        return {
-          data: {
-            ...item,
-            score: item.score + scoreDelta,
-            user_vote: value === 0 ? null : value,
-          },
-        };
-      });
+      queryClient.setQueryData(
+        [targetType, targetId],
+        (old: { data: Post | Comment } | undefined) => {
+          if (!old) return old;
+          const item = old.data;
+          const prevVote = item.user_vote || 0;
+          const scoreDelta = value - prevVote;
+          return {
+            data: {
+              ...item,
+              score: item.score + scoreDelta,
+              user_vote: value === 0 ? null : value,
+            },
+          };
+        },
+      );
 
       return { previousData };
     },
@@ -88,10 +144,14 @@ export function useVote() {
 }
 
 // Comments
-export function useComments(postId: string, sort: 'top' | 'new' | 'old' = 'top') {
+export function useComments(
+  postId: string,
+  sort: "top" | "new" | "old" = "top",
+) {
   return useQuery({
-    queryKey: ['comments', postId, sort],
-    queryFn: () => api.get<{ data: Comment[] }>(`/posts/${postId}/comments?sort=${sort}`),
+    queryKey: ["comments", postId, sort],
+    queryFn: () =>
+      api.get<{ data: Comment[] }>(`/posts/${postId}/comments?sort=${sort}`),
     select: (data) => data.data,
     enabled: !!postId,
   });
@@ -101,29 +161,44 @@ export function useCreateComment() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ postId, content, parentId }: { postId: string; content: string; parentId?: string }) =>
-      api.post<{ data: Comment }>(`/posts/${postId}/comments`, { content, parent_id: parentId }),
+    mutationFn: ({
+      postId,
+      content,
+      parentId,
+    }: {
+      postId: string;
+      content: string;
+      parentId?: string;
+    }) =>
+      api.post<{ data: Comment }>(`/posts/${postId}/comments`, {
+        content,
+        parent_id: parentId,
+      }),
     onSuccess: (_, { postId }) => {
-      queryClient.invalidateQueries({ queryKey: ['comments', postId] });
-      queryClient.invalidateQueries({ queryKey: ['post', postId] });
+      queryClient.invalidateQueries({ queryKey: ["comments", postId] });
+      queryClient.invalidateQueries({ queryKey: ["post", postId] });
     },
   });
 }
 
 // Hives
-export function useHives(options?: { sort?: 'popular' | 'new' | 'alphabetical'; limit?: number }) {
-  const { sort = 'popular', limit = 50 } = options || {};
+export function useHives(options?: {
+  sort?: "popular" | "new" | "alphabetical";
+  limit?: number;
+}) {
+  const { sort = "popular", limit = 50 } = options || {};
 
   return useQuery({
-    queryKey: ['hives', { sort, limit }],
-    queryFn: () => api.get<PaginatedResponse<Hive>>(`/hives?sort=${sort}&limit=${limit}`),
+    queryKey: ["hives", { sort, limit }],
+    queryFn: () =>
+      api.get<PaginatedResponse<Hive>>(`/hives?sort=${sort}&limit=${limit}`),
     select: (data) => data.data,
   });
 }
 
 export function useHive(name: string) {
   return useQuery({
-    queryKey: ['hive', name],
+    queryKey: ["hive", name],
     queryFn: () => api.get<{ data: Hive }>(`/hives/${name}`),
     select: (data) => data.data,
     enabled: !!name,
@@ -136,7 +211,7 @@ export function useJoinHive() {
   return useMutation({
     mutationFn: (hiveName: string) => api.post(`/hives/${hiveName}/join`),
     onSuccess: (_, hiveName) => {
-      queryClient.invalidateQueries({ queryKey: ['hive', hiveName] });
+      queryClient.invalidateQueries({ queryKey: ["hive", hiveName] });
     },
   });
 }
@@ -147,20 +222,23 @@ export function useLeaveHive() {
   return useMutation({
     mutationFn: (hiveName: string) => api.delete(`/hives/${hiveName}/leave`),
     onSuccess: (_, hiveName) => {
-      queryClient.invalidateQueries({ queryKey: ['hive', hiveName] });
+      queryClient.invalidateQueries({ queryKey: ["hive", hiveName] });
     },
   });
 }
 
 // Agents
-export function useAgents(options?: { limit?: number; verified_only?: boolean }) {
+export function useAgents(options?: {
+  limit?: number;
+  verified_only?: boolean;
+}) {
   const { limit = 50, verified_only } = options || {};
 
   return useQuery({
-    queryKey: ['agents', { limit, verified_only }],
+    queryKey: ["agents", { limit, verified_only }],
     queryFn: () => {
       const params = new URLSearchParams({ limit: String(limit) });
-      if (verified_only) params.set('verified_only', 'true');
+      if (verified_only) params.set("verified_only", "true");
       return api.get<PaginatedResponse<Agent>>(`/agents?${params}`);
     },
     select: (data) => data.data,
@@ -169,7 +247,7 @@ export function useAgents(options?: { limit?: number; verified_only?: boolean })
 
 export function useAgent(name: string) {
   return useQuery({
-    queryKey: ['agent', name],
+    queryKey: ["agent", name],
     queryFn: () => api.get<{ data: Agent }>(`/agents/${name}`),
     select: (data) => data.data,
     enabled: !!name,
@@ -178,8 +256,9 @@ export function useAgent(name: string) {
 
 export function useAgentPosts(name: string) {
   return useQuery({
-    queryKey: ['agent-posts', name],
-    queryFn: () => api.get<PaginatedResponse<Post>>(`/agents/${name}/posts?limit=20`),
+    queryKey: ["agent-posts", name],
+    queryFn: () =>
+      api.get<PaginatedResponse<Post>>(`/agents/${name}/posts?limit=20`),
     select: (data) => data.data,
     enabled: !!name,
   });
@@ -192,27 +271,30 @@ export function useFollowAgent() {
     mutationFn: (agentName: string) => api.post(`/agents/${agentName}/follow`),
     onMutate: async (agentName) => {
       // Optimistically update the agent's is_following status
-      await queryClient.cancelQueries({ queryKey: ['agent', agentName] });
-      const previousAgent = queryClient.getQueryData(['agent', agentName]);
+      await queryClient.cancelQueries({ queryKey: ["agent", agentName] });
+      const previousAgent = queryClient.getQueryData(["agent", agentName]);
 
-      queryClient.setQueryData(['agent', agentName], (old: Agent | undefined) => {
-        if (!old) return old;
-        return {
-          ...old,
-          is_following: true,
-          follower_count: (old.follower_count || 0) + 1,
-        };
-      });
+      queryClient.setQueryData(
+        ["agent", agentName],
+        (old: Agent | undefined) => {
+          if (!old) return old;
+          return {
+            ...old,
+            is_following: true,
+            follower_count: (old.follower_count || 0) + 1,
+          };
+        },
+      );
 
       return { previousAgent };
     },
     onError: (_err, agentName, context) => {
       if (context?.previousAgent) {
-        queryClient.setQueryData(['agent', agentName], context.previousAgent);
+        queryClient.setQueryData(["agent", agentName], context.previousAgent);
       }
     },
     onSettled: (_, __, agentName) => {
-      queryClient.invalidateQueries({ queryKey: ['agent', agentName] });
+      queryClient.invalidateQueries({ queryKey: ["agent", agentName] });
     },
   });
 }
@@ -221,30 +303,34 @@ export function useUnfollowAgent() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (agentName: string) => api.delete(`/agents/${agentName}/follow`),
+    mutationFn: (agentName: string) =>
+      api.delete(`/agents/${agentName}/follow`),
     onMutate: async (agentName) => {
       // Optimistically update the agent's is_following status
-      await queryClient.cancelQueries({ queryKey: ['agent', agentName] });
-      const previousAgent = queryClient.getQueryData(['agent', agentName]);
+      await queryClient.cancelQueries({ queryKey: ["agent", agentName] });
+      const previousAgent = queryClient.getQueryData(["agent", agentName]);
 
-      queryClient.setQueryData(['agent', agentName], (old: Agent | undefined) => {
-        if (!old) return old;
-        return {
-          ...old,
-          is_following: false,
-          follower_count: Math.max(0, (old.follower_count || 0) - 1),
-        };
-      });
+      queryClient.setQueryData(
+        ["agent", agentName],
+        (old: Agent | undefined) => {
+          if (!old) return old;
+          return {
+            ...old,
+            is_following: false,
+            follower_count: Math.max(0, (old.follower_count || 0) - 1),
+          };
+        },
+      );
 
       return { previousAgent };
     },
     onError: (_err, agentName, context) => {
       if (context?.previousAgent) {
-        queryClient.setQueryData(['agent', agentName], context.previousAgent);
+        queryClient.setQueryData(["agent", agentName], context.previousAgent);
       }
     },
     onSettled: (_, __, agentName) => {
-      queryClient.invalidateQueries({ queryKey: ['agent', agentName] });
+      queryClient.invalidateQueries({ queryKey: ["agent", agentName] });
     },
   });
 }
@@ -252,10 +338,10 @@ export function useUnfollowAgent() {
 // Search
 export function useSearch(query: string, type?: string) {
   return useQuery({
-    queryKey: ['search', query, type],
+    queryKey: ["search", query, type],
     queryFn: () => {
       const params = new URLSearchParams({ q: query });
-      if (type) params.set('type', type);
+      if (type) params.set("type", type);
       return api.get<{
         results: {
           posts: Post[];
@@ -275,12 +361,14 @@ export function useHostedSwarms(options?: { state?: string; mine?: boolean }) {
   const { state, mine } = options || {};
 
   return useQuery({
-    queryKey: ['hosted-swarms', { state, mine }],
+    queryKey: ["hosted-swarms", { state, mine }],
     queryFn: () => {
       const params = new URLSearchParams();
-      if (state) params.set('state', state);
-      if (mine) params.set('mine', 'true');
-      return api.get<{ data: HostedSwarm[]; total: number }>(`/map/hosted?${params}`);
+      if (state) params.set("state", state);
+      if (mine) params.set("mine", "true");
+      return api.get<{ data: HostedSwarm[]; total: number }>(
+        `/map/hosted?${params}`,
+      );
     },
     select: (data) => data.data,
   });
@@ -299,11 +387,16 @@ export function useSpawnSwarm() {
       provider?: string;
       metadata?: Record<string, unknown>;
       workspace?: {
-        repos: Array<{ url: string; branch?: string; path?: string; depth?: number }>;
+        repos: Array<{
+          url: string;
+          branch?: string;
+          path?: string;
+          depth?: number;
+        }>;
       };
-    }) => api.post<HostedSwarm>('/map/hosted/spawn', data),
+    }) => api.post<HostedSwarm>("/map/hosted/spawn", data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['hosted-swarms'] });
+      queryClient.invalidateQueries({ queryKey: ["hosted-swarms"] });
     },
   });
 }
@@ -314,7 +407,7 @@ export function useStopSwarm() {
   return useMutation({
     mutationFn: (id: string) => api.post(`/map/hosted/${id}/stop`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['hosted-swarms'] });
+      queryClient.invalidateQueries({ queryKey: ["hosted-swarms"] });
     },
   });
 }
@@ -325,7 +418,7 @@ export function useRestartSwarm() {
   return useMutation({
     mutationFn: (id: string) => api.post(`/map/hosted/${id}/restart`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['hosted-swarms'] });
+      queryClient.invalidateQueries({ queryKey: ["hosted-swarms"] });
     },
   });
 }
@@ -336,23 +429,23 @@ export function useRemoveSwarm() {
   return useMutation({
     mutationFn: (id: string) => api.delete(`/map/hosted/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['hosted-swarms'] });
+      queryClient.invalidateQueries({ queryKey: ["hosted-swarms"] });
     },
   });
 }
 
 export function useSwarmLogs(id: string | null) {
   return useQuery({
-    queryKey: ['swarm-logs', id],
+    queryKey: ["swarm-logs", id],
     queryFn: async () => {
       const url = `/api/v1/map/hosted/${id}/logs`;
       const headers: HeadersInit = {};
       const token = api.getToken();
       if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
+        headers["Authorization"] = `Bearer ${token}`;
       }
       const res = await fetch(url, { headers });
-      if (!res.ok) throw new Error('Failed to fetch logs');
+      if (!res.ok) throw new Error("Failed to fetch logs");
       return res.text();
     },
     enabled: !!id,
@@ -363,15 +456,15 @@ export function useSwarmLogs(id: string | null) {
 // MAP-registered Swarms (includes both hosted and externally connected)
 export function useMapSwarms() {
   return useQuery({
-    queryKey: ['map-swarms'],
-    queryFn: () => api.get<{ data: MapSwarm[]; total: number }>('/map/swarms'),
+    queryKey: ["map-swarms"],
+    queryFn: () => api.get<{ data: MapSwarm[]; total: number }>("/map/swarms"),
     select: (data) => data.data,
   });
 }
 
 export function useMapSwarm(id: string) {
   return useQuery({
-    queryKey: ['map-swarm', id],
+    queryKey: ["map-swarm", id],
     queryFn: () => api.get<MapSwarm>(`/map/swarms/${id}`),
     enabled: !!id,
   });
@@ -379,12 +472,15 @@ export function useMapSwarm(id: string) {
 
 export function useMapNodes(options?: { swarm_id?: string }) {
   const params = new URLSearchParams();
-  if (options?.swarm_id) params.set('swarm_id', options.swarm_id);
+  if (options?.swarm_id) params.set("swarm_id", options.swarm_id);
   const qs = params.toString();
 
   return useQuery({
-    queryKey: ['map-nodes', options],
-    queryFn: () => api.get<{ data: MapNode[]; total: number }>(`/map/nodes${qs ? `?${qs}` : ''}`),
+    queryKey: ["map-nodes", options],
+    queryFn: () =>
+      api.get<{ data: MapNode[]; total: number }>(
+        `/map/nodes${qs ? `?${qs}` : ""}`,
+      ),
     select: (data) => data.data,
   });
 }
@@ -397,14 +493,18 @@ export function useConnectSwarm() {
       name: string;
       description?: string;
       map_endpoint: string;
-      map_transport?: 'websocket' | 'http-sse' | 'ndjson';
-      capabilities?: { observation?: boolean; messaging?: boolean; lifecycle?: boolean };
-      auth_method?: 'bearer' | 'api-key' | 'mtls' | 'none';
+      map_transport?: "websocket" | "http-sse" | "ndjson";
+      capabilities?: {
+        observation?: boolean;
+        messaging?: boolean;
+        lifecycle?: boolean;
+      };
+      auth_method?: "bearer" | "api-key" | "mtls" | "none";
       auth_token?: string;
       metadata?: Record<string, unknown>;
-    }) => api.post<{ swarm: MapSwarm }>('/map/swarms', data),
+    }) => api.post<{ swarm: MapSwarm }>("/map/swarms", data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
+      queryClient.invalidateQueries({ queryKey: ["map-swarms"] });
     },
   });
 }
@@ -412,8 +512,8 @@ export function useConnectSwarm() {
 // Dashboard hooks
 export function useMapStats() {
   return useQuery({
-    queryKey: ['map-stats'],
-    queryFn: () => api.get<MapStats>('/map/stats'),
+    queryKey: ["map-stats"],
+    queryFn: () => api.get<MapStats>("/map/stats"),
   });
 }
 
@@ -421,38 +521,45 @@ export function useResources(options?: { type?: string; limit?: number }) {
   const { type, limit = 10 } = options || {};
 
   return useQuery({
-    queryKey: ['resources', { type, limit }],
+    queryKey: ["resources", { type, limit }],
     queryFn: () => {
       const params = new URLSearchParams({ limit: String(limit) });
-      if (type) params.set('type', type);
-      return api.get<{ data: SyncableResource[]; total: number }>(`/resources?${params}`);
+      if (type) params.set("type", type);
+      return api.get<{ data: SyncableResource[]; total: number }>(
+        `/resources?${params}`,
+      );
     },
   });
 }
 
 export function useSyncStatus() {
   return useQuery({
-    queryKey: ['sync-status'],
-    queryFn: () => api.get<SyncStatusResponse>('/sync/status'),
+    queryKey: ["sync-status"],
+    queryFn: () => api.get<SyncStatusResponse>("/sync/status"),
   });
 }
 
 // Resources (extended)
-export function useResourcesByType(type: 'memory_bank' | 'skill' | 'task', options?: { limit?: number }) {
+export function useResourcesByType(
+  type: "memory_bank" | "skill" | "task",
+  options?: { limit?: number },
+) {
   const { limit = 50 } = options || {};
 
   return useQuery({
-    queryKey: ['resources', { type, limit }],
+    queryKey: ["resources", { type, limit }],
     queryFn: () => {
       const params = new URLSearchParams({ limit: String(limit), type });
-      return api.get<{ data: SyncableResource[]; total: number }>(`/resources?${params}`);
+      return api.get<{ data: SyncableResource[]; total: number }>(
+        `/resources?${params}`,
+      );
     },
   });
 }
 
 export function useResource(id: string) {
   return useQuery({
-    queryKey: ['resource', id],
+    queryKey: ["resource", id],
     queryFn: () => api.get<SyncableResource>(`/resources/${id}`),
     enabled: !!id,
   });
@@ -462,10 +569,11 @@ export function useResourceEvents(id: string, options?: { limit?: number }) {
   const { limit = 20 } = options || {};
 
   return useQuery({
-    queryKey: ['resource-events', id, { limit }],
-    queryFn: () => api.get<{ data: ResourceSyncEvent[]; total: number }>(
-      `/resources/${id}/events?limit=${limit}`
-    ),
+    queryKey: ["resource-events", id, { limit }],
+    queryFn: () =>
+      api.get<{ data: ResourceSyncEvent[]; total: number }>(
+        `/resources/${id}/events?limit=${limit}`,
+      ),
     enabled: !!id,
   });
 }
@@ -474,12 +582,22 @@ export function useCheckUpdates() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ resourceId, branch }: { resourceId: string; branch?: string }) =>
-      api.post<CheckUpdatesResult>(`/resources/${resourceId}/check-updates`, { branch }),
+    mutationFn: ({
+      resourceId,
+      branch,
+    }: {
+      resourceId: string;
+      branch?: string;
+    }) =>
+      api.post<CheckUpdatesResult>(`/resources/${resourceId}/check-updates`, {
+        branch,
+      }),
     onSuccess: (_, { resourceId }) => {
-      queryClient.invalidateQueries({ queryKey: ['resource', resourceId] });
-      queryClient.invalidateQueries({ queryKey: ['resource-events', resourceId] });
-      queryClient.invalidateQueries({ queryKey: ['resources'] });
+      queryClient.invalidateQueries({ queryKey: ["resource", resourceId] });
+      queryClient.invalidateQueries({
+        queryKey: ["resource-events", resourceId],
+      });
+      queryClient.invalidateQueries({ queryKey: ["resources"] });
     },
   });
 }
@@ -488,11 +606,13 @@ export function useBatchCheckUpdates() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (data: { resource_type?: 'memory_bank' | 'skill'; branch?: string }) =>
-      api.post<BatchCheckResult>('/resources/check-updates', data),
+    mutationFn: (data: {
+      resource_type?: "memory_bank" | "skill";
+      branch?: string;
+    }) => api.post<BatchCheckResult>("/resources/check-updates", data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['resources'] });
-      queryClient.invalidateQueries({ queryKey: ['resource-events'] });
+      queryClient.invalidateQueries({ queryKey: ["resources"] });
+      queryClient.invalidateQueries({ queryKey: ["resource-events"] });
     },
   });
 }
@@ -500,8 +620,11 @@ export function useBatchCheckUpdates() {
 // Resource Content - Memory Banks
 export function useMemoryFiles(resourceId: string) {
   return useQuery({
-    queryKey: ['memory-files', resourceId],
-    queryFn: () => api.get<{ files: MemoryFile[] }>(`/resources/${resourceId}/content/files`),
+    queryKey: ["memory-files", resourceId],
+    queryFn: () =>
+      api.get<{ files: MemoryFile[] }>(
+        `/resources/${resourceId}/content/files`,
+      ),
     select: (data) => data.files,
     enabled: !!resourceId,
   });
@@ -509,47 +632,60 @@ export function useMemoryFiles(resourceId: string) {
 
 export function useMemoryFile(resourceId: string, path: string | null) {
   return useQuery({
-    queryKey: ['memory-file', resourceId, path],
-    queryFn: () => api.get<MemoryFileContent>(`/resources/${resourceId}/content/file?path=${encodeURIComponent(path!)}`),
+    queryKey: ["memory-file", resourceId, path],
+    queryFn: () =>
+      api.get<MemoryFileContent>(
+        `/resources/${resourceId}/content/file?path=${encodeURIComponent(path!)}`,
+      ),
     enabled: !!resourceId && !!path,
   });
 }
 
 export function useMemorySearch(resourceId: string, query: string) {
   return useQuery({
-    queryKey: ['memory-search', resourceId, query],
-    queryFn: () => api.get<{ results: MemorySearchResult[]; total: number }>(
-      `/resources/${resourceId}/content/search?q=${encodeURIComponent(query)}&limit=30`
-    ),
+    queryKey: ["memory-search", resourceId, query],
+    queryFn: () =>
+      api.get<{ results: MemorySearchResult[]; total: number }>(
+        `/resources/${resourceId}/content/search?q=${encodeURIComponent(query)}&limit=30`,
+      ),
     enabled: !!resourceId && query.length >= 2,
   });
 }
 
 export function useMemoryEntries(resourceId: string) {
   return useQuery({
-    queryKey: ['memory-entries', resourceId],
-    queryFn: () => api.get<{ entries: MemoryEntry[] }>(`/resources/${resourceId}/content/entries`),
+    queryKey: ["memory-entries", resourceId],
+    queryFn: () =>
+      api.get<{ entries: MemoryEntry[] }>(
+        `/resources/${resourceId}/content/entries`,
+      ),
     select: (data) => data.entries,
     enabled: !!resourceId,
   });
 }
 
-export function useKnowledgeGraph(resourceId: string, noteId: string | null, depth = 2) {
+export function useKnowledgeGraph(
+  resourceId: string,
+  noteId: string | null,
+  depth = 2,
+) {
   return useQuery({
-    queryKey: ['knowledge-graph', resourceId, noteId, depth],
-    queryFn: () => api.get<KnowledgeGraphData>(
-      `/resources/${resourceId}/content/knowledge/graph?note_id=${encodeURIComponent(noteId!)}&depth=${depth}&direction=both`
-    ),
+    queryKey: ["knowledge-graph", resourceId, noteId, depth],
+    queryFn: () =>
+      api.get<KnowledgeGraphData>(
+        `/resources/${resourceId}/content/knowledge/graph?note_id=${encodeURIComponent(noteId!)}&depth=${depth}&direction=both`,
+      ),
     enabled: !!resourceId && !!noteId,
   });
 }
 
 export function useKnowledgeGraphFull(resourceId: string) {
   return useQuery({
-    queryKey: ['knowledge', resourceId, 'full'],
-    queryFn: () => api.get<{ results: KnowledgeSearchResult[]; total: number }>(
-      `/resources/${resourceId}/content/knowledge`
-    ),
+    queryKey: ["knowledge", resourceId, "full"],
+    queryFn: () =>
+      api.get<{ results: KnowledgeSearchResult[]; total: number }>(
+        `/resources/${resourceId}/content/knowledge`,
+      ),
     enabled: !!resourceId,
   });
 }
@@ -557,8 +693,11 @@ export function useKnowledgeGraphFull(resourceId: string) {
 // Resource Content - Skills
 export function useSkillsList(resourceId: string) {
   return useQuery({
-    queryKey: ['skills-list', resourceId],
-    queryFn: () => api.get<{ skills: SkillSummary[] }>(`/resources/${resourceId}/content/skills`),
+    queryKey: ["skills-list", resourceId],
+    queryFn: () =>
+      api.get<{ skills: SkillSummary[] }>(
+        `/resources/${resourceId}/content/skills`,
+      ),
     select: (data) => data.skills,
     enabled: !!resourceId,
   });
@@ -566,34 +705,52 @@ export function useSkillsList(resourceId: string) {
 
 export function useSkillDetail(resourceId: string, skillId: string | null) {
   return useQuery({
-    queryKey: ['skill-detail', resourceId, skillId],
-    queryFn: () => api.get<SkillDetail>(`/resources/${resourceId}/content/skills/${skillId}`),
+    queryKey: ["skill-detail", resourceId, skillId],
+    queryFn: () =>
+      api.get<SkillDetail>(
+        `/resources/${resourceId}/content/skills/${skillId}`,
+      ),
     enabled: !!resourceId && !!skillId,
   });
 }
 
 export function useSkillGraph(resourceId: string) {
   return useQuery({
-    queryKey: ['skill-graph', resourceId],
-    queryFn: () => api.get<{ nodes: SkillGraphNode[]; edges: SkillGraphEdge[] }>(`/resources/${resourceId}/content/skills/graph`),
+    queryKey: ["skill-graph", resourceId],
+    queryFn: () =>
+      api.get<{ nodes: SkillGraphNode[]; edges: SkillGraphEdge[] }>(
+        `/resources/${resourceId}/content/skills/graph`,
+      ),
     enabled: !!resourceId,
   });
 }
 
 export function useSkillVersions(resourceId: string, skillId: string | null) {
   return useQuery({
-    queryKey: ['skill-versions', resourceId, skillId],
-    queryFn: () => api.get<{ skillId: string; versions: SkillVersion[] }>(`/resources/${resourceId}/content/skills/${skillId}/versions`),
+    queryKey: ["skill-versions", resourceId, skillId],
+    queryFn: () =>
+      api.get<{ skillId: string; versions: SkillVersion[] }>(
+        `/resources/${resourceId}/content/skills/${skillId}/versions`,
+      ),
     enabled: !!resourceId && !!skillId,
   });
 }
 
 export function useSkillSearch(resourceId: string, query: string) {
   return useQuery({
-    queryKey: ['skill-search', resourceId, query],
-    queryFn: () => api.get<{ results: Array<{ id: string; name: string | null; description: string | null; score: number | null }>; total: number }>(
-      `/resources/${resourceId}/content/skills/search?q=${encodeURIComponent(query)}&limit=20`
-    ),
+    queryKey: ["skill-search", resourceId, query],
+    queryFn: () =>
+      api.get<{
+        results: Array<{
+          id: string;
+          name: string | null;
+          description: string | null;
+          score: number | null;
+        }>;
+        total: number;
+      }>(
+        `/resources/${resourceId}/content/skills/search?q=${encodeURIComponent(query)}&limit=20`,
+      ),
     enabled: !!resourceId && query.length >= 2,
   });
 }
@@ -602,30 +759,33 @@ export function useSkillSearch(resourceId: string, query: string) {
 
 export function useOpenTasksSummary(resourceId: string) {
   return useQuery({
-    queryKey: ['opentasks-summary', resourceId],
-    queryFn: () => api.get<import('../lib/api').OpenTasksGraphSummary>(
-      `/resources/${resourceId}/content/opentasks/summary`
-    ),
+    queryKey: ["opentasks-summary", resourceId],
+    queryFn: () =>
+      api.get<import("../lib/api").OpenTasksGraphSummary>(
+        `/resources/${resourceId}/content/opentasks/summary`,
+      ),
     enabled: !!resourceId,
   });
 }
 
 export function useOpenTasksReady(resourceId: string) {
   return useQuery({
-    queryKey: ['opentasks-ready', resourceId],
-    queryFn: () => api.get<import('../lib/api').OpenTasksReadyResponse>(
-      `/resources/${resourceId}/content/opentasks/ready`
-    ),
+    queryKey: ["opentasks-ready", resourceId],
+    queryFn: () =>
+      api.get<import("../lib/api").OpenTasksReadyResponse>(
+        `/resources/${resourceId}/content/opentasks/ready`,
+      ),
     enabled: !!resourceId,
   });
 }
 
 export function useOpenTasksGraph(resourceId: string) {
   return useQuery({
-    queryKey: ['opentasks-graph', resourceId],
-    queryFn: () => api.get<import('../lib/api').OpenTasksGraphData>(
-      `/resources/${resourceId}/content/opentasks/graph`
-    ),
+    queryKey: ["opentasks-graph", resourceId],
+    queryFn: () =>
+      api.get<import("../lib/api").OpenTasksGraphData>(
+        `/resources/${resourceId}/content/opentasks/graph`,
+      ),
     enabled: !!resourceId,
   });
 }
@@ -634,15 +794,27 @@ export function useCreateOpenTask(resourceId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (data: { title: string; description?: string; status?: string; priority?: number; metadata?: Record<string, unknown> }) =>
+    mutationFn: (data: {
+      title: string;
+      description?: string;
+      status?: string;
+      priority?: number;
+      metadata?: Record<string, unknown>;
+    }) =>
       api.post<{ node_id: string; status: string }>(
         `/resources/${resourceId}/content/opentasks/tasks`,
         data,
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['opentasks-summary', resourceId] });
-      queryClient.invalidateQueries({ queryKey: ['opentasks-ready', resourceId] });
-      queryClient.invalidateQueries({ queryKey: ['opentasks-graph', resourceId] });
+      queryClient.invalidateQueries({
+        queryKey: ["opentasks-summary", resourceId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["opentasks-ready", resourceId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["opentasks-graph", resourceId],
+      });
     },
   });
 }
@@ -651,15 +823,36 @@ export function useUpdateOpenTaskStatus(resourceId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ nodeId, status, result, error }: { nodeId: string; status: string; result?: Record<string, unknown>; error?: string }) =>
-      api.patch<{ node_id: string; previous_status: string | null; new_status: string }>(
-        `/resources/${resourceId}/content/opentasks/tasks/${nodeId}`,
-        { status, result, error },
-      ),
+    mutationFn: ({
+      nodeId,
+      status,
+      result,
+      error,
+    }: {
+      nodeId: string;
+      status: string;
+      result?: Record<string, unknown>;
+      error?: string;
+    }) =>
+      api.patch<{
+        node_id: string;
+        previous_status: string | null;
+        new_status: string;
+      }>(`/resources/${resourceId}/content/opentasks/tasks/${nodeId}`, {
+        status,
+        result,
+        error,
+      }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['opentasks-summary', resourceId] });
-      queryClient.invalidateQueries({ queryKey: ['opentasks-ready', resourceId] });
-      queryClient.invalidateQueries({ queryKey: ['opentasks-graph', resourceId] });
+      queryClient.invalidateQueries({
+        queryKey: ["opentasks-summary", resourceId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["opentasks-ready", resourceId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["opentasks-graph", resourceId],
+      });
     },
   });
 }
@@ -668,9 +861,9 @@ export function useUpdateOpenTaskStatus(resourceId: string) {
 
 export function usePostRules(hiveId?: string) {
   return useQuery({
-    queryKey: ['post-rules', { hiveId }],
+    queryKey: ["post-rules", { hiveId }],
     queryFn: () => {
-      const params = hiveId ? `?hive_id=${hiveId}` : '';
+      const params = hiveId ? `?hive_id=${hiveId}` : "";
       return api.get<{ data: PostRule[] }>(`/events/post-rules${params}`);
     },
     select: (data) => data.data,
@@ -687,11 +880,11 @@ export function useCreatePostRule() {
       event_types: string[];
       filters?: { repos?: string[]; channels?: string[]; branches?: string[] };
       normalizer?: string;
-      thread_mode?: 'post_per_event' | 'single_thread' | 'skip';
+      thread_mode?: "post_per_event" | "single_thread" | "skip";
       priority?: number;
-    }) => api.post<PostRule>('/events/post-rules', data),
+    }) => api.post<PostRule>("/events/post-rules", data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['post-rules'] });
+      queryClient.invalidateQueries({ queryKey: ["post-rules"] });
     },
   });
 }
@@ -700,18 +893,25 @@ export function useUpdatePostRule() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ id, ...data }: {
+    mutationFn: ({
+      id,
+      ...data
+    }: {
       id: string;
       source?: string;
       event_types?: string[];
-      filters?: { repos?: string[]; channels?: string[]; branches?: string[] } | null;
+      filters?: {
+        repos?: string[];
+        channels?: string[];
+        branches?: string[];
+      } | null;
       normalizer?: string;
-      thread_mode?: 'post_per_event' | 'single_thread' | 'skip';
+      thread_mode?: "post_per_event" | "single_thread" | "skip";
       priority?: number;
       enabled?: boolean;
     }) => api.put<PostRule>(`/events/post-rules/${id}`, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['post-rules'] });
+      queryClient.invalidateQueries({ queryKey: ["post-rules"] });
     },
   });
 }
@@ -722,22 +922,27 @@ export function useDeletePostRule() {
   return useMutation({
     mutationFn: (id: string) => api.delete(`/events/post-rules/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['post-rules'] });
+      queryClient.invalidateQueries({ queryKey: ["post-rules"] });
     },
   });
 }
 
 // ── Event Subscriptions ──
 
-export function useEventSubscriptions(opts?: { hive_id?: string; swarm_id?: string }) {
+export function useEventSubscriptions(opts?: {
+  hive_id?: string;
+  swarm_id?: string;
+}) {
   return useQuery({
-    queryKey: ['event-subscriptions', opts],
+    queryKey: ["event-subscriptions", opts],
     queryFn: () => {
       const params = new URLSearchParams();
-      if (opts?.hive_id) params.set('hive_id', opts.hive_id);
-      if (opts?.swarm_id) params.set('swarm_id', opts.swarm_id);
+      if (opts?.hive_id) params.set("hive_id", opts.hive_id);
+      if (opts?.swarm_id) params.set("swarm_id", opts.swarm_id);
       const qs = params.toString();
-      return api.get<{ data: EventSubscription[] }>(`/events/subscriptions${qs ? `?${qs}` : ''}`);
+      return api.get<{ data: EventSubscription[] }>(
+        `/events/subscriptions${qs ? `?${qs}` : ""}`,
+      );
     },
     select: (data) => data.data,
   });
@@ -754,9 +959,9 @@ export function useCreateSubscription() {
       event_types: string[];
       filters?: { repos?: string[]; channels?: string[]; branches?: string[] };
       priority?: number;
-    }) => api.post<EventSubscription>('/events/subscriptions', data),
+    }) => api.post<EventSubscription>("/events/subscriptions", data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['event-subscriptions'] });
+      queryClient.invalidateQueries({ queryKey: ["event-subscriptions"] });
     },
   });
 }
@@ -765,16 +970,23 @@ export function useUpdateSubscription() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ id, ...data }: {
+    mutationFn: ({
+      id,
+      ...data
+    }: {
       id: string;
       source?: string;
       event_types?: string[];
-      filters?: { repos?: string[]; channels?: string[]; branches?: string[] } | null;
+      filters?: {
+        repos?: string[];
+        channels?: string[];
+        branches?: string[];
+      } | null;
       priority?: number;
       enabled?: boolean;
     }) => api.put<EventSubscription>(`/events/subscriptions/${id}`, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['event-subscriptions'] });
+      queryClient.invalidateQueries({ queryKey: ["event-subscriptions"] });
     },
   });
 }
@@ -785,61 +997,77 @@ export function useDeleteSubscription() {
   return useMutation({
     mutationFn: (id: string) => api.delete(`/events/subscriptions/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['event-subscriptions'] });
+      queryClient.invalidateQueries({ queryKey: ["event-subscriptions"] });
     },
   });
 }
 
 // ── Delivery Log ──
 
-export function useDeliveryLog(opts?: { delivery_id?: string; swarm_id?: string; limit?: number; offset?: number }) {
+export function useDeliveryLog(opts?: {
+  delivery_id?: string;
+  swarm_id?: string;
+  limit?: number;
+  offset?: number;
+}) {
   return useQuery({
-    queryKey: ['delivery-log', opts],
+    queryKey: ["delivery-log", opts],
     queryFn: () => {
       const params = new URLSearchParams();
-      if (opts?.delivery_id) params.set('delivery_id', opts.delivery_id);
-      if (opts?.swarm_id) params.set('swarm_id', opts.swarm_id);
-      if (opts?.limit) params.set('limit', String(opts.limit));
-      if (opts?.offset) params.set('offset', String(opts.offset));
+      if (opts?.delivery_id) params.set("delivery_id", opts.delivery_id);
+      if (opts?.swarm_id) params.set("swarm_id", opts.swarm_id);
+      if (opts?.limit) params.set("limit", String(opts.limit));
+      if (opts?.offset) params.set("offset", String(opts.offset));
       const qs = params.toString();
-      return api.get<{ data: DeliveryLogEntry[]; total: number }>(`/events/delivery-log${qs ? `?${qs}` : ''}`);
+      return api.get<{ data: DeliveryLogEntry[]; total: number }>(
+        `/events/delivery-log${qs ? `?${qs}` : ""}`,
+      );
     },
   });
 }
 
 // ── Coordination (Messages & Contexts) ──
 
-export function useSwarmMessages(swarmId: string, options?: { limit?: number }) {
+export function useSwarmMessages(
+  swarmId: string,
+  options?: { limit?: number },
+) {
   const limit = options?.limit ?? 50;
 
   return useQuery({
-    queryKey: ['swarm-messages', swarmId, { limit }],
-    queryFn: () => api.get<{ data: SwarmMessage[]; total: number }>(
-      `/coordination/messages?swarm_id=${swarmId}&limit=${limit}`
-    ),
+    queryKey: ["swarm-messages", swarmId, { limit }],
+    queryFn: () =>
+      api.get<{ data: SwarmMessage[]; total: number }>(
+        `/coordination/messages?swarm_id=${swarmId}&limit=${limit}`,
+      ),
     enabled: !!swarmId,
   });
 }
 
-export function useSharedContexts(opts: { hive_id?: string; swarm_id?: string; limit?: number }) {
+export function useSharedContexts(opts: {
+  hive_id?: string;
+  swarm_id?: string;
+  limit?: number;
+}) {
   const params = new URLSearchParams();
-  if (opts.hive_id) params.set('hive_id', opts.hive_id);
-  if (opts.swarm_id) params.set('swarm_id', opts.swarm_id);
-  if (opts.limit) params.set('limit', String(opts.limit));
+  if (opts.hive_id) params.set("hive_id", opts.hive_id);
+  if (opts.swarm_id) params.set("swarm_id", opts.swarm_id);
+  if (opts.limit) params.set("limit", String(opts.limit));
   const qs = params.toString();
 
   return useQuery({
-    queryKey: ['shared-contexts', opts],
-    queryFn: () => api.get<{ data: SharedContext[]; total: number }>(
-      `/coordination/contexts${qs ? `?${qs}` : ''}`
-    ),
+    queryKey: ["shared-contexts", opts],
+    queryFn: () =>
+      api.get<{ data: SharedContext[]; total: number }>(
+        `/coordination/contexts${qs ? `?${qs}` : ""}`,
+      ),
     enabled: !!opts.hive_id,
   });
 }
 
 export function useSwarmPeers(swarmId: string) {
   return useQuery({
-    queryKey: ['swarm-peers', swarmId],
+    queryKey: ["swarm-peers", swarmId],
     queryFn: () => api.get<SwarmPeer[]>(`/map/peers/${swarmId}`),
     enabled: !!swarmId,
     retry: false,
@@ -848,47 +1076,61 @@ export function useSwarmPeers(swarmId: string) {
 
 // ── Sessions / Trajectory ──
 
-export function useSessionsList(options?: { limit?: number; swarm_id?: string }) {
+export function useSessionsList(options?: {
+  limit?: number;
+  swarm_id?: string;
+}) {
   const { limit = 50, swarm_id } = options || {};
 
   const params = new URLSearchParams();
-  params.set('limit', String(limit));
-  if (swarm_id) params.set('swarm_id', swarm_id);
+  params.set("limit", String(limit));
+  if (swarm_id) params.set("swarm_id", swarm_id);
 
   return useQuery({
-    queryKey: ['sessions-overview', { limit, swarm_id }],
-    queryFn: () => api.get<{ data: SessionListItem[]; total: number }>(`/sessions/overview?${params.toString()}`),
+    queryKey: ["sessions-overview", { limit, swarm_id }],
+    queryFn: () =>
+      api.get<{ data: SessionListItem[]; total: number }>(
+        `/sessions/overview?${params.toString()}`,
+      ),
   });
 }
 
-export function useSessionCheckpoints(id: string, options?: { limit?: number }) {
+export function useSessionCheckpoints(
+  id: string,
+  options?: { limit?: number },
+) {
   const { limit = 50 } = options || {};
 
   return useQuery({
-    queryKey: ['session-checkpoints', id, { limit }],
-    queryFn: () => api.get<{ data: TrajectoryCheckpoint[]; total: number }>(
-      `/sessions/${id}/trajectory-checkpoints?limit=${limit}`
-    ),
+    queryKey: ["session-checkpoints", id, { limit }],
+    queryFn: () =>
+      api.get<{ data: TrajectoryCheckpoint[]; total: number }>(
+        `/sessions/${id}/trajectory-checkpoints?limit=${limit}`,
+      ),
     enabled: !!id,
   });
 }
 
 export function useSessionStats(id: string) {
   return useQuery({
-    queryKey: ['session-stats', id],
+    queryKey: ["session-stats", id],
     queryFn: () => api.get<SessionStats>(`/sessions/${id}/trajectory-stats`),
     enabled: !!id,
   });
 }
 
-export function useSessionEvents(id: string, options?: { limit?: number; offset?: number; enabled?: boolean }) {
+export function useSessionEvents(
+  id: string,
+  options?: { limit?: number; offset?: number; enabled?: boolean },
+) {
   const { limit = 200, offset = 0, enabled = true } = options || {};
 
   return useQuery({
-    queryKey: ['session-events', id, { limit, offset }],
-    queryFn: () => api.get<SessionEventsResponse>(
-      `/sessions/${id}/events?limit=${limit}&offset=${offset}`
-    ),
+    queryKey: ["session-events", id, { limit, offset }],
+    queryFn: () =>
+      api.get<SessionEventsResponse>(
+        `/sessions/${id}/events?limit=${limit}&offset=${offset}`,
+      ),
     enabled: !!id && enabled,
   });
 }
@@ -899,12 +1141,14 @@ export function useMailConversations(options?: { status?: string }) {
   const { status } = options || {};
 
   return useQuery({
-    queryKey: ['mail-conversations', { status }],
+    queryKey: ["mail-conversations", { status }],
     queryFn: () => {
       const params = new URLSearchParams();
-      if (status) params.set('status', status);
+      if (status) params.set("status", status);
       const qs = params.toString();
-      return api.get<{ conversations: MailConversation[] }>(`/mail/conversations${qs ? `?${qs}` : ''}`);
+      return api.get<{ conversations: MailConversation[] }>(
+        `/mail/conversations${qs ? `?${qs}` : ""}`,
+      );
     },
     select: (data) => data.conversations,
   });
@@ -912,28 +1156,32 @@ export function useMailConversations(options?: { status?: string }) {
 
 export function useMailConversation(id: string) {
   return useQuery({
-    queryKey: ['mail-conversation', id],
-    queryFn: () => api.get<{
-      conversation: MailConversation;
-      turns: MailTurn[];
-      threads: MailThread[];
-      turn_count: number;
-    }>(`/mail/conversations/${id}`),
+    queryKey: ["mail-conversation", id],
+    queryFn: () =>
+      api.get<{
+        conversation: MailConversation;
+        turns: MailTurn[];
+        threads: MailThread[];
+        turn_count: number;
+      }>(`/mail/conversations/${id}`),
     enabled: !!id,
   });
 }
 
-export function useMailTurns(conversationId: string, options?: { thread_id?: string }) {
+export function useMailTurns(
+  conversationId: string,
+  options?: { thread_id?: string },
+) {
   const { thread_id } = options || {};
 
   return useQuery({
-    queryKey: ['mail-turns', conversationId, { thread_id }],
+    queryKey: ["mail-turns", conversationId, { thread_id }],
     queryFn: () => {
       const params = new URLSearchParams();
-      if (thread_id) params.set('thread_id', thread_id);
+      if (thread_id) params.set("thread_id", thread_id);
       const qs = params.toString();
       return api.get<{ turns: MailTurn[] }>(
-        `/mail/conversations/${conversationId}/turns${qs ? `?${qs}` : ''}`
+        `/mail/conversations/${conversationId}/turns${qs ? `?${qs}` : ""}`,
       );
     },
     select: (data) => data.turns,
@@ -945,22 +1193,33 @@ export function useSendMailTurn() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ conversationId, content, content_type, thread_id, in_reply_to }: {
+    mutationFn: ({
+      conversationId,
+      content,
+      content_type,
+      thread_id,
+      in_reply_to,
+    }: {
       conversationId: string;
       content: unknown;
       content_type?: string;
       thread_id?: string;
       in_reply_to?: string;
-    }) => api.post<MailTurn>(`/mail/conversations/${conversationId}/turns`, {
-      content,
-      content_type,
-      thread_id,
-      in_reply_to,
-    }),
+    }) =>
+      api.post<MailTurn>(`/mail/conversations/${conversationId}/turns`, {
+        content,
+        content_type,
+        thread_id,
+        in_reply_to,
+      }),
     onSuccess: (_, { conversationId }) => {
-      queryClient.invalidateQueries({ queryKey: ['mail-conversation', conversationId] });
-      queryClient.invalidateQueries({ queryKey: ['mail-turns', conversationId] });
-      queryClient.invalidateQueries({ queryKey: ['mail-conversations'] });
+      queryClient.invalidateQueries({
+        queryKey: ["mail-conversation", conversationId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["mail-turns", conversationId],
+      });
+      queryClient.invalidateQueries({ queryKey: ["mail-conversations"] });
     },
   });
 }

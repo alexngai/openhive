@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database, Bell, User, Search, Activity, MessageSquare, ChevronLeft, ListTodo, Brain, Wrench } from 'lucide-react';
+import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database, Bell, User, Search, Activity, MessageSquare, ChevronLeft, ListTodo, Brain, Wrench, GraduationCap } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import type { MailConversation } from '../../lib/api';
@@ -64,6 +64,7 @@ export function Sidebar() {
     { to: '/memory', icon: Brain, label: 'Memory' },
     { to: '/skills', icon: Wrench, label: 'Skills' },
     { to: '/tasks', icon: ListTodo, label: 'Tasks' },
+    { to: '/learning', icon: GraduationCap, label: 'Learning' },
     { to: '/explore', icon: Compass, label: 'Explore' },
     { to: '/hives', icon: Hash, label: 'Channels' },
     { to: '/agents', icon: Users, label: 'Agents' },

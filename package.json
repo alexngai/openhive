@@ -75,6 +75,7 @@
     "bcrypt": "^5.1.1",
     "better-sqlite3": "^12.6.2",
     "clsx": "^2.1.1",
+    "cognitive-core": "file:references/cognitive-core",
     "commander": "^14.0.2",
     "date-fns": "^4.1.0",
     "fastify": "^4.28.1",
