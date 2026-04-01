@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { broadcastToChannel } from '../../realtime/index.js';
+import { authMiddleware, requireAdmin } from '../middleware/auth.js';
 import type { Config } from '../../config.js';
 import type { AtlasService } from '../../learning/atlas-service.js';
 
@@ -47,15 +48,29 @@ export async function learningRoutes(
     return svc;
   }
 
+  // Admin auth: authenticate first, then check admin flag
+  const adminAuth = async (request: any, reply: any) => {
+    // Check for admin key header first
+    const adminKey = request.headers['x-admin-key'];
+    const config = _options.config;
+    if (adminKey && config.admin?.key && adminKey === config.admin.key) {
+      return;
+    }
+    // Fall back to agent auth + admin check
+    await authMiddleware(request, reply);
+    if (reply.sent) return;
+    requireAdmin(request, reply);
+  };
+
   // GET /learning/stats
-  fastify.get('/learning/stats', async (_request, reply) => {
+  fastify.get('/learning/stats', { preHandler: authMiddleware }, async (_request, reply) => {
     const svc = getAtlasService();
     const stats = await svc.getStats();
     return reply.send(stats);
   });
 
   // GET /learning/playbooks
-  fastify.get('/learning/playbooks', async (request, reply) => {
+  fastify.get('/learning/playbooks', { preHandler: authMiddleware }, async (request, reply) => {
     const svc = getAtlasService();
     const params = PlaybookQuerySchema.parse(request.query);
     const memory = svc.getMemory();
@@ -86,7 +101,7 @@ export async function learningRoutes(
   });
 
   // GET /learning/playbooks/:id
-  fastify.get('/learning/playbooks/:id', async (request, reply) => {
+  fastify.get('/learning/playbooks/:id', { preHandler: authMiddleware }, async (request, reply) => {
     const svc = getAtlasService();
     const { id } = request.params as { id: string };
     const memory = svc.getMemory();
@@ -101,7 +116,7 @@ export async function learningRoutes(
   });
 
   // GET /learning/knowledge
-  fastify.get('/learning/knowledge', async (request, reply) => {
+  fastify.get('/learning/knowledge', { preHandler: authMiddleware }, async (request, reply) => {
     const svc = getAtlasService();
     const params = KnowledgeQuerySchema.parse(request.query);
     const kb = svc.getKnowledgeBank();
@@ -138,7 +153,7 @@ export async function learningRoutes(
   });
 
   // GET /learning/knowledge/:id
-  fastify.get('/learning/knowledge/:id', async (request, reply) => {
+  fastify.get('/learning/knowledge/:id', { preHandler: authMiddleware }, async (request, reply) => {
     const svc = getAtlasService();
     const { id } = request.params as { id: string };
     const kb = svc.getKnowledgeBank();
@@ -161,7 +176,7 @@ export async function learningRoutes(
   });
 
   // GET /learning/experiences
-  fastify.get('/learning/experiences', async (request, reply) => {
+  fastify.get('/learning/experiences', { preHandler: authMiddleware }, async (request, reply) => {
     const svc = getAtlasService();
     const params = ExperienceQuerySchema.parse(request.query);
     const memory = svc.getMemory();
@@ -186,15 +201,23 @@ export async function learningRoutes(
     return reply.send({ data, total, limit: params.limit, offset: params.offset });
   });
 
+  // GET /learning/activity — learning event timeline
+  fastify.get('/learning/activity', { preHandler: authMiddleware }, async (request, reply) => {
+    const svc = getAtlasService();
+    const params = PaginationSchema.parse(request.query);
+    const { data, total } = svc.getActivityLog(params.limit, params.offset);
+    return reply.send({ data, total, limit: params.limit, offset: params.offset });
+  });
+
   // POST /learning/batch (admin only)
-  fastify.post('/learning/batch', async (_request, reply) => {
+  fastify.post('/learning/batch', { preHandler: adminAuth }, async (_request, reply) => {
     const svc = getAtlasService();
     const result = await svc.runBatchLearning();
     return reply.send(result);
   });
 
   // POST /learning/maintenance (admin only)
-  fastify.post('/learning/maintenance', async (_request, reply) => {
+  fastify.post('/learning/maintenance', { preHandler: adminAuth }, async (_request, reply) => {
     const svc = getAtlasService();
     const learning = svc.getLearning();
 

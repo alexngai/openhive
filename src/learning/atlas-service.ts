@@ -14,9 +14,22 @@ type Logger = {
   error: (...args: unknown[]) => void;
 };
 
+/** A learning activity event for the timeline */
+export interface LearningActivity {
+  id: string;
+  type: 'instant' | 'batch' | 'maintenance' | 'ingestion';
+  timestamp: string;
+  summary: string;
+  data?: Record<string, unknown>;
+}
+
+const MAX_ACTIVITY_LOG = 200;
+let activityIdCounter = 0;
+
 export class AtlasService {
   private atlas: Atlas | null = null;
   private sessionBanks: SessionBank[] = [];
+  private activityLog: LearningActivity[] = [];
   private config: Config;
   private baseDir: string;
   private ownerAgentId: string;
@@ -95,6 +108,28 @@ export class AtlasService {
     return this.sessionBanks;
   }
 
+  /** Get recent activity log entries */
+  getActivityLog(limit = 50, offset = 0): { data: LearningActivity[]; total: number } {
+    const total = this.activityLog.length;
+    const data = this.activityLog.slice(offset, offset + limit);
+    return { data, total };
+  }
+
+  /** Record a learning activity event */
+  private recordActivity(type: LearningActivity['type'], summary: string, data?: Record<string, unknown>): void {
+    const activity: LearningActivity = {
+      id: `la_${++activityIdCounter}`,
+      type,
+      timestamp: new Date().toISOString(),
+      summary,
+      data,
+    };
+    this.activityLog.unshift(activity); // newest first
+    if (this.activityLog.length > MAX_ACTIVITY_LOG) {
+      this.activityLog.length = MAX_ACTIVITY_LOG;
+    }
+  }
+
   /**
    * Process a trajectory through the learning pipeline.
    * Broadcasts learning:instant WS event on completion.
@@ -104,6 +139,11 @@ export class AtlasService {
 
     try {
       const result = await this.atlas.processTrajectory(trajectory);
+
+      this.recordActivity('instant', 'Trajectory processed', {
+        domain: (trajectory as any).task?.domain,
+        outcome: (trajectory as any).outcome?.success ? 'success' : 'failure',
+      });
 
       broadcastToChannel('learning', {
         type: 'learning:instant',
@@ -127,6 +167,11 @@ export class AtlasService {
     }
 
     const result = await this.atlas.runBatchLearning();
+
+    this.recordActivity('batch', 'Batch learning completed', {
+      trajectoriesProcessed: (result as any).trajectoriesProcessed,
+      playbooksExtracted: (result as any).playbooksExtracted,
+    });
 
     broadcastToChannel('learning', {
       type: 'learning:batch',
@@ -382,6 +427,7 @@ export class AtlasService {
             type: 'learning:maintenance',
             data: result,
           });
+          this.recordActivity('maintenance', 'Scheduled maintenance completed');
           this.log.info('Scheduled maintenance completed');
         }
       } catch (err) {

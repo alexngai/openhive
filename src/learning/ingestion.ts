@@ -56,7 +56,7 @@ async function ingestFromAllBanks(
       const { sessions } = await sessionBank.query({ unprocessedOnly: true });
       if (sessions.length === 0) continue;
 
-      log.info(`Processing ${sessions.length} unprocessed session(s) from bank ${i} (swarm ${swarmId})`);
+      log.info(`Ingesting ${sessions.length} unprocessed session(s) from bank ${i} (swarm ${swarmId})`);
 
       const source = new EntireTrajectorySource(sessionBank, { outcomeStrategy: 'heuristic' });
 

@@ -39,7 +39,7 @@ function truncate(s: string, max: number): string {
 // Shared Components
 // ============================================================================
 
-type DetailTab = 'checkpoints' | 'trajectory';
+type DetailTab = 'checkpoints' | 'trajectory' | 'learning';
 
 function StatCard({ label, value, icon: Icon }: { label: string; value: string | number; icon: React.ElementType }) {
   return (
@@ -821,6 +821,21 @@ export function SessionDetail() {
             {total > 0 && <span className="text-2xs opacity-70">({total})</span>}
           </span>
         </button>
+        <button
+          className={clsx(
+            'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
+            tab === 'learning'
+              ? 'border-honey-500 text-honey-500'
+              : 'border-transparent'
+          )}
+          style={tab !== 'learning' ? { color: 'var(--color-text-muted)' } : undefined}
+          onClick={() => setTab('learning')}
+        >
+          <span className="flex items-center gap-1.5">
+            <Brain className="w-3.5 h-3.5" />
+            Learning
+          </span>
+        </button>
       </div>
 
       {/* Tab content */}
@@ -830,6 +845,102 @@ export function SessionDetail() {
       {tab === 'trajectory' && (
         <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} />
       )}
+      {tab === 'learning' && (
+        <SessionLearningTab sessionId={id!} />
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Session Learning Tab
+// ============================================================================
+
+function SessionLearningTab({ sessionId }: { sessionId: string }) {
+  // Query the learning health to check if learning is available
+  const [learningAvailable, setLearningAvailable] = useState<boolean | null>(null);
+  const [learningData, setLearningData] = useState<{
+    experiences: any[];
+    stats: any;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Fetch learning data on mount
+  useState(() => {
+    (async () => {
+      try {
+        const { api } = await import('../lib/api');
+        const health = await api.get<{ available: boolean }>('/learning/health');
+        setLearningAvailable(health.available);
+
+        if (health.available) {
+          // Fetch experiences that might be related to this session
+          const experiences = await api.get<{ data: any[]; total: number }>('/learning/experiences?limit=100');
+          const stats = await api.get<any>('/learning/stats');
+          setLearningData({ experiences: experiences.data, stats });
+        }
+      } catch {
+        setLearningAvailable(false);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  });
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="w-4 h-4 border-2 border-honey-500/30 border-t-honey-500 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!learningAvailable) {
+    return (
+      <div className="card px-4 py-8 flex flex-col items-center gap-3 text-center">
+        <Brain className="w-8 h-8 text-text-muted" />
+        <p className="text-sm font-medium">Learning engine not available</p>
+        <p className="text-2xs text-text-muted max-w-md">
+          Enable learning in openhive.config.js to see what the learning engine extracted from this session.
+        </p>
+        <Link to="/learning" className="text-2xs text-honey-500 hover:underline">
+          Go to Learning Dashboard
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="card px-3 py-2.5">
+        <h3 className="text-xs font-medium text-text-secondary mb-2 flex items-center gap-1.5">
+          <Brain className="w-3.5 h-3.5" />
+          Learning Summary
+        </h3>
+        <div className="grid grid-cols-2 gap-3 text-2xs">
+          <div>
+            <span className="text-text-muted">Total experiences:</span>
+            <span className="ml-1 text-text-secondary">{learningData?.stats?.memory?.experienceCount ?? 0}</span>
+          </div>
+          <div>
+            <span className="text-text-muted">Total playbooks:</span>
+            <span className="ml-1 text-text-secondary">{learningData?.stats?.memory?.playbookCount ?? 0}</span>
+          </div>
+          <div>
+            <span className="text-text-muted">Trajectories processed:</span>
+            <span className="ml-1 text-text-secondary">{learningData?.stats?.learning?.trajectoriesProcessed ?? 0}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="card px-3 py-2.5">
+        <p className="text-2xs text-text-muted">
+          Session-specific learning extraction tracking (linking individual sessions to the experiences and playbook updates they produced) will be available in a future update.
+        </p>
+        <Link to="/learning" className="text-2xs text-honey-500 hover:underline mt-1 inline-block">
+          View full Learning Dashboard
+        </Link>
+      </div>
     </div>
   );
 }

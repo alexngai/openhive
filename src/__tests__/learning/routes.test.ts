@@ -31,7 +31,7 @@ describe('Learning API Routes', () => {
     cleanTestRoot(TEST_ROOT);
     initDatabase(TEST_DB_PATH);
 
-    const { agent } = await createAgent({ name: 'test-agent', description: 'test' });
+    const { agent } = await createAgent({ name: 'test-agent', description: 'test', is_admin: true });
     setLocalAgent(agent);
 
     config = createTestConfig();
@@ -180,7 +180,7 @@ describe('Learning API Routes — disabled', () => {
     const dbPath = testDbPath(disabledRoot, 'test.db');
     initDatabase(dbPath);
 
-    const { agent } = await createAgent({ name: 'test-agent2', description: 'test' });
+    const { agent } = await createAgent({ name: 'test-agent2', description: 'test', is_admin: true });
     setLocalAgent(agent);
 
     const config = ConfigSchema.parse({
