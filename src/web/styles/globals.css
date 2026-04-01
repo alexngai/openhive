@@ -353,6 +353,16 @@
     color: var(--color-text-muted);
   }
 
+  .sidebar-section-toggle {
+    @apply flex items-center justify-between w-full px-3 py-1.5 text-xs font-medium uppercase tracking-wider cursor-pointer;
+    color: var(--color-text-muted);
+    transition: color 80ms ease;
+  }
+
+  .sidebar-section-toggle:hover {
+    color: var(--color-text-secondary);
+  }
+
   /* === Sidebar item === */
   .sidebar-item {
     @apply flex items-center gap-2 px-3 py-1 rounded-md text-sm cursor-pointer mx-2;

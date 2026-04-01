@@ -3,11 +3,13 @@ import { Sidebar } from './Sidebar';
 import { ToastContainer } from '../common/Toast';
 
 // Routes that need full-width layout (no max-width constraint)
-const FULL_WIDTH_ROUTES = ['/swarmcraft', '/terminal', '/tasks', '/messages/'];
+const FULL_WIDTH_ROUTES = ['/terminal', '/tasks', '/messages/'];
+const FULL_WIDTH_EXACT = ['/'];
 
 export function Layout() {
   const location = useLocation();
-  const isFullWidth = FULL_WIDTH_ROUTES.some(r => location.pathname.startsWith(r));
+  const isFullWidth = FULL_WIDTH_ROUTES.some(r => location.pathname.startsWith(r))
+    || FULL_WIDTH_EXACT.includes(location.pathname);
 
   return (
     <div className="h-screen flex overflow-hidden">
