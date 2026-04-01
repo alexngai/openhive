@@ -21,6 +21,7 @@ import { findResourceById, findSessionResourceBySwarm, upsertDiscoveredResource,
 import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import { updateSwarm } from '../db/dal/map.js';
+import { mapHubEvents } from './service.js';
 
 // ============================================================================
 // Types
@@ -104,6 +105,7 @@ function handleCheckpoint(
   // ── Enrich swarm record with project context ────────────────────────
   const meta = checkpoint.metadata as Record<string, unknown> | undefined;
   const project = meta?.project as string | undefined;
+  const projectPath = meta?.projectPath as string | undefined;
   if (project && swarmId) {
     try {
       const branch = checkpoint.branch as string | undefined;
@@ -111,10 +113,24 @@ function handleCheckpoint(
       const swarmName = branch ? `${project} (${branch})` : project;
       updateSwarm(swarmId, {
         name: swarmName,
-        metadata: { project, branch, template, type: (checkpoint.agent as string) || 'sidecar' },
+        metadata: { project, branch, template, projectPath, type: (checkpoint.agent as string) || 'sidecar' },
       });
     } catch { /* non-critical */ }
   }
+
+  // Emit for SwarmCraft bridge (after enrichment so projectPath is available)
+  mapHubEvents.emit('trajectory_checkpoint', {
+    session_resource_id: resourceId,
+    checkpoint_id: checkpointId,
+    agent: (checkpoint.agent as string) || 'unknown',
+    branch: checkpoint.branch as string | undefined,
+    files_touched: checkpoint.files_touched as string[] | undefined,
+    token_usage: checkpoint.token_usage as Record<string, unknown> | undefined,
+    source_swarm_id: swarmId,
+    source_agent_id: agentId,
+    projectPath,
+    created,
+  });
 
   // ── Invalidate cached trajectory content ────────────────────────────
   //    New checkpoint means the session has progressed. Clear the storage

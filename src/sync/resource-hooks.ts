@@ -14,6 +14,7 @@ import { listSyncGroups } from '../db/dal/sync-groups.js';
 import { insertLocalEvent } from '../db/dal/sync-events.js';
 import { signEvent } from './crypto.js';
 import { getSyncService } from './service.js';
+import { mapHubEvents } from '../map/service.js';
 import type { Agent } from '../types.js';
 import type {
   HiveEventType,
@@ -90,6 +91,14 @@ export function onResourcePublished(
     };
 
     recordEventOnAllGroups('resource_published', payload);
+
+    // Emit for SwarmCraft bridge
+    mapHubEvents.emit('resource_published', {
+      resource_id: resource.id,
+      resource_type: resource.resource_type,
+      name: resource.name,
+      owner_agent_id: agent.id,
+    });
   } catch (err) {
     console.error('[Sync Hook] onResourcePublished failed:', (err as Error).message);
   }
@@ -112,6 +121,13 @@ export function onResourceUpdated(
     };
 
     recordEventOnAllGroups('resource_updated', payload);
+
+    // Emit for SwarmCraft bridge
+    mapHubEvents.emit('resource_updated', {
+      resource_id: resourceId,
+      fields,
+      owner_agent_id: agent.id,
+    });
   } catch (err) {
     console.error('[Sync Hook] onResourceUpdated failed:', (err as Error).message);
   }
@@ -155,6 +171,13 @@ export function onResourceSynced(
     };
 
     recordEventOnAllGroups('resource_synced', payload);
+
+    // Emit for SwarmCraft bridge
+    mapHubEvents.emit('resource_synced', {
+      resource_id: resourceId,
+      commit_hash: commitHash,
+      pusher_agent_id: pusherAgentId,
+    });
   } catch (err) {
     console.error('[Sync Hook] onResourceSynced failed:', (err as Error).message);
   }

@@ -47,6 +47,10 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": __dirname,
+      // Use local SwarmCraft source (references/swarmcraft) instead of npm package
+      // so changes to the submodule are reflected immediately during dev
+      "swarmcraft/ui/embed": path.resolve(__dirname, "../../references/swarmcraft/src/ui/embed.ts"),
+      "swarmcraft/ui/embed.css": path.resolve(__dirname, "../../references/swarmcraft/src/ui/index.css"),
       // Fix for mermaid d3-color prototype crash (known issue with mermaid 10.9.0+ and Vite)
       mermaid: path.resolve(
         __dirname,

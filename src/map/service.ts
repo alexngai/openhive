@@ -132,6 +132,16 @@ export function registerNode(
     },
   });
 
+  // Emit for SwarmCraft bridge
+  mapHubEvents.emit('node_registered', {
+    node_id: node.id,
+    swarm_id: node.swarm_id,
+    map_agent_id: node.map_agent_id,
+    name: node.name,
+    role: node.role,
+    state: node.state,
+  });
+
   return node;
 }
 
@@ -261,12 +271,24 @@ export function leaveHive(swarmId: string, hiveName: string): boolean {
  */
 export function markStaleSwarms(staleThresholdMinutes: number = 5): number {
   const db = getDatabase();
+  // Collect IDs of swarms about to go offline (for SwarmCraft bridge)
+  const staleRows = db.prepare(`
+    SELECT id FROM map_swarms
+    WHERE status IN ('online', 'unreachable')
+      AND last_seen_at < datetime('now', ?)
+  `).all(`-${staleThresholdMinutes} minutes`) as { id: string }[];
+
   const result = db.prepare(`
     UPDATE map_swarms
     SET status = 'offline', updated_at = datetime('now')
     WHERE status IN ('online', 'unreachable')
       AND last_seen_at < datetime('now', ?)
   `).run(`-${staleThresholdMinutes} minutes`);
+
+  // Emit for SwarmCraft bridge
+  for (const row of staleRows) {
+    mapHubEvents.emit('swarm_offline', { swarm_id: row.id });
+  }
 
   return result.changes;
 }
