@@ -6,6 +6,7 @@ import { broadcastToChannel } from '../realtime/index.js';
 import { mapHubEvents } from '../map/service.js';
 import { triggerIngestion } from './ingestion.js';
 import type { Config } from '../config.js';
+import { emitBatchSyncEvents } from './sync.js';
 import { type Atlas, createAtlas, type ProcessResult, type BatchResult, SessionBank } from 'cognitive-core';
 
 type Logger = {
@@ -30,6 +31,8 @@ export class AtlasService {
   private atlas: Atlas | null = null;
   private sessionBanks: SessionBank[] = [];
   private activityLog: LearningActivity[] = [];
+  private skillResourceId: string | null = null;
+  private knowledgeResourceId: string | null = null;
   private config: Config;
   private baseDir: string;
   private ownerAgentId: string;
@@ -177,6 +180,16 @@ export class AtlasService {
       type: 'learning:batch',
       data: result,
     });
+
+    // Emit sync events for cross-hive playbook/knowledge federation
+    if (this.config.learning.sync.publishPlaybooks) {
+      emitBatchSyncEvents(
+        this.skillResourceId,
+        this.knowledgeResourceId,
+        this.ownerAgentId,
+        result as unknown as Record<string, unknown>,
+      );
+    }
 
     return result;
   }
@@ -496,7 +509,7 @@ export class AtlasService {
     const skilltreeDir = path.join(this.baseDir, '.skilltree');
     fs.mkdirSync(skilltreeDir, { recursive: true });
     try {
-      upsertDiscoveredResource({
+      const { resource } = upsertDiscoveredResource({
         resource_type: 'skill',
         name: 'learning/skills',
         description: 'Skills extracted from learning engine playbooks',
@@ -506,6 +519,7 @@ export class AtlasService {
         sync_strategy: 'local',
         local_path: skilltreeDir,
       });
+      this.skillResourceId = resource.id;
     } catch (err) {
       this.log.warn('Failed to register skill resource:', (err as Error).message);
     }
@@ -513,7 +527,7 @@ export class AtlasService {
     const knowledgeDir = path.join(this.baseDir, 'knowledge');
     fs.mkdirSync(knowledgeDir, { recursive: true });
     try {
-      upsertDiscoveredResource({
+      const { resource } = upsertDiscoveredResource({
         resource_type: 'memory_bank',
         name: 'learning/knowledge',
         description: 'Knowledge notes from the learning engine',
@@ -523,6 +537,7 @@ export class AtlasService {
         sync_strategy: 'local',
         local_path: knowledgeDir,
       });
+      this.knowledgeResourceId = resource.id;
     } catch (err) {
       this.log.warn('Failed to register knowledge resource:', (err as Error).message);
     }

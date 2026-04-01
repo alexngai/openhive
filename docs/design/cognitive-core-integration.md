@@ -563,22 +563,28 @@ MAP messages are only used for the optional agentic layer (dispatching workspace
   - [x] Conditional: only when `learning.compute.enabled` and a swarm is available
 - [x] `/health` route includes `agentic_compute` status
 
-### Phase 2: UI & Observability
+### Phase 2: UI & Observability — IMPLEMENTED
 
-- [ ] Learning dashboard page (`/learning`)
-- [ ] Playbook list + detail views
-- [ ] Knowledge notes browser with search
-- [ ] Learning activity timeline
-- [ ] Session detail "Learning" tab
-- [ ] Batch/maintenance trigger controls (admin)
+- [x] Learning dashboard page (`/learning`) with 4 tabs (overview, playbooks, knowledge, experiences)
+- [x] Playbook list + detail views with full playbook inspection
+- [x] Knowledge notes browser with search
+- [x] Learning activity timeline (in-memory ring buffer, API + UI)
+- [x] Session detail "Learning" tab with stats and link to dashboard
+- [x] Batch/maintenance trigger controls (admin-only via adminAuth)
+- [x] Admin auth on mutation routes (POST batch/maintenance), read routes use authMiddleware
+- [x] Real-time invalidation via `useLearningRealtime()` hook
+- [x] 49 tests across 3 files (atlas-service, routes, sync)
 
-### Phase 3: Cross-Hive Sync
+### Phase 3: Cross-Hive Sync — IMPLEMENTED
 
-- [ ] Add `playbook` resource type to SyncableResourceType
-- [ ] Emit `resource_synced` events on skill-tree publish
-- [ ] Materialize incoming playbook/skill resources from peer hives
-- [ ] Conflict resolution (merge strategy)
-- [ ] Knowledge sync via `memory_bank` resource
+- [x] `'playbook'` added to `SyncableResourceType` and `ResourcePublishedPayload`
+- [x] `PlaybookResourceMetadata` type added (playbook_count, domains, avg_confidence, provenance)
+- [x] `emitBatchSyncEvents()` in `src/learning/sync.ts` — emits `resource_synced` after batch learning
+- [x] Skill and knowledge resource IDs tracked in AtlasService for sync emission
+- [x] Sync emission gated by `learning.sync.publishPlaybooks` config
+- [x] Knowledge sync via existing `memory_bank` resource infrastructure (no changes needed)
+- [x] Materializer handles incoming playbook resources generically (existing `resource_published` flow)
+- [x] 6 sync-specific tests
 
 ### Phase 4: Distributed Compute
 
