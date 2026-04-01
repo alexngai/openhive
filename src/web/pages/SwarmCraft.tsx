@@ -1,8 +1,10 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { SwarmCraftApp } from 'swarmcraft/ui/embed';
+import type { TasksOverride } from 'swarmcraft/ui/embed';
 import 'swarmcraft/ui/embed.css';
 import { useMapSwarms, useSessionsList } from '../hooks/useApi';
+import { useOpenTasksAggregated } from '../hooks/useOpenTasksAggregated';
 import { Activity, Zap, Brain, Wrench, ListTodo } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
@@ -13,6 +15,16 @@ function useSwarmCraftConfig() {
     apiUrl: '/api/swarmcraft',
     wsUrl: `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/swarmcraft`,
   }), []);
+}
+
+/** Bridge OpenTasks into SwarmCraft's task system */
+function useTasksOverride(): TasksOverride {
+  const openTasks = useOpenTasksAggregated();
+  return useMemo(() => ({
+    tasks: openTasks.tasks,
+    createTask: openTasks.createTask,
+    assignTask: openTasks.assignTask,
+  }), [openTasks.tasks, openTasks.createTask, openTasks.assignTask]);
 }
 
 function BridgeStatusBar() {
@@ -79,11 +91,18 @@ function BridgeStatusBar() {
 
 export function SwarmCraft() {
   const config = useSwarmCraftConfig();
+  const tasksOverride = useTasksOverride();
+
   return (
     <div className="flex flex-col h-full">
       <BridgeStatusBar />
       <div className="flex-1 min-h-0">
-        <SwarmCraftApp config={config} autoConnect defaultPanelOpen />
+        <SwarmCraftApp
+          config={config}
+          autoConnect
+          defaultPanelOpen
+          tasksOverride={tasksOverride}
+        />
       </div>
     </div>
   );

@@ -5,9 +5,11 @@
  * into SwarmCraft agents with trajectory turns and file-based positioning.
  */
 
+import path from 'node:path';
 import { mapHubEvents } from '../map/service.js';
 import { listAllSessions, listCheckpointsForSession, getSessionStats } from '../db/dal/trajectory-checkpoints.js';
 import { findResourceById } from '../db/dal/syncable-resources.js';
+import { findSwarmById } from '../db/dal/map.js';
 import {
   OPENHIVE_SESSION_SERVER_ID,
   agentIdFromSession,
@@ -45,6 +47,7 @@ export async function setupSessionBridge(ctx: BridgeContext): Promise<SessionBri
       token_usage?: Record<string, unknown>;
       source_swarm_id?: string;
       source_agent_id?: string;
+      projectPath?: string;
       created: boolean;
     };
     try {
@@ -80,24 +83,36 @@ export async function setupSessionBridge(ctx: BridgeContext): Promise<SessionBri
         }
       }
 
+      // Resolve project name prefix for merged graph alignment
+      // In merged graphs, file paths are prefixed: "projectName/src/file.ts"
+      // We record both the prefixed and unprefixed path so positioning works
+      // whether the graph is single-project or merged
+      const projectPrefix = ev.projectPath
+        ? path.basename(ev.projectPath) + '/'
+        : '';
+
       // Record trajectory turn
       if (ctx.trajectoryService) {
         await ctx.trajectoryService.startTurn({
           turnId: ev.checkpoint_id,
           agentId,
           sessionId: ev.session_resource_id,
-          turnNumber: Date.now(), // monotonic ordering
+          turnNumber: Date.now(),
           startedAt: Date.now(),
         });
 
-        // Record file access actions
         if (ev.files_touched) {
           for (const file of ev.files_touched) {
+            // Record with project prefix (for merged graph positioning)
+            if (projectPrefix) {
+              await ctx.positionService.recordAccess(agentId, projectPrefix + file, 'write');
+            }
+            // Also record without prefix (for single-project positioning)
             await ctx.positionService.recordAccess(agentId, file, 'write');
             await ctx.trajectoryService.recordAction({
               agentId,
               tool: 'checkpoint',
-              filePath: file,
+              filePath: projectPrefix + file,
               success: true,
               timestamp: Date.now(),
             });
@@ -106,8 +121,10 @@ export async function setupSessionBridge(ctx: BridgeContext): Promise<SessionBri
 
         await ctx.trajectoryService.endCurrentTurn(agentId);
       } else if (ev.files_touched) {
-        // Still record file access for positioning even without trajectory service
         for (const file of ev.files_touched) {
+          if (projectPrefix) {
+            await ctx.positionService.recordAccess(agentId, projectPrefix + file, 'write');
+          }
           await ctx.positionService.recordAccess(agentId, file, 'write');
         }
       }
@@ -187,6 +204,18 @@ async function hydrateSession(
     // Hydrate trajectory turns from checkpoints
     if (ctx.trajectoryService) {
       const { data: checkpoints } = listCheckpointsForSession(sessionResourceId, 50);
+
+      // Resolve project prefix for merged graph alignment
+      let projectPrefix = '';
+      if (checkpoints.length > 0 && checkpoints[0].source_swarm_id) {
+        try {
+          const swarm = findSwarmById(checkpoints[0].source_swarm_id);
+          const meta = swarm?.metadata as Record<string, unknown> | null;
+          const project = meta?.project as string | undefined;
+          if (project) projectPrefix = project + '/';
+        } catch { /* best effort */ }
+      }
+
       for (let i = 0; i < checkpoints.length; i++) {
         const cp = checkpoints[i];
         await ctx.trajectoryService.startTurn({
@@ -198,11 +227,14 @@ async function hydrateSession(
         });
 
         for (const file of cp.files_touched) {
+          if (projectPrefix) {
+            await ctx.positionService.recordAccess(agentId, projectPrefix + file, 'write');
+          }
           await ctx.positionService.recordAccess(agentId, file, 'write');
           await ctx.trajectoryService.recordAction({
             agentId,
             tool: 'checkpoint',
-            filePath: file,
+            filePath: projectPrefix + file,
             success: true,
             timestamp: new Date(cp.synced_at).getTime(),
           });

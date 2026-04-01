@@ -16,7 +16,8 @@ interface SwarmCraftInstance {
   db: BridgeContext['db'] & {
     projects?: {
       getByPath(path: string): Promise<{ id: string; status: string } | null>;
-      create(data: { id: string; name: string; path: string }): Promise<unknown>;
+      create(data: { id: string; name: string; path: string; gitUrl?: string; branch?: string; commitHash?: string }): Promise<unknown>;
+      update(id: string, data: Record<string, unknown>): Promise<unknown>;
     };
   };
   wsHub: BridgeContext['wsHub'];
