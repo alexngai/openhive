@@ -13,7 +13,12 @@ import { setupRepoBridge } from './repo-bridge.js';
 import type { BridgeConfig, BridgeHandle, BridgeContext } from './types.js';
 
 interface SwarmCraftInstance {
-  db: BridgeContext['db'];
+  db: BridgeContext['db'] & {
+    projects?: {
+      getByPath(path: string): Promise<{ id: string; status: string } | null>;
+      create(data: { id: string; name: string; path: string }): Promise<unknown>;
+    };
+  };
   wsHub: BridgeContext['wsHub'];
   positionService: BridgeContext['positionService'];
   trajectoryService?: BridgeContext['trajectoryService'];
@@ -59,9 +64,9 @@ export async function setupOpenHiveBridge(
   // Phase 3: Tasks — handled by OpenTasks via frontend hook (useOpenTasksAggregated),
   // no server-side bridge needed. Coordination events go to OpenTasks via compat shim.
 
-  // Phase 4: Auto-import repos from swarm trajectory checkpoints
+  // Phase 4: Auto-register repos from swarm trajectory checkpoints
   if (sc.pipelineService) {
-    const handle = await setupRepoBridge(sc.pipelineService);
+    const handle = await setupRepoBridge(sc.pipelineService, sc.db.projects);
     teardowns.push(handle.teardown);
     console.log('[swarmcraft-bridge] Repo bridge ready');
   }

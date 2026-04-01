@@ -106,6 +106,8 @@ function handleCheckpoint(
   const meta = checkpoint.metadata as Record<string, unknown> | undefined;
   const project = meta?.project as string | undefined;
   const projectPath = meta?.projectPath as string | undefined;
+  const gitRemoteUrl = meta?.gitRemoteUrl as string | undefined;
+  const gitCommitHash = meta?.gitCommitHash as string | undefined;
   if (project && swarmId) {
     try {
       const branch = checkpoint.branch as string | undefined;
@@ -113,7 +115,7 @@ function handleCheckpoint(
       const swarmName = branch ? `${project} (${branch})` : project;
       updateSwarm(swarmId, {
         name: swarmName,
-        metadata: { project, branch, template, projectPath, type: (checkpoint.agent as string) || 'sidecar' },
+        metadata: { project, branch, template, projectPath, gitRemoteUrl, gitCommitHash, type: (checkpoint.agent as string) || 'sidecar' },
       });
     } catch { /* non-critical */ }
   }
@@ -129,6 +131,8 @@ function handleCheckpoint(
     source_swarm_id: swarmId,
     source_agent_id: agentId,
     projectPath,
+    gitRemoteUrl,
+    gitCommitHash,
     created,
   });
 
