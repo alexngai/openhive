@@ -265,19 +265,30 @@ export class AtlasService {
   }
 
   /**
-   * Enable agentic workspace template execution by wiring a SwarmAgentBackend.
-   * Called after swarm infrastructure is available (Phase 1.5+).
+   * Enable agentic workspace template execution.
+   *
+   * Wires both SwarmAgentBackend (session tracking) and SwarmAgentDelegate
+   * (actual execution dispatch) into Atlas. cognitive-core's AgenticTaskRunner
+   * then handles:
+   *   - Complexity assessment (heuristic vs agentic)
+   *   - Workspace setup via WorkspaceManager (local filesystem)
+   *   - Knowledge injection
+   *   - Agent dispatch via delegate → swarm
+   *   - Output validation and collection
+   *   - Workspace cleanup
    */
-  enableAgenticCompute(backend: import('./swarm-agent-backend.js').SwarmAgentBackend): void {
+  enableAgenticCompute(
+    backend: import('./swarm-agent-backend.js').SwarmAgentBackend,
+    delegate: import('./swarm-agent-backend.js').SwarmAgentDelegate,
+  ): void {
     if (!this.atlas) {
       this.log.warn('Cannot enable agentic compute — Atlas not available');
       return;
     }
 
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.atlas.setAgentManager([backend as any]);
-      this.log.info('Agentic compute enabled via SwarmAgentBackend');
+      this.atlas.setAgentManager([backend], { delegate });
+      this.log.info('Agentic compute enabled — workspace templates will use swarm agents');
     } catch (err) {
       this.log.warn('Failed to enable agentic compute:', (err as Error).message);
     }

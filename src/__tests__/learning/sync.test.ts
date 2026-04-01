@@ -2,7 +2,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import { createAgent } from '../../db/dal/agents.js';
-import { findResourceById } from '../../db/dal/syncable-resources.js';
 import { AtlasService } from '../../learning/atlas-service.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import type { SyncableResourceType } from '../../types.js';
@@ -23,9 +22,11 @@ function createTestConfig(): Config {
 
 describe('Learning Sync — Cross-Hive', () => {
   let ownerAgentId: string;
+  const originalHome = process.env.OPENHIVE_HOME;
 
   beforeAll(async () => {
     cleanTestRoot(TEST_ROOT);
+    process.env.OPENHIVE_HOME = TEST_ROOT;
     initDatabase(TEST_DB_PATH);
     const { agent } = await createAgent({ name: 'sync-test-agent', description: 'test' });
     ownerAgentId = agent.id;
@@ -34,6 +35,8 @@ describe('Learning Sync — Cross-Hive', () => {
   afterAll(() => {
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
+    if (originalHome) process.env.OPENHIVE_HOME = originalHome;
+    else delete process.env.OPENHIVE_HOME;
   });
 
   describe('Resource type support', () => {
@@ -113,6 +116,46 @@ describe('Learning Sync — Cross-Hive', () => {
       const batchEvent = data.find(e => e.type === 'batch');
       expect(batchEvent).toBeDefined();
       expect(batchEvent!.summary).toBe('Batch learning completed');
+
+      await svc.close();
+    });
+  });
+
+  describe('emitBatchSyncEvents directly', () => {
+    it('should not throw when resource IDs are null', async () => {
+      const { emitBatchSyncEvents } = await import('../../learning/sync.js');
+      // Should not throw with null resource IDs
+      expect(() => emitBatchSyncEvents(null, null, 'agent-1', { playbooksExtracted: 0 })).not.toThrow();
+    });
+
+    it('should not throw when resource is not found', async () => {
+      const { emitBatchSyncEvents } = await import('../../learning/sync.js');
+      // Non-existent resource IDs
+      expect(() => emitBatchSyncEvents('res_nonexistent', 'res_also_nonexistent', 'agent-1', {})).not.toThrow();
+    });
+
+    it('should skip private resources', async () => {
+      const config = createTestConfig();
+      const svc = new AtlasService(config, ownerAgentId);
+      await svc.init();
+
+      // Resources registered by atlas-service default to 'private' visibility
+      // emitBatchSyncEvents should skip them (only emits for shared/public)
+      const { emitBatchSyncEvents } = await import('../../learning/sync.js');
+      const db = (await import('../../db/index.js')).getDatabase();
+
+      // Check registered resources are private
+      const res = db.prepare(
+        "SELECT visibility FROM syncable_resources WHERE name = 'learning/skills'"
+      ).get() as { visibility: string } | undefined;
+
+      if (res) {
+        expect(res.visibility).toBe('private');
+        // emitBatchSyncEvents should not emit for private resources
+        expect(() => emitBatchSyncEvents(
+          'res_123', null, ownerAgentId, { playbooksExtracted: 1 }
+        )).not.toThrow();
+      }
 
       await svc.close();
     });

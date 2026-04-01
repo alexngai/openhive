@@ -31,9 +31,11 @@ describe('Learning API Routes', () => {
   let app: FastifyInstance;
   let atlasService: AtlasService;
   let config: Config;
+  const originalHome = process.env.OPENHIVE_HOME;
 
   beforeAll(async () => {
     cleanTestRoot(TEST_ROOT);
+    process.env.OPENHIVE_HOME = TEST_ROOT;
     initDatabase(TEST_DB_PATH);
 
     const { agent } = await createAgent({ name: 'test-agent', description: 'test', is_admin: true });
@@ -61,6 +63,8 @@ describe('Learning API Routes', () => {
     setLocalAgent(null);
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
+    if (originalHome) process.env.OPENHIVE_HOME = originalHome;
+    else delete process.env.OPENHIVE_HOME;
   });
 
   // ── Stats ──
@@ -285,10 +289,12 @@ describe('Learning API Routes', () => {
 
 describe('Learning API Routes — disabled', () => {
   let app: FastifyInstance;
+  const originalHome2 = process.env.OPENHIVE_HOME;
+  const disabledRoot = testRoot('learning-routes-disabled');
 
   beforeAll(async () => {
-    const disabledRoot = testRoot('learning-routes-disabled');
     cleanTestRoot(disabledRoot);
+    process.env.OPENHIVE_HOME = disabledRoot;
     const dbPath = testDbPath(disabledRoot, 'test.db');
     initDatabase(dbPath);
 
@@ -319,6 +325,8 @@ describe('Learning API Routes — disabled', () => {
     await app.close();
     setLocalAgent(null);
     closeDatabase();
+    if (originalHome2) process.env.OPENHIVE_HOME = originalHome2;
+    else delete process.env.OPENHIVE_HOME;
   });
 
   it('should return 503 for stats when learning is disabled', async () => {
@@ -372,10 +380,12 @@ describe('Learning API Routes — disabled', () => {
 describe('Learning API Routes — non-admin auth', () => {
   let app: FastifyInstance;
   let atlasService: AtlasService;
+  const originalHome3 = process.env.OPENHIVE_HOME;
+  const authRoot = testRoot('learning-routes-auth');
 
   beforeAll(async () => {
-    const authRoot = testRoot('learning-routes-auth');
     cleanTestRoot(authRoot);
+    process.env.OPENHIVE_HOME = authRoot;
     const dbPath = testDbPath(authRoot, 'test.db');
     initDatabase(dbPath);
 
@@ -404,6 +414,8 @@ describe('Learning API Routes — non-admin auth', () => {
     await atlasService.close();
     setLocalAgent(null);
     closeDatabase();
+    if (originalHome3) process.env.OPENHIVE_HOME = originalHome3;
+    else delete process.env.OPENHIVE_HOME;
   });
 
   it('should allow non-admin to read stats', async () => {

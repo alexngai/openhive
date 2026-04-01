@@ -10,25 +10,31 @@ import * as fs from 'fs';
 const TEST_ROOT = testRoot('learning-atlas');
 const TEST_DB_PATH = testDbPath(TEST_ROOT, 'test.db');
 
-function createTestConfig(overrides?: Partial<Config['learning']>): Config {
+function createTestConfig(overrides?: Record<string, unknown>): Config {
+  const learning: Record<string, unknown> = { enabled: true };
+  if (overrides) {
+    for (const [k, v] of Object.entries(overrides)) {
+      learning[k] = v;
+    }
+  }
   return ConfigSchema.parse({
     database: TEST_DB_PATH,
     instance: { name: 'Test', description: 'Test' },
     admin: { createOnStartup: false },
     auth: { mode: 'local' },
     rateLimit: { enabled: false },
-    learning: {
-      enabled: true,
-      ...overrides,
-    },
+    learning,
   });
 }
 
 describe('AtlasService', () => {
   let ownerAgentId: string;
 
+  const originalHome = process.env.OPENHIVE_HOME;
+
   beforeAll(async () => {
     cleanTestRoot(TEST_ROOT);
+    process.env.OPENHIVE_HOME = TEST_ROOT;
     initDatabase(TEST_DB_PATH);
     const { agent } = await createAgent({ name: 'test-agent', description: 'test' });
     ownerAgentId = agent.id;
@@ -37,6 +43,8 @@ describe('AtlasService', () => {
   afterAll(() => {
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
+    if (originalHome) process.env.OPENHIVE_HOME = originalHome;
+    else delete process.env.OPENHIVE_HOME;
   });
 
   it('should initialize Atlas when learning is enabled', async () => {
@@ -246,6 +254,73 @@ describe('AtlasService', () => {
     expect(status.maintenance.scheduled).toBe(true);
     expect(status.maintenance).toHaveProperty('schedule');
 
+    await svc.close();
+  });
+
+  it('should not start maintenance scheduler when autoRun is false', async () => {
+    const config = createTestConfig();
+    config.learning.maintenance.autoRun = false;
+    const svc = new AtlasService(config, ownerAgentId);
+    await svc.init();
+
+    const status = await svc.getDetailedStatus();
+    expect(status.maintenance.scheduled).toBe(false);
+
+    await svc.close();
+  });
+
+  it('should parse schedule hour correctly', async () => {
+    const config = createTestConfig();
+    config.learning.maintenance.schedule = '0 15 * * *'; // 3pm
+    const svc = new AtlasService(config, ownerAgentId);
+    await svc.init();
+
+    const status = await svc.getDetailedStatus();
+    expect(status.maintenance.scheduled).toBe(true);
+    expect(status.maintenance.schedule).toBe('0 15 * * *');
+
+    await svc.close();
+  });
+
+  it('should evict old entries when activity log exceeds 200', async () => {
+    const config = createTestConfig();
+    const svc = new AtlasService(config, ownerAgentId);
+    await svc.init();
+
+    const { createTrajectory, createTask, createStep, successOutcome } = await import('cognitive-core');
+
+    // Feed 210 trajectories to fill the activity log beyond capacity
+    for (let i = 0; i < 210; i++) {
+      await svc.processTrajectory(createTrajectory({
+        task: createTask({ domain: 'overflow', description: `overflow-${i}` }),
+        steps: [createStep({ action: 'a', observation: 'b' })],
+        outcome: successOutcome('done'),
+        agentId: 'test',
+      }));
+    }
+
+    const { data, total } = svc.getActivityLog(300);
+    // Should be capped at 200
+    expect(total).toBeLessThanOrEqual(200);
+    expect(data.length).toBeLessThanOrEqual(200);
+
+    // Most recent entry should be the last one processed
+    const newest = data[0];
+    expect(newest.type).toBe('instant');
+
+    await svc.close();
+  });
+
+  it('should clean up event listener and timer on close', async () => {
+    const config = createTestConfig();
+    const svc = new AtlasService(config, ownerAgentId);
+    await svc.init();
+    expect(svc.isAvailable()).toBe(true);
+
+    await svc.close();
+    expect(svc.isAvailable()).toBe(false);
+
+    // Double-close should be safe
     await svc.close();
   });
 

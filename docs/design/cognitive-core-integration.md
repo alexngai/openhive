@@ -226,14 +226,29 @@ class SwarmAgentBackend implements AgentBackend {
 2. **Available connected swarm** — LRU among connected swarms
 3. **Spawn ephemeral** — Via SwarmManager if `spawnIfNoneAvailable: true`
 
-**Swarm-side handling**: The swarm (macro-agent) receives `x-openhive/learning.workspace.execute` as a task. It spawns a worker agent in an isolated worktree, the agent executes the task (which is just a well-defined analysis prompt), and returns structured JSON output. The swarm doesn't need cognitive-core — it's executing a generic task.
+**Swarm-side handling**: macro-agent's `orchestration` branch includes a full `src/cognitive/` module with:
+- `MacroAgentBackend` — Implements cognitive-core's `AgentBackend` interface natively
+- `AnalystRole` — Minimal role for cognitive analysis agents (reads input/, writes output/, calls done())
+- `SessionConverter` — Converts ACP protocol updates to cognitive sessions in real-time
+- `TrajectoryExtractor` — Converts completed sessions to ReAct-format trajectories
+- `ACP extensions` (`_macro/cognitive/command`, `status`, `query`) — For Atlas-level operations
+- `TeamLifecycle` — Factory for initializing cognitive-ops teams
 
-**Protocol**: Single MAP extension method for the agentic layer:
+When OpenHive dispatches a workspace task to a swarm running macro-agent with cognitive integration, the flow is:
+1. `x-openhive/learning.workspace.execute` MAP message arrives at the swarm
+2. Swarm's handler spawns an analyst agent via `MacroAgentBackend.spawn()`
+3. Agent executes in the workspace `cwd`, reads input files, writes output files
+4. Agent calls `done()`, trajectory is extracted
+5. Result sent back via `x-openhive/learning.workspace.result`
+
+**Protocol**: MAP extension methods for the agentic layer:
 
 | Method | Direction | Description |
 |--------|-----------|-------------|
 | `x-openhive/learning.workspace.execute` | Hive → Swarm | Send workspace template task for agent execution |
 | `x-openhive/learning.workspace.result` | Swarm → Hive | Return structured analysis results |
+| `_macro/cognitive/command` | (Swarm internal) | Dispatch Atlas operations (extract, query, prune) |
+| `_macro/cognitive/status` | (Swarm internal) | Query Atlas availability |
 
 **Phase 2**: Wire `SwarmAgentBackend` into Atlas as the `AgenticTaskRunner`. Set on Atlas after a swarm is available.
 

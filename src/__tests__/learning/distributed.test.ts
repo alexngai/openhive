@@ -25,9 +25,11 @@ function createTestConfig(distributed?: Partial<Config['learning']['distributed'
 
 describe('DistributedLearningCoordinator', () => {
   let ownerAgentId: string;
+  const originalHome = process.env.OPENHIVE_HOME;
 
   beforeAll(async () => {
     cleanTestRoot(TEST_ROOT);
+    process.env.OPENHIVE_HOME = TEST_ROOT;
     initDatabase(TEST_DB_PATH);
     const { agent } = await createAgent({ name: 'dist-test', description: 'test' });
     ownerAgentId = agent.id;
@@ -36,6 +38,8 @@ describe('DistributedLearningCoordinator', () => {
   afterAll(() => {
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
+    if (originalHome) process.env.OPENHIVE_HOME = originalHome;
+    else delete process.env.OPENHIVE_HOME;
   });
 
   describe('local mode', () => {
@@ -152,6 +156,36 @@ describe('DistributedLearningCoordinator', () => {
       const coordinator = new DistributedLearningCoordinator(config, svc);
       expect(coordinator.resolveTarget('code')).toBe('local');
       expect(coordinator.resolveTarget('unknown')).toBe('local');
+
+      await svc.close();
+    });
+
+    it('should guard against self-forwarding in domain-partitioned mode', async () => {
+      const config = ConfigSchema.parse({
+        database: TEST_DB_PATH,
+        instance: { name: 'Test', description: 'Test', url: 'https://self.example.com' },
+        admin: { createOnStartup: false },
+        auth: { mode: 'local' },
+        rateLimit: { enabled: false },
+        learning: {
+          enabled: true,
+          distributed: {
+            mode: 'domain-partitioned',
+            domainRouting: {
+              'deployment': 'https://self.example.com', // Points to self!
+              'debugging': 'https://other.example.com',
+            },
+          },
+        },
+      });
+      const svc = new AtlasService(config, ownerAgentId);
+      await svc.init();
+
+      const coordinator = new DistributedLearningCoordinator(config, svc);
+      // deployment routes to self → should resolve to 'local'
+      expect(coordinator.resolveTarget('deployment')).toBe('local');
+      // debugging routes to other → should forward
+      expect(coordinator.resolveTarget('debugging')).toBe('https://other.example.com');
 
       await svc.close();
     });

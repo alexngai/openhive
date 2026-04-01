@@ -630,9 +630,10 @@ export async function createHive(
 
       // Enable agentic learning compute if configured and swarm infrastructure is available
       if (atlasService?.isAvailable() && config.learning.compute.enabled) {
-        const { SwarmAgentBackend } = await import('./learning/swarm-agent-backend.js');
-        const backend = new SwarmAgentBackend(config, swarmManager);
-        atlasService.enableAgenticCompute(backend);
+        const { SwarmAgentBackend, SwarmAgentDelegate } = await import('./learning/swarm-agent-backend.js');
+        const delegate = new SwarmAgentDelegate(config, swarmManager);
+        const backend = new SwarmAgentBackend(delegate);
+        atlasService.enableAgenticCompute(backend, delegate);
       }
 
       // Connect to SwarmHub

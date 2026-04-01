@@ -88,12 +88,15 @@ export class DistributedLearningCoordinator {
         return 'local';
 
       case 'domain-partitioned': {
-        // Check if this domain has a designated hive
         const targetUrl = dist.domainRouting[domain];
         if (targetUrl) {
+          // Guard against self-forwarding
+          const instanceUrl = this.config.instance?.url;
+          if (instanceUrl && targetUrl === instanceUrl) {
+            return 'local';
+          }
           return targetUrl;
         }
-        // No routing for this domain — process locally
         return 'local';
       }
 
