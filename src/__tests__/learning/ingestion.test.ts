@@ -25,6 +25,10 @@ function createTestConfig(): Config {
     auth: { mode: 'local' },
     rateLimit: { enabled: false },
     learning: { enabled: true },
+    // Point sessionlog at the test root (no git repo) so SessionBank
+    // reports as unavailable — prevents picking up the real repo's
+    // sessionlog/checkpoints/v1 branch via process.cwd()
+    sessionlog: { sessionDirs: [TEST_ROOT] },
   });
 }
 

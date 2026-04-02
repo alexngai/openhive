@@ -72,8 +72,9 @@ export function dataDirPaths(dataDir: string) {
     root: dataDir,
     database: path.join(dataDir, 'data', 'openhive.db'),
     uploads: path.join(dataDir, 'uploads'),
-    config: path.join(dataDir, 'config.js'),
-    configJson: path.join(dataDir, 'config.json'),
+    config: path.join(dataDir, 'config.json'),
+    /** @deprecated Use config (JSON) instead */
+    configLegacyJs: path.join(dataDir, 'config.js'),
   };
 }
 
@@ -89,10 +90,10 @@ export function isInitialised(dataDir: string): boolean {
  */
 export function findConfigFile(dataDir: string): string | undefined {
   const candidates = [
-    path.join(process.cwd(), 'openhive.config.js'),
     path.join(process.cwd(), 'openhive.config.json'),
-    path.join(dataDir, 'config.js'),
+    path.join(process.cwd(), 'openhive.config.js'),
     path.join(dataDir, 'config.json'),
+    path.join(dataDir, 'config.js'),
   ];
 
   for (const candidate of candidates) {
