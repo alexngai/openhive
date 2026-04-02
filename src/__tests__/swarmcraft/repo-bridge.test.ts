@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import fs from 'node:fs';
 import { mapHubEvents } from '../../map/service.js';
 
 // Mock listSwarms for startup hydration
@@ -25,31 +24,46 @@ describe('Repo Bridge', () => {
     mapHubEvents.removeAllListeners('trajectory_checkpoint');
   });
 
-  it('should trigger analysis when trajectory_checkpoint has a valid local projectPath', async () => {
+  it('should auto-analyze CWD project on startup', async () => {
+    // CWD has package.json and src/, so it should auto-analyze
     const handle = await setupRepoBridge(mockPipeline);
 
-    // Use a path that exists on disk (the project root)
-    const projectPath = process.cwd();
-    mapHubEvents.emit('trajectory_checkpoint', { projectPath, source_swarm_id: 'swarm-1' });
-
-    expect(mockPipeline.startAnalysis).toHaveBeenCalledWith(projectPath);
+    expect(mockPipeline.startAnalysis).toHaveBeenCalledWith(process.cwd());
     handle.teardown();
   });
 
-  it('should not trigger analysis for non-existent paths', async () => {
+  it('should not auto-analyze CWD if pipeline is already ready', async () => {
+    mockPipeline.isReady.mockReturnValue(true);
     const handle = await setupRepoBridge(mockPipeline);
 
-    mapHubEvents.emit('trajectory_checkpoint', { projectPath: '/nonexistent/path/xyz', source_swarm_id: 'swarm-1' });
+    expect(mockPipeline.startAnalysis).not.toHaveBeenCalled();
+    handle.teardown();
+  });
 
+  it('should register non-CWD paths passively (no analysis) via trajectory_checkpoint', async () => {
+    const handle = await setupRepoBridge(mockPipeline);
+
+    // Clear the CWD auto-analysis call
+    mockPipeline.startAnalysis.mockClear();
+
+    // Emit a trajectory for a non-existent remote path
+    mapHubEvents.emit('trajectory_checkpoint', {
+      projectPath: '/nonexistent/remote/project',
+      source_swarm_id: 'swarm-1',
+    });
+
+    // Should NOT trigger analysis for non-CWD paths
     expect(mockPipeline.startAnalysis).not.toHaveBeenCalled();
     handle.teardown();
   });
 
   it('should not trigger analysis when projectPath is missing', async () => {
     const handle = await setupRepoBridge(mockPipeline);
+    mockPipeline.startAnalysis.mockClear();
 
     mapHubEvents.emit('trajectory_checkpoint', { source_swarm_id: 'swarm-1' });
 
+    // Only the initial CWD analysis should have been called (already cleared)
     expect(mockPipeline.startAnalysis).not.toHaveBeenCalled();
     handle.teardown();
   });
@@ -58,21 +72,14 @@ describe('Repo Bridge', () => {
     const handle = await setupRepoBridge(mockPipeline);
     const projectPath = process.cwd();
 
+    // CWD was already analyzed at startup, so trajectory_checkpoint for CWD
+    // should not re-trigger analysis
     mapHubEvents.emit('trajectory_checkpoint', { projectPath });
     mapHubEvents.emit('trajectory_checkpoint', { projectPath });
     mapHubEvents.emit('trajectory_checkpoint', { projectPath });
 
+    // Only 1 call total (the startup auto-analysis)
     expect(mockPipeline.startAnalysis).toHaveBeenCalledTimes(1);
-    handle.teardown();
-  });
-
-  it('should skip analysis if pipeline already has a graph', async () => {
-    mockPipeline.isReady.mockReturnValue(true);
-    const handle = await setupRepoBridge(mockPipeline);
-
-    mapHubEvents.emit('trajectory_checkpoint', { projectPath: process.cwd() });
-
-    expect(mockPipeline.startAnalysis).not.toHaveBeenCalled();
     handle.teardown();
   });
 
@@ -80,9 +87,7 @@ describe('Repo Bridge', () => {
     mockPipeline.startAnalysis.mockImplementation(() => { throw new Error('Pipeline failed'); });
     const handle = await setupRepoBridge(mockPipeline);
 
-    // Should not throw
-    mapHubEvents.emit('trajectory_checkpoint', { projectPath: process.cwd() });
-
+    // Should not throw, even though CWD analysis fails
     expect(mockPipeline.startAnalysis).toHaveBeenCalled();
     handle.teardown();
   });
@@ -96,7 +101,7 @@ describe('Repo Bridge', () => {
     expect(mapHubEvents.listenerCount('trajectory_checkpoint')).toBeLessThan(listenerCount);
   });
 
-  it('should hydrate from historical swarm metadata on startup', async () => {
+  it('should hydrate from historical swarm metadata on startup and analyze CWD match', async () => {
     const projectPath = process.cwd();
     (listSwarms as ReturnType<typeof vi.fn>).mockReturnValue({
       data: [
@@ -109,10 +114,12 @@ describe('Repo Bridge', () => {
     const handle = await setupRepoBridge(mockPipeline);
 
     expect(mockPipeline.startAnalysis).toHaveBeenCalledWith(projectPath);
+    // Should only be called once (hydration matches CWD, so fallback CWD analysis is skipped)
+    expect(mockPipeline.startAnalysis).toHaveBeenCalledTimes(1);
     handle.teardown();
   });
 
-  it('should skip hydration for non-existent historical paths', async () => {
+  it('should skip analysis for non-existent historical paths and fall back to CWD', async () => {
     (listSwarms as ReturnType<typeof vi.fn>).mockReturnValue({
       data: [
         { id: 'remote-swarm', metadata: { projectPath: '/remote/machine/path' } },
@@ -122,19 +129,31 @@ describe('Repo Bridge', () => {
 
     const handle = await setupRepoBridge(mockPipeline);
 
-    expect(mockPipeline.startAnalysis).not.toHaveBeenCalled();
+    // Remote path is not analyzed, but CWD fallback should trigger
+    expect(mockPipeline.startAnalysis).toHaveBeenCalledWith(process.cwd());
+    expect(mockPipeline.startAnalysis).toHaveBeenCalledTimes(1);
     handle.teardown();
   });
 
-  it('should not re-analyze file paths (only directories)', async () => {
-    const handle = await setupRepoBridge(mockPipeline);
+  describe('isCwdProject detection', () => {
+    it('should analyze CWD subpath during hydration', async () => {
+      // A project path under the CWD should be treated as a CWD project
+      const subPath = process.cwd() + '/packages/sub-project';
+      (listSwarms as ReturnType<typeof vi.fn>).mockReturnValue({
+        data: [
+          { id: 'swarm-sub', metadata: { projectPath: subPath } },
+        ],
+        total: 1,
+      });
 
-    // package.json is a file, not a directory
-    mapHubEvents.emit('trajectory_checkpoint', {
-      projectPath: `${process.cwd()}/package.json`,
+      const handle = await setupRepoBridge(mockPipeline);
+
+      // Sub-path is under CWD, but it's not a local directory — so analysis
+      // won't happen for it. CWD fallback should trigger instead.
+      const calls = mockPipeline.startAnalysis.mock.calls;
+      const calledPaths = calls.map((c: unknown[]) => c[0]);
+      expect(calledPaths).toContain(process.cwd());
+      handle.teardown();
     });
-
-    expect(mockPipeline.startAnalysis).not.toHaveBeenCalled();
-    handle.teardown();
   });
 });

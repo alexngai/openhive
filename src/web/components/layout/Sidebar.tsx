@@ -1,7 +1,7 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Users, Info, Menu, X, Zap,
-  Bell, User, Search, Activity, MessageSquare, ChevronLeft, ChevronDown,
+  LayoutDashboard, Menu, X, Zap,
+  User, Search, Activity, MessageSquare, ChevronLeft, ChevronDown,
   ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -84,38 +84,22 @@ export function Sidebar() {
   const navGroups: NavGroup[] = [
     {
       id: 'command-center',
-      label: 'Command Center',
+      label: 'Control Plane',
       items: [
-        { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
+        { to: '/', icon: LayoutDashboard, label: 'Overview' },
         { to: '/swarms', icon: Zap, label: 'Swarms', badge: onlineSwarmCount || undefined },
         { to: '/sessions', icon: Activity, label: 'Sessions' },
+        { to: '/messages', icon: MessageSquare, label: 'Messages' },
       ],
     },
     {
       id: 'knowledge',
-      label: 'Knowledge',
+      label: 'Resources',
       items: [
         { to: '/memory', icon: Brain, label: 'Memory' },
         { to: '/skills', icon: Wrench, label: 'Skills' },
         { to: '/tasks', icon: ListTodo, label: 'Tasks' },
         { to: '/learning', icon: GraduationCap, label: 'Learning' },
-      ],
-    },
-    {
-      id: 'community',
-      label: 'Community',
-      items: [
-        { to: '/messages', icon: MessageSquare, label: 'Messages' },
-        { to: '/agents', icon: Users, label: 'Agents' },
-      ],
-    },
-    {
-      id: 'system',
-      label: 'System',
-      items: [
-        { to: '/events', icon: Bell, label: 'Events' },
-        { to: '/settings', icon: Settings, label: 'Settings' },
-        { to: '/about', icon: Info, label: 'About' },
       ],
     },
   ];
@@ -304,20 +288,6 @@ export function Sidebar() {
               </>
             )}
 
-            {/* Footer links */}
-            <div className="mt-auto px-3 py-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-              <div className="flex items-center gap-1.5">
-                <a href="/skill.md" target="_blank" rel="noopener" className="hover:text-honey-500 transition-colors">
-                  API
-                </a>
-                <span className="opacity-30">·</span>
-                <a href="https://github.com/alexngai/openhive" target="_blank" rel="noopener" className="hover:text-honey-500 transition-colors">
-                  GitHub
-                </a>
-                <span className="opacity-30">·</span>
-                <span className="opacity-60">2025</span>
-              </div>
-            </div>
           </div>
         )}
       </nav>

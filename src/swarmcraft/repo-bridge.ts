@@ -5,9 +5,8 @@
  * report project paths via trajectory checkpoints. Also hydrates from
  * historical swarm metadata on startup.
  *
- * For local paths: registers and auto-analyzes the first project.
- * For remote paths with git URLs: clones to a temp dir and analyzes.
- * Temp dirs are cleaned up after analysis completes (graph is cached in DB).
+ * Auto-analyzes the CWD project (where the OpenHive server runs).
+ * Other discovered projects are registered passively for manual selection.
  */
 
 import fs from 'node:fs';
@@ -36,7 +35,7 @@ export async function setupRepoBridge(
   projectStore?: ProjectStore,
 ): Promise<RepoBridgeHandle> {
   const registeredPaths = new Set<string>();
-  let firstProjectAnalyzed = false;
+  let cwdAnalyzed = false;
 
   const listeners: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
 
@@ -45,13 +44,28 @@ export async function setupRepoBridge(
     listeners.push({ event, fn });
   }
 
-  /** Register a project path and optionally analyze it. */
-  async function tryRegister(projectPath: string, gitRemoteUrl?: string, branch?: string, commitHash?: string): Promise<void> {
+  const cwdPath = process.cwd();
+
+  /** Check if a project path matches or is under the CWD */
+  function isCwdProject(projectPath: string): boolean {
+    const resolved = path.resolve(projectPath);
+    const resolvedCwd = path.resolve(cwdPath);
+    return resolved === resolvedCwd || resolved.startsWith(resolvedCwd + '/');
+  }
+
+  /** Register a project path. Only analyzes if shouldAnalyze is true. */
+  async function tryRegister(
+    projectPath: string,
+    gitRemoteUrl?: string,
+    branch?: string,
+    commitHash?: string,
+    shouldAnalyze = false,
+  ): Promise<void> {
     const isLocal = (() => {
       try { return fs.existsSync(projectPath) && fs.statSync(projectPath).isDirectory(); } catch { return false; }
     })();
 
-    // For remote projects, update branch/commit on every checkpoint (even if already registered)
+    // For remote projects, update branch/commit on every checkpoint
     if (!isLocal && projectStore && (branch || commitHash)) {
       try {
         const existing = await projectStore.getByPath(projectPath);
@@ -61,7 +75,7 @@ export async function setupRepoBridge(
       } catch { /* best effort */ }
     }
 
-    // Skip if already registered (dedup for initial registration + analysis)
+    // Skip if already registered (dedup)
     if (registeredPaths.has(projectPath)) return;
     registeredPaths.add(projectPath);
 
@@ -84,22 +98,22 @@ export async function setupRepoBridge(
       }
     }
 
-    // Auto-analyze the first project
-    if (!firstProjectAnalyzed && !pipelineService.isReady()) {
-      firstProjectAnalyzed = true;
+    // Only analyze if explicitly requested (CWD project)
+    if (shouldAnalyze && !cwdAnalyzed && !pipelineService.isReady()) {
+      cwdAnalyzed = true;
 
       if (isLocal) {
         try {
           const jobId = pipelineService.startAnalysis(projectPath);
-          console.log(`[swarmcraft-bridge] Auto-analyzing local project at ${projectPath} (job: ${jobId})`);
+          console.log(`[swarmcraft-bridge] Auto-analyzing CWD project at ${projectPath} (job: ${jobId})`);
         } catch (err) {
           console.warn(`[swarmcraft-bridge] Auto-analyze failed: ${(err as Error).message}`);
-          firstProjectAnalyzed = false;
+          cwdAnalyzed = false;
         }
       } else if (gitRemoteUrl) {
         cloneAndAnalyze(gitRemoteUrl, projectName, branch, pipelineService).catch(err => {
           console.warn(`[swarmcraft-bridge] Clone + analyze failed: ${(err as Error).message}`);
-          firstProjectAnalyzed = false;
+          cwdAnalyzed = false;
         });
       }
     }
@@ -115,11 +129,28 @@ export async function setupRepoBridge(
       const branch = meta?.branch as string | undefined;
       const gitCommitHash = meta?.gitCommitHash as string | undefined;
       if (projectPath) {
-        await tryRegister(projectPath, gitRemoteUrl, branch, gitCommitHash);
+        // Auto-analyze only if this project matches the CWD
+        const shouldAnalyze = isCwdProject(projectPath);
+        await tryRegister(projectPath, gitRemoteUrl, branch, gitCommitHash, shouldAnalyze);
       }
     }
   } catch (err) {
     console.warn(`[swarmcraft-bridge] Repo hydration failed: ${(err as Error).message}`);
+  }
+
+  // If no swarm matched CWD, analyze CWD directly
+  if (!cwdAnalyzed && !pipelineService.isReady()) {
+    try {
+      const hasPackageJson = fs.existsSync(path.join(cwdPath, 'package.json'));
+      const hasSrc = fs.existsSync(path.join(cwdPath, 'src'));
+      if (hasPackageJson || hasSrc) {
+        cwdAnalyzed = true;
+        const jobId = pipelineService.startAnalysis(cwdPath);
+        console.log(`[swarmcraft-bridge] Auto-analyzing CWD project at ${cwdPath} (job: ${jobId})`);
+      }
+    } catch (err) {
+      console.warn(`[swarmcraft-bridge] CWD analysis failed: ${(err as Error).message}`);
+    }
   }
 
   // ── Real-time events ─────────────────────────────────────────────────
@@ -157,7 +188,6 @@ async function cloneAndAnalyze(
     const { promisify } = await import('node:util');
     const execFileAsync = promisify(execFile);
 
-    // Clone the specific branch if provided, otherwise default
     const cloneArgs = ['clone', '--depth=1'];
     if (branch) cloneArgs.push('--branch', branch);
     cloneArgs.push(gitUrl, tmpDir);
@@ -168,15 +198,13 @@ async function cloneAndAnalyze(
     console.log(`[swarmcraft-bridge] Analyzing cloned repo ${projectName} (job: ${jobId})`);
 
     // Clean up after a delay (give analysis time to read files)
-    // The graph will be cached in the DB, so we don't need the files after analysis
     setTimeout(() => {
       try {
         fs.rmSync(tmpDir, { recursive: true, force: true });
         console.log(`[swarmcraft-bridge] Cleaned up temp clone: ${tmpDir}`);
       } catch { /* best effort */ }
-    }, 5 * 60 * 1000); // 5 minutes — generous for large repos
+    }, 5 * 60 * 1000);
   } catch (err) {
-    // Clean up on error
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
     throw err;
   }

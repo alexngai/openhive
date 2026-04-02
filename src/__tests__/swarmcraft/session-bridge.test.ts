@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import path from 'node:path';
 import { mapHubEvents } from '../../map/service.js';
 
 // Mock DALs
@@ -81,7 +80,30 @@ describe('Session Bridge', () => {
     handle.teardown();
   });
 
-  it('should record file access with project prefix for merged graph alignment', async () => {
+  it('should normalize absolute paths to relative using projectPath', async () => {
+    const handle = await setupSessionBridge(ctx as any);
+
+    mapHubEvents.emit('trajectory_checkpoint', {
+      session_resource_id: 'res-1',
+      checkpoint_id: 'cp-1',
+      agent: 'sidecar',
+      files_touched: ['/Users/test/my-project/src/server.ts'],
+      projectPath: '/Users/test/my-project',
+      source_swarm_id: 'swarm-1',
+      created: true,
+    });
+
+    await new Promise(r => setTimeout(r, 10));
+
+    // normalizeFilePath strips the project root to produce relative paths
+    const calls = ctx.positionService.recordAccess.mock.calls;
+    const paths = calls.map((c: unknown[]) => c[1]);
+    expect(paths).toContain('src/server.ts');
+
+    handle.teardown();
+  });
+
+  it('should pass through already-relative paths unchanged', async () => {
     const handle = await setupSessionBridge(ctx as any);
 
     mapHubEvents.emit('trajectory_checkpoint', {
@@ -96,11 +118,10 @@ describe('Session Bridge', () => {
 
     await new Promise(r => setTimeout(r, 10));
 
-    // Should record both prefixed and unprefixed paths
     const calls = ctx.positionService.recordAccess.mock.calls;
     const paths = calls.map((c: unknown[]) => c[1]);
-    expect(paths).toContain('my-project/src/server.ts');  // prefixed for merged graph
-    expect(paths).toContain('src/server.ts');              // unprefixed for single-project
+    // Already relative, so normalizeFilePath returns it as-is
+    expect(paths).toContain('src/server.ts');
 
     handle.teardown();
   });
@@ -122,8 +143,6 @@ describe('Session Bridge', () => {
     const calls = ctx.positionService.recordAccess.mock.calls;
     const paths = calls.map((c: unknown[]) => c[1]);
     expect(paths).toContain('src/app.ts');
-    // Should NOT have a prefixed version
-    expect(paths.every((p: string) => !p.includes('/')  || p === 'src/app.ts')).toBe(true);
 
     handle.teardown();
   });

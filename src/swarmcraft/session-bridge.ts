@@ -20,6 +20,42 @@ interface SessionBridgeHandle {
   teardown(): void;
 }
 
+/**
+ * Normalize a file path to be relative to the project root.
+ * Trajectory data from Claude Code uses absolute paths (e.g., /Users/.../src/file.ts).
+ * The code graph uses relative paths (e.g., src/file.ts).
+ * This strips the project root prefix to align them.
+ */
+function normalizeFilePath(filePath: string, projectPath?: string): string {
+  if (!filePath) return filePath;
+
+  // If we have a project path, strip it to get a relative path
+  if (projectPath) {
+    const root = projectPath.endsWith('/') ? projectPath : projectPath + '/';
+    if (filePath.startsWith(root)) {
+      return filePath.slice(root.length);
+    }
+  }
+
+  // Heuristic: if it looks absolute, try to extract the relative portion
+  // by finding common project markers (src/, lib/, etc.)
+  if (filePath.startsWith('/')) {
+    // Try to find a relative portion after common root patterns
+    const markers = ['/src/', '/lib/', '/test/', '/tests/', '/docs/', '/references/'];
+    for (const marker of markers) {
+      const idx = filePath.indexOf(marker);
+      if (idx !== -1) {
+        // Include the marker directory (e.g., "src/file.ts" not "/file.ts")
+        return filePath.slice(idx + 1);
+      }
+    }
+    // Last resort: use just the filename
+    return path.basename(filePath);
+  }
+
+  return filePath;
+}
+
 export async function setupSessionBridge(ctx: BridgeContext): Promise<SessionBridgeHandle> {
   const listeners: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
 
@@ -83,53 +119,44 @@ export async function setupSessionBridge(ctx: BridgeContext): Promise<SessionBri
         }
       }
 
-      // Resolve project name prefix for merged graph alignment
-      // In merged graphs, file paths are prefixed: "projectName/src/file.ts"
-      // We record both the prefixed and unprefixed path so positioning works
-      // whether the graph is single-project or merged
-      const projectPrefix = ev.projectPath
-        ? path.basename(ev.projectPath) + '/'
-        : '';
+      // Record trajectory turn and file accesses
+      if (ev.files_touched) {
+        if (ctx.trajectoryService) {
+          await ctx.trajectoryService.startTurn({
+            turnId: ev.checkpoint_id,
+            agentId,
+            sessionId: ev.session_resource_id,
+            turnNumber: Date.now(),
+            startedAt: Date.now(),
+          });
+        }
 
-      // Record trajectory turn
-      if (ctx.trajectoryService) {
-        await ctx.trajectoryService.startTurn({
-          turnId: ev.checkpoint_id,
-          agentId,
-          sessionId: ev.session_resource_id,
-          turnNumber: Date.now(),
-          startedAt: Date.now(),
-        });
-
-        if (ev.files_touched) {
-          for (const file of ev.files_touched) {
-            // Record with project prefix (for merged graph positioning)
-            if (projectPrefix) {
-              await ctx.positionService.recordAccess(agentId, projectPrefix + file, 'write');
-            }
-            // Also record without prefix (for single-project positioning)
-            await ctx.positionService.recordAccess(agentId, file, 'write');
+        for (const file of ev.files_touched) {
+          const relPath = normalizeFilePath(file, ev.projectPath);
+          await ctx.positionService.recordAccess(agentId, relPath, 'write');
+          if (ctx.trajectoryService) {
             await ctx.trajectoryService.recordAction({
               agentId,
               tool: 'checkpoint',
-              filePath: projectPrefix + file,
+              filePath: relPath,
               success: true,
               timestamp: Date.now(),
             });
           }
+
+          // Broadcast per-file event for frontend position calculation
+          ctx.wsHub.broadcast({
+            type: 'agent.activity',
+            payload: { agentId, filePath: relPath, accessType: 'write' },
+          }, 'agents');
         }
 
-        await ctx.trajectoryService.endCurrentTurn(agentId);
-      } else if (ev.files_touched) {
-        for (const file of ev.files_touched) {
-          if (projectPrefix) {
-            await ctx.positionService.recordAccess(agentId, projectPrefix + file, 'write');
-          }
-          await ctx.positionService.recordAccess(agentId, file, 'write');
+        if (ctx.trajectoryService) {
+          await ctx.trajectoryService.endCurrentTurn(agentId);
         }
       }
 
-      // Broadcast activity
+      // Broadcast summary activity event
       ctx.wsHub.broadcast({
         type: 'agent.activity',
         payload: {
@@ -205,14 +232,13 @@ async function hydrateSession(
     if (ctx.trajectoryService) {
       const { data: checkpoints } = listCheckpointsForSession(sessionResourceId, 50);
 
-      // Resolve project prefix for merged graph alignment
-      let projectPrefix = '';
+      // Resolve project path for path normalization
+      let projectPath: string | undefined;
       if (checkpoints.length > 0 && checkpoints[0].source_swarm_id) {
         try {
           const swarm = findSwarmById(checkpoints[0].source_swarm_id);
           const meta = swarm?.metadata as Record<string, unknown> | null;
-          const project = meta?.project as string | undefined;
-          if (project) projectPrefix = project + '/';
+          projectPath = meta?.projectPath as string | undefined;
         } catch { /* best effort */ }
       }
 
@@ -227,14 +253,12 @@ async function hydrateSession(
         });
 
         for (const file of cp.files_touched) {
-          if (projectPrefix) {
-            await ctx.positionService.recordAccess(agentId, projectPrefix + file, 'write');
-          }
-          await ctx.positionService.recordAccess(agentId, file, 'write');
+          const relPath = normalizeFilePath(file, projectPath);
+          await ctx.positionService.recordAccess(agentId, relPath, 'write');
           await ctx.trajectoryService.recordAction({
             agentId,
             tool: 'checkpoint',
-            filePath: projectPrefix + file,
+            filePath: relPath,
             success: true,
             timestamp: new Date(cp.synced_at).getTime(),
           });
