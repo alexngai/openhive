@@ -177,8 +177,8 @@ describe('data-dir', () => {
       expect(paths.root).toBe('/my/data');
       expect(paths.database).toBe(path.join('/my/data', 'data', 'openhive.db'));
       expect(paths.uploads).toBe(path.join('/my/data', 'uploads'));
-      expect(paths.config).toBe(path.join('/my/data', 'config.js'));
-      expect(paths.configJson).toBe(path.join('/my/data', 'config.json'));
+      expect(paths.config).toBe(path.join('/my/data', 'config.json'));
+      expect(paths.configLegacyJs).toBe(path.join('/my/data', 'config.js'));
     });
 
     it('should handle paths with trailing slashes', () => {
@@ -273,19 +273,19 @@ describe('data-dir', () => {
       }
     });
 
-    it('should prefer config.js over config.json in data dir', () => {
-      const dir = mkTemp('find-prefer-js');
+    it('should prefer config.json over config.js in data dir', () => {
+      const dir = mkTemp('find-prefer-json');
       const jsPath = path.join(dir, 'config.js');
       const jsonPath = path.join(dir, 'config.json');
       fs.writeFileSync(jsPath, 'module.exports = {}');
       fs.writeFileSync(jsonPath, '{}');
 
-      const fakeCwd = mkTemp('find-prefer-js-cwd');
+      const fakeCwd = mkTemp('find-prefer-json-cwd');
       vi.spyOn(process, 'cwd').mockReturnValue(fakeCwd);
 
       try {
         const result = findConfigFile(dir);
-        expect(result).toBe(jsPath);
+        expect(result).toBe(jsonPath);
       } finally {
         vi.restoreAllMocks();
       }

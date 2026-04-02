@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock } from 'lucide-react';
+import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores/auth';
 import { useThemeStore } from '../stores/theme';
@@ -74,51 +74,79 @@ export function Settings() {
 // Server Settings
 // ═══════════════════════════════════════════════════════════════
 
-interface ServerConfig {
-  mapHub: {
-    enabled: boolean;
-    trustModel: 'open' | 'verified';
-    staleThresholdMinutes: number;
-  };
-  auth: {
-    mode: 'local' | 'swarmhub';
-  };
+interface FieldMetaInfo {
+  label: string;
+  description?: string;
+  secret?: boolean;
+  readOnly?: boolean;
+  restartRequired?: boolean;
 }
 
-const TRUST_MODELS = [
-  {
-    value: 'open' as const,
-    label: 'Open',
-    icon: Unlock,
-    description: 'API key is sufficient. Swarms can bring their own identity. Best for local dev and single-operator setups.',
-  },
-  {
-    value: 'verified' as const,
-    label: 'Verified',
-    icon: Shield,
-    description: 'MAP spec auth flow with agent-iam tokens. Capability-based auth with delegation and federation support.',
-  },
-];
+interface SectionMetaInfo {
+  label: string;
+  description: string;
+  group: string;
+  readOnly?: boolean;
+  fields: Record<string, FieldMetaInfo>;
+}
+
+interface ServerConfigResponse {
+  [key: string]: unknown;
+  _meta: Record<string, SectionMetaInfo>;
+  _editable?: boolean;
+  _configFormat?: 'json' | 'js';
+  restartRequired?: boolean;
+}
+
+const SECRET_SENTINEL = '********';
+
+const GROUP_ORDER = ['general', 'swarms', 'integrations', 'networking', 'storage', 'resources'];
+const GROUP_LABELS: Record<string, string> = {
+  general: 'General',
+  swarms: 'Swarms',
+  integrations: 'Integrations',
+  networking: 'Networking',
+  storage: 'Storage',
+  resources: 'Resources',
+};
+
+/** Known enum values for select dropdowns */
+const ENUM_OPTIONS: Record<string, string[]> = {
+  'mapHub.trustModel': ['open', 'verified'],
+  'auth.mode': ['local', 'swarmhub'],
+  'swarmHosting.default_provider': ['local', 'local-sandboxed', 'docker', 'fly', 'ssh', 'k8s'],
+  'swarmcraft.logLevel': ['debug', 'info', 'warn', 'error'],
+  'learning.atlas.creditStrategy': ['simple', 'causal'],
+  'learning.atlas.embedding.provider': ['none', 'openai', 'voyage', 'local'],
+  'learning.ingestion.mode': ['deferred'],
+  'learning.compute.spawnProvider': ['local', 'sandboxed'],
+  'learning.sync.conflictStrategy': ['merge', 'local-wins', 'remote-wins'],
+  'learning.distributed.mode': ['local', 'centralized', 'domain-partitioned'],
+  'network.provider': ['tailscale-cloud', 'headscale-sidecar', 'headscale-external', 'none'],
+  'sync.discovery': ['hub', 'manual', 'both'],
+  'sessions.type': ['local', 's3', 'none'],
+  'resourceSync.defaultStrategy': ['metadata', 'local', 'ls-remote', 'mirror', 'bundle'],
+  'resourceSync.localDiscoveryStrategy': ['metadata', 'local', 'ls-remote', 'mirror', 'bundle'],
+};
 
 function ServerSettings({ isAdmin }: { isAdmin: boolean }) {
   const queryClient = useQueryClient();
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(['general', 'swarms', 'integrations']));
+  const [restartBanner, setRestartBanner] = useState(false);
 
-  const { data: config, isLoading } = useQuery<ServerConfig>({
+  const { data: config, isLoading } = useQuery<ServerConfigResponse>({
     queryKey: ['server-config'],
     queryFn: () => api.get('/admin/config'),
   });
 
-  const updateMutation = useMutation({
-    mutationFn: (body: { mapHub?: { trustModel?: string } }) =>
-      api.patch('/admin/config', body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['server-config'] });
-      toast.success('Config updated', 'Server configuration has been saved.');
-    },
-    onError: (err: Error) => {
-      toast.error('Update failed', err.message);
-    },
-  });
+  const toggleGroup = useCallback((group: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(group)) next.delete(group);
+      else next.add(group);
+      return next;
+    });
+  }, []);
 
   if (isLoading || !config) {
     return (
@@ -128,81 +156,423 @@ function ServerSettings({ isAdmin }: { isAdmin: boolean }) {
     );
   }
 
-  return (
-    <div className="space-y-3">
-      {/* MAP Hub */}
-      <div className="card p-4">
-        <h2 className="text-sm font-semibold mb-1">MAP Hub</h2>
-        <p className="text-2xs mb-3" style={{ color: 'var(--color-text-muted)' }}>
-          Controls how agents authenticate when connecting via WebSocket.
-        </p>
+  const meta = config._meta || {};
 
-        {/* Trust Model */}
-        <div>
-          <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-            Trust Model
-          </label>
-          <div className="space-y-1.5">
-            {TRUST_MODELS.map(({ value, label, icon: Icon, description }) => {
-              const isActive = config.mapHub.trustModel === value;
-              return (
-                <button
-                  key={value}
-                  onClick={() => {
-                    if (isAdmin && value !== config.mapHub.trustModel) {
-                      updateMutation.mutate({ mapHub: { trustModel: value } });
-                    }
-                  }}
-                  disabled={!isAdmin || updateMutation.isPending}
-                  className={clsx(
-                    'w-full flex items-start gap-3 px-3 py-2.5 rounded-md text-left transition-colors',
-                    isActive
-                      ? 'bg-honey-500/10 text-honey-500'
-                      : isAdmin
-                        ? 'hover:bg-workspace-hover cursor-pointer'
-                        : 'opacity-60 cursor-not-allowed',
-                  )}
-                  style={!isActive ? { color: 'var(--color-text-secondary)' } : undefined}
-                >
-                  <Icon className="w-4 h-4 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-sm font-medium">{label}</p>
-                    <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-                      {description}
-                    </p>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-          {!isAdmin && (
-            <p className="text-2xs mt-2" style={{ color: 'var(--color-text-muted)' }}>
-              Only admins can change the trust model.
-            </p>
-          )}
+  // Group sections
+  const grouped: Record<string, string[]> = {};
+  for (const [sectionKey, sectionMeta] of Object.entries(meta)) {
+    const sm = sectionMeta as SectionMetaInfo;
+    const group = sm.group || 'general';
+    if (!grouped[group]) grouped[group] = [];
+    grouped[group].push(sectionKey);
+  }
+
+  return (
+    <div className="space-y-2">
+      {restartBanner && (
+        <div
+          className="p-2.5 rounded-lg border flex items-center gap-2 text-xs"
+          style={{ backgroundColor: 'rgba(245, 158, 11, 0.06)', borderColor: 'rgba(245, 158, 11, 0.2)', color: 'rgb(245, 158, 11)' }}
+        >
+          <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+          <span>Some changes require a server restart to take effect.</span>
+          <button onClick={() => setRestartBanner(false)} className="ml-auto btn btn-ghost p-0.5">
+            <X className="w-3 h-3" />
+          </button>
         </div>
+      )}
+
+      {!isAdmin && (
+        <div className="p-2 rounded-md text-2xs" style={{ color: 'var(--color-text-muted)', backgroundColor: 'var(--color-elevated)' }}>
+          Only admins can modify server configuration.
+        </div>
+      )}
+
+      {config._configFormat === 'js' && isAdmin && (
+        <div
+          className="p-2.5 rounded-lg border flex items-start gap-2 text-xs"
+          style={{ backgroundColor: 'rgba(245, 158, 11, 0.06)', borderColor: 'rgba(245, 158, 11, 0.2)', color: 'rgb(245, 158, 11)' }}
+        >
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <div>
+            <p className="font-medium">Config is read-only</p>
+            <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+              Your instance uses a JavaScript config file which cannot be edited from the UI.
+              Migrate to JSON format (<code className="text-2xs">config.json</code>) to enable editing.
+              Changes made here will apply at runtime but won't persist across restarts.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {GROUP_ORDER.map(group => {
+        const sections = grouped[group];
+        if (!sections || sections.length === 0) return null;
+        const isExpanded = expandedGroups.has(group);
+
+        return (
+          <div key={group}>
+            <button
+              onClick={() => toggleGroup(group)}
+              className="w-full flex items-center gap-1.5 py-1.5 text-xs font-semibold hover:opacity-80 transition-opacity"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              {isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+              {GROUP_LABELS[group] || group}
+            </button>
+
+            {isExpanded && (
+              <div className="space-y-2 mb-3">
+                {sections.map(sectionKey => (
+                  <ConfigSectionCard
+                    key={sectionKey}
+                    sectionKey={sectionKey}
+                    sectionData={(config[sectionKey] as Record<string, unknown>) || {}}
+                    sectionMeta={meta[sectionKey] as SectionMetaInfo}
+                    isAdmin={isAdmin}
+                    queryClient={queryClient}
+                    onRestartRequired={() => setRestartBanner(true)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Config Section Card ─────────────────────────────────────────
+
+function ConfigSectionCard({
+  sectionKey,
+  sectionData,
+  sectionMeta,
+  isAdmin,
+  queryClient,
+  onRestartRequired,
+}: {
+  sectionKey: string;
+  sectionData: Record<string, unknown>;
+  sectionMeta: SectionMetaInfo;
+  isAdmin: boolean;
+  queryClient: ReturnType<typeof useQueryClient>;
+  onRestartRequired: () => void;
+}) {
+  const [localData, setLocalData] = useState<Record<string, unknown>>(sectionData);
+  const [isDirty, setIsDirty] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const updateMutation = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api.patch<ServerConfigResponse>('/admin/config', body),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['server-config'] });
+      toast.success('Config updated', `${sectionMeta.label} has been saved.`);
+      setIsDirty(false);
+      if (data.restartRequired) {
+        onRestartRequired();
+      }
+    },
+    onError: (err: Error) => {
+      toast.error('Update failed', err.message);
+    },
+  });
+
+  const handleSave = () => {
+    // Build a diff: only send changed values
+    const diff = buildDiff(sectionData, localData);
+    if (Object.keys(diff).length === 0) return;
+    updateMutation.mutate({ [sectionKey]: diff });
+  };
+
+  const handleReset = () => {
+    setLocalData(sectionData);
+    setIsDirty(false);
+  };
+
+  const updateField = (path: string, value: unknown) => {
+    setLocalData(prev => setNestedValue({ ...prev }, path, value));
+    setIsDirty(true);
+  };
+
+  // Flatten fields for rendering
+  const fields = flattenFields(localData, sectionKey, sectionMeta.fields);
+
+  // Show first 3 fields collapsed, all fields expanded
+  const visibleFields = isExpanded ? fields : fields.slice(0, 3);
+  const hasMore = fields.length > 3;
+
+  return (
+    <div className="card p-3">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="text-xs font-semibold">{sectionMeta.label}</h3>
+        {isDirty && isAdmin && (
+          <div className="flex items-center gap-1.5">
+            <button onClick={handleReset} className="btn btn-ghost text-2xs px-2 py-0.5">
+              Reset
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={updateMutation.isPending}
+              className="btn btn-primary text-2xs px-2 py-0.5 flex items-center gap-1"
+            >
+              {updateMutation.isPending && <LoadingSpinner size="sm" />}
+              Save
+            </button>
+          </div>
+        )}
+      </div>
+      <p className="text-2xs mb-2.5" style={{ color: 'var(--color-text-muted)' }}>
+        {sectionMeta.description}
+      </p>
+
+      <div className="space-y-2">
+        {visibleFields.map(field => (
+          <ConfigField
+            key={field.path}
+            {...field}
+            isAdmin={isAdmin}
+            onChange={(val) => updateField(field.localPath, val)}
+          />
+        ))}
       </div>
 
-      {/* Read-only info */}
-      <div className="card p-4">
-        <h2 className="text-sm font-semibold mb-3">Instance Info</h2>
-        <div className="space-y-2 text-xs">
-          <div className="flex items-center justify-between">
-            <span style={{ color: 'var(--color-text-muted)' }}>Auth Mode</span>
-            <span className="font-medium">{config.auth.mode}</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span style={{ color: 'var(--color-text-muted)' }}>MAP Hub</span>
-            <span className="font-medium">{config.mapHub.enabled ? 'Enabled' : 'Disabled'}</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span style={{ color: 'var(--color-text-muted)' }}>Stale Threshold</span>
-            <span className="font-medium">{config.mapHub.staleThresholdMinutes} min</span>
-          </div>
+      {hasMore && (
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="mt-2 text-2xs font-medium hover:opacity-80 transition-opacity"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          {isExpanded ? 'Show less' : `Show ${fields.length - 3} more fields...`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ─── Individual Field Renderer ───────────────────────────────────
+
+interface FieldRenderInfo {
+  path: string;       // full dot-path (e.g., "learning.atlas.maxExperiences")
+  localPath: string;  // path within section (e.g., "atlas.maxExperiences")
+  label: string;
+  description?: string;
+  value: unknown;
+  isSecret: boolean;
+  isReadOnly: boolean;
+  isRestartRequired: boolean;
+  isEnum: boolean;
+  enumOptions?: string[];
+}
+
+function ConfigField({
+  path,
+  label,
+  description,
+  value,
+  isSecret,
+  isReadOnly,
+  isRestartRequired,
+  isEnum,
+  enumOptions,
+  isAdmin,
+  onChange,
+}: FieldRenderInfo & { isAdmin: boolean; onChange: (val: unknown) => void }) {
+  const disabled = !isAdmin || isReadOnly;
+  const displayValue = value ?? '';
+
+  return (
+    <div className="flex items-start gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 mb-0.5">
+          <label className="text-2xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>
+            {label}
+          </label>
+          {isRestartRequired && (
+            <span
+              className="text-2xs px-1 py-0 rounded"
+              style={{ backgroundColor: 'rgba(245, 158, 11, 0.1)', color: 'rgb(245, 158, 11)', fontSize: '9px' }}
+              title="Requires server restart"
+            >
+              restart
+            </span>
+          )}
+          {isReadOnly && (
+            <span
+              className="text-2xs px-1 py-0 rounded"
+              style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)', fontSize: '9px' }}
+            >
+              read-only
+            </span>
+          )}
+          {isSecret && (
+            <span
+              className="text-2xs px-1 py-0 rounded"
+              style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'rgb(239, 68, 68)', fontSize: '9px' }}
+            >
+              secret
+            </span>
+          )}
         </div>
+        {description && (
+          <p className="text-2xs mb-0.5" style={{ color: 'var(--color-text-muted)', fontSize: '9px' }}>
+            {description}
+          </p>
+        )}
+      </div>
+      <div className="w-48 shrink-0">
+        {typeof value === 'boolean' ? (
+          <button
+            onClick={() => !disabled && onChange(!value)}
+            disabled={disabled}
+            className={clsx(
+              'relative inline-flex h-5 w-9 items-center rounded-full transition-colors',
+              value ? 'bg-honey-500' : 'bg-gray-600',
+              disabled && 'opacity-50 cursor-not-allowed',
+            )}
+          >
+            <span
+              className={clsx(
+                'inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform',
+                value ? 'translate-x-4.5' : 'translate-x-0.5',
+              )}
+            />
+          </button>
+        ) : isEnum && enumOptions ? (
+          <select
+            value={String(displayValue)}
+            onChange={(e) => onChange(e.target.value)}
+            disabled={disabled}
+            className="input w-full text-2xs py-1 px-2"
+          >
+            {enumOptions.map(opt => (
+              <option key={opt} value={opt}>{opt}</option>
+            ))}
+          </select>
+        ) : typeof value === 'number' ? (
+          <input
+            type="number"
+            value={value}
+            onChange={(e) => onChange(Number(e.target.value))}
+            disabled={disabled}
+            className="input w-full text-2xs py-1 px-2"
+          />
+        ) : Array.isArray(value) ? (
+          <input
+            type="text"
+            value={(value as unknown[]).join(', ')}
+            onChange={(e) => onChange(e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+            disabled={disabled}
+            className="input w-full text-2xs py-1 px-2"
+            placeholder="Comma-separated values"
+          />
+        ) : isSecret && displayValue === SECRET_SENTINEL ? (
+          <input
+            type="password"
+            value={SECRET_SENTINEL}
+            onChange={(e) => onChange(e.target.value)}
+            disabled={disabled}
+            className="input w-full text-2xs py-1 px-2"
+            placeholder="Enter new value to change"
+          />
+        ) : (
+          <input
+            type="text"
+            value={String(displayValue)}
+            onChange={(e) => onChange(e.target.value)}
+            disabled={disabled}
+            className="input w-full text-2xs py-1 px-2"
+          />
+        )}
       </div>
     </div>
   );
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────
+
+/** Flatten nested config objects into a list of renderable fields */
+function flattenFields(
+  data: Record<string, unknown>,
+  sectionKey: string,
+  fieldsMeta: Record<string, FieldMetaInfo>,
+  prefix = '',
+): FieldRenderInfo[] {
+  const result: FieldRenderInfo[] = [];
+
+  for (const [key, value] of Object.entries(data)) {
+    const localPath = prefix ? `${prefix}.${key}` : key;
+    const fullPath = `${sectionKey}.${localPath}`;
+    const meta = fieldsMeta[localPath];
+
+    // Skip complex nested objects that don't have field metadata —
+    // but recurse into them to find fields that do
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      result.push(...flattenFields(
+        value as Record<string, unknown>,
+        sectionKey,
+        fieldsMeta,
+        localPath,
+      ));
+      continue;
+    }
+
+    const enumOpts = ENUM_OPTIONS[fullPath];
+
+    result.push({
+      path: fullPath,
+      localPath,
+      label: meta?.label || key,
+      description: meta?.description,
+      value,
+      isSecret: meta?.secret || false,
+      isReadOnly: meta?.readOnly || false,
+      isRestartRequired: meta?.restartRequired || false,
+      isEnum: !!enumOpts,
+      enumOptions: enumOpts,
+    });
+  }
+
+  return result;
+}
+
+/** Build a diff between original and modified objects */
+function buildDiff(
+  original: Record<string, unknown>,
+  modified: Record<string, unknown>,
+): Record<string, unknown> {
+  const diff: Record<string, unknown> = {};
+  for (const [key, newVal] of Object.entries(modified)) {
+    const oldVal = original[key];
+    if (newVal && typeof newVal === 'object' && !Array.isArray(newVal) &&
+        oldVal && typeof oldVal === 'object' && !Array.isArray(oldVal)) {
+      const nested = buildDiff(oldVal as Record<string, unknown>, newVal as Record<string, unknown>);
+      if (Object.keys(nested).length > 0) diff[key] = nested;
+    } else if (JSON.stringify(newVal) !== JSON.stringify(oldVal)) {
+      diff[key] = newVal;
+    }
+  }
+  return diff;
+}
+
+/** Set a nested value using a dot-path */
+function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
+  const parts = path.split('.');
+  let current: Record<string, unknown> = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const existing = current[parts[i]];
+    if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+      current[parts[i]] = { ...(existing as Record<string, unknown>) };
+      current = current[parts[i]] as Record<string, unknown>;
+    } else {
+      current[parts[i]] = {};
+      current = current[parts[i]] as Record<string, unknown>;
+    }
+  }
+  current[parts[parts.length - 1]] = value;
+  return obj;
 }
 
 function ProfileSettings({ agent }: { agent: { name: string; email?: string | null; description?: string | null } }) {

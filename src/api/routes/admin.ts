@@ -7,6 +7,19 @@ import * as invitesDAL from '../../db/dal/invites.js';
 import * as ingestKeysDAL from '../../db/dal/ingest-keys.js';
 import type { Config } from '../../config.js';
 import type { InstanceInfo } from '../../types.js';
+import {
+  CONFIG_SECTIONS,
+  SECRET_PATHS,
+  READONLY_PATHS,
+  READONLY_SECTIONS,
+  RESTART_REQUIRED_PATHS,
+  SECRET_SENTINEL,
+  matchesPath,
+  buildMetaResponse,
+} from '../../config-meta.js';
+import { readConfigFile, writeConfigFile, deepMerge } from '../../config-persistence.js';
+import { getLoadedConfigPath, isConfigEditable, setLoadedConfigPath } from '../../config.js';
+import { resolveDataDir, dataDirPaths } from '../../data-dir.js';
 
 export async function adminRoutes(fastify: FastifyInstance, options: { config: Config }): Promise<void> {
   const adminAuth = async (request: Parameters<typeof authMiddleware>[0], reply: Parameters<typeof authMiddleware>[1]) => {
@@ -368,47 +381,158 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
   // Server Configuration
   // ============================================================================
 
-  // GET /admin/config — public read of safe server configuration
+  /** Redact secret fields from a config object (returns a deep copy) */
+  function redactSecrets(obj: Record<string, unknown>, prefix = ''): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (matchesPath(path, SECRET_PATHS)) {
+        // Show sentinel if a value exists, omit if undefined/null
+        if (value !== undefined && value !== null && value !== '') {
+          result[key] = SECRET_SENTINEL;
+        }
+      } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+        result[key] = redactSecrets(value as Record<string, unknown>, path);
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+
+  /** Strip secret sentinel values from incoming PATCH body */
+  function stripSentinels(obj: Record<string, unknown>, prefix = ''): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (value === SECRET_SENTINEL) {
+        // Skip — don't overwrite existing secret with sentinel
+        continue;
+      }
+      if (matchesPath(path, READONLY_PATHS)) {
+        // Skip read-only fields
+        continue;
+      }
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const stripped = stripSentinels(value as Record<string, unknown>, path);
+        if (Object.keys(stripped).length > 0) {
+          result[key] = stripped;
+        }
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+
+  /** Check if any changed path requires a restart */
+  function hasRestartRequired(obj: Record<string, unknown>, prefix = ''): boolean {
+    for (const [key, value] of Object.entries(obj)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (matchesPath(path, RESTART_REQUIRED_PATHS)) return true;
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        if (hasRestartRequired(value as Record<string, unknown>, path)) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Build the full config response (all sections, secrets redacted) */
+  function buildConfigResponse() {
+    const sectionKeys = CONFIG_SECTIONS.map(s => s.key);
+    const response: Record<string, unknown> = {};
+
+    for (const key of sectionKeys) {
+      const val = (options.config as Record<string, unknown>)[key];
+      if (val !== undefined) {
+        if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
+          response[key] = redactSecrets(val as Record<string, unknown>, key);
+        } else {
+          response[key] = val;
+        }
+      }
+    }
+
+    // Include auth (not in CONFIG_SECTIONS but useful for display)
+    response.auth = { mode: options.config.auth.mode };
+
+    response._meta = buildMetaResponse();
+    response._editable = isConfigEditable();
+    response._configFormat = getLoadedConfigPath()?.endsWith('.js') ? 'js' : 'json';
+    return response;
+  }
+
+  // GET /admin/config — any authenticated user can read (secrets redacted, PATCH is admin-only)
   fastify.get('/admin/config', { preHandler: authMiddleware }, async (_request, reply) => {
-    return reply.send({
-      mapHub: {
-        enabled: options.config.mapHub.enabled,
-        trustModel: options.config.mapHub.trustModel,
-        staleThresholdMinutes: options.config.mapHub.staleThresholdMinutes,
-      },
-      auth: {
-        mode: options.config.auth.mode,
-      },
-    });
+    return reply.send(buildConfigResponse());
   });
 
   // PATCH /admin/config — admin-only update of runtime configuration
-  fastify.patch<{ Body: { mapHub?: { trustModel?: string } } }>(
+  fastify.patch(
     '/admin/config',
     { preHandler: adminAuth },
     async (request, reply) => {
-      const { mapHub } = request.body || {};
+      const body = (request.body || {}) as Record<string, unknown>;
 
-      if (mapHub?.trustModel) {
-        if (mapHub.trustModel !== 'open' && mapHub.trustModel !== 'verified') {
-          return reply.status(400).send({
-            error: 'Bad Request',
-            message: 'trustModel must be "open" or "verified"',
-          });
+      // Filter out _meta, read-only sections, sentinels, and read-only fields
+      const updates: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(body)) {
+        if (key === '_meta') continue;
+        if (READONLY_SECTIONS.has(key)) continue;
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          const stripped = stripSentinels(value as Record<string, unknown>, key);
+          if (Object.keys(stripped).length > 0) {
+            updates[key] = stripped;
+          }
+        } else {
+          updates[key] = value;
         }
-        (options.config.mapHub as any).trustModel = mapHub.trustModel;
       }
 
-      return reply.send({
-        mapHub: {
-          enabled: options.config.mapHub.enabled,
-          trustModel: options.config.mapHub.trustModel,
-          staleThresholdMinutes: options.config.mapHub.staleThresholdMinutes,
-        },
-        auth: {
-          mode: options.config.auth.mode,
-        },
-      });
+      if (Object.keys(updates).length === 0) {
+        return reply.send({ ...buildConfigResponse(), restartRequired: false });
+      }
+
+      // Check if any changes require restart
+      const restartRequired = hasRestartRequired(updates);
+
+      // Apply to runtime config (deep merge into the reference object)
+      for (const [key, value] of Object.entries(updates)) {
+        const existing = (options.config as Record<string, unknown>)[key];
+        if (existing && typeof existing === 'object' && !Array.isArray(existing) &&
+            value && typeof value === 'object' && !Array.isArray(value)) {
+          // Deep merge into existing object to preserve un-patched fields
+          Object.assign(existing, deepMerge(
+            existing as Record<string, unknown>,
+            value as Record<string, unknown>,
+          ));
+        } else {
+          (options.config as Record<string, unknown>)[key] = value;
+        }
+      }
+
+      // Persist to config file (JSON only — JS configs are read-only)
+      let configPath = getLoadedConfigPath();
+
+      if (!configPath) {
+        // No config file was loaded (running on defaults) — auto-create one
+        const paths = dataDirPaths(resolveDataDir());
+        configPath = paths.config; // <dataDir>/config.json
+        setLoadedConfigPath(configPath);
+      }
+
+      if (isConfigEditable()) {
+        try {
+          const currentFile = readConfigFile(configPath);
+          const merged = deepMerge(currentFile, updates);
+          writeConfigFile(configPath, merged);
+        } catch (err) {
+          fastify.log.error({ err }, 'Failed to persist config to file');
+          // Runtime config was already updated — don't fail the request
+        }
+      }
+
+      return reply.send({ ...buildConfigResponse(), restartRequired });
     },
   );
 }
