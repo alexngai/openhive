@@ -47,10 +47,10 @@ const PORT_RANGE_MIN = 19600;
 const PORT_RANGE_MAX = 19610;
 const SERVER_PORT = 19699;
 
-// Path to the real OpenSwarm binary
+// Path to the npm-installed OpenSwarm binary (published package)
 const OPENSWARM_BIN = path.resolve(
   __dirname,
-  '../../../references/openswarm/bin/openswarm.mjs',
+  '../../../node_modules/openswarm/bin/openswarm.mjs',
 );
 
 // ============================================================================

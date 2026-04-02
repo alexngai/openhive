@@ -49,7 +49,7 @@ const TEST_DATA_DIR = path.join(TEST_ROOT, 'swarm-data');
 
 const OPENSWARM_BIN = path.resolve(
   __dirname,
-  '../../../references/openswarm/bin/openswarm.mjs',
+  '../../../node_modules/openswarm/bin/openswarm.mjs',
 );
 
 const PORT_RANGE_MIN = 19700;
