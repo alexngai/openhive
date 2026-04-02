@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Zap, Square, RotateCw, Terminal, ChevronDown, ChevronUp, Plus, X, Cpu,
-  Link2, Globe, Wifi, WifiOff, Settings2, Trash2, FileText, Shield, GitBranch,
+  Link2, Globe, Wifi, WifiOff, Settings2, Trash2, FileText, Shield, GitBranch, Monitor,
 } from 'lucide-react';
 import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-generator';
 import { toast } from '../stores/toast';
@@ -808,7 +808,14 @@ function MapSwarmCard({ swarm }: { swarm: MapSwarm }) {
           </div>
         </div>
 
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            onClick={(e) => { e.stopPropagation(); navigate('/swarmcraft'); }}
+            className="p-1 rounded hover:bg-white/5 transition-colors opacity-0 group-hover:opacity-100"
+            title="View in Overview"
+          >
+            <Monitor className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+          </button>
           {swarm.status === 'online' ? (
             <Wifi className="w-3.5 h-3.5 text-emerald-400" />
           ) : swarm.status === 'unreachable' ? (

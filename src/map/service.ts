@@ -132,6 +132,16 @@ export function registerNode(
     },
   });
 
+  // Emit for SwarmCraft bridge
+  mapHubEvents.emit('node_registered', {
+    node_id: node.id,
+    swarm_id: node.swarm_id,
+    map_agent_id: node.map_agent_id,
+    name: node.name,
+    role: node.role,
+    state: node.state,
+  });
+
   return node;
 }
 
@@ -262,14 +272,14 @@ export function leaveHive(swarmId: string, hiveName: string): boolean {
 export function markStaleSwarms(staleThresholdMinutes: number = 5): number {
   const db = getDatabase();
 
-  // Find which swarms will be marked stale (for event emission)
-  const stale = db.prepare(`
+  // Collect IDs of swarms about to go offline (for SwarmCraft bridge + learning engine)
+  const staleRows = db.prepare(`
     SELECT id FROM map_swarms
     WHERE status IN ('online', 'unreachable')
       AND last_seen_at < datetime('now', ?)
   `).all(`-${staleThresholdMinutes} minutes`) as { id: string }[];
 
-  if (stale.length === 0) return 0;
+  if (staleRows.length === 0) return 0;
 
   const result = db.prepare(`
     UPDATE map_swarms
@@ -278,9 +288,9 @@ export function markStaleSwarms(staleThresholdMinutes: number = 5): number {
       AND last_seen_at < datetime('now', ?)
   `).run(`-${staleThresholdMinutes} minutes`);
 
-  // Emit swarm_offline events for learning engine ingestion
-  for (const s of stale) {
-    mapHubEvents.emit('swarm_offline', { swarm_id: s.id });
+  // Emit for SwarmCraft bridge and learning engine ingestion
+  for (const row of staleRows) {
+    mapHubEvents.emit('swarm_offline', { swarm_id: row.id });
   }
 
   return result.changes;

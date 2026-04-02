@@ -1,13 +1,49 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Compass, Users, Info, TrendingUp, Plus, Hash, Menu, X, Zap, Monitor, Database, Bell, User, Search, Activity, MessageSquare, ChevronLeft, ListTodo, Brain, Wrench, GraduationCap } from 'lucide-react';
+import {
+  LayoutDashboard, Menu, X, Zap,
+  User, Search, Activity, MessageSquare, ChevronLeft, ChevronDown,
+  ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import type { MailConversation } from '../../lib/api';
 import { useMapSwarms } from '../../hooks/useApi';
+import { useInstanceFeatures } from '../../hooks/useInstanceFeatures';
 import { useAuthStore } from '../../stores/auth';
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import clsx from 'clsx';
 import { Logo } from '../common/Logo';
+
+interface NavItem {
+  to: string;
+  icon: LucideIcon;
+  label: string;
+  badge?: number;
+}
+
+interface NavGroup {
+  id: string;
+  label: string;
+  items: NavItem[];
+}
+
+const STORAGE_KEY = 'sidebar-sections';
+
+function loadSectionState(): Record<string, boolean> {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored ? JSON.parse(stored) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSectionState(state: Record<string, boolean>) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch { /* ignore */ }
+}
 
 export function Sidebar() {
   const location = useLocation();
@@ -16,6 +52,7 @@ export function Sidebar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(loadSectionState);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,16 +62,13 @@ export function Sidebar() {
     }
   };
 
-  const { data: hives } = useQuery({
-    queryKey: ['hives', 'sidebar'],
-    queryFn: () => api.get('/hives?limit=10&sort=popular'),
-  });
-
-  const { data: trendingTopics } = useQuery({
-    queryKey: ['trending'],
-    queryFn: () => api.get('/posts?limit=5&sort=hot'),
-    select: (data) => data.data?.slice(0, 5) || [],
-  });
+  const toggleSection = useCallback((id: string) => {
+    setExpandedSections((prev) => {
+      const next = { ...prev, [id]: prev[id] === false };
+      saveSectionState(next);
+      return next;
+    });
+  }, []);
 
   const { data: activeThreads } = useQuery<{ conversations: MailConversation[] }>({
     queryKey: ['mail-conversations-sidebar'],
@@ -43,33 +77,31 @@ export function Sidebar() {
     staleTime: 15_000,
   });
 
-  const { data: instanceInfo } = useQuery<{ features?: { swarm_hosting?: boolean; swarmcraft?: boolean } }>({
-    queryKey: ['instance-info'],
-    queryFn: () => fetch('/.well-known/openhive.json').then((r) => r.json()),
-    staleTime: 5 * 60 * 1000,
-  });
-
+  const features = useInstanceFeatures();
   const { data: mapSwarms } = useMapSwarms();
   const onlineSwarmCount = mapSwarms?.filter((s) => s.status === 'online').length ?? 0;
 
-  const features = instanceInfo?.features;
-
-  const navItems = [
-    { to: '/', icon: LayoutDashboard, label: 'Home' },
-    { to: '/swarms', icon: Zap, label: 'Swarms', badge: onlineSwarmCount || undefined },
-    { to: '/sessions', icon: Activity, label: 'Sessions' },
-    { to: '/messages', icon: MessageSquare, label: 'Messages' },
-    { to: '/events', icon: Bell, label: 'Events' },
-    { to: '/resources', icon: Database, label: 'Assets' },
-    { to: '/memory', icon: Brain, label: 'Memory' },
-    { to: '/skills', icon: Wrench, label: 'Skills' },
-    { to: '/tasks', icon: ListTodo, label: 'Tasks' },
-    { to: '/learning', icon: GraduationCap, label: 'Learning' },
-    { to: '/explore', icon: Compass, label: 'Explore' },
-    { to: '/hives', icon: Hash, label: 'Channels' },
-    { to: '/agents', icon: Users, label: 'Agents' },
-    ...(features?.swarmcraft ? [{ to: '/swarmcraft', icon: Monitor, label: 'Overview' }] : []),
-    { to: '/about', icon: Info, label: 'About' },
+  const navGroups: NavGroup[] = [
+    {
+      id: 'command-center',
+      label: 'Control Plane',
+      items: [
+        { to: '/', icon: LayoutDashboard, label: 'Overview' },
+        { to: '/swarms', icon: Zap, label: 'Swarms', badge: onlineSwarmCount || undefined },
+        { to: '/sessions', icon: Activity, label: 'Sessions' },
+        { to: '/messages', icon: MessageSquare, label: 'Messages' },
+      ],
+    },
+    {
+      id: 'knowledge',
+      label: 'Resources',
+      items: [
+        { to: '/memory', icon: Brain, label: 'Memory' },
+        { to: '/skills', icon: Wrench, label: 'Skills' },
+        { to: '/tasks', icon: ListTodo, label: 'Tasks' },
+        { to: '/learning', icon: GraduationCap, label: 'Learning' },
+      ],
+    },
   ];
 
   const sidebarContent = (
@@ -143,91 +175,78 @@ export function Sidebar() {
       )}
 
       {/* Navigation */}
-      <nav className={clsx('flex-1 overflow-y-auto py-2 space-y-0.5', collapsed ? 'px-1' : 'px-2')}>
-        {navItems.map((item) => (
-          <Link
-            key={item.to}
-            to={item.to}
-            onClick={() => setMobileOpen(false)}
-            className={clsx(
-              collapsed
-                ? 'flex flex-col items-center gap-0.5 rounded-md px-1 py-1.5 mx-0.5 text-center cursor-pointer transition-colors duration-80'
-                : 'sidebar-item',
-              location.pathname === item.to && (collapsed ? 'bg-honey-500/10 text-honey-500' : 'active')
-            )}
-            style={collapsed && location.pathname !== item.to ? { color: 'var(--color-text-secondary)' } : undefined}
-            onMouseEnter={(e) => { if (collapsed && location.pathname !== item.to) { e.currentTarget.style.backgroundColor = 'var(--color-hover)'; e.currentTarget.style.color = 'var(--color-text)'; } }}
-            onMouseLeave={(e) => { if (collapsed && location.pathname !== item.to) { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; } }}
-          >
-            <item.icon className={clsx('shrink-0', collapsed ? 'w-5 h-5' : 'w-4 h-4')} />
-            {collapsed
-              ? <span className="text-2xs leading-tight truncate w-full">{item.label}</span>
-              : <>
-                  <span className="truncate">{item.label}</span>
-                  {item.badge != null && (
-                    <span className="ml-auto text-2xs font-medium px-1.5 py-0.5 rounded-full bg-honey-500/15 text-honey-500 leading-none">
-                      {item.badge}
-                    </span>
-                  )}
-                </>
-            }
-          </Link>
-        ))}
-
-        {!collapsed && (
-          <>
-            {/* Create Post */}
-            {isAuthenticated && (
-              <div className="px-1 pt-2">
-                <Link
-                  to="/submit"
-                  onClick={() => setMobileOpen(false)}
-                  className="btn btn-primary w-full flex items-center justify-center gap-1.5 text-xs py-1.5"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  New Post
-                </Link>
+      <nav className={clsx('flex-1 overflow-y-auto py-2', collapsed ? 'px-1 space-y-0.5' : 'px-0')}>
+        {collapsed ? (
+          /* Collapsed: icon list grouped by thin dividers */
+          <div className="space-y-1">
+            {navGroups.map((group, gi) => (
+              <div key={group.id}>
+                {gi > 0 && <div className="divider mx-2 !my-1" />}
+                <div className="space-y-0.5">
+                  {group.items.map((item) => (
+                    <Link
+                      key={item.to}
+                      to={item.to}
+                      onClick={() => setMobileOpen(false)}
+                      className={clsx(
+                        'flex flex-col items-center gap-0.5 rounded-md px-1 py-1.5 mx-0.5 text-center cursor-pointer transition-colors duration-80',
+                        location.pathname === item.to ? 'bg-honey-500/10 text-honey-500' : ''
+                      )}
+                      style={location.pathname !== item.to ? { color: 'var(--color-text-secondary)' } : undefined}
+                      onMouseEnter={(e) => { if (location.pathname !== item.to) { e.currentTarget.style.backgroundColor = 'var(--color-hover)'; e.currentTarget.style.color = 'var(--color-text)'; } }}
+                      onMouseLeave={(e) => { if (location.pathname !== item.to) { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; } }}
+                    >
+                      <item.icon className="w-5 h-5 shrink-0" />
+                      <span className="text-2xs leading-tight truncate w-full">{item.label}</span>
+                    </Link>
+                  ))}
+                </div>
               </div>
-            )}
-
-            <div className="divider mx-1" />
-
-            {/* Channels (hives) */}
-            <div className="py-1">
-              <div className="sidebar-section flex items-center justify-between">
-                <span>Channels</span>
-              </div>
-              {hives?.data?.map((hive: { name: string; member_count: number }) => (
-                <Link
-                  key={hive.name}
-                  to={`/h/${hive.name}`}
-                  onClick={() => setMobileOpen(false)}
-                  className={clsx(
-                    'sidebar-item',
-                    location.pathname === `/h/${hive.name}` && 'active'
+            ))}
+          </div>
+        ) : (
+          /* Expanded: grouped sections */
+          <div className="space-y-1">
+            {navGroups.map((group) => {
+              const isExpanded = expandedSections[group.id] !== false;
+              return (
+                <div key={group.id}>
+                  <button
+                    onClick={() => toggleSection(group.id)}
+                    className="sidebar-section-toggle"
+                  >
+                    <span>{group.label}</span>
+                    {isExpanded
+                      ? <ChevronDown className="w-3 h-3 shrink-0" />
+                      : <ChevronRight className="w-3 h-3 shrink-0" />
+                    }
+                  </button>
+                  {isExpanded && (
+                    <div className="space-y-0.5">
+                      {group.items.map((item) => (
+                        <Link
+                          key={item.to}
+                          to={item.to}
+                          onClick={() => setMobileOpen(false)}
+                          className={clsx(
+                            'sidebar-item',
+                            location.pathname === item.to && 'active'
+                          )}
+                        >
+                          <item.icon className="w-4 h-4 shrink-0" />
+                          <span className="truncate">{item.label}</span>
+                          {item.badge != null && (
+                            <span className="ml-auto text-2xs font-medium px-1.5 py-0.5 rounded-full bg-honey-500/15 text-honey-500 leading-none">
+                              {item.badge}
+                            </span>
+                          )}
+                        </Link>
+                      ))}
+                    </div>
                   )}
-                >
-                  <Hash className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
-                  <span className="truncate">{hive.name}</span>
-                  <span className="ml-auto text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-                    {hive.member_count || 0}
-                  </span>
-                </Link>
-              )) || (
-                <p className="px-5 py-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>No hives yet</p>
-              )}
-              <Link
-                to="/hives"
-                onClick={() => setMobileOpen(false)}
-                className="sidebar-item text-xs"
-                style={{ color: 'var(--color-text-muted)' }}
-              >
-                <Plus className="w-3 h-3 shrink-0" />
-                Browse all
-              </Link>
-            </div>
-
-            <div className="divider mx-1" />
+                </div>
+              );
+            })}
 
             {/* Threads (active mail conversations) */}
             {activeThreads?.conversations && activeThreads.conversations.length > 0 && (
@@ -269,46 +288,7 @@ export function Sidebar() {
               </>
             )}
 
-            {/* Trending */}
-            <div className="py-1 flex-1 min-h-0 overflow-y-auto">
-              <div className="sidebar-section flex items-center gap-1.5">
-                <TrendingUp className="w-3 h-3" />
-                <span>Trending</span>
-              </div>
-              {trendingTopics?.length > 0 ? (
-                trendingTopics.map((post: { id: string; title: string; hive_name: string; score: number }) => (
-                  <Link
-                    key={post.id}
-                    to={`/h/${post.hive_name}/post/${post.id}`}
-                    onClick={() => setMobileOpen(false)}
-                    className="sidebar-item flex-col items-start gap-0 py-1.5"
-                  >
-                    <span className="text-xs line-clamp-1 w-full">{post.title}</span>
-                    <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-                      #{post.hive_name} · {post.score}pts
-                    </span>
-                  </Link>
-                ))
-              ) : (
-                <p className="px-5 py-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>No trending posts</p>
-              )}
-            </div>
-
-            {/* Footer links */}
-            <div className="mt-auto px-3 py-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-              <div className="flex items-center gap-1.5">
-                <a href="/skill.md" target="_blank" rel="noopener" className="hover:text-honey-500 transition-colors">
-                  API
-                </a>
-                <span className="opacity-30">·</span>
-                <a href="https://github.com/alexngai/openhive" target="_blank" rel="noopener" className="hover:text-honey-500 transition-colors">
-                  GitHub
-                </a>
-                <span className="opacity-30">·</span>
-                <span className="opacity-60">2025</span>
-              </div>
-            </div>
-          </>
+          </div>
         )}
       </nav>
 

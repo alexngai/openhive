@@ -1,7 +1,7 @@
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Activity, Bell, ChevronRight, Clock, Cpu, FileText, Globe,
-  Link2, MessageSquare, Network, Share2,
+  Link2, MessageSquare, Monitor, Network, Share2,
   Square, RotateCw, Terminal, Trash2, User, Wifi, WifiOff,
   CheckCircle2,
 } from 'lucide-react';
@@ -651,14 +651,24 @@ export function SwarmDetail() {
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-6 space-y-4">
-      <Link
-        to="/swarms"
-        className="inline-flex items-center gap-1 text-xs hover:text-honey-500 transition-colors"
-        style={{ color: 'var(--color-text-muted)' }}
-      >
-        <ArrowLeft className="w-3 h-3" />
-        Back to Swarms
-      </Link>
+      <div className="flex items-center justify-between">
+        <Link
+          to="/swarms"
+          className="inline-flex items-center gap-1 text-xs hover:text-honey-500 transition-colors"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          <ArrowLeft className="w-3 h-3" />
+          Back to Swarms
+        </Link>
+        <Link
+          to="/swarmcraft"
+          className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors"
+          style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+        >
+          <Monitor className="w-3.5 h-3.5" />
+          Overview
+        </Link>
+      </div>
 
       <SwarmInfo swarm={swarm} />
 

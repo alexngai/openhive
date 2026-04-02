@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Activity, ChevronRight, Clock, Cpu, FileText, User } from 'lucide-react';
+import { Activity, ChevronRight, Clock, Cpu, FileText, User, Monitor } from 'lucide-react';
 import { useSessionsList } from '../hooks/useApi';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -95,14 +95,24 @@ export function Sessions() {
   return (
     <div className="max-w-4xl mx-auto px-4 py-6">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-xl font-bold flex items-center gap-2">
-          <Activity className="w-5 h-5 text-honey-500" />
-          Sessions
-        </h1>
-        <p className="text-sm mt-1" style={{ color: 'var(--color-text-secondary)' }}>
-          Agent session trajectories synced via MAP. {total > 0 && `${total} session${total !== 1 ? 's' : ''} tracked.`}
-        </p>
+      <div className="mb-6 flex items-start justify-between">
+        <div>
+          <h1 className="text-xl font-bold flex items-center gap-2">
+            <Activity className="w-5 h-5 text-honey-500" />
+            Sessions
+          </h1>
+          <p className="text-sm mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+            Agent session trajectories synced via MAP. {total > 0 && `${total} session${total !== 1 ? 's' : ''} tracked.`}
+          </p>
+        </div>
+        <Link
+          to="/swarmcraft"
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors shrink-0"
+          style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+        >
+          <Monitor className="w-3.5 h-3.5" />
+          Overview
+        </Link>
       </div>
 
       {/* Session list */}

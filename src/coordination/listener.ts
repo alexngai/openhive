@@ -9,6 +9,7 @@
 import { getMessagingService } from '../messaging/index.js';
 import { getContextsService } from '../contexts/index.js';
 import { shimTaskAssign, shimTaskStatus } from './compat.js';
+import { mapHubEvents } from '../map/service.js';
 import type { MapCoordinationMessage, TaskAssignParams, TaskStatusParams, ContextShareParams, MessageSendParams } from './types.js';
 
 /** Set of valid coordination method names for fast validation */
@@ -42,6 +43,16 @@ export function handleCoordinationMessage(msg: MapCoordinationMessage, sourceSwa
       } else {
         console.log(`[coordination] task.assign "${p.title}" from swarm ${sourceSwarmId} — no OpenTasks resource found, dropped`);
       }
+      // Emit for SwarmCraft bridge
+      mapHubEvents.emit('task_assigned', {
+        task_id: p.task_id,
+        title: p.title,
+        description: p.description,
+        priority: p.priority,
+        assigned_by: p.assigned_by,
+        assigned_to_swarm: p.assigned_to_swarm,
+        source_swarm_id: sourceSwarmId,
+      });
       break;
     }
 
@@ -53,6 +64,14 @@ export function handleCoordinationMessage(msg: MapCoordinationMessage, sourceSwa
       } else {
         console.log(`[coordination] task.status ${p.status} for ${p.task_id} — no OpenTasks resource found, dropped`);
       }
+      // Emit for SwarmCraft bridge
+      mapHubEvents.emit('task_status_changed', {
+        task_id: p.task_id,
+        status: p.status,
+        progress: p.progress,
+        result: p.result,
+        error: p.error,
+      });
       break;
     }
 

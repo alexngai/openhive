@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/layout/Layout';
 import { PageLoader } from './components/common/LoadingSpinner';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
@@ -9,11 +9,7 @@ import { useAuthStore } from './stores/auth';
 
 // Lazy load page components for code splitting
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
-const Explore = lazy(() => import('./pages/Explore').then(m => ({ default: m.Explore })));
-const Hive = lazy(() => import('./pages/Hive').then(m => ({ default: m.Hive })));
-const Post = lazy(() => import('./pages/Post').then(m => ({ default: m.Post })));
 const Agent = lazy(() => import('./pages/Agent').then(m => ({ default: m.Agent })));
-const Hives = lazy(() => import('./pages/Hives').then(m => ({ default: m.Hives })));
 const Agents = lazy(() => import('./pages/Agents').then(m => ({ default: m.Agents })));
 const Search = lazy(() => import('./pages/Search').then(m => ({ default: m.Search })));
 const About = lazy(() => import('./pages/About').then(m => ({ default: m.About })));
@@ -22,10 +18,7 @@ const AuthCallback = lazy(() => import('./pages/AuthCallback').then(m => ({ defa
 const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })));
 const Swarms = lazy(() => import('./pages/Swarms').then(m => ({ default: m.Swarms })));
 const SwarmDetail = lazy(() => import('./pages/SwarmDetail').then(m => ({ default: m.SwarmDetail })));
-const SwarmCraft = lazy(() => import('./pages/SwarmCraft').then(m => ({ default: m.SwarmCraft })));
 const Terminal = lazy(() => import('./pages/Terminal').then(m => ({ default: m.Terminal })));
-const Resources = lazy(() => import('./pages/Resources').then(m => ({ default: m.Resources })));
-const ResourceDetail = lazy(() => import('./pages/ResourceDetail').then(m => ({ default: m.ResourceDetail })));
 const Sessions = lazy(() => import('./pages/Sessions').then(m => ({ default: m.Sessions })));
 const SessionDetail = lazy(() => import('./pages/SessionDetail').then(m => ({ default: m.SessionDetail })));
 const Events = lazy(() => import('./pages/Events').then(m => ({ default: m.Events })));
@@ -62,11 +55,7 @@ export default function App() {
             {/* Protected routes */}
             <Route element={<ProtectedRoute />}>
               <Route index element={<Dashboard />} />
-              <Route path="explore" element={<Explore />} />
-              <Route path="h/:hiveName" element={<Hive />} />
-              <Route path="h/:hiveName/post/:postId" element={<Post />} />
               <Route path="a/:agentName" element={<Agent />} />
-              <Route path="hives" element={<Hives />} />
               <Route path="agents" element={<Agents />} />
               <Route path="search" element={<Search />} />
               <Route path="about" element={<About />} />
@@ -76,9 +65,6 @@ export default function App() {
               <Route path="sessions" element={<Sessions />} />
               <Route path="sessions/:id" element={<SessionDetail />} />
               <Route path="events" element={<Events />} />
-              <Route path="resources" element={<Resources />} />
-              <Route path="resources/:id" element={<ResourceDetail />} />
-              <Route path="swarmcraft" element={<SwarmCraft />} />
               <Route path="terminal/:swarmId" element={<Terminal />} />
               <Route path="messages" element={<Messages />} />
               <Route path="messages/:id" element={<Conversation />} />
@@ -90,6 +76,10 @@ export default function App() {
               <Route path="learning/playbooks/:id" element={<LearningPlaybookDetail />} />
               <Route path="tasks" element={<Tasks />} />
               <Route path="tasks/:resourceId" element={<TaskGraph />} />
+
+              {/* Redirects for removed routes */}
+              <Route path="resources" element={<Navigate to="/memory" replace />} />
+              <Route path="swarmcraft" element={<Navigate to="/" replace />} />
             </Route>
           </Route>
         </Routes>

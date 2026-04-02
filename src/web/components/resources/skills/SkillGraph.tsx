@@ -4,6 +4,7 @@ import Graph from 'graphology';
 import { random as randomLayout } from 'graphology-layout';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import { ZoomIn, ZoomOut, Maximize2, X, Network } from 'lucide-react';
+import { applySigmaPerfSettings } from '../../../utils/sigmaPerf';
 import { useSkillGraph } from '../../../hooks/useApi';
 import type { SkillGraphNode, SkillGraphEdge } from '../../../lib/api';
 
@@ -117,7 +118,7 @@ export function SkillGraph({ resourceId }: { resourceId: string }) {
       renderEdgeLabels: true,
       defaultEdgeType: 'arrow',
       defaultNodeColor: '#6b7280',
-      defaultEdgeColor: '#4b5563',
+      defaultEdgeColor: '#4b556340',
       labelColor: { color: '#d1d2d3' },
       labelFont: 'Inter, system-ui, sans-serif',
       labelSize: 11,
@@ -127,6 +128,8 @@ export function SkillGraph({ resourceId }: { resourceId: string }) {
     });
 
     sigmaRef.current = sigma;
+    applySigmaPerfSettings(sigma, graph.order);
+
     sigma.on('clickNode', ({ node }) => {
       const attrs = graph.getNodeAttributes(node);
       setSelectedNode(attrs._data as SkillGraphNode);

@@ -312,57 +312,34 @@ export async function createHive(
           typeof config.cors.origin === "string"
             ? config.cors.origin
             : undefined,
+        // Enable sessionlog watcher for live local agent session tracking
+        sessionlog: {
+          enabled: true,
+          repoPath: process.cwd(),
+          pollIntervalMs: 3000,
+        },
+        // Trajectory auto-enables with memory provider when sessionlog is on
       });
       console.log(`[openhive] SwarmCraft plugin registered at ${scPrefix}`);
 
-      // Bridge: auto-connect SwarmCraft MAP client when swarms register with the Hub
-      const mcm = (fastify as any).swarmcraft.mapClientManager;
-      const connectSwarm = async (
-        id: string,
-        name: string,
-        endpoint: string,
-        authMethod?: string,
-      ) => {
-        try {
-          await mcm.connect({
-            id,
-            name,
-            url: endpoint,
-            auth:
-              authMethod === "none" || !authMethod
-                ? { method: "none" as const }
-                : {
-                    method: authMethod as "bearer" | "api-key",
-                    token: undefined,
-                  },
-          });
-          console.log(`[openhive] SwarmCraft bridge: connected to ${name}`);
-        } catch (err) {
-          console.warn(
-            `[openhive] SwarmCraft bridge: failed to connect to ${name}: ${(err as Error).message}`,
-          );
-        }
-      };
+      // Initialize the full OpenHive → SwarmCraft data bridge
+      // (replaces the inline MAP client auto-connect with a comprehensive
+      //  bridge that also projects sessions, tasks, and resources)
+      const { setupOpenHiveBridge } = await import("./swarmcraft/bridge.js");
+      const sc = (fastify as any).swarmcraft;
+      const bridgeHandle = await setupOpenHiveBridge({
+        db: sc.db,
+        wsHub: sc.wsHub,
+        positionService: sc.positionService,
+        trajectoryService: sc.trajectoryService,
+        mapClientManager: sc.mapClientManager,
+        pipelineService: sc.pipelineService,
+      });
 
-      // Connect to existing online swarms at startup
-      const { listSwarms } = await import("./db/dal/map.js");
-      const { data: online } = listSwarms({ status: "online", limit: 500 });
-      for (const s of online)
-        await connectSwarm(s.id, s.name, s.map_endpoint, s.auth_method);
-
-      // Subscribe to new registrations
-      const { mapHubEvents } = await import("./map/service.js");
-      mapHubEvents.on(
-        "swarm_registered",
-        (e: {
-          swarm_id: string;
-          name: string;
-          map_endpoint: string;
-          auth_method?: string;
-        }) => {
-          connectSwarm(e.swarm_id, e.name, e.map_endpoint, e.auth_method);
-        },
-      );
+      // Teardown bridge on server close
+      fastify.addHook("onClose", () => {
+        bridgeHandle.teardown();
+      });
     } catch (err) {
       console.warn(
         `[openhive] Failed to register SwarmCraft plugin: ${(err as Error).message}`,

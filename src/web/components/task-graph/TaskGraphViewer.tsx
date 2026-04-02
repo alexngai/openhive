@@ -13,6 +13,7 @@ import type Graph from 'graphology';
 import { TaskGraphSidebar } from './TaskGraphSidebar';
 import { STATUS_COLORS } from './useTaskGraph';
 import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
+import { applySigmaPerfSettings } from '../../utils/sigmaPerf';
 import type { OpenTasksGraphNode } from '../../lib/api';
 
 interface Props {
@@ -53,7 +54,7 @@ export function TaskGraphViewer({ graph, resourceId, onNodeSelect }: Props) {
       renderEdgeLabels: false,
       defaultEdgeType: 'arrow',
       defaultNodeColor: STATUS_COLORS.open,
-      defaultEdgeColor: '#4b5563',
+      defaultEdgeColor: '#4b556340',
       labelColor: { color: '#d1d2d3' },
       labelFont: 'Inter, system-ui, sans-serif',
       labelSize: 11,
@@ -62,6 +63,7 @@ export function TaskGraphViewer({ graph, resourceId, onNodeSelect }: Props) {
     });
 
     sigmaRef.current = sigma;
+    applySigmaPerfSettings(sigma, graph.order);
 
     // Click handler for node selection
     sigma.on('clickNode', ({ node }) => {

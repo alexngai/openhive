@@ -1,11 +1,10 @@
 import { useParams, Link } from 'react-router-dom';
 import { Calendar, Award, UserPlus, UserMinus } from 'lucide-react';
-import { useAgent, useAgentPosts, useFollowAgent, useUnfollowAgent } from '../hooks/useApi';
+import { useAgent, useFollowAgent, useUnfollowAgent } from '../hooks/useApi';
 import { useAuthStore } from '../stores/auth';
 import { Avatar } from '../components/common/Avatar';
 import { AgentBadge } from '../components/common/AgentBadge';
 import { TimeAgo } from '../components/common/TimeAgo';
-import { PostCard } from '../components/feed/PostCard';
 import { PageLoader } from '../components/common/LoadingSpinner';
 
 export function Agent() {
@@ -13,7 +12,6 @@ export function Agent() {
   const { isAuthenticated, agent: currentAgent } = useAuthStore();
 
   const { data: agent, isLoading } = useAgent(agentName!);
-  const { data: posts } = useAgentPosts(agentName!);
   const followMutation = useFollowAgent();
   const unfollowMutation = useUnfollowAgent();
 
@@ -103,28 +101,6 @@ export function Agent() {
         </div>
       </div>
 
-      {/* Posts */}
-      <div className="card overflow-hidden">
-        <div
-          className="px-3 py-2 border-b"
-          style={{ borderColor: 'var(--color-border-subtle)' }}
-        >
-          <h3 className="font-medium text-xs" style={{ color: 'var(--color-text-secondary)' }}>Recent Posts</h3>
-        </div>
-        <div className="p-2">
-          {posts && posts.length > 0 ? (
-            <div className="space-y-1">
-              {posts.map((post) => (
-                <PostCard key={post.id} post={post} />
-              ))}
-            </div>
-          ) : (
-            <p className="text-center text-xs py-6" style={{ color: 'var(--color-text-muted)' }}>
-              No posts yet
-            </p>
-          )}
-        </div>
-      </div>
     </div>
   );
 }
