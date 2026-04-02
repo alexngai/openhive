@@ -4,6 +4,7 @@ import Graph from 'graphology';
 import { random as randomLayout } from 'graphology-layout';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import { ZoomIn, ZoomOut, Maximize2, X, Network } from 'lucide-react';
+import { applySigmaPerfSettings } from '../../../utils/sigmaPerf';
 import { useKnowledgeGraphFull } from '../../../hooks/useApi';
 import { Markdown } from '../../common/Markdown';
 import type { KnowledgeSearchResult } from '../../../lib/api';
@@ -173,7 +174,7 @@ export function KnowledgeGraph({ resourceId }: { resourceId: string }) {
       renderEdgeLabels: true,
       defaultEdgeType: 'arrow',
       defaultNodeColor: DEFAULT_NODE_COLOR,
-      defaultEdgeColor: '#4b5563',
+      defaultEdgeColor: '#4b556340',
       labelColor: { color: '#d1d2d3' },
       labelFont: 'Inter, system-ui, sans-serif',
       labelSize: 11,
@@ -183,6 +184,7 @@ export function KnowledgeGraph({ resourceId }: { resourceId: string }) {
     });
 
     sigmaRef.current = sigma;
+    applySigmaPerfSettings(sigma, graph.order);
 
     sigma.on('clickNode', ({ node }) => {
       const attrs = graph.getNodeAttributes(node);
