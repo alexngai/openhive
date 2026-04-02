@@ -227,6 +227,27 @@ describeFn('Full Stack E2E: OpenHive → OpenSwarm → macro-agent', () => {
     const mapPort = assignedPort + 2;
     const mapUrl = `ws://127.0.0.1:${mapPort}/map`;
 
+    // Wait for MAP server to be ready (it starts after the gateway health endpoint)
+    const mapReady = await waitFor(async () => {
+      try {
+        const res = await fetch(`http://127.0.0.1:${mapPort}/health`);
+        return res.ok;
+      } catch { return false; }
+    }, 10000);
+
+    console.log(`[full-stack-e2e] MAP server (port ${mapPort}): ${mapReady ? 'ready' : 'NOT ready'}`);
+
+    // If MAP server not ready, dump swarm logs to diagnose
+    if (!mapReady) {
+      try {
+        const agentId = (await import('../../db/dal/agents.js')).findAgentByApiKey(agentApiKey)?.id ?? '';
+        const logs = await swarmManager.getLogs(spawnedSwarmId, agentId, { lines: 50 });
+        console.log(`[full-stack-e2e] Swarm logs:\n${logs}`);
+      } catch (e) {
+        console.log(`[full-stack-e2e] Could not get logs: ${(e as Error).message}`);
+      }
+    }
+
     console.log(`[full-stack-e2e] Connecting to MAP at ${mapUrl}`);
 
     // Connect via raw WebSocket and send map/connect

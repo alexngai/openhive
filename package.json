@@ -92,7 +92,7 @@
     "nanoid": "^5.0.9",
     "nodemailer": "^7.0.13",
     "openhive-types": "^0.2.0",
-    "openswarm": "^0.1.5",
+    "openswarm": "^0.1.7",
     "opentasks": "^0.0.8",
     "pg": "^8.18.0",
     "react": "^18.3.1",
