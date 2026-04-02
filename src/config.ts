@@ -2,6 +2,7 @@ import { z } from 'zod';
 import * as path from 'path';
 import * as fs from 'fs';
 import { resolveDataDir } from './data-dir.js';
+import { writeConfigFile } from './config-persistence.js';
 
 // Storage configuration schema
 const LocalStorageSchema = z.object({
@@ -426,6 +427,24 @@ export type Config = z.infer<typeof ConfigSchema>;
 // Default configuration
 export const defaultConfig: Config = ConfigSchema.parse({});
 
+/** The file path that was loaded by the most recent loadConfig() call */
+let _loadedConfigPath: string | undefined;
+
+/** Returns the config file path that was loaded, or undefined if none found */
+export function getLoadedConfigPath(): string | undefined {
+  return _loadedConfigPath;
+}
+
+/** Set the loaded config path (used when auto-creating a config file) */
+export function setLoadedConfigPath(filePath: string): void {
+  _loadedConfigPath = filePath;
+}
+
+/** Returns true if the loaded config is a JSON file (editable by UI) */
+export function isConfigEditable(): boolean {
+  return _loadedConfigPath?.endsWith('.json') ?? false;
+}
+
 // Load configuration from file or environment
 export function loadConfig(configPath?: string): Config {
   let fileConfig: Partial<Config> = {};
@@ -433,19 +452,23 @@ export function loadConfig(configPath?: string): Config {
   // Resolve data directory for config file lookup
   const dataDir = resolveDataDir();
   const dataDirConfigCandidates = [
-    path.join(dataDir, 'config.js'),
     path.join(dataDir, 'config.json'),
+    path.join(dataDir, 'config.js'),
   ];
 
-  // Try to load from config file (CWD first, then data dir)
+  // Try to load from config file.
+  // JSON is preferred (editable by UI). JS is supported for backwards compat (read-only).
+  // Search order: explicit path, CWD (JSON first), data dir (JSON first).
   const configFiles = [
     configPath,
-    './openhive.config.js',
     './openhive.config.json',
-    path.join(process.cwd(), 'openhive.config.js'),
+    './openhive.config.js',
     path.join(process.cwd(), 'openhive.config.json'),
+    path.join(process.cwd(), 'openhive.config.js'),
     ...dataDirConfigCandidates,
   ].filter(Boolean) as string[];
+
+  _loadedConfigPath = undefined;
 
   for (const file of configFiles) {
     if (fs.existsSync(file)) {
@@ -457,10 +480,24 @@ export function loadConfig(configPath?: string): Config {
           const loaded = require(path.resolve(file));
           fileConfig = loaded.default || loaded;
         }
+        _loadedConfigPath = path.resolve(file);
         break;
       } catch {
         // Continue to next file
       }
+    }
+  }
+
+  // Auto-migrate JS config → JSON on first load
+  // Writes the resolved JS config as JSON next to the original, renames .js → .js.bak
+  if (_loadedConfigPath?.endsWith('.js')) {
+    const jsonPath = _loadedConfigPath.replace(/\.js$/, '.json');
+    try {
+      writeConfigFile(jsonPath, fileConfig as Record<string, unknown>);
+      fs.renameSync(_loadedConfigPath, _loadedConfigPath + '.bak');
+      _loadedConfigPath = jsonPath;
+    } catch {
+      // Migration failed — continue with JS config (read-only in UI)
     }
   }
 
@@ -545,183 +582,33 @@ export function loadConfig(configPath?: string): Config {
   return ConfigSchema.parse(rawConfig);
 }
 
-// Generate a sample config file
+// Generate a sample config file (JSON format)
 export function generateSampleConfig(): string {
-  return `// OpenHive Configuration
-// See docs for all options: https://github.com/alexngai/openhive
-
-module.exports = {
-  port: 3000,
-  host: '0.0.0.0',
-  database: './data/openhive.db',
-
-  instance: {
-    name: 'My OpenHive',
-    description: 'A community for AI agents',
-    // url: 'https://hive.example.com', // Set this for federation
-    public: true,
-  },
-
-  admin: {
-    // key: 'your-secret-admin-key', // Set via OPENHIVE_ADMIN_KEY env var
-    createOnStartup: true,
-  },
-
-  rateLimit: {
-    enabled: true,
-    max: 100,
-    timeWindow: '1 minute',
-  },
-
-  federation: {
-    enabled: false,
-    peers: [],
-  },
-
-  cors: {
-    enabled: true,
-    origin: true, // Allow all origins, or specify: ['https://example.com']
-  },
-
-  // Storage configuration for media uploads
-  // Uncomment to enable file uploads
-  // storage: {
-  //   type: 'local',
-  //   path: './uploads',
-  //   publicUrl: '/uploads',
-  // },
-  // Or use S3-compatible storage:
-  // storage: {
-  //   type: 's3',
-  //   bucket: 'your-bucket',
-  //   region: 'us-east-1',
-  //   accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  //   secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  //   // endpoint: 'https://s3.amazonaws.com', // Optional: for MinIO or other S3-compatible services
-  //   // publicUrl: 'https://cdn.example.com', // Optional: custom CDN URL
-  // },
-
-  // SwarmHub connector: connects to SwarmHub for managed credentials & webhooks
-  // Auto-detected from env vars. Set SWARMHUB_API_URL + SWARMHUB_HIVE_TOKEN.
-  // In 'swarmhub' auth mode, also set SWARMHUB_OAUTH_CLIENT_ID + SWARMHUB_OAUTH_CLIENT_SECRET.
-  // swarmhub: {
-  //   enabled: true,
-  //   apiUrl: process.env.SWARMHUB_API_URL,
-  //   healthCheckInterval: 60000,
-  //   oauth: {
-  //     clientId: process.env.SWARMHUB_OAUTH_CLIENT_ID,
-  //     clientSecret: process.env.SWARMHUB_OAUTH_CLIENT_SECRET,
-  //   },
-  // },
-
-  // GitHub App for automatic memory bank webhook handling
-  // Create a GitHub App at: https://github.com/settings/apps/new
-  // githubApp: {
-  //   enabled: true,
-  //   appId: process.env.GITHUB_APP_ID,
-  //   webhookSecret: process.env.GITHUB_APP_WEBHOOK_SECRET,
-  //   privateKey: process.env.GITHUB_APP_PRIVATE_KEY, // PEM format
-  //   clientId: process.env.GITHUB_APP_CLIENT_ID,
-  //   clientSecret: process.env.GITHUB_APP_CLIENT_SECRET,
-  // },
-
-  // Swarm hosting: spawn and manage OpenSwarm instances from OpenHive
-  // swarmHosting: {
-  //   enabled: true,
-  //   default_provider: 'local',     // 'local' | 'docker' (more coming)
-  //   openswarm_command: 'npx openswarm serve', // or path to binary
-  //   data_dir: './data/swarms',
-  //   port_range: [9000, 9100],
-  //   max_swarms: 10,
-  //   health_check_interval: 30000,  // ms
-  //   max_health_failures: 3,
-  //
-  //   // Credential configuration for swarm processes
-  //   credentials: {
-  //     inherit_env: true,  // inherit operator's process.env (default for local provider)
-  //
-  //     sets: {
-  //       'llm-default': {
-  //         source: 'env',  // read from process.env at spawn time
-  //         vars: {
-  //           ANTHROPIC_API_KEY: 'ANTHROPIC_API_KEY',
-  //           OPENAI_API_KEY: 'OPENAI_API_KEY',
-  //         },
-  //       },
-  //       'cogops': {
-  //         source: 'static',
-  //         vars: {
-  //           ANTHROPIC_API_KEY: process.env.COGOPS_ANTHROPIC_KEY,
-  //         },
-  //       },
-  //     },
-  //
-  //     default_set: 'llm-default',
-  //
-  //     hive_overrides: {
-  //       'cogops': { credential_set: 'cogops' },
-  //       'my-repo': { extra_vars: { GITHUB_TOKEN: process.env.MY_REPO_TOKEN } },
-  //     },
-  //   },
-  //
-  //   // Sandbox: OS-level isolation for swarm processes (bubblewrap on Linux, seatbelt on macOS)
-  //   // Requires: @anthropic-ai/sandbox-runtime + bubblewrap & socat (Linux) or ripgrep (macOS)
-  //   sandbox: {
-  //     enabled: true,
-  //     default_policy: {
-  //       allowed_domains: [],          // no network by default (add domains as needed)
-  //       deny_read: ['~/.ssh', '~/.gnupg', '~/.aws'],
-  //       allow_write: [],              // swarm data dir is always auto-included
-  //       allow_local_binding: true,    // swarms need to listen on their assigned port
-  //     },
-  //     hive_overrides: {
-  //       'github-agents': {
-  //         allowed_domains: ['api.github.com', '*.githubusercontent.com'],
-  //       },
-  //     },
-  //   },
-  // },
-
-  // SwarmCraft: MAP client for agent monitoring and orchestration
-  // swarmcraft: {
-  //   enabled: true,
-  //   prefix: '/api/swarmcraft',
-  //   wsPath: '/ws/swarmcraft',
-  //   logLevel: 'info',
-  // },
-
-  // Mesh networking for MAP swarm hosts
-  // Choose one provider:
-  //
-  // Option 1: Tailscale Cloud (simplest — no infra to manage)
-  // network: {
-  //   provider: 'tailscale-cloud',
-  //   tailscale: {
-  //     tailnet: 'your-tailnet.ts.net',
-  //     apiKey: process.env.TAILSCALE_API_KEY,
-  //   },
-  // },
-  //
-  // Option 2: Headscale sidecar (self-hosted, OpenHive manages the binary)
-  // network: {
-  //   provider: 'headscale-sidecar',
-  //   headscaleSidecar: {
-  //     serverUrl: 'https://openhive.example.com',
-  //     baseDomain: 'hive.internal',
-  //     embeddedDerp: true,
-  //     tls: { mode: 'letsencrypt', letsencryptHostname: 'openhive.example.com' },
-  //   },
-  // },
-  //
-  // Option 3: External headscale (BYO headscale instance)
-  // network: {
-  //   provider: 'headscale-external',
-  //   headscaleExternal: {
-  //     apiUrl: 'http://localhost:8085',
-  //     apiKey: process.env.HEADSCALE_API_KEY,
-  //     serverUrl: 'https://headscale.example.com',
-  //   },
-  // },
-};
-`;
+  const sample = {
+    port: 3000,
+    host: '0.0.0.0',
+    database: './data/openhive.db',
+    instance: {
+      name: 'My OpenHive',
+      description: 'A community for AI agents',
+      public: true,
+    },
+    admin: {
+      createOnStartup: true,
+    },
+    rateLimit: {
+      enabled: true,
+      max: 100,
+      timeWindow: '1 minute',
+    },
+    federation: {
+      enabled: false,
+      peers: [],
+    },
+    cors: {
+      enabled: true,
+      origin: true,
+    },
+  };
+  return JSON.stringify(sample, null, 2) + '\n';
 }

@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { ConfigSchema, defaultConfig } from '../config.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { ConfigSchema, defaultConfig, loadConfig, getLoadedConfigPath, isConfigEditable } from '../config.js';
 
 describe('Configuration', () => {
   describe('ConfigSchema', () => {
@@ -200,6 +203,66 @@ describe('Configuration', () => {
       expect(defaultConfig.host).toBe('0.0.0.0');
       expect(defaultConfig.instance.name).toBe('OpenHive');
       expect(defaultConfig.auth.mode).toBe('local');
+    });
+  });
+
+  describe('JS → JSON auto-migration', () => {
+    let tmpDir: string;
+
+    afterEach(() => {
+      if (tmpDir && fs.existsSync(tmpDir)) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should migrate a JS config to JSON on load', () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openhive-migrate-'));
+      const jsPath = path.join(tmpDir, 'openhive.config.js');
+      fs.writeFileSync(jsPath, `module.exports = {
+        port: 4000,
+        instance: { name: 'MigrateTest', description: 'test', public: true },
+      };`);
+
+      const config = loadConfig(jsPath);
+
+      // Config should have loaded correctly
+      expect(config.port).toBe(4000);
+      expect(config.instance.name).toBe('MigrateTest');
+
+      // JS file should be renamed to .bak
+      expect(fs.existsSync(jsPath)).toBe(false);
+      expect(fs.existsSync(jsPath + '.bak')).toBe(true);
+
+      // JSON file should exist
+      const jsonPath = jsPath.replace(/\.js$/, '.json');
+      expect(fs.existsSync(jsonPath)).toBe(true);
+
+      // JSON should be valid and contain the config
+      const jsonContent = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+      expect(jsonContent.port).toBe(4000);
+      expect(jsonContent.instance.name).toBe('MigrateTest');
+
+      // Loaded path should point to JSON
+      expect(getLoadedConfigPath()).toBe(jsonPath);
+      expect(isConfigEditable()).toBe(true);
+    });
+
+    it('should not migrate if JSON already exists', () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openhive-nomigrate-'));
+      const jsPath = path.join(tmpDir, 'openhive.config.js');
+      const jsonPath = path.join(tmpDir, 'openhive.config.json');
+
+      fs.writeFileSync(jsPath, `module.exports = { port: 4000 };`);
+      fs.writeFileSync(jsonPath, JSON.stringify({ port: 5000 }));
+
+      // Since JSON is preferred in search order, it loads JSON (not JS)
+      // So no migration is triggered
+      const config = loadConfig(jsonPath);
+      expect(config.port).toBe(5000);
+
+      // JS file should still exist (not renamed)
+      expect(fs.existsSync(jsPath)).toBe(true);
+      expect(fs.existsSync(jsPath + '.bak')).toBe(false);
     });
   });
 });
