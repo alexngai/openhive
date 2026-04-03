@@ -218,11 +218,20 @@ function StatsDashboard() {
 }
 
 export function Dashboard() {
-  const features = useInstanceFeatures();
+  const { features, isLoading, isError } = useInstanceFeatures();
 
-  // Still loading instance features — render nothing to avoid flashing the wrong view
+  // Still loading or server not ready — show a loading indicator instead of a blank screen
   if (!features) {
-    return <div className="flex flex-col h-full" />;
+    return (
+      <div className="flex flex-col h-full items-center justify-center gap-3 text-zinc-400">
+        <Activity className="w-6 h-6 animate-pulse" />
+        {isError ? (
+          <p className="text-sm">Waiting for server&hellip;</p>
+        ) : (
+          <p className="text-sm">Loading dashboard&hellip;</p>
+        )}
+      </div>
+    );
   }
 
   if (features.swarmcraft) {

@@ -77,7 +77,7 @@ export function Sidebar() {
     staleTime: 15_000,
   });
 
-  const features = useInstanceFeatures();
+  const { features } = useInstanceFeatures();
   const { data: mapSwarms } = useMapSwarms();
   const onlineSwarmCount = mapSwarms?.filter((s) => s.status === 'online').length ?? 0;
 

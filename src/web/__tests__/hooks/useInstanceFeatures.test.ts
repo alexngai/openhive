@@ -26,7 +26,7 @@ afterEach(() => {
 });
 
 describe('useInstanceFeatures', () => {
-  it('returns undefined while loading', () => {
+  it('returns undefined features while loading', () => {
     // fetch never resolves
     (fetch as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
 
@@ -34,7 +34,9 @@ describe('useInstanceFeatures', () => {
       wrapper: createWrapper(),
     });
 
-    expect(result.current).toBeUndefined();
+    expect(result.current.features).toBeUndefined();
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.isError).toBe(false);
   });
 
   it('returns features on successful response', async () => {
@@ -50,10 +52,12 @@ describe('useInstanceFeatures', () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toBeDefined();
+      expect(result.current.features).toBeDefined();
     });
 
-    expect(result.current).toEqual({ swarmcraft: true, swarm_hosting: true });
+    expect(result.current.features).toEqual({ swarmcraft: true, swarm_hosting: true });
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.isError).toBe(false);
   });
 
   it('returns empty object when response has no features', async () => {
@@ -67,17 +71,13 @@ describe('useInstanceFeatures', () => {
     });
 
     await waitFor(() => {
-      expect(result.current).toBeDefined();
+      expect(result.current.features).toBeDefined();
     });
 
-    expect(result.current).toEqual({});
+    expect(result.current.features).toEqual({});
   });
 
   it('throws on non-OK responses instead of caching them as success', async () => {
-    // Test the queryFn behavior directly: a 500 should throw,
-    // not return parsed JSON. This is the core fix — before, fetch()
-    // silently returned the 500 body as "data", and React Query cached
-    // it as a successful (but empty) result for 5 minutes.
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: false,
       status: 500,
@@ -89,6 +89,22 @@ describe('useInstanceFeatures', () => {
         return (r as Response).json();
       }),
     ).rejects.toThrow('Instance info returned 500');
+  });
+
+  it('returns undefined features while retrying after error', async () => {
+    // Hook has retry: 5 built-in, so during retries features stays undefined
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      status: 500,
+    });
+
+    const { result } = renderHook(() => useInstanceFeatures(), {
+      wrapper: createWrapper(),
+    });
+
+    // While the hook is retrying, features should remain undefined
+    expect(result.current.features).toBeUndefined();
+    expect(result.current.isLoading).toBe(true);
   });
 
   it('retries on failure and succeeds on subsequent attempt', async () => {
@@ -117,7 +133,7 @@ describe('useInstanceFeatures', () => {
     const { result } = renderHook(() => useInstanceFeatures(), { wrapper });
 
     await waitFor(() => {
-      expect(result.current).toEqual({ swarmcraft: true });
+      expect(result.current.features).toEqual({ swarmcraft: true });
     }, { timeout: 3000 });
 
     // Should have been called at least twice (initial + retry)
