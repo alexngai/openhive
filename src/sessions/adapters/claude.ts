@@ -184,6 +184,217 @@ export class ClaudeSessionAdapter implements SessionAdapter {
     }
   }
 
+  /**
+   * Paginated variant: parse only enough lines to fill the requested page.
+   * Parses up to `stopAfter` content events, then scans ahead for any
+   * tool_result lines that pair with tool_calls already collected.
+   * Falls back to full parse when stopAfter is not provided.
+   */
+  toAcpEventsPaginated(
+    content: string,
+    stopAfter?: number,
+  ): { events: SessionEvent[]; total: number } {
+    const lines = content.trim().split('\n');
+    const totalLines = lines.length;
+
+    // If no pagination hint or small file, do the full parse
+    if (!stopAfter || totalLines <= stopAfter * 2) {
+      const events = this.toAcpEvents(content);
+      return { events, total: events.length };
+    }
+
+    const events: SessionEvent[] = [];
+    // Track tool_call IDs we've seen so we can pair results from upcoming lines
+    const pendingToolCallIds = new Set<string>();
+    let sequence = 0;
+    let lineIndex = 0;
+    let contentEventCount = 0;
+
+    // Phase 1: Parse lines until we have enough content events
+    for (; lineIndex < totalLines; lineIndex++) {
+      if (contentEventCount >= stopAfter) break;
+
+      try {
+        const line = JSON.parse(lines[lineIndex]) as ClaudeSessionLine;
+        const parsed = this.parseLine(line, sequence, events, pendingToolCallIds);
+        sequence = parsed.sequence;
+        contentEventCount += parsed.contentEvents;
+      } catch {
+        continue;
+      }
+    }
+
+    // Phase 2: Scan ahead for tool_result lines that pair with collected tool_calls
+    if (pendingToolCallIds.size > 0) {
+      for (; lineIndex < totalLines && pendingToolCallIds.size > 0; lineIndex++) {
+        try {
+          const line = JSON.parse(lines[lineIndex]) as ClaudeSessionLine;
+          // Only process result and user (tool_result delivery) types
+          if (line.type === 'result' && line.tool_use_id && pendingToolCallIds.has(line.tool_use_id)) {
+            const parsed = this.parseLine(line, sequence, events, pendingToolCallIds);
+            sequence = parsed.sequence;
+          } else if (line.type === 'user' && Array.isArray(line.message?.content)) {
+            const blocks = line.message!.content as ClaudeContentBlock[];
+            const hasMatchingResult = blocks.some(
+              (b) => b.type === 'tool_result' && b.tool_use_id && pendingToolCallIds.has(b.tool_use_id)
+            );
+            if (hasMatchingResult) {
+              const parsed = this.parseLine(line, sequence, events, pendingToolCallIds);
+              sequence = parsed.sequence;
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    // Estimate total by counting content lines (fast scan of remaining lines)
+    let estimatedTotal = contentEventCount;
+    for (let i = lineIndex; i < totalLines; i++) {
+      try {
+        // Quick type check without full parse — just extract the type field
+        const typeMatch = lines[i].match(/"type"\s*:\s*"(\w+)"/);
+        if (typeMatch && CONTENT_TYPES.has(typeMatch[1])) {
+          estimatedTotal++;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    const paired = this.pairToolResults(events);
+    return { events: paired, total: estimatedTotal };
+  }
+
+  /**
+   * Parse a single JSONL line into events. Shared by toAcpEvents and toAcpEventsPaginated.
+   * Returns the updated sequence counter and how many "content" events were produced.
+   */
+  private parseLine(
+    line: ClaudeSessionLine,
+    sequence: number,
+    events: SessionEvent[],
+    pendingToolCallIds?: Set<string>,
+  ): { sequence: number; contentEvents: number } {
+    const baseEvent = {
+      id: line.uuid || `evt_${sequence}`,
+      timestamp: line.timestamp || new Date().toISOString(),
+      sequence: sequence++,
+    };
+    let contentEvents = 0;
+
+    // Aggregate consecutive non-content entries into single summary events
+    if (!CONTENT_TYPES.has(line.type)) {
+      const lastEvent = events[events.length - 1];
+      if (lastEvent?.type === 'custom' && lastEvent.eventType === `claude_${line.type}`) {
+        (lastEvent as any)._count = ((lastEvent as any)._count || 1) + 1;
+        lastEvent.data = { type: line.type, count: (lastEvent as any)._count };
+      } else {
+        events.push({
+          ...baseEvent,
+          type: 'custom',
+          eventType: `claude_${line.type}`,
+          data: { type: line.type, count: 1 },
+          _count: 1,
+        } as SessionEvent & { _count: number });
+      }
+      return { sequence, contentEvents: 0 };
+    }
+
+    contentEvents = 1;
+
+    switch (line.type) {
+      case 'user': {
+        const userContent = line.message?.content;
+        const isToolResult = Array.isArray(userContent)
+          && userContent.length > 0
+          && userContent.every((b) => b.type === 'tool_result');
+
+        if (isToolResult) {
+          for (const block of userContent as ClaudeContentBlock[]) {
+            events.push({
+              ...baseEvent,
+              id: `${baseEvent.id}_${block.tool_use_id || 'result'}`,
+              type: 'tool_result',
+              toolCallId: block.tool_use_id || 'unknown',
+              content: [{
+                type: 'text',
+                text: typeof block.content === 'string'
+                  ? block.content
+                  : JSON.stringify(block.content),
+              } as TextContent],
+              isError: block.is_error,
+            });
+            pendingToolCallIds?.delete(block.tool_use_id || '');
+          }
+        } else {
+          events.push({
+            ...baseEvent,
+            type: 'user_message',
+            content: this.convertClaudeContent(userContent),
+          });
+        }
+        break;
+      }
+
+      case 'assistant':
+        if (line.message?.content && Array.isArray(line.message.content)) {
+          const thinkingBlocks = line.message.content.filter((b) => b.type === 'thinking');
+          for (const thinking of thinkingBlocks) {
+            if (thinking.thinking) {
+              events.push({
+                ...baseEvent,
+                id: `${baseEvent.id}_thinking`,
+                type: 'assistant_thinking',
+                thinking: thinking.thinking,
+              });
+            }
+          }
+          // Track tool_call IDs for pairing
+          if (pendingToolCallIds) {
+            for (const block of line.message.content) {
+              if (block.type === 'tool_use' && block.id) {
+                pendingToolCallIds.add(block.id);
+              }
+            }
+          }
+        }
+
+        events.push({
+          ...baseEvent,
+          type: 'assistant_message',
+          content: this.convertClaudeContent(line.message?.content),
+          stopReason: this.mapStopReason(line.message?.stop_reason),
+        });
+        break;
+
+      case 'result':
+        events.push({
+          ...baseEvent,
+          type: 'tool_result',
+          toolCallId: line.tool_use_id || 'unknown',
+          content: [{ type: 'text', text: line.result || '' } as TextContent],
+          isError: line.is_error,
+        });
+        pendingToolCallIds?.delete(line.tool_use_id || '');
+        break;
+
+      case 'summary':
+        if (line.input_tokens || line.output_tokens) {
+          events.push({
+            ...baseEvent,
+            type: 'token_usage',
+            inputTokens: line.input_tokens || 0,
+            outputTokens: line.output_tokens || 0,
+          });
+        }
+        break;
+    }
+
+    return { sequence, contentEvents };
+  }
+
   toAcpEvents(content: string): SessionEvent[] {
     const lines = content.trim().split('\n');
     const events: SessionEvent[] = [];
@@ -192,130 +403,13 @@ export class ClaudeSessionAdapter implements SessionAdapter {
     for (const lineStr of lines) {
       try {
         const line = JSON.parse(lineStr) as ClaudeSessionLine;
-        const baseEvent = {
-          id: line.uuid || `evt_${sequence}`,
-          timestamp: line.timestamp || new Date().toISOString(),
-          sequence: sequence++,
-        };
-
-        // Aggregate consecutive non-content entries into single summary events.
-        // Any type that isn't user/assistant/result/summary gets collapsed.
-        if (!CONTENT_TYPES.has(line.type)) {
-          const lastEvent = events[events.length - 1];
-          if (lastEvent?.type === 'custom' && lastEvent.eventType === `claude_${line.type}`) {
-            (lastEvent as any)._count = ((lastEvent as any)._count || 1) + 1;
-            lastEvent.data = { type: line.type, count: (lastEvent as any)._count };
-          } else {
-            events.push({
-              ...baseEvent,
-              type: 'custom',
-              eventType: `claude_${line.type}`,
-              data: { type: line.type, count: 1 },
-              _count: 1,
-            } as SessionEvent & { _count: number });
-          }
-          continue;
-        }
-
-        switch (line.type) {
-          case 'user': {
-            // Check if this is a tool_result delivery (user message with only tool_result blocks)
-            const userContent = line.message?.content;
-            const isToolResult = Array.isArray(userContent)
-              && userContent.length > 0
-              && userContent.every((b) => b.type === 'tool_result');
-
-            if (isToolResult) {
-              // Convert each tool_result block to a tool_result event
-              for (const block of userContent as ClaudeContentBlock[]) {
-                events.push({
-                  ...baseEvent,
-                  id: `${baseEvent.id}_${block.tool_use_id || 'result'}`,
-                  type: 'tool_result',
-                  toolCallId: block.tool_use_id || 'unknown',
-                  content: [{
-                    type: 'text',
-                    text: typeof block.content === 'string'
-                      ? block.content
-                      : JSON.stringify(block.content),
-                  } as TextContent],
-                  isError: block.is_error,
-                });
-              }
-            } else {
-              events.push({
-                ...baseEvent,
-                type: 'user_message',
-                content: this.convertClaudeContent(userContent),
-              });
-            }
-            break;
-          }
-
-          case 'assistant':
-            // Check for thinking blocks
-            if (line.message?.content && Array.isArray(line.message.content)) {
-              const thinkingBlocks = line.message.content.filter(
-                (b) => b.type === 'thinking'
-              );
-              for (const thinking of thinkingBlocks) {
-                if (thinking.thinking) {
-                  events.push({
-                    ...baseEvent,
-                    id: `${baseEvent.id}_thinking`,
-                    type: 'assistant_thinking',
-                    thinking: thinking.thinking,
-                  });
-                }
-              }
-            }
-
-            events.push({
-              ...baseEvent,
-              type: 'assistant_message',
-              content: this.convertClaudeContent(line.message?.content),
-              stopReason: this.mapStopReason(line.message?.stop_reason),
-            });
-            break;
-
-          case 'result':
-            events.push({
-              ...baseEvent,
-              type: 'tool_result',
-              toolCallId: line.tool_use_id || 'unknown',
-              content: [
-                {
-                  type: 'text',
-                  text: line.result || '',
-                } as TextContent,
-              ],
-              isError: line.is_error,
-            });
-            break;
-
-          case 'summary':
-            // Convert to token usage event
-            if (line.input_tokens || line.output_tokens) {
-              events.push({
-                ...baseEvent,
-                type: 'token_usage',
-                inputTokens: line.input_tokens || 0,
-                outputTokens: line.output_tokens || 0,
-              });
-            }
-            break;
-
-          default:
-            // All non-content types are handled by the aggregation above
-            break;
-        }
+        const parsed = this.parseLine(line, sequence, events);
+        sequence = parsed.sequence;
       } catch {
-        // Skip malformed lines
         continue;
       }
     }
 
-    // Post-process: pair tool_result events with their matching tool_call content blocks
     return this.pairToolResults(events);
   }
 
