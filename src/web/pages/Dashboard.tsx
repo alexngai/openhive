@@ -12,6 +12,7 @@ import { StatsOverview } from '../components/dashboard/StatsOverview';
 import { SwarmStatusSummary } from '../components/dashboard/SwarmStatusSummary';
 import { SyncResourcesStatus } from '../components/dashboard/SyncResourcesStatus';
 import { RecentActivity } from '../components/dashboard/RecentActivity';
+import { SpawnFormDialog, ConnectFormDialog } from './Swarms';
 
 /** Derive API/WS URLs relative to current host */
 function useSwarmCraftConfig() {
@@ -163,6 +164,7 @@ function SwarmCraftView() {
   const config = useSwarmCraftConfig();
   const tasksOverride = useTasksOverride();
   const [showStats, setShowStats] = useState(false);
+  const [formMode, setFormMode] = useState<'none' | 'spawn' | 'connect'>('none');
 
   const headerLeft = <BridgeLinks />;
   const headerRight = (
@@ -175,14 +177,14 @@ function SwarmCraftView() {
         <BarChart3 className="w-3.5 h-3.5" />
         Stats
       </button>
-      <Link to="/swarms?action=spawn" className="btn btn-primary flex items-center gap-1 text-xs py-1.5 px-2.5">
+      <button onClick={() => setFormMode('spawn')} className="btn btn-primary flex items-center gap-1 text-xs py-1.5 px-2.5">
         <Zap className="w-3 h-3" />
         Spawn
-      </Link>
-      <Link to="/swarms?action=connect" className="btn btn-secondary flex items-center gap-1 text-xs py-1.5 px-2.5">
+      </button>
+      <button onClick={() => setFormMode('connect')} className="btn btn-secondary flex items-center gap-1 text-xs py-1.5 px-2.5">
         <Link2 className="w-3 h-3" />
         Connect
-      </Link>
+      </button>
     </div>
   );
 
@@ -199,6 +201,8 @@ function SwarmCraftView() {
         headerRightContent={headerRight}
       />
       {showStats && <StatsOverlay onClose={() => setShowStats(false)} />}
+      {formMode === 'spawn' && <SpawnFormDialog onClose={() => setFormMode('none')} />}
+      {formMode === 'connect' && <ConnectFormDialog onClose={() => setFormMode('none')} />}
     </div>
   );
 }
@@ -220,6 +224,7 @@ function StatsDashboard() {
 
 export function Dashboard() {
   const features = useInstanceFeatures();
+  const [formMode, setFormMode] = useState<'none' | 'spawn' | 'connect'>('none');
 
   if (features?.swarmcraft) {
     return (
@@ -238,17 +243,19 @@ export function Dashboard() {
       >
         <h1 className="text-lg font-semibold" style={{ color: 'var(--color-text)' }}>Dashboard</h1>
         <div className="flex items-center gap-1.5">
-          <Link to="/swarms?action=spawn" className="btn btn-primary flex items-center gap-1.5 text-xs">
+          <button onClick={() => setFormMode('spawn')} className="btn btn-primary flex items-center gap-1.5 text-xs">
             <Zap className="w-3 h-3" />
             Spawn
-          </Link>
-          <Link to="/swarms?action=connect" className="btn btn-secondary flex items-center gap-1.5 text-xs">
+          </button>
+          <button onClick={() => setFormMode('connect')} className="btn btn-secondary flex items-center gap-1.5 text-xs">
             <Link2 className="w-3 h-3" />
             Connect
-          </Link>
+          </button>
         </div>
       </div>
       <StatsDashboard />
+      {formMode === 'spawn' && <SpawnFormDialog onClose={() => setFormMode('none')} />}
+      {formMode === 'connect' && <ConnectFormDialog onClose={() => setFormMode('none')} />}
     </div>
   );
 }

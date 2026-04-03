@@ -30,6 +30,18 @@ import type {
   SkillVersion,
   SkillSummary,
   SkillDetail,
+  SkillWritePayload,
+  ImportPayload,
+  ImportResult,
+  LoadoutProfile,
+  LoadoutStateResponse,
+  LoadoutRenderResponse,
+  CompileLoadoutPayload,
+  IndexerSkillSource,
+  ScrapeAndIndexResult,
+  IndexerTaxonomyNode,
+  IndexerStats,
+  IndexerStatus,
   PostRule,
   EventSubscription,
   DeliveryLogEntry,
@@ -752,6 +764,280 @@ export function useSkillSearch(resourceId: string, query: string) {
         `/resources/${resourceId}/content/skills/search?q=${encodeURIComponent(query)}&limit=20`,
       ),
     enabled: !!resourceId && query.length >= 2,
+  });
+}
+
+// Resource Content - Skill Management (CRUD + Import + Loadout)
+
+export function useCreateSkill(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: SkillWritePayload) =>
+      api.post<{ id: string; created: boolean }>(
+        `/resources/${resourceId}/skills`,
+        payload,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills-list", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["skill-graph", resourceId] });
+    },
+  });
+}
+
+export function useUpdateSkill(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ skillId, ...payload }: Partial<SkillWritePayload> & { skillId: string }) =>
+      api.put<{ id: string; updated: boolean }>(
+        `/resources/${resourceId}/skills/${skillId}`,
+        payload,
+      ),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["skills-list", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["skill-detail", resourceId, vars.skillId] });
+      queryClient.invalidateQueries({ queryKey: ["skill-graph", resourceId] });
+    },
+  });
+}
+
+export function useDeleteSkill(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (skillId: string) =>
+      api.delete(`/resources/${resourceId}/skills/${skillId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills-list", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["skill-graph", resourceId] });
+    },
+  });
+}
+
+export function useDeprecateSkill(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (skillId: string) =>
+      api.post<{ id: string; status: string }>(
+        `/resources/${resourceId}/skills/${skillId}/deprecate`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills-list", resourceId] });
+    },
+  });
+}
+
+export function useImportSkills(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: ImportPayload) =>
+      api.post<ImportResult>(
+        `/resources/${resourceId}/skills/import`,
+        payload,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills-list", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["skill-graph", resourceId] });
+    },
+  });
+}
+
+export function useExportSkills(resourceId: string) {
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ skills: unknown[]; stats: Record<string, unknown> }>(
+        `/resources/${resourceId}/skills/export`,
+      ),
+  });
+}
+
+export function useBootstrapSkillBank(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ initialized: boolean; alreadyExisted: boolean; path: string }>(
+        `/resources/${resourceId}/skills/bootstrap`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills-list", resourceId] });
+    },
+  });
+}
+
+// Loadout management
+
+export function useLoadoutProfiles(resourceId: string) {
+  return useQuery({
+    queryKey: ["loadout-profiles", resourceId],
+    queryFn: () =>
+      api.get<{ profiles: LoadoutProfile[] }>(
+        `/resources/${resourceId}/loadout/profiles`,
+      ),
+    select: (data) => data.profiles,
+    enabled: !!resourceId,
+  });
+}
+
+export function useLoadoutState(resourceId: string) {
+  return useQuery({
+    queryKey: ["loadout-state", resourceId],
+    queryFn: () =>
+      api.get<LoadoutStateResponse>(
+        `/resources/${resourceId}/loadout`,
+      ),
+    enabled: !!resourceId,
+  });
+}
+
+export function useLoadoutRender(resourceId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["loadout-render", resourceId],
+    queryFn: () =>
+      api.get<LoadoutRenderResponse>(
+        `/resources/${resourceId}/loadout/render`,
+      ),
+    enabled: !!resourceId && enabled,
+  });
+}
+
+export function useCompileLoadout(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: CompileLoadoutPayload) =>
+      api.post<LoadoutStateResponse>(
+        `/resources/${resourceId}/loadout/compile`,
+        payload,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["loadout-state", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["loadout-render", resourceId] });
+    },
+  });
+}
+
+export function useExpandLoadoutSkill(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (skillId: string) =>
+      api.post<{ skillId: string; expanded: boolean }>(
+        `/resources/${resourceId}/loadout/expand/${skillId}`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["loadout-state", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["loadout-render", resourceId] });
+    },
+  });
+}
+
+export function useCollapseLoadoutSkill(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (skillId: string) =>
+      api.post<{ skillId: string; collapsed: boolean }>(
+        `/resources/${resourceId}/loadout/collapse/${skillId}`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["loadout-state", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["loadout-render", resourceId] });
+    },
+  });
+}
+
+export function useClearLoadout(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.delete(`/resources/${resourceId}/loadout`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["loadout-state", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["loadout-render", resourceId] });
+    },
+  });
+}
+
+// Indexer / Scraper
+
+export function useIndexerStatus(resourceId: string) {
+  return useQuery({
+    queryKey: ["indexer-status", resourceId],
+    queryFn: () =>
+      api.get<IndexerStatus>(
+        `/resources/${resourceId}/indexer/status`,
+      ),
+    enabled: !!resourceId,
+  });
+}
+
+export function useIndexerStats(resourceId: string) {
+  return useQuery({
+    queryKey: ["indexer-stats", resourceId],
+    queryFn: () =>
+      api.get<IndexerStats>(
+        `/resources/${resourceId}/indexer/stats`,
+      ),
+    enabled: !!resourceId,
+  });
+}
+
+export function useIndexerTaxonomy(resourceId: string) {
+  return useQuery({
+    queryKey: ["indexer-taxonomy", resourceId],
+    queryFn: () =>
+      api.get<IndexerTaxonomyNode>(
+        `/resources/${resourceId}/indexer/taxonomy`,
+      ),
+    enabled: !!resourceId,
+  });
+}
+
+export function useScrapeAndIndex(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: {
+      sources: IndexerSkillSource[];
+      force?: boolean;
+      autoClassify?: boolean;
+      detectRelationships?: boolean;
+      importAll?: boolean;
+    }) =>
+      api.post<ScrapeAndIndexResult>(
+        `/resources/${resourceId}/indexer/scrape-and-index`,
+        payload,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills-list", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["skill-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["indexer-stats", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["indexer-taxonomy", resourceId] });
+    },
+  });
+}
+
+export function useClassifySkills(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { skillId?: string; all?: boolean }) =>
+      api.post<{ indexed: number; skipped: number; failed: number; errors: string[] }>(
+        `/resources/${resourceId}/indexer/classify`,
+        payload,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills-list", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["indexer-stats", resourceId] });
+    },
+  });
+}
+
+export function useDetectRelationships(resourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { skillId?: string }) =>
+      api.post<{ detected: number; skipped: number; errors: string[] }>(
+        `/resources/${resourceId}/indexer/relationships`,
+        payload,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skill-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["indexer-stats", resourceId] });
+    },
   });
 }
 

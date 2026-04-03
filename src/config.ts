@@ -85,7 +85,7 @@ export const ConfigSchema = z.object({
 
   rateLimit: z.object({
     enabled: z.boolean().default(true),
-    max: z.number().default(100),
+    max: z.number().default(300),
     timeWindow: z.string().default('1 minute'),
   }).default({}),
 

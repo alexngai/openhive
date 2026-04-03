@@ -85,22 +85,22 @@ export function useOpenTasksAggregated() {
     queryFn: async () => {
       if (resourceIds.length === 0) return [];
 
-      const results = await Promise.allSettled(
-        resourceIds.map(async (id) => {
-          try {
-            const resp = await api.get<{ items: OpenTasksGraphNode[]; daemon_connected: boolean }>(
-              `/resources/${id}/content/opentasks/tasks?limit=200`,
-            );
-            return (resp.items || [])
-              .filter((n: OpenTasksGraphNode) => n.type === 'task')
-              .map((n: OpenTasksGraphNode) => mapToSCTask(n, id));
-          } catch {
-            return [];
-          }
-        }),
-      );
-
-      return results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+      // Fetch sequentially to avoid bursting the rate limiter
+      const allResults: SCTask[] = [];
+      for (const id of resourceIds) {
+        try {
+          const resp = await api.get<{ items: OpenTasksGraphNode[]; daemon_connected: boolean }>(
+            `/resources/${id}/content/opentasks/tasks?limit=200`,
+          );
+          const tasks = (resp.items || [])
+            .filter((n: OpenTasksGraphNode) => n.type === 'task')
+            .map((n: OpenTasksGraphNode) => mapToSCTask(n, id));
+          allResults.push(...tasks);
+        } catch {
+          // skip failed resources
+        }
+      }
+      return allResults;
     },
     enabled: resourceIds.length > 0,
     staleTime: 10_000,
