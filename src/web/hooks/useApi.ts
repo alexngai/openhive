@@ -371,6 +371,7 @@ export function useHostedSwarms(options?: { state?: string; mine?: boolean }) {
       );
     },
     select: (data) => data.data,
+    staleTime: 30_000,
   });
 }
 
@@ -459,6 +460,8 @@ export function useMapSwarms() {
     queryKey: ["map-swarms"],
     queryFn: () => api.get<{ data: MapSwarm[]; total: number }>("/map/swarms"),
     select: (data) => data.data,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 }
 
@@ -467,6 +470,7 @@ export function useMapSwarm(id: string) {
     queryKey: ["map-swarm", id],
     queryFn: () => api.get<MapSwarm>(`/map/swarms/${id}`),
     enabled: !!id,
+    staleTime: 30_000,
   });
 }
 
@@ -482,6 +486,7 @@ export function useMapNodes(options?: { swarm_id?: string }) {
         `/map/nodes${qs ? `?${qs}` : ""}`,
       ),
     select: (data) => data.data,
+    staleTime: 30_000,
   });
 }
 
@@ -945,6 +950,7 @@ export function useEventSubscriptions(opts?: {
       );
     },
     select: (data) => data.data,
+    staleTime: 30_000,
   });
 }
 
@@ -1023,6 +1029,7 @@ export function useDeliveryLog(opts?: {
         `/events/delivery-log${qs ? `?${qs}` : ""}`,
       );
     },
+    staleTime: 15_000,
   });
 }
 
@@ -1041,6 +1048,7 @@ export function useSwarmMessages(
         `/coordination/messages?swarm_id=${swarmId}&limit=${limit}`,
       ),
     enabled: !!swarmId,
+    staleTime: 15_000,
   });
 }
 
@@ -1071,6 +1079,7 @@ export function useSwarmPeers(swarmId: string) {
     queryFn: () => api.get<SwarmPeer[]>(`/map/peers/${swarmId}`),
     enabled: !!swarmId,
     retry: false,
+    staleTime: 30_000,
   });
 }
 
@@ -1092,6 +1101,7 @@ export function useSessionsList(options?: {
       api.get<{ data: SessionListItem[]; total: number }>(
         `/sessions/overview?${params.toString()}`,
       ),
+    staleTime: 30_000,
   });
 }
 

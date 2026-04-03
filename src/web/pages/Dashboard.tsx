@@ -117,7 +117,7 @@ function BridgeStatusBar() {
 
 function StatsOverlay({ onClose }: { onClose: () => void }) {
   return (
-    <div className="absolute inset-0 z-30 flex items-start justify-center pt-4 px-4">
+    <div className="absolute inset-0 z-50 flex items-center justify-center px-4">
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/40 backdrop-blur-sm"
@@ -173,7 +173,6 @@ function SwarmCraftView() {
         style={{ color: 'var(--color-text-secondary)' }}
       >
         <BarChart3 className="w-3.5 h-3.5" />
-        Stats
       </button>
       <Link to="/swarms?action=spawn" className="btn btn-primary flex items-center gap-1 text-xs py-1.5 px-2.5">
         <Zap className="w-3 h-3" />
@@ -219,9 +218,23 @@ function StatsDashboard() {
 }
 
 export function Dashboard() {
-  const features = useInstanceFeatures();
+  const { features, isLoading, isError } = useInstanceFeatures();
 
-  if (features?.swarmcraft) {
+  // Still loading or server not ready — show a loading indicator instead of a blank screen
+  if (!features) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center gap-3 text-zinc-400">
+        <Activity className="w-6 h-6 animate-pulse" />
+        {isError ? (
+          <p className="text-sm">Waiting for server&hellip;</p>
+        ) : (
+          <p className="text-sm">Loading dashboard&hellip;</p>
+        )}
+      </div>
+    );
+  }
+
+  if (features.swarmcraft) {
     return (
       <div className="flex flex-col h-full">
         <SwarmCraftView />

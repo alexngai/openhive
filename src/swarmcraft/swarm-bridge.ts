@@ -9,7 +9,6 @@
 import { mapHubEvents } from '../map/service.js';
 import { listSwarms, discoverNodes } from '../db/dal/map.js';
 import {
-  OPENHIVE_MAP_SERVER_ID,
   agentIdFromSwarm,
   agentIdFromNode,
   mapSwarmStatusToState,
@@ -55,11 +54,14 @@ export async function setupSwarmBridge(
     const ev = e as { swarm_id: string; name: string; map_endpoint: string; auth_method?: string };
     try {
       const agentId = agentIdFromSwarm(ev.swarm_id);
+      // Use the swarm's own ID as mapServerId so SwarmCraft's ACP manager
+      // can find the correct MAP ClientConnection via getClient(serverId)
+      const serverId = ev.swarm_id;
       await ctx.db.agents.create({
         id: agentId,
         name: ev.name,
         type: 'swarm',
-        mapServerId: OPENHIVE_MAP_SERVER_ID,
+        mapServerId: serverId,
         state: 'active',
         capabilities: ['observation', 'messaging', 'lifecycle'],
         stateMetadata: {
@@ -70,7 +72,7 @@ export async function setupSwarmBridge(
       });
       ctx.wsHub.broadcastAgentRegistered({ id: agentId, name: ev.name, type: 'swarm' });
 
-      // Auto-connect MAP client
+      // Auto-connect MAP client to the swarm's MAP endpoint
       if (mapClientManager) {
         await connectMapClient(mapClientManager, {
           id: ev.swarm_id,
@@ -90,12 +92,15 @@ export async function setupSwarmBridge(
       const agentId = agentIdFromNode(ev.swarm_id, ev.map_agent_id);
       const parentAgentId = agentIdFromSwarm(ev.swarm_id);
       const name = ev.name || ev.map_agent_id;
+      // Use the swarm's ID as mapServerId so ACP streams route through
+      // the correct MAP ClientConnection for this swarm
+      const serverId = ev.swarm_id;
       await ctx.db.agents.create({
         id: agentId,
         name,
         type: ev.role || 'agent',
         capabilities: [],
-        mapServerId: OPENHIVE_MAP_SERVER_ID,
+        mapServerId: serverId,
         parentAgentId,
         state: mapNodeStateToState(ev.state),
         stateMetadata: {
@@ -150,11 +155,16 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
       ? Object.keys(swarm.capabilities).filter(k => (swarm.capabilities as Record<string, unknown>)[k])
       : [];
 
+    // Use the swarm's own ID as mapServerId so SwarmCraft's ACP manager
+    // can find the correct MAP ClientConnection via getClient(serverId)
+    const serverId = swarm.id;
+
     const existing = await ctx.db.agents.get(agentId);
     if (existing) {
       await ctx.db.agents.update(agentId, {
         name: swarm.name,
         state: mapSwarmStatusToState(swarm.status),
+        mapServerId: serverId,
         stateMetadata: swarmMeta,
       });
     } else {
@@ -162,7 +172,7 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
         id: agentId,
         name: swarm.name,
         type: 'swarm',
-        mapServerId: OPENHIVE_MAP_SERVER_ID,
+        mapServerId: serverId,
         state: mapSwarmStatusToState(swarm.status),
         capabilities: caps,
         stateMetadata: swarmMeta,
@@ -183,6 +193,7 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
         await ctx.db.agents.update(nodeAgentId, {
           name: node.name || node.map_agent_id,
           state: mapNodeStateToState(node.state),
+          mapServerId: serverId,
           stateMetadata: nodeMeta,
         });
       } else {
@@ -191,7 +202,7 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
           name: node.name || node.map_agent_id,
           type: node.role || 'agent',
           capabilities: [],
-          mapServerId: OPENHIVE_MAP_SERVER_ID,
+          mapServerId: serverId,
           parentAgentId: agentId,
           state: mapNodeStateToState(node.state),
           stateMetadata: nodeMeta,
@@ -203,20 +214,55 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
   }
 }
 
+/**
+ * Derive the MAP server URL from a swarm's base endpoint.
+ *
+ * Hosted swarms (OpenSwarm + macro-agent) expose:
+ *   - ACP WebSocket on the base port ({endpoint}/acp)
+ *   - MAP server on base port + 2 ({endpoint_port+2}/map)
+ *
+ * The map_endpoint stored in the hub is the base port URL. We derive
+ * the MAP server URL by bumping the port by 2 and appending /map.
+ */
+function deriveMapServerUrl(baseEndpoint: string): string {
+  try {
+    const url = new URL(baseEndpoint);
+    const basePort = parseInt(url.port, 10);
+    if (Number.isFinite(basePort)) {
+      url.port = String(basePort + 2);
+    }
+    // Ensure /map path
+    url.pathname = url.pathname.replace(/\/?$/, '/map');
+    return url.toString();
+  } catch {
+    // If URL parsing fails, return as-is
+    return baseEndpoint;
+  }
+}
+
 async function connectMapClient(
   mcm: { connect(opts: Record<string, unknown>): Promise<void> },
   swarm: Pick<MapSwarm, 'id' | 'name' | 'map_endpoint' | 'auth_method'>,
 ): Promise<void> {
+  // Only connect to swarms with real WebSocket endpoints.
+  // Swarms that connected inbound to the hub get map_endpoint='hub-inbound'
+  // which is a marker, not a connectable URL.
+  if (!swarm.map_endpoint || (!swarm.map_endpoint.startsWith('ws://') && !swarm.map_endpoint.startsWith('wss://'))) {
+    return;
+  }
+
+  const mapUrl = deriveMapServerUrl(swarm.map_endpoint);
+
   try {
     await mcm.connect({
       id: swarm.id,
       name: swarm.name,
-      url: swarm.map_endpoint,
+      url: mapUrl,
       auth: !swarm.auth_method || swarm.auth_method === 'none'
         ? { method: 'none' }
         : { method: swarm.auth_method, token: undefined },
     });
-    console.log(`[swarmcraft-bridge] MAP client connected to ${swarm.name}`);
+    console.log(`[swarmcraft-bridge] MAP client connected to ${swarm.name} at ${mapUrl}`);
   } catch (err) {
     console.warn(`[swarmcraft-bridge] MAP client connect to ${swarm.name} failed: ${(err as Error).message}`);
   }
