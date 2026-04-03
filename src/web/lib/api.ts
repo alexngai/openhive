@@ -542,6 +542,7 @@ export interface IndexerStatus {
   degraded: boolean;
   hasGithubToken: boolean;
   hasAnthropicKey: boolean;
+  hasSwarmAvailable: boolean;
 }
 
 // OpenTasks content types

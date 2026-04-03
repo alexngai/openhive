@@ -72,6 +72,7 @@
     "@tanstack/react-query": "^5.90.20",
     "agent-iam": "^0.0.2",
     "agent-inbox": "^0.1.9",
+    "agent-workspace": "^0.1.3",
     "bcrypt": "^5.1.1",
     "better-sqlite3": "^12.6.2",
     "clsx": "^2.1.1",

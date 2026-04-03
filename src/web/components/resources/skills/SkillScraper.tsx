@@ -63,6 +63,7 @@ export function SkillScraper({ resourceId }: { resourceId: string }) {
   const [autoClassify, setAutoClassify] = useState(true);
   const [autoRelationships, setAutoRelationships] = useState(true);
   const [importAll, setImportAll] = useState(true);
+  const [useSwarm, setUseSwarm] = useState(!status?.hasAnthropicKey && !!status?.hasSwarmAvailable);
 
   // Use mutation's built-in data/error — survives re-renders better than local state
   const result: ScrapeAndIndexResult | null = scrapeAndIndex.data ?? null;
@@ -173,6 +174,12 @@ export function SkillScraper({ resourceId }: { resourceId: string }) {
           <input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} className="rounded" />
           Force rescrape
         </label>
+        {status?.hasSwarmAvailable && (
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" checked={useSwarm} onChange={e => setUseSwarm(e.target.checked)} className="rounded" />
+            Use swarm agent
+          </label>
+        )}
       </div>
 
       {/* Scrape button */}
@@ -189,7 +196,7 @@ export function SkillScraper({ resourceId }: { resourceId: string }) {
 
         <button
           type="button"
-          onClick={() => classify.mutate({})}
+          onClick={() => classify.mutate({ useSwarm })}
           disabled={isRunning}
           className="btn text-xs px-3 py-1.5 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
           style={{ color: 'var(--color-text-muted)' }}
@@ -200,7 +207,7 @@ export function SkillScraper({ resourceId }: { resourceId: string }) {
 
         <button
           type="button"
-          onClick={() => detectRels.mutate({})}
+          onClick={() => detectRels.mutate({ useSwarm })}
           disabled={isRunning}
           className="btn text-xs px-3 py-1.5 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
           style={{ color: 'var(--color-text-muted)' }}

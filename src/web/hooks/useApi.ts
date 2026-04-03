@@ -1014,7 +1014,7 @@ export function useScrapeAndIndex(resourceId: string) {
 export function useClassifySkills(resourceId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { skillId?: string; all?: boolean }) =>
+    mutationFn: (payload: { skillId?: string; all?: boolean; useSwarm?: boolean }) =>
       api.post<{ indexed: number; skipped: number; failed: number; errors: string[] }>(
         `/resources/${resourceId}/indexer/classify`,
         payload,
@@ -1029,7 +1029,7 @@ export function useClassifySkills(resourceId: string) {
 export function useDetectRelationships(resourceId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { skillId?: string }) =>
+    mutationFn: (payload: { skillId?: string; useSwarm?: boolean }) =>
       api.post<{ detected: number; skipped: number; errors: string[] }>(
         `/resources/${resourceId}/indexer/relationships`,
         payload,

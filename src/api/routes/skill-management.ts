@@ -22,6 +22,8 @@ import {
 import { authMiddleware } from '../middleware/auth.js';
 import { resolveResourceAndPath } from './_resource-helpers.js';
 import { broadcastToChannel } from '../../realtime/index.js';
+import { classifyViaSwarm, detectRelationshipsViaSwarm } from '../services/swarm-classifier.js';
+import type { SwarmAgentDelegate } from '../../learning/swarm-agent-backend.js';
 import type { Config } from '../../config.js';
 
 // ============================================================================
@@ -796,11 +798,17 @@ export async function skillManagementRoutes(
   const ClassifySchema = z.object({
     skillId: z.string().optional(),
     all: z.boolean().optional(),
+    useSwarm: z.boolean().optional(),
   });
 
   const RelationshipsSchema = z.object({
     skillId: z.string().optional(),
+    useSwarm: z.boolean().optional(),
   });
+
+  function getSwarmDelegate(): SwarmAgentDelegate | null {
+    return (fastify as unknown as { swarmDelegate?: SwarmAgentDelegate }).swarmDelegate || null;
+  }
 
   // Check indexer availability
   fastify.get<{
@@ -820,6 +828,7 @@ export async function skillManagementRoutes(
       degraded: indexer.isDegradedMode(),
       hasGithubToken: !!process.env.GITHUB_TOKEN,
       hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
+      hasSwarmAvailable: !!getSwarmDelegate(),
     });
   });
 
@@ -889,8 +898,27 @@ export async function skillManagementRoutes(
     }
 
     const body = ClassifySchema.parse(request.body);
-    const { indexer } = await getIndexer(resource.id, localPath);
+    const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
+    const delegate = getSwarmDelegate();
+    const useSwarm = body.useSwarm === true || (!hasApiKey && !!delegate);
 
+    if (useSwarm) {
+      if (!delegate) {
+        return reply.status(503).send({ error: 'Service Unavailable', message: 'No swarm agent available for classification. Connect a swarm or set ANTHROPIC_API_KEY.' });
+      }
+
+      const { bank, indexer } = await getIndexer(resource.id, localPath);
+      const taxonomy = await indexer.getTaxonomyTree().catch(() => null);
+      const result = await classifyViaSwarm(delegate, bank, taxonomy, { skillId: body.skillId, all: body.all });
+      notifySkillChange(resource.id);
+      return reply.send(result);
+    }
+
+    if (!hasApiKey) {
+      return reply.status(503).send({ error: 'Service Unavailable', message: 'No classification backend available. Set ANTHROPIC_API_KEY or connect a swarm.' });
+    }
+
+    const { indexer } = await getIndexer(resource.id, localPath);
     const result = await indexer.classify(body);
     notifySkillChange(resource.id);
     return reply.send(result);
@@ -909,8 +937,26 @@ export async function skillManagementRoutes(
     }
 
     const body = RelationshipsSchema.parse(request.body);
-    const { indexer } = await getIndexer(resource.id, localPath);
+    const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
+    const delegate = getSwarmDelegate();
+    const useSwarm = body.useSwarm === true || (!hasApiKey && !!delegate);
 
+    if (useSwarm) {
+      if (!delegate) {
+        return reply.status(503).send({ error: 'Service Unavailable', message: 'No swarm agent available for relationship detection. Connect a swarm or set ANTHROPIC_API_KEY.' });
+      }
+
+      const { bank } = await getIndexer(resource.id, localPath);
+      const result = await detectRelationshipsViaSwarm(delegate, bank, { skillId: body.skillId });
+      notifySkillChange(resource.id);
+      return reply.send(result);
+    }
+
+    if (!hasApiKey) {
+      return reply.status(503).send({ error: 'Service Unavailable', message: 'No classification backend available. Set ANTHROPIC_API_KEY or connect a swarm.' });
+    }
+
+    const { indexer } = await getIndexer(resource.id, localPath);
     const result = await indexer.detectRelationships(body);
     notifySkillChange(resource.id);
     return reply.send(result);
