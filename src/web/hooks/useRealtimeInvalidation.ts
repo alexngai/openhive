@@ -31,7 +31,9 @@ export function useSwarmRealtime() {
   useWSEvent('swarm_offline', invalidate);
   useWSEvent('swarm_spawned', invalidate);
   useWSEvent('swarm_stopped', invalidate);
-  useWSEvent('swarm_heartbeat', invalidate);
+  // Note: swarm_heartbeat intentionally omitted — it fires every ~30s per swarm
+  // and causes excessive refetch storms. Swarm status updates from heartbeats
+  // are cosmetic; lifecycle events above cover meaningful state changes.
 }
 
 // ── Resources & Sync ──
