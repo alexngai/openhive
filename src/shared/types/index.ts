@@ -32,14 +32,5 @@ export {
   CONTENT_REQUEST_TIMEOUT_MS,
 } from './map-session-sync.js';
 
-// MAP coordination wire format (JSON-RPC 2.0 notifications)
-export type {
-  MapCoordinationMethod,
-  MapCoordinationParams,
-  MapCoordinationMessage,
-  TaskAssignParams,
-  TaskStatusParams,
-  ContextShareParams,
-  MessageSendParams,
-} from './map-coordination.js';
-export { COORDINATION_METHODS, createCoordinationNotification } from './map-coordination.js';
+// MAP coordination types removed — task events now use MAP scope messages,
+// context/messaging uses agent-inbox. See coordination/listener.ts.

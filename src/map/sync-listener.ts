@@ -25,7 +25,7 @@ import { getSyncOrchestrator } from '../sync/sync-orchestrator.js';
 import { evictMinimem } from '../api/routes/resource-content.js';
 import type { MapSyncMessage, MapTransport } from './types.js';
 import { SYNC_METHODS, SYNC_MESSAGE_RESOURCE_TYPE } from './types.js';
-import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
+import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
 import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
 import { getInbound } from './connection-registry.js';
 
@@ -270,8 +270,8 @@ function connectToSwarm(swarmId: string, name: string, endpoint: string, transpo
         const parsed = JSON.parse(data.toString());
         if (isMapSyncMessage(parsed)) {
           handleSyncMessage(parsed, swarmId);
-        } else if (isCoordinationMessage(parsed)) {
-          handleCoordinationMessage(parsed, swarmId);
+        } else if (isMapTaskEvent(parsed)) {
+          handleMapTaskEvent(parsed.payload as Record<string, unknown>, swarmId);
         }
       } catch {
         // Ignore non-JSON or unrecognized messages

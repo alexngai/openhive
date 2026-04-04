@@ -13,7 +13,7 @@
  *
  * Two dispatch protocols supported:
  *   - _macro/cognitive/command: For Atlas-level operations (batch, query, prune)
- *   - x-openhive/learning.workspace.execute: For workspace template execution
+ *   - x-workspace/task.execute (WORKSPACE_METHODS.EXECUTE): For workspace template execution
  *     (the swarm agent reads prompt and writes to cwd)
  */
 
