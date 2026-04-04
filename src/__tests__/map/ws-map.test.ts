@@ -1,7 +1,7 @@
 /**
  * Tests for MAP inbound WebSocket (/ws/map):
  * - Connection registry (register, unregister, replace)
- * - isMapSyncMessage / isCoordinationMessage type guards
+ * - isMapSyncMessage / isMapTaskEvent type guards
  * - Dual-transport sendToSwarm (inbound preferred over outbound)
  * - Auto-registration of hub-inbound swarms
  * - connectToSwarm skips hub-inbound endpoints
@@ -26,7 +26,7 @@ import {
   handleSyncMessage,
   sendToSwarm,
 } from '../../map/sync-listener.js';
-import { isCoordinationMessage } from '../../coordination/listener.js';
+import { isMapTaskEvent } from '../../coordination/listener.js';
 import { createSyncNotification } from '../../map/types.js';
 import type { MapSyncMessage } from '../../map/types.js';
 import { createHive } from '../../db/dal/hives.js';
@@ -223,7 +223,7 @@ describe('MAP Inbound WebSocket', () => {
     it('isMapSyncMessage should reject non-sync methods', () => {
       expect(isMapSyncMessage({
         jsonrpc: '2.0',
-        method: 'x-openhive/task.assign',
+        method: 'ping',
         params: { resource_id: 'r', agent_id: 'a', commit_hash: 'c', timestamp: 't' },
       })).toBe(false);
     });
@@ -234,20 +234,58 @@ describe('MAP Inbound WebSocket', () => {
       expect(isMapSyncMessage({ jsonrpc: '2.0', method: 'x-openhive/memory.sync' })).toBe(false);
     });
 
-    it('isCoordinationMessage should accept valid task.assign', () => {
-      expect(isCoordinationMessage({
-        jsonrpc: '2.0',
-        method: 'x-openhive/task.assign',
-        params: { task_id: 't1', title: 'Test' },
+    it('isMapTaskEvent should accept task.created MAP scope message', () => {
+      expect(isMapTaskEvent({
+        id: 'msg-1',
+        from: 'swarm-a',
+        to: { scope: 'swarm:test' },
+        timestamp: new Date().toISOString(),
+        payload: { type: 'task.created', task: { id: 't-1', title: 'Fix bug' } },
       })).toBe(true);
     });
 
-    it('isCoordinationMessage should reject sync methods', () => {
-      expect(isCoordinationMessage({
-        jsonrpc: '2.0',
-        method: 'x-openhive/memory.sync',
-        params: { resource_id: 'r' },
+    it('isMapTaskEvent should accept task.assigned MAP scope message', () => {
+      expect(isMapTaskEvent({
+        id: 'msg-2',
+        from: 'swarm-a',
+        to: { scope: 'swarm:test' },
+        timestamp: new Date().toISOString(),
+        payload: { type: 'task.assigned', taskId: 't-1', assignee: 'agent-1' },
+      })).toBe(true);
+    });
+
+    it('isMapTaskEvent should accept task.status MAP scope message', () => {
+      expect(isMapTaskEvent({
+        id: 'msg-3',
+        from: 'swarm-a',
+        to: { scope: 'swarm:test' },
+        timestamp: new Date().toISOString(),
+        payload: { type: 'task.status', taskId: 't-1', previous: 'open', current: 'in_progress' },
+      })).toBe(true);
+    });
+
+    it('isMapTaskEvent should reject non-task MAP messages', () => {
+      expect(isMapTaskEvent({
+        id: 'msg-4',
+        from: 'swarm-a',
+        to: { scope: 'swarm:test' },
+        timestamp: new Date().toISOString(),
+        payload: { type: 'agent.registered', agentId: 'a-1' },
       })).toBe(false);
+    });
+
+    it('isMapTaskEvent should reject legacy JSON-RPC notifications', () => {
+      expect(isMapTaskEvent({
+        jsonrpc: '2.0',
+        method: 'x-openhive/task.assign',
+        params: { task_id: 't1', title: 'Test' },
+      })).toBe(false);
+    });
+
+    it('isMapTaskEvent should reject messages without payload', () => {
+      expect(isMapTaskEvent({ id: 'msg-5', from: 'a', to: 'b', timestamp: '' })).toBe(false);
+      expect(isMapTaskEvent(null)).toBe(false);
+      expect(isMapTaskEvent({})).toBe(false);
     });
   });
 

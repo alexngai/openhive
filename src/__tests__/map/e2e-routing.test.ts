@@ -197,37 +197,21 @@ describe('E2E Routing: Open Mode — notification and request routing', () => {
     ws.close();
   });
 
-  // ── Coordination notification routing ────────────────────────────
+  // ── MAP scope task message routing ────────────────────────────
 
-  it('routes coordination notifications without crashing the connection', async () => {
-    const ws = await openModeConnect(`coord-open-${Date.now()}`);
+  it('routes MAP scope task messages without crashing the connection', async () => {
+    const ws = await openModeConnect(`task-open-${Date.now()}`);
 
-    // Send a coordination notification (matches isCoordinationMessage format)
-    sendNotification(ws, 'x-openhive/task.assign', {
-      title: 'Test task',
-      assigned_by: 'agent_coord_001',
-      hive_id: 'hive_test',
-    });
+    // Send a MAP scope task message (isMapTaskEvent format)
+    ws.send(JSON.stringify({
+      id: `msg-${Date.now()}`,
+      from: 'swarm-test',
+      to: { scope: 'swarm:test' },
+      timestamp: new Date().toISOString(),
+      payload: { type: 'task.created', task: { id: 't-1', title: 'Test task', status: 'open' } },
+    }));
 
     // Verify the connection is still alive
-    const pongPromise = waitNotification(ws);
-    sendNotification(ws, 'ping', {});
-    const pong = await pongPromise;
-    expect(pong.method).toBe('pong');
-
-    ws.close();
-  });
-
-  it('routes context.share coordination notifications without crashing', async () => {
-    const ws = await openModeConnect(`coord-ctx-open-${Date.now()}`);
-
-    sendNotification(ws, 'x-openhive/context.share', {
-      hive_id: 'hive_test',
-      source_swarm_id: 'swarm_src',
-      context_type: 'test_context',
-      data: { key: 'value' },
-    });
-
     const pongPromise = waitNotification(ws);
     sendNotification(ws, 'ping', {});
     const pong = await pongPromise;
@@ -380,32 +364,16 @@ describe('E2E Routing: Verified Mode — notification and request routing', () =
     ws.close();
   });
 
-  it('routes coordination notifications after auth+register without crashing', async () => {
+  it('routes MAP scope task messages after auth+register without crashing', async () => {
     const ws = await verifiedConnectAndRegister();
 
-    sendNotification(ws, 'x-openhive/task.status', {
-      task_id: 'task_verified_001',
-      status: 'completed',
-    });
-
-    const pongPromise = waitNotification(ws);
-    sendNotification(ws, 'ping', {});
-    const pong = await pongPromise;
-    expect(pong.method).toBe('pong');
-
-    ws.close();
-  });
-
-  it('routes message.send coordination notifications without crashing', async () => {
-    const ws = await verifiedConnectAndRegister();
-
-    sendNotification(ws, 'x-openhive/message.send', {
-      hive_id: 'hive_test',
-      from_swarm_id: 'swarm_a',
-      to_swarm_id: 'swarm_b',
-      content_type: 'text',
-      content: 'Hello from e2e test',
-    });
+    ws.send(JSON.stringify({
+      id: `msg-${Date.now()}`,
+      from: 'swarm-verified',
+      to: { scope: 'swarm:test' },
+      timestamp: new Date().toISOString(),
+      payload: { type: 'task.status', taskId: 't-1', previous: 'open', current: 'in_progress' },
+    }));
 
     const pongPromise = waitNotification(ws);
     sendNotification(ws, 'ping', {});
