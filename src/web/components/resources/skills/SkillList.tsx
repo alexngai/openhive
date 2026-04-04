@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react';
-import { Wrench, ChevronRight, Tag, ArrowLeft, AlertTriangle, CheckCircle, Clock, Zap, FlaskConical, Archive, GitBranch, Network } from 'lucide-react';
+import { Wrench, ChevronRight, Tag, ArrowLeft, AlertTriangle, CheckCircle, Clock, Zap, FlaskConical, Archive, GitBranch, Network, Plus } from 'lucide-react';
 import { useSkillsList, useSkillDetail, useSkillSearch } from '../../../hooks/useApi';
 import { Markdown } from '../../common/Markdown';
+import { SkillEditor } from './SkillEditor';
 import clsx from 'clsx';
 import type { SkillSummary } from '../../../lib/api';
 
@@ -192,6 +193,7 @@ function SearchResults({ resourceId, query }: { resourceId: string; query: strin
 export function SkillList({ resourceId, searchQuery }: { resourceId: string; searchQuery: string }) {
   const { data: skills, isLoading } = useSkillsList(resourceId);
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
+  const [showEditor, setShowEditor] = useState(false);
 
   const filteredSkills = useMemo(() => {
     if (!skills) return [];
@@ -216,6 +218,10 @@ export function SkillList({ resourceId, searchQuery }: { resourceId: string; sea
 
   const statusOrder = ['active', 'experimental', 'draft', 'deprecated', 'unknown'];
 
+  if (showEditor) {
+    return <SkillEditor resourceId={resourceId} onClose={() => setShowEditor(false)} />;
+  }
+
   if (searchQuery.length >= 2) {
     return <SearchResults resourceId={resourceId} query={searchQuery} />;
   }
@@ -237,7 +243,17 @@ export function SkillList({ resourceId, searchQuery }: { resourceId: string; sea
 
   return (
     <div className="space-y-3">
-      <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>{skills?.length || 0} skills</div>
+      <div className="flex items-center justify-between">
+        <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>{skills?.length || 0} skills</div>
+        <button
+          onClick={() => setShowEditor(true)}
+          className="text-2xs flex items-center gap-1 px-2 py-1 rounded hover:bg-workspace-hover transition-colors cursor-pointer"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          <Plus className="w-3 h-3" />
+          New Skill
+        </button>
+      </div>
       {statusOrder.map((status) => {
         const group = grouped[status];
         if (!group?.length) return null;

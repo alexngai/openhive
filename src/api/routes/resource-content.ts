@@ -8,6 +8,11 @@ import { createSkillBank, discoverSkills } from 'skill-tree';
 import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { getSyncOrchestrator } from '../../sync/sync-orchestrator.js';
+import {
+  resolveResourceAndPath as resolveResourceAndPathShared,
+  resolveLocalPath,
+  isPathWithin,
+} from './_resource-helpers.js';
 import type { SyncableResource } from '../../types.js';
 import type { Config } from '../../config.js';
 
@@ -72,33 +77,8 @@ export function evictMinimem(memoryDir: string): void {
 }
 
 // ============================================================================
-// Path Helpers
+// Path Helpers (delegates to shared module)
 // ============================================================================
-
-const REMOTE_URL_PREFIXES = ['http', 'git://', 'ssh://'];
-
-function resolveLocalPath(resource: SyncableResource): string | null {
-  if (resource.local_path) {
-    return resolve(resource.local_path);
-  }
-
-  // ls-remote/mirror resources must go through ensureContent() to clone properly
-  if (resource.sync_strategy === 'ls-remote' || resource.sync_strategy === 'mirror') {
-    return null;
-  }
-
-  const url = resource.git_remote_url;
-  for (const prefix of REMOTE_URL_PREFIXES) {
-    if (url.startsWith(prefix)) return null;
-  }
-  return resolve(url);
-}
-
-function isPathWithin(filePath: string, baseDir: string): boolean {
-  const resolved = resolve(filePath);
-  const base = resolve(baseDir);
-  return resolved === base || resolved.startsWith(base + '/');
-}
 
 function validateRelativePath(pathParam: string, baseDir: string): string | null {
   if (!pathParam || pathParam.includes('..') || resolve(pathParam) === pathParam) return null;
@@ -118,41 +98,7 @@ export async function resourceContentRoutes(
 ): Promise<void> {
 
   // Shared preHandler: resolve resource → check access → resolve local path
-  async function resolveResourceAndPath(
-    request: { params: { id: string }; agent?: { id: string } },
-    reply: { status: (code: number) => { send: (body: unknown) => unknown } }
-  ): Promise<{ resource: SyncableResource; localPath: string; isCloned: boolean } | null> {
-    const resource = resourcesDAL.findResourceById(request.params.id);
-    if (!resource) {
-      reply.status(404).send({ error: 'Not Found', message: 'Resource not found' });
-      return null;
-    }
-    if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
-      reply.status(403).send({ error: 'Forbidden', message: 'You do not have access to this resource' });
-      return null;
-    }
-
-    let localPath = resolveLocalPath(resource);
-
-    // Trigger lazy clone (ls-remote) or verify eager clone (mirror)
-    if (!localPath && (resource.sync_strategy === 'ls-remote' || resource.sync_strategy === 'mirror')) {
-      try {
-        const contentPath = await getSyncOrchestrator().ensureContent(resource);
-        if (contentPath) localPath = contentPath;
-      } catch { /* clone failed */ }
-    }
-
-    if (!localPath) {
-      reply.status(400).send({ error: 'Bad Request', message: 'Resource does not point to a local filesystem path' });
-      return null;
-    }
-    if (!existsSync(localPath) || !statSync(localPath).isDirectory()) {
-      reply.status(404).send({ error: 'Not Found', message: 'Resource path does not exist on the filesystem' });
-      return null;
-    }
-
-    return { resource, localPath, isCloned: resource.sync_strategy === 'ls-remote' || resource.sync_strategy === 'mirror' };
-  }
+  const resolveResourceAndPath = resolveResourceAndPathShared;
 
   /**
    * Resolve resource with optional local path — for opentasks endpoints that

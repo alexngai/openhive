@@ -605,12 +605,17 @@ export async function createHive(
         console.log("[openhive] Swarm hosting health monitor started");
       }
 
-      // Enable agentic learning compute if configured and swarm infrastructure is available
-      if (atlasService?.isAvailable() && config.learning.compute.enabled) {
+      // Create swarm agent delegate for workspace dispatch (used by learning + skill classification)
+      if (swarmManager) {
         const { SwarmAgentBackend, SwarmAgentDelegate } = await import('./learning/swarm-agent-backend.js');
         const delegate = new SwarmAgentDelegate(config, swarmManager);
-        const backend = new SwarmAgentBackend(delegate);
-        atlasService.enableAgenticCompute(backend, delegate);
+        (fastify as unknown as { swarmDelegate: typeof delegate }).swarmDelegate = delegate;
+
+        // Enable agentic learning compute if configured and Atlas is available
+        if (atlasService?.isAvailable() && config.learning.compute.enabled) {
+          const backend = new SwarmAgentBackend(delegate);
+          atlasService.enableAgenticCompute(backend, delegate);
+        }
       }
 
       // Connect to SwarmHub

@@ -1,17 +1,23 @@
 import { useState } from 'react';
-import { List, Network, GitBranch, Search, Wrench } from 'lucide-react';
+import { List, Network, GitBranch, Search, Wrench, Upload, Zap, Globe } from 'lucide-react';
 import { useSkillRealtime } from '../../hooks/useRealtimeInvalidation';
 import { SkillList } from './skills/SkillList';
 import { SkillGraph } from './skills/SkillGraph';
 import { SkillVersions } from './skills/SkillVersions';
+import { SkillImport } from './skills/SkillImport';
+import { LoadoutPanel } from './skills/LoadoutPanel';
+import { SkillScraper } from './skills/SkillScraper';
 import clsx from 'clsx';
 
-type Tab = 'list' | 'graph' | 'versions';
+type Tab = 'list' | 'graph' | 'versions' | 'import' | 'loadout' | 'scraper';
 
 const TABS: { key: Tab; label: string; icon: React.ElementType }[] = [
   { key: 'list', label: 'Skills', icon: List },
   { key: 'graph', label: 'Graph', icon: Network },
   { key: 'versions', label: 'Versions', icon: GitBranch },
+  { key: 'import', label: 'Import', icon: Upload },
+  { key: 'loadout', label: 'Loadout', icon: Zap },
+  { key: 'scraper', label: 'Scraper', icon: Globe },
 ];
 
 export function SkillBrowser({ resourceId }: { resourceId: string }) {
@@ -69,6 +75,15 @@ export function SkillBrowser({ resourceId }: { resourceId: string }) {
       )}
       {activeTab === 'versions' && (
         <SkillVersions resourceId={resourceId} />
+      )}
+      {activeTab === 'import' && (
+        <SkillImport resourceId={resourceId} />
+      )}
+      {activeTab === 'loadout' && (
+        <LoadoutPanel resourceId={resourceId} />
+      )}
+      {activeTab === 'scraper' && (
+        <SkillScraper resourceId={resourceId} />
       )}
     </div>
   );

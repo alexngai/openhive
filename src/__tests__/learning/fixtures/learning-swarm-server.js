@@ -55,7 +55,7 @@ mapWss.on('connection', (ws) => {
             },
           },
         }));
-      } else if (msg.method === 'x-openhive/learning.workspace.execute') {
+      } else if (msg.method === 'x-workspace/task.execute' || msg.method === 'x-openhive/learning.workspace.execute') {
         // Handle workspace execution request
         handleWorkspaceExecute(ws, msg);
       } else if (msg.id !== undefined) {
@@ -117,7 +117,7 @@ function handleWorkspaceExecute(ws, msg) {
   // Send result back
   const response = {
     jsonrpc: '2.0',
-    method: 'x-openhive/learning.workspace.result',
+    method: 'x-workspace/task.result',
     params: {
       request_id: requestId,
       success: true,
@@ -215,7 +215,7 @@ function connectToHub(token) {
         process.stderr.write(`[learning-swarm] hubWs message: method=${msg.method}\n`);
         if (msg.method === 'hub/welcome') {
           process.stderr.write(`[learning-swarm] Hub welcome received\n`);
-        } else if (msg.method === 'x-openhive/learning.workspace.execute') {
+        } else if (msg.method === 'x-workspace/task.execute' || msg.method === 'x-openhive/learning.workspace.execute') {
           process.stderr.write(`[learning-swarm] Handling workspace.execute\n`);
           handleWorkspaceExecuteFromHub(msg);
         } else {
@@ -298,7 +298,7 @@ function handleWorkspaceExecuteFromHub(msg) {
 
   hubWs.send(JSON.stringify({
     jsonrpc: '2.0',
-    method: 'x-openhive/learning.workspace.result',
+    method: 'x-workspace/task.result',
     params: {
       request_id: requestId,
       success: true,

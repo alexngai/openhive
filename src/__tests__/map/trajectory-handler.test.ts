@@ -349,8 +349,8 @@ describe('Trajectory Handler', () => {
     });
   });
 
-  describe('cache invalidation', () => {
-    it('clears storage metadata on new checkpoint', () => {
+  describe('proactive caching', () => {
+    it('preserves existing cache when swarm is unreachable on new checkpoint', () => {
       // Create session with cached storage
       const r1 = handleTrajectoryRequest(
         'trajectory/checkpoint',
@@ -367,7 +367,8 @@ describe('Trajectory Handler', () => {
       const before = resourcesDAL.findResourceById(r1.resource_id);
       expect((before!.metadata as any)?.storage?.backend).toBe('local');
 
-      // New checkpoint should invalidate
+      // New checkpoint fires proactive cache, but swarm is not connected
+      // (no real WS connection in unit test) so cache should be preserved
       handleTrajectoryRequest(
         'trajectory/checkpoint',
         { checkpoint: { id: 'cache-002', agent: 'sidecar' } },
@@ -375,7 +376,8 @@ describe('Trajectory Handler', () => {
       );
 
       const after = resourcesDAL.findResourceById(r1.resource_id);
-      expect((after!.metadata as any)?.storage).toBeUndefined();
+      // Existing cache is preserved — stale cache is better than no cache
+      expect((after!.metadata as any)?.storage?.backend).toBe('local');
     });
   });
 

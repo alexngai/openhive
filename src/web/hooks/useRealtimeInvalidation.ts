@@ -93,6 +93,9 @@ export function useSkillRealtime(resourceId: string) {
   const invalidate = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['skills-list', resourceId] });
     queryClient.invalidateQueries({ queryKey: ['skill-detail', resourceId] });
+    queryClient.invalidateQueries({ queryKey: ['skill-graph', resourceId] });
+    queryClient.invalidateQueries({ queryKey: ['loadout-state', resourceId] });
+    queryClient.invalidateQueries({ queryKey: ['loadout-render', resourceId] });
   }, [queryClient, resourceId]);
 
   useWSEvent('skill:sync', invalidate);

@@ -294,4 +294,53 @@ describe('Tier 3: configurable sessionlog lookup', () => {
     });
     expect(res.statusCode).toBe(503);
   });
+
+  it('resolves sessionlog from resource projectPath metadata', async () => {
+    const sessionId = 'projectpath-session-202';
+
+    // Simulate an agent running in a different project directory.
+    // The checkpoint includes projectPath pointing to that directory.
+    const projectDir = path.join(TEST_ROOT, 'fake-project');
+    const projectSessionlogDir = path.join(projectDir, '.git', 'sessionlog-sessions');
+    const transcriptDir = path.join(TEST_ROOT, 'transcripts-projectpath');
+    const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+
+    fs.mkdirSync(projectSessionlogDir, { recursive: true });
+    fs.mkdirSync(transcriptDir, { recursive: true });
+
+    // Write sessionlog state + transcript in the project's .git/ directory
+    fs.writeFileSync(transcriptPath, mockTranscript);
+    fs.writeFileSync(
+      path.join(projectSessionlogDir, `${sessionId}.json`),
+      JSON.stringify({ sessionID: sessionId, phase: 'active', transcriptPath }),
+    );
+
+    // Create checkpoint with projectPath in metadata
+    const r = handleTrajectoryRequest(
+      'trajectory/checkpoint',
+      {
+        checkpoint: {
+          id: `${sessionId}-step1`,
+          agent: 'test-agent',
+          metadata: { project: 'fake-project', projectPath: projectDir },
+        },
+      },
+      { swarmId: 'swarm-projectpath', agentId },
+    );
+
+    try {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/sessions/${r.resource_id}/events?limit=10`,
+      });
+      expect(res.statusCode).toBe(200);
+
+      const body = JSON.parse(res.body);
+      expect(body.events.length).toBeGreaterThan(0);
+      expect(body.events.map((e: any) => e.type)).toContain('user_message');
+    } finally {
+      try { fs.unlinkSync(path.join(projectSessionlogDir, `${sessionId}.json`)); } catch {}
+      try { fs.unlinkSync(transcriptPath); } catch {}
+    }
+  });
 });

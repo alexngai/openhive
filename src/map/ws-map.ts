@@ -155,8 +155,8 @@ function createNotificationInterceptor(
       } else if (msg.method === 'trajectory/content.response') {
         // Content response from swarm — resolve pending content request
         handleContentResponse(msg.params as Record<string, unknown>);
-      } else if (msg.method === 'x-openhive/learning.workspace.result') {
-        // Workspace execution result from swarm — resolve pending learning task
+      } else if (msg.method === 'x-workspace/task.result' || msg.method === 'x-openhive/learning.workspace.result') {
+        // Workspace execution result from swarm — resolve pending task
         handleWorkspaceResult(msg.params as Record<string, unknown>);
       } else if (typeof msg.method === 'string' && msg.method.startsWith('opentasks/') && msg.method.endsWith('.response')) {
         // OpenTasks response from swarm — resolve pending remote query
