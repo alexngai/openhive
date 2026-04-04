@@ -74,7 +74,7 @@
     "agent-inbox": "^0.1.9",
     "agent-workspace": "^0.1.5",
     "bcrypt": "^5.1.1",
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^12.8.0",
     "boring-avatars": "^2.0.4",
     "clsx": "^2.1.1",
     "cognitive-core": "^0.2.3",

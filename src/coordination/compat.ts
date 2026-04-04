@@ -1,10 +1,9 @@
 /**
  * Coordination Compatibility Shim
  *
- * Translates legacy x-openhive/task.assign and x-openhive/task.status
- * wire messages into OpenTasks graph mutations. This allows existing swarms
- * to continue using the old coordination protocol while the task system
- * is migrated to OpenTasks.
+ * Translates MAP task events (task.created, task.status) into OpenTasks
+ * graph mutations. When swarms report task activity via MAP scope messages,
+ * this shim writes the data into the swarm's OpenTasks graph.jsonl file.
  *
  * The shim writes directly to the swarm's OpenTasks graph.jsonl file,
  * mirroring the behavior of map/opentasks/create-task and

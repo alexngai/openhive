@@ -67,8 +67,8 @@ vi.mock('../../db/dal/map.js', () => ({
 }));
 
 vi.mock('../../coordination/listener.js', () => ({
-  isCoordinationMessage: vi.fn(() => false),
-  handleCoordinationMessage: vi.fn(),
+  isMapTaskEvent: vi.fn(() => false),
+  handleMapTaskEvent: vi.fn(),
 }));
 
 import { handleSyncMessage } from '../../map/sync-listener.js';

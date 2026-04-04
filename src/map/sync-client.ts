@@ -26,17 +26,11 @@ import WebSocket from 'ws';
 import type { MapSyncMessage, MapSyncMethod } from './types.js';
 import { SYNC_METHODS, createSyncNotification } from './types.js';
 import type {
-  MapCoordinationMessage,
-  TaskStatusParams,
-  ContextShareParams,
-  MessageSendParams,
   SessionSyncParams,
   SessionContentRequest,
   SessionContentChunkParams,
 } from '../shared/types/index.js';
 import {
-  COORDINATION_METHODS,
-  createCoordinationNotification,
   createSessionSyncNotification,
   SESSION_CONTENT_METHOD,
   SESSION_CONTENT_CHUNK_METHOD,
@@ -95,7 +89,6 @@ export interface MapSyncClientConfig {
 }
 
 export type SyncMessageHandler = (msg: MapSyncMessage, resource: SyncResource) => void;
-export type CoordinationMessageHandler = (msg: MapCoordinationMessage) => void;
 
 /** Callback that provides checkpoint content for serving content requests from the hub. */
 export type SessionContentProvider = (checkpointId: string) => Promise<{
@@ -118,10 +111,6 @@ export class MapSyncClient {
   private memoryHandlers: SyncMessageHandler[] = [];
   private skillHandlers: SyncMessageHandler[] = [];
   private sessionHandlers: SessionSyncHandler[] = [];
-  private taskAssignHandlers: CoordinationMessageHandler[] = [];
-  private taskStatusHandlers: CoordinationMessageHandler[] = [];
-  private contextShareHandlers: CoordinationMessageHandler[] = [];
-  private messageHandlers: CoordinationMessageHandler[] = [];
   private contentProvider: SessionContentProvider | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -217,62 +206,9 @@ export class MapSyncClient {
     this.sessionHandlers.push(handler);
   }
 
-  // --------------------------------------------------------------------------
-  // Emit coordination notifications (swarm → hub)
-  // --------------------------------------------------------------------------
-
-  /**
-   * Emit an x-openhive/task.status notification to report task progress.
-   */
-  emitTaskStatus(params: TaskStatusParams): void {
-    this.broadcastCoordination(createCoordinationNotification('x-openhive/task.status', params));
-  }
-
-  /**
-   * Emit an x-openhive/context.share notification to share context with peers.
-   */
-  emitContextShare(params: ContextShareParams): void {
-    this.broadcastCoordination(createCoordinationNotification('x-openhive/context.share', params));
-  }
-
-  /**
-   * Emit an x-openhive/message.send notification to send a message to another swarm.
-   */
-  emitMessage(params: MessageSendParams): void {
-    this.broadcastCoordination(createCoordinationNotification('x-openhive/message.send', params));
-  }
-
-  // --------------------------------------------------------------------------
-  // Subscribe to incoming coordination notifications (hub → swarm)
-  // --------------------------------------------------------------------------
-
-  /**
-   * Register a handler for incoming x-openhive/task.assign notifications.
-   */
-  onTaskAssigned(handler: CoordinationMessageHandler): void {
-    this.taskAssignHandlers.push(handler);
-  }
-
-  /**
-   * Register a handler for incoming x-openhive/task.status notifications.
-   */
-  onTaskStatus(handler: CoordinationMessageHandler): void {
-    this.taskStatusHandlers.push(handler);
-  }
-
-  /**
-   * Register a handler for incoming x-openhive/context.share notifications.
-   */
-  onContextShared(handler: CoordinationMessageHandler): void {
-    this.contextShareHandlers.push(handler);
-  }
-
-  /**
-   * Register a handler for incoming x-openhive/message.send notifications.
-   */
-  onMessage(handler: CoordinationMessageHandler): void {
-    this.messageHandlers.push(handler);
-  }
+  // Task coordination, context sharing, and messaging now use MAP scope
+  // messages (tasks) and agent-inbox (context/messaging) instead of
+  // x-openhive/ JSON-RPC notifications. See coordination/listener.ts.
 
   // --------------------------------------------------------------------------
   // WebSocket Server (swarm's own MAP endpoint)
@@ -319,18 +255,6 @@ export class MapSyncClient {
   }
 
   /**
-   * Broadcast a coordination notification to all connected clients.
-   */
-  private broadcastCoordination(msg: MapCoordinationMessage): void {
-    const payload = JSON.stringify(msg);
-    for (const ws of this.wsClients) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(payload);
-      }
-    }
-  }
-
-  /**
    * Broadcast any JSON-RPC message to all connected clients.
    */
   private broadcastAny(msg: { jsonrpc: '2.0'; method: string; params: unknown }): void {
@@ -364,8 +288,6 @@ export class MapSyncClient {
 
           if (SYNC_METHODS.has(parsed.method)) {
             this.handleIncomingSync(parsed as MapSyncMessage);
-          } else if (COORDINATION_METHODS.has(parsed.method)) {
-            this.handleIncomingCoordination(parsed as MapCoordinationMessage);
           }
         } catch {
           // Ignore non-JSON or unrecognized messages
@@ -432,26 +354,6 @@ export class MapSyncClient {
         handler(msg, resource);
       } catch (err) {
         console.error(`[map-sync-client] Handler error for ${msg.method}:`, err);
-      }
-    }
-  }
-
-  private handleIncomingCoordination(msg: MapCoordinationMessage): void {
-    const handlerMap: Record<string, CoordinationMessageHandler[]> = {
-      'x-openhive/task.assign': this.taskAssignHandlers,
-      'x-openhive/task.status': this.taskStatusHandlers,
-      'x-openhive/context.share': this.contextShareHandlers,
-      'x-openhive/message.send': this.messageHandlers,
-    };
-
-    const handlers = handlerMap[msg.method];
-    if (!handlers) return;
-
-    for (const handler of handlers) {
-      try {
-        handler(msg);
-      } catch (err) {
-        console.error(`[map-sync-client] Coordination handler error for ${msg.method}:`, err);
       }
     }
   }

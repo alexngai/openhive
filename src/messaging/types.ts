@@ -31,7 +31,7 @@ export interface CreateMessageInput {
   origin_message_id?: string;
 }
 
-/** Wire format for x-openhive/message.send JSON-RPC notification */
+/** Message send parameters (used internally for DAL persistence) */
 export interface MessageSendParams {
   message_id: string;
   from_swarm_id: string;
