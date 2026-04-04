@@ -20,7 +20,10 @@ import type {
   MapSwarm, MapNode, HostedSwarm, SessionListItem,
   SwarmMessage, SwarmPeer, EventSubscription, DeliveryLogEntry,
 } from '../lib/api';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
+import { AgentChat } from 'swarmcraft/ui/embed';
+import type { ChatChannelConfig } from 'swarmcraft/ui/embed';
+import { createCoordinationChatAdapter } from '../adapters/coordination-chat-adapter';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -360,6 +363,38 @@ function MessageCard({ message, swarmId }: { message: SwarmMessage; swarmId: str
   );
 }
 
+function ComposeMessageSection({ swarmId }: { swarmId: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Use the swarm itself as the "from" identity for coordination messages
+  const channelConfig: ChatChannelConfig = useMemo(() => ({
+    adapters: [createCoordinationChatAdapter({ fromSwarmId: swarmId })],
+  }), [swarmId]);
+
+  return (
+    <div className="mb-3">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 text-xs font-medium px-2 py-1.5 rounded hover:bg-[var(--color-elevated)] transition-colors"
+        style={{ color: 'var(--color-text-secondary)' }}
+      >
+        <MessageSquare className="w-3.5 h-3.5" />
+        {expanded ? 'Hide' : 'Send'} Coordination Message
+      </button>
+      {expanded && (
+        <div className="card mt-1 overflow-hidden h-52">
+          <AgentChat
+            agentId={swarmId}
+            channelConfig={channelConfig}
+            showHeader={false}
+            compact
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MessagesSection({ swarmId }: { swarmId: string }) {
   const { data, isLoading } = useSwarmMessages(swarmId, { limit: 20 });
   const messages = data?.data ?? [];
@@ -677,6 +712,8 @@ export function SwarmDetail() {
       <NodesSection swarmId={id!} />
 
       <SessionsSection swarmId={id!} />
+
+      <ComposeMessageSection swarmId={id!} />
 
       <MessagesSection swarmId={id!} />
 

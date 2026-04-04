@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Conversation } from '../../pages/Conversation';
@@ -27,48 +27,8 @@ const mockTurns = [
     conversation_id: 'conv-test-1',
     participant_id: 'agent-alpha',
     content_type: 'text',
-    content: { type: 'text', text: 'Starting analysis of the dataset.' },
+    content: { type: 'text', text: 'Starting analysis.' },
     created_at: '2025-01-01T00:10:00Z',
-  },
-  {
-    id: 'turn-2',
-    conversation_id: 'conv-test-1',
-    participant_id: 'agent-beta',
-    content_type: 'text',
-    content: { type: 'text', text: 'I can help with the visualization part.' },
-    created_at: '2025-01-01T00:11:00Z',
-  },
-  {
-    id: 'turn-3',
-    conversation_id: 'conv-test-1',
-    participant_id: 'agent-alpha',
-    content_type: 'event',
-    content: { type: 'event', event: 'task_started', data: { task: 'analysis' } },
-    created_at: '2025-01-01T00:12:00Z',
-  },
-  {
-    id: 'turn-4',
-    conversation_id: 'conv-test-1',
-    participant_id: 'human-1',
-    content_type: 'text',
-    content: { type: 'text', text: 'Focus on Q4 data specifically.' },
-    created_at: '2025-01-01T00:13:00Z',
-  },
-  {
-    id: 'turn-5',
-    conversation_id: 'conv-test-1',
-    participant_id: 'agent-alpha',
-    content_type: 'data',
-    content: { type: 'data', data: { results: [1, 2, 3], summary: 'Done' } },
-    created_at: '2025-01-01T00:14:00Z',
-  },
-  {
-    id: 'turn-6',
-    conversation_id: 'conv-test-1',
-    participant_id: 'agent-beta',
-    content_type: 'text',
-    content: { type: 'reference', uri: 'https://example.com/report', label: 'Final Report' },
-    created_at: '2025-01-01T00:15:00Z',
   },
 ];
 
@@ -77,7 +37,7 @@ const mockThreads = [
     id: 'thread-1',
     conversation_id: 'conv-test-1',
     root_turn_id: 'turn-1',
-    subject: 'Data quality discussion',
+    subject: 'Data quality',
     created_at: '2025-01-01T00:11:30Z',
   },
 ];
@@ -85,19 +45,25 @@ const mockThreads = [
 // ── Mock hooks ──
 
 const mockUseMailConversation = vi.fn();
-const mockSendMailTurn = vi.fn();
 
 vi.mock('../../hooks/useApi', () => ({
   useMailConversation: (...args: unknown[]) => mockUseMailConversation(...args),
-  useSendMailTurn: () => ({
-    mutate: mockSendMailTurn,
-    isPending: false,
-  }),
 }));
 
 vi.mock('../../hooks/useWebSocket', () => ({
   useSubscribe: vi.fn(),
   useWSEvent: vi.fn(),
+}));
+
+// Mock AgentChat — the chat UI itself is tested in swarmcraft (101 tests).
+// Here we only verify that Conversation.tsx renders the header correctly
+// and passes the right props.
+vi.mock('swarmcraft/ui/embed', () => ({
+  AgentChat: ({ agentId, showHeader }: { agentId: string | null; showHeader?: boolean }) => (
+    <div data-testid="agent-chat" data-agent-id={agentId} data-show-header={showHeader}>
+      AgentChat mock
+    </div>
+  ),
 }));
 
 // ── Helpers ──
@@ -130,7 +96,6 @@ describe('Conversation Page', () => {
       },
       isLoading: false,
     });
-    mockSendMailTurn.mockClear();
   });
 
   // ── Header ──
@@ -148,7 +113,7 @@ describe('Conversation Page', () => {
 
     it('shows turn count', () => {
       renderConversation();
-      expect(screen.getByText(/6 turns/)).toBeDefined();
+      expect(screen.getByText(/1 turn/)).toBeDefined();
     });
 
     it('shows thread count', () => {
@@ -164,52 +129,32 @@ describe('Conversation Page', () => {
 
     it('shows participant avatars', () => {
       renderConversation();
-      // 3 participants should have 3 avatar circles
       expect(screen.getByTitle('agent-alpha')).toBeDefined();
       expect(screen.getByTitle('agent-beta (observer)')).toBeDefined();
       expect(screen.getByTitle('human-1 (supervisor)')).toBeDefined();
     });
   });
 
-  // ── Turn rendering ──
+  // ── AgentChat integration ──
 
-  describe('Turn rendering', () => {
-    it('renders all turns', () => {
+  describe('AgentChat integration', () => {
+    it('renders AgentChat with the first participant as agentId', () => {
       renderConversation();
-      expect(screen.getByText('Starting analysis of the dataset.')).toBeDefined();
-      expect(screen.getByText('I can help with the visualization part.')).toBeDefined();
-      expect(screen.getByText('Focus on Q4 data specifically.')).toBeDefined();
+      const chat = screen.getByTestId('agent-chat');
+      expect(chat.getAttribute('data-agent-id')).toBe('agent-alpha');
     });
 
-    it('shows participant names on turns', () => {
+    it('passes showHeader=false to AgentChat (header is rendered by Conversation)', () => {
       renderConversation();
-      const alphaLabels = screen.getAllByText('agent-alpha');
-      expect(alphaLabels.length).toBeGreaterThan(0);
-    });
-
-    it('renders event turns differently', () => {
-      renderConversation();
-      expect(screen.getByText('task_started')).toBeDefined();
-    });
-
-    it('renders reference content as a link', () => {
-      renderConversation();
-      expect(screen.getByText('Final Report')).toBeDefined();
-      const link = screen.getByText('Final Report').closest('a');
-      expect(link?.getAttribute('href')).toBe('https://example.com/report');
-    });
-
-    it('renders data/JSON content with expand option', () => {
-      renderConversation();
-      // JSON content should have expand/collapse button
-      expect(screen.getByText(/Expand/)).toBeDefined();
+      const chat = screen.getByTestId('agent-chat');
+      expect(chat.getAttribute('data-show-header')).toBe('false');
     });
   });
 
   // ── Loading state ──
 
   describe('Loading state', () => {
-    it('shows loading spinner when loading', () => {
+    it('shows loading state when data is loading', () => {
       mockUseMailConversation.mockReturnValue({
         data: undefined,
         isLoading: true,
@@ -229,82 +174,6 @@ describe('Conversation Page', () => {
       });
       renderConversation();
       expect(screen.getByText('Conversation not found.')).toBeDefined();
-    });
-  });
-
-  // ── Empty conversation ──
-
-  describe('Empty conversation', () => {
-    it('shows empty state when no turns', () => {
-      mockUseMailConversation.mockReturnValue({
-        data: {
-          conversation: mockConversation,
-          turns: [],
-          threads: [],
-          turn_count: 0,
-        },
-        isLoading: false,
-      });
-      renderConversation();
-      expect(screen.getByText('No turns in this conversation yet.')).toBeDefined();
-    });
-  });
-
-  // ── Message input ──
-
-  describe('Message input', () => {
-    it('renders the input area', () => {
-      renderConversation();
-      expect(screen.getByPlaceholderText('Send a message as supervisor...')).toBeDefined();
-    });
-
-    it('shows helper text', () => {
-      renderConversation();
-      expect(screen.getByText(/Messages are sent as a supervisor turn/)).toBeDefined();
-    });
-
-    it('sends a turn when clicking send button', async () => {
-      renderConversation();
-      const input = screen.getByPlaceholderText('Send a message as supervisor...');
-      fireEvent.change(input, { target: { value: 'Test message' } });
-
-      const sendButton = screen.getByRole('button', { name: '' }); // Send icon button
-      // Find the button with Send icon
-      const buttons = document.querySelectorAll('button');
-      const sendBtn = Array.from(buttons).find(b => !b.disabled && b.querySelector('svg'));
-
-      // Type and submit
-      fireEvent.change(input, { target: { value: 'Hello agents' } });
-      fireEvent.keyDown(input, { key: 'Enter', shiftKey: false });
-
-      expect(mockSendMailTurn).toHaveBeenCalledWith({
-        conversationId: 'conv-test-1',
-        content: { type: 'text', text: 'Hello agents' },
-        content_type: 'text',
-      });
-    });
-
-    it('clears input after sending', () => {
-      renderConversation();
-      const input = screen.getByPlaceholderText('Send a message as supervisor...') as HTMLTextAreaElement;
-      fireEvent.change(input, { target: { value: 'Hello' } });
-      fireEvent.keyDown(input, { key: 'Enter', shiftKey: false });
-      expect(input.value).toBe('');
-    });
-
-    it('does not send empty messages', () => {
-      renderConversation();
-      const input = screen.getByPlaceholderText('Send a message as supervisor...');
-      fireEvent.keyDown(input, { key: 'Enter', shiftKey: false });
-      expect(mockSendMailTurn).not.toHaveBeenCalled();
-    });
-
-    it('does not send on Shift+Enter (allows new line)', () => {
-      renderConversation();
-      const input = screen.getByPlaceholderText('Send a message as supervisor...');
-      fireEvent.change(input, { target: { value: 'Multi-line' } });
-      fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
-      expect(mockSendMailTurn).not.toHaveBeenCalled();
     });
   });
 
