@@ -261,3 +261,45 @@ export function toAcpEvents(
     events: adapter.toAcpEvents(content),
   };
 }
+
+/**
+ * Paginated variant: parse only enough events for the requested page.
+ * Uses the adapter's toAcpEventsPaginated if available, otherwise
+ * falls back to full parse + slice.
+ */
+export function toAcpEventsPaginated(
+  content: string,
+  limit: number,
+  offset: number,
+  formatId?: string,
+): { formatId: string; events: ReturnType<SessionAdapter['toAcpEvents']>; total: number } {
+  let adapter: SessionAdapter;
+  let detectedFormatId: string;
+
+  if (formatId && isFormatSupported(formatId)) {
+    adapter = getAdapterOrFallback(formatId);
+    detectedFormatId = formatId;
+  } else {
+    const detection = detectFormatExtended({ content, sizeBytes: content.length });
+    adapter = detection.adapter;
+    detectedFormatId = detection.formatId;
+  }
+
+  if (adapter.toAcpEventsPaginated) {
+    const stopAfter = offset + limit;
+    const { events, total } = adapter.toAcpEventsPaginated(content, stopAfter);
+    return {
+      formatId: detectedFormatId,
+      events: events.slice(offset, offset + limit),
+      total,
+    };
+  }
+
+  // Fallback: full parse + slice
+  const allEvents = adapter.toAcpEvents(content);
+  return {
+    formatId: detectedFormatId,
+    events: allEvents.slice(offset, offset + limit),
+    total: allEvents.length,
+  };
+}

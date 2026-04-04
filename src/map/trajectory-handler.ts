@@ -22,6 +22,8 @@ import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js'
 import { broadcastToChannel } from '../realtime/index.js';
 import { updateSwarm } from '../db/dal/map.js';
 import { mapHubEvents } from './service.js';
+import { fetchTranscriptFromSwarm } from './trajectory-content.js';
+import { isSessionStorageInitialized, getSessionStorage } from '../sessions/storage/index.js';
 
 // ============================================================================
 // Types
@@ -136,24 +138,33 @@ function handleCheckpoint(
     created,
   });
 
-  // ── Invalidate cached trajectory content ────────────────────────────
-  //    New checkpoint means the session has progressed. Clear the storage
-  //    flag so the next /events request re-fetches from the swarm.
-  try {
-    const resource = findResourceById(resourceId);
-    if (resource) {
-      const existingMeta = (resource.metadata as Record<string, unknown>) || {};
-      if (existingMeta.storage && (existingMeta.storage as Record<string, unknown>).backend === 'local') {
+  // ── Proactively cache transcript content ─────────────────────────────
+  //    Fetch the transcript from the (still-connected) swarm and cache it
+  //    so the UI can load it even after the swarm disconnects.
+  //    Fire-and-forget: runs in the background, doesn't block the response.
+  if (isSessionStorageInitialized()) {
+    void (async () => {
+      try {
+        const transcript = await fetchTranscriptFromSwarm(resourceId);
+        if (!transcript) return;
+
+        const storage = getSessionStorage();
+        await storage.store(
+          { sessionId: resourceId, agentId },
+          [{ path: 'session.jsonl', content: transcript }],
+        );
         updateResource(resourceId, {
           metadata: {
-            ...existingMeta,
-            storage: undefined, // clear storage flag → next request re-fetches
+            ...((findResourceById(resourceId)?.metadata as Record<string, unknown>) || {}),
+            format: { id: 'claude_jsonl_v1' },
+            storage: { backend: 'local', cachedAt: new Date().toISOString() },
+            trajectory: { source: 'swarm' },
           },
         });
+      } catch {
+        // Non-critical — cache miss just means on-demand fetch at view time
       }
-    }
-  } catch {
-    // Non-critical
+    })();
   }
 
   // ── Broadcast to WebSocket channels for UI ───────────────────────────
@@ -228,6 +239,7 @@ function resolveSessionResource(
   const branch = checkpoint.branch as string | undefined;
   const firstPrompt = meta?.firstPrompt as string | undefined;
   const template = meta?.template as string | undefined;
+  const projectPath = meta?.projectPath as string | undefined;
 
   // Build a human-readable session name and description
   const sessionName = `session:${swarmId}`;
@@ -245,7 +257,8 @@ function resolveSessionResource(
     const existingMeta = (existing.metadata as Record<string, unknown>) || {};
     const needsUpdate = existing.name === sessionName
       || !existingMeta.project
-      || (firstPrompt && !existingMeta.firstPrompt);
+      || (firstPrompt && !existingMeta.firstPrompt)
+      || (projectPath && !existingMeta.projectPath);
     if (needsUpdate) {
       try {
         updateResource(existing.id, {
@@ -256,6 +269,7 @@ function resolveSessionResource(
             project,
             branch,
             template,
+            projectPath,
             firstPrompt: firstPrompt?.slice(0, 200),
           },
         });
@@ -272,7 +286,7 @@ function resolveSessionResource(
     git_remote_url: `map://trajectory/${swarmId}`,
     owner_agent_id: agentId,
     scope: 'manual',
-    metadata: { project, branch, template, firstPrompt: firstPrompt?.slice(0, 200) },
+    metadata: { project, branch, template, projectPath, firstPrompt: firstPrompt?.slice(0, 200) },
   });
 
   return { resourceId: resource.id, created };

@@ -47,6 +47,16 @@ export interface SessionAdapter {
   toAcpEvents(content: string): SessionEvent[];
 
   /**
+   * Paginated variant: parse only enough lines to fill the requested page.
+   * Returns events and an estimated total count without full parsing.
+   * Optional — adapters that don't implement this fall back to toAcpEvents + slice.
+   */
+  toAcpEventsPaginated?(
+    content: string,
+    stopAfter?: number,
+  ): { events: SessionEvent[]; total: number };
+
+  /**
    * Serialize from ACP events back to native format
    * Not all adapters support this (one-way conversion is OK)
    */

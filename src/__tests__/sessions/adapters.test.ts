@@ -9,6 +9,7 @@ import {
   getSupportedFormats,
   quickExtractStats,
   toAcpEvents,
+  toAcpEventsPaginated,
 } from '../../sessions/adapters/index.js';
 
 // ============================================================================
@@ -480,6 +481,139 @@ describe('Adapter Registry', () => {
       // All events should be custom type when using raw
       expect(result.events.every((e) => e.type === 'custom')).toBe(true);
     });
+  });
+});
+
+// ============================================================================
+// Paginated Parsing Tests
+// ============================================================================
+
+// Build a larger session: 10 user/assistant pairs with tool calls
+function buildLargeSession(pairs: number): string {
+  const lines: string[] = [];
+  for (let i = 0; i < pairs; i++) {
+    lines.push(JSON.stringify({
+      type: 'user',
+      sessionId: 'ses_large',
+      timestamp: `2024-01-15T10:${String(i).padStart(2, '0')}:00Z`,
+      uuid: `msg_u${i}`,
+      message: { role: 'user', content: `Question ${i}` },
+    }));
+    lines.push(JSON.stringify({
+      type: 'assistant',
+      sessionId: 'ses_large',
+      timestamp: `2024-01-15T10:${String(i).padStart(2, '0')}:05Z`,
+      uuid: `msg_a${i}`,
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: `Answer ${i}` },
+          { type: 'tool_use', id: `tool_${i}`, name: 'Read', input: { file: `file${i}.ts` } },
+        ],
+        stop_reason: 'tool_use',
+      },
+    }));
+    lines.push(JSON.stringify({
+      type: 'result',
+      sessionId: 'ses_large',
+      timestamp: `2024-01-15T10:${String(i).padStart(2, '0')}:06Z`,
+      uuid: `msg_r${i}`,
+      tool_use_id: `tool_${i}`,
+      result: `content of file${i}.ts`,
+      is_error: false,
+    }));
+  }
+  return lines.join('\n');
+}
+
+describe('ClaudeSessionAdapter paginated parsing', () => {
+  const adapter = new ClaudeSessionAdapter();
+
+  it('should return same events as full parse for small files', () => {
+    const full = adapter.toAcpEvents(CLAUDE_SESSION_CONTENT);
+    const paginated = adapter.toAcpEventsPaginated(CLAUDE_SESSION_CONTENT, 100);
+
+    expect(paginated.events).toEqual(full);
+    expect(paginated.total).toBe(full.length);
+  });
+
+  it('should limit events when stopAfter is small', () => {
+    const content = buildLargeSession(20); // 60 lines → ~20 content events
+    const full = adapter.toAcpEvents(content);
+
+    // Request only first 5 content events
+    // After tool-result merging, some events get absorbed into tool_call blocks,
+    // so the final count may be fewer than stopAfter
+    const paginated = adapter.toAcpEventsPaginated(content, 5);
+
+    expect(paginated.events.length).toBeLessThan(full.length);
+    expect(paginated.events.length).toBeGreaterThanOrEqual(1);
+    // Total should approximate the full count
+    expect(paginated.total).toBeGreaterThanOrEqual(5);
+  });
+
+  it('should pair tool results across the stop boundary', () => {
+    const content = buildLargeSession(10);
+
+    // Stop after 3 content events — tool_results for the 3rd assistant message
+    // may appear past the stop boundary but should still get paired
+    const paginated = adapter.toAcpEventsPaginated(content, 3);
+
+    // Check that tool_call blocks have their results paired
+    const assistantEvents = paginated.events.filter((e: any) => e.type === 'assistant_message');
+    for (const evt of assistantEvents) {
+      const toolCalls = (evt as any).content?.filter((c: any) => c.type === 'tool_call') || [];
+      for (const tc of toolCalls) {
+        // Tool calls that were within our window should have results paired
+        expect(tc.status).toBe('completed');
+        expect(tc.output).toBeDefined();
+      }
+    }
+  });
+
+  it('should estimate total correctly for large files', () => {
+    const content = buildLargeSession(50); // 150 lines
+    const full = adapter.toAcpEvents(content);
+
+    const paginated = adapter.toAcpEventsPaginated(content, 10);
+
+    // Estimated total should be close to actual (not exact due to aggregation)
+    expect(paginated.total).toBeGreaterThanOrEqual(full.length * 0.5);
+    expect(paginated.total).toBeLessThanOrEqual(full.length * 1.5);
+  });
+});
+
+describe('toAcpEventsPaginated (registry wrapper)', () => {
+  it('should return correct page with offset and limit', () => {
+    const content = buildLargeSession(20);
+
+    // Use larger limit to account for tool-result merging reducing event counts
+    const page1 = toAcpEventsPaginated(content, 10, 0, 'claude_jsonl_v1');
+    const page2 = toAcpEventsPaginated(content, 10, 10, 'claude_jsonl_v1');
+
+    expect(page1.events.length).toBeGreaterThan(0);
+    expect(page1.events.length).toBeLessThanOrEqual(10);
+    expect(page2.events.length).toBeGreaterThan(0);
+    expect(page2.events.length).toBeLessThanOrEqual(10);
+    // Pages should not overlap
+    const page1Ids = new Set(page1.events.map((e: any) => e.id));
+    const page2Ids = new Set(page2.events.map((e: any) => e.id));
+    for (const id of page2Ids) {
+      expect(page1Ids.has(id)).toBe(false);
+    }
+  });
+
+  it('should auto-detect format', () => {
+    const result = toAcpEventsPaginated(CLAUDE_SESSION_CONTENT, 10, 0);
+    expect(result.formatId).toBe('claude_jsonl_v1');
+    expect(result.events.length).toBeGreaterThan(0);
+  });
+
+  it('should fall back to full parse for adapters without paginated method', () => {
+    const result = toAcpEventsPaginated(RAW_SESSION_CONTENT, 2, 0, 'raw');
+    expect(result.formatId).toBe('raw');
+    expect(result.events.length).toBe(2);
+    expect(result.total).toBeGreaterThanOrEqual(2);
   });
 });
 
