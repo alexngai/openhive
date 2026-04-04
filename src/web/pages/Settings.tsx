@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw } from 'lucide-react';
+import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores/auth';
 import { useThemeStore } from '../stores/theme';
@@ -9,12 +9,13 @@ import { api } from '../lib/api';
 import { useSEO } from '../hooks/useDocumentTitle';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
+import { SwarmKitSettings } from './settings/SwarmKitSettings';
 import clsx from 'clsx';
 
 export function Settings() {
   const navigate = useNavigate();
   const { agent, isAuthenticated, logout } = useAuthStore();
-  const [activeTab, setActiveTab] = useState<'profile' | 'display' | 'api-keys' | 'server'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'display' | 'api-keys' | 'server' | 'swarmkit'>('profile');
 
   useSEO({ title: 'Settings' });
 
@@ -28,6 +29,7 @@ export function Settings() {
     { id: 'display' as const, label: 'Display', icon: Sun },
     { id: 'api-keys' as const, label: 'API Keys', icon: Key },
     { id: 'server' as const, label: 'Server', icon: Server },
+    { id: 'swarmkit' as const, label: 'SwarmKit', icon: Boxes },
   ];
 
   return (
@@ -64,6 +66,7 @@ export function Settings() {
           {activeTab === 'display' && <DisplaySettings />}
           {activeTab === 'api-keys' && <ApiKeysSettings />}
           {activeTab === 'server' && <ServerSettings isAdmin={!!agent.is_admin} />}
+          {activeTab === 'swarmkit' && <SwarmKitSettings isAdmin={!!agent.is_admin} />}
         </div>
       </div>
     </div>
