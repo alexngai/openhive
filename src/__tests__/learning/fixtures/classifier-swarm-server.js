@@ -136,7 +136,7 @@ function handleWorkspaceExecute(ws, msg) {
   // Send result back via MAP
   ws.send(JSON.stringify({
     jsonrpc: '2.0',
-    method: 'x-openhive/learning.workspace.result',
+    method: 'x-workspace/task.result',
     params: {
       request_id: requestId,
       success: true,
@@ -179,7 +179,7 @@ mapWss.on('connection', (ws) => {
             },
           },
         }));
-      } else if (msg.method === 'x-openhive/learning.workspace.execute') {
+      } else if (msg.method === 'x-workspace/task.execute' || msg.method === 'x-openhive/learning.workspace.execute') {
         handleWorkspaceExecute(ws, msg);
       } else if (msg.id !== undefined) {
         ws.send(JSON.stringify({
@@ -262,7 +262,7 @@ function connectToHub(token) {
         const msg = JSON.parse(raw.toString());
 
         // Handle workspace execute requests coming through the hub connection
-        if (msg.method === 'x-openhive/learning.workspace.execute') {
+        if (msg.method === 'x-workspace/task.execute' || msg.method === 'x-openhive/learning.workspace.execute') {
           handleWorkspaceExecute(hubWs, msg);
         }
       } catch {
