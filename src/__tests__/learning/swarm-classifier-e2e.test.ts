@@ -273,15 +273,11 @@ describeIf('Live E2E — Swarm-Delegated Skill Classification', () => {
     const skillDirs = fs.readdirSync(path.join(resourcePath, '.skilltree', 'skills'));
     expect(skillDirs.length).toBeGreaterThan(0);
 
-    let foundTaxonomy = false;
     for (const dir of skillDirs) {
       const skillFile = path.join(resourcePath, '.skilltree', 'skills', dir, 'SKILL.md');
       if (fs.existsSync(skillFile)) {
-        const content = fs.readFileSync(skillFile, 'utf-8');
-        if (content.includes('taxonomy') || content.includes('primaryPath')) {
-          foundTaxonomy = true;
-          break;
-        }
+        // Verify file is readable (taxonomy may not be in frontmatter for filesystem storage)
+        fs.readFileSync(skillFile, 'utf-8');
       }
     }
     // Note: filesystem storage may not persist taxonomy to SKILL.md frontmatter.
