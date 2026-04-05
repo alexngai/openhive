@@ -141,7 +141,7 @@ describeFn('Full Stack E2E: OpenHive → OpenSwarm → macro-agent', () => {
 
     // Boot Fastify with auth hook (matches existing e2e pattern)
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
 
     app.addHook('preHandler', async (request: any) => {
       const auth = request.headers.authorization;

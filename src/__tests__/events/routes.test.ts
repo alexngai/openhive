@@ -20,7 +20,7 @@ const TEST_DB_PATH = testDbPath(TEST_ROOT, 'events-routes-test.db');
 
 async function createTestApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
-  app.decorateRequest('agent', null);
+  app.decorateRequest('agent');
 
   await app.register(
     async (api) => {

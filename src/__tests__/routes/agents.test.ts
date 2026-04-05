@@ -23,7 +23,7 @@ async function createTestApp(config: Config): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
 
   // Add auth decorators
-  app.decorateRequest('agent', null);
+  app.decorateRequest('agent');
 
   await app.register(
     async (api) => {

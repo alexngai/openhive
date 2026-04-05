@@ -136,7 +136,7 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
     });
 
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     await app.register(websocket);
     setHeartbeatInterval(HEARTBEAT_MS);
     setupMapWebSocket(app, config);

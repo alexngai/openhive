@@ -81,7 +81,7 @@ describe('Swarm Hosting API Routes', () => {
     app = Fastify({ logger: false });
 
     // Decorate request with agent
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
 
     // Add auth hook for all routes
     app.addHook('preHandler', async (request: any, _reply: any) => {

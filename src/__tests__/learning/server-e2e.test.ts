@@ -128,7 +128,7 @@ describe('Full Server E2E: Learning + Swarm Hosting', () => {
     app = Fastify({ logger: false });
     await app.register(websocket);
 
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     (app as unknown as { atlasService: AtlasService }).atlasService = atlasService;
     (app as unknown as { swarmManager: SwarmManager }).swarmManager = swarmManager;
 

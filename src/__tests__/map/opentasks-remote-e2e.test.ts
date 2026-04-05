@@ -142,7 +142,7 @@ describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks via MAP Connector', { tim
     app = Fastify({ logger: false });
     await app.register(websocket);
     setupMapWebSocket(app, config);
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     setLocalAgent(testAgent.id);
     await app.register(async (api) => { await api.register(resourceContentRoutes, { config }); }, { prefix: '/api/v1' });
     await app.listen({ port: SERVER_PORT, host: '127.0.0.1' });
