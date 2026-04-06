@@ -6,11 +6,12 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
-import * as fs from 'fs';
+import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { authMiddleware } from '../middleware/auth.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import * as trajectoryDAL from '../../db/dal/trajectory-checkpoints.js';
+import { findSwarmById } from '../../db/dal/map.js';
 import { getDatabase } from '../../db/index.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import { fetchTranscriptFromSwarm } from '../../map/trajectory-content.js';
@@ -18,7 +19,7 @@ import {
   detectFormatExtended,
   getSupportedFormats,
   quickExtractStats,
-  toAcpEvents,
+  toAcpEventsPaginated,
   getAdapter,
 } from '../../sessions/adapters/index.js';
 import {
@@ -105,7 +106,22 @@ const QuerySessionsSchema = z.object({
  *
  * @returns transcript string or null if not available locally
  */
-function readLocalSessionlogTranscript(sessionResourceId: string, config?: Config): string | null {
+async function trySessionlogDir(sessionlogDir: string, sessionId: string): Promise<string | null> {
+  try {
+    const statePath = path.join(sessionlogDir, `${sessionId}.json`);
+    await fsp.access(statePath);
+    const stateRaw = await fsp.readFile(statePath, 'utf-8');
+    const state = JSON.parse(stateRaw);
+    const transcriptPath = state.transcriptPath;
+    if (!transcriptPath) return null;
+    await fsp.access(transcriptPath);
+    return await fsp.readFile(transcriptPath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+async function readLocalSessionlogTranscript(sessionResourceId: string, config?: Config): Promise<string | null> {
   try {
     // Get session_id from the latest checkpoint's checkpoint_id
     // Checkpoint IDs are formatted as: {sessionID}-step{N} or just {sessionID}
@@ -118,22 +134,57 @@ function readLocalSessionlogTranscript(sessionResourceId: string, config?: Confi
     if (!sessionId) return null;
 
     // Build list of directories to search for sessionlog state files.
-    // Configured paths are checked first (supports separate session repos),
-    // then fall back to the default .git/sessionlog-sessions/ location.
+    // Priority: configured paths → resource projectPath → swarm projectPath → CWD fallback
     const searchDirs: string[] = [
       ...(config?.sessionlog?.sessionDirs ?? []),
-      path.join(process.cwd(), '.git', 'sessionlog-sessions'),
     ];
 
+    // Get the agent's project directory from the resource metadata.
+    // This is stored during checkpoint handling and points to the agent's
+    // actual working directory where .git/sessionlog-sessions/ lives.
+    const resource = resourcesDAL.findResourceById(sessionResourceId);
+    const resourceMeta = resource?.metadata as Record<string, unknown> | undefined;
+    const resourceProjectPath = resourceMeta?.projectPath as string | undefined;
+    if (resourceProjectPath) {
+      searchDirs.push(path.join(resourceProjectPath, '.git', 'sessionlog-sessions'));
+    }
+
+    // Also check the swarm's metadata as a fallback
+    const swarmId = checkpoints[0].source_swarm_id;
+    if (swarmId) {
+      const swarm = findSwarmById(swarmId);
+      const swarmMeta = swarm?.metadata as Record<string, unknown> | undefined;
+      const swarmProjectPath = swarmMeta?.projectPath as string | undefined;
+      if (swarmProjectPath && swarmProjectPath !== resourceProjectPath) {
+        searchDirs.push(path.join(swarmProjectPath, '.git', 'sessionlog-sessions'));
+      }
+    }
+
+    // Fall back to OpenHive server's working directory
+    searchDirs.push(path.join(process.cwd(), '.git', 'sessionlog-sessions'));
+
     for (const sessionlogDir of searchDirs) {
-      const statePath = path.join(sessionlogDir, `${sessionId}.json`);
-      if (!fs.existsSync(statePath)) continue;
+      const result = await trySessionlogDir(sessionlogDir, sessionId);
+      if (result) return result;
+    }
 
-      const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-      const transcriptPath = state.transcriptPath;
-      if (!transcriptPath || !fs.existsSync(transcriptPath)) continue;
-
-      return fs.readFileSync(transcriptPath, 'utf-8');
+    // Last resort: scan sibling directories of CWD for the session state file.
+    // Handles the common case where project repos live under the same parent
+    // (e.g. ~/GitHub/openhive, ~/GitHub/openhive-3, ~/GitHub/other-project).
+    // Only triggered when projectPath is not yet stored in metadata.
+    const parentDir = path.dirname(process.cwd());
+    try {
+      const siblings = await fsp.readdir(parentDir, { withFileTypes: true });
+      for (const entry of siblings) {
+        if (!entry.isDirectory()) continue;
+        const siblingSessionlogDir = path.join(parentDir, entry.name, '.git', 'sessionlog-sessions');
+        // Skip directories we already checked
+        if (searchDirs.some(d => d === siblingSessionlogDir)) continue;
+        const result = await trySessionlogDir(siblingSessionlogDir, sessionId);
+        if (result) return result;
+      }
+    } catch {
+      // Parent directory not readable — skip scan
     }
 
     return null;
@@ -611,7 +662,7 @@ export async function sessionsRoutes(
       // Uses the session_id from checkpoint metadata to find the sessionlog state,
       // which contains the transcriptPath to the Claude Code JSONL file.
       if (!content) {
-        content = readLocalSessionlogTranscript(resource.id, _options.config);
+        content = await readLocalSessionlogTranscript(resource.id, _options.config);
         if (content) {
           formatId = 'claude_jsonl_v1';
         }
@@ -641,15 +692,13 @@ export async function sessionsRoutes(
         });
       }
 
-      // Convert to ACP events
-      const { events } = toAcpEvents(content, formatId);
-
-      // Apply pagination
-      const paginatedEvents = events.slice(offset, offset + limit);
+      // Convert to ACP events (paginated — only parses enough lines for the requested page)
+      const { events: paginatedEvents, total, formatId: resolvedFormatId } =
+        toAcpEventsPaginated(content, limit, offset, formatId);
 
       return reply.send({
-        format_id: formatId,
-        total: events.length,
+        format_id: resolvedFormatId,
+        total,
         limit,
         offset,
         events: paginatedEvents,

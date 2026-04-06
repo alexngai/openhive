@@ -23,7 +23,7 @@ export interface CreateContextInput {
   ttl_seconds?: number;
 }
 
-/** Wire format for x-openhive/context.share JSON-RPC notification */
+/** Context share parameters (used internally for DAL persistence) */
 export interface ContextShareParams {
   context_id: string;
   source_swarm_id: string;

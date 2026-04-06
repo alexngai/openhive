@@ -13,12 +13,13 @@
  *
  * Two dispatch protocols supported:
  *   - _macro/cognitive/command: For Atlas-level operations (batch, query, prune)
- *   - x-openhive/learning.workspace.execute: For workspace template execution
+ *   - x-workspace/task.execute (WORKSPACE_METHODS.EXECUTE): For workspace template execution
  *     (the swarm agent reads prompt and writes to cwd)
  */
 
 import WebSocket from 'ws';
 import { nanoid } from 'nanoid';
+import { WORKSPACE_METHODS } from 'agent-workspace';
 import { getInbound, getAllInbound } from '../map/connection-registry.js';
 import { type LearningLogger, defaultLogger } from './types.js';
 import type { SwarmManager } from '../swarm/manager.js';
@@ -132,7 +133,7 @@ export class SwarmAgentDelegate implements AgentDelegate {
     // MacroAgentBackend spawns an analyst agent in the cwd.
     const request = {
       jsonrpc: '2.0',
-      method: 'x-openhive/learning.workspace.execute',
+      method: WORKSPACE_METHODS.EXECUTE,
       params: {
         request_id: requestId,
         prompt,

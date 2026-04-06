@@ -6,12 +6,22 @@ import { Sidebar } from '../../../components/layout/Sidebar';
 
 // Mock auth store
 vi.mock('../../../stores/auth', () => ({
-  useAuthStore: vi.fn().mockReturnValue({ isAuthenticated: false }),
+  useAuthStore: vi.fn().mockReturnValue({ isAuthenticated: false, authMode: 'local' }),
 }));
 
-// Mock fetch for .well-known/openhive.json
+// Mock useMapSwarms
+vi.mock('../../../hooks/useApi', () => ({
+  useMapSwarms: vi.fn().mockReturnValue({ data: [] }),
+}));
+
+// Mock useInstanceFeatures
+vi.mock('../../../hooks/useInstanceFeatures', () => ({
+  useInstanceFeatures: vi.fn().mockReturnValue({ features: {} }),
+}));
+
+// Mock fetch for mail conversations sidebar query
 global.fetch = vi.fn().mockResolvedValue({
-  json: () => Promise.resolve({ features: { swarm_hosting: true, swarmcraft: true } }),
+  json: () => Promise.resolve({ conversations: [] }),
   ok: true,
 }) as unknown as typeof fetch;
 
@@ -32,12 +42,12 @@ function renderSidebar(initialRoute = '/') {
 }
 
 describe('Sidebar Navigation', () => {
-  it('renders Home as the first nav item', () => {
+  it('renders Overview as the first nav item linking to /', () => {
     renderSidebar();
     const links = screen.getAllByRole('link');
-    const homeLink = links.find((l) => l.textContent?.includes('Home'));
-    expect(homeLink).toBeDefined();
-    expect(homeLink!.getAttribute('href')).toBe('/');
+    const overviewLink = links.find((l) => l.textContent?.includes('Overview'));
+    expect(overviewLink).toBeDefined();
+    expect(overviewLink!.getAttribute('href')).toBe('/');
   });
 
   it('renders Swarms nav item linking to /swarms', () => {
@@ -48,63 +58,69 @@ describe('Sidebar Navigation', () => {
     expect(swarmsLink!.getAttribute('href')).toBe('/swarms');
   });
 
-  it('renders Explore nav item linking to /explore', () => {
+  it('renders Sessions nav item linking to /sessions', () => {
     renderSidebar();
     const links = screen.getAllByRole('link');
-    const exploreLink = links.find((l) => l.textContent?.trim() === 'Explore');
-    expect(exploreLink).toBeDefined();
-    expect(exploreLink!.getAttribute('href')).toBe('/explore');
+    const link = links.find((l) => l.textContent?.trim() === 'Sessions');
+    expect(link).toBeDefined();
+    expect(link!.getAttribute('href')).toBe('/sessions');
   });
 
-  it('renders Channels nav item linking to /hives', () => {
+  it('renders Messages nav item linking to /messages', () => {
     renderSidebar();
     const links = screen.getAllByRole('link');
-    const channelsLink = links.find((l) => l.textContent?.trim() === 'Channels');
-    expect(channelsLink).toBeDefined();
-    expect(channelsLink!.getAttribute('href')).toBe('/hives');
+    const link = links.find((l) => l.textContent?.trim() === 'Messages');
+    expect(link).toBeDefined();
+    expect(link!.getAttribute('href')).toBe('/messages');
   });
 
-  it('renders Agents nav item', () => {
+  it('renders Memory nav item linking to /memory', () => {
     renderSidebar();
     const links = screen.getAllByRole('link');
-    const agentsLink = links.find((l) => l.textContent?.trim() === 'Agents');
-    expect(agentsLink).toBeDefined();
-    expect(agentsLink!.getAttribute('href')).toBe('/agents');
+    const link = links.find((l) => l.textContent?.trim() === 'Memory');
+    expect(link).toBeDefined();
+    expect(link!.getAttribute('href')).toBe('/memory');
   });
 
-  it('shows Swarms without requiring swarm_hosting feature flag', () => {
-    // Even with no features, Swarms should be visible
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      json: () => Promise.resolve({ features: {} }),
-      ok: true,
-    });
-
+  it('renders Skills nav item linking to /skills', () => {
     renderSidebar();
     const links = screen.getAllByRole('link');
-    const swarmsLink = links.find((l) => l.textContent?.trim() === 'Swarms');
-    expect(swarmsLink).toBeDefined();
+    const link = links.find((l) => l.textContent?.trim() === 'Skills');
+    expect(link).toBeDefined();
+    expect(link!.getAttribute('href')).toBe('/skills');
   });
 
-  it('has the "Channels" section header', () => {
+  it('renders Tasks nav item linking to /tasks', () => {
     renderSidebar();
-    const channelsElements = screen.getAllByText('Channels');
-    // One in nav, one as section header
-    expect(channelsElements.length).toBeGreaterThanOrEqual(2);
+    const links = screen.getAllByRole('link');
+    const link = links.find((l) => l.textContent?.trim() === 'Tasks');
+    expect(link).toBeDefined();
+    expect(link!.getAttribute('href')).toBe('/tasks');
   });
 
-  it('marks Home link as active when on /', () => {
+  it('has the Control Plane section header', () => {
+    renderSidebar();
+    expect(screen.getByText('Control Plane')).toBeDefined();
+  });
+
+  it('has the Resources section header', () => {
+    renderSidebar();
+    expect(screen.getByText('Resources')).toBeDefined();
+  });
+
+  it('marks Overview link as active when on /', () => {
     renderSidebar('/');
     const links = screen.getAllByRole('link');
-    const homeLink = links.find((l) => l.textContent?.includes('Home'));
-    expect(homeLink!.className).toContain('active');
+    const overviewLink = links.find((l) => l.textContent?.includes('Overview'));
+    expect(overviewLink).toBeDefined();
+    expect(overviewLink!.className).toContain('active');
   });
 
-  it('does not have a Dashboard nav item', () => {
-    renderSidebar();
+  it('marks Swarms link as active when on /swarms', () => {
+    renderSidebar('/swarms');
     const links = screen.getAllByRole('link');
-    const dashboardLink = links.find(
-      (l) => l.textContent?.trim() === 'Dashboard' && l.getAttribute('href') === '/'
-    );
-    expect(dashboardLink).toBeUndefined();
+    const link = links.find((l) => l.textContent?.trim() === 'Swarms');
+    expect(link).toBeDefined();
+    expect(link!.className).toContain('active');
   });
 });

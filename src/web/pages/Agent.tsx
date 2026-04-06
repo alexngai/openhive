@@ -1,11 +1,15 @@
 import { useParams, Link } from 'react-router-dom';
-import { Calendar, Award, UserPlus, UserMinus } from 'lucide-react';
+import { useMemo } from 'react';
+import { Calendar, Award, UserPlus, UserMinus, MessageSquare } from 'lucide-react';
 import { useAgent, useFollowAgent, useUnfollowAgent } from '../hooks/useApi';
 import { useAuthStore } from '../stores/auth';
 import { Avatar } from '../components/common/Avatar';
 import { AgentBadge } from '../components/common/AgentBadge';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
+import { AgentChat } from 'swarmcraft/ui/embed';
+import type { ChatChannelConfig } from 'swarmcraft/ui/embed';
+import { createMailChatAdapter } from '../adapters/mail-chat-adapter';
 
 export function Agent() {
   const { agentName } = useParams<{ agentName: string }>();
@@ -44,6 +48,12 @@ export function Agent() {
       </div>
     );
   }
+
+  // Mail adapter for this agent — only offered for non-human agents
+  const channelConfig: ChatChannelConfig | undefined = useMemo(() => {
+    if (agent.account_type === 'human') return undefined;
+    return { adapters: [createMailChatAdapter()] };
+  }, [agent.account_type]);
 
   return (
     <div>
@@ -101,6 +111,23 @@ export function Agent() {
         </div>
       </div>
 
+      {/* Send Message — only for agent accounts */}
+      {channelConfig && agentName && (
+        <div className="card mb-3 overflow-hidden">
+          <div className="px-3 py-2 border-b flex items-center gap-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
+            <MessageSquare className="w-3.5 h-3.5 text-honey-500" />
+            <span className="text-xs font-semibold">Send Message</span>
+          </div>
+          <div className="h-64">
+            <AgentChat
+              agentId={agentName}
+              channelConfig={channelConfig}
+              showHeader={false}
+              compact
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -248,6 +248,7 @@ export interface SyncableResource {
   subscriber_count: number;
   owner_agent_id: string;
   git_remote_url?: string;
+  local_path?: string | null;
   tags?: string[];
   owner?: Agent;
   my_permission?: 'read' | 'write' | 'admin' | null;
@@ -415,6 +416,133 @@ export interface SkillLineage {
   rootId: string;
   versions: SkillVersion[];
   forks: Array<{ forkedFrom: string; forkId: string; version: string }>;
+}
+
+// Skill management types
+
+export interface SkillWritePayload {
+  id?: string;
+  name: string;
+  description?: string;
+  problem?: string;
+  solution?: string;
+  verification?: string;
+  tags?: string[];
+  status?: 'active' | 'draft' | 'deprecated' | 'experimental';
+  version?: string;
+  author?: string;
+}
+
+export interface ImportPayload {
+  format?: 'json' | 'agents-md' | 'indexer';
+  content: string | unknown[] | Record<string, unknown>;
+}
+
+export interface ImportResult {
+  format: string;
+  imported: number;
+  failed: number;
+  warnings?: string[];
+}
+
+export interface LoadoutProfile {
+  name: string;
+  builtIn: boolean;
+  criteria: Record<string, unknown> | null;
+}
+
+export interface LoadoutSkillEntry {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  status: string | null;
+  expanded: boolean;
+}
+
+export interface LoadoutStateResponse {
+  available: LoadoutSkillEntry[];
+  expanded: string[];
+  pending: string[];
+  source: {
+    type: string;
+    profileName?: string;
+    taskDescription?: string;
+    criteria?: Record<string, unknown>;
+  };
+  updatedAt: string;
+}
+
+export interface LoadoutRenderResponse {
+  content: string;
+  estimatedTokens: number;
+}
+
+export interface CompileLoadoutPayload {
+  profile?: string;
+  taskDescription?: string;
+  tags?: string[];
+  status?: string[];
+  include?: string[];
+  exclude?: string[];
+  maxSkills?: number;
+  maxTokens?: number;
+}
+
+// Indexer / Scraper types
+
+export interface IndexerSkillSource {
+  type: 'awesome-list' | 'repository';
+  url: string;
+}
+
+export interface ScrapeResult {
+  discovered: number;
+  scraped: number;
+  skipped: number;
+  failed: number;
+  unchanged: number;
+  errors: string[];
+}
+
+export interface IndexResult {
+  indexed: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
+}
+
+export interface ScrapeAndIndexResult {
+  scraped: ScrapeResult;
+  indexed: IndexResult;
+  relationships: { detected: number; skipped: number; errors: string[] };
+  skillsAdded: string[];
+}
+
+export interface IndexerTaxonomyNode {
+  id: string;
+  name: string;
+  path: string[];
+  skillCount: number;
+  children: IndexerTaxonomyNode[];
+}
+
+export interface IndexerStats {
+  totalSkills: number;
+  indexedSkills: number;
+  rawSkills: number;
+  failedSkills: number;
+  taxonomyNodes: number;
+  relationships: number;
+  sources: number;
+}
+
+export interface IndexerStatus {
+  available: boolean;
+  degraded: boolean;
+  hasGithubToken: boolean;
+  hasAnthropicKey: boolean;
+  hasSwarmAvailable: boolean;
 }
 
 // OpenTasks content types

@@ -4,7 +4,7 @@
 
 import { Link } from 'react-router-dom';
 import {
-  Wrench, ChevronRight, Clock, Tag, CheckCircle, FlaskConical, Archive,
+  Wrench, ChevronRight, Clock, Tag, CheckCircle, FlaskConical, Archive, FolderOpen,
 } from 'lucide-react';
 import { useResourcesByType, useSkillsList } from '../hooks/useApi';
 import { useResourcesRealtime } from '../hooks/useRealtimeInvalidation';
@@ -70,6 +70,12 @@ function SkillResourceCard({ resource }: { resource: SyncableResource }) {
             </span>
           )}
         </div>
+        {(resource.local_path || resource.git_remote_url) && (
+          <div className="flex items-center gap-1 mt-1 text-2xs font-mono truncate" style={{ color: 'var(--color-text-muted)' }}>
+            <FolderOpen className="w-3 h-3 shrink-0" />
+            <span className="truncate">{resource.local_path || resource.git_remote_url}</span>
+          </div>
+        )}
       </div>
 
       <ChevronRight

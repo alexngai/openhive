@@ -1,23 +1,18 @@
 /**
  * Coordination Types
  *
- * TypeScript interfaces for inter-swarm coordination: task delegation,
- * direct messaging, and ephemeral shared contexts.
+ * TypeScript interfaces for inter-swarm coordination.
  *
- * Wire format types mirror packages/openhive-types/src/map-coordination.ts
- * and will be consolidated once the openhive-types package is republished.
+ * Task events use generic MAP scope messages (task.created, task.assigned,
+ * task.status). Context sharing and messaging use agent-inbox.
+ *
+ * The TaskAssignParams and TaskStatusParams types are kept for the OpenTasks
+ * compat shim (coordination/compat.ts).
  */
 
 // ============================================================================
-// Wire Format Types (JSON-RPC 2.0)
+// Task Parameter Types (used by compat shim → OpenTasks)
 // ============================================================================
-
-/** JSON-RPC 2.0 method names for coordination notifications */
-export type MapCoordinationMethod =
-  | 'x-openhive/task.assign'
-  | 'x-openhive/task.status'
-  | 'x-openhive/context.share'
-  | 'x-openhive/message.send';
 
 export interface TaskAssignParams {
   task_id: string;
@@ -37,47 +32,6 @@ export interface TaskStatusParams {
   progress?: number;
   result?: Record<string, unknown>;
   error?: string;
-}
-
-export interface ContextShareParams {
-  context_id: string;
-  source_swarm_id: string;
-  target_swarm_ids: string[];
-  hive_id: string;
-  context_type: string;
-  data: Record<string, unknown>;
-  ttl_seconds?: number;
-}
-
-export interface MessageSendParams {
-  message_id: string;
-  from_swarm_id: string;
-  to_swarm_id: string;
-  hive_id?: string;
-  content_type: 'text' | 'json' | 'binary_ref';
-  content: unknown;
-  reply_to?: string;
-  metadata?: Record<string, unknown>;
-}
-
-export type MapCoordinationParams =
-  | TaskAssignParams
-  | TaskStatusParams
-  | ContextShareParams
-  | MessageSendParams;
-
-export interface MapCoordinationMessage {
-  jsonrpc: '2.0';
-  method: MapCoordinationMethod;
-  params: MapCoordinationParams;
-}
-
-/** Create a well-formed coordination notification */
-export function createCoordinationNotification(
-  method: MapCoordinationMethod,
-  params: MapCoordinationParams,
-): MapCoordinationMessage {
-  return { jsonrpc: '2.0', method, params };
 }
 
 // ============================================================================

@@ -22,6 +22,7 @@ import * as mapDAL from '../../db/dal/map.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import * as trajectoryDAL from '../../db/dal/trajectory-checkpoints.js';
 import { handleSyncMessage } from '../../map/sync-listener.js';
+import { handleTrajectoryRequest } from '../../map/trajectory-handler.js';
 import type { MapSyncMessage } from '../../map/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
@@ -240,5 +241,82 @@ describe('Sessionlog wire format E2E: cc-swarm → OpenHive', () => {
       cache_read_tokens: 0,
       api_call_count: 0,
     });
+  });
+
+  it('stores projectPath in resource metadata via trajectory handler', () => {
+    // handleTrajectoryRequest is the callExtension path (vs handleSyncMessage which is the legacy sync path).
+    // It auto-creates resources and stores projectPath from checkpoint metadata.
+    const r = handleTrajectoryRequest(
+      'trajectory/checkpoint',
+      {
+        checkpoint: {
+          id: 'projectpath-wire-test-step1',
+          agent: 'test-swarm-sidecar',
+          branch: 'main',
+          metadata: {
+            project: 'my-project',
+            projectPath: '/Users/dev/projects/my-project',
+            firstPrompt: 'Fix the login bug',
+          },
+        },
+      },
+      { swarmId: swarmId, agentId },
+    );
+
+    expect(r.ok).toBe(true);
+    expect(r.resource_id).toBeDefined();
+
+    // Verify projectPath is stored in the resource metadata
+    const resource = resourcesDAL.findResourceById(r.resource_id);
+    expect(resource).toBeDefined();
+    const meta = resource!.metadata as Record<string, unknown>;
+    expect(meta.projectPath).toBe('/Users/dev/projects/my-project');
+    expect(meta.project).toBe('my-project');
+    expect(meta.firstPrompt).toBe('Fix the login bug');
+  });
+
+  it('updates projectPath on subsequent checkpoints', () => {
+    // Use a unique swarm so we don't pick up state from previous tests
+    const isolatedSwarm = mapDAL.createSwarm(agentId, {
+      name: 'evolving-swarm',
+      map_endpoint: 'ws://localhost:9998/map',
+      map_transport: 'websocket',
+    });
+    mapDAL.updateSwarm(isolatedSwarm.id, { status: 'online' });
+
+    // First checkpoint — creates resource with no projectPath
+    const r1 = handleTrajectoryRequest(
+      'trajectory/checkpoint',
+      {
+        checkpoint: {
+          id: 'update-pp-step1',
+          agent: 'test-swarm-sidecar',
+          metadata: { project: 'evolving-project' },
+        },
+      },
+      { swarmId: isolatedSwarm.id, agentId },
+    );
+
+    const resource1 = resourcesDAL.findResourceById(r1.resource_id);
+    const meta1 = resource1!.metadata as Record<string, unknown>;
+    expect(meta1.projectPath).toBeUndefined(); // no projectPath in first checkpoint
+
+    // Second checkpoint — adds projectPath
+    const r2 = handleTrajectoryRequest(
+      'trajectory/checkpoint',
+      {
+        checkpoint: {
+          id: 'update-pp-step2',
+          agent: 'test-swarm-sidecar',
+          metadata: { project: 'evolving-project', projectPath: '/Users/dev/evolving' },
+        },
+      },
+      { swarmId: isolatedSwarm.id, agentId },
+    );
+
+    expect(r2.resource_id).toBe(r1.resource_id); // same resource reused
+    const resource2 = resourcesDAL.findResourceById(r2.resource_id);
+    const meta2 = resource2!.metadata as Record<string, unknown>;
+    expect(meta2.projectPath).toBe('/Users/dev/evolving');
   });
 });

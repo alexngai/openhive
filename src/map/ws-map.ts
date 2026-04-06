@@ -22,7 +22,7 @@ import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
 import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm } from '../db/dal/map.js';
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
-import { isCoordinationMessage, handleCoordinationMessage } from '../coordination/listener.js';
+import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
 import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph } from './connection-registry.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
@@ -148,15 +148,15 @@ function createNotificationInterceptor(
 
       if (isMapSyncMessage(msg)) {
         handleSyncMessage(msg, swarmId);
-      } else if (isCoordinationMessage(msg)) {
-        handleCoordinationMessage(msg, swarmId);
+      } else if (isMapTaskEvent(msg)) {
+        handleMapTaskEvent(msg.payload as Record<string, unknown>, swarmId);
       } else if (msg.method === 'ping') {
         sendJsonRpc(ws, 'pong', {});
       } else if (msg.method === 'trajectory/content.response') {
         // Content response from swarm — resolve pending content request
         handleContentResponse(msg.params as Record<string, unknown>);
-      } else if (msg.method === 'x-openhive/learning.workspace.result') {
-        // Workspace execution result from swarm — resolve pending learning task
+      } else if (msg.method === 'x-workspace/task.result' || msg.method === 'x-openhive/learning.workspace.result') {
+        // Workspace execution result from swarm — resolve pending task
         handleWorkspaceResult(msg.params as Record<string, unknown>);
       } else if (typeof msg.method === 'string' && msg.method.startsWith('opentasks/') && msg.method.endsWith('.response')) {
         // OpenTasks response from swarm — resolve pending remote query
@@ -188,6 +188,25 @@ function createNotificationInterceptor(
 
 export function setupMapWebSocket(fastify: FastifyInstance, config: Config): void {
   const mapServer = initMapServer(config);
+
+  // Subscribe to MAP scope messages for task event interception.
+  // When agents send task events via connection.send({ scope }, payload),
+  // the MAPServer processes the map/send request and fires message.sent.
+  // We intercept these to route task events to the OpenTasks compat shim.
+  mapServer.eventBus.on('message.sent', (event: any) => {
+    const message = event?.data?.message;
+    if (!message?.payload || typeof message.payload !== 'object') return;
+    const payload = message.payload as Record<string, unknown>;
+    if (typeof payload.type !== 'string') return;
+
+    // Only handle task events
+    const taskTypes = new Set(['task.created', 'task.assigned', 'task.status']);
+    if (!taskTypes.has(payload.type)) return;
+
+    // Extract source swarm ID from the message sender
+    const sourceSwarmId = typeof message.from === 'string' ? message.from : 'unknown';
+    handleMapTaskEvent(payload, sourceSwarmId);
+  });
 
   fastify.get('/ws/map', { websocket: true }, async (socket, request) => {
     const trustModel = config.mapHub.trustModel;

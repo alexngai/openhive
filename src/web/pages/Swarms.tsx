@@ -12,6 +12,7 @@ import {
 } from '../hooks/useApi';
 import { useSwarmRealtime } from '../hooks/useRealtimeInvalidation';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
+import { Dialog } from '../components/common/Dialog';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { HostedStateBadge, MapStatusBadge, SandboxBadge, SectionLabel } from '../components/swarm/StatusBadges';
 import type { HostedSwarm, MapSwarm } from '../lib/api';
@@ -90,7 +91,7 @@ interface WorkspaceRepoEntry {
 
 const emptyRepo = (): WorkspaceRepoEntry => ({ url: '', branch: '', path: '', depth: '' });
 
-function SpawnForm({ onClose }: { onClose: () => void }) {
+export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState(() =>
     uniqueNamesGenerator({ dictionaries: [adjectives, colors, animals], separator: '-', length: 3 })
   );
@@ -174,7 +175,8 @@ function SpawnForm({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="card p-4 mb-3">
+    <Dialog open onClose={onClose} maxWidth="max-w-xl">
+      <div className="p-4">
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-sm font-semibold flex items-center gap-1.5">
           <Zap className="w-3.5 h-3.5 text-honey-500" />
@@ -431,7 +433,8 @@ function SpawnForm({ onClose }: { onClose: () => void }) {
           </button>
         </div>
       </form>
-    </div>
+      </div>
+    </Dialog>
   );
 }
 
@@ -439,7 +442,7 @@ function SpawnForm({ onClose }: { onClose: () => void }) {
 // Connect Form
 // =============================================================================
 
-function ConnectForm({ onClose }: { onClose: () => void }) {
+export function ConnectFormDialog({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [endpoint, setEndpoint] = useState('');
@@ -471,7 +474,8 @@ function ConnectForm({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="card p-4 mb-3">
+    <Dialog open onClose={onClose} maxWidth="max-w-lg">
+      <div className="p-4">
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-sm font-semibold flex items-center gap-1.5">
           <Link2 className="w-3.5 h-3.5 text-honey-500" />
@@ -601,7 +605,8 @@ function ConnectForm({ onClose }: { onClose: () => void }) {
           </button>
         </div>
       </form>
-    </div>
+      </div>
+    </Dialog>
   );
 }
 
@@ -919,29 +924,27 @@ export function Swarms() {
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <h1 className="text-lg font-semibold">Swarms</h1>
-        {formMode === 'none' && (
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => setFormMode('spawn')}
-              className="btn btn-primary flex items-center gap-1.5 text-xs"
-            >
-              <Plus className="w-3 h-3" />
-              Spawn
-            </button>
-            <button
-              onClick={() => setFormMode('connect')}
-              className="btn btn-secondary flex items-center gap-1.5 text-xs"
-            >
-              <Link2 className="w-3 h-3" />
-              Connect
-            </button>
-          </div>
-        )}
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setFormMode('spawn')}
+            className="btn btn-primary flex items-center gap-1.5 text-xs"
+          >
+            <Plus className="w-3 h-3" />
+            Spawn
+          </button>
+          <button
+            onClick={() => setFormMode('connect')}
+            className="btn btn-secondary flex items-center gap-1.5 text-xs"
+          >
+            <Link2 className="w-3 h-3" />
+            Connect
+          </button>
+        </div>
       </div>
 
       {/* Forms */}
-      {formMode === 'spawn' && <SpawnForm onClose={() => setFormMode('none')} />}
-      {formMode === 'connect' && <ConnectForm onClose={() => setFormMode('none')} />}
+      {formMode === 'spawn' && <SpawnFormDialog onClose={() => setFormMode('none')} />}
+      {formMode === 'connect' && <ConnectFormDialog onClose={() => setFormMode('none')} />}
 
       {/* Hosted section */}
       <SectionHeader
