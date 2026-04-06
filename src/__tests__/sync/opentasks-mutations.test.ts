@@ -210,7 +210,7 @@ describe('OpenTasks Mutations & Compatibility Shim', () => {
         rateLimit: { enabled: false },
       }) as Config;
       app = Fastify({ logger: false });
-      app.decorateRequest('agent', null);
+      app.decorateRequest('agent');
 
       await app.register(
         async (api: typeof app) => {

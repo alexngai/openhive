@@ -54,16 +54,16 @@
     "url": "https://github.com/alexngai/openhive"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.49",
     "@aws-sdk/client-s3": "^3.980.0",
-    "@fastify/cors": "^9.0.1",
-    "@fastify/multipart": "^8.3.1",
-    "@fastify/rate-limit": "^9.1.0",
-    "@fastify/static": "^7.0.4",
-    "@fastify/websocket": "^10.0.1",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/multipart": "^9.0.0",
+    "@fastify/rate-limit": "^10.0.0",
+    "@fastify/static": "^8.0.0",
+    "@fastify/websocket": "^11.0.0",
     "@libsql/client": "^0.14.0",
     "@lydell/node-pty": "^1.2.0-beta.3",
     "@multi-agent-protocol/sdk": "^0.1.8",
@@ -80,7 +80,7 @@
     "cognitive-core": "^0.2.3",
     "commander": "^14.0.2",
     "date-fns": "^4.1.0",
-    "fastify": "^4.28.1",
+    "fastify": "^5.0.0",
     "ghostty-web": "^0.4.0",
     "graphology": "^0.26.0",
     "graphology-layout": "^0.6.1",
@@ -130,6 +130,7 @@
     "@types/react-dom": "^18.3.7",
     "@types/ws": "^8.5.14",
     "@vitejs/plugin-react": "^4.7.0",
+    "claude-code-swarm": "^0.3.18",
     "jsdom": "^28.1.0",
     "tailwindcss": "^4.1.18",
     "tsup": "^8.3.5",

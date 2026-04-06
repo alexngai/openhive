@@ -176,7 +176,7 @@ function createTestConfig(): Config {
 
 async function createTestApp(config: Config): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
-  app.decorateRequest('agent', null);
+  app.decorateRequest('agent');
   await app.register(
     async (api) => {
       await api.register(resourceContentRoutes, { config });

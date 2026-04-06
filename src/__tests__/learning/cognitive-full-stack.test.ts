@@ -137,7 +137,7 @@ describeFn(
         name: 'cognitive-e2e-agent',
       });
 
-      setLocalAgent(agentResult.agent.id);
+      setLocalAgent(agentResult.agent);
 
       // Initialize SwarmManager
       swarmManager = new SwarmManager(
@@ -151,7 +151,7 @@ describeFn(
 
       // Build Fastify
       app = Fastify({ logger: false });
-      app.decorateRequest('agent', null);
+      app.decorateRequest('agent');
 
       app.addHook('preHandler', async (request: any) => {
         const auth = request.headers.authorization;
@@ -192,7 +192,7 @@ describeFn(
     afterAll(async () => {
       if (swarmManager) {
         try {
-          await swarmManager.stopAll();
+          await swarmManager.shutdown();
         } catch {
           /* ignore */
         }

@@ -34,14 +34,14 @@ import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 // cc-swarm real function
 // @ts-expect-error — .mjs import
-import { buildTrajectoryCheckpoint } from '../../../references/claude-code-swarm/src/sessionlog.mjs';
+import { buildTrajectoryCheckpoint } from 'claude-code-swarm/src/sessionlog.mjs';
 
 vi.mock('../../realtime/index.js', () => ({
   broadcastToChannel: vi.fn(),
 }));
 
 // Mock cc-swarm config for buildTrajectoryCheckpoint
-vi.mock('../../../references/claude-code-swarm/src/config.mjs', () => ({
+vi.mock('claude-code-swarm/src/config.mjs', () => ({
   readConfig: () => ({ sessionlog: { enabled: true, sync: 'metrics', mode: 'plugin' } }),
   resolveTeamName: () => 'e2e-team',
   resolveScope: () => 'swarm:e2e-team',
@@ -136,7 +136,7 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
     });
 
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     await app.register(websocket);
     setHeartbeatInterval(HEARTBEAT_MS);
     setupMapWebSocket(app, config);

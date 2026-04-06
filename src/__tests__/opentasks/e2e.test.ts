@@ -396,7 +396,7 @@ describe("OpenTasks E2E Integration", { timeout: 60000 }, () => {
     });
 
     app = Fastify({ logger: false });
-    app.decorateRequest("agent", null);
+    app.decorateRequest('agent');
     await app.register(
       async (api) => {
         await api.register(resourceContentRoutes, { config });

@@ -8,7 +8,7 @@
  * 4. Sync orchestrator is called for cloned resources
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Mocks ──
 
@@ -38,10 +38,10 @@ vi.mock('../../api/routes/resource-content.js', () => ({
 }));
 
 vi.mock('../../db/dal/syncable-resources.js', () => ({
-  findResourceById: (...args: unknown[]) => mockFindResourceById(...args),
-  updateResourceSyncState: (...args: unknown[]) => mockUpdateResourceSyncState(...args),
-  createSyncEvent: (...args: unknown[]) => mockCreateSyncEvent(...args),
-  getResourceSubscribers: (...args: unknown[]) => mockGetResourceSubscribers(...args),
+  findResourceById: (...args: any[]) => mockFindResourceById(...args),
+  updateResourceSyncState: (...args: any[]) => mockUpdateResourceSyncState(...args),
+  createSyncEvent: (...args: any[]) => (mockCreateSyncEvent as any)(...args),
+  getResourceSubscribers: (...args: any[]) => (mockGetResourceSubscribers as any)(...args),
 }));
 
 vi.mock('../../sync/resource-hooks.js', () => ({

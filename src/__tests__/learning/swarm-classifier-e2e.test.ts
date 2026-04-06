@@ -191,7 +191,7 @@ describeIf('Live E2E — Swarm-Delegated Skill Classification', () => {
     app = Fastify({ logger: false });
     await app.register(websocket);
 
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     (app as unknown as { swarmManager: SwarmManager }).swarmManager = swarmManager;
     (app as unknown as { swarmDelegate: SwarmAgentDelegate }).swarmDelegate = delegate;
 

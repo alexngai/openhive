@@ -7,7 +7,7 @@
  * - Skips closed connections
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { registerInbound, unregisterInbound, getAllInbound } from '../../map/connection-registry.js';
 import { findSwarmForResource } from '../../map/opentasks-remote.js';
 import type { SyncableResource } from '../../types.js';

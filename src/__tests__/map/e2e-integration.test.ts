@@ -107,7 +107,7 @@ describe('E2E Integration: Open Mode — full client flow', () => {
     });
 
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     await app.register(websocket);
     setupMapWebSocket(app, config);
     await app.listen({ port: PORT, host: '127.0.0.1' });
@@ -245,7 +245,7 @@ describe('E2E Integration: Verified Mode — full client flow', () => {
     });
 
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     await app.register(websocket);
     setupMapWebSocket(app, config);
     await app.listen({ port: PORT, host: '127.0.0.1' });

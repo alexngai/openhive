@@ -27,6 +27,7 @@ interface ProjectStore {
 
 interface PipelineService {
   startAnalysis(repoPath: string): string;
+  loadProject(projectId: string): Promise<unknown>;
   isReady(): boolean;
 }
 
@@ -102,6 +103,20 @@ export async function setupRepoBridge(
     if (shouldAnalyze && !cwdAnalyzed && !pipelineService.isReady()) {
       cwdAnalyzed = true;
 
+      // Try loading from cache first
+      if (projectStore) {
+        try {
+          const existing = await projectStore.getByPath(projectPath);
+          if (existing && existing.status !== 'error') {
+            const loaded = await pipelineService.loadProject(existing.id);
+            if (loaded) {
+              console.log(`[swarmcraft-bridge] Loaded cached project at ${projectPath} (id: ${existing.id})`);
+              return;
+            }
+          }
+        } catch { /* fall through to full analysis */ }
+      }
+
       if (isLocal) {
         try {
           const jobId = pipelineService.startAnalysis(projectPath);
@@ -138,18 +153,36 @@ export async function setupRepoBridge(
     console.warn(`[swarmcraft-bridge] Repo hydration failed: ${(err as Error).message}`);
   }
 
-  // If no swarm matched CWD, analyze CWD directly
+  // If no swarm matched CWD, try cache then analyze CWD directly
   if (!cwdAnalyzed && !pipelineService.isReady()) {
-    try {
-      const hasPackageJson = fs.existsSync(path.join(cwdPath, 'package.json'));
-      const hasSrc = fs.existsSync(path.join(cwdPath, 'src'));
-      if (hasPackageJson || hasSrc) {
-        cwdAnalyzed = true;
-        const jobId = pipelineService.startAnalysis(cwdPath);
-        console.log(`[swarmcraft-bridge] Auto-analyzing CWD project at ${cwdPath} (job: ${jobId})`);
+    // Try loading from cache first
+    let loadedFromCache = false;
+    if (projectStore) {
+      try {
+        const existing = await projectStore.getByPath(cwdPath);
+        if (existing && existing.status !== 'error') {
+          const loaded = await pipelineService.loadProject(existing.id);
+          if (loaded) {
+            loadedFromCache = true;
+            cwdAnalyzed = true;
+            console.log(`[swarmcraft-bridge] Loaded cached CWD project at ${cwdPath} (id: ${existing.id})`);
+          }
+        }
+      } catch { /* fall through to full analysis */ }
+    }
+
+    if (!loadedFromCache) {
+      try {
+        const hasPackageJson = fs.existsSync(path.join(cwdPath, 'package.json'));
+        const hasSrc = fs.existsSync(path.join(cwdPath, 'src'));
+        if (hasPackageJson || hasSrc) {
+          cwdAnalyzed = true;
+          const jobId = pipelineService.startAnalysis(cwdPath);
+          console.log(`[swarmcraft-bridge] Auto-analyzing CWD project at ${cwdPath} (job: ${jobId})`);
+        }
+      } catch (err) {
+        console.warn(`[swarmcraft-bridge] CWD analysis failed: ${(err as Error).message}`);
       }
-    } catch (err) {
-      console.warn(`[swarmcraft-bridge] CWD analysis failed: ${(err as Error).message}`);
     }
   }
 

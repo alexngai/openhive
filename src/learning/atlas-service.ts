@@ -8,7 +8,7 @@ import { triggerIngestion } from './ingestion.js';
 import { DistributedLearningCoordinator } from './distributed.js';
 import type { Config } from '../config.js';
 import { emitBatchSyncEvents } from './sync.js';
-import { type Atlas, createAtlas, type ProcessResult, type BatchResult, SessionBank } from 'cognitive-core';
+import { type Atlas, createAtlas, type ImmediateResult, type UnifiedBatchResult, SessionBank } from 'cognitive-core';
 import { type LearningLogger, defaultLogger } from './types.js';
 
 /** A learning activity event for the timeline */
@@ -138,7 +138,7 @@ export class AtlasService {
    * Process a trajectory through the learning pipeline.
    * Broadcasts learning:instant WS event on completion.
    */
-  async processTrajectory(trajectory: Parameters<Atlas['processTrajectory']>[0]): Promise<ProcessResult | null> {
+  async processTrajectory(trajectory: Parameters<Atlas['processTrajectory']>[0]): Promise<ImmediateResult | null> {
     if (!this.atlas) return null;
 
     try {
@@ -165,7 +165,7 @@ export class AtlasService {
    * Trigger batch learning.
    * Broadcasts learning:batch WS event on completion.
    */
-  async runBatchLearning(): Promise<BatchResult> {
+  async runBatchLearning(): Promise<UnifiedBatchResult> {
     if (!this.atlas) {
       throw new Error('Learning engine is not available');
     }

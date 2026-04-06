@@ -154,7 +154,7 @@ export class SandboxedLocalProvider implements HostingProvider {
         }
       }
     };
-    process.on('exit', this.exitHandler);
+    process.once('exit', this.exitHandler);
   }
 
   /** Remove the process exit handler */
@@ -376,6 +376,11 @@ export class SandboxedLocalProvider implements HostingProvider {
         });
       });
     }
+
+    // Remove all listeners on the child process to release closures
+    child.removeAllListeners();
+    child.stdout?.removeAllListeners();
+    child.stderr?.removeAllListeners();
 
     this.processes.delete(instanceId);
   }

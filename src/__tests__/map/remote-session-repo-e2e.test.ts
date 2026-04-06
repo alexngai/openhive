@@ -32,15 +32,34 @@ import { setLocalAgent } from '../../api/middleware/auth.js';
 import { initializeLocalSessionStorage } from '../../sessions/storage/index.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-// Sessionlog module — real git operations
+// Sessionlog module
 import {
-  cloneSessionRepo,
-  pushSessionRepo,
-  getProjectID,
-} from '../../../references/sessionlog/src/git-operations.js';
-import { createSessionStore } from '../../../references/sessionlog/src/store/session-store.js';
-import { createCheckpointStore } from '../../../references/sessionlog/src/store/checkpoint-store.js';
-import { CHECKPOINTS_BRANCH, SESSION_DIR_NAME } from '../../../references/sessionlog/src/types.js';
+  git,
+  createSessionStore,
+  createCheckpointStore,
+  CHECKPOINTS_BRANCH,
+  SESSION_DIR_NAME,
+} from 'sessionlog';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+/** Clone a session repo (test helper — replaces unpublished cloneSessionRepo) */
+async function cloneSessionRepo(remote: string, localPath: string): Promise<string> {
+  const absPath = path.resolve(localPath);
+  await fs.promises.mkdir(absPath, { recursive: true });
+  await execFileAsync('git', ['clone', '--depth', '1', remote, absPath], {
+    timeout: 120000,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  });
+  return absPath;
+}
+
+/** Push a branch to remote (test helper — replaces unpublished pushSessionRepo) */
+async function pushSessionRepo(localPath: string, branch: string): Promise<void> {
+  await git(['push', 'origin', branch], { cwd: localPath, timeout: 60000 });
+}
 
 vi.mock('../../realtime/index.js', () => ({
   broadcastToChannel: vi.fn(),
@@ -169,7 +188,7 @@ beforeAll(async () => {
   });
 
   app = Fastify();
-  app.decorateRequest('agent', null);
+  app.decorateRequest('agent');
   await app.register(sessionsRoutes, { prefix: '/api/v1', config } as any);
   await app.ready();
 }, 15000);
