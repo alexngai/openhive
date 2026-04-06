@@ -137,7 +137,7 @@ describeFn(
         name: 'cognitive-e2e-agent',
       });
 
-      setLocalAgent(agentResult.agent.id);
+      setLocalAgent(agentResult.agent);
 
       // Initialize SwarmManager
       swarmManager = new SwarmManager(
@@ -192,7 +192,7 @@ describeFn(
     afterAll(async () => {
       if (swarmManager) {
         try {
-          await swarmManager.stopAll();
+          await swarmManager.shutdown();
         } catch {
           /* ignore */
         }

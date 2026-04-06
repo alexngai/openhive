@@ -24,7 +24,7 @@ interface SwarmCraftInstance {
   positionService: BridgeContext['positionService'];
   trajectoryService?: BridgeContext['trajectoryService'];
   mapClientManager?: { connect(opts: Record<string, unknown>): Promise<void> };
-  pipelineService?: { startAnalysis(repoPath: string): string; isReady(): boolean };
+  pipelineService?: { startAnalysis(repoPath: string): string; loadProject(projectId: string): Promise<unknown>; isReady(): boolean };
 }
 
 /**

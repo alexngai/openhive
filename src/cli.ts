@@ -319,24 +319,34 @@ async function startServer(opts: StartOptions): Promise<string> {
     console.log(`\n  Press Ctrl+C to stop\n`);
 
     let shuttingDown = false;
-    const shutdown = async () => {
+    const shutdown = async (signal?: string) => {
       if (shuttingDown) return;
       shuttingDown = true;
-      console.log('\n\n  Shutting down...');
 
-      // Force exit after 10s if graceful shutdown hangs
+      // SIGTERM from tsx watch / process managers: exit quickly to avoid
+      // "Previous process hasn't exited yet" and MaxListenersExceeded warnings.
+      // SIGINT (Ctrl+C) still gets a full graceful shutdown.
+      const isTermSignal = signal === 'SIGTERM';
+      const timeoutMs = isTermSignal ? 2_000 : 10_000;
+
+      if (!isTermSignal) {
+        console.log('\n\n  Shutting down...');
+      }
+
       const forceExit = setTimeout(() => {
-        console.warn('  Shutdown timed out, forcing exit');
+        if (!isTermSignal) {
+          console.warn('  Shutdown timed out, forcing exit');
+        }
         process.exit(1);
-      }, 10_000);
+      }, timeoutMs);
       forceExit.unref();
 
       await server.stop();
       process.exit(0);
     };
 
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
 
     return address;
   } catch (error) {

@@ -8,16 +8,14 @@ import { mapHubEvents } from '../../map/service.js';
 
 describe('SwarmCraft Bridge Event Emissions', () => {
   let events: Array<{ name: string; args: unknown[] }>;
-  let originalEmit: typeof mapHubEvents.emit;
 
   beforeEach(() => {
     events = [];
-    originalEmit = mapHubEvents.emit.bind(mapHubEvents);
     // Spy on emit to capture all events
-    vi.spyOn(mapHubEvents, 'emit').mockImplementation((event: string, ...args: unknown[]) => {
+    vi.spyOn(mapHubEvents, 'emit').mockImplementation(((event: string, ...args: unknown[]) => {
       events.push({ name: event, args });
       return true;
-    });
+    }) as any);
   });
 
   afterEach(() => {

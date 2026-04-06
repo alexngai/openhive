@@ -171,7 +171,7 @@ describeFn('Full Stack E2E: OpenHive → OpenSwarm → macro-agent', () => {
     // Stop swarm if running
     if (spawnedSwarmId && swarmManager) {
       try {
-        await swarmManager.stopSwarm(spawnedSwarmId);
+        await swarmManager.stop(spawnedSwarmId, '');
       } catch { /* ignore */ }
     }
 
@@ -240,7 +240,7 @@ describeFn('Full Stack E2E: OpenHive → OpenSwarm → macro-agent', () => {
     // If MAP server not ready, dump swarm logs to diagnose
     if (!mapReady) {
       try {
-        const agentId = (await import('../../db/dal/agents.js')).findAgentByApiKey(agentApiKey)?.id ?? '';
+        const agentId = (await (await import('../../db/dal/agents.js')).findAgentByApiKey(agentApiKey))?.id ?? '';
         const logs = await swarmManager.getLogs(spawnedSwarmId, agentId, { lines: 50 });
         console.log(`[full-stack-e2e] Swarm logs:\n${logs}`);
       } catch (e) {

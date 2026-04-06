@@ -10,11 +10,12 @@ import { setupRepoBridge } from '../../swarmcraft/repo-bridge.js';
 import { listSwarms } from '../../db/dal/map.js';
 
 describe('Repo Bridge', () => {
-  let mockPipeline: { startAnalysis: ReturnType<typeof vi.fn>; isReady: ReturnType<typeof vi.fn> };
+  let mockPipeline: { startAnalysis: ReturnType<typeof vi.fn>; loadProject: ReturnType<typeof vi.fn>; isReady: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     mockPipeline = {
       startAnalysis: vi.fn(() => 'job-123'),
+      loadProject: vi.fn(() => Promise.resolve(null)),
       isReady: vi.fn(() => false),
     };
     vi.clearAllMocks();

@@ -129,6 +129,7 @@
     "@types/react-dom": "^18.3.7",
     "@types/ws": "^8.5.14",
     "@vitejs/plugin-react": "^4.7.0",
+    "claude-code-swarm": "^0.3.18",
     "jsdom": "^28.1.0",
     "tailwindcss": "^4.1.18",
     "tsup": "^8.3.5",

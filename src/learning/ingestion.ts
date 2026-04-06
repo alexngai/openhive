@@ -1,4 +1,4 @@
-import { EntireTrajectorySource } from 'cognitive-core';
+import { SessionTrajectorySource } from 'cognitive-core';
 import type { AtlasService } from './atlas-service.js';
 import type { DistributedLearningCoordinator } from './distributed.js';
 import type { LearningLogger } from './types.js';
@@ -60,7 +60,7 @@ async function ingestFromAllBanks(
 
       log.info(`Ingesting ${sessions.length} unprocessed session(s) from bank ${i} (swarm ${swarmId})`);
 
-      const source = new EntireTrajectorySource(sessionBank, { outcomeStrategy: 'heuristic' });
+      const source = new SessionTrajectorySource(sessionBank, { outcomeStrategy: 'heuristic' });
 
       for (const session of sessions) {
         try {
