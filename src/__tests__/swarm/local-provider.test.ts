@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { LocalProvider } from '../../swarm/providers/local.js';
+import { SandboxedLocalProvider } from '../../swarm/providers/sandboxed-local.js';
 import { testRoot, cleanTestRoot } from '../helpers/test-dirs.js';
 
 const TEST_ROOT = testRoot('swarm-provider');
@@ -275,5 +276,125 @@ describe('LocalProvider', () => {
       provider = new LocalProvider('node');
       expect(provider.recordHealthFailure('nonexistent')).toBe(0);
     });
+  });
+
+  describe('event listener cleanup', () => {
+    it('should use once() so exit listener does not accumulate across instances', () => {
+      const before = process.listenerCount('exit');
+
+      const p1 = new LocalProvider('node');
+      const p2 = new LocalProvider('node');
+      const p3 = new LocalProvider('node');
+
+      const after = process.listenerCount('exit');
+      // Each instance adds exactly one listener
+      expect(after - before).toBe(3);
+
+      // Cleanup
+      p1.removeExitHandler();
+      p2.removeExitHandler();
+      p3.removeExitHandler();
+
+      expect(process.listenerCount('exit')).toBe(before);
+    });
+
+    it('should not exceed default maxListeners with many instances', () => {
+      const providers: LocalProvider[] = [];
+      const before = process.listenerCount('exit');
+
+      // Simulate hot-reload: create providers, remove them, create new ones
+      for (let i = 0; i < 5; i++) {
+        const p = new LocalProvider('node');
+        providers.push(p);
+      }
+
+      // Remove all (simulating proper shutdown)
+      for (const p of providers) {
+        p.removeExitHandler();
+      }
+
+      // All listeners should be cleaned up
+      expect(process.listenerCount('exit')).toBe(before);
+
+      // Create another batch — should work without warning
+      const batch2: LocalProvider[] = [];
+      for (let i = 0; i < 5; i++) {
+        const p = new LocalProvider('node');
+        batch2.push(p);
+      }
+
+      // Should still be well under the default max (10)
+      expect(process.listenerCount('exit') - before).toBe(5);
+
+      for (const p of batch2) {
+        p.removeExitHandler();
+      }
+    });
+
+    it('should clean up child process listeners on deprovision', async () => {
+      provider = new LocalProvider(`node ${SLEEP_SCRIPT}`);
+
+      const result = await provider.provision({
+        name: 'listener-cleanup-test',
+        adapter: '',
+        bootstrap_token: 'dGVzdA==',
+        assigned_port: 19012,
+        data_dir: path.join(TEST_DATA_DIR, 'listener-cleanup-test'),
+      });
+
+      await provider.deprovision(result.instance_id);
+
+      // After deprovision, instance should be fully removed
+      const status = await provider.getStatus(result.instance_id);
+      expect(status.state).toBe('stopped');
+    }, 15000);
+  });
+});
+
+describe('SandboxedLocalProvider', () => {
+  let provider: SandboxedLocalProvider;
+
+  afterEach(async () => {
+    if (provider) {
+      await provider.stopAll();
+      provider.removeExitHandler();
+    }
+    cleanTestRoot(TEST_ROOT);
+  });
+
+  describe('event listener cleanup', () => {
+    it('should use once() so exit listener does not accumulate across instances', () => {
+      const before = process.listenerCount('exit');
+
+      const p1 = new SandboxedLocalProvider('node');
+      const p2 = new SandboxedLocalProvider('node');
+      const p3 = new SandboxedLocalProvider('node');
+
+      const after = process.listenerCount('exit');
+      expect(after - before).toBe(3);
+
+      p1.removeExitHandler();
+      p2.removeExitHandler();
+      p3.removeExitHandler();
+
+      expect(process.listenerCount('exit')).toBe(before);
+    });
+
+    it('should clean up child process listeners on deprovision', async () => {
+      provider = new SandboxedLocalProvider(`node ${SLEEP_SCRIPT}`);
+
+      const result = await provider.provision({
+        name: 'sandbox-listener-cleanup',
+        adapter: '',
+        bootstrap_token: 'dGVzdA==',
+        assigned_port: 19013,
+        data_dir: path.join(TEST_DATA_DIR, 'sandbox-listener-cleanup'),
+      });
+
+      await provider.deprovision(result.instance_id);
+
+      const status = await provider.getStatus(result.instance_id);
+      expect(status.state).toBe('stopped');
+    }, 15000);
   });
 });

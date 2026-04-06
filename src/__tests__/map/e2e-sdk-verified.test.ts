@@ -54,7 +54,7 @@ describe('E2E: MAP SDK — Verified Mode', () => {
     });
 
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     await app.register(websocket);
     setupMapWebSocket(app, config);
     await app.listen({ port: PORT, host: '127.0.0.1' });

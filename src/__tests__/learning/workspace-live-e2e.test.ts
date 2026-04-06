@@ -141,7 +141,7 @@ describeIf('Live E2E — Workspace Execution with Connected Swarm', () => {
     app = Fastify({ logger: false });
     await app.register(websocket);
 
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     (app as unknown as { atlasService: AtlasService }).atlasService = atlasService;
     (app as unknown as { swarmManager: SwarmManager }).swarmManager = swarmManager;
 

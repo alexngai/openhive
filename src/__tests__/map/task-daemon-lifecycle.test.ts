@@ -6,7 +6,7 @@
  * - ensureDaemon uses parent dir as cwd when opentasksDir is .opentasks/
  */
 
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { resolveDaemonSocket } from '../../map/task-daemon-client.js';

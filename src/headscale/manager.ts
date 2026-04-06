@@ -101,12 +101,12 @@ export class HeadscaleManager {
       if (line) console.error(`[headscale] ${line}`);
     });
 
-    this.process.on('exit', (code, signal) => {
+    this.process.once('exit', (code, signal) => {
       console.log(`[headscale] Process exited (code=${code}, signal=${signal})`);
       this.process = null;
     });
 
-    this.process.on('error', (err) => {
+    this.process.once('error', (err) => {
       console.error(`[headscale] Failed to start: ${err.message}`);
       this.process = null;
     });
@@ -158,7 +158,7 @@ export class HeadscaleManager {
         }, 5000);
 
         if (this.process) {
-          this.process.on('exit', () => {
+          this.process.once('exit', () => {
             clearTimeout(timeout);
             resolve();
           });

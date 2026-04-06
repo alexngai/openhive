@@ -10,18 +10,16 @@ import websocket from '@fastify/websocket';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as net from 'net';
-import { spawn, ChildProcess, execSync } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { createIngestKey } from '../../db/dal/ingest-keys.js';
 import { setupMapWebSocket, stopMapWebSocket } from '../../map/ws-map.js';
 import { getAllInbound, setDefaultTaskGraph } from '../../map/connection-registry.js';
-import { ConfigSchema, type Config } from '../../config.js';
+import { ConfigSchema } from '../../config.js';
 import { resourceContentRoutes } from '../../api/routes/resource-content.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
-import { testRoot, testDbPath, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
-
 // Import opentasks for daemon setup
 import {
   createGraphStore, createIPCServer, createDaemonFlushManager,
@@ -87,6 +85,7 @@ describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks via MAP Connector', { tim
     const { agent, apiKey } = await agentsDAL.createAgent({ name: 'remote-e2e-agent', description: 'E2E' });
     testAgent = { id: agent.id, apiKey };
     const { plaintext_key } = createIngestKey(agent.id, { label: 'remote-e2e', agent_id: agent.id });
+    const _fullAgent = agent;
     ingestToken = plaintext_key;
 
     // Start opentasks daemon via API
@@ -142,8 +141,8 @@ describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks via MAP Connector', { tim
     app = Fastify({ logger: false });
     await app.register(websocket);
     setupMapWebSocket(app, config);
-    app.decorateRequest('agent', null);
-    setLocalAgent(testAgent.id);
+    app.decorateRequest('agent');
+    setLocalAgent(_fullAgent);
     await app.register(async (api) => { await api.register(resourceContentRoutes, { config }); }, { prefix: '/api/v1' });
     await app.listen({ port: SERVER_PORT, host: '127.0.0.1' });
   }, 30000);
@@ -240,7 +239,7 @@ describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks via MAP Connector', { tim
 
     if (summaryRes.statusCode !== 200) {
       console.log('Summary status:', summaryRes.statusCode, summaryRes.body);
-      console.log('Sidecar stderr (last 500):', sidecar.stderr().slice(-500));
+      console.log('Sidecar stderr (last 500):', sidecar?.stderr().slice(-500));
     }
 
     expect(summaryRes.statusCode).toBe(200);

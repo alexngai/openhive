@@ -47,7 +47,6 @@ async function createTestApp(config: Config): Promise<FastifyInstance> {
 }
 
 describe('Admin Config API', () => {
-  let adminAgentId: string;
   let bearerToken: string; // ingest key for authMiddleware (GET)
 
   beforeAll(async () => {
@@ -59,8 +58,6 @@ describe('Admin Config API', () => {
       description: 'Admin agent for config tests',
       is_admin: true,
     });
-    adminAgentId = agent.id;
-
     // Create an ingest key for Bearer auth on GET (authMiddleware)
     const { plaintext_key } = ingestKeysDAL.createIngestKey(agent.id, {
       label: 'config-test-key',

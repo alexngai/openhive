@@ -160,7 +160,7 @@ describe('E2E: Swarm Hosting + Terminal WebSocket', () => {
 
     // Build Fastify app with auth, websocket, routes
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
 
     // Simple auth hook mapping Bearer tokens → agents
     app.addHook('preHandler', async (request: any) => {

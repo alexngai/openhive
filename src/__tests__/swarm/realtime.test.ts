@@ -190,7 +190,7 @@ describe('E2E: Swarm Realtime WebSocket Events', () => {
 
     // Build Fastify app
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
 
     app.addHook('preHandler', async (request: any) => {
       const auth = request.headers.authorization;

@@ -734,43 +734,30 @@ export async function createHive(
         staleSweepTimer = null;
       }
       stopHeartbeat();
-      // Destroy terminal sessions
+
+      // Synchronous cleanup
       const ptyMgr = (
         fastify as unknown as { ptyManager?: { destroyAll(): void } }
       ).ptyManager;
       if (ptyMgr) {
         ptyMgr.destroyAll();
       }
-      // Disconnect SwarmHub connector
-      if (swarmhubConnector) {
-        await swarmhubConnector.disconnect();
-      }
-      // Stop all bridges
-      if (bridgeManager) {
-        await bridgeManager.stopAll();
-      }
-      // Stop learning engine
-      if (atlasService) {
-        await atlasService.close();
-      }
-      // Stop hosted swarms
-      if (swarmManager) {
-        await swarmManager.shutdown();
-      }
-      // Stop MAP inbound WebSocket connections
       stopMapWebSocket();
-      // Stop MAP sync listener (outbound connections)
       stopMapSyncListener();
-      // Stop local resource file watchers
       stopLocalResourceWatchers();
-      // Stop sync service
       if (syncService) {
         syncService.stop();
       }
-      // Stop mesh networking provider
-      if (networkProvider.type !== "none") {
-        await networkProvider.stop();
-      }
+
+      // Parallel async cleanup — these are independent of each other
+      await Promise.allSettled([
+        swarmhubConnector?.disconnect(),
+        bridgeManager?.stopAll(),
+        atlasService?.close(),
+        swarmManager?.shutdown(),
+        networkProvider.type !== "none" ? networkProvider.stop() : undefined,
+      ]);
+
       await fastify.close();
       closeDatabase();
 

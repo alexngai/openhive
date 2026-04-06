@@ -46,7 +46,7 @@ describe('Learning API Routes', () => {
     await atlasService.init();
 
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     (app as unknown as { atlasService: AtlasService }).atlasService = atlasService;
 
     await app.register(
@@ -311,7 +311,7 @@ describe('Learning API Routes — disabled', () => {
     });
 
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
 
     await app.register(
       async (api) => {
@@ -398,7 +398,7 @@ describe('Learning API Routes — non-admin auth', () => {
     await atlasService.init();
 
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     (app as unknown as { atlasService: AtlasService }).atlasService = atlasService;
 
     await app.register(

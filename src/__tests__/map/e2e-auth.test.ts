@@ -86,7 +86,7 @@ describe('E2E: MAP Auth — Open Mode', () => {
     testAgent = { id: result.agent.id, apiKey: result.apiKey };
 
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     await app.register(websocket);
     setupMapWebSocket(app, config);
     await app.listen({ port: SERVER_PORT, host: '127.0.0.1' });

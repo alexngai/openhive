@@ -82,7 +82,7 @@ beforeAll(async () => {
   });
 
   app = Fastify();
-  app.decorateRequest('agent', null);
+  app.decorateRequest('agent');
   await app.register(sessionsRoutes, { prefix: '/api/v1', config } as any);
   await app.ready();
 });
