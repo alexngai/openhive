@@ -83,7 +83,7 @@ export class LocalProvider implements HostingProvider {
         }
       }
     };
-    process.on('exit', this.exitHandler);
+    process.once('exit', this.exitHandler);
   }
 
   /** Remove the process exit handler (call after stopAll to avoid listener leaks) */
