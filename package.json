@@ -132,6 +132,7 @@
     "@vitejs/plugin-react": "^4.7.0",
     "claude-code-swarm": "^0.3.18",
     "jsdom": "^28.1.0",
+    "sessionlog": "^0.0.6",
     "tailwindcss": "^4.1.18",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",

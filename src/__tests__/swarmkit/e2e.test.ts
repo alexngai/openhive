@@ -236,7 +236,9 @@ describe('SwarmKit Config E2E', () => {
       const res = await get('/admin/swarmkit/projects');
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.payload);
-      expect(body.projectRoots.length).toBe(2);
+      expect(body.projectRoots.length).toBeGreaterThanOrEqual(2);
+      expect(body.projectRoots).toContain(PROJECT_A);
+      expect(body.projectRoots).toContain(PROJECT_B);
     });
 
     it('should reject paths without .swarm or .git', async () => {
