@@ -11,6 +11,8 @@ import type { ProjectRegistryData } from './types.js';
 
 export class ProjectRegistry {
   private filePath: string;
+  private cachedRoots: string[] | null = null;
+  private cachedMtimeMs: number = 0;
 
   constructor(dataDir: string) {
     this.filePath = path.join(dataDir, 'swarmkit-projects.json');
@@ -89,23 +91,36 @@ export class ProjectRegistry {
 
   // ─── Private ────────────────────────────────────────────────
 
+  private invalidateCache(): void {
+    this.cachedRoots = null;
+  }
+
   private read(): ProjectRegistryData {
     try {
       if (fs.existsSync(this.filePath)) {
+        const stat = fs.statSync(this.filePath);
+        // Return cached result if the file hasn't changed
+        if (this.cachedRoots && stat.mtimeMs === this.cachedMtimeMs) {
+          return { projectRoots: this.cachedRoots };
+        }
+
         const raw = fs.readFileSync(this.filePath, 'utf-8');
         const parsed = JSON.parse(raw);
         if (parsed && Array.isArray(parsed.projectRoots)) {
           // Filter out stale paths that no longer exist
-          return {
-            projectRoots: parsed.projectRoots.filter(
-              (p: unknown) => typeof p === 'string' && fs.existsSync(p as string),
-            ),
-          };
+          const validated = parsed.projectRoots.filter(
+            (p: unknown) => typeof p === 'string' && fs.existsSync(p as string),
+          );
+          this.cachedRoots = validated;
+          this.cachedMtimeMs = stat.mtimeMs;
+          return { projectRoots: validated };
         }
       }
     } catch {
       // Corrupt file — reset
     }
+    this.cachedRoots = [];
+    this.cachedMtimeMs = 0;
     return { projectRoots: [] };
   }
 
@@ -117,5 +132,6 @@ export class ProjectRegistry {
     const tmpPath = this.filePath + '.tmp';
     fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
     fs.renameSync(tmpPath, this.filePath);
+    this.invalidateCache();
   }
 }

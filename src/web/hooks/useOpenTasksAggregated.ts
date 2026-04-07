@@ -74,9 +74,12 @@ export function useOpenTasksAggregated() {
   const { data: resourcesData } = useQuery({
     queryKey: ['resources', { type: 'task', limit: 50 }],
     queryFn: () => api.get<{ data: SyncableResource[]; total: number }>('/resources?type=task&limit=50'),
+    staleTime: 60_000,
   });
 
-  const resources = resourcesData?.data ?? [];
+  const resources = (resourcesData?.data ?? []).filter(
+    (r) => r.local_path || r.sync_strategy === 'local',
+  );
   const resourceIds = resources.map(r => r.id);
 
   // Step 2: Fetch tasks from each resource's OpenTasks graph
@@ -103,7 +106,8 @@ export function useOpenTasksAggregated() {
       return allResults;
     },
     enabled: resourceIds.length > 0,
-    staleTime: 10_000,
+    staleTime: 30_000,
+    retry: false,
   });
 
   // Step 3: Mutations

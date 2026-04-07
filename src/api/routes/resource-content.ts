@@ -883,10 +883,14 @@ export async function resourceContentRoutes(
     Params: { id: string };
     Querystring: { limit?: number };
   }>('/resources/:id/content/opentasks/ready', { preHandler: authMiddleware }, async (request, reply) => {
-    const ctx = await resolveResourceAndPath(request, reply);
+    const ctx = await resolveResourceForOpenTasks(request, reply);
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (!localPath) {
+      return reply.send({ items: [], daemon_connected: false, message: 'Resource path not available locally' });
+    }
 
     const limit = Math.min(Math.max(request.query.limit || 50, 1), 200);
     const { daemonGetReady, resolveDaemonSocket, TaskDaemonError } = await import('../../map/task-daemon-client.js');
@@ -906,10 +910,14 @@ export async function resourceContentRoutes(
     Params: { id: string };
     Querystring: { status?: string; limit?: number; offset?: number };
   }>('/resources/:id/content/opentasks/tasks', { preHandler: authMiddleware }, async (request, reply) => {
-    const ctx = await resolveResourceAndPath(request, reply);
+    const ctx = await resolveResourceForOpenTasks(request, reply);
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (!localPath) {
+      return reply.send({ items: [], daemon_connected: false, message: 'Resource path not available locally' });
+    }
 
     const { daemonQueryNodes, daemonGetSummary, resolveDaemonSocket, TaskDaemonError } = await import('../../map/task-daemon-client.js');
     const socketPath = resolveDaemonSocket(localPath);
@@ -932,10 +940,14 @@ export async function resourceContentRoutes(
   fastify.get<{
     Params: { id: string };
   }>('/resources/:id/content/opentasks/status', { preHandler: authMiddleware }, async (request, reply) => {
-    const ctx = await resolveResourceAndPath(request, reply);
+    const ctx = await resolveResourceForOpenTasks(request, reply);
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (!localPath) {
+      return reply.send({ daemon_connected: false, running: false, message: 'Resource path not available locally' });
+    }
 
     const { daemonGetStatus, resolveDaemonSocket } = await import('../../map/task-daemon-client.js');
     const socketPath = resolveDaemonSocket(localPath);

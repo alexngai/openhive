@@ -648,4 +648,63 @@ describe('OpenTasks Content Routes', () => {
       expect(body.total).toBe(0);
     });
   });
+
+  // ==========================================================================
+  // Graceful fallback when local path is missing
+  // ==========================================================================
+
+  describe('Graceful fallback for inaccessible resources', () => {
+    let noPathResource: { id: string };
+
+    beforeAll(() => {
+      // Create a task resource whose path does not exist on disk
+      noPathResource = resourcesDAL.createResource({
+        resource_type: 'task',
+        name: 'Ghost OpenTasks',
+        description: 'Points to a nonexistent path',
+        git_remote_url: '/tmp/nonexistent-opentasks-' + Date.now(),
+        visibility: 'private',
+        owner_agent_id: testAgent.id,
+        metadata: { opentasks: true },
+      });
+    });
+
+    it('GET /opentasks/tasks should return empty items instead of 404', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/resources/${noPathResource.id}/content/opentasks/tasks`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.items).toEqual([]);
+      expect(body.daemon_connected).toBe(false);
+    });
+
+    it('GET /opentasks/ready should return empty items instead of 404', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/resources/${noPathResource.id}/content/opentasks/ready`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.items).toEqual([]);
+      expect(body.daemon_connected).toBe(false);
+    });
+
+    it('GET /opentasks/status should return not-connected instead of 404', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/resources/${noPathResource.id}/content/opentasks/status`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.daemon_connected).toBe(false);
+    });
+  });
 });
