@@ -286,6 +286,14 @@ export class MapSyncClient {
           const parsed = JSON.parse(data.toString());
           if (parsed?.jsonrpc !== '2.0' || typeof parsed?.method !== 'string') return;
 
+          // Respond to hub heartbeat pings to keep the connection alive
+          if (parsed.method === 'ping') {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'pong', params: {} }));
+            }
+            return;
+          }
+
           if (SYNC_METHODS.has(parsed.method)) {
             this.handleIncomingSync(parsed as MapSyncMessage);
           }
