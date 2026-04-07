@@ -119,9 +119,11 @@ function resolveSwarmOpen(agentId: string, agentName: string, swarmIdHint?: stri
     const match = swarms.find((s) => s.id === swarmIdHint);
     if (match) return { swarmId: match.id, created: false };
 
+    // Use the swarm_id hint as a short label when it looks like a session ID
+    const shortId = swarmIdHint.length > 12 ? swarmIdHint.slice(0, 8) : swarmIdHint;
     const swarm = createSwarm(agentId, {
       id: swarmIdHint,
-      name: `${agentName}-hub`,
+      name: `session ${shortId}`,
       map_endpoint: 'hub-inbound',
       map_transport: 'websocket',
       auth_method: 'none',
@@ -460,10 +462,15 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       // on our router (we know the swarmId is correct because this handler is scoped to it)
       try {
         const session = router.session;
-        if (session?.id && registeredAgent.sessionId && session.id !== registeredAgent.sessionId) return;
+        if (session?.id && registeredAgent.sessionId && session.id !== registeredAgent.sessionId) {
+          // Different session — not our agent
+          return;
+        }
       } catch {
         // router.session may not be available — continue anyway in open mode
       }
+
+      console.log(`[ws-map] Agent registered on ${swarmId}: ${registeredAgent.name || registeredAgent.id} (${registeredAgent.role || 'agent'})`);
 
       const conn = getInbound(swarmId);
       if (conn) {
@@ -479,6 +486,9 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
           scopes: registeredAgent.scopes || [],
         };
         conn.registeredAgents.set(agentEntry.id, agentEntry);
+
+        // Keep DB agent_count in sync with live registrations
+        try { updateSwarm(swarmId, { agent_count: conn.registeredAgents.size }); } catch { /* non-critical */ }
       }
 
       // Enrich swarm record with agent metadata (project, branch, template)
@@ -486,16 +496,24 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         const meta = registeredAgent.metadata as Record<string, unknown>;
         const project = meta.project as string | undefined;
         const branch = meta.branch as string | undefined;
+        const template = meta.template as string | undefined;
+        const agentName = registeredAgent.name as string | undefined;
+
+        // Build a descriptive display name from available metadata
+        let displayName: string | undefined;
         if (project) {
-          const displayName = branch ? `${project} (${branch})` : project;
-          try {
-            updateSwarm(swarmId, {
-              name: displayName,
-              capabilities: registeredAgent.capabilities || undefined,
-              metadata: meta,
-            });
-          } catch { /* non-critical */ }
+          displayName = branch ? `${project} (${branch})` : project;
+        } else if (agentName && agentName !== 'unknown') {
+          displayName = template ? `${agentName} [${template}]` : agentName;
         }
+
+        try {
+          updateSwarm(swarmId, {
+            ...(displayName ? { name: displayName } : {}),
+            capabilities: registeredAgent.capabilities || undefined,
+            metadata: meta,
+          });
+        } catch { /* non-critical */ }
 
         // Auto-detect default task graph from agent metadata
         const taskGraph = meta.task_graph as Record<string, string> | undefined;
