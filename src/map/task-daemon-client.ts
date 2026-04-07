@@ -351,27 +351,5 @@ export async function daemonGetStatus(
 // Socket Path Resolution
 // ============================================================================
 
-/**
- * Resolve the daemon socket path for an .opentasks directory.
- * Reads config.json for explicit socketPath, falls back to daemon.sock.
- */
-export function resolveDaemonSocket(opentasksDir: string): string {
-  const configPath = join(opentasksDir, 'config.json');
-  if (existsSync(configPath)) {
-    try {
-      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-      if (config.daemon?.socketPath) return config.daemon.socketPath;
-    } catch { /* fall through */ }
-  }
-
-  // Standard location: daemon.sock directly in the .opentasks directory
-  const directSocket = join(opentasksDir, 'daemon.sock');
-  if (existsSync(directSocket)) return directSocket;
-
-  // Fallback: nested .opentasks/daemon.sock (created when daemon was previously
-  // started with cwd inside the .opentasks dir instead of the project root)
-  const nestedSocket = join(opentasksDir, '.opentasks', 'daemon.sock');
-  if (existsSync(nestedSocket)) return nestedSocket;
-
-  return directSocket;
-}
+// Re-export from lifecycle to avoid duplication
+export { resolveDaemonSocket } from './task-daemon-lifecycle.js';

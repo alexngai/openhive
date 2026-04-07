@@ -127,7 +127,19 @@ export async function resourceContentRoutes(
     }
 
     if (localPath && (!existsSync(localPath) || !statSync(localPath).isDirectory())) {
-      localPath = null;
+      // For OpenTasks resources, create the directory so the daemon can start.
+      // The daemon's ensureDaemon() will initialize config.json and graph.jsonl.
+      const meta = resource.metadata as Record<string, unknown> | null;
+      if (resource.resource_type === 'task' && meta?.opentasks) {
+        try {
+          const { mkdirSync } = await import('node:fs');
+          mkdirSync(localPath, { recursive: true });
+        } catch {
+          localPath = null;
+        }
+      } else {
+        localPath = null;
+      }
     }
 
     return { resource, localPath };
@@ -864,7 +876,7 @@ export async function resourceContentRoutes(
       if (summary) return reply.send(summary);
     }
 
-    return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks graph is not available locally or via connected swarm' });
+    return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon could not be started and no connected swarm is available' });
   });
 
   fastify.get<{
@@ -883,7 +895,9 @@ export async function resourceContentRoutes(
       const ready = await daemonGetReady(socketPath, limit, localPath);
       return reply.send(ready);
     } catch (err) {
-      if (err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
+      if (err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING') {
+        return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon could not be started for this resource' });
+      }
       throw err;
     }
   });
@@ -909,13 +923,7 @@ export async function resourceContentRoutes(
       return reply.send({ items: result.items || [], daemon_connected: true });
     } catch (err) {
       if (err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING') {
-        // Fallback: try to get summary without daemon
-        try {
-          const summary = await daemonGetSummary(socketPath, localPath);
-          return reply.send({ daemon_connected: false, message: 'Daemon not running; returning summary only', task_counts: summary.task_counts });
-        } catch {
-          return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
-        }
+        return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon could not be started for this resource' });
       }
       throw err;
     }
