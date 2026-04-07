@@ -337,8 +337,8 @@ export class MapSyncClient {
             return;
           }
 
+          // Respond to hub heartbeat pings to keep the connection alive
           if (parsed.method === 'ping') {
-            // Respond to application-level ping with pong
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'pong', params: {} }));
             }
