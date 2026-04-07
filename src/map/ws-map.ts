@@ -38,9 +38,46 @@ let HEARTBEAT_INTERVAL = 30_000;
 const TOKEN_EXPIRY_WARNING_SECONDS = 300;
 let heartbeatTimer: NodeJS.Timeout | null = null;
 
+// Connection persistence settings (overridden from config at setup time)
+let MISSED_PONGS_BEFORE_TERMINATE = 3;
+let HEARTBEAT_DEBOUNCE_MS = 10_000;
+
 /** Override heartbeat interval (ms). Useful for testing with shorter timeouts. */
 export function setHeartbeatInterval(ms: number): void {
   HEARTBEAT_INTERVAL = ms;
+}
+
+// ============================================================================
+// Debounced Heartbeat
+//
+// Instead of writing to SQLite on every JSON-RPC message, we batch heartbeat
+// writes per-swarm with a debounce timer. This reduces DB pressure under load
+// while still keeping last_seen_at reasonably fresh.
+// ============================================================================
+
+const heartbeatDebounceTimers: Map<string, NodeJS.Timeout> = new Map();
+
+/**
+ * Schedule a debounced heartbeatSwarm() DB write.
+ * Collapses multiple calls within HEARTBEAT_DEBOUNCE_MS into a single write.
+ */
+function debouncedHeartbeat(swarmId: string): void {
+  if (heartbeatDebounceTimers.has(swarmId)) return;
+
+  const timer = setTimeout(() => {
+    heartbeatDebounceTimers.delete(swarmId);
+    try { heartbeatSwarm(swarmId); } catch { /* swarm may have been deleted */ }
+  }, HEARTBEAT_DEBOUNCE_MS);
+
+  heartbeatDebounceTimers.set(swarmId, timer);
+}
+
+function clearHeartbeatDebounce(swarmId: string): void {
+  const timer = heartbeatDebounceTimers.get(swarmId);
+  if (timer) {
+    clearTimeout(timer);
+    heartbeatDebounceTimers.delete(swarmId);
+  }
 }
 
 // ============================================================================
@@ -167,12 +204,12 @@ function createNotificationInterceptor(
       }
       // Other notifications pass through to MAPServer (it will ignore unknown ones)
 
-      // Update heartbeat on any message
+      // Update heartbeat on any message (debounced to reduce DB writes)
       const conn = getAllInbound().get(swarmId);
       if (conn) {
         conn.lastMessageAt = new Date().toISOString();
       }
-      heartbeatSwarm(swarmId);
+      debouncedHeartbeat(swarmId);
     } catch {
       // Non-JSON — ignore
     }
@@ -187,6 +224,10 @@ function createNotificationInterceptor(
 // ============================================================================
 
 export function setupMapWebSocket(fastify: FastifyInstance, config: Config): void {
+  // Apply connection persistence config
+  MISSED_PONGS_BEFORE_TERMINATE = config.mapHub.missedPongsBeforeTerminate;
+  HEARTBEAT_DEBOUNCE_MS = config.mapHub.heartbeatDebounceMs;
+
   const mapServer = initMapServer(config);
 
   // Subscribe to MAP scope messages for task event interception.
@@ -215,7 +256,13 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
     // Track liveness for heartbeat ping/pong
     (ws as any).isAlive = true;
-    ws.on('pong', () => { (ws as any).isAlive = true; });
+    (ws as any).missedPongs = 0;
+    ws.on('pong', () => {
+      (ws as any).isAlive = true;
+      (ws as any).missedPongs = 0;
+      // Pong receipt is a liveness signal — refresh heartbeat via debounced path
+      if (connectedSwarmId) debouncedHeartbeat(connectedSwarmId);
+    });
 
     // Track swarm ID for cleanup on raw socket close
     let connectedSwarmId: string | null = null;
@@ -231,6 +278,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       const current = getInbound(sid);
       if (current && current.ws !== ws) return;
 
+      clearHeartbeatDebounce(sid);
       unregisterInbound(sid);
       try {
         if (!hasOutboundConnection(sid)) {
@@ -490,20 +538,70 @@ function startMapHeartbeat(): void {
 
     for (const [swarmId, conn] of getAllInbound()) {
       if ((conn.ws as any).isAlive === false) {
-        // No pong received since last ping — connection is dead
-        conn.ws.terminate();
-        unregisterInbound(swarmId);
-        try {
-          if (!hasOutboundConnection(swarmId)) {
-            updateSwarm(swarmId, { status: 'unreachable' });
-            broadcastToChannel('map:discovery', {
-              type: 'swarm_offline',
-              data: { swarm_id: swarmId },
+        // Increment missed pong counter instead of immediately terminating
+        const missed = ((conn.ws as any).missedPongs = ((conn.ws as any).missedPongs || 0) + 1);
+
+        if (missed >= MISSED_PONGS_BEFORE_TERMINATE) {
+          // Send reconnect hint then close gracefully. We use ws.close()
+          // instead of ws.terminate() so the send buffer flushes and the
+          // client actually receives the hub/reconnect notification. A
+          // fallback terminate fires after 1s in case close hangs.
+          try {
+            sendJsonRpc(conn.ws, 'hub/reconnect', {
+              reason: 'heartbeat_timeout',
+              missed_pongs: missed,
+              message: 'Connection will be terminated due to missed heartbeats. Please reconnect.',
             });
-            mapHubEvents.emit('swarm_offline', { swarm_id: swarmId });
-          }
-        } catch { /* */ }
-        continue;
+          } catch { /* connection may already be dead */ }
+
+          console.log(`[ws-map] Closing swarm ${swarmId} after ${missed} missed pongs`);
+          clearHeartbeatDebounce(swarmId);
+          unregisterInbound(swarmId);
+
+          // Graceful close with a hard terminate fallback
+          try { conn.ws.close(4000, 'heartbeat_timeout'); } catch { /* ignore */ }
+          setTimeout(() => {
+            try { conn.ws.terminate(); } catch { /* already gone */ }
+          }, 1000);
+
+          try {
+            if (!hasOutboundConnection(swarmId)) {
+              updateSwarm(swarmId, { status: 'unreachable' });
+              broadcastToChannel('map:discovery', {
+                type: 'swarm_offline',
+                data: { swarm_id: swarmId },
+              });
+              mapHubEvents.emit('swarm_offline', { swarm_id: swarmId });
+            }
+          } catch { /* */ }
+          continue;
+        }
+
+        // Not yet at threshold — log warning, broadcast degraded event, continue pinging
+        console.log(`[ws-map] Swarm ${swarmId} missed pong (${missed}/${MISSED_PONGS_BEFORE_TERMINATE})`);
+        broadcastToChannel('map:discovery', {
+          type: 'connection_degraded',
+          data: {
+            swarm_id: swarmId,
+            missed_pongs: missed,
+            max_missed_pongs: MISSED_PONGS_BEFORE_TERMINATE,
+          },
+        });
+      } else {
+        // Pong was received — reset counter
+        const previousMissed = (conn.ws as any).missedPongs || 0;
+        (conn.ws as any).missedPongs = 0;
+
+        // Broadcast recovery if connection was previously degraded
+        if (previousMissed > 0) {
+          broadcastToChannel('map:discovery', {
+            type: 'connection_recovered',
+            data: {
+              swarm_id: swarmId,
+              recovered_from_missed: previousMissed,
+            },
+          });
+        }
       }
 
       // Mark as not-alive; set back to true when pong arrives or a message is received
@@ -511,8 +609,8 @@ function startMapHeartbeat(): void {
 
       if (conn.ws.readyState !== WebSocket.OPEN) continue;
 
-      // Keep last_seen_at fresh so connected swarms stay "online"
-      heartbeatSwarm(swarmId);
+      // Keep last_seen_at fresh so connected swarms stay "online" (debounced)
+      debouncedHeartbeat(swarmId);
 
       // Protocol-level ping — the ws library responds with a pong frame
       // at the transport layer, so this works for ALL WebSocket clients
@@ -546,6 +644,12 @@ export function stopMapWebSocket(): void {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
   }
+
+  // Clean up all debounce timers
+  for (const timer of heartbeatDebounceTimers.values()) {
+    clearTimeout(timer);
+  }
+  heartbeatDebounceTimers.clear();
 
   for (const [swarmId, conn] of getAllInbound()) {
     try { conn.ws.close(); } catch { /* ignore */ }

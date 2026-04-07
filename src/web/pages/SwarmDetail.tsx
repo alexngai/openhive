@@ -10,6 +10,7 @@ import {
   useStopSwarm, useRestartSwarm, useRemoveSwarm,
   useSwarmMessages, useSwarmPeers,
   useEventSubscriptions, useDeliveryLog,
+  useConnectionHealth,
 } from '../hooks/useApi';
 import { useSwarmRealtime, useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -59,7 +60,8 @@ function EmptyState({ message }: { message: string }) {
 
 // ─── Swarm Info ──────────────────────────────────────────────────────────────
 
-function SwarmInfo({ swarm }: { swarm: MapSwarm }) {
+function SwarmInfo({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
+  const { data: health } = useConnectionHealth(swarmId);
   return (
     <div className="card px-4 py-3">
       <div className="flex items-start gap-3">
@@ -72,7 +74,7 @@ function SwarmInfo({ swarm }: { swarm: MapSwarm }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-lg font-bold truncate">{swarm.name}</h2>
-            <MapStatusBadge status={swarm.status} />
+            <MapStatusBadge status={swarm.status} missedPongs={health?.missedPongs} />
             {swarm.map_endpoint === 'hub-inbound' && (
               <span className="text-2xs px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">inbound</span>
             )}
@@ -126,6 +128,73 @@ function SwarmInfo({ swarm }: { swarm: MapSwarm }) {
             ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Connection Health ──────────────────────────────────────────────────────
+
+function ConnectionHealthBar({ swarmId }: { swarmId: string }) {
+  const { data: health } = useConnectionHealth(swarmId);
+  if (!health) return null;
+
+  const uptime = health.connectedAt
+    ? Math.floor((Date.now() - new Date(health.connectedAt).getTime()) / 1000)
+    : 0;
+  const formatUptime = (s: number) => {
+    if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+    if (s >= 60) return `${Math.floor(s / 60)}m ${s % 60}s`;
+    return `${s}s`;
+  };
+
+  const isDegraded = health.missedPongs > 0;
+  const healthPct = Math.max(0, Math.round((1 - health.missedPongs / health.maxMissedPongs) * 100));
+
+  return (
+    <div className="card px-4 py-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Activity className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+        <span className="text-xs font-semibold">Connection Health</span>
+        {isDegraded && (
+          <span className="text-2xs px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-medium">
+            {health.missedPongs}/{health.maxMissedPongs} pongs missed
+          </span>
+        )}
+      </div>
+
+      {/* Health bar */}
+      <div className="w-full h-1.5 rounded-full mb-3" style={{ backgroundColor: 'var(--color-elevated)' }}>
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${
+            isDegraded ? 'bg-amber-400' : 'bg-emerald-400'
+          }`}
+          style={{ width: `${healthPct}%` }}
+        />
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+        <div>
+          <div className="font-medium mb-0.5" style={{ color: 'var(--color-text-secondary)' }}>Uptime</div>
+          {formatUptime(uptime)}
+        </div>
+        <div>
+          <div className="font-medium mb-0.5" style={{ color: 'var(--color-text-secondary)' }}>Last Activity</div>
+          <TimeAgo date={health.lastMessageAt} />
+        </div>
+        <div>
+          <div className="font-medium mb-0.5" style={{ color: 'var(--color-text-secondary)' }}>Agents</div>
+          {health.registeredAgentCount}
+        </div>
+        <div>
+          <div className="font-medium mb-0.5" style={{ color: 'var(--color-text-secondary)' }}>Transport</div>
+          {health.transport}
+          {health.tokenExpiresAt && (
+            <span className="ml-1 text-amber-400" title={`Token expires: ${health.tokenExpiresAt}`}>
+              (token)
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -705,7 +774,9 @@ export function SwarmDetail() {
         </Link>
       </div>
 
-      <SwarmInfo swarm={swarm} />
+      <SwarmInfo swarm={swarm} swarmId={id!} />
+
+      {swarm.status === 'online' && <ConnectionHealthBar swarmId={id!} />}
 
       {hosted && <HostedInfo hosted={hosted} />}
 

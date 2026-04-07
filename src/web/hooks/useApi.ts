@@ -52,6 +52,8 @@ import type {
   MailConversation,
   MailTurn,
   MailThread,
+  ConnectionHealth,
+  ConnectionsResponse,
 } from "../lib/api";
 
 // Posts
@@ -523,6 +525,26 @@ export function useConnectSwarm() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["map-swarms"] });
     },
+  });
+}
+
+// Connection health hooks
+export function useConnectionHealth(swarmId: string) {
+  return useQuery({
+    queryKey: ["connection-health", swarmId],
+    queryFn: () => api.get<ConnectionHealth>(`/map/connections/${swarmId}`),
+    enabled: !!swarmId,
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useAllConnections() {
+  return useQuery({
+    queryKey: ["connections"],
+    queryFn: () => api.get<ConnectionsResponse>("/map/connections"),
+    staleTime: 10_000,
+    refetchInterval: 30_000,
   });
 }
 

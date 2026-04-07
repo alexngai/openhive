@@ -34,6 +34,15 @@ export function useSwarmRealtime() {
   // Note: swarm_heartbeat intentionally omitted — it fires every ~30s per swarm
   // and causes excessive refetch storms. Swarm status updates from heartbeats
   // are cosmetic; lifecycle events above cover meaningful state changes.
+
+  // Connection health events — only invalidate connection-specific queries
+  const invalidateConnections = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['connections'] });
+    queryClient.invalidateQueries({ queryKey: ['connection-health'] });
+  }, [queryClient]);
+
+  useWSEvent('connection_degraded', invalidateConnections);
+  useWSEvent('connection_recovered', invalidateConnections);
 }
 
 // ── Resources & Sync ──

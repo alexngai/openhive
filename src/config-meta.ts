@@ -164,6 +164,8 @@ export const FIELD_META: Record<string, FieldMeta> = {
   'mapHub.trustModel': { label: 'Trust Model', description: 'How agents authenticate via WebSocket' },
   'mapHub.staleThresholdMinutes': { label: 'Stale Threshold', description: 'Minutes before unresponsive swarm goes offline' },
   'mapHub.iamSecret': { label: 'IAM Secret', secret: true },
+  'mapHub.missedPongsBeforeTerminate': { label: 'Missed Pongs Tolerance', description: 'Pong misses before connection is terminated' },
+  'mapHub.heartbeatDebounceMs': { label: 'Heartbeat Debounce', description: 'Debounce interval (ms) for heartbeat DB writes' },
 
   // Swarm Hosting
   'swarmHosting.enabled': { label: 'Enabled' },
