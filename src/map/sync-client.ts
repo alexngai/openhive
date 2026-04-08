@@ -105,6 +105,12 @@ export type SessionSyncHandler = (msg: MapSyncMessage) => void;
 // Client
 // ============================================================================
 
+/** Connection state for observability. */
+export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+
+/** Callback for connection state changes. */
+export type ConnectionStateHandler = (state: ConnectionState, detail?: { reason?: string; attempt?: number }) => void;
+
 export class MapSyncClient {
   private config: MapSyncClientConfig;
   private hubWs: WebSocket | null = null;
@@ -117,6 +123,8 @@ export class MapSyncClient {
   private reconnectAttempts = 0;
   private wsClients: Set<WebSocket> = new Set();
   private running = false;
+  private _connectionState: ConnectionState = 'disconnected';
+  private connectionStateHandlers: ConnectionStateHandler[] = [];
 
   private static readonly RECONNECT_BASE_MS = 5_000;
   private static readonly RECONNECT_MAX_MS = 60_000;
@@ -124,6 +132,28 @@ export class MapSyncClient {
 
   constructor(config: MapSyncClientConfig) {
     this.config = config;
+  }
+
+  // --------------------------------------------------------------------------
+  // Connection State
+  // --------------------------------------------------------------------------
+
+  /** Current connection state. */
+  get connectionState(): ConnectionState {
+    return this._connectionState;
+  }
+
+  /** Register a handler for connection state changes. */
+  onConnectionStateChange(handler: ConnectionStateHandler): void {
+    this.connectionStateHandlers.push(handler);
+  }
+
+  private setConnectionState(state: ConnectionState, detail?: { reason?: string; attempt?: number }): void {
+    if (this._connectionState === state) return;
+    this._connectionState = state;
+    for (const handler of this.connectionStateHandlers) {
+      try { handler(state, detail); } catch { /* ignore */ }
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -273,18 +303,39 @@ export class MapSyncClient {
   private connectToHub(): void {
     if (!this.config.hub_ws_url || !this.running) return;
 
+    this.setConnectionState(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting', {
+      attempt: this.reconnectAttempts,
+    });
+
     try {
       const ws = new WebSocket(this.config.hub_ws_url);
       this.hubWs = ws;
 
       ws.on('open', () => {
         this.reconnectAttempts = 0;
+        this.setConnectionState('connected');
       });
 
       ws.on('message', (data) => {
         try {
           const parsed = JSON.parse(data.toString());
           if (parsed?.jsonrpc !== '2.0' || typeof parsed?.method !== 'string') return;
+
+          if (parsed.method === 'hub/reconnect') {
+            // Hub is about to terminate us — reconnect immediately with reset backoff
+            const reason = parsed.params?.reason || 'hub_requested';
+            console.log(`[map-sync-client] Received hub/reconnect (reason: ${reason}), scheduling immediate reconnect`);
+            this.reconnectAttempts = 0; // Reset backoff — hub-initiated reconnects get fresh attempts
+            // Close cleanly — the 'close' handler will trigger reconnect
+            ws.close();
+            return;
+          }
+
+          if (parsed.method === 'hub/welcome') {
+            // Hub acknowledged our connection — connection is fully established
+            this.setConnectionState('connected');
+            return;
+          }
 
           // Respond to hub heartbeat pings to keep the connection alive
           if (parsed.method === 'ping') {
@@ -304,6 +355,7 @@ export class MapSyncClient {
 
       ws.on('close', () => {
         this.hubWs = null;
+        this.setConnectionState('disconnected');
         if (this.running) this.scheduleReconnect();
       });
 
@@ -311,19 +363,25 @@ export class MapSyncClient {
         // close event will fire after error
       });
     } catch {
+      this.setConnectionState('disconnected');
       if (this.running) this.scheduleReconnect();
     }
   }
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer || !this.running) return;
-    if (this.reconnectAttempts >= MapSyncClient.MAX_RECONNECT_ATTEMPTS) return;
+    if (this.reconnectAttempts >= MapSyncClient.MAX_RECONNECT_ATTEMPTS) {
+      this.setConnectionState('disconnected', { reason: 'max_attempts_exceeded' });
+      return;
+    }
 
     const delay = Math.min(
       MapSyncClient.RECONNECT_BASE_MS * Math.pow(2, this.reconnectAttempts),
       MapSyncClient.RECONNECT_MAX_MS,
     );
     this.reconnectAttempts++;
+
+    this.setConnectionState('reconnecting', { attempt: this.reconnectAttempts });
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -573,6 +631,8 @@ export class MapSyncClient {
       ws.close();
     }
     this.wsClients.clear();
+
+    this.setConnectionState('disconnected', { reason: 'stopped' });
   }
 }
 

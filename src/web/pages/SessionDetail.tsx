@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   Activity, AlertTriangle, ArrowLeft, Bot, Brain, ChevronDown, ChevronRight,
@@ -9,6 +9,10 @@ import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents }
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
+import {
+  EventBubble, ToolCallBlock,
+  formatTokens, extractText, truncate, groupConsecutiveCustomEvents,
+} from '../components/sessions/EventBubble';
 import type { TrajectoryCheckpoint, SessionEvent, SessionContentBlock } from '../lib/api';
 import clsx from 'clsx';
 
@@ -16,46 +20,13 @@ import clsx from 'clsx';
 // Helpers
 // ============================================================================
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
-
-function extractText(blocks: SessionContentBlock[] | undefined): string {
-  if (!blocks) return '';
-  return blocks
-    .filter((b) => b.type === 'text' && b.text)
-    .map((b) => b.text!)
-    .join('\n');
-}
-
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max) + '...';
-}
+// formatTokens, extractText, truncate imported from components/sessions/EventBubble
 
 // ============================================================================
 // Shared Components
 // ============================================================================
 
 type DetailTab = 'checkpoints' | 'trajectory' | 'learning';
-
-function StatCard({ label, value, icon: Icon }: { label: string; value: string | number; icon: React.ElementType }) {
-  return (
-    <div className="card px-3 py-2.5">
-      <div className="flex items-center gap-2 mb-1">
-        <Icon className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-        <span className="text-2xs uppercase tracking-wide" style={{ color: 'var(--color-text-muted)' }}>
-          {label}
-        </span>
-      </div>
-      <p className="text-lg font-semibold" style={{ color: 'var(--color-text)' }}>
-        {value}
-      </p>
-    </div>
-  );
-}
 
 // ============================================================================
 // Checkpoint Timeline
@@ -601,7 +572,53 @@ function groupConsecutiveCustomEvents(events: SessionEvent[]): (SessionEvent | S
 }
 
 function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string; hasTrajectorySupport: boolean }) {
-  const { data, isLoading, isError, error } = useSessionEvents(sessionId, { enabled: hasTrajectorySupport });
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    hasNextPage,
+    fetchNextPage,
+    isFetchingNextPage,
+  } = useSessionEvents(sessionId, { enabled: hasTrajectorySupport });
+
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const hasScrolledRef = useRef(false);
+
+  // Auto-scroll to bottom on initial load
+  const pages = data?.pages ?? [];
+  const events = pages.flatMap((page) => page.events);
+
+  useEffect(() => {
+    if (events.length > 0 && !hasScrolledRef.current) {
+      hasScrolledRef.current = true;
+      // Small delay to let DOM render
+      requestAnimationFrame(() => {
+        bottomRef.current?.scrollIntoView({ behavior: 'instant' });
+      });
+    }
+  }, [events.length]);
+
+  // Intersection observer: auto-fetch older events when sentinel is visible
+  const sentinelCallbackRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      sentinelRef.current = node;
+      if (!node) return;
+
+      const observer = new IntersectionObserver(
+        (entries) => {
+          if (entries[0]?.isIntersecting && hasNextPage && !isFetchingNextPage) {
+            fetchNextPage();
+          }
+        },
+        { rootMargin: '200px 0px 0px 0px' },
+      );
+      observer.observe(node);
+      return () => observer.disconnect();
+    },
+    [hasNextPage, isFetchingNextPage, fetchNextPage],
+  );
 
   if (!hasTrajectorySupport) {
     return (
@@ -637,7 +654,8 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string;
     );
   }
 
-  const events = data?.events ?? [];
+  const total = pages[0]?.total ?? 0;
+  const firstPage = pages[0];
 
   if (events.length === 0) {
     return (
@@ -648,6 +666,9 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string;
     );
   }
 
+  // Events come newest-first from API; reverse for chronological display
+  const displayEvents = [...events].reverse();
+
   return (
     <div>
       <div className="flex items-center gap-2 mb-3">
@@ -655,21 +676,47 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string;
           <MessageSquare className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
           Agent Trajectory
           <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>
-            ({data?.total ?? events.length} events)
+            ({total} events)
           </span>
         </h2>
-        {data?.format_id && (
+        {firstPage?.format_id && (
           <span
             className="text-2xs px-1.5 py-0.5 rounded"
             style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
           >
-            {data.format_id}
+            {firstPage.format_id}
           </span>
         )}
       </div>
 
+      {/* Sentinel for upward infinite scroll */}
+      <div ref={sentinelCallbackRef}>
+        {isFetchingNextPage && (
+          <div className="flex items-center justify-center py-3">
+            <LoadingSpinner />
+            <span className="ml-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+              Loading older events…
+            </span>
+          </div>
+        )}
+        {hasNextPage && !isFetchingNextPage && (
+          <div className="text-center py-2">
+            <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+              Showing {events.length} of {total} events — scroll up for more
+            </span>
+          </div>
+        )}
+        {!hasNextPage && total > events.length && (
+          <div className="text-center py-2">
+            <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+              All {total} events loaded
+            </span>
+          </div>
+        )}
+      </div>
+
       <div className="space-y-3">
-        {groupConsecutiveCustomEvents(events).map((item, i) => {
+        {groupConsecutiveCustomEvents(displayEvents).map((item, i) => {
           if (Array.isArray(item)) {
             // Group of consecutive custom events — render inline as badges
             return (
@@ -693,13 +740,8 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string;
         })}
       </div>
 
-      {data && data.total > data.events.length && (
-        <div className="text-center mt-4">
-          <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-            Showing {data.events.length} of {data.total} events
-          </p>
-        </div>
-      )}
+      {/* Scroll anchor for auto-scroll to bottom */}
+      <div ref={bottomRef} />
     </div>
   );
 }
@@ -750,46 +792,54 @@ export function SessionDetail() {
         Sessions
       </Link>
 
-      {/* Header */}
-      <div className="card px-4 py-3 mb-4">
-        <div className="flex items-center gap-3">
-          <div
-            className="w-10 h-10 rounded-md flex items-center justify-center shrink-0"
-            style={{ backgroundColor: 'var(--color-elevated)' }}
-          >
-            <Activity className="w-5 h-5 text-honey-500" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-bold truncate">{resource.name}</h1>
-              <span className="text-2xs px-1.5 py-0.5 rounded bg-honey-500/10 text-honey-500">
-                session
-              </span>
+      {/* Sticky header: session detail + stats + tabs */}
+      <div
+        className="sticky top-0 z-10 -mx-4 px-4 pb-0 pt-2"
+        style={{ backgroundColor: 'var(--color-bg)' }}
+      >
+        {/* Header with inline stats */}
+        <div className="card px-4 py-2.5 mb-3">
+          <div className="flex items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <h1 className="text-sm font-bold truncate">{resource.name}</h1>
+                <span className="text-2xs px-1.5 py-0.5 rounded bg-honey-500/10 text-honey-500">
+                  session
+                </span>
+              </div>
+              {resource.description && (
+                <p className="text-2xs mt-0.5 truncate" style={{ color: 'var(--color-text-secondary)' }}>
+                  {resource.description}
+                </p>
+              )}
             </div>
-            {resource.description && (
-              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-secondary)' }}>
-                {resource.description}
-              </p>
+            {stats && (
+              <div className="flex items-center gap-3 shrink-0" style={{ color: 'var(--color-text-muted)' }}>
+                <span className="flex items-center gap-1 text-2xs">
+                  <GitCommit className="w-3 h-3" />
+                  {stats.total_checkpoints}
+                </span>
+                <span className="flex items-center gap-1 text-2xs" title="Input tokens">
+                  <Cpu className="w-3 h-3" />
+                  {formatTokens(stats.total_input_tokens)} in
+                </span>
+                <span className="flex items-center gap-1 text-2xs" title="Output tokens">
+                  {formatTokens(stats.total_output_tokens)} out
+                </span>
+                <span className="flex items-center gap-1 text-2xs" title="Files modified">
+                  <FileText className="w-3 h-3" />
+                  {stats.total_files_touched}
+                </span>
+              </div>
             )}
           </div>
         </div>
-      </div>
 
-      {/* Stats bar */}
-      {stats && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
-          <StatCard label="Checkpoints" value={stats.total_checkpoints} icon={GitCommit} />
-          <StatCard label="Input Tokens" value={formatTokens(stats.total_input_tokens)} icon={Cpu} />
-          <StatCard label="Output Tokens" value={formatTokens(stats.total_output_tokens)} icon={Cpu} />
-          <StatCard label="Files Modified" value={stats.total_files_touched} icon={FileText} />
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div
-        className="flex items-center gap-1 mb-4 border-b"
-        style={{ borderColor: 'var(--color-border-subtle)' }}
-      >
+        {/* Tabs */}
+        <div
+          className="flex items-center gap-1 mb-4 border-b"
+          style={{ borderColor: 'var(--color-border-subtle)' }}
+        >
         <button
           className={clsx(
             'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
@@ -836,6 +886,7 @@ export function SessionDetail() {
             Learning
           </span>
         </button>
+        </div>
       </div>
 
       {/* Tab content */}

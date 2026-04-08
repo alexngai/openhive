@@ -272,6 +272,7 @@ export function toAcpEventsPaginated(
   limit: number,
   offset: number,
   formatId?: string,
+  order: 'asc' | 'desc' = 'asc',
 ): { formatId: string; events: ReturnType<SessionAdapter['toAcpEvents']>; total: number } {
   let adapter: SessionAdapter;
   let detectedFormatId: string;
@@ -283,6 +284,19 @@ export function toAcpEventsPaginated(
     const detection = detectFormatExtended({ content, sizeBytes: content.length });
     adapter = detection.adapter;
     detectedFormatId = detection.formatId;
+  }
+
+  if (order === 'desc') {
+    // For reverse order, we need all events to slice from the end
+    const allEvents = adapter.toAcpEvents(content);
+    const total = allEvents.length;
+    // Reverse so newest is first, then paginate
+    allEvents.reverse();
+    return {
+      formatId: detectedFormatId,
+      events: allEvents.slice(offset, offset + limit),
+      total,
+    };
   }
 
   if (adapter.toAcpEventsPaginated) {

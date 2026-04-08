@@ -14,6 +14,7 @@ export const HOSTED_STATE_STYLES: Record<HostedSwarm['state'], { label: string; 
 
 export const MAP_STATUS_STYLES: Record<string, { label: string; bg: string; text: string }> = {
   online:      { label: 'Online',      bg: 'bg-emerald-500/10', text: 'text-emerald-400' },
+  degraded:    { label: 'Degraded',    bg: 'bg-amber-500/10',   text: 'text-amber-400' },
   offline:     { label: 'Offline',     bg: 'bg-gray-500/10',    text: 'text-gray-400' },
   unreachable: { label: 'Unreachable', bg: 'bg-red-500/10',     text: 'text-red-400' },
 };
@@ -28,12 +29,20 @@ export function HostedStateBadge({ state }: { state: HostedSwarm['state'] }) {
   );
 }
 
-export function MapStatusBadge({ status }: { status: string }) {
-  const style = MAP_STATUS_STYLES[status] || MAP_STATUS_STYLES.offline;
+export function MapStatusBadge({ status, missedPongs }: { status: string; missedPongs?: number }) {
+  // Show degraded state when online but has missed pongs
+  const effectiveStatus = status === 'online' && missedPongs && missedPongs > 0 ? 'degraded' : status;
+  const style = MAP_STATUS_STYLES[effectiveStatus] || MAP_STATUS_STYLES.offline;
+  const dotStyle = effectiveStatus === 'online' ? 'bg-emerald-400 animate-pulse'
+    : effectiveStatus === 'degraded' ? 'bg-amber-400 animate-pulse'
+    : 'bg-current opacity-50';
   return (
     <span className={clsx('inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs font-medium', style.bg, style.text)}>
-      <span className={clsx('w-1.5 h-1.5 rounded-full', status === 'online' ? 'bg-emerald-400 animate-pulse' : 'bg-current opacity-50')} />
+      <span className={clsx('w-1.5 h-1.5 rounded-full', dotStyle)} />
       {style.label}
+      {missedPongs != null && missedPongs > 0 && (
+        <span className="opacity-70">({missedPongs})</span>
+      )}
     </span>
   );
 }

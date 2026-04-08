@@ -15,6 +15,8 @@ export {
   type SyncMessageHandler,
   type PollChecker,
   type PollCheckResult,
+  type ConnectionState,
+  type ConnectionStateHandler,
 } from './sync-client.js';
 
 export type {
