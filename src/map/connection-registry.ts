@@ -69,3 +69,57 @@ export function setDefaultTaskGraph(swarmId: string, target: { resource_id?: str
 export function getDefaultTaskGraph(swarmId: string): { resource_id?: string; path?: string; location_hash?: string } | undefined {
   return inboundConnections.get(swarmId)?.defaultTaskGraph;
 }
+
+// ============================================================================
+// Connection Health
+// ============================================================================
+
+export interface ConnectionHealth {
+  swarmId: string;
+  agentId: string;
+  transport: 'inbound';
+  connectedAt: string;
+  lastMessageAt: string;
+  missedPongs: number;
+  maxMissedPongs: number;
+  tokenExpiresAt?: string;
+  registeredAgentCount: number;
+  registeredAgents: Array<{ id: string; name: string; role: string; state: string }>;
+  capabilities?: Record<string, unknown>;
+}
+
+/**
+ * Get structured health data for a single inbound connection.
+ */
+export function getConnectionHealth(swarmId: string, maxMissedPongs: number): ConnectionHealth | undefined {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn) return undefined;
+
+  return {
+    swarmId: conn.swarmId,
+    agentId: conn.agentId,
+    transport: 'inbound',
+    connectedAt: conn.connectedAt,
+    lastMessageAt: conn.lastMessageAt,
+    missedPongs: (conn.ws as any).missedPongs ?? 0,
+    maxMissedPongs,
+    tokenExpiresAt: conn.tokenExpiresAt,
+    registeredAgentCount: conn.registeredAgents.size,
+    registeredAgents: Array.from(conn.registeredAgents.values()).map(a => ({
+      id: a.id, name: a.name, role: a.role, state: a.state,
+    })),
+    capabilities: conn.capabilities,
+  };
+}
+
+/**
+ * Get structured health data for all inbound connections.
+ */
+export function getAllConnectionHealth(maxMissedPongs: number): ConnectionHealth[] {
+  const results: ConnectionHealth[] = [];
+  for (const swarmId of inboundConnections.keys()) {
+    const health = getConnectionHealth(swarmId, maxMissedPongs);
+    if (health) results.push(health);
+  }
+  return results;
+}
