@@ -87,6 +87,7 @@ export function Sidebar() {
       label: 'Control Plane',
       items: [
         { to: '/', icon: LayoutDashboard, label: 'Overview' },
+        { to: '/tasks', icon: ListTodo, label: 'Tasks' },
         { to: '/swarms', icon: Zap, label: 'Swarms', badge: onlineSwarmCount || undefined },
         { to: '/sessions', icon: Activity, label: 'Sessions' },
         { to: '/messages', icon: MessageSquare, label: 'Messages' },
@@ -98,7 +99,6 @@ export function Sidebar() {
       items: [
         { to: '/memory', icon: Brain, label: 'Memory' },
         { to: '/skills', icon: Wrench, label: 'Skills' },
-        { to: '/tasks', icon: ListTodo, label: 'Tasks' },
         { to: '/learning', icon: GraduationCap, label: 'Learning' },
       ],
     },

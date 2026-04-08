@@ -13,7 +13,7 @@ import clsx from 'clsx';
 import { useResource, useResourcesByType } from '../hooks/useApi';
 import { useQueries } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { useTaskGraph, STATUS_COLORS } from '../components/task-graph/useTaskGraph';
+import { useTaskGraph, buildGraphologyGraph, STATUS_COLORS } from '../components/task-graph/useTaskGraph';
 import { TaskGraphViewer } from '../components/task-graph/TaskGraphViewer';
 import { TaskKanban } from '../components/task-graph/TaskKanban';
 import { CreateTaskForm } from '../components/task-graph/CreateTaskForm';
@@ -102,6 +102,8 @@ export function TaskGraph() {
     })),
   });
 
+  const isMultiGraph = selectedIds.length > 1;
+
   const { mergedNodes, mergedEdges, graphColorMap } = useMemo(() => {
     const nodes: (OpenTasksGraphNode & { _sourceGraphId?: string; _sourceGraphName?: string; _sourceColor?: string })[] = [];
     const edges: OpenTasksGraphEdge[] = [];
@@ -136,6 +138,23 @@ export function TaskGraph() {
 
     return { mergedNodes: nodes, mergedEdges: edges, graphColorMap: colorMap };
   }, [graphQueryResults, selectedIds, allGraphs]);
+
+  // Build merged graphology graph for multi-graph sigma.js rendering
+  const mergedGraph = useMemo(() => {
+    if (!isMultiGraph || mergedNodes.length === 0) return null;
+    return buildGraphologyGraph(mergedNodes, mergedEdges, graphColorMap);
+  }, [isMultiGraph, mergedNodes, mergedEdges, graphColorMap]);
+
+  // Graph sources legend data for multi-graph mode
+  const graphSources = useMemo(() => {
+    if (!isMultiGraph) return undefined;
+    const sources = new Map<string, { name: string; color: string }>();
+    for (const id of selectedIds) {
+      const g = allGraphs.find((r) => r.id === id);
+      sources.set(id, { name: g?.name || id, color: graphColorMap.get(id) || '#6b7280' });
+    }
+    return sources;
+  }, [isMultiGraph, selectedIds, allGraphs, graphColorMap]);
 
   // For multi-graph, compute merged summary (must be before early returns)
   const mergedSummary = useMemo(() => {
@@ -297,11 +316,12 @@ export function TaskGraph() {
                 {count}
               </span>
             ))}
+            <TaskFilterBar filters={filters} onChange={setFilters} />
             <CreateTaskForm resourceId={resourceId!} />
             <CreateContextForm resourceId={resourceId!} />
             <Link
               to="/tasks/list"
-              className="btn-ghost p-1 rounded"
+              className="btn-ghost p-1 rounded cursor-pointer"
               title="Manage task graphs"
             >
               <Settings className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
@@ -309,9 +329,6 @@ export function TaskGraph() {
           </div>
         )}
       </div>
-
-      {/* Filter bar */}
-      <TaskFilterBar filters={filters} onChange={setFilters} />
 
       {/* View content */}
       <div className="flex-1 min-h-0">
@@ -321,12 +338,13 @@ export function TaskGraph() {
             filters={filters}
             mergedNodes={selectedIds.length > 1 ? mergedNodes : undefined}
           />
-        ) : graph ? (
+        ) : (isMultiGraph ? mergedGraph : graph) ? (
           <TaskGraphViewer
-            graph={graph}
+            graph={(isMultiGraph ? mergedGraph : graph)!}
             resourceId={resourceId!}
-            edges={mergedEdges}
-            allNodes={mergedNodes}
+            edges={isMultiGraph ? mergedEdges : undefined}
+            allNodes={isMultiGraph ? mergedNodes : undefined}
+            graphSources={graphSources}
           />
         ) : (
           <div className="h-full flex items-center justify-center">

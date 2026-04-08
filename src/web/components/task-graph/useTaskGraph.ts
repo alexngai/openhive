@@ -45,6 +45,54 @@ export interface TaskGraphState {
   } | null;
 }
 
+/**
+ * Build a graphology Graph from raw nodes + edges arrays.
+ * Used by multi-graph mode to create a merged sigma.js graph.
+ */
+export function buildGraphologyGraph(
+  nodes: OpenTasksGraphNode[],
+  edges: OpenTasksGraphEdge[],
+  graphColorMap?: Map<string, string>,
+): Graph {
+  const g = new Graph({ type: 'directed', multi: false });
+
+  for (const node of nodes) {
+    if (node.archived) continue;
+    const status = node.status || 'open';
+    // Use source color if available (multi-graph), fall back to status color
+    const sourceColor = (node as any)._sourceColor;
+    g.addNode(node.id, {
+      label: node.title || node.id,
+      size: TYPE_SIZES[node.type] || 6,
+      color: STATUS_COLORS[status] || STATUS_COLORS.open,
+      borderColor: sourceColor || null,
+      nodeType: node.type,
+      status,
+      priority: node.priority,
+      x: Math.random() * 100,
+      y: Math.random() * 100,
+      _data: node,
+    });
+  }
+
+  for (const edge of edges) {
+    if (g.hasNode(edge.from_id) && g.hasNode(edge.to_id)) {
+      try {
+        g.addEdge(edge.from_id, edge.to_id, {
+          type: 'arrow',
+          size: 1.5,
+          color: '#4b5563',
+          edgeType: edge.type,
+        });
+      } catch {
+        // Skip duplicate edges
+      }
+    }
+  }
+
+  return g;
+}
+
 export function useTaskGraph(resourceId: string): TaskGraphState {
   const { data: graphData, isLoading: graphLoading, error: graphError } = useOpenTasksGraph(resourceId);
   const { data: summary } = useOpenTasksSummary(resourceId);
@@ -77,7 +125,7 @@ export function useTaskGraph(resourceId: string): TaskGraphState {
         nodeType: node.type,
         status,
         priority: node.priority,
-        // Initial random position (will be laid out)
+        // Initial position (randomLayout.assign will override)
         x: Math.random() * 100,
         y: Math.random() * 100,
         // Store full node data for sidebar
