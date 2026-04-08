@@ -137,10 +137,11 @@ export async function daemonUpdateTask(
             transition: { id: taskId, action: action as 'start' | 'complete' | 'block' | 'reopen' | 'close' },
           });
           if (!result.success) {
-            throw new TaskDaemonError('OPERATION_FAILED', result.error || 'Transition failed');
+            // Semantic transition not valid for current state — fall back to direct update
+            await client.updateNode(taskId, { status: updates.status });
           }
-        } catch (err) {
-          if (err instanceof TaskDaemonError) throw err;
+        } catch {
+          // Transition threw — fall back to direct update
           await client.updateNode(taskId, { status: updates.status });
         }
       } else {

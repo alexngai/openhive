@@ -1025,10 +1025,15 @@ export async function resourceContentRoutes(
     metadata: z.record(z.unknown()).optional(),
   });
 
-  const UpdateTaskStatusSchema = z.object({
-    status: z.string().min(1),
+  const UpdateTaskSchema = z.object({
+    status: z.string().min(1).optional(),
+    title: z.string().min(1).max(500).optional(),
+    description: z.string().max(5000).optional().nullable(),
+    priority: z.number().int().min(0).max(10).optional(),
     result: z.record(z.unknown()).optional(),
     error: z.string().optional(),
+  }).refine(data => data.status || data.title !== undefined || data.description !== undefined || data.priority !== undefined, {
+    message: 'At least one field (status, title, description, or priority) is required',
   });
 
   fastify.post<{
@@ -1075,7 +1080,7 @@ export async function resourceContentRoutes(
     }
 
     let body;
-    try { body = UpdateTaskStatusSchema.parse(request.body); }
+    try { body = UpdateTaskSchema.parse(request.body); }
     catch (error) {
       if (error instanceof z.ZodError) return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'Invalid request body', details: error.errors });
       throw error;
@@ -1084,9 +1089,15 @@ export async function resourceContentRoutes(
     const { daemonUpdateTask: updateFn, resolveDaemonSocket: resolveSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
     const socketPath = resolveSocket(localPath);
     try {
-      await updateFn(socketPath, request.params.nodeId, { status: body.status }, localPath);
-      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.status', data: { taskId: request.params.nodeId, current: body.status } }); } catch { /* best effort */ }
-      return reply.send({ node_id: request.params.nodeId, previous_status: null, new_status: body.status });
+      await updateFn(socketPath, request.params.nodeId, {
+        status: body.status,
+        title: body.title,
+        description: body.description ?? undefined,
+      }, localPath);
+      if (body.status) {
+        try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.status', data: { taskId: request.params.nodeId, current: body.status } }); } catch { /* best effort */ }
+      }
+      return reply.send({ node_id: request.params.nodeId, previous_status: null, new_status: body.status ?? null });
     } catch (err) {
       if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
       throw err;

@@ -1240,6 +1240,32 @@ export function useDeleteTaskResource() {
   });
 }
 
+export function useUpdateOpenTask(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      nodeId,
+      title,
+      description,
+      priority,
+    }: {
+      nodeId: string;
+      title?: string;
+      description?: string | null;
+      priority?: number;
+    }) =>
+      api.patch<{ node_id: string }>(
+        `/resources/${resourceId}/content/opentasks/tasks/${nodeId}`,
+        { title, description, priority },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+    },
+  });
+}
+
 // ── Git Sync for Task Resources ──
 
 export function useGitSyncStatus(resourceId: string, enabled: boolean) {
