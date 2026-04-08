@@ -127,13 +127,13 @@ export async function resourceContentRoutes(
     }
 
     if (localPath && (!existsSync(localPath) || !statSync(localPath).isDirectory())) {
-      // For OpenTasks resources, create the directory so the daemon can start.
-      // The daemon's ensureDaemon() will initialize config.json and graph.jsonl.
+      // For OpenTasks resources, initialize the directory (equivalent to `opentasks init`)
       const meta = resource.metadata as Record<string, unknown> | null;
       if (resource.resource_type === 'task' && meta?.opentasks) {
         try {
-          const { mkdirSync } = await import('node:fs');
-          mkdirSync(localPath, { recursive: true });
+          const { ensureInitialized } = await import('../../map/task-daemon-lifecycle.js');
+          const extraConfig = meta.opentasks_config as Record<string, unknown> | undefined;
+          ensureInitialized(localPath, extraConfig);
         } catch {
           localPath = null;
         }
@@ -870,10 +870,30 @@ export async function resourceContentRoutes(
 
     // Remote swarm path
     const { findSwarmForResource, remoteGetSummary } = await import('../../map/opentasks-remote.js');
+    const { getInbound } = await import('../../map/connection-registry.js');
     const swarmId = findSwarmForResource(resource);
     if (swarmId) {
       const summary = await remoteGetSummary(swarmId);
-      if (summary) return reply.send(summary);
+      if (summary) {
+        // Enrich with remote location info from live connection + DB
+        const conn = getInbound(swarmId);
+        if (conn) {
+          let swarmName: string | undefined;
+          try {
+            const { findSwarmById } = await import('../../db/dal/map.js');
+            const swarm = findSwarmById(swarmId);
+            swarmName = swarm?.name ?? undefined;
+          } catch { /* non-critical */ }
+
+          (summary as Record<string, unknown>).remote_info = {
+            swarm_id: swarmId,
+            swarm_name: swarmName,
+            swarm_path: conn.defaultTaskGraph?.path,
+            connected_at: conn.connectedAt,
+          };
+        }
+        return reply.send(summary);
+      }
     }
 
     return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon could not be started and no connected swarm is available' });
@@ -988,6 +1008,15 @@ export async function resourceContentRoutes(
 
   // OpenTasks mutations
 
+  /** Check if a resource is read-only (ls-remote/mirror without git sync enabled) */
+  function isReadOnlyResource(resource: SyncableResource): boolean {
+    if (resource.sync_strategy !== 'ls-remote' && resource.sync_strategy !== 'mirror') return false;
+    const meta = resource.metadata as Record<string, unknown> | null;
+    const otConfig = meta?.opentasks_config as Record<string, unknown> | undefined;
+    const gitSync = otConfig?.sync as Record<string, unknown> | undefined;
+    return !gitSync?.git || !(gitSync.git as Record<string, unknown>).enabled;
+  }
+
   const CreateTaskNodeSchema = z.object({
     title: z.string().min(1).max(500),
     description: z.string().max(5000).optional(),
@@ -1009,6 +1038,10 @@ export async function resourceContentRoutes(
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only. Enable git sync in advanced settings to allow edits.' });
+    }
 
     let body;
     try { body = CreateTaskNodeSchema.parse(request.body); }
@@ -1037,6 +1070,10 @@ export async function resourceContentRoutes(
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
 
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only. Enable git sync in advanced settings to allow edits.' });
+    }
+
     let body;
     try { body = UpdateTaskStatusSchema.parse(request.body); }
     catch (error) {
@@ -1054,5 +1091,62 @@ export async function resourceContentRoutes(
       if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
       throw err;
     }
+  });
+
+  // ============================================================================
+  // Git Sync Endpoints (for ls-remote/mirror task resources)
+  // ============================================================================
+
+  fastify.get<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/git-status', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const { getGitSyncStatus } = await import('../../sync/git-content.js');
+    try {
+      const status = await getGitSyncStatus(localPath);
+      return reply.send(status);
+    } catch {
+      return reply.send({ hasUncommittedChanges: false, unpushedCommits: 0, localHead: null, remoteHead: null });
+    }
+  });
+
+  fastify.post<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/git-commit', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'Git sync is not enabled for this resource' });
+    }
+
+    const { commitChanges } = await import('../../sync/git-content.js');
+    const hash = await commitChanges(localPath);
+    return reply.send({ committed: hash !== null, hash });
+  });
+
+  fastify.post<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/git-push', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'Git sync is not enabled for this resource' });
+    }
+
+    const { commitChanges, pushToRemote } = await import('../../sync/git-content.js');
+    // Commit first if there are uncommitted changes
+    await commitChanges(localPath, 'Update task graph');
+    await pushToRemote(localPath);
+    return reply.send({ pushed: true });
   });
 }

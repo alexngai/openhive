@@ -653,15 +653,16 @@ describe('OpenTasks Content Routes', () => {
   // Graceful fallback when local path is missing
   // ==========================================================================
 
-  describe('Graceful fallback for inaccessible resources', () => {
+  describe('Behavior when daemon cannot start for a resource', () => {
     let noPathResource: { id: string };
 
     beforeAll(() => {
-      // Create a task resource whose path does not exist on disk
+      // Create a task resource pointing to a path that will be auto-created
+      // but the daemon won't start (no opentasks CLI in mocked env)
       noPathResource = resourcesDAL.createResource({
         resource_type: 'task',
         name: 'Ghost OpenTasks',
-        description: 'Points to a nonexistent path',
+        description: 'Points to an auto-created path',
         git_remote_url: '/tmp/nonexistent-opentasks-' + Date.now(),
         visibility: 'private',
         owner_agent_id: testAgent.id,
@@ -669,20 +670,20 @@ describe('OpenTasks Content Routes', () => {
       });
     });
 
-    it('GET /opentasks/tasks should return empty items instead of 404', async () => {
+    it('GET /opentasks/tasks should return empty items for auto-created path', async () => {
       const res = await app.inject({
         method: 'GET',
         url: `/api/v1/resources/${noPathResource.id}/content/opentasks/tasks`,
         headers: { Authorization: `Bearer ${testAgent.apiKey}` },
       });
 
+      // Path is auto-created for opentasks resources, mock daemon returns empty
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
       expect(body.items).toEqual([]);
-      expect(body.daemon_connected).toBe(false);
     });
 
-    it('GET /opentasks/ready should return empty items instead of 404', async () => {
+    it('GET /opentasks/ready should return empty items for auto-created path', async () => {
       const res = await app.inject({
         method: 'GET',
         url: `/api/v1/resources/${noPathResource.id}/content/opentasks/ready`,
@@ -692,10 +693,9 @@ describe('OpenTasks Content Routes', () => {
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
       expect(body.items).toEqual([]);
-      expect(body.daemon_connected).toBe(false);
     });
 
-    it('GET /opentasks/status should return not-connected instead of 404', async () => {
+    it('GET /opentasks/status should report daemon not running', async () => {
       const res = await app.inject({
         method: 'GET',
         url: `/api/v1/resources/${noPathResource.id}/content/opentasks/status`,
@@ -704,7 +704,7 @@ describe('OpenTasks Content Routes', () => {
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(body.daemon_connected).toBe(false);
+      expect(body.daemon_running).toBe(false);
     });
   });
 });

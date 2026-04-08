@@ -1056,6 +1056,7 @@ export function useOpenTasksSummary(resourceId: string) {
         `/resources/${resourceId}/content/opentasks/summary`,
       ),
     enabled: !!resourceId,
+    staleTime: 30_000, // consider fresh for 30s — avoids refetch storms on window focus
   });
 }
 
@@ -1144,6 +1145,126 @@ export function useUpdateOpenTaskStatus(resourceId: string) {
       queryClient.invalidateQueries({
         queryKey: ["opentasks-graph", resourceId],
       });
+    },
+  });
+}
+
+// ── SwarmKit Projects ──
+
+export function useSwarmKitProjects() {
+  return useQuery({
+    queryKey: ["swarmkit-projects"],
+    queryFn: () =>
+      api.get<{ projectRoots: string[] }>("/admin/swarmkit/projects"),
+  });
+}
+
+// ── Connected Task Graphs ──
+
+interface ConnectedTaskGraph {
+  swarm_id: string;
+  swarm_name: string | null;
+  location_hash: string | null;
+  path: string | null;
+  connected_at: string;
+  capabilities: Record<string, unknown> | null;
+}
+
+export function useConnectedTaskGraphs() {
+  return useQuery({
+    queryKey: ["connected-task-graphs"],
+    queryFn: () =>
+      api.get<{ data: ConnectedTaskGraph[] }>("/map/connected-task-graphs"),
+    refetchInterval: 30000, // poll every 30s since these are ephemeral
+  });
+}
+
+// ── Task Resource Management ──
+
+export function useCreateTaskResource() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: {
+      name: string;
+      path: string;
+      description?: string;
+      config?: Record<string, unknown>;
+      syncStrategy?: string;
+    }) =>
+      api.post<import("../lib/api").SyncableResource>("/resources", {
+        resource_type: "task",
+        name: data.name,
+        git_remote_url: data.path,
+        description: data.description || undefined,
+        visibility: "private",
+        sync_strategy: data.syncStrategy || "metadata",
+        metadata: { opentasks: true, ...(data.config ? { opentasks_config: data.config } : {}) },
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["resources"] });
+    },
+  });
+}
+
+export function useUpdateTaskResource() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      resourceId,
+      data,
+    }: {
+      resourceId: string;
+      data: {
+        name?: string;
+        description?: string | null;
+        metadata?: Record<string, unknown>;
+      };
+    }) => api.patch<import("../lib/api").SyncableResource>(`/resources/${resourceId}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["resources"] });
+    },
+  });
+}
+
+export function useDeleteTaskResource() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (resourceId: string) =>
+      api.delete(`/resources/${resourceId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["resources"] });
+    },
+  });
+}
+
+// ── Git Sync for Task Resources ──
+
+export function useGitSyncStatus(resourceId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["git-sync-status", resourceId],
+    queryFn: () =>
+      api.get<{
+        hasUncommittedChanges: boolean;
+        unpushedCommits: number;
+        localHead: string | null;
+        remoteHead: string | null;
+      }>(`/resources/${resourceId}/content/opentasks/git-status`),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useGitPush(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ pushed: boolean }>(`/resources/${resourceId}/content/opentasks/git-push`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["git-sync-status", resourceId] });
     },
   });
 }

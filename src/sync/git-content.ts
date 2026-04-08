@@ -186,6 +186,105 @@ export async function fetchLatest(
   };
 }
 
+// ============================================================================
+// Git Write Operations (commit + push for task graph sync)
+// ============================================================================
+
+export interface GitSyncStatus {
+  hasUncommittedChanges: boolean;
+  unpushedCommits: number;
+  localHead: string | null;
+  remoteHead: string | null;
+}
+
+/**
+ * Check git sync status of a clone — uncommitted changes + unpushed commits.
+ */
+export async function getGitSyncStatus(clonePath: string): Promise<GitSyncStatus> {
+  const localHead = await getLocalHead(clonePath);
+  let hasUncommittedChanges = false;
+  let unpushedCommits = 0;
+  let remoteHead: string | null = null;
+
+  // Check for uncommitted changes
+  try {
+    const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
+      cwd: clonePath, timeout: 5_000,
+    });
+    hasUncommittedChanges = stdout.trim().length > 0;
+  } catch { /* assume no changes */ }
+
+  // Check for unpushed commits (local vs remote tracking branch)
+  try {
+    const { stdout } = await execFileAsync(
+      'git', ['rev-list', '--count', '@{upstream}..HEAD'],
+      { cwd: clonePath, timeout: 5_000 },
+    );
+    unpushedCommits = parseInt(stdout.trim(), 10) || 0;
+  } catch { /* no upstream or no commits */ }
+
+  // Get remote HEAD for comparison
+  try {
+    const { stdout } = await execFileAsync(
+      'git', ['rev-parse', '@{upstream}'],
+      { cwd: clonePath, timeout: 5_000 },
+    );
+    remoteHead = stdout.trim() || null;
+  } catch { /* no upstream */ }
+
+  return { hasUncommittedChanges, unpushedCommits, localHead, remoteHead };
+}
+
+/**
+ * Commit all opentasks-related changes in a clone.
+ * Stages graph.jsonl and config.json in both root and .opentasks/ subdirectory.
+ * Returns the new commit hash or null if nothing to commit.
+ */
+export async function commitChanges(
+  clonePath: string,
+  message = 'Update task graph',
+): Promise<string | null> {
+  // Stage all opentasks-related files (could be at root or in .opentasks/)
+  const filesToStage = [
+    'graph.jsonl', 'config.json',
+    '.opentasks/graph.jsonl', '.opentasks/config.json', '.opentasks/.gitignore',
+  ];
+  for (const file of filesToStage) {
+    try {
+      await execFileAsync('git', ['add', '--', file], { cwd: clonePath, timeout: 5_000 });
+    } catch { /* file may not exist — skip */ }
+  }
+
+  // Check if there's anything staged
+  try {
+    await execFileAsync('git', ['diff', '--cached', '--quiet'], {
+      cwd: clonePath, timeout: 5_000,
+    });
+    // Exit 0 means no staged changes
+    return null;
+  } catch {
+    // Exit 1 means there ARE staged changes — commit them
+  }
+
+  await execFileAsync('git', ['commit', '-m', message], {
+    cwd: clonePath, timeout: 10_000,
+  });
+
+  return getLocalHead(clonePath);
+}
+
+/**
+ * Push local commits to the remote.
+ */
+export async function pushToRemote(
+  clonePath: string,
+  timeout: number = GIT_TIMEOUT,
+): Promise<void> {
+  await execFileAsync('git', ['push'], {
+    cwd: clonePath, timeout,
+  });
+}
+
 /**
  * Resolve the graph.jsonl path within a clone or local directory.
  * Checks for graph.jsonl directly, then in .opentasks/ subdirectory.

@@ -7,10 +7,10 @@
  */
 
 import * as net from 'node:net';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execSync } from 'node:child_process';
-import { join, basename, dirname, resolve } from 'node:path';
+import { join, basename, dirname, resolve, relative } from 'node:path';
 import { mkdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 
 // ============================================================================
 // Socket Resolution
@@ -113,25 +113,68 @@ export function isDaemonAlive(socketPath: string, timeoutMs = 2000): Promise<boo
 // ============================================================================
 
 /**
- * Ensure the .opentasks directory is initialized with at minimum a config.json
- * and graph.jsonl. The daemon needs these to start.
+ * Generate a deterministic 8-char location hash.
+ * Mirrors opentasks' generateLocationIdentity logic.
  */
-function ensureInitialized(opentasksDir: string): void {
+function generateLocationHash(opentasksDir: string): string {
+  const parentDir = dirname(resolve(opentasksDir));
+  let seed = resolve(opentasksDir);
+
+  // Try to use git remote URL for a stable, portable hash
+  try {
+    const gitRoot = execSync('git rev-parse --show-toplevel', { cwd: parentDir, stdio: ['pipe', 'pipe', 'pipe'] }).toString().trim();
+    const remoteUrl = execSync('git remote get-url origin', { cwd: gitRoot, stdio: ['pipe', 'pipe', 'pipe'] }).toString().trim();
+    if (remoteUrl) {
+      const relativePath = relative(gitRoot, parentDir) || '.';
+      seed = `${remoteUrl}:${relativePath}`;
+    }
+  } catch { /* no git or no remote — use path */ }
+
+  const hash = createHash('sha256').update(seed).digest();
+  // Base36 encode first 5 bytes → 8 chars
+  let result = '';
+  for (let i = 0; i < 5 && result.length < 8; i++) {
+    result += hash[i].toString(36).padStart(2, '0');
+  }
+  return result.slice(0, 8);
+}
+
+/**
+ * Ensure the .opentasks directory is fully initialized (equivalent to `opentasks init`).
+ * Creates config.json with location identity, graph.jsonl, and .gitignore.
+ *
+ * If extraConfig is provided (from resource metadata.opentasks_config),
+ * it's merged into the generated config.json.
+ */
+export function ensureInitialized(opentasksDir: string, extraConfig?: Record<string, unknown>): void {
   mkdirSync(opentasksDir, { recursive: true });
 
   const configPath = join(opentasksDir, 'config.json');
   if (!existsSync(configPath)) {
-    // Create minimal config — the daemon will fill in the rest
-    const dirName = basename(dirname(resolve(opentasksDir))) || 'default';
-    writeFileSync(configPath, JSON.stringify({
+    const locationName = basename(dirname(resolve(opentasksDir))) || 'default';
+    const config: Record<string, unknown> = {
       version: '1.0',
-      location: { name: dirName },
-    }, null, 2));
+      location: {
+        hash: generateLocationHash(opentasksDir),
+        uuid: randomUUID(),
+        name: locationName,
+      },
+      ...extraConfig,
+    };
+    writeFileSync(configPath, JSON.stringify(config, null, 2));
   }
 
   const graphPath = join(opentasksDir, 'graph.jsonl');
   if (!existsSync(graphPath)) {
     writeFileSync(graphPath, '');
+  }
+
+  const gitignorePath = join(opentasksDir, '.gitignore');
+  if (!existsSync(gitignorePath)) {
+    writeFileSync(gitignorePath, [
+      'cache.db', 'cache.db-wal', 'cache.db-shm',
+      'write.lock', 'daemon.sock', 'daemon.lock', '',
+    ].join('\n'));
   }
 }
 
