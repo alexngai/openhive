@@ -10,7 +10,7 @@
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { authMiddleware } from '../api/middleware/auth.js';
+import { authMiddleware, requireAdmin } from '../api/middleware/auth.js';
 import { handleForwardedSlackEvent } from './webhook-handler.js';
 import { normalize, routeEvent } from '../events/index.js';
 import * as eventsDAL from '../db/dal/events.js';
@@ -40,7 +40,62 @@ export async function swarmhubRoutes(
       last_health_check: state.lastHealthCheck,
       last_error: state.lastError,
       connected_at: state.connectedAt,
+      tunnel_connected: connector.isTunnelConnected,
     });
+  });
+
+  // ==========================================================================
+  // POST /swarmhub/connect — Connect to SwarmHub with provided credentials
+  // ==========================================================================
+
+  fastify.post<{ Body: { api_url: string; hive_token: string } }>(
+    '/swarmhub/connect',
+    { preHandler: [requireAdmin] },
+    async (request: FastifyRequest<{ Body: { api_url: string; hive_token: string } }>, reply: FastifyReply) => {
+      const { api_url, hive_token } = request.body;
+
+      if (!api_url || !hive_token) {
+        return reply.status(400).send({ error: 'api_url and hive_token are required' });
+      }
+
+      // Store credentials in environment for the connector to use
+      process.env.SWARMHUB_API_URL = api_url;
+      process.env.SWARMHUB_HIVE_TOKEN = hive_token;
+
+      // If already connected, disconnect first
+      if (connector.isConnected) {
+        await connector.disconnect();
+      }
+
+      try {
+        const identity = await connector.connect();
+        return reply.send({
+          connected: true,
+          identity,
+        });
+      } catch (err) {
+        // Clear all credentials on failure
+        delete process.env.SWARMHUB_API_URL;
+        delete process.env.SWARMHUB_HIVE_TOKEN;
+        delete process.env.SWARMHUB_PROXY_URL;
+        return reply.status(502).send({
+          error: 'Failed to connect to SwarmHub',
+          message: (err as Error).message,
+        });
+      }
+    },
+  );
+
+  // ==========================================================================
+  // POST /swarmhub/disconnect — Disconnect from SwarmHub
+  // ==========================================================================
+
+  fastify.post('/swarmhub/disconnect', { preHandler: [requireAdmin] }, async (_request: FastifyRequest, reply: FastifyReply) => {
+    await connector.disconnect();
+    delete process.env.SWARMHUB_API_URL;
+    delete process.env.SWARMHUB_HIVE_TOKEN;
+    delete process.env.SWARMHUB_PROXY_URL;
+    return reply.send({ disconnected: true });
   });
 
   // ==========================================================================

@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes } from 'lucide-react';
+import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes, Globe } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores/auth';
 import { useThemeStore } from '../stores/theme';
@@ -10,12 +10,13 @@ import { useSEO } from '../hooks/useDocumentTitle';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { SwarmKitSettings } from './settings/SwarmKitSettings';
+import { SwarmHubSettings } from './settings/SwarmHubSettings';
 import clsx from 'clsx';
 
 export function Settings() {
   const navigate = useNavigate();
   const { agent, isAuthenticated, logout } = useAuthStore();
-  const [activeTab, setActiveTab] = useState<'profile' | 'display' | 'api-keys' | 'server' | 'swarmkit'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'display' | 'api-keys' | 'server' | 'swarmkit' | 'swarmhub'>('profile');
 
   useSEO({ title: 'Settings' });
 
@@ -30,6 +31,7 @@ export function Settings() {
     { id: 'api-keys' as const, label: 'API Keys', icon: Key },
     { id: 'server' as const, label: 'Server', icon: Server },
     { id: 'swarmkit' as const, label: 'SwarmKit', icon: Boxes },
+    { id: 'swarmhub' as const, label: 'SwarmHub', icon: Globe },
   ];
 
   return (
@@ -67,6 +69,7 @@ export function Settings() {
           {activeTab === 'api-keys' && <ApiKeysSettings />}
           {activeTab === 'server' && <ServerSettings isAdmin={!!agent.is_admin} />}
           {activeTab === 'swarmkit' && <SwarmKitSettings isAdmin={!!agent.is_admin} />}
+          {activeTab === 'swarmhub' && <SwarmHubSettings />}
         </div>
       </div>
     </div>
