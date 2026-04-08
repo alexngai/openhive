@@ -1135,6 +1135,181 @@ export async function resourceContentRoutes(
   });
 
   // ============================================================================
+  // Context Node Endpoints
+  // ============================================================================
+
+  const CreateContextNodeSchema = z.object({
+    title: z.string().min(1).max(500),
+    content: z.string().max(50000).optional(),
+    priority: z.number().int().min(0).max(10).optional(),
+    tags: z.array(z.string().max(50)).max(20).optional(),
+  });
+
+  fastify.post<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/contexts', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
+    }
+
+    let body;
+    try { body = CreateContextNodeSchema.parse(request.body); }
+    catch (error) {
+      if (error instanceof z.ZodError) return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'Invalid request body', details: error.errors });
+      throw error;
+    }
+
+    const { daemonCreateContext, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const context = await daemonCreateContext(socketPath, {
+        title: body.title,
+        content: body.content,
+        priority: body.priority,
+        tags: body.tags,
+      }, localPath);
+      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.created', data: { task: { id: context.id, title: context.title, type: 'context' } } }); } catch { /* best effort */ }
+      return reply.status(201).send({ node_id: context.id, type: 'context' });
+    } catch (err) {
+      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running' });
+      throw err;
+    }
+  });
+
+  // Context summary / breadcrumbs
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { taskId?: string; branch?: string; limit?: number };
+  }>('/resources/:id/content/opentasks/context-summary', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const { daemonContextSummary, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const result = await daemonContextSummary(socketPath, {
+        taskId: request.query.taskId,
+        branch: request.query.branch,
+        limit: request.query.limit,
+      }, localPath);
+      return reply.send(result);
+    } catch (err) {
+      if (err instanceof DaemonErr) return reply.status(503).send({ error: 'Service Unavailable', message: err.message });
+      throw err;
+    }
+  });
+
+  // Create file-backed context node
+  const CreateContextFileSchema = z.object({
+    filePath: z.string().min(1).max(1000),
+    title: z.string().max(500).optional(),
+    commit: z.string().max(100).optional(),
+  });
+
+  fastify.post<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/context-files', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
+    }
+
+    let body;
+    try { body = CreateContextFileSchema.parse(request.body); }
+    catch (error) {
+      if (error instanceof z.ZodError) return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'Invalid request body', details: error.errors });
+      throw error;
+    }
+
+    const { daemonCreateContextFile, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const context = await daemonCreateContextFile(socketPath, body, localPath);
+      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.created', data: { task: { id: context.id, title: context.title, type: 'context' } } }); } catch { /* best effort */ }
+      return reply.status(201).send({ node_id: context.id, type: 'context' });
+    } catch (err) {
+      if (err instanceof DaemonErr) return reply.status(503).send({ error: 'Service Unavailable', message: err.message });
+      throw err;
+    }
+  });
+
+  // Resolve file-backed context content
+  fastify.get<{
+    Params: { id: string; nodeId: string };
+  }>('/resources/:id/content/opentasks/contexts/:nodeId/resolve', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const { daemonResolveContextFile, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const result = await daemonResolveContextFile(socketPath, request.params.nodeId, localPath);
+      return reply.send(result);
+    } catch (err) {
+      if (err instanceof DaemonErr) return reply.status(503).send({ error: 'Service Unavailable', message: err.message });
+      throw err;
+    }
+  });
+
+  // Check drift for file-backed context
+  fastify.get<{
+    Params: { id: string; nodeId: string };
+  }>('/resources/:id/content/opentasks/contexts/:nodeId/drift', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const { daemonCheckContextDrift, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const result = await daemonCheckContextDrift(socketPath, request.params.nodeId, localPath);
+      return reply.send(result);
+    } catch (err) {
+      if (err instanceof DaemonErr) return reply.status(503).send({ error: 'Service Unavailable', message: err.message });
+      throw err;
+    }
+  });
+
+  // Sync file-backed context to HEAD
+  fastify.post<{
+    Params: { id: string; nodeId: string };
+  }>('/resources/:id/content/opentasks/contexts/:nodeId/sync', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
+    }
+
+    const force = (request.body as any)?.force === true;
+    const { daemonSyncContextFile, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const result = await daemonSyncContextFile(socketPath, request.params.nodeId, force, localPath);
+      return reply.send(result);
+    } catch (err) {
+      if (err instanceof DaemonErr) return reply.status(503).send({ error: 'Service Unavailable', message: err.message });
+      throw err;
+    }
+  });
+
+  // ============================================================================
   // Task Link Endpoints (dependency management)
   // ============================================================================
 

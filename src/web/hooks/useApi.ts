@@ -1285,6 +1285,93 @@ export function useUpdateOpenTask(resourceId: string) {
   });
 }
 
+// ── Context Nodes ──
+
+export function useCreateContext(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: { title: string; content?: string; priority?: number; tags?: string[] }) =>
+      api.post<{ node_id: string; type: string }>(
+        `/resources/${resourceId}/content/opentasks/contexts`,
+        data,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+    },
+  });
+}
+
+export function useCreateContextFile(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: { filePath: string; title?: string; commit?: string }) =>
+      api.post<{ node_id: string; type: string }>(
+        `/resources/${resourceId}/content/opentasks/context-files`,
+        data,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+    },
+  });
+}
+
+export function useResolveContextFile(resourceId: string, nodeId: string | null) {
+  return useQuery({
+    queryKey: ["context-resolve", resourceId, nodeId],
+    queryFn: () =>
+      api.get<{ content: string; drifted: boolean; filePath: string; commit: string; contentHash: string }>(
+        `/resources/${resourceId}/content/opentasks/contexts/${nodeId}/resolve`,
+      ),
+    enabled: !!nodeId,
+    staleTime: 30_000,
+  });
+}
+
+export function useCheckContextDrift(resourceId: string, nodeId: string | null) {
+  return useQuery({
+    queryKey: ["context-drift", resourceId, nodeId],
+    queryFn: () =>
+      api.get<{ drifted: boolean; currentHash: string; capturedHash?: string }>(
+        `/resources/${resourceId}/content/opentasks/contexts/${nodeId}/drift`,
+      ),
+    enabled: !!nodeId,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useSyncContextFile(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (nodeId: string) =>
+      api.post<{ id: string; title: string }>(
+        `/resources/${resourceId}/content/opentasks/contexts/${nodeId}/sync`,
+        { force: true },
+      ),
+    onSuccess: (_data, nodeId) => {
+      queryClient.invalidateQueries({ queryKey: ["context-resolve", resourceId, nodeId] });
+      queryClient.invalidateQueries({ queryKey: ["context-drift", resourceId, nodeId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+    },
+  });
+}
+
+export function useContextSummary(resourceId: string) {
+  return useQuery({
+    queryKey: ["opentasks-context-summary", resourceId],
+    queryFn: () =>
+      api.get<Record<string, unknown>>(
+        `/resources/${resourceId}/content/opentasks/context-summary`,
+      ),
+    enabled: !!resourceId,
+    staleTime: 30_000,
+  });
+}
+
 // ── Task Links (dependencies) ──
 
 export function useCreateTaskLink(resourceId: string) {

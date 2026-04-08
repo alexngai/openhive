@@ -6,7 +6,7 @@
 import { useState } from 'react';
 import { X, CheckCircle2, PlayCircle, AlertTriangle, XCircle, Circle, Trash2, Link2, Plus } from 'lucide-react';
 import clsx from 'clsx';
-import { useUpdateOpenTaskStatus, useDeleteOpenTask, useCreateTaskLink, useRemoveTaskLink } from '../../hooks/useApi';
+import { useUpdateOpenTaskStatus, useDeleteOpenTask, useCreateTaskLink, useRemoveTaskLink, useResolveContextFile, useCheckContextDrift, useSyncContextFile } from '../../hooks/useApi';
 import type { OpenTasksGraphNode, OpenTasksGraphEdge } from '../../lib/api';
 
 const STATUS_ICONS: Record<string, React.ElementType> = {
@@ -136,8 +136,20 @@ export function TaskGraphSidebar({ node, resourceId, onClose, edges = [], allNod
           </div>
         )}
 
-        {/* Description */}
-        {node.description && (
+        {/* Content (for context nodes) or Description (for tasks) */}
+        {node.type === 'context' && node.content ? (
+          <div>
+            <div className="text-2xs font-medium mb-1" style={{ color: 'var(--color-text-muted)' }}>
+              Content
+            </div>
+            <pre
+              className="text-xs p-3 rounded-lg overflow-auto max-h-64 whitespace-pre-wrap break-words"
+              style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+            >
+              {node.content}
+            </pre>
+          </div>
+        ) : node.description ? (
           <div>
             <div className="text-2xs font-medium mb-1" style={{ color: 'var(--color-text-muted)' }}>
               Description
@@ -146,6 +158,11 @@ export function TaskGraphSidebar({ node, resourceId, onClose, edges = [], allNod
               {node.description}
             </p>
           </div>
+        ) : null}
+
+        {/* File-backed context — source info, drift, resolved content */}
+        {node.type === 'context' && node.metadata?.context_file && (
+          <FileContextSection nodeId={node.id} metadata={node.metadata} resourceId={resourceId} />
         )}
 
         {/* Metadata */}
@@ -216,6 +233,83 @@ export function TaskGraphSidebar({ node, resourceId, onClose, edges = [], allNod
                 </button>
               </div>
             )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FileContextSection({
+  nodeId,
+  metadata,
+  resourceId,
+}: {
+  nodeId: string;
+  metadata: Record<string, unknown>;
+  resourceId: string;
+}) {
+  const { data: resolved, isLoading: resolving } = useResolveContextFile(resourceId, nodeId);
+  const { data: drift } = useCheckContextDrift(resourceId, nodeId);
+  const syncFile = useSyncContextFile(resourceId);
+
+  const filePath = metadata.context_file_path as string;
+  const commit = metadata.context_file_commit as string | undefined;
+  const lineStart = metadata.context_line_start as number | undefined;
+  const lineEnd = metadata.context_line_end as number | undefined;
+
+  return (
+    <div className="space-y-2">
+      <div className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>
+        Source File
+      </div>
+      <div className="text-xs font-mono p-2 rounded-lg" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}>
+        <p className="truncate">{filePath}</p>
+        <div className="flex items-center gap-2 mt-1 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+          {commit && <span>commit: {commit.slice(0, 8)}</span>}
+          {lineStart != null && lineEnd != null && (
+            <span>lines {lineStart}-{lineEnd}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Drift warning */}
+      {drift?.drifted && (
+        <div className="flex items-center justify-between p-2 rounded-lg bg-amber-500/10">
+          <span className="text-2xs text-amber-400">File has changed since captured</span>
+          <button
+            onClick={() => syncFile.mutate(nodeId)}
+            disabled={syncFile.isPending}
+            className="text-2xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 hover:bg-amber-500/30"
+          >
+            {syncFile.isPending ? '...' : 'Sync to HEAD'}
+          </button>
+        </div>
+      )}
+
+      {syncFile.isSuccess && (
+        <p className="text-2xs text-emerald-400">Synced to HEAD</p>
+      )}
+
+      {/* Resolved file content */}
+      <div>
+        <div className="text-2xs font-medium mb-1" style={{ color: 'var(--color-text-muted)' }}>
+          Content
+        </div>
+        {resolving ? (
+          <div className="text-2xs p-3 rounded-lg" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
+            Loading file content...
+          </div>
+        ) : resolved?.content ? (
+          <pre
+            className="text-xs p-3 rounded-lg overflow-auto max-h-64 whitespace-pre-wrap break-words"
+            style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+          >
+            {resolved.content}
+          </pre>
+        ) : (
+          <div className="text-2xs p-3 rounded-lg" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
+            Could not resolve file content
           </div>
         )}
       </div>

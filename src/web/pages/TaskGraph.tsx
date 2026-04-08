@@ -15,6 +15,7 @@ import { useTaskGraph, STATUS_COLORS } from '../components/task-graph/useTaskGra
 import { TaskGraphViewer } from '../components/task-graph/TaskGraphViewer';
 import { TaskKanban } from '../components/task-graph/TaskKanban';
 import { CreateTaskForm } from '../components/task-graph/CreateTaskForm';
+import { CreateContextForm } from '../components/task-graph/CreateContextForm';
 import { TaskFilterBar, DEFAULT_FILTERS, type TaskFilters } from '../components/task-graph/TaskFilterBar';
 import { useTasksRealtime } from '../hooks/useMapTasks';
 
@@ -112,6 +113,7 @@ export function TaskGraph() {
               </span>
             ))}
             <CreateTaskForm resourceId={resourceId!} />
+            <CreateContextForm resourceId={resourceId!} />
           </div>
         )}
       </div>

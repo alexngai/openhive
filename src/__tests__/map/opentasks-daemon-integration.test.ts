@@ -884,4 +884,93 @@ describe('OpenTasks Daemon Integration', { timeout: 30000 }, () => {
       expect(updateRes.statusCode).toBe(200);
     });
   });
+
+  // ==========================================================================
+  // Daemon Client — Inline Context Nodes
+  // ==========================================================================
+
+  describe('Daemon Client — Inline Context Nodes', () => {
+    it('should create an inline context node via daemonCreateContext', async () => {
+      const { daemonCreateContext } = await import('../../map/task-daemon-client.js');
+
+      const ctx = await daemonCreateContext(daemonSocketPath, {
+        title: 'Architecture overview',
+        content: 'This is the system architecture.',
+        priority: 2,
+        tags: ['arch', 'docs'],
+      }, opentasksDir);
+
+      expect(ctx.id).toBeTruthy();
+      expect(ctx.title).toBe('Architecture overview');
+      expect(ctx.type).toBe('context');
+    });
+
+    it('should see context nodes in graph via daemonGetGraph', async () => {
+      const { daemonCreateContext, daemonGetGraph } = await import('../../map/task-daemon-client.js');
+
+      const uniqueTitle = `ctx-graph-${Date.now()}`;
+      await daemonCreateContext(daemonSocketPath, {
+        title: uniqueTitle,
+        content: 'Visible in graph',
+      }, opentasksDir);
+
+      const graph = await daemonGetGraph(daemonSocketPath, opentasksDir);
+      const found = graph.nodes.find((n: any) => n.title === uniqueTitle);
+      expect(found).toBeDefined();
+      expect(found!.type).toBe('context');
+    });
+
+    it('should count context nodes in summary', async () => {
+      const { daemonGetSummary } = await import('../../map/task-daemon-client.js');
+
+      const summary = await daemonGetSummary(daemonSocketPath, opentasksDir);
+      expect(summary.context_count).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // ==========================================================================
+  // Graph Metadata Passthrough
+  // ==========================================================================
+
+  describe('Graph Metadata Passthrough', () => {
+    it('daemonGetGraph should return content, metadata, and tags on nodes', async () => {
+      const { daemonCreateContext, daemonGetGraph } = await import('../../map/task-daemon-client.js');
+
+      const uniqueTitle = `meta-ctx-${Date.now()}`;
+      await daemonCreateContext(daemonSocketPath, {
+        title: uniqueTitle,
+        content: 'Content for metadata test',
+        tags: ['meta-tag'],
+      }, opentasksDir);
+
+      const graph = await daemonGetGraph(daemonSocketPath, opentasksDir);
+      const node = graph.nodes.find((n: any) => n.title === uniqueTitle);
+      expect(node).toBeDefined();
+
+      // content field should be present (returned by verbose query)
+      expect(node).toHaveProperty('content');
+      // metadata field should be present
+      expect(node).toHaveProperty('metadata');
+      // tags field should be present
+      expect(node).toHaveProperty('tags');
+    });
+
+    it('task nodes should also have content/metadata/tags fields', async () => {
+      const { daemonCreateTask, daemonGetGraph } = await import('../../map/task-daemon-client.js');
+
+      const uniqueTitle = `meta-task-${Date.now()}`;
+      await daemonCreateTask(daemonSocketPath, {
+        title: uniqueTitle,
+        description: 'Task with metadata fields',
+        priority: 1,
+      }, opentasksDir);
+
+      const graph = await daemonGetGraph(daemonSocketPath, opentasksDir);
+      const node = graph.nodes.find((n: any) => n.title === uniqueTitle);
+      expect(node).toBeDefined();
+      expect(node).toHaveProperty('content');
+      expect(node).toHaveProperty('metadata');
+      expect(node).toHaveProperty('tags');
+    });
+  });
 });

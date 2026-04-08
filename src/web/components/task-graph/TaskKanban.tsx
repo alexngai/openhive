@@ -6,7 +6,7 @@
 import { useState } from 'react';
 import {
   Circle, PlayCircle, AlertTriangle, CheckCircle2,
-  Pencil, Check, X, Trash2,
+  Pencil, Check, X, Trash2, FileText, FileCode, ChevronDown,
 } from 'lucide-react';
 import clsx from 'clsx';
 import {
@@ -401,9 +401,10 @@ export function TaskKanban({ resourceId, filters }: TaskKanbanProps) {
     }),
   );
 
-  const allNodes = (graphData?.nodes || []).filter(
-    (n) => n.type === 'task' && !n.archived,
-  );
+  const allGraphNodes = graphData?.nodes || [];
+  const allNodes = allGraphNodes.filter((n) => n.type === 'task' && !n.archived);
+  const contextNodes = allGraphNodes.filter((n) => n.type === 'context' && !n.archived);
+  const [showContexts, setShowContexts] = useState(true);
 
   // Apply filters
   const nodes = filters
@@ -533,6 +534,42 @@ export function TaskKanban({ resourceId, filters }: TaskKanbanProps) {
           />
         ))}
       </div>
+
+      {/* Context nodes section */}
+      {contextNodes.length > 0 && (
+        <div className="px-4 pb-4">
+          <button
+            onClick={() => setShowContexts(!showContexts)}
+            className="flex items-center gap-1.5 text-xs font-semibold mb-2"
+            style={{ color: 'var(--color-text-muted)' }}
+          >
+            <FileText className="w-3.5 h-3.5" />
+            Context
+            <span className="text-2xs font-normal px-1.5 py-0.5 rounded-full" style={{ backgroundColor: 'var(--color-elevated)' }}>
+              {contextNodes.length}
+            </span>
+            <ChevronDown className={`w-3.5 h-3.5 ml-auto transition-transform ${showContexts ? '' : '-rotate-90'}`} />
+          </button>
+          {showContexts && (
+            <div className="flex flex-wrap gap-2">
+              {contextNodes.map((n) => {
+                const isFile = !!(n.metadata as Record<string, unknown> | undefined)?.context_file;
+                return (
+                  <div
+                    key={n.id}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs cursor-pointer hover:ring-1 hover:ring-white/10"
+                    style={{ backgroundColor: 'var(--color-surface)' }}
+                    onClick={() => handleSelectNode(n)}
+                  >
+                    {isFile ? <FileCode className="w-3 h-3 text-blue-400" /> : <FileText className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
+                    <span className="truncate max-w-[200px]">{n.title || n.id}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Drag overlay — floating card that follows the cursor */}
       <DragOverlay>
