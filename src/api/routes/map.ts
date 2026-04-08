@@ -27,6 +27,8 @@
  *   DELETE /map/preauth-keys/:id     - Revoke pre-auth key (admin)
  *
  *   GET    /map/stats                - Hub stats
+ *   GET    /map/connections          - Live connection health (all)
+ *   GET    /map/connections/:swarmId - Live connection health (single)
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
@@ -44,6 +46,8 @@ import {
 import { createSwarmToken, delegateToken, revokeToken } from '../../map/token-service.js';
 import type { Config } from '../../config.js';
 import { broadcastToChannel } from '../../realtime/index.js';
+import { getAllConnectionHealth, getConnectionHealth } from '../../map/connection-registry.js';
+import { getSyncListenerStatus } from '../../map/sync-listener.js';
 
 // ============================================================================
 // Zod Schemas
@@ -638,6 +642,45 @@ export async function mapRoutes(
   }, async (_request: FastifyRequest, reply: FastifyReply) => {
     const stats = mapDal.getMapStats();
     return reply.send(stats);
+  });
+
+  // ==========================================================================
+  // Live Connection Health
+  // ==========================================================================
+
+  // GET /map/connections -- Live connection health for all inbound swarms
+  fastify.get('/map/connections', {
+    preHandler: [authMiddleware],
+  }, async (_request: FastifyRequest, reply: FastifyReply) => {
+    const connections = getAllConnectionHealth(opts.config.mapHub.missedPongsBeforeTerminate);
+    const outbound = getSyncListenerStatus();
+
+    return reply.send({
+      inbound: connections,
+      outbound: outbound.connections,
+      summary: {
+        inbound_count: connections.length,
+        outbound_connected: outbound.connected,
+        outbound_reconnecting: outbound.reconnecting,
+        degraded: connections.filter(c => c.missedPongs > 0).length,
+      },
+    });
+  });
+
+  // GET /map/connections/:swarmId -- Live connection health for a specific swarm
+  fastify.get<{ Params: { swarmId: string } }>('/map/connections/:swarmId', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
+    const health = getConnectionHealth(request.params.swarmId, opts.config.mapHub.missedPongsBeforeTerminate);
+
+    if (!health) {
+      return reply.status(404).send({
+        error: 'Not Found',
+        message: 'No active inbound connection for this swarm',
+      });
+    }
+
+    return reply.send(health);
   });
 
   // ==========================================================================

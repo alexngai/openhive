@@ -589,7 +589,7 @@ export async function sessionsRoutes(
   );
 
   // Get session events (ACP-converted)
-  fastify.get<{ Params: { id: string }; Querystring: { limit?: number; offset?: number } }>(
+  fastify.get<{ Params: { id: string }; Querystring: { limit?: number; offset?: number; order?: string } }>(
     '/sessions/:id/events',
     { preHandler: authMiddleware },
     async (request, reply) => {
@@ -613,6 +613,7 @@ export async function sessionsRoutes(
       const storageBackend = metadata?.storage?.backend;
       const limit = Math.min(Number(request.query.limit) || 100, 500);
       const offset = Number(request.query.offset) || 0;
+      const order = request.query.order === 'asc' ? 'asc' as const : 'desc' as const;
 
       let content: string | null = null;
       let formatId = metadata?.format?.id || 'claude_jsonl_v1';
@@ -694,7 +695,7 @@ export async function sessionsRoutes(
 
       // Convert to ACP events (paginated — only parses enough lines for the requested page)
       const { events: paginatedEvents, total, formatId: resolvedFormatId } =
-        toAcpEventsPaginated(content, limit, offset, formatId);
+        toAcpEventsPaginated(content, limit, offset, formatId, order);
 
       return reply.send({
         format_id: resolvedFormatId,

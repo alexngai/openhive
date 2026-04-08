@@ -154,6 +154,10 @@ export const ConfigSchema = z.object({
       // HMAC secret for agent-iam token signing/verification (verified mode).
       // Auto-generated and persisted to <dataDir>/data/iam-secret.key if not set.
       iamSecret: z.string().optional(),
+      // Number of missed pongs before terminating a WebSocket connection (default 3).
+      missedPongsBeforeTerminate: z.number().min(1).default(3),
+      // Debounce interval (ms) for batching heartbeatSwarm() DB writes (default 10s).
+      heartbeatDebounceMs: z.number().min(1000).default(10_000),
     })
     .default({}),
 
