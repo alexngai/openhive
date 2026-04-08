@@ -1022,6 +1022,7 @@ export async function resourceContentRoutes(
     description: z.string().max(5000).optional(),
     status: z.string().optional(),
     priority: z.number().int().min(0).max(10).optional(),
+    assignee: z.string().max(200).optional().nullable(),
     metadata: z.record(z.unknown()).optional(),
   });
 
@@ -1030,10 +1031,11 @@ export async function resourceContentRoutes(
     title: z.string().min(1).max(500).optional(),
     description: z.string().max(5000).optional().nullable(),
     priority: z.number().int().min(0).max(10).optional(),
+    assignee: z.string().max(200).optional().nullable(),
     result: z.record(z.unknown()).optional(),
     error: z.string().optional(),
-  }).refine(data => data.status || data.title !== undefined || data.description !== undefined || data.priority !== undefined, {
-    message: 'At least one field (status, title, description, or priority) is required',
+  }).refine(data => data.status || data.title !== undefined || data.description !== undefined || data.priority !== undefined || data.assignee !== undefined, {
+    message: 'At least one field (status, title, description, priority, or assignee) is required',
   });
 
   fastify.post<{
@@ -1059,7 +1061,7 @@ export async function resourceContentRoutes(
     const { daemonCreateTask: createFn, resolveDaemonSocket: resolveSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
     const socketPath = resolveSocket(localPath);
     try {
-      const task = await createFn(socketPath, { title: body.title, description: body.description, status: body.status || 'open', priority: body.priority }, localPath);
+      const task = await createFn(socketPath, { title: body.title, description: body.description, status: body.status || 'open', priority: body.priority, assignee: body.assignee ?? undefined }, localPath);
       try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.created', data: { task: { id: task.id, title: task.title, status: task.status } } }); } catch { /* best effort */ }
       return reply.status(201).send({ node_id: task.id, status: task.status });
     } catch (err) {
@@ -1093,6 +1095,7 @@ export async function resourceContentRoutes(
         status: body.status,
         title: body.title,
         description: body.description ?? undefined,
+        assignee: body.assignee,
       }, localPath);
       if (body.status) {
         try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.status', data: { taskId: request.params.nodeId, current: body.status } }); } catch { /* best effort */ }
@@ -1100,6 +1103,111 @@ export async function resourceContentRoutes(
       return reply.send({ node_id: request.params.nodeId, previous_status: null, new_status: body.status ?? null });
     } catch (err) {
       if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
+      throw err;
+    }
+  });
+
+  // Delete task node
+  fastify.delete<{
+    Params: { id: string; nodeId: string };
+    Querystring: { hard?: string };
+  }>('/resources/:id/content/opentasks/tasks/:nodeId', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
+    }
+
+    const hard = request.query.hard === 'true';
+    const { daemonDeleteTask, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      await daemonDeleteTask(socketPath, request.params.nodeId, { hard }, localPath);
+      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.deleted', data: { taskId: request.params.nodeId, hard } }); } catch { /* best effort */ }
+      return reply.send({ deleted: true, node_id: request.params.nodeId, hard });
+    } catch (err) {
+      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
+      throw err;
+    }
+  });
+
+  // ============================================================================
+  // Task Link Endpoints (dependency management)
+  // ============================================================================
+
+  const CreateLinkSchema = z.object({
+    targetId: z.string().min(1),
+    type: z.enum(['blocks', 'depends-on', 'related', 'parent-of', 'implements', 'references']),
+    metadata: z.record(z.unknown()).optional(),
+  });
+
+  // Create a link from nodeId to targetId
+  fastify.post<{
+    Params: { id: string; nodeId: string };
+  }>('/resources/:id/content/opentasks/tasks/:nodeId/links', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
+    }
+
+    let body;
+    try { body = CreateLinkSchema.parse(request.body); }
+    catch (error) {
+      if (error instanceof z.ZodError) return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'Invalid request body', details: error.errors });
+      throw error;
+    }
+
+    const { daemonCreateLink, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const result = await daemonCreateLink(socketPath, {
+        fromId: request.params.nodeId,
+        toId: body.targetId,
+        type: body.type,
+        metadata: body.metadata,
+      }, localPath);
+      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.linked', data: { fromId: request.params.nodeId, toId: body.targetId, edgeType: body.type } }); } catch { /* best effort */ }
+      return reply.status(201).send({ edge_id: result.edgeId, from_id: request.params.nodeId, to_id: body.targetId, type: body.type });
+    } catch (err) {
+      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running' });
+      throw err;
+    }
+  });
+
+  // Remove a link from nodeId to targetId
+  fastify.delete<{
+    Params: { id: string; nodeId: string; targetId: string };
+    Querystring: { type?: string };
+  }>('/resources/:id/content/opentasks/tasks/:nodeId/links/:targetId', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
+    }
+
+    const edgeType = request.query.type || 'blocks';
+    const { daemonRemoveLink, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      await daemonRemoveLink(socketPath, {
+        fromId: request.params.nodeId,
+        toId: request.params.targetId,
+        type: edgeType,
+      }, localPath);
+      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.unlinked', data: { fromId: request.params.nodeId, toId: request.params.targetId, edgeType } }); } catch { /* best effort */ }
+      return reply.send({ removed: true });
+    } catch (err) {
+      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running' });
       throw err;
     }
   });

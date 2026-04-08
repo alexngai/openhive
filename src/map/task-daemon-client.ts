@@ -168,6 +168,54 @@ export async function daemonUpdateTask(
   }, opentasksDir);
 }
 
+export async function daemonDeleteTask(
+  socketPath: string,
+  taskId: string,
+  options?: { hard?: boolean },
+  opentasksDir?: string,
+): Promise<void> {
+  return withDaemon(socketPath, async (client) => {
+    await client.deleteNode(taskId, { hard: options?.hard ?? false });
+  }, opentasksDir);
+}
+
+export async function daemonCreateLink(
+  socketPath: string,
+  params: { fromId: string; toId: string; type: string; metadata?: Record<string, unknown> },
+  opentasksDir?: string,
+): Promise<{ edgeId?: string }> {
+  return withDaemon(socketPath, async (client) => {
+    const result = await client.link({
+      fromId: params.fromId,
+      toId: params.toId,
+      type: params.type as any,
+      metadata: params.metadata,
+    });
+    if (!result.success) {
+      throw new TaskDaemonError('OPERATION_FAILED', result.error || 'Link creation failed');
+    }
+    return { edgeId: result.edgeId };
+  }, opentasksDir);
+}
+
+export async function daemonRemoveLink(
+  socketPath: string,
+  params: { fromId: string; toId: string; type: string },
+  opentasksDir?: string,
+): Promise<void> {
+  return withDaemon(socketPath, async (client) => {
+    const result = await client.link({
+      fromId: params.fromId,
+      toId: params.toId,
+      type: params.type as any,
+      remove: true,
+    });
+    if (!result.success) {
+      throw new TaskDaemonError('OPERATION_FAILED', result.error || 'Link removal failed');
+    }
+  }, opentasksDir);
+}
+
 export async function daemonAssignTask(
   socketPath: string,
   taskId: string,

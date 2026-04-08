@@ -15,6 +15,7 @@ import { useTaskGraph, STATUS_COLORS } from '../components/task-graph/useTaskGra
 import { TaskGraphViewer } from '../components/task-graph/TaskGraphViewer';
 import { TaskKanban } from '../components/task-graph/TaskKanban';
 import { CreateTaskForm } from '../components/task-graph/CreateTaskForm';
+import { TaskFilterBar, DEFAULT_FILTERS, type TaskFilters } from '../components/task-graph/TaskFilterBar';
 import { useTasksRealtime } from '../hooks/useMapTasks';
 
 type ViewMode = 'graph' | 'board';
@@ -22,8 +23,9 @@ type ViewMode = 'graph' | 'board';
 export function TaskGraph() {
   const { resourceId } = useParams<{ resourceId: string }>();
   const [view, setView] = useState<ViewMode>('board');
+  const [filters, setFilters] = useState<TaskFilters>(DEFAULT_FILTERS);
   const { data: resource, isLoading: resourceLoading } = useResource(resourceId!);
-  const { graph, isLoading: graphLoading, summary } = useTaskGraph(resourceId!);
+  const { graph, isLoading: graphLoading, summary, nodes: rawNodes, edges: rawEdges } = useTaskGraph(resourceId!);
   useTasksRealtime();
 
   if (resourceLoading || graphLoading) {
@@ -114,12 +116,15 @@ export function TaskGraph() {
         )}
       </div>
 
+      {/* Filter bar */}
+      <TaskFilterBar filters={filters} onChange={setFilters} />
+
       {/* View content */}
       <div className="flex-1 min-h-0">
         {view === 'board' ? (
-          <TaskKanban resourceId={resourceId!} />
+          <TaskKanban resourceId={resourceId!} filters={filters} />
         ) : graph ? (
-          <TaskGraphViewer graph={graph} resourceId={resourceId!} />
+          <TaskGraphViewer graph={graph} resourceId={resourceId!} edges={rawEdges} allNodes={rawNodes} />
         ) : (
           <div className="h-full flex items-center justify-center">
             <div className="text-center space-y-2">

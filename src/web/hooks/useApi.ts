@@ -1091,6 +1091,7 @@ export function useCreateOpenTask(resourceId: string) {
       description?: string;
       status?: string;
       priority?: number;
+      assignee?: string | null;
       metadata?: Record<string, unknown>;
     }) =>
       api.post<{ node_id: string; status: string }>(
@@ -1240,6 +1241,22 @@ export function useDeleteTaskResource() {
   });
 }
 
+export function useDeleteOpenTask(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (nodeId: string) =>
+      api.delete<{ deleted: boolean; node_id: string }>(
+        `/resources/${resourceId}/content/opentasks/tasks/${nodeId}`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-ready", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+    },
+  });
+}
+
 export function useUpdateOpenTask(resourceId: string) {
   const queryClient = useQueryClient();
 
@@ -1249,19 +1266,56 @@ export function useUpdateOpenTask(resourceId: string) {
       title,
       description,
       priority,
+      assignee,
     }: {
       nodeId: string;
       title?: string;
       description?: string | null;
       priority?: number;
+      assignee?: string | null;
     }) =>
       api.patch<{ node_id: string }>(
         `/resources/${resourceId}/content/opentasks/tasks/${nodeId}`,
-        { title, description, priority },
+        { title, description, priority, assignee },
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
       queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+    },
+  });
+}
+
+// ── Task Links (dependencies) ──
+
+export function useCreateTaskLink(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ nodeId, targetId, type }: { nodeId: string; targetId: string; type: string }) =>
+      api.post<{ edge_id: string; from_id: string; to_id: string; type: string }>(
+        `/resources/${resourceId}/content/opentasks/tasks/${nodeId}/links`,
+        { targetId, type },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-ready", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+    },
+  });
+}
+
+export function useRemoveTaskLink(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ nodeId, targetId, type }: { nodeId: string; targetId: string; type: string }) =>
+      api.delete<{ removed: boolean }>(
+        `/resources/${resourceId}/content/opentasks/tasks/${nodeId}/links/${targetId}?type=${type}`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-ready", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
     },
   });
 }

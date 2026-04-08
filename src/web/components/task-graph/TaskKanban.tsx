@@ -6,7 +6,7 @@
 import { useState } from 'react';
 import {
   Circle, PlayCircle, AlertTriangle, CheckCircle2,
-  Pencil, Check, X,
+  Pencil, Check, X, Trash2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import {
@@ -16,8 +16,8 @@ import {
   type DragStartEvent, type DragEndEvent, type DragOverEvent,
 } from '@dnd-kit/core';
 // @dnd-kit/utilities not needed — using useDraggable (not useSortable)
-import { useOpenTasksGraph, useUpdateOpenTaskStatus, useUpdateOpenTask } from '../../hooks/useApi';
-// Note: useUpdateOpenTaskStatus is still used by the main TaskKanban component for drag-drop
+import { useOpenTasksGraph, useUpdateOpenTaskStatus, useUpdateOpenTask, useDeleteOpenTask } from '../../hooks/useApi';
+import { applyTaskFilters } from './TaskFilterBar';
 import { useTasksRealtime } from '../../hooks/useMapTasks';
 import type { OpenTasksGraphNode } from '../../lib/api';
 
@@ -106,9 +106,12 @@ function DraggableTaskCard({
   isDragOverlay?: boolean;
 }) {
   const updateTask = useUpdateOpenTask(resourceId);
+  const deleteTask = useDeleteOpenTask(resourceId);
   const [isEditing, setIsEditing] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [editTitle, setEditTitle] = useState(node.title || '');
   const [editDescription, setEditDescription] = useState(node.description || '');
+  const [editAssignee, setEditAssignee] = useState((node as any).assignee || '');
 
   const {
     attributes,
@@ -163,7 +166,7 @@ function DraggableTaskCard({
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 if (editTitle.trim()) {
-                  updateTask.mutate({ nodeId: node.id, title: editTitle.trim(), description: editDescription.trim() || null }, { onSuccess: () => setIsEditing(false) });
+                  updateTask.mutate({ nodeId: node.id, title: editTitle.trim(), description: editDescription.trim() || null, assignee: editAssignee.trim() || null }, { onSuccess: () => setIsEditing(false) });
                 }
               }
             }}
@@ -175,6 +178,13 @@ function DraggableTaskCard({
             rows={2}
             className="input w-full text-2xs resize-none"
           />
+          <input
+            type="text"
+            value={editAssignee}
+            onChange={(e) => setEditAssignee(e.target.value)}
+            placeholder="Assignee (optional)"
+            className="input w-full text-2xs"
+          />
           <div className="flex justify-end gap-1">
             <button
               onClick={() => { setIsEditing(false); setEditTitle(node.title || ''); setEditDescription(node.description || ''); }}
@@ -185,7 +195,7 @@ function DraggableTaskCard({
             <button
               onClick={() => {
                 if (editTitle.trim()) {
-                  updateTask.mutate({ nodeId: node.id, title: editTitle.trim(), description: editDescription.trim() || null }, { onSuccess: () => setIsEditing(false) });
+                  updateTask.mutate({ nodeId: node.id, title: editTitle.trim(), description: editDescription.trim() || null, assignee: editAssignee.trim() || null }, { onSuccess: () => setIsEditing(false) });
                 }
               }}
               disabled={!editTitle.trim() || updateTask.isPending}
@@ -210,20 +220,54 @@ function DraggableTaskCard({
                 </p>
               )}
             </div>
-            {!isDragOverlay && node.type === 'task' && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setEditTitle(node.title || '');
-                  setEditDescription(node.description || '');
-                  setIsEditing(true);
-                }}
+            {!isDragOverlay && node.type === 'task' && !confirmDelete && (
+              <div className="flex items-center gap-0.5 opacity-0 group-hover/card:opacity-100 transition-opacity shrink-0">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditTitle(node.title || '');
+                    setEditDescription(node.description || '');
+                    setEditAssignee((node as any).assignee || '');
+                    setIsEditing(true);
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  className="p-1 rounded hover:bg-white/10"
+                  title="Edit task"
+                >
+                  <Pencil className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  className="p-1 rounded hover:bg-red-500/10"
+                  title="Delete task"
+                >
+                  <Trash2 className="w-3 h-3 text-red-400/60 hover:text-red-400" />
+                </button>
+              </div>
+            )}
+            {confirmDelete && (
+              <div
+                className="flex items-center gap-1 shrink-0"
+                onClick={(e) => e.stopPropagation()}
                 onPointerDown={(e) => e.stopPropagation()}
-                className="p-1 rounded opacity-0 group-hover/card:opacity-100 transition-opacity hover:bg-white/10 shrink-0"
-                title="Edit task"
               >
-                <Pencil className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
-              </button>
+                <span className="text-2xs text-red-400">Delete?</span>
+                <button
+                  onClick={() => deleteTask.mutate(node.id)}
+                  disabled={deleteTask.isPending}
+                  className="text-2xs px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30"
+                >
+                  {deleteTask.isPending ? '...' : 'Yes'}
+                </button>
+                <button
+                  onClick={() => setConfirmDelete(false)}
+                  className="text-2xs px-1.5 py-0.5 rounded hover:bg-white/10"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
+                  No
+                </button>
+              </div>
             )}
           </div>
 
@@ -246,6 +290,11 @@ function DraggableTaskCard({
         <span className="text-2xs font-mono" style={{ color: 'var(--color-text-muted)' }}>
           {node.id.length > 12 ? node.id.slice(-8) : node.id}
         </span>
+        {(node as any).assignee && (
+          <span className="text-2xs ml-auto" style={{ color: 'var(--color-text-muted)' }}>
+            @{(node as any).assignee}
+          </span>
+        )}
       </div>
 
         </>
@@ -333,9 +382,10 @@ function DroppableColumn({
 
 interface TaskKanbanProps {
   resourceId: string;
+  filters?: import('./TaskFilterBar').TaskFilters;
 }
 
-export function TaskKanban({ resourceId }: TaskKanbanProps) {
+export function TaskKanban({ resourceId, filters }: TaskKanbanProps) {
   const { data: graphData, isLoading } = useOpenTasksGraph(resourceId);
   const updateStatus = useUpdateOpenTaskStatus(resourceId);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -351,9 +401,14 @@ export function TaskKanban({ resourceId }: TaskKanbanProps) {
     }),
   );
 
-  const nodes = (graphData?.nodes || []).filter(
+  const allNodes = (graphData?.nodes || []).filter(
     (n) => n.type === 'task' && !n.archived,
   );
+
+  // Apply filters
+  const nodes = filters
+    ? applyTaskFilters(allNodes as any[], filters) as typeof allNodes
+    : allNodes;
 
   // Group nodes into columns
   const columnData = COLUMNS.map((col) => ({

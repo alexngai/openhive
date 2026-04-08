@@ -20,9 +20,11 @@ interface Props {
   graph: Graph;
   resourceId: string;
   onNodeSelect?: (node: OpenTasksGraphNode | null) => void;
+  edges?: import('../../lib/api').OpenTasksGraphEdge[];
+  allNodes?: OpenTasksGraphNode[];
 }
 
-export function TaskGraphViewer({ graph, resourceId, onNodeSelect }: Props) {
+export function TaskGraphViewer({ graph, resourceId, onNodeSelect, edges = [], allNodes = [] }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const [selectedNode, setSelectedNode] = useState<OpenTasksGraphNode | null>(null);
@@ -151,7 +153,7 @@ export function TaskGraphViewer({ graph, resourceId, onNodeSelect }: Props) {
       </div>
 
       {/* Sidebar */}
-      <TaskGraphSidebar node={selectedNode} resourceId={resourceId} onClose={handleCloseSidebar} />
+      <TaskGraphSidebar node={selectedNode} resourceId={resourceId} onClose={handleCloseSidebar} edges={edges} allNodes={allNodes} />
     </div>
   );
 }

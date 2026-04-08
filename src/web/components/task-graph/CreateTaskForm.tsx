@@ -16,6 +16,7 @@ export function CreateTaskForm({ resourceId, onCreated }: Props) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState(0);
+  const [assignee, setAssignee] = useState('');
 
   const createTask = useCreateOpenTask(resourceId);
 
@@ -28,12 +29,14 @@ export function CreateTaskForm({ resourceId, onCreated }: Props) {
         title: title.trim(),
         description: description.trim() || undefined,
         priority,
+        assignee: assignee.trim() || undefined,
       },
       {
         onSuccess: () => {
           setTitle('');
           setDescription('');
           setPriority(0);
+          setAssignee('');
           setOpen(false);
           onCreated?.();
         },
@@ -77,6 +80,14 @@ export function CreateTaskForm({ resourceId, onCreated }: Props) {
         placeholder="Description (optional)"
         className="input text-xs w-full resize-none"
         rows={2}
+      />
+
+      <input
+        type="text"
+        value={assignee}
+        onChange={(e) => setAssignee(e.target.value)}
+        placeholder="Assignee (optional)"
+        className="input text-xs w-full"
       />
 
       <div className="flex items-center gap-2">

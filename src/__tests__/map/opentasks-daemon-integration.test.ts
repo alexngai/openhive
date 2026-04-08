@@ -602,4 +602,286 @@ describe('OpenTasks Daemon Integration', { timeout: 30000 }, () => {
       ).rejects.toThrow(/not found/i);
     });
   });
+
+  // ==========================================================================
+  // Daemon Client — Delete Task
+  // ==========================================================================
+
+  describe('Daemon Client — Delete Task', () => {
+    it('should soft delete a task (archive it)', async () => {
+      const { daemonCreateTask, daemonDeleteTask, daemonGetGraph } = await import('../../map/task-daemon-client.js');
+
+      const task = await daemonCreateTask(daemonSocketPath, {
+        title: 'Task to soft-delete',
+        status: 'open',
+      }, opentasksDir);
+
+      await daemonDeleteTask(daemonSocketPath, task.id, { hard: false }, opentasksDir);
+
+      // Soft-deleted tasks should be archived — not returned in graph (which filters archived: false)
+      const graph = await daemonGetGraph(daemonSocketPath, opentasksDir);
+      const ids = graph.nodes.map((n: any) => n.id);
+      expect(ids).not.toContain(task.id);
+    });
+
+    it('should hard delete a task', async () => {
+      const { daemonCreateTask, daemonDeleteTask, daemonQueryNodes } = await import('../../map/task-daemon-client.js');
+
+      const task = await daemonCreateTask(daemonSocketPath, {
+        title: 'Task to hard-delete',
+        status: 'open',
+      }, opentasksDir);
+
+      await daemonDeleteTask(daemonSocketPath, task.id, { hard: true }, opentasksDir);
+
+      // Hard-deleted tasks should not exist at all — even in archived queries
+      const all = await daemonQueryNodes(daemonSocketPath, { type: 'task' }, opentasksDir);
+      const ids = all.items.map((n: any) => n.id);
+      expect(ids).not.toContain(task.id);
+    });
+  });
+
+  // ==========================================================================
+  // Daemon Client — Create and Remove Links
+  // ==========================================================================
+
+  describe('Daemon Client — Links (Dependencies)', () => {
+    it('should create a blocking link between tasks', async () => {
+      const { daemonCreateTask, daemonCreateLink, daemonGetReady } = await import('../../map/task-daemon-client.js');
+
+      const taskA = await daemonCreateTask(daemonSocketPath, {
+        title: 'Link source direct',
+        status: 'open',
+        priority: 1,
+      }, opentasksDir);
+      const taskB = await daemonCreateTask(daemonSocketPath, {
+        title: 'Link target direct',
+        status: 'open',
+        priority: 1,
+      }, opentasksDir);
+
+      const result = await daemonCreateLink(daemonSocketPath, {
+        fromId: taskA.id,
+        toId: taskB.id,
+        type: 'blocks',
+      }, opentasksDir);
+
+      // The link was created successfully (no error thrown)
+      // Verify via ready computation — blocked task should not be ready
+      const ready = await daemonGetReady(daemonSocketPath, 200, opentasksDir);
+      const readyIds = ready.items.map((t: any) => t.id);
+      expect(readyIds).not.toContain(taskB.id);
+    });
+
+    it('should remove a link between tasks', async () => {
+      const { daemonCreateTask, daemonCreateLink, daemonRemoveLink, daemonGetReady } = await import('../../map/task-daemon-client.js');
+
+      const taskA = await daemonCreateTask(daemonSocketPath, {
+        title: 'Unlink source',
+        status: 'open',
+        priority: 1,
+      }, opentasksDir);
+      const taskB = await daemonCreateTask(daemonSocketPath, {
+        title: 'Unlink target',
+        status: 'open',
+        priority: 1,
+      }, opentasksDir);
+
+      // Create link — taskB should become blocked
+      await daemonCreateLink(daemonSocketPath, {
+        fromId: taskA.id,
+        toId: taskB.id,
+        type: 'blocks',
+      }, opentasksDir);
+
+      // Remove link — taskB should become ready again
+      await daemonRemoveLink(daemonSocketPath, {
+        fromId: taskA.id,
+        toId: taskB.id,
+        type: 'blocks',
+      }, opentasksDir);
+
+      // Verify taskB is ready again (no longer blocked)
+      const ready = await daemonGetReady(daemonSocketPath, 200, opentasksDir);
+      const readyIds = ready.items.map((t: any) => t.id);
+      expect(readyIds).toContain(taskB.id);
+    });
+
+    it('should create a link and verify it blocks ready computation', async () => {
+      const { daemonCreateTask, daemonCreateLink, daemonGetReady } = await import('../../map/task-daemon-client.js');
+
+      const blocker = await daemonCreateTask(daemonSocketPath, {
+        title: 'Blocker for link test',
+        status: 'open',
+        priority: 1,
+      }, opentasksDir);
+      const blocked = await daemonCreateTask(daemonSocketPath, {
+        title: 'Blocked by link test',
+        status: 'open',
+        priority: 1,
+      }, opentasksDir);
+
+      await daemonCreateLink(daemonSocketPath, {
+        fromId: blocker.id,
+        toId: blocked.id,
+        type: 'blocks',
+      }, opentasksDir);
+
+      const ready = await daemonGetReady(daemonSocketPath, 100, opentasksDir);
+      const readyIds = ready.items.map((t: any) => t.id);
+      expect(readyIds).not.toContain(blocked.id);
+      expect(readyIds).toContain(blocker.id);
+    });
+  });
+
+  // ==========================================================================
+  // REST Routes — Delete, Links
+  // ==========================================================================
+
+  describe('REST Routes — Delete & Links', () => {
+    it('DELETE /tasks/:nodeId should soft delete via daemon', async () => {
+      // Create a task first
+      const createRes = await app.inject({
+        method: 'POST',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { title: 'Task to delete via REST' },
+      });
+      const { node_id } = JSON.parse(createRes.body);
+
+      const res = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${node_id}`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.deleted).toBe(true);
+      expect(body.node_id).toBe(node_id);
+      expect(body.hard).toBe(false);
+    });
+
+    it('DELETE /tasks/:nodeId?hard=true should hard delete via daemon', async () => {
+      const createRes = await app.inject({
+        method: 'POST',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { title: 'Task to hard-delete via REST' },
+      });
+      const { node_id } = JSON.parse(createRes.body);
+
+      const res = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${node_id}?hard=true`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.deleted).toBe(true);
+      expect(body.hard).toBe(true);
+    });
+
+    it('POST /tasks/:nodeId/links should create a link via REST', async () => {
+      // Create two tasks
+      const resA = await app.inject({
+        method: 'POST',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { title: 'Link source via REST' },
+      });
+      const { node_id: nodeA } = JSON.parse(resA.body);
+
+      const resB = await app.inject({
+        method: 'POST',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { title: 'Link target via REST' },
+      });
+      const { node_id: nodeB } = JSON.parse(resB.body);
+
+      const linkRes = await app.inject({
+        method: 'POST',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${nodeA}/links`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { targetId: nodeB, type: 'blocks' },
+      });
+
+      expect(linkRes.statusCode).toBe(201);
+      const body = JSON.parse(linkRes.body);
+      expect(body.from_id).toBe(nodeA);
+      expect(body.to_id).toBe(nodeB);
+      expect(body.type).toBe('blocks');
+      expect(body.edge_id).toBeTruthy();
+    });
+
+    it('DELETE /tasks/:nodeId/links/:targetId should remove a link via REST', async () => {
+      // Create two tasks and a link
+      const resA = await app.inject({
+        method: 'POST',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { title: 'Unlink source via REST' },
+      });
+      const { node_id: nodeA } = JSON.parse(resA.body);
+
+      const resB = await app.inject({
+        method: 'POST',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { title: 'Unlink target via REST' },
+      });
+      const { node_id: nodeB } = JSON.parse(resB.body);
+
+      // Create link
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${nodeA}/links`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { targetId: nodeB, type: 'depends-on' },
+      });
+
+      // Remove link
+      const removeRes = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${nodeA}/links/${nodeB}?type=depends-on`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+
+      expect(removeRes.statusCode).toBe(200);
+      const body = JSON.parse(removeRes.body);
+      expect(body.removed).toBe(true);
+    });
+
+    it('POST /tasks with assignee should pass through to daemon', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { title: 'Assigned task via REST', assignee: 'agent_rest_worker' },
+      });
+
+      expect(res.statusCode).toBe(201);
+    });
+
+    it('PATCH /tasks/:nodeId with assignee should update via daemon', async () => {
+      const createRes = await app.inject({
+        method: 'POST',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { title: 'Task to reassign via REST' },
+      });
+      const { node_id } = JSON.parse(createRes.body);
+
+      const updateRes = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${node_id}`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { assignee: 'new_agent' },
+      });
+
+      expect(updateRes.statusCode).toBe(200);
+    });
+  });
 });
