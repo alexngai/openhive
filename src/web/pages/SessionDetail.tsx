@@ -9,6 +9,10 @@ import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents }
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
+import {
+  EventBubble, ToolCallBlock,
+  formatTokens, extractText, truncate, groupConsecutiveCustomEvents,
+} from '../components/sessions/EventBubble';
 import type { TrajectoryCheckpoint, SessionEvent, SessionContentBlock } from '../lib/api';
 import clsx from 'clsx';
 
@@ -16,24 +20,7 @@ import clsx from 'clsx';
 // Helpers
 // ============================================================================
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
-
-function extractText(blocks: SessionContentBlock[] | undefined): string {
-  if (!blocks) return '';
-  return blocks
-    .filter((b) => b.type === 'text' && b.text)
-    .map((b) => b.text!)
-    .join('\n');
-}
-
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max) + '...';
-}
+// formatTokens, extractText, truncate imported from components/sessions/EventBubble
 
 // ============================================================================
 // Shared Components
