@@ -22,7 +22,7 @@ const Terminal = lazy(() => import('./pages/Terminal').then(m => ({ default: m.T
 const Sessions = lazy(() => import('./pages/Sessions').then(m => ({ default: m.Sessions })));
 const SessionDetail = lazy(() => import('./pages/SessionDetail').then(m => ({ default: m.SessionDetail })));
 const Events = lazy(() => import('./pages/Events').then(m => ({ default: m.Events })));
-const Tasks = lazy(() => import('./pages/Tasks').then(m => ({ default: m.Tasks })));
+const TasksList = lazy(() => import('./pages/Tasks').then(m => ({ default: m.TaskGraphList })));
 const TaskGraph = lazy(() => import('./pages/TaskGraph').then(m => ({ default: m.TaskGraph })));
 const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
 const MemoryDetail = lazy(() => import('./pages/MemoryDetail').then(m => ({ default: m.MemoryDetail })));
@@ -74,8 +74,8 @@ export default function App() {
               <Route path="skills/:resourceId" element={<SkillDetail />} />
               <Route path="learning" element={<Learning />} />
               <Route path="learning/playbooks/:id" element={<LearningPlaybookDetail />} />
-              <Route path="tasks" element={<Tasks />} />
-              <Route path="tasks/:resourceId" element={<TaskGraph />} />
+              <Route path="tasks" element={<TaskGraph />} />
+              <Route path="tasks/list" element={<TasksList />} />
 
               {/* Redirects for removed routes */}
               <Route path="resources" element={<Navigate to="/memory" replace />} />

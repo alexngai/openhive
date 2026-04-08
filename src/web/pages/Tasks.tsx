@@ -2,12 +2,12 @@
  * Tasks Page — Lists all OpenTasks resources with management options.
  */
 
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import {
-  ListTodo, Network, ChevronRight, Clock, AlertTriangle,
+  ListTodo, Network, ChevronRight, Clock, AlertTriangle, ArrowLeft,
   CheckCircle2, Activity, XCircle, Zap, Plus, Trash2, FolderOpen, X,
-  ChevronDown, Settings2, Radio, Upload,
+  ChevronDown, Settings, Radio, Upload,
 } from 'lucide-react';
 import { useResourcesByType, useOpenTasksSummary, useCreateTaskResource, useUpdateTaskResource, useDeleteTaskResource, useSwarmKitProjects, useConnectedTaskGraphs, useGitSyncStatus, useGitPush } from '../hooks/useApi';
 import { useTasksRealtime } from '../hooks/useMapTasks';
@@ -339,7 +339,7 @@ function AddTaskRepoDialog({
               className="flex items-center gap-1.5 text-xs font-medium w-full group"
               style={{ color: 'var(--color-text-muted)' }}
             >
-              <Settings2 className="w-3.5 h-3.5" />
+              <Settings className="w-3.5 h-3.5" />
               Advanced Configuration
               <ChevronDown className={`w-3.5 h-3.5 ml-auto transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
             </button>
@@ -585,7 +585,7 @@ function TaskGraphSettingsDialog({
     <Dialog open={open} onClose={onClose} maxWidth="max-w-md">
       <div className="flex items-center justify-between p-4 border-b border-[var(--color-border-subtle)]">
         <div className="flex items-center gap-2">
-          <Settings2 className="w-4 h-4 text-honey-500" />
+          <Settings className="w-4 h-4 text-honey-500" />
           <span className="text-sm font-semibold">Task Graph Settings</span>
         </div>
         <button type="button" onClick={onClose} className="p-1 rounded hover:bg-white/5">
@@ -724,12 +724,21 @@ function TaskGraphSettingsDialog({
 // Task Resource Card (persistent OpenTasks graphs)
 // ============================================================================
 
+function CardWrapper({ resourceId, onNavigate, children }: { resourceId: string; onNavigate?: (id: string) => void; children: React.ReactNode }) {
+  if (onNavigate) {
+    return <div onClick={() => onNavigate(resourceId)} className="flex-1 flex items-start gap-4 p-4 cursor-pointer">{children}</div>;
+  }
+  return <Link to={`/tasks?g=${resourceId}`} className="flex-1 flex items-start gap-4 p-4">{children}</Link>;
+}
+
 function TaskResourceCard({
   resource,
   onDelete,
+  onNavigate,
 }: {
   resource: SyncableResource;
   onDelete: (id: string) => void;
+  onNavigate?: (id: string) => void;
 }) {
   const { data: summary, isError } = useOpenTasksSummary(resource.id);
   const meta = resource.metadata as Record<string, unknown> | null;
@@ -776,17 +785,7 @@ function TaskResourceCard({
 
   return (
     <div className="card card-hover flex items-start gap-4 group relative">
-      <Link
-        to={`/tasks/${resource.id}`}
-        className="flex-1 flex items-start gap-4 p-4"
-      >
-        <div
-          className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
-          style={{ backgroundColor: 'var(--color-elevated)' }}
-        >
-          <Network className="w-5 h-5 text-honey-500" />
-        </div>
-
+      <CardWrapper resourceId={resource.id} onNavigate={onNavigate}>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="font-medium text-sm truncate group-hover:text-honey-500 transition-colors">
@@ -891,7 +890,7 @@ function TaskResourceCard({
           className="w-4 h-4 shrink-0 mt-1 opacity-0 group-hover:opacity-50 transition-opacity"
           style={{ color: 'var(--color-text-muted)' }}
         />
-      </Link>
+      </CardWrapper>
 
       {/* Card actions (top-right) */}
       <div className="absolute top-3 right-3 flex items-center gap-1">
@@ -899,7 +898,7 @@ function TaskResourceCard({
           <button
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); gitPush.mutate(); }}
             disabled={gitPush.isPending}
-            className="p-1.5 rounded text-amber-400 hover:bg-amber-500/10 transition-opacity"
+            className="p-1.5 rounded text-amber-400 hover:bg-amber-500/10 transition-opacity cursor-pointer"
             title={hasUnpushedCommits
               ? `${gitStatus!.unpushedCommits} unpushed commit${gitStatus!.unpushedCommits !== 1 ? 's' : ''} — click to push`
               : 'Uncommitted changes — click to commit & push'}
@@ -909,10 +908,10 @@ function TaskResourceCard({
         )}
         <button
           onClick={(e) => { e.preventDefault(); setShowSettings(true); }}
-          className="p-1.5 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white/10"
+          className="p-1.5 rounded hover:bg-white/10 cursor-pointer"
           title="Task graph settings"
         >
-          <Settings2 className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+          <Settings className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
         </button>
       </div>
 
@@ -931,7 +930,13 @@ function TaskResourceCard({
 // Tasks Page
 // ============================================================================
 
-export function Tasks() {
+const LAST_GRAPH_KEY = 'openhive-last-task-graph';
+
+// ============================================================================
+// TaskGraphList — reusable list of task graphs (used standalone and in dialog)
+// ============================================================================
+
+export function TaskGraphList({ onNavigate }: { onNavigate?: (id: string) => void }) {
   const [showAddForm, setShowAddForm] = useState(false);
   const { data: resourcesData, isLoading: resourcesLoading } = useResourcesByType('task');
   const { data: connectedGraphs } = useConnectedTaskGraphs();
@@ -940,7 +945,6 @@ export function Tasks() {
   useTasksRealtime();
 
   const allResources = resourcesData?.data || [];
-  // Filter out remote:// and map:// resources — those are ephemeral
   const resources = allResources.filter(
     (r) => !r.git_remote_url.startsWith('remote://') && !r.git_remote_url.startsWith('map://'),
   );
@@ -954,11 +958,16 @@ export function Tasks() {
     <div className="max-w-4xl mx-auto px-4 py-6 space-y-8">
       {/* Page header */}
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-bold">Tasks</h1>
-          <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
-            Task graphs from OpenTasks resources.
-          </p>
+        <div className="flex items-center gap-3">
+          <Link to="/tasks" className="btn-ghost p-1" title="Back to workspace">
+            <ArrowLeft className="w-4 h-4" />
+          </Link>
+          <div>
+            <h1 className="text-lg font-bold">Task Graphs</h1>
+            <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+              Manage OpenTasks resources.
+            </p>
+          </div>
         </div>
         <button
           onClick={() => setShowAddForm(true)}
@@ -1012,6 +1021,7 @@ export function Tasks() {
                 key={resource.id}
                 resource={resource}
                 onDelete={(id) => deleteResource.mutate(id)}
+                onNavigate={onNavigate}
               />
             ))}
           </div>
@@ -1070,3 +1080,4 @@ export function Tasks() {
     </div>
   );
 }
+

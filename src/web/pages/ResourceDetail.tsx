@@ -267,7 +267,7 @@ export function ResourceDetail() {
         <div className="mb-3">
           <OpenTasksSummary resourceId={resource.id} />
           <div className="mt-2">
-            <Link to={`/tasks/${resource.id}`} className="btn btn-secondary text-xs">
+            <Link to={`/tasks?g=${resource.id}`} className="btn btn-secondary text-xs">
               View Task Graph
             </Link>
           </div>

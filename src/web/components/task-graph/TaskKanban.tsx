@@ -139,7 +139,7 @@ function DraggableTaskCard({
       style={cardStyle}
       onClick={() => !isDragging && onSelect(isSelected ? null : node)}
       className={clsx(
-        'rounded-lg p-3 cursor-grab active:cursor-grabbing touch-none transition-all duration-150',
+        'rounded-r-lg p-3 cursor-grab active:cursor-grabbing touch-none transition-all duration-150 relative overflow-hidden',
         isDragOverlay && 'shadow-xl ring-1 ring-honey-500/50 rotate-1',
         isSelected && !isDragOverlay
           ? 'ring-1 ring-honey-500/50'
@@ -148,6 +148,18 @@ function DraggableTaskCard({
       {...attributes}
       {...listeners}
     >
+      {/* Source graph color bar */}
+      {(node as any)._sourceColor && (
+        <div
+          className="absolute left-0 top-0 bottom-0 w-1 group/source"
+          style={{ backgroundColor: (node as any)._sourceColor }}
+          title={(node as any)._sourceGraphName}
+        >
+          <div className="absolute left-full top-1/2 -translate-y-1/2 ml-1 hidden group-hover/source:block z-10 whitespace-nowrap text-2xs px-1.5 py-0.5 rounded shadow-lg" style={{ backgroundColor: 'var(--color-elevated)', color: (node as any)._sourceColor }}>
+            {(node as any)._sourceGraphName}
+          </div>
+        </div>
+      )}
       {isEditing ? (
         /* Inline edit form */
         <div
@@ -383,9 +395,11 @@ function DroppableColumn({
 interface TaskKanbanProps {
   resourceId: string;
   filters?: import('./TaskFilterBar').TaskFilters;
+  /** Pre-merged nodes from multiple graphs (when multi-graph mode is active) */
+  mergedNodes?: OpenTasksGraphNode[];
 }
 
-export function TaskKanban({ resourceId, filters }: TaskKanbanProps) {
+export function TaskKanban({ resourceId, filters, mergedNodes }: TaskKanbanProps) {
   const { data: graphData, isLoading } = useOpenTasksGraph(resourceId);
   const updateStatus = useUpdateOpenTaskStatus(resourceId);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -401,9 +415,10 @@ export function TaskKanban({ resourceId, filters }: TaskKanbanProps) {
     }),
   );
 
-  const allGraphNodes = graphData?.nodes || [];
-  const allNodes = allGraphNodes.filter((n) => n.type === 'task' && !n.archived);
-  const contextNodes = allGraphNodes.filter((n) => n.type === 'context' && !n.archived);
+  const ownGraphNodes = graphData?.nodes || [];
+  const sourceNodes = mergedNodes || ownGraphNodes;
+  const allNodes = sourceNodes.filter((n) => n.type === 'task' && !n.archived);
+  const contextNodes = sourceNodes.filter((n) => n.type === 'context' && !n.archived);
   const [showContexts, setShowContexts] = useState(true);
 
   // Apply filters
