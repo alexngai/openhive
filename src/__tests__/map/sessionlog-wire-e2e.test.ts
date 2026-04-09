@@ -26,9 +26,9 @@ import { handleTrajectoryRequest } from '../../map/trajectory-handler.js';
 import type { MapSyncMessage } from '../../map/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-// cc-swarm real function
-// @ts-expect-error — .mjs import from TypeScript
-import { buildTrajectoryCheckpoint } from 'claude-code-swarm/src/sessionlog.mjs';
+// cc-swarm real function — import from references/ (published package doesn't export src/)
+// @ts-expect-error — .mjs import from references
+import { buildTrajectoryCheckpoint } from '../../../references/claude-code-swarm/src/sessionlog.mjs';
 
 vi.mock('../../realtime/index.js', () => ({
   broadcastToChannel: vi.fn(),
@@ -36,7 +36,7 @@ vi.mock('../../realtime/index.js', () => ({
 
 // cc-swarm's resolveTeamName/resolveScope are called by buildTrajectoryCheckpoint via config
 // We mock the cc-swarm config module so it doesn't try to read .swarm/claude-swarm/config.json
-vi.mock('claude-code-swarm/src/config.mjs', () => ({
+vi.mock('../../../references/claude-code-swarm/src/config.mjs', () => ({
   readConfig: () => ({ sessionlog: { enabled: true, sync: 'metrics', mode: 'plugin' } }),
   resolveTeamName: () => 'test-swarm',
   resolveScope: () => 'swarm:test-swarm',

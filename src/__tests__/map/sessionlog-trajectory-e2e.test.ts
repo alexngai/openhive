@@ -32,16 +32,16 @@ import { initializeLocalSessionStorage } from '../../sessions/storage/index.js';
 import { handleTrajectoryRequest } from '../../map/trajectory-handler.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-// cc-swarm real function
-// @ts-expect-error — .mjs import
-import { buildTrajectoryCheckpoint } from 'claude-code-swarm/src/sessionlog.mjs';
+// cc-swarm real function — import from references/ (published package doesn't export src/)
+// @ts-expect-error — .mjs import from references
+import { buildTrajectoryCheckpoint } from '../../../references/claude-code-swarm/src/sessionlog.mjs';
 
 vi.mock('../../realtime/index.js', () => ({
   broadcastToChannel: vi.fn(),
 }));
 
 // Mock cc-swarm config for buildTrajectoryCheckpoint
-vi.mock('claude-code-swarm/src/config.mjs', () => ({
+vi.mock('../../../references/claude-code-swarm/src/config.mjs', () => ({
   readConfig: () => ({ sessionlog: { enabled: true, sync: 'metrics', mode: 'plugin' } }),
   resolveTeamName: () => 'e2e-team',
   resolveScope: () => 'swarm:e2e-team',

@@ -613,9 +613,13 @@ export interface OpenTasksGraphNode {
   type: string;
   title?: string;
   description?: string;
+  content?: string;
   status?: string;
   priority?: number;
   archived?: boolean;
+  assignee?: string | null;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;

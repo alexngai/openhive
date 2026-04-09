@@ -1078,6 +1078,7 @@ export function useOpenTasksSummary(resourceId: string) {
         `/resources/${resourceId}/content/opentasks/summary`,
       ),
     enabled: !!resourceId,
+    staleTime: 30_000, // consider fresh for 30s — avoids refetch storms on window focus
   });
 }
 
@@ -1112,6 +1113,7 @@ export function useCreateOpenTask(resourceId: string) {
       description?: string;
       status?: string;
       priority?: number;
+      assignee?: string | null;
       metadata?: Record<string, unknown>;
     }) =>
       api.post<{ node_id: string; status: string }>(
@@ -1166,6 +1168,292 @@ export function useUpdateOpenTaskStatus(resourceId: string) {
       queryClient.invalidateQueries({
         queryKey: ["opentasks-graph", resourceId],
       });
+    },
+  });
+}
+
+// ── SwarmKit Projects ──
+
+export function useSwarmKitProjects() {
+  return useQuery({
+    queryKey: ["swarmkit-projects"],
+    queryFn: () =>
+      api.get<{ projectRoots: string[] }>("/admin/swarmkit/projects"),
+  });
+}
+
+// ── Connected Task Graphs ──
+
+interface ConnectedTaskGraph {
+  swarm_id: string;
+  swarm_name: string | null;
+  location_hash: string | null;
+  path: string | null;
+  connected_at: string;
+  capabilities: Record<string, unknown> | null;
+}
+
+export function useConnectedTaskGraphs() {
+  return useQuery({
+    queryKey: ["connected-task-graphs"],
+    queryFn: () =>
+      api.get<{ data: ConnectedTaskGraph[] }>("/map/connected-task-graphs"),
+    refetchInterval: 30000, // poll every 30s since these are ephemeral
+  });
+}
+
+// ── Task Resource Management ──
+
+export function useCreateTaskResource() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: {
+      name: string;
+      path: string;
+      description?: string;
+      config?: Record<string, unknown>;
+      syncStrategy?: string;
+    }) =>
+      api.post<import("../lib/api").SyncableResource>("/resources", {
+        resource_type: "task",
+        name: data.name,
+        git_remote_url: data.path,
+        description: data.description || undefined,
+        visibility: "private",
+        sync_strategy: data.syncStrategy || "metadata",
+        metadata: { opentasks: true, ...(data.config ? { opentasks_config: data.config } : {}) },
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["resources"] });
+    },
+  });
+}
+
+export function useUpdateTaskResource() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      resourceId,
+      data,
+    }: {
+      resourceId: string;
+      data: {
+        name?: string;
+        description?: string | null;
+        metadata?: Record<string, unknown>;
+      };
+    }) => api.patch<import("../lib/api").SyncableResource>(`/resources/${resourceId}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["resources"] });
+    },
+  });
+}
+
+export function useDeleteTaskResource() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (resourceId: string) =>
+      api.delete(`/resources/${resourceId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["resources"] });
+    },
+  });
+}
+
+export function useDeleteOpenTask(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (nodeId: string) =>
+      api.delete<{ deleted: boolean; node_id: string }>(
+        `/resources/${resourceId}/content/opentasks/tasks/${nodeId}`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-ready", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+    },
+  });
+}
+
+export function useUpdateOpenTask(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      nodeId,
+      title,
+      description,
+      priority,
+      assignee,
+    }: {
+      nodeId: string;
+      title?: string;
+      description?: string | null;
+      priority?: number;
+      assignee?: string | null;
+    }) =>
+      api.patch<{ node_id: string }>(
+        `/resources/${resourceId}/content/opentasks/tasks/${nodeId}`,
+        { title, description, priority, assignee },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+    },
+  });
+}
+
+// ── Context Nodes ──
+
+export function useCreateContext(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: { title: string; content?: string; priority?: number; tags?: string[] }) =>
+      api.post<{ node_id: string; type: string }>(
+        `/resources/${resourceId}/content/opentasks/contexts`,
+        data,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+    },
+  });
+}
+
+export function useCreateContextFile(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: { filePath: string; title?: string; commit?: string }) =>
+      api.post<{ node_id: string; type: string }>(
+        `/resources/${resourceId}/content/opentasks/context-files`,
+        data,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+    },
+  });
+}
+
+export function useResolveContextFile(resourceId: string, nodeId: string | null) {
+  return useQuery({
+    queryKey: ["context-resolve", resourceId, nodeId],
+    queryFn: () =>
+      api.get<{ content: string; drifted: boolean; filePath: string; commit: string; contentHash: string }>(
+        `/resources/${resourceId}/content/opentasks/contexts/${nodeId}/resolve`,
+      ),
+    enabled: !!nodeId,
+    staleTime: 30_000,
+  });
+}
+
+export function useCheckContextDrift(resourceId: string, nodeId: string | null) {
+  return useQuery({
+    queryKey: ["context-drift", resourceId, nodeId],
+    queryFn: () =>
+      api.get<{ drifted: boolean; currentHash: string; capturedHash?: string }>(
+        `/resources/${resourceId}/content/opentasks/contexts/${nodeId}/drift`,
+      ),
+    enabled: !!nodeId,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useSyncContextFile(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (nodeId: string) =>
+      api.post<{ id: string; title: string }>(
+        `/resources/${resourceId}/content/opentasks/contexts/${nodeId}/sync`,
+        { force: true },
+      ),
+    onSuccess: (_data, nodeId) => {
+      queryClient.invalidateQueries({ queryKey: ["context-resolve", resourceId, nodeId] });
+      queryClient.invalidateQueries({ queryKey: ["context-drift", resourceId, nodeId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+    },
+  });
+}
+
+export function useContextSummary(resourceId: string) {
+  return useQuery({
+    queryKey: ["opentasks-context-summary", resourceId],
+    queryFn: () =>
+      api.get<Record<string, unknown>>(
+        `/resources/${resourceId}/content/opentasks/context-summary`,
+      ),
+    enabled: !!resourceId,
+    staleTime: 30_000,
+  });
+}
+
+// ── Task Links (dependencies) ──
+
+export function useCreateTaskLink(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ nodeId, targetId, type }: { nodeId: string; targetId: string; type: string }) =>
+      api.post<{ edge_id: string; from_id: string; to_id: string; type: string }>(
+        `/resources/${resourceId}/content/opentasks/tasks/${nodeId}/links`,
+        { targetId, type },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-ready", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+    },
+  });
+}
+
+export function useRemoveTaskLink(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ nodeId, targetId, type }: { nodeId: string; targetId: string; type: string }) =>
+      api.delete<{ removed: boolean }>(
+        `/resources/${resourceId}/content/opentasks/tasks/${nodeId}/links/${targetId}?type=${type}`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-ready", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+    },
+  });
+}
+
+// ── Git Sync for Task Resources ──
+
+export function useGitSyncStatus(resourceId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["git-sync-status", resourceId],
+    queryFn: () =>
+      api.get<{
+        hasUncommittedChanges: boolean;
+        unpushedCommits: number;
+        localHead: string | null;
+        remoteHead: string | null;
+      }>(`/resources/${resourceId}/content/opentasks/git-status`),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useGitPush(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ pushed: boolean }>(`/resources/${resourceId}/content/opentasks/git-push`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["git-sync-status", resourceId] });
     },
   });
 }

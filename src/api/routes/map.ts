@@ -796,4 +796,41 @@ export async function mapRoutes(
       connectivity,
     });
   });
+
+  // GET /map/connected-task-graphs -- Live task graphs from connected swarms
+  fastify.get('/map/connected-task-graphs', {
+    preHandler: [authMiddleware],
+  }, async (_request, reply) => {
+    const { getAllInbound } = await import('../../map/connection-registry.js');
+    const graphs: Array<{
+      swarm_id: string;
+      swarm_name: string | null;
+      location_hash: string | null;
+      path: string | null;
+      connected_at: string;
+      capabilities: Record<string, unknown> | null;
+    }> = [];
+
+    for (const [swarmId, conn] of getAllInbound()) {
+      if (conn.ws.readyState !== 1) continue; // only OPEN connections
+      if (!conn.defaultTaskGraph && !conn.capabilities?.tasks) continue;
+
+      let swarmName: string | null = null;
+      try {
+        const swarm = mapDal.findSwarmById(swarmId);
+        swarmName = swarm?.name ?? null;
+      } catch { /* non-critical */ }
+
+      graphs.push({
+        swarm_id: swarmId,
+        swarm_name: swarmName,
+        location_hash: conn.defaultTaskGraph?.location_hash ?? null,
+        path: conn.defaultTaskGraph?.path ?? null,
+        connected_at: conn.connectedAt,
+        capabilities: (conn.capabilities as Record<string, unknown>) ?? null,
+      });
+    }
+
+    return reply.send({ data: graphs });
+  });
 }

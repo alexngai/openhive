@@ -120,7 +120,7 @@ describe('Mock Swarm — Workspace Execution Round-Trip', () => {
       expect(ws.sentMessages.length).toBe(1);
       const sent = JSON.parse(ws.sentMessages[0]);
       expect(sent.jsonrpc).toBe('2.0');
-      expect(sent.method).toBe('x-openhive/learning.workspace.execute');
+      expect(sent.method).toBe('x-workspace/task.execute');
       expect(sent.params.prompt).toBe('Analyze these trajectories and extract playbooks');
       expect(sent.params.cwd).toBe('/tmp/test-workspace');
       expect(sent.params.system_context).toBe('You are an analysis agent');
@@ -408,7 +408,7 @@ describe('Mock Swarm — Workspace Execution Round-Trip', () => {
         // Respond to any workspace.execute messages
         for (const msg of ws.sentMessages) {
           const parsed = JSON.parse(msg);
-          if (parsed.method === 'x-openhive/learning.workspace.execute') {
+          if (parsed.method === 'x-workspace/task.execute') {
             handleWorkspaceResult({
               request_id: parsed.params.request_id,
               output: 'Heuristic analysis sufficient',

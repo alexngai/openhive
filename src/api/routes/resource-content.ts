@@ -127,7 +127,19 @@ export async function resourceContentRoutes(
     }
 
     if (localPath && (!existsSync(localPath) || !statSync(localPath).isDirectory())) {
-      localPath = null;
+      // For OpenTasks resources, initialize the directory (equivalent to `opentasks init`)
+      const meta = resource.metadata as Record<string, unknown> | null;
+      if (resource.resource_type === 'task' && meta?.opentasks) {
+        try {
+          const { ensureInitialized } = await import('../../map/task-daemon-lifecycle.js');
+          const extraConfig = meta.opentasks_config as Record<string, unknown> | undefined;
+          ensureInitialized(localPath, extraConfig);
+        } catch {
+          localPath = null;
+        }
+      } else {
+        localPath = null;
+      }
     }
 
     return { resource, localPath };
@@ -858,13 +870,33 @@ export async function resourceContentRoutes(
 
     // Remote swarm path
     const { findSwarmForResource, remoteGetSummary } = await import('../../map/opentasks-remote.js');
+    const { getInbound } = await import('../../map/connection-registry.js');
     const swarmId = findSwarmForResource(resource);
     if (swarmId) {
       const summary = await remoteGetSummary(swarmId);
-      if (summary) return reply.send(summary);
+      if (summary) {
+        // Enrich with remote location info from live connection + DB
+        const conn = getInbound(swarmId);
+        if (conn) {
+          let swarmName: string | undefined;
+          try {
+            const { findSwarmById } = await import('../../db/dal/map.js');
+            const swarm = findSwarmById(swarmId);
+            swarmName = swarm?.name ?? undefined;
+          } catch { /* non-critical */ }
+
+          (summary as Record<string, unknown>).remote_info = {
+            swarm_id: swarmId,
+            swarm_name: swarmName,
+            swarm_path: conn.defaultTaskGraph?.path,
+            connected_at: conn.connectedAt,
+          };
+        }
+        return reply.send(summary);
+      }
     }
 
-    return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks graph is not available locally or via connected swarm' });
+    return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon could not be started and no connected swarm is available' });
   });
 
   fastify.get<{
@@ -887,7 +919,9 @@ export async function resourceContentRoutes(
       const ready = await daemonGetReady(socketPath, limit, localPath);
       return reply.send(ready);
     } catch (err) {
-      if (err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
+      if (err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING') {
+        return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon could not be started for this resource' });
+      }
       throw err;
     }
   });
@@ -917,13 +951,7 @@ export async function resourceContentRoutes(
       return reply.send({ items: result.items || [], daemon_connected: true });
     } catch (err) {
       if (err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING') {
-        // Fallback: try to get summary without daemon
-        try {
-          const summary = await daemonGetSummary(socketPath, localPath);
-          return reply.send({ daemon_connected: false, message: 'Daemon not running; returning summary only', task_counts: summary.task_counts });
-        } catch {
-          return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
-        }
+        return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon could not be started for this resource' });
       }
       throw err;
     }
@@ -980,18 +1008,34 @@ export async function resourceContentRoutes(
 
   // OpenTasks mutations
 
+  /** Check if a resource is read-only (ls-remote/mirror without git sync enabled) */
+  function isReadOnlyResource(resource: SyncableResource): boolean {
+    if (resource.sync_strategy !== 'ls-remote' && resource.sync_strategy !== 'mirror') return false;
+    const meta = resource.metadata as Record<string, unknown> | null;
+    const otConfig = meta?.opentasks_config as Record<string, unknown> | undefined;
+    const gitSync = otConfig?.sync as Record<string, unknown> | undefined;
+    return !gitSync?.git || !(gitSync.git as Record<string, unknown>).enabled;
+  }
+
   const CreateTaskNodeSchema = z.object({
     title: z.string().min(1).max(500),
     description: z.string().max(5000).optional(),
     status: z.string().optional(),
     priority: z.number().int().min(0).max(10).optional(),
+    assignee: z.string().max(200).optional().nullable(),
     metadata: z.record(z.unknown()).optional(),
   });
 
-  const UpdateTaskStatusSchema = z.object({
-    status: z.string().min(1),
+  const UpdateTaskSchema = z.object({
+    status: z.string().min(1).optional(),
+    title: z.string().min(1).max(500).optional(),
+    description: z.string().max(5000).optional().nullable(),
+    priority: z.number().int().min(0).max(10).optional(),
+    assignee: z.string().max(200).optional().nullable(),
     result: z.record(z.unknown()).optional(),
     error: z.string().optional(),
+  }).refine(data => data.status || data.title !== undefined || data.description !== undefined || data.priority !== undefined || data.assignee !== undefined, {
+    message: 'At least one field (status, title, description, priority, or assignee) is required',
   });
 
   fastify.post<{
@@ -1001,6 +1045,10 @@ export async function resourceContentRoutes(
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only. Enable git sync in advanced settings to allow edits.' });
+    }
 
     let body;
     try { body = CreateTaskNodeSchema.parse(request.body); }
@@ -1013,7 +1061,7 @@ export async function resourceContentRoutes(
     const { daemonCreateTask: createFn, resolveDaemonSocket: resolveSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
     const socketPath = resolveSocket(localPath);
     try {
-      const task = await createFn(socketPath, { title: body.title, description: body.description, status: body.status || 'open', priority: body.priority }, localPath);
+      const task = await createFn(socketPath, { title: body.title, description: body.description, status: body.status || 'open', priority: body.priority, assignee: body.assignee ?? undefined }, localPath);
       try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.created', data: { task: { id: task.id, title: task.title, status: task.status } } }); } catch { /* best effort */ }
       return reply.status(201).send({ node_id: task.id, status: task.status });
     } catch (err) {
@@ -1029,8 +1077,12 @@ export async function resourceContentRoutes(
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
 
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only. Enable git sync in advanced settings to allow edits.' });
+    }
+
     let body;
-    try { body = UpdateTaskStatusSchema.parse(request.body); }
+    try { body = UpdateTaskSchema.parse(request.body); }
     catch (error) {
       if (error instanceof z.ZodError) return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'Invalid request body', details: error.errors });
       throw error;
@@ -1039,12 +1091,356 @@ export async function resourceContentRoutes(
     const { daemonUpdateTask: updateFn, resolveDaemonSocket: resolveSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
     const socketPath = resolveSocket(localPath);
     try {
-      await updateFn(socketPath, request.params.nodeId, { status: body.status }, localPath);
-      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.status', data: { taskId: request.params.nodeId, current: body.status } }); } catch { /* best effort */ }
-      return reply.send({ node_id: request.params.nodeId, previous_status: null, new_status: body.status });
+      await updateFn(socketPath, request.params.nodeId, {
+        status: body.status,
+        title: body.title,
+        description: body.description ?? undefined,
+        assignee: body.assignee,
+      }, localPath);
+      if (body.status) {
+        try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.status', data: { taskId: request.params.nodeId, current: body.status } }); } catch { /* best effort */ }
+      }
+      return reply.send({ node_id: request.params.nodeId, previous_status: null, new_status: body.status ?? null });
     } catch (err) {
       if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
       throw err;
     }
+  });
+
+  // Delete task node
+  fastify.delete<{
+    Params: { id: string; nodeId: string };
+    Querystring: { hard?: string };
+  }>('/resources/:id/content/opentasks/tasks/:nodeId', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
+    }
+
+    const hard = request.query.hard === 'true';
+    const { daemonDeleteTask, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      await daemonDeleteTask(socketPath, request.params.nodeId, { hard }, localPath);
+      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.deleted', data: { taskId: request.params.nodeId, hard } }); } catch { /* best effort */ }
+      return reply.send({ deleted: true, node_id: request.params.nodeId, hard });
+    } catch (err) {
+      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
+      throw err;
+    }
+  });
+
+  // ============================================================================
+  // Context Node Endpoints
+  // ============================================================================
+
+  const CreateContextNodeSchema = z.object({
+    title: z.string().min(1).max(500),
+    content: z.string().max(50000).optional(),
+    priority: z.number().int().min(0).max(10).optional(),
+    tags: z.array(z.string().max(50)).max(20).optional(),
+  });
+
+  fastify.post<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/contexts', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
+    }
+
+    let body;
+    try { body = CreateContextNodeSchema.parse(request.body); }
+    catch (error) {
+      if (error instanceof z.ZodError) return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'Invalid request body', details: error.errors });
+      throw error;
+    }
+
+    const { daemonCreateContext, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const context = await daemonCreateContext(socketPath, {
+        title: body.title,
+        content: body.content,
+        priority: body.priority,
+        tags: body.tags,
+      }, localPath);
+      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.created', data: { task: { id: context.id, title: context.title, type: 'context' } } }); } catch { /* best effort */ }
+      return reply.status(201).send({ node_id: context.id, type: 'context' });
+    } catch (err) {
+      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running' });
+      throw err;
+    }
+  });
+
+  // Context summary / breadcrumbs
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { taskId?: string; branch?: string; limit?: number };
+  }>('/resources/:id/content/opentasks/context-summary', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const { daemonContextSummary, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const result = await daemonContextSummary(socketPath, {
+        taskId: request.query.taskId,
+        branch: request.query.branch,
+        limit: request.query.limit,
+      }, localPath);
+      return reply.send(result);
+    } catch (err) {
+      if (err instanceof DaemonErr) return reply.status(503).send({ error: 'Service Unavailable', message: err.message });
+      throw err;
+    }
+  });
+
+  // Create file-backed context node
+  const CreateContextFileSchema = z.object({
+    filePath: z.string().min(1).max(1000),
+    title: z.string().max(500).optional(),
+    commit: z.string().max(100).optional(),
+  });
+
+  fastify.post<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/context-files', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
+    }
+
+    let body;
+    try { body = CreateContextFileSchema.parse(request.body); }
+    catch (error) {
+      if (error instanceof z.ZodError) return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'Invalid request body', details: error.errors });
+      throw error;
+    }
+
+    const { daemonCreateContextFile, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const context = await daemonCreateContextFile(socketPath, body, localPath);
+      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.created', data: { task: { id: context.id, title: context.title, type: 'context' } } }); } catch { /* best effort */ }
+      return reply.status(201).send({ node_id: context.id, type: 'context' });
+    } catch (err) {
+      if (err instanceof DaemonErr) return reply.status(503).send({ error: 'Service Unavailable', message: err.message });
+      throw err;
+    }
+  });
+
+  // Resolve file-backed context content
+  fastify.get<{
+    Params: { id: string; nodeId: string };
+  }>('/resources/:id/content/opentasks/contexts/:nodeId/resolve', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const { daemonResolveContextFile, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const result = await daemonResolveContextFile(socketPath, request.params.nodeId, localPath);
+      return reply.send(result);
+    } catch (err) {
+      if (err instanceof DaemonErr) return reply.status(503).send({ error: 'Service Unavailable', message: err.message });
+      throw err;
+    }
+  });
+
+  // Check drift for file-backed context
+  fastify.get<{
+    Params: { id: string; nodeId: string };
+  }>('/resources/:id/content/opentasks/contexts/:nodeId/drift', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const { daemonCheckContextDrift, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const result = await daemonCheckContextDrift(socketPath, request.params.nodeId, localPath);
+      return reply.send(result);
+    } catch (err) {
+      if (err instanceof DaemonErr) return reply.status(503).send({ error: 'Service Unavailable', message: err.message });
+      throw err;
+    }
+  });
+
+  // Sync file-backed context to HEAD
+  fastify.post<{
+    Params: { id: string; nodeId: string };
+  }>('/resources/:id/content/opentasks/contexts/:nodeId/sync', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
+    }
+
+    const force = (request.body as any)?.force === true;
+    const { daemonSyncContextFile, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const result = await daemonSyncContextFile(socketPath, request.params.nodeId, force, localPath);
+      return reply.send(result);
+    } catch (err) {
+      if (err instanceof DaemonErr) return reply.status(503).send({ error: 'Service Unavailable', message: err.message });
+      throw err;
+    }
+  });
+
+  // ============================================================================
+  // Task Link Endpoints (dependency management)
+  // ============================================================================
+
+  const CreateLinkSchema = z.object({
+    targetId: z.string().min(1),
+    type: z.enum(['blocks', 'depends-on', 'related', 'parent-of', 'implements', 'references']),
+    metadata: z.record(z.unknown()).optional(),
+  });
+
+  // Create a link from nodeId to targetId
+  fastify.post<{
+    Params: { id: string; nodeId: string };
+  }>('/resources/:id/content/opentasks/tasks/:nodeId/links', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
+    }
+
+    let body;
+    try { body = CreateLinkSchema.parse(request.body); }
+    catch (error) {
+      if (error instanceof z.ZodError) return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'Invalid request body', details: error.errors });
+      throw error;
+    }
+
+    const { daemonCreateLink, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      const result = await daemonCreateLink(socketPath, {
+        fromId: request.params.nodeId,
+        toId: body.targetId,
+        type: body.type,
+        metadata: body.metadata,
+      }, localPath);
+      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.linked', data: { fromId: request.params.nodeId, toId: body.targetId, edgeType: body.type } }); } catch { /* best effort */ }
+      return reply.status(201).send({ edge_id: result.edgeId, from_id: request.params.nodeId, to_id: body.targetId, type: body.type });
+    } catch (err) {
+      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running' });
+      throw err;
+    }
+  });
+
+  // Remove a link from nodeId to targetId
+  fastify.delete<{
+    Params: { id: string; nodeId: string; targetId: string };
+    Querystring: { type?: string };
+  }>('/resources/:id/content/opentasks/tasks/:nodeId/links/:targetId', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
+    }
+
+    const edgeType = request.query.type || 'blocks';
+    const { daemonRemoveLink, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      await daemonRemoveLink(socketPath, {
+        fromId: request.params.nodeId,
+        toId: request.params.targetId,
+        type: edgeType,
+      }, localPath);
+      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.unlinked', data: { fromId: request.params.nodeId, toId: request.params.targetId, edgeType } }); } catch { /* best effort */ }
+      return reply.send({ removed: true });
+    } catch (err) {
+      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running' });
+      throw err;
+    }
+  });
+
+  // ============================================================================
+  // Git Sync Endpoints (for ls-remote/mirror task resources)
+  // ============================================================================
+
+  fastify.get<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/git-status', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const { getGitSyncStatus } = await import('../../sync/git-content.js');
+    try {
+      const status = await getGitSyncStatus(localPath);
+      return reply.send(status);
+    } catch {
+      return reply.send({ hasUncommittedChanges: false, unpushedCommits: 0, localHead: null, remoteHead: null });
+    }
+  });
+
+  fastify.post<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/git-commit', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'Git sync is not enabled for this resource' });
+    }
+
+    const { commitChanges } = await import('../../sync/git-content.js');
+    const hash = await commitChanges(localPath);
+    return reply.send({ committed: hash !== null, hash });
+  });
+
+  fastify.post<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/git-push', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    if (isReadOnlyResource(resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'Git sync is not enabled for this resource' });
+    }
+
+    const { commitChanges, pushToRemote } = await import('../../sync/git-content.js');
+    // Commit first if there are uncommitted changes
+    await commitChanges(localPath, 'Update task graph');
+    await pushToRemote(localPath);
+    return reply.send({ pushed: true });
   });
 }

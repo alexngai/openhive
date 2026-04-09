@@ -246,9 +246,52 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     const taskTypes = new Set(['task.created', 'task.assigned', 'task.status']);
     if (!taskTypes.has(payload.type)) return;
 
-    // Extract source swarm ID from the message sender
-    const sourceSwarmId = typeof message.from === 'string' ? message.from : 'unknown';
-    handleMapTaskEvent(payload, sourceSwarmId);
+    // Resolve the OpenHive agent ID from the MAP message sender.
+    // message.from is the MAP session agent ID (a ULID assigned by MAPServer),
+    // not the OpenHive swarmId or agentId. We need to find which inbound
+    // connection this MAP agent belongs to, then use its OpenHive agentId.
+    const mapFrom = typeof message.from === 'string' ? message.from : 'unknown';
+    let resolvedAgentId = mapFrom;
+
+    // Try direct lookup (message.from might be a swarmId)
+    const directConn = getInbound(mapFrom);
+    if (directConn) {
+      resolvedAgentId = directConn.agentId;
+    } else {
+      // Search all connections — message.from might be a MAP session agent ID
+      // or a registered agent name. Check both registeredAgents and the ULID match.
+      for (const [, conn] of getAllInbound()) {
+        if (conn.registeredAgents.has(mapFrom)) {
+          resolvedAgentId = conn.agentId;
+          break;
+        }
+      }
+      // Fallback: the MAP session agent ID doesn't directly map to our registry.
+      // Try matching via the event's session metadata or by finding the connection
+      // whose router session owns this agent.
+      if (resolvedAgentId === mapFrom) {
+        const sessionId = event?.data?.sessionId ?? event?.sessionId;
+        for (const [, conn] of getAllInbound()) {
+          // Check if any registered agent on this connection matches
+          for (const [, regAgent] of conn.registeredAgents) {
+            if (regAgent.id === mapFrom || regAgent.name === mapFrom) {
+              resolvedAgentId = conn.agentId;
+              break;
+            }
+          }
+          if (resolvedAgentId !== mapFrom) break;
+        }
+        // Last resort: if still unresolved and only one connection, use it
+        if (resolvedAgentId === mapFrom) {
+          const allInbound = getAllInbound();
+          if (allInbound.size === 1) {
+            resolvedAgentId = [...allInbound.values()][0].agentId;
+          }
+        }
+      }
+    }
+
+    handleMapTaskEvent(payload, resolvedAgentId);
   });
 
   fastify.get('/ws/map', { websocket: true }, async (socket, request) => {
