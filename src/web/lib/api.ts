@@ -229,6 +229,37 @@ export interface MapNode {
   created_at: string;
 }
 
+export interface ConnectionHealth {
+  swarmId: string;
+  agentId: string;
+  transport: 'inbound';
+  connectedAt: string;
+  lastMessageAt: string;
+  missedPongs: number;
+  maxMissedPongs: number;
+  tokenExpiresAt?: string;
+  registeredAgentCount: number;
+  registeredAgents: Array<{ id: string; name: string; role: string; state: string }>;
+  capabilities?: Record<string, unknown>;
+}
+
+export interface OutboundConnection {
+  swarmId: string;
+  name: string;
+  status: 'connected' | 'reconnecting' | 'disconnected';
+}
+
+export interface ConnectionsResponse {
+  inbound: ConnectionHealth[];
+  outbound: OutboundConnection[];
+  summary: {
+    inbound_count: number;
+    outbound_connected: number;
+    outbound_reconnecting: number;
+    degraded: number;
+  };
+}
+
 export interface MapStats {
   swarms: { total: number; online: number; offline: number };
   nodes: { total: number; active: number };

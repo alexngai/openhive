@@ -15,6 +15,7 @@
 
 import { EventEmitter } from 'node:events';
 import { SwarmHubClient } from './client.js';
+import { TunnelClient } from './tunnel.js';
 import { handleForwardedSlackEvent } from './webhook-handler.js';
 import { normalize, routeEvent } from '../events/index.js';
 import * as eventsDAL from '../db/dal/events.js';
@@ -49,6 +50,9 @@ export class SwarmHubConnector extends EventEmitter {
   };
   private hiveConfig: HiveConfig | null = null;
   private healthTimer?: ReturnType<typeof setInterval>;
+
+  // Tunnel client for remote proxy access
+  private tunnel: TunnelClient | null = null;
 
   // Event polling state
   private pollAbortController?: AbortController;
@@ -111,6 +115,9 @@ export class SwarmHubConnector extends EventEmitter {
       this.emit('connected', identity);
       this.startHealthMonitor();
 
+      // Start remote proxy tunnel if proxy URL is available
+      this.startTunnel();
+
       // Start event polling if enabled (tunnel mode)
       if (this.config.enableEventPolling !== false) {
         this.startEventPoller();
@@ -133,6 +140,7 @@ export class SwarmHubConnector extends EventEmitter {
 
   /** Disconnect and stop health monitoring */
   async disconnect(): Promise<void> {
+    this.stopTunnel();
     this.stopEventPoller();
     this.stopHealthMonitor();
     this.client.clearTokenCache();
@@ -418,6 +426,37 @@ export class SwarmHubConnector extends EventEmitter {
   // ==========================================================================
   // Internal
   // ==========================================================================
+
+  // ==========================================================================
+  // Remote Proxy Tunnel
+  // ==========================================================================
+
+  private startTunnel(): void {
+    this.stopTunnel();
+
+    // Determine local port from env or default
+    const localPort = parseInt(process.env.PORT || '3000', 10);
+    const tunnel = TunnelClient.fromEnv(localPort);
+
+    if (tunnel) {
+      this.tunnel = tunnel;
+      tunnel.connect();
+      console.log('[swarmhub] Remote proxy tunnel started');
+    }
+  }
+
+  private stopTunnel(): void {
+    if (this.tunnel) {
+      this.tunnel.disconnect();
+      this.tunnel = null;
+      console.log('[swarmhub] Remote proxy tunnel stopped');
+    }
+  }
+
+  /** Returns true if the remote proxy tunnel is currently connected. */
+  get isTunnelConnected(): boolean {
+    return this.tunnel?.isConnected ?? false;
+  }
 
   private setStatus(status: ConnectorStatus): void {
     this.state.status = status;

@@ -21,6 +21,7 @@
 
 export { SwarmHubConnector } from './connector.js';
 export { SwarmHubClient } from './client.js';
+export { TunnelClient } from './tunnel.js';
 export { swarmhubRoutes, swarmhubWebhookRoutes } from './routes.js';
 export { handleForwardedSlackEvent, clearManagedBridgeCache } from './webhook-handler.js';
 export type {

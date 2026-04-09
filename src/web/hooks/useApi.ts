@@ -52,6 +52,8 @@ import type {
   MailConversation,
   MailTurn,
   MailThread,
+  ConnectionHealth,
+  ConnectionsResponse,
 } from "../lib/api";
 
 // Posts
@@ -523,6 +525,26 @@ export function useConnectSwarm() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["map-swarms"] });
     },
+  });
+}
+
+// Connection health hooks
+export function useConnectionHealth(swarmId: string) {
+  return useQuery({
+    queryKey: ["connection-health", swarmId],
+    queryFn: () => api.get<ConnectionHealth>(`/map/connections/${swarmId}`),
+    enabled: !!swarmId,
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useAllConnections() {
+  return useQuery({
+    queryKey: ["connections"],
+    queryFn: () => api.get<ConnectionsResponse>("/map/connections"),
+    staleTime: 10_000,
+    refetchInterval: 30_000,
   });
 }
 
@@ -1705,16 +1727,22 @@ export function useSessionStats(id: string) {
 
 export function useSessionEvents(
   id: string,
-  options?: { limit?: number; offset?: number; enabled?: boolean },
+  options?: { limit?: number; order?: 'asc' | 'desc'; enabled?: boolean },
 ) {
-  const { limit = 200, offset = 0, enabled = true } = options || {};
+  const { limit = 50, order = 'desc', enabled = true } = options || {};
 
-  return useQuery({
-    queryKey: ["session-events", id, { limit, offset }],
-    queryFn: () =>
+  return useInfiniteQuery({
+    queryKey: ["session-events", id, { limit, order }],
+    queryFn: ({ pageParam = 0 }) =>
       api.get<SessionEventsResponse>(
-        `/sessions/${id}/events?limit=${limit}&offset=${offset}`,
+        `/sessions/${id}/events?limit=${limit}&offset=${pageParam}&order=${order}`,
       ),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) => {
+      const nextOffset = (lastPageParam as number) + limit;
+      if (nextOffset >= lastPage.total) return undefined;
+      return nextOffset;
+    },
     enabled: !!id && enabled,
   });
 }

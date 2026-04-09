@@ -766,6 +766,27 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
 
 function MapSwarmCard({ swarm }: { swarm: MapSwarm }) {
   const navigate = useNavigate();
+  const meta = swarm.metadata as Record<string, unknown> | null;
+  const project = meta?.project as string | undefined;
+  const branch = meta?.branch as string | undefined;
+  const template = meta?.template as string | undefined;
+  const metaType = meta?.type as string | undefined;
+
+  // Build a meaningful display name from the best available data
+  const isGenericName = swarm.name === 'local-hub' || swarm.name.endsWith('-hub');
+  let displayName: string;
+  if (project) {
+    displayName = branch ? `${project} (${branch})` : project;
+  } else if (!isGenericName) {
+    displayName = swarm.name;
+  } else {
+    // No project, generic name — show truncated swarm ID
+    displayName = `Session ${swarm.id.replace(/^swarm_/, '').slice(0, 8)}`;
+  }
+
+  const isSidecar = metaType === 'default-sidecar' || metaType === 'claude-code-swarm-sidecar';
+  const isInbound = swarm.map_endpoint === 'hub-inbound';
+  const isLocal = swarm.map_endpoint === 'local-hub';
 
   return (
     <div className="card card-hover px-3 py-2.5 cursor-pointer group" onClick={() => navigate(`/swarms/${swarm.id}`)}>
@@ -779,21 +800,24 @@ function MapSwarmCard({ swarm }: { swarm: MapSwarm }) {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium font-mono truncate group-hover:text-honey-500 transition-colors">{swarm.id}</span>
+            <span className="text-sm font-medium truncate group-hover:text-honey-500 transition-colors">{displayName}</span>
             <MapStatusBadge status={swarm.status} />
-            {swarm.map_endpoint === 'hub-inbound' && (
+            {isInbound && (
               <span className="text-2xs px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">inbound</span>
             )}
-            {swarm.map_endpoint === 'local-hub' && (
+            {isLocal && (
               <span className="text-2xs px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">local</span>
+            )}
+            {template && (
+              <span className="text-2xs px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400">{template}</span>
             )}
           </div>
           <div className="flex items-center gap-2 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-            <span className="truncate">{swarm.name}</span>
-            {swarm.map_endpoint !== 'hub-inbound' && swarm.map_endpoint !== 'local-hub' && (
+            <span className="font-mono truncate max-w-[180px]">{swarm.id}</span>
+            {!isInbound && !isLocal && (
               <>
                 <span className="opacity-30">&middot;</span>
-                <span className="truncate max-w-[250px] font-mono">{swarm.map_endpoint}</span>
+                <span className="truncate max-w-[200px] font-mono">{swarm.map_endpoint}</span>
               </>
             )}
             {swarm.agent_count > 0 && (
@@ -806,6 +830,12 @@ function MapSwarmCard({ swarm }: { swarm: MapSwarm }) {
               <>
                 <span className="opacity-30">&middot;</span>
                 <span>{swarm.hives.join(', ')}</span>
+              </>
+            )}
+            {isSidecar && (
+              <>
+                <span className="opacity-30">&middot;</span>
+                <span>sidecar</span>
               </>
             )}
             <span className="opacity-30">&middot;</span>
