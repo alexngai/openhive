@@ -10,7 +10,7 @@
  * - Smooth camera follow on node select
  */
 
-import { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useState, useCallback, memo } from "react";
 import Sigma from "sigma";
 import { createEdgeArrowProgram } from "sigma/rendering";
 import FA2LayoutSupervisor from "graphology-layout-forceatlas2/worker";
@@ -100,7 +100,7 @@ function getNodesWithinHops(
   return visited;
 }
 
-export function TaskGraphViewer({
+export const TaskGraphViewer = memo(function TaskGraphViewer({
   graph,
   resourceId,
   onNodeSelect,
@@ -111,6 +111,19 @@ export function TaskGraphViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const supervisorRef = useRef<FA2LayoutSupervisor | null>(null);
+  const physicsRanForNodesRef = useRef<string | null>(null);
+  const graphRef = useRef<Graph | null>(null);
+  const onNodeSelectRef = useRef(onNodeSelect);
+  onNodeSelectRef.current = onNodeSelect;
+
+  // Stable fingerprint of graph content — only changes when nodes/edges actually change.
+  // This prevents sigma recreation on React re-renders with identical graph data.
+  const graphFingerprint = (() => {
+    if (!graph || graph.order === 0) return '';
+    const nodes = graph.nodes().sort().join(',');
+    const edgeCount = graph.size;
+    return `${nodes}|${edgeCount}`;
+  })();
   const [selectedNode, setSelectedNode] = useState<OpenTasksGraphNode | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<SelectedEdge | null>(null);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
@@ -331,11 +344,19 @@ export function TaskGraphViewer({
     sigmaRef.current = sigma;
     applySigmaPerfSettings(sigma, graph.order);
 
-    // Scale edge label size with zoom
+    // Scale edge label size with zoom (debounced to avoid re-render storms)
     const BASE_EDGE_LABEL_SIZE = 25;
+    let labelSizeTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastLabelRatio = -1;
     sigma.getCamera().on("updated", () => {
-      const ratio = sigma.getCamera().ratio + 1;
-      sigma.setSetting("edgeLabelSize", BASE_EDGE_LABEL_SIZE / ratio);
+      const ratio = sigma.getCamera().ratio;
+      // Only update if ratio changed meaningfully (avoids jitter from micro-adjustments)
+      if (Math.abs(ratio - lastLabelRatio) < 0.01) return;
+      if (labelSizeTimer) clearTimeout(labelSizeTimer);
+      labelSizeTimer = setTimeout(() => {
+        lastLabelRatio = ratio;
+        sigma.setSetting("edgeLabelSize", BASE_EDGE_LABEL_SIZE / (ratio + 1));
+      }, 100);
     });
 
     // ---------- Hover highlighting ----------
@@ -606,7 +627,7 @@ export function TaskGraphViewer({
       // --- Normal mode: select node ---
       setSelectedNode(data);
       setSelectedEdge(null);
-      onNodeSelect?.(data);
+      onNodeSelectRef.current?.(data);
 
       // Smooth camera follow — convert raw graph coords to framed graph coords
       const viewportPos = sigma.graphToViewport({
@@ -638,12 +659,12 @@ export function TaskGraphViewer({
           type: (edgeAttrs.edgeType as string) || 'related',
         });
         setSelectedNode(null);
-        onNodeSelect?.(null);
+        onNodeSelectRef.current?.(null);
         return;
       }
       setSelectedNode(null);
       setSelectedEdge(null);
-      onNodeSelect?.(null);
+      onNodeSelectRef.current?.(null);
     });
 
     // ---------- Node drag ----------
@@ -706,7 +727,7 @@ export function TaskGraphViewer({
           if (supervisorRef.current?.isRunning()) {
             supervisorRef.current.stop();
           }
-        }, 1500);
+        }, 800);
 
         // Small delay so the click handler can check dragStateRef
         setTimeout(() => {
@@ -734,22 +755,31 @@ export function TaskGraphViewer({
       },
     });
     supervisorRef.current = supervisor;
-    supervisor.start();
 
-    // Stop physics after settling to prevent jitter
-    const settleTimer = setTimeout(() => {
-      supervisor.stop();
-    }, 5000);
+    // Only run physics when the node set changes (new graph or added/removed nodes).
+    // Skip on data-only refreshes (status changes, edge additions) to avoid jitter.
+    const nodeFingerprint = graph.nodes().sort().join(',');
+    const needsLayout = physicsRanForNodesRef.current !== nodeFingerprint;
+    physicsRanForNodesRef.current = nodeFingerprint;
+
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    if (needsLayout) {
+      supervisor.start();
+      settleTimer = setTimeout(() => {
+        supervisor.stop();
+      }, 2000);
+    }
 
     return () => {
-      clearTimeout(settleTimer);
+      if (settleTimer) clearTimeout(settleTimer);
       supervisor.kill();
       supervisorRef.current = null;
       document.removeEventListener("mouseup", handleMouseUp);
       sigma.kill();
       sigmaRef.current = null;
     };
-  }, [graph, onNodeSelect]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graphFingerprint]);
 
   // ---------- Node/edge reducers for hover + depth filtering ----------
   useEffect(() => {
@@ -774,7 +804,7 @@ export function TaskGraphViewer({
         }
 
         // Hover highlight: dim non-neighbors
-        if (hoveredNode && hoveredNode !== node) {
+        if (hoveredNode && hoveredNode !== node && graph.hasNode(hoveredNode)) {
           const neighbors = getNeighborSet(graph, hoveredNode);
           if (!neighbors.has(node)) {
             result.color = hexToRgba(data.color || STATUS_COLORS.open, 0.15);
@@ -805,8 +835,13 @@ export function TaskGraphViewer({
       "edgeReducer",
       (edge: string, data: Record<string, any>) => {
         const result = { ...data };
-        const source = graph.source(edge);
-        const target = graph.target(edge);
+        let source: string, target: string;
+        try {
+          source = graph.source(edge);
+          target = graph.target(edge);
+        } catch {
+          return result;
+        }
 
         // Depth filter
         if (
@@ -1138,4 +1173,4 @@ export function TaskGraphViewer({
       />
     </div>
   );
-}
+});

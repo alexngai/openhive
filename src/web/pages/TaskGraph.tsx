@@ -106,6 +106,11 @@ export function TaskGraph() {
 
   const isMultiGraph = selectedIds.length > 1;
 
+  // Stabilize dependency: React Query returns stable data refs per query when
+  // the data hasn't changed, but useQueries returns a new array each render.
+  // Extract individual data objects — they ARE referentially stable from React Query.
+  const graphQueryData = graphQueryResults.map((r) => r.data);
+
   const { mergedNodes, mergedEdges, graphColorMap } = useMemo(() => {
     const nodes: (OpenTasksGraphNode & { _sourceGraphId?: string; _sourceGraphName?: string; _sourceColor?: string })[] = [];
     const edges: OpenTasksGraphEdge[] = [];
@@ -113,13 +118,13 @@ export function TaskGraph() {
 
     for (let i = 0; i < selectedIds.length; i++) {
       const id = selectedIds[i];
-      const result = graphQueryResults[i];
+      const result = graphQueryData[i];
       const color = GRAPH_COLORS[i % GRAPH_COLORS.length];
       const graphResource = allGraphs.find((g) => g.id === id);
       const graphName = graphResource?.name || id;
       colorMap.set(id, color);
 
-      for (const node of result?.data?.nodes || []) {
+      for (const node of result?.nodes || []) {
         nodes.push({
           ...node,
           id: selectedIds.length > 1 ? `${id}:${node.id}` : node.id,
@@ -128,7 +133,7 @@ export function TaskGraph() {
           _sourceColor: color,
         });
       }
-      for (const edge of result?.data?.edges || []) {
+      for (const edge of result?.edges || []) {
         edges.push({
           ...edge,
           id: selectedIds.length > 1 ? `${id}:${edge.id}` : edge.id,
@@ -139,7 +144,8 @@ export function TaskGraph() {
     }
 
     return { mergedNodes: nodes, mergedEdges: edges, graphColorMap: colorMap };
-  }, [graphQueryResults, selectedIds, allGraphs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graphQueryData, selectedIds, allGraphs]);
 
   // Build merged graphology graph for multi-graph sigma.js rendering
   const mergedGraph = useMemo(() => {
