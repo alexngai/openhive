@@ -6,7 +6,6 @@
 import { useState } from 'react';
 import {
   Circle, PlayCircle, AlertTriangle, CheckCircle2,
-  Pencil, Check, X, Trash2, FileText, FileCode, ChevronDown,
 } from 'lucide-react';
 import clsx from 'clsx';
 import {
@@ -16,7 +15,8 @@ import {
   type DragStartEvent, type DragEndEvent, type DragOverEvent,
 } from '@dnd-kit/core';
 // @dnd-kit/utilities not needed — using useDraggable (not useSortable)
-import { useOpenTasksGraph, useUpdateOpenTaskStatus, useUpdateOpenTask, useDeleteOpenTask } from '../../hooks/useApi';
+import { useOpenTasksGraph, useUpdateOpenTaskStatus } from '../../hooks/useApi';
+import { TaskGraphSidebar } from './TaskGraphSidebar';
 import { applyTaskFilters } from './TaskFilterBar';
 import { useTasksRealtime } from '../../hooks/useMapTasks';
 import type { OpenTasksGraphNode } from '../../lib/api';
@@ -105,21 +105,13 @@ function DraggableTaskCard({
   onSelect: (node: OpenTasksGraphNode | null) => void;
   isDragOverlay?: boolean;
 }) {
-  const updateTask = useUpdateOpenTask(resourceId);
-  const deleteTask = useDeleteOpenTask(resourceId);
-  const [isEditing, setIsEditing] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [editTitle, setEditTitle] = useState(node.title || '');
-  const [editDescription, setEditDescription] = useState(node.description || '');
-  const [editAssignee, setEditAssignee] = useState((node as any).assignee || '');
-
   const {
     attributes,
     listeners,
     setNodeRef,
     transform,
     isDragging,
-  } = useDraggable({ id: node.id, disabled: isEditing, data: { node } });
+  } = useDraggable({ id: node.id, data: { node } });
 
   const cardStyle: React.CSSProperties = isDragOverlay
     ? { backgroundColor: 'var(--color-surface)' }
@@ -128,10 +120,6 @@ function DraggableTaskCard({
         opacity: isDragging ? 0.3 : 1,
         backgroundColor: 'var(--color-surface)',
       };
-
-  const handleMove = (target: string) => {
-    updateStatus.mutate({ nodeId: node.id, status: target });
-  };
 
   return (
     <div
@@ -160,131 +148,21 @@ function DraggableTaskCard({
           </div>
         </div>
       )}
-      {isEditing ? (
-        /* Inline edit form */
-        <div
-          className="space-y-2"
-          onClick={(e) => e.stopPropagation()}
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          <input
-            type="text"
-            value={editTitle}
-            onChange={(e) => setEditTitle(e.target.value)}
-            className="input w-full text-sm"
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') { setIsEditing(false); setEditTitle(node.title || ''); setEditDescription(node.description || ''); }
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                if (editTitle.trim()) {
-                  updateTask.mutate({ nodeId: node.id, title: editTitle.trim(), description: editDescription.trim() || null, assignee: editAssignee.trim() || null }, { onSuccess: () => setIsEditing(false) });
-                }
-              }
-            }}
-          />
-          <textarea
-            value={editDescription}
-            onChange={(e) => setEditDescription(e.target.value)}
-            placeholder="Description (optional)"
-            rows={2}
-            className="input w-full text-2xs resize-none"
-          />
-          <input
-            type="text"
-            value={editAssignee}
-            onChange={(e) => setEditAssignee(e.target.value)}
-            placeholder="Assignee (optional)"
-            className="input w-full text-2xs"
-          />
-          <div className="flex justify-end gap-1">
-            <button
-              onClick={() => { setIsEditing(false); setEditTitle(node.title || ''); setEditDescription(node.description || ''); }}
-              className="p-1 rounded hover:bg-white/10"
-            >
-              <X className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-            </button>
-            <button
-              onClick={() => {
-                if (editTitle.trim()) {
-                  updateTask.mutate({ nodeId: node.id, title: editTitle.trim(), description: editDescription.trim() || null, assignee: editAssignee.trim() || null }, { onSuccess: () => setIsEditing(false) });
-                }
-              }}
-              disabled={!editTitle.trim() || updateTask.isPending}
-              className="p-1 rounded hover:bg-emerald-500/10"
-            >
-              <Check className={`w-3.5 h-3.5 ${updateTask.isPending ? 'animate-pulse' : 'text-emerald-400'}`} />
-            </button>
-          </div>
-        </div>
-      ) : (
-        <>
-          {/* Title + edit button */}
-          <div className="flex items-start gap-2 group/card">
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium leading-snug">{node.title || node.id}</p>
-              {node.description && (
-                <p
-                  className="text-2xs mt-1 line-clamp-2 leading-relaxed"
-                  style={{ color: 'var(--color-text-muted)' }}
-                >
-                  {node.description}
-                </p>
-              )}
-            </div>
-            {!isDragOverlay && node.type === 'task' && !confirmDelete && (
-              <div className="flex items-center gap-0.5 opacity-0 group-hover/card:opacity-100 transition-opacity shrink-0">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setEditTitle(node.title || '');
-                    setEditDescription(node.description || '');
-                    setEditAssignee((node as any).assignee || '');
-                    setIsEditing(true);
-                  }}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  className="p-1 rounded hover:bg-white/10"
-                  title="Edit task"
-                >
-                  <Pencil className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  className="p-1 rounded hover:bg-red-500/10"
-                  title="Delete task"
-                >
-                  <Trash2 className="w-3 h-3 text-red-400/60 hover:text-red-400" />
-                </button>
-              </div>
-            )}
-            {confirmDelete && (
-              <div
-                className="flex items-center gap-1 shrink-0"
-                onClick={(e) => e.stopPropagation()}
-                onPointerDown={(e) => e.stopPropagation()}
-              >
-                <span className="text-2xs text-red-400">Delete?</span>
-                <button
-                  onClick={() => deleteTask.mutate(node.id)}
-                  disabled={deleteTask.isPending}
-                  className="text-2xs px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30"
-                >
-                  {deleteTask.isPending ? '...' : 'Yes'}
-                </button>
-                <button
-                  onClick={() => setConfirmDelete(false)}
-                  className="text-2xs px-1.5 py-0.5 rounded hover:bg-white/10"
-                  style={{ color: 'var(--color-text-muted)' }}
-                >
-                  No
-                </button>
-              </div>
-            )}
-          </div>
+      {/* Title */}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium leading-snug">{node.title || node.id}</p>
+        {node.description && (
+          <p
+            className="text-2xs mt-1 line-clamp-2 leading-relaxed"
+            style={{ color: 'var(--color-text-muted)' }}
+          >
+            {node.description}
+          </p>
+        )}
+      </div>
 
-          {/* Priority + meta */}
-          <div className="flex items-center gap-2 mt-2">
+      {/* Priority + meta */}
+      <div className="flex items-center gap-2 mt-2">
         {node.priority != null && node.priority > 0 && (
           <span
             className={clsx(
@@ -308,9 +186,6 @@ function DraggableTaskCard({
           </span>
         )}
       </div>
-
-        </>
-      )}
     </div>
   );
 }
@@ -357,6 +232,7 @@ function DroppableColumn({
       {/* Cards (droppable area) */}
       <div
         ref={setNodeRef}
+        onClick={(e) => { if (e.target === e.currentTarget) onSelectNode(null); }}
         className={clsx(
           'flex-1 space-y-2 p-2 rounded-lg overflow-y-auto transition-colors duration-200',
           isOver && 'ring-2 ring-honey-500/30',
@@ -418,8 +294,6 @@ export function TaskKanban({ resourceId, filters, mergedNodes }: TaskKanbanProps
   const ownGraphNodes = graphData?.nodes || [];
   const sourceNodes = mergedNodes || ownGraphNodes;
   const allNodes = sourceNodes.filter((n) => n.type === 'task' && !n.archived);
-  const contextNodes = sourceNodes.filter((n) => n.type === 'context' && !n.archived);
-  const [showContexts, setShowContexts] = useState(true);
 
   // Apply filters
   const nodes = filters
@@ -433,6 +307,12 @@ export function TaskKanban({ resourceId, filters, mergedNodes }: TaskKanbanProps
       .filter((n) => col.statuses.includes(n.status || 'open'))
       .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)),
   }));
+
+  const selectedNode = selectedNodeId
+    ? sourceNodes.find((n) => n.id === selectedNodeId) ?? null
+    : null;
+
+  const graphEdges = graphData?.edges || [];
 
   const handleSelectNode = (node: OpenTasksGraphNode | null) => {
     setSelectedNodeId(node?.id ?? null);
@@ -528,15 +408,20 @@ export function TaskKanban({ resourceId, filters, mergedNodes }: TaskKanbanProps
   }
 
   return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={pointerWithin}
-      onDragStart={handleDragStart}
-      onDragOver={handleDragOver}
-      onDragEnd={handleDragEnd}
-      onDragCancel={handleDragCancel}
-    >
-      <div className="h-full flex gap-3 p-4 overflow-x-auto">
+    <div className="h-full flex">
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <DndContext
+          sensors={sensors}
+          collisionDetection={pointerWithin}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={handleDragEnd}
+          onDragCancel={handleDragCancel}
+        >
+          <div
+            className="flex-1 flex gap-3 p-4 overflow-x-auto [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-white/20"
+            onClick={(e) => { if (e.target === e.currentTarget) setSelectedNodeId(null); }}
+          >
         {columnData.map(({ column, nodes: colNodes }) => (
           <DroppableColumn
             key={column.key}
@@ -550,41 +435,6 @@ export function TaskKanban({ resourceId, filters, mergedNodes }: TaskKanbanProps
         ))}
       </div>
 
-      {/* Context nodes section */}
-      {contextNodes.length > 0 && (
-        <div className="px-4 pb-4">
-          <button
-            onClick={() => setShowContexts(!showContexts)}
-            className="flex items-center gap-1.5 text-xs font-semibold mb-2"
-            style={{ color: 'var(--color-text-muted)' }}
-          >
-            <FileText className="w-3.5 h-3.5" />
-            Context
-            <span className="text-2xs font-normal px-1.5 py-0.5 rounded-full" style={{ backgroundColor: 'var(--color-elevated)' }}>
-              {contextNodes.length}
-            </span>
-            <ChevronDown className={`w-3.5 h-3.5 ml-auto transition-transform ${showContexts ? '' : '-rotate-90'}`} />
-          </button>
-          {showContexts && (
-            <div className="flex flex-wrap gap-2">
-              {contextNodes.map((n) => {
-                const isFile = !!(n.metadata as Record<string, unknown> | undefined)?.context_file;
-                return (
-                  <div
-                    key={n.id}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs cursor-pointer hover:ring-1 hover:ring-white/10"
-                    style={{ backgroundColor: 'var(--color-surface)' }}
-                    onClick={() => handleSelectNode(n)}
-                  >
-                    {isFile ? <FileCode className="w-3 h-3 text-blue-400" /> : <FileText className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
-                    <span className="truncate max-w-[200px]">{n.title || n.id}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Drag overlay — floating card that follows the cursor */}
       <DragOverlay>
@@ -599,7 +449,20 @@ export function TaskKanban({ resourceId, filters, mergedNodes }: TaskKanbanProps
             />
           </div>
         )}
-      </DragOverlay>
-    </DndContext>
+          </DragOverlay>
+        </DndContext>
+      </div>
+
+      {/* Detail sidebar */}
+      {selectedNode && (
+        <TaskGraphSidebar
+          node={selectedNode}
+          resourceId={resourceId}
+          onClose={() => setSelectedNodeId(null)}
+          edges={graphEdges}
+          allNodes={sourceNodes}
+        />
+      )}
+    </div>
   );
 }

@@ -1,13 +1,84 @@
 /**
- * TaskGraphSidebar — Node detail panel shown when a graph node is clicked.
- * Includes status transition buttons for task nodes.
+ * TaskGraphSidebar — Detail panel shown when a graph node or edge is clicked.
+ * Includes status transition buttons for task nodes and edge management.
  */
 
-import { useState } from 'react';
-import { X, CheckCircle2, PlayCircle, AlertTriangle, XCircle, Circle, Trash2, Link2, Plus } from 'lucide-react';
+import { useState, useRef, useCallback } from 'react';
+import { X, CheckCircle2, PlayCircle, AlertTriangle, XCircle, Circle, Trash2, Link2, Plus, ArrowDown, Pencil, Check } from 'lucide-react';
 import clsx from 'clsx';
-import { useUpdateOpenTaskStatus, useDeleteOpenTask, useCreateTaskLink, useRemoveTaskLink, useResolveContextFile, useCheckContextDrift, useSyncContextFile } from '../../hooks/useApi';
+import { useUpdateOpenTaskStatus, useUpdateOpenTask, useDeleteOpenTask, useCreateTaskLink, useRemoveTaskLink, useResolveContextFile, useCheckContextDrift, useSyncContextFile } from '../../hooks/useApi';
 import type { OpenTasksGraphNode, OpenTasksGraphEdge } from '../../lib/api';
+
+// ============================================================================
+// Resizable sidebar wrapper
+// ============================================================================
+
+const MIN_WIDTH = 280;
+const MAX_WIDTH = 600;
+const DEFAULT_WIDTH = 320;
+const STORAGE_KEY = 'openhive-sidebar-width';
+
+function ResizableSidebar({ children }: { children: React.ReactNode }) {
+  const [width, setWidth] = useState(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, parseInt(stored, 10)));
+    } catch {}
+    return DEFAULT_WIDTH;
+  });
+  const widthRef = useRef(width);
+  widthRef.current = width;
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = widthRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const delta = startX - e.clientX;
+      const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startWidth + delta));
+      setWidth(newWidth);
+      widthRef.current = newWidth;
+    };
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      localStorage.setItem(STORAGE_KEY, String(widthRef.current));
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  return (
+    <div
+      className="shrink-0 overflow-y-auto border-l relative flex"
+      style={{ width, borderColor: 'var(--color-border)', backgroundColor: 'var(--color-surface)' }}
+    >
+      {/* Drag handle */}
+      <div
+        onMouseDown={handleMouseDown}
+        className="absolute left-0 top-0 bottom-0 w-[3px] cursor-col-resize hover:bg-honey-500/30 transition-colors z-10"
+      />
+      <div className="flex-1 overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-white/20">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Selected edge info passed from the graph viewer */
+export interface SelectedEdge {
+  id: string;
+  from_id: string;
+  to_id: string;
+  type: string;
+}
 
 const STATUS_ICONS: Record<string, React.ElementType> = {
   open: Circle,
@@ -55,21 +126,41 @@ const STATUS_ACTIONS: Record<string, Array<{ label: string; target: string; colo
 
 interface Props {
   node: OpenTasksGraphNode | null;
+  selectedEdge?: SelectedEdge | null;
   resourceId: string;
   onClose: () => void;
+  onSelectNode?: (node: OpenTasksGraphNode) => void;
   edges?: OpenTasksGraphEdge[];
   allNodes?: OpenTasksGraphNode[];
 }
 
-export function TaskGraphSidebar({ node, resourceId, onClose, edges = [], allNodes = [] }: Props) {
+export function TaskGraphSidebar({ node, selectedEdge, resourceId, onClose, onSelectNode, edges = [], allNodes = [] }: Props) {
   const updateStatus = useUpdateOpenTaskStatus(resourceId);
+  const updateTask = useUpdateOpenTask(resourceId);
   const deleteTask = useDeleteOpenTask(resourceId);
   const createLink = useCreateTaskLink(resourceId);
   const removeLink = useRemoveTaskLink(resourceId);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editAssignee, setEditAssignee] = useState('');
   const [showAddLink, setShowAddLink] = useState(false);
   const [linkTargetId, setLinkTargetId] = useState('');
   const [linkType, setLinkType] = useState('blocks');
+
+  // Edge detail view
+  if (selectedEdge) {
+    return (
+      <EdgeDetailSidebar
+        edge={selectedEdge}
+        resourceId={resourceId}
+        allNodes={allNodes}
+        onClose={onClose}
+        onSelectNode={onSelectNode}
+      />
+    );
+  }
 
   if (!node) return null;
 
@@ -82,18 +173,92 @@ export function TaskGraphSidebar({ node, resourceId, onClose, edges = [], allNod
   };
 
   return (
-    <div
-      className="w-80 shrink-0 overflow-y-auto border-l"
-      style={{ borderColor: 'var(--color-border)', backgroundColor: 'var(--color-surface)' }}
-    >
+    <ResizableSidebar>
       <div className="p-4 space-y-4">
         {/* Header */}
         <div className="flex items-start justify-between gap-2">
-          <h3 className="text-sm font-semibold leading-tight">{node.title || node.id}</h3>
-          <button onClick={onClose} className="btn-ghost p-1 shrink-0">
-            <X className="w-4 h-4" />
-          </button>
+          <h3 className="text-sm font-semibold leading-tight flex-1">{node.title || node.id}</h3>
+          <div className="flex items-center gap-0.5 shrink-0">
+            {node.type === 'task' && !isEditing && (
+              <button
+                onClick={() => {
+                  setEditTitle(node.title || '');
+                  setEditDescription(node.description || '');
+                  setEditAssignee((node as any).assignee || '');
+                  setIsEditing(true);
+                }}
+                className="btn-ghost p-1"
+                title="Edit task"
+              >
+                <Pencil className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+              </button>
+            )}
+            <button onClick={onClose} className="btn-ghost p-1">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
+
+        {/* Edit form */}
+        {isEditing && (
+          <div className="space-y-2 p-3 rounded-lg" style={{ backgroundColor: 'var(--color-elevated)' }}>
+            <div>
+              <label className="text-2xs font-medium block mb-1" style={{ color: 'var(--color-text-muted)' }}>Title</label>
+              <input
+                type="text"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                className="input text-xs w-full"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="text-2xs font-medium block mb-1" style={{ color: 'var(--color-text-muted)' }}>Description</label>
+              <textarea
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                placeholder="Optional"
+                className="input text-xs w-full resize-none"
+                rows={3}
+              />
+            </div>
+            <div>
+              <label className="text-2xs font-medium block mb-1" style={{ color: 'var(--color-text-muted)' }}>Assignee</label>
+              <input
+                type="text"
+                value={editAssignee}
+                onChange={(e) => setEditAssignee(e.target.value)}
+                placeholder="Optional"
+                className="input text-xs w-full"
+              />
+            </div>
+            <div className="flex justify-end gap-1.5 pt-1">
+              <button
+                onClick={() => setIsEditing(false)}
+                className="btn btn-ghost text-2xs"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (editTitle.trim()) {
+                    updateTask.mutate(
+                      { nodeId: node.id, title: editTitle.trim(), description: editDescription.trim() || null, assignee: editAssignee.trim() || null },
+                      { onSuccess: () => setIsEditing(false) },
+                    );
+                  }
+                }}
+                disabled={!editTitle.trim() || updateTask.isPending}
+                className="btn btn-primary text-2xs"
+              >
+                {updateTask.isPending ? '...' : 'Save'}
+              </button>
+            </div>
+            {updateTask.isError && (
+              <p className="text-2xs text-red-400">{(updateTask.error as Error).message}</p>
+            )}
+          </div>
+        )}
 
         {/* Status badge */}
         <div className="flex items-center gap-2">
@@ -236,7 +401,7 @@ export function TaskGraphSidebar({ node, resourceId, onClose, edges = [], allNod
           </div>
         )}
       </div>
-    </div>
+    </ResizableSidebar>
   );
 }
 
@@ -488,5 +653,149 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
       <span style={{ color: 'var(--color-text-muted)' }}>{label}</span>
       <span className={clsx('truncate', mono && 'font-mono text-2xs')}>{value}</span>
     </div>
+  );
+}
+
+// ============================================================================
+// Edge Detail Sidebar
+// ============================================================================
+
+const EDGE_TYPE_LABELS: Record<string, { label: string; color: string }> = {
+  blocks: { label: 'Blocks', color: 'text-red-400' },
+  'depends-on': { label: 'Depends on', color: 'text-amber-400' },
+  related: { label: 'Related', color: 'text-gray-400' },
+  'parent-of': { label: 'Parent of', color: 'text-blue-400' },
+  implements: { label: 'Implements', color: 'text-emerald-400' },
+};
+
+function EdgeDetailSidebar({
+  edge,
+  resourceId,
+  allNodes,
+  onClose,
+  onSelectNode,
+}: {
+  edge: SelectedEdge;
+  resourceId: string;
+  allNodes: OpenTasksGraphNode[];
+  onClose: () => void;
+  onSelectNode?: (node: OpenTasksGraphNode) => void;
+}) {
+  const removeLink = useRemoveTaskLink(resourceId);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const stripPrefix = (id: string) => id.includes(':') ? id.split(':').pop()! : id;
+  const sourceNode = allNodes.find((n) => stripPrefix(n.id) === stripPrefix(edge.from_id));
+  const targetNode = allNodes.find((n) => stripPrefix(n.id) === stripPrefix(edge.to_id));
+  const typeInfo = EDGE_TYPE_LABELS[edge.type] || { label: edge.type.replace(/-/g, ' '), color: 'text-gray-400' };
+
+  const handleDelete = () => {
+    removeLink.mutate(
+      { nodeId: stripPrefix(edge.from_id), targetId: stripPrefix(edge.to_id), type: edge.type },
+      { onSuccess: () => onClose() },
+    );
+  };
+
+  const NodeButton = ({ node, label }: { node?: OpenTasksGraphNode; label: string }) => {
+    if (!node) return <span className="text-xs truncate" style={{ color: 'var(--color-text-muted)' }}>{label}</span>;
+    const status = node.status || 'open';
+    const StatusIcon = STATUS_ICONS[status] || Circle;
+    return (
+      <button
+        onClick={() => onSelectNode?.(node)}
+        className="flex items-center gap-2 w-full p-2 rounded-lg text-left hover:bg-white/5 transition-colors group"
+        style={{ backgroundColor: 'var(--color-elevated)' }}
+      >
+        <StatusIcon className={clsx('w-3.5 h-3.5 shrink-0', STATUS_STYLES[status])} />
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-medium truncate group-hover:text-honey-500 transition-colors">{node.title || node.id}</p>
+          <p className="text-2xs capitalize" style={{ color: 'var(--color-text-muted)' }}>{node.type}</p>
+        </div>
+      </button>
+    );
+  };
+
+  return (
+    <ResizableSidebar>
+      <div className="p-4 space-y-4">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Link2 className="w-4 h-4 text-amber-400" />
+            <h3 className="text-sm font-semibold">Edge</h3>
+          </div>
+          <button onClick={onClose} className="btn-ghost p-1 shrink-0">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Type badge */}
+        <div className="flex items-center gap-2">
+          <span className={clsx('text-xs font-medium capitalize', typeInfo.color)}>
+            {typeInfo.label}
+          </span>
+        </div>
+
+        {/* Source → Target */}
+        <div className="space-y-2">
+          <div className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Source</div>
+          <NodeButton node={sourceNode} label={edge.from_id} />
+
+          <div className="flex justify-center">
+            <ArrowDown className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+          </div>
+
+          <div className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Target</div>
+          <NodeButton node={targetNode} label={edge.to_id} />
+        </div>
+
+        {/* Details */}
+        <div>
+          <div className="text-2xs font-medium mb-1" style={{ color: 'var(--color-text-muted)' }}>Details</div>
+          <div className="space-y-1">
+            <DetailRow label="Edge ID" value={edge.id} mono />
+            <DetailRow label="Type" value={edge.type} />
+            <DetailRow label="From" value={stripPrefix(edge.from_id)} mono />
+            <DetailRow label="To" value={stripPrefix(edge.to_id)} mono />
+          </div>
+        </div>
+
+        {/* Delete */}
+        <div className="pt-3 border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
+          {!confirmDelete ? (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="btn-ghost text-2xs px-2 py-1 rounded text-red-400/60 hover:text-red-400 hover:bg-red-500/10 flex items-center gap-1"
+            >
+              <Trash2 className="w-3 h-3" />
+              Remove edge
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="text-2xs text-red-400">Remove this edge?</span>
+              <button
+                onClick={handleDelete}
+                disabled={removeLink.isPending}
+                className="text-2xs px-2 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30"
+              >
+                {removeLink.isPending ? '...' : 'Remove'}
+              </button>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="text-2xs px-2 py-0.5 rounded hover:bg-white/10"
+                style={{ color: 'var(--color-text-muted)' }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+          {removeLink.isError && (
+            <p className="text-2xs text-red-400 mt-1">
+              {removeLink.error instanceof Error ? removeLink.error.message : 'Failed to remove'}
+            </p>
+          )}
+        </div>
+      </div>
+    </ResizableSidebar>
   );
 }

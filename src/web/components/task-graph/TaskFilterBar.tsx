@@ -73,10 +73,9 @@ export function TaskFilterBar({ filters, onChange }: Props) {
       {/* Filter trigger */}
       <button
         onClick={() => setOpen(!open)}
-        className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors cursor-pointer ${
-          active ? 'bg-honey-500/15 text-honey-500' : 'hover:bg-white/5'
+        className={`btn btn-ghost flex items-center gap-1 text-xs ${
+          active ? 'text-honey-500' : ''
         }`}
-        style={!active ? { color: 'var(--color-text-muted)' } : {}}
         title="Filter tasks"
       >
         <Filter className="w-3.5 h-3.5" />

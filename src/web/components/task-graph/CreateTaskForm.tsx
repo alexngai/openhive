@@ -2,10 +2,10 @@
  * CreateTaskForm — Inline form for creating a new task in an OpenTasks resource.
  */
 
-import { useState } from 'react';
-import { Plus, X } from 'lucide-react';
-import { useCreateOpenTask } from '../../hooks/useApi';
-import { Dialog } from '../common/Dialog';
+import { useState } from "react";
+import { Plus, X } from "lucide-react";
+import { useCreateOpenTask } from "../../hooks/useApi";
+import { Dialog } from "../common/Dialog";
 
 interface Props {
   resourceId: string;
@@ -14,10 +14,10 @@ interface Props {
 
 export function CreateTaskForm({ resourceId, onCreated }: Props) {
   const [open, setOpen] = useState(false);
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [priority, setPriority] = useState(0);
-  const [assignee, setAssignee] = useState('');
+  const [assignee, setAssignee] = useState("");
 
   const createTask = useCreateOpenTask(resourceId);
 
@@ -34,10 +34,10 @@ export function CreateTaskForm({ resourceId, onCreated }: Props) {
       },
       {
         onSuccess: () => {
-          setTitle('');
-          setDescription('');
+          setTitle("");
+          setDescription("");
           setPriority(0);
-          setAssignee('');
+          setAssignee("");
           setOpen(false);
           onCreated?.();
         },
@@ -49,19 +49,25 @@ export function CreateTaskForm({ resourceId, onCreated }: Props) {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="text-xs flex items-center gap-1.5 px-2 py-1 rounded-md border cursor-pointer hover:bg-white/5 transition-colors"
-        style={{ borderColor: 'var(--color-border)' }}
+        className="btn btn-primary flex items-center gap-1.5 text-xs"
       >
         <Plus className="w-3 h-3" />
-        Task
+        New Task
       </button>
 
       <Dialog open={open} onClose={() => setOpen(false)} maxWidth="max-w-md">
         <form onSubmit={handleSubmit}>
           <div className="flex items-center justify-between p-4 border-b border-[var(--color-border-subtle)]">
             <span className="text-sm font-semibold">New Task</span>
-            <button type="button" onClick={() => setOpen(false)} className="p-1 rounded hover:bg-white/5">
-              <X className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="p-1 rounded hover:bg-white/5"
+            >
+              <X
+                className="w-4 h-4"
+                style={{ color: "var(--color-text-muted)" }}
+              />
             </button>
           </div>
 
@@ -79,7 +85,9 @@ export function CreateTaskForm({ resourceId, onCreated }: Props) {
             </div>
 
             <div>
-              <label className="text-xs font-medium block mb-1.5">Description</label>
+              <label className="text-xs font-medium block mb-1.5">
+                Description
+              </label>
               <textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
@@ -90,7 +98,9 @@ export function CreateTaskForm({ resourceId, onCreated }: Props) {
             </div>
 
             <div>
-              <label className="text-xs font-medium block mb-1.5">Assignee</label>
+              <label className="text-xs font-medium block mb-1.5">
+                Assignee
+              </label>
               <input
                 type="text"
                 value={assignee}
@@ -101,7 +111,9 @@ export function CreateTaskForm({ resourceId, onCreated }: Props) {
             </div>
 
             <div>
-              <label className="text-xs font-medium block mb-1.5">Priority</label>
+              <label className="text-xs font-medium block mb-1.5">
+                Priority
+              </label>
               <select
                 value={priority}
                 onChange={(e) => setPriority(Number(e.target.value))}
@@ -117,13 +129,19 @@ export function CreateTaskForm({ resourceId, onCreated }: Props) {
 
             {createTask.isError && (
               <p className="text-xs text-red-400">
-                {createTask.error instanceof Error ? createTask.error.message : 'Failed to create task'}
+                {createTask.error instanceof Error
+                  ? createTask.error.message
+                  : "Failed to create task"}
               </p>
             )}
           </div>
 
           <div className="flex justify-end gap-2 p-4 border-t border-[var(--color-border-subtle)]">
-            <button type="button" onClick={() => setOpen(false)} className="btn btn-ghost text-xs">
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="btn btn-ghost text-xs"
+            >
               Cancel
             </button>
             <button
@@ -131,7 +149,7 @@ export function CreateTaskForm({ resourceId, onCreated }: Props) {
               disabled={!title.trim() || createTask.isPending}
               className="btn btn-primary text-xs"
             >
-              {createTask.isPending ? 'Creating...' : 'Create Task'}
+              {createTask.isPending ? "Creating..." : "Create Task"}
             </button>
           </div>
         </form>

@@ -15,7 +15,7 @@ import Sigma from "sigma";
 import { createEdgeArrowProgram } from "sigma/rendering";
 import FA2LayoutSupervisor from "graphology-layout-forceatlas2/worker";
 import type Graph from "graphology";
-import { TaskGraphSidebar } from "./TaskGraphSidebar";
+import { TaskGraphSidebar, type SelectedEdge } from "./TaskGraphSidebar";
 import { STATUS_COLORS } from "./useTaskGraph";
 import NodeSquareProgram from "./NodeSquareProgram";
 import { ZoomIn, ZoomOut, Maximize2, GitFork } from "lucide-react";
@@ -111,9 +111,8 @@ export function TaskGraphViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const supervisorRef = useRef<FA2LayoutSupervisor | null>(null);
-  const [selectedNode, setSelectedNode] = useState<OpenTasksGraphNode | null>(
-    null,
-  );
+  const [selectedNode, setSelectedNode] = useState<OpenTasksGraphNode | null>(null);
+  const [selectedEdge, setSelectedEdge] = useState<SelectedEdge | null>(null);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [depthFilter, setDepthFilter] = useState<number>(0); // 0 = show all
   const [linkMode, setLinkMode] = useState<LinkModeState>({ active: false });
@@ -303,7 +302,7 @@ export function TaskGraphViewer({
     });
 
     const sigma = new Sigma(graph, containerRef.current, {
-      renderEdgeLabels: false,
+      renderEdgeLabels: true,
       defaultEdgeType: "arrow",
       defaultNodeType: "circle",
       edgeProgramClasses: {
@@ -331,6 +330,13 @@ export function TaskGraphViewer({
 
     sigmaRef.current = sigma;
     applySigmaPerfSettings(sigma, graph.order);
+
+    // Scale edge label size with zoom
+    const BASE_EDGE_LABEL_SIZE = 25;
+    sigma.getCamera().on("updated", () => {
+      const ratio = sigma.getCamera().ratio + 1;
+      sigma.setSetting("edgeLabelSize", BASE_EDGE_LABEL_SIZE / ratio);
+    });
 
     // ---------- Hover highlighting ----------
     sigma.on("enterNode", ({ node }) => {
@@ -599,6 +605,7 @@ export function TaskGraphViewer({
 
       // --- Normal mode: select node ---
       setSelectedNode(data);
+      setSelectedEdge(null);
       onNodeSelect?.(data);
 
       // Smooth camera follow — convert raw graph coords to framed graph coords
@@ -621,7 +628,21 @@ export function TaskGraphViewer({
         setLinkModeAndRef({ active: false });
         return;
       }
+      // If hovering an edge, select it instead of deselecting
+      if (hoveredEdgeRef.current && graph.hasEdge(hoveredEdgeRef.current)) {
+        const edgeAttrs = graph.getEdgeAttributes(hoveredEdgeRef.current);
+        setSelectedEdge({
+          id: hoveredEdgeRef.current,
+          from_id: graph.source(hoveredEdgeRef.current),
+          to_id: graph.target(hoveredEdgeRef.current),
+          type: (edgeAttrs.edgeType as string) || 'related',
+        });
+        setSelectedNode(null);
+        onNodeSelect?.(null);
+        return;
+      }
       setSelectedNode(null);
+      setSelectedEdge(null);
       onNodeSelect?.(null);
     });
 
@@ -800,6 +821,10 @@ export function TaskGraphViewer({
         if (hoveredEdge === edge) {
           result.color = "#fbbf24";
           result.size = data.size || 4;
+          result.label = ((data.edgeType as string) || "related").replace(
+            /-/g,
+            " ",
+          );
           return result;
         }
 
@@ -909,9 +934,28 @@ export function TaskGraphViewer({
 
   const handleCloseSidebar = useCallback(() => {
     setSelectedNode(null);
+    setSelectedEdge(null);
     onNodeSelect?.(null);
     setDepthFilter(0);
   }, [onNodeSelect]);
+
+  const handleSidebarSelectNode = useCallback((node: OpenTasksGraphNode) => {
+    setSelectedNode(node);
+    setSelectedEdge(null);
+    onNodeSelect?.(node);
+
+    // Animate camera to the node
+    const sigma = sigmaRef.current;
+    if (sigma && graph.hasNode(node.id)) {
+      const nodeData = graph.getNodeAttributes(node.id);
+      const viewportPos = sigma.graphToViewport({ x: nodeData.x as number, y: nodeData.y as number });
+      const framedPos = sigma.viewportToFramedGraph(viewportPos);
+      sigma.getCamera().animate(
+        { x: framedPos.x, y: framedPos.y, ratio: Math.min(sigma.getCamera().ratio, 0.7) },
+        { duration: 400 },
+      );
+    }
+  }, [graph, onNodeSelect]);
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -1086,7 +1130,9 @@ export function TaskGraphViewer({
       <TaskGraphSidebar
         node={selectedNode}
         resourceId={resourceId}
+        selectedEdge={selectedEdge}
         onClose={handleCloseSidebar}
+        onSelectNode={handleSidebarSelectNode}
         edges={edges}
         allNodes={allNodes}
       />

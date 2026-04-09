@@ -17,7 +17,6 @@ import { useTaskGraph, buildGraphologyGraph, STATUS_COLORS } from '../components
 import { TaskGraphViewer } from '../components/task-graph/TaskGraphViewer';
 import { TaskKanban } from '../components/task-graph/TaskKanban';
 import { CreateTaskForm } from '../components/task-graph/CreateTaskForm';
-import { CreateContextForm } from '../components/task-graph/CreateContextForm';
 import { TaskFilterBar, DEFAULT_FILTERS, type TaskFilters } from '../components/task-graph/TaskFilterBar';
 import { useTasksRealtime } from '../hooks/useMapTasks';
 import type { OpenTasksGraphNode, OpenTasksGraphEdge } from '../lib/api';
@@ -321,10 +320,9 @@ export function TaskGraph() {
             ))}
             <TaskFilterBar filters={filters} onChange={setFilters} />
             <CreateTaskForm resourceId={resourceId!} />
-            <CreateContextForm resourceId={resourceId!} />
             <Link
               to="/tasks/list"
-              className="btn-ghost p-1 rounded cursor-pointer"
+              className="btn btn-ghost p-1.5"
               title="Manage task graphs"
             >
               <Settings className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
