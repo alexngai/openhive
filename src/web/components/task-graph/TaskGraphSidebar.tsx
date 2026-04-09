@@ -3,8 +3,10 @@
  * Includes status transition buttons for task nodes and edge management.
  */
 
-import { useState, useRef, useCallback } from 'react';
-import { X, CheckCircle2, PlayCircle, AlertTriangle, XCircle, Circle, Trash2, Link2, Plus, ArrowDown, Pencil, Check } from 'lucide-react';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { X, CheckCircle2, PlayCircle, AlertTriangle, XCircle, Circle, Trash2, Link2, Plus, ArrowDown } from 'lucide-react';
+import { TiptapEditor, useEditorViewMode } from '../common/TiptapEditor';
+import { FileText, Eye } from 'lucide-react';
 import clsx from 'clsx';
 import { useUpdateOpenTaskStatus, useUpdateOpenTask, useDeleteOpenTask, useCreateTaskLink, useRemoveTaskLink, useResolveContextFile, useCheckContextDrift, useSyncContextFile } from '../../hooks/useApi';
 import type { OpenTasksGraphNode, OpenTasksGraphEdge } from '../../lib/api';
@@ -141,10 +143,16 @@ export function TaskGraphSidebar({ node, selectedEdge, resourceId, onClose, onSe
   const createLink = useCreateTaskLink(resourceId);
   const removeLink = useRemoveTaskLink(resourceId);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
-  const [editTitle, setEditTitle] = useState('');
-  const [editDescription, setEditDescription] = useState('');
-  const [editAssignee, setEditAssignee] = useState('');
+  const editorView = useEditorViewMode();
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Auto-save helper — debounces 1s
+  const autoSave = useCallback((updates: Record<string, unknown>) => {
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    autoSaveTimer.current = setTimeout(() => {
+      updateTask.mutate({ nodeId: node?.id || '', ...updates } as any);
+    }, 1000);
+  }, [updateTask, node?.id]);
   const [showAddLink, setShowAddLink] = useState(false);
   const [linkTargetId, setLinkTargetId] = useState('');
   const [linkType, setLinkType] = useState('blocks');
@@ -175,88 +183,50 @@ export function TaskGraphSidebar({ node, selectedEdge, resourceId, onClose, onSe
   return (
     <ResizableSidebar>
       <div className="p-4 space-y-4">
-        {/* Header */}
+        {/* Header — title is inline-editable for tasks */}
         <div className="flex items-start justify-between gap-2">
-          <h3 className="text-sm font-semibold leading-tight flex-1">{node.title || node.id}</h3>
-          <div className="flex items-center gap-0.5 shrink-0">
-            {node.type === 'task' && !isEditing && (
-              <button
-                onClick={() => {
-                  setEditTitle(node.title || '');
-                  setEditDescription(node.description || '');
-                  setEditAssignee((node as any).assignee || '');
-                  setIsEditing(true);
-                }}
-                className="btn-ghost p-1"
-                title="Edit task"
-              >
-                <Pencil className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-              </button>
-            )}
-            <button onClick={onClose} className="btn-ghost p-1">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+          {node.type === 'task' ? (
+            <input
+              type="text"
+              defaultValue={node.title || ''}
+              key={node.id + '-title'}
+              onBlur={(e) => {
+                const newTitle = e.target.value.trim();
+                if (newTitle && newTitle !== node.title) {
+                  updateTask.mutate({ nodeId: node.id, title: newTitle });
+                }
+              }}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+              className="text-base font-semibold leading-tight flex-1 bg-transparent border-none outline-none hover:bg-white/5 focus:bg-white/5 rounded px-1 -ml-1 transition-colors"
+              style={{ color: 'inherit' }}
+            />
+          ) : (
+            <h3 className="text-base font-semibold leading-tight flex-1">{node.title || node.id}</h3>
+          )}
+          <button onClick={onClose} className="btn-ghost p-1 shrink-0">
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* Edit form */}
-        {isEditing && (
-          <div className="space-y-2 p-3 rounded-lg" style={{ backgroundColor: 'var(--color-elevated)' }}>
-            <div>
-              <label className="text-2xs font-medium block mb-1" style={{ color: 'var(--color-text-muted)' }}>Title</label>
-              <input
-                type="text"
-                value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
-                className="input text-xs w-full"
-                autoFocus
-              />
-            </div>
-            <div>
-              <label className="text-2xs font-medium block mb-1" style={{ color: 'var(--color-text-muted)' }}>Description</label>
-              <textarea
-                value={editDescription}
-                onChange={(e) => setEditDescription(e.target.value)}
-                placeholder="Optional"
-                className="input text-xs w-full resize-none"
-                rows={3}
-              />
-            </div>
-            <div>
-              <label className="text-2xs font-medium block mb-1" style={{ color: 'var(--color-text-muted)' }}>Assignee</label>
-              <input
-                type="text"
-                value={editAssignee}
-                onChange={(e) => setEditAssignee(e.target.value)}
-                placeholder="Optional"
-                className="input text-xs w-full"
-              />
-            </div>
-            <div className="flex justify-end gap-1.5 pt-1">
-              <button
-                onClick={() => setIsEditing(false)}
-                className="btn btn-ghost text-2xs"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  if (editTitle.trim()) {
-                    updateTask.mutate(
-                      { nodeId: node.id, title: editTitle.trim(), description: editDescription.trim() || null, assignee: editAssignee.trim() || null },
-                      { onSuccess: () => setIsEditing(false) },
-                    );
-                  }
-                }}
-                disabled={!editTitle.trim() || updateTask.isPending}
-                className="btn btn-primary text-2xs"
-              >
-                {updateTask.isPending ? '...' : 'Save'}
-              </button>
-            </div>
-            {updateTask.isError && (
-              <p className="text-2xs text-red-400">{(updateTask.error as Error).message}</p>
-            )}
+        {/* Assignee — inline editable for tasks */}
+        {node.type === 'task' && (
+          <div>
+            <div className="text-2xs font-medium mb-1" style={{ color: 'var(--color-text-muted)' }}>Assignee</div>
+            <input
+              type="text"
+              defaultValue={(node as any).assignee || ''}
+              key={node.id + '-assignee'}
+              onBlur={(e) => {
+                const newAssignee = e.target.value.trim();
+                if (newAssignee !== ((node as any).assignee || '')) {
+                  updateTask.mutate({ nodeId: node.id, assignee: newAssignee || null });
+                }
+              }}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+              placeholder="Unassigned"
+              className="text-xs w-full bg-transparent border-none outline-none hover:bg-white/5 focus:bg-white/5 rounded px-1 -ml-1 py-0.5 transition-colors"
+              style={{ color: 'var(--color-text-secondary)' }}
+            />
           </div>
         )}
 
@@ -301,27 +271,63 @@ export function TaskGraphSidebar({ node, selectedEdge, resourceId, onClose, onSe
           </div>
         )}
 
-        {/* Content (for context nodes) or Description (for tasks) */}
-        {node.type === 'context' && node.content ? (
+        {/* Description / Content — tiptap editor for tasks, pre for contexts */}
+        {node.type === 'task' ? (
           <div>
-            <div className="text-2xs font-medium mb-1" style={{ color: 'var(--color-text-muted)' }}>
-              Content
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Description</span>
+              <button
+                onClick={editorView.toggle}
+                className="flex items-center gap-0.5 text-2xs px-1 py-0.5 rounded hover:bg-white/5 transition-colors"
+                style={{ color: 'var(--color-text-muted)' }}
+                title={editorView.mode === 'formatted' ? 'Switch to markdown' : 'Switch to formatted'}
+              >
+                {editorView.mode === 'markdown' ? <FileText className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
+                {editorView.mode === 'markdown' ? 'Raw' : 'Rich'}
+              </button>
             </div>
-            <pre
-              className="text-xs p-3 rounded-lg overflow-auto max-h-64 whitespace-pre-wrap break-words"
-              style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
-            >
-              {node.content}
-            </pre>
+            <TiptapEditor
+              content={node.description || node.content || ''}
+              editable
+              placeholder="Add a description..."
+              showToolbar={false}
+              viewMode={editorView.mode}
+              minHeight="60px"
+              onChange={(markdown) => {
+                autoSave({ description: markdown || null });
+              }}
+            />
+          </div>
+        ) : node.type === 'context' ? (
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Content</span>
+              <button
+                onClick={editorView.toggle}
+                className="flex items-center gap-0.5 text-2xs px-1 py-0.5 rounded hover:bg-white/5 transition-colors"
+                style={{ color: 'var(--color-text-muted)' }}
+                title={editorView.mode === 'markdown' ? 'Switch to rich text' : 'Switch to markdown'}
+              >
+                {editorView.mode === 'markdown' ? <FileText className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
+                {editorView.mode === 'markdown' ? 'Raw' : 'Rich'}
+              </button>
+            </div>
+            <TiptapEditor
+              content={node.content || node.description || ''}
+              editable
+              placeholder="Add content..."
+              showToolbar={editorView.mode === 'formatted'}
+              viewMode={editorView.mode}
+              minHeight="200px"
+              onChange={(markdown) => {
+                autoSave({ description: markdown || null });
+              }}
+            />
           </div>
         ) : node.description ? (
           <div>
-            <div className="text-2xs font-medium mb-1" style={{ color: 'var(--color-text-muted)' }}>
-              Description
-            </div>
-            <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-              {node.description}
-            </p>
+            <div className="text-2xs font-medium mb-1" style={{ color: 'var(--color-text-muted)' }}>Description</div>
+            <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{node.description}</p>
           </div>
         ) : null}
 
