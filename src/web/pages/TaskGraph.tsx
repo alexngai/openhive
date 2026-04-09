@@ -32,7 +32,10 @@ const GRAPH_COLORS = ['#f59e0b', '#3b82f6', '#10b981', '#8b5cf6', '#ef4444', '#0
 export function TaskGraph() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [view, setView] = useState<ViewMode>('board');
+  const [view, setViewState] = useState<ViewMode>(
+    () => (localStorage.getItem('openhive-task-view') as ViewMode) || 'board',
+  );
+  const setView = (v: ViewMode) => { setViewState(v); localStorage.setItem('openhive-task-view', v); };
   const [filters, setFilters] = useState<TaskFilters>(DEFAULT_FILTERS);
   const [showGraphPicker, setShowGraphPicker] = useState(false);
 
@@ -197,7 +200,7 @@ export function TaskGraph() {
   }
 
   return (
-    <div className="h-full flex flex-col" style={{ backgroundColor: 'var(--color-bg)' }}>
+    <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--color-bg)' }}>
       {/* Header bar */}
       <div
         className="flex items-center gap-3 px-4 py-2 border-b shrink-0"
@@ -331,7 +334,7 @@ export function TaskGraph() {
       </div>
 
       {/* View content */}
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 overflow-hidden">
         {view === 'board' ? (
           <TaskKanban
             resourceId={resourceId!}

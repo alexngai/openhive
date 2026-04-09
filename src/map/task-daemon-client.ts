@@ -355,7 +355,6 @@ export async function daemonGetGraph(
 ): Promise<{ nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] }> {
   return withDaemon(socketPath, async (client) => {
     const nodesResult = await client.query({ nodes: { archived: false }, limit: 5000, verbose: true });
-    const edgesResult = await client.query({ edges: {}, limit: 10000 });
 
     const nodes = (nodesResult.items as unknown as Record<string, unknown>[]).map((n) => ({
       id: n.id,
@@ -373,10 +372,14 @@ export async function daemonGetGraph(
       updated_at: n.updated_at ?? n.updatedAt,
     }));
 
-    const edges = (edgesResult.items as EdgeSummary[]).map((e) => ({
+    const edgesResult = await client.query({ edges: {}, limit: 10000 });
+    // Strip any resource-prefixed IDs (e.g. "res_xxx:t-4iwf" → "t-4iwf")
+    // that may have been stored by the multi-graph UI
+    const stripPrefix = (id: string) => id.includes(':') ? id.split(':').pop()! : id;
+    const edges = ((edgesResult.items as EdgeSummary[]) ?? []).map((e) => ({
       id: e.id,
-      from_id: e.fromId,
-      to_id: e.toId,
+      from_id: stripPrefix(e.fromId),
+      to_id: stripPrefix(e.toId),
       type: e.type,
     }));
 

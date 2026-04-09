@@ -56,10 +56,11 @@ export function CreateContextForm({ resourceId, onCreated }: Props) {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="btn-ghost text-xs flex items-center gap-1.5 px-2 py-1"
+        className="text-xs flex items-center gap-1.5 px-2 py-1 rounded-md border cursor-pointer hover:bg-white/5 transition-colors"
+        style={{ borderColor: 'var(--color-border)' }}
       >
         <FileText className="w-3 h-3" />
-        New Context
+        Context
       </button>
 
       <Dialog open={open} onClose={() => setOpen(false)} maxWidth="max-w-md">
