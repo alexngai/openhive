@@ -15,8 +15,9 @@ import {
   AlertTriangle, ChevronDown, ChevronRight,
 } from 'lucide-react';
 import clsx from 'clsx';
-import type { SessionEvent, SessionContentBlock } from '../../lib/api';
+import type { SessionEvent, SessionContentBlock, AgentIdentity } from '../../lib/api';
 import { TimeAgo } from '../common/TimeAgo';
+import { AgentAvatar } from '../common/AgentAvatar';
 import { MarkdownContent } from './MarkdownContent';
 
 // Lazy import JsonView to avoid bundling it when not expanded
@@ -157,7 +158,7 @@ export function ToolCallBlock({ block }: { block: SessionContentBlock }) {
 
 // ── EventBubble ─────────────────────────────────────────────────────────────
 
-export function EventBubble({ event }: { event: SessionEvent }) {
+export function EventBubble({ event, agentIdentity }: { event: SessionEvent; agentIdentity?: AgentIdentity }) {
   const [expanded, setExpanded] = useState(false);
 
   if (event.type === 'token_usage') {
@@ -205,15 +206,19 @@ export function EventBubble({ event }: { event: SessionEvent }) {
     const toolCalls = event.content?.filter((b) => b.type === 'tool_call') ?? [];
     return (
       <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)' }}
-        >
-          <Bot className="w-3 h-3 text-honey-500" />
-        </div>
+        {agentIdentity ? (
+          <AgentAvatar src={agentIdentity.avatarUrl} name={agentIdentity.name} size={24} className="mt-0.5" />
+        ) : (
+          <div
+            className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
+            style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)' }}
+          >
+            <Bot className="w-3 h-3 text-honey-500" />
+          </div>
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-2xs font-medium text-honey-500">Assistant</span>
+            <span className="text-2xs font-medium text-honey-500">{agentIdentity?.name || 'Assistant'}</span>
             {event.timestamp && (
               <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
                 <TimeAgo date={event.timestamp} />

@@ -1,19 +1,20 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import {
-  Activity, AlertTriangle, ArrowDown, ArrowLeft, Bot, Brain, ChevronDown, ChevronRight,
+  Activity, AlertTriangle, ArrowDown, Bot, Brain, ChevronDown, ChevronRight,
   Clock, Code, Cpu, FileText, GitBranch, GitCommit, Hash,
   MessageSquare, Terminal, User, Wrench,
 } from 'lucide-react';
-import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents } from '../hooks/useApi';
+import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants } from '../hooks/useApi';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
+import { AgentAvatar } from '../components/common/AgentAvatar';
 import {
   formatTokens, extractText, truncate,
 } from '../components/sessions/EventBubble';
 import { MarkdownContent } from '../components/sessions/MarkdownContent';
-import type { TrajectoryCheckpoint, SessionEvent, SessionContentBlock } from '../lib/api';
+import type { TrajectoryCheckpoint, SessionEvent, SessionContentBlock, AgentIdentity } from '../lib/api';
 import clsx from 'clsx';
 
 // ============================================================================
@@ -335,7 +336,7 @@ function getEventAuthor(event: SessionEvent): string | null {
   }
 }
 
-function EventBubble({ event, showHeader = true }: { event: SessionEvent; showHeader?: boolean }) {
+function EventBubble({ event, showHeader = true, agentIdentity }: { event: SessionEvent; showHeader?: boolean; agentIdentity?: AgentIdentity }) {
   const [expanded, setExpanded] = useState(false);
 
   // Left padding to align content when avatar is hidden
@@ -417,15 +418,19 @@ function EventBubble({ event, showHeader = true }: { event: SessionEvent; showHe
     }
     return (
       <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)' }}
-        >
-          <Bot className="w-3 h-3 text-honey-500" />
-        </div>
+        {agentIdentity ? (
+          <AgentAvatar src={agentIdentity.avatarUrl} name={agentIdentity.name} size={24} className="mt-0.5" />
+        ) : (
+          <div
+            className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
+            style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)' }}
+          >
+            <Bot className="w-3 h-3 text-honey-500" />
+          </div>
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-2xs font-medium text-honey-500">Assistant</span>
+            <span className="text-2xs font-medium text-honey-500">{agentIdentity?.name || 'Assistant'}</span>
             {event.timestamp && (
               <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
                 <TimeAgo date={event.timestamp} />
@@ -670,7 +675,7 @@ function ToolCallGroupBlock({ events }: { events: SessionEvent[] }) {
   );
 }
 
-function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string; hasTrajectorySupport: boolean }) {
+function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity }: { sessionId: string; hasTrajectorySupport: boolean; agentIdentity?: AgentIdentity }) {
   const {
     data,
     isLoading,
@@ -682,7 +687,6 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string;
   } = useSessionEvents(sessionId, { enabled: hasTrajectorySupport });
 
   const bottomRef = useRef<HTMLDivElement>(null);
-  const sentinelRef = useRef<HTMLDivElement>(null);
   const hasScrolledRef = useRef(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
 
@@ -709,32 +713,11 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string;
   useEffect(() => {
     if (events.length > 0 && !hasScrolledRef.current) {
       hasScrolledRef.current = true;
-      // Small delay to let DOM render
       requestAnimationFrame(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'instant' });
       });
     }
   }, [events.length]);
-
-  // Intersection observer: auto-fetch older events when sentinel is visible
-  const sentinelCallbackRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      sentinelRef.current = node;
-      if (!node) return;
-
-      const observer = new IntersectionObserver(
-        (entries) => {
-          if (entries[0]?.isIntersecting && hasNextPage && !isFetchingNextPage) {
-            fetchNextPage();
-          }
-        },
-        { rootMargin: '200px 0px 0px 0px' },
-      );
-      observer.observe(node);
-      return () => observer.disconnect();
-    },
-    [hasNextPage, isFetchingNextPage, fetchNextPage],
-  );
 
   if (!hasTrajectorySupport) {
     return (
@@ -878,31 +861,37 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string;
         )}
       </div>
 
-      {/* Sentinel for upward infinite scroll */}
-      <div ref={sentinelCallbackRef}>
-        {isFetchingNextPage && (
-          <div className="flex items-center justify-center py-3">
-            <LoadingSpinner />
-            <span className="ml-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-              Loading older events…
-            </span>
-          </div>
-        )}
-        {hasNextPage && !isFetchingNextPage && (
-          <div className="text-center py-2">
-            <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-              Showing {events.length} of {total} events — scroll up for more
-            </span>
-          </div>
-        )}
-        {!hasNextPage && total > events.length && (
-          <div className="text-center py-2">
-            <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-              All {total} events loaded
-            </span>
-          </div>
-        )}
-      </div>
+      {/* Load more button for older events */}
+      {isFetchingNextPage && (
+        <div className="flex items-center justify-center py-3">
+          <LoadingSpinner />
+          <span className="ml-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+            Loading older events…
+          </span>
+        </div>
+      )}
+      {hasNextPage && !isFetchingNextPage && (
+        <div className="text-center py-2">
+          <button
+            onClick={() => fetchNextPage()}
+            className="text-2xs px-3 py-1 rounded transition-colors"
+            style={{
+              color: 'var(--color-accent)',
+              backgroundColor: 'var(--color-elevated)',
+              border: '1px solid var(--color-border)',
+            }}
+          >
+            Load older events ({events.length} of {total})
+          </button>
+        </div>
+      )}
+      {!hasNextPage && total > events.length && (
+        <div className="text-center py-2">
+          <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+            All {total} events loaded
+          </span>
+        </div>
+      )}
 
       <div className="space-y-3">
         {(() => {
@@ -945,13 +934,13 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string;
             const author = getEventAuthor(event);
             // System events (token_usage, error) don't reset author grouping
             if (author === null) {
-              return <EventBubble key={event.id} event={event} />;
+              return <EventBubble key={event.id} event={event} agentIdentity={agentIdentity} />;
             }
             const showHeader = author !== lastAuthor;
             lastAuthor = author;
             return (
               <div key={event.id} className={showHeader ? '' : '-mt-1.5'}>
-                <EventBubble event={event} showHeader={showHeader} />
+                <EventBubble event={event} showHeader={showHeader} agentIdentity={agentIdentity} />
               </div>
             );
           });
@@ -990,17 +979,30 @@ export function SessionDetail() {
   const { data: resource, isLoading: resourceLoading } = useResource(id!);
   const { data: checkpointsData, isLoading: checkpointsLoading } = useSessionCheckpoints(id!);
   const { data: stats } = useSessionStats(id!);
+  const { data: participantsData } = useSessionParticipants(id!);
   useSessionsRealtime();
+
+  // Derive assistant agent identity for the trajectory view.
+  // Uses the session resource name (e.g. "openhive-3 (agents)") for boring-avatar
+  // hashing — this is unique per session and gives each one a distinct avatar.
+  // The checkpoint agent field is generic ("default-sidecar") so we don't use it.
+  const assistantAgent: AgentIdentity | undefined = (() => {
+    if (resource) {
+      return {
+        id: resource.owner?.id || resource.owner_agent_id || '',
+        name: resource.name,
+        avatarUrl: null, // always use boring-avatar, not account avatar
+      };
+    }
+    return undefined;
+  })();
 
   if (resourceLoading) return <PageLoader />;
 
   if (!resource) {
     return (
-      <div className="max-w-4xl mx-auto px-4 py-12 text-center">
+      <div className="px-4 py-12 text-center">
         <p style={{ color: 'var(--color-text-muted)' }}>Session not found.</p>
-        <Link to="/sessions" className="text-honey-500 text-sm mt-2 inline-block">
-          Back to Sessions
-        </Link>
       </div>
     );
   }
@@ -1015,17 +1017,7 @@ export function SessionDetail() {
   const hasTrajectorySupport = total > 0;
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6">
-      {/* Back link */}
-      <Link
-        to="/sessions"
-        className="inline-flex items-center gap-1 text-xs mb-4 hover:text-honey-500 transition-colors"
-        style={{ color: 'var(--color-text-muted)' }}
-      >
-        <ArrowLeft className="w-3 h-3" />
-        Sessions
-      </Link>
-
+    <div className="max-w-4xl mx-auto px-4 py-4">
       {/* Sticky header: session detail + stats + tabs */}
       <div
         className="sticky top-0 z-10 -mx-4 px-4 pb-0 pt-2"
@@ -1128,7 +1120,7 @@ export function SessionDetail() {
         <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
       )}
       {tab === 'trajectory' && (
-        <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} />
+        <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} />
       )}
       {tab === 'learning' && (
         <SessionLearningTab sessionId={id!} />

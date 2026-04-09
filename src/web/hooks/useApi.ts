@@ -1701,6 +1701,32 @@ export function useSessionsList(options?: {
   });
 }
 
+export function useSessionsInfinite(options?: {
+  limit?: number;
+  search?: string;
+}) {
+  const { limit = 30, search } = options || {};
+
+  return useInfiniteQuery({
+    queryKey: ["sessions-overview-infinite", { limit, search }],
+    queryFn: ({ pageParam = 0 }) => {
+      const params = new URLSearchParams();
+      params.set("limit", String(limit));
+      params.set("offset", String(pageParam));
+      if (search) params.set("search", search);
+      return api.get<{ data: SessionListItem[]; total: number }>(
+        `/sessions/overview?${params.toString()}`,
+      );
+    },
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((n, p) => n + p.data.length, 0);
+      return loaded < lastPage.total ? loaded : undefined;
+    },
+    initialPageParam: 0,
+    staleTime: 30_000,
+  });
+}
+
 export function useSessionCheckpoints(
   id: string,
   options?: { limit?: number },
@@ -1722,6 +1748,26 @@ export function useSessionStats(id: string) {
     queryKey: ["session-stats", id],
     queryFn: () => api.get<SessionStats>(`/sessions/${id}/trajectory-stats`),
     enabled: !!id,
+  });
+}
+
+export function useSessionParticipants(id: string) {
+  return useQuery({
+    queryKey: ["session-participants", id],
+    queryFn: () =>
+      api.get<{
+        participants: Array<{
+          id: string;
+          session_resource_id: string;
+          agent_id: string;
+          role: string;
+          joined_at: string;
+          agent_name: string;
+          agent_avatar_url: string | null;
+        }>;
+      }>(`/sessions/${id}/participants`),
+    enabled: !!id,
+    staleTime: 5 * 60 * 1000,
   });
 }
 

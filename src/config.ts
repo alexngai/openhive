@@ -94,7 +94,7 @@ export const ConfigSchema = z.object({
 
   rateLimit: z
     .object({
-      enabled: z.boolean().default(true),
+      enabled: z.boolean().default(false),
       max: z
         .number()
         .default(process.env.NODE_ENV === "production" ? 100 : 1000),
@@ -746,7 +746,7 @@ export function generateSampleConfig(): string {
       createOnStartup: true,
     },
     rateLimit: {
-      enabled: true,
+      enabled: false,
       max: process.env.NODE_ENV === "production" ? 100 : 1000,
       timeWindow: "1 minute",
     },

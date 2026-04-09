@@ -20,7 +20,6 @@ const Swarms = lazy(() => import('./pages/Swarms').then(m => ({ default: m.Swarm
 const SwarmDetail = lazy(() => import('./pages/SwarmDetail').then(m => ({ default: m.SwarmDetail })));
 const Terminal = lazy(() => import('./pages/Terminal').then(m => ({ default: m.Terminal })));
 const Sessions = lazy(() => import('./pages/Sessions').then(m => ({ default: m.Sessions })));
-const SessionDetail = lazy(() => import('./pages/SessionDetail').then(m => ({ default: m.SessionDetail })));
 const Events = lazy(() => import('./pages/Events').then(m => ({ default: m.Events })));
 const TasksList = lazy(() => import('./pages/Tasks').then(m => ({ default: m.TaskGraphList })));
 const TaskGraph = lazy(() => import('./pages/TaskGraph').then(m => ({ default: m.TaskGraph })));
@@ -63,7 +62,7 @@ export default function App() {
               <Route path="swarms" element={<Swarms />} />
               <Route path="swarms/:id" element={<SwarmDetail />} />
               <Route path="sessions" element={<Sessions />} />
-              <Route path="sessions/:id" element={<SessionDetail />} />
+              <Route path="sessions/:id" element={<Sessions />} />
               <Route path="events" element={<Events />} />
               <Route path="terminal/:swarmId" element={<Terminal />} />
               <Route path="messages" element={<Messages />} />
