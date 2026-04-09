@@ -17,6 +17,7 @@ import {
 import clsx from 'clsx';
 import type { SessionEvent, SessionContentBlock } from '../../lib/api';
 import { TimeAgo } from '../common/TimeAgo';
+import { MarkdownContent } from './MarkdownContent';
 
 // Lazy import JsonView to avoid bundling it when not expanded
 let JsonView: any = null;
@@ -192,7 +193,7 @@ export function EventBubble({ event }: { event: SessionEvent }) {
             className="text-sm rounded-lg px-3 py-2 max-w-[85%]"
             style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text)' }}
           >
-            <p className="whitespace-pre-wrap break-words">{text || '(empty)'}</p>
+            {text ? <MarkdownContent>{text}</MarkdownContent> : <p>(empty)</p>}
           </div>
         </div>
       </div>
@@ -226,7 +227,7 @@ export function EventBubble({ event }: { event: SessionEvent }) {
           </div>
           {text && (
             <div className="text-sm max-w-[85%]" style={{ color: 'var(--color-text-secondary)' }}>
-              <p className="whitespace-pre-wrap break-words">{text}</p>
+              <MarkdownContent>{text}</MarkdownContent>
             </div>
           )}
           {toolCalls.length > 0 && (
@@ -268,7 +269,7 @@ export function EventBubble({ event }: { event: SessionEvent }) {
                 color: 'var(--color-text-secondary)',
               }}
             >
-              <p className="whitespace-pre-wrap break-words">{event.thinking}</p>
+              <MarkdownContent className="text-xs">{event.thinking}</MarkdownContent>
             </div>
           )}
         </div>
