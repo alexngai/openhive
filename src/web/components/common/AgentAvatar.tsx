@@ -12,17 +12,22 @@ interface AgentAvatarProps {
   name: string;
   src?: string | null;
   size?: number;
+  borderColor?: string;
   className?: string;
 }
 
-export function AgentAvatar({ name, src, size = 24, className = '' }: AgentAvatarProps) {
+export function AgentAvatar({ name, src, size = 24, borderColor, className = '' }: AgentAvatarProps) {
+  const borderStyle = borderColor
+    ? { border: `2px solid ${borderColor}`, borderRadius: '9999px' }
+    : undefined;
+
   if (src) {
     return (
       <img
         src={src}
         alt={name}
         className={`rounded-full object-cover shrink-0 ${className}`}
-        style={{ width: size, height: size }}
+        style={{ width: size, height: size, ...borderStyle }}
       />
     );
   }
@@ -30,8 +35,11 @@ export function AgentAvatar({ name, src, size = 24, className = '' }: AgentAvata
   const palette = generateAgentPalette(name);
 
   return (
-    <div className={`shrink-0 ${className}`} style={{ width: size, height: size }}>
-      <BoringAvatar size={size} name={name} variant="beam" colors={palette} />
+    <div
+      className={`shrink-0 rounded-full overflow-hidden ${className}`}
+      style={{ width: size, height: size, ...borderStyle }}
+    >
+      <BoringAvatar size={borderColor ? size - 4 : size} name={name} variant="beam" colors={palette} />
     </div>
   );
 }

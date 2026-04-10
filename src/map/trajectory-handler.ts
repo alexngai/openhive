@@ -221,16 +221,20 @@ function resolveSessionResource(
 ): { resourceId: string; created: boolean } {
   const { swarmId, agentId } = context;
 
-  // 1. Explicit resource_id
+  // 1. Explicit resource_id — but verify session_id matches if provided.
+  //    The sidecar caches resource_id, but the sessionlog may switch to a
+  //    different session between checkpoints. If session_id doesn't match,
+  //    fall through to resolution.
   if (params.resource_id) {
     const existing = findResourceById(params.resource_id);
-    if (!existing) {
-      throw new TrajectoryRequestError(-32602, `Resource not found: ${params.resource_id}`);
+    if (existing && existing.resource_type === 'session') {
+      const sessionId = checkpoint.session_id as string | undefined;
+      const existingSessionId = (existing.metadata as Record<string, unknown>)?.sessionId as string | undefined;
+      if (!sessionId || !existingSessionId || sessionId === existingSessionId) {
+        return { resourceId: params.resource_id, created: false };
+      }
+      // session_id mismatch — fall through to resolve the correct resource
     }
-    if (existing.resource_type !== 'session') {
-      throw new TrajectoryRequestError(-32602, `Resource ${params.resource_id} is not a session`);
-    }
-    return { resourceId: params.resource_id, created: false };
   }
 
   // Extract context from checkpoint metadata for display
@@ -240,6 +244,7 @@ function resolveSessionResource(
   const firstPrompt = meta?.firstPrompt as string | undefined;
   const template = meta?.template as string | undefined;
   const projectPath = meta?.projectPath as string | undefined;
+  const sessionId = checkpoint.session_id as string | undefined;
 
   // Build a human-readable session name and description
   const sessionName = `session:${swarmId}`;
@@ -250,8 +255,8 @@ function resolveSessionResource(
     ? firstPrompt.slice(0, 200)
     : `Trajectory session for ${(checkpoint.agent as string) || swarmId}`;
 
-  // 2. Look up by swarm (via git_remote_url pattern)
-  const existing = findSessionResourceBySwarm(agentId, swarmId);
+  // 2. Look up by swarm + session_id (via git_remote_url pattern)
+  const existing = findSessionResourceBySwarm(agentId, swarmId, sessionId);
   if (existing) {
     // Update name/description with latest context (first prompt, branch may arrive after creation)
     const existingMeta = (existing.metadata as Record<string, unknown>) || {};
@@ -279,14 +284,20 @@ function resolveSessionResource(
   }
 
   // 3. Auto-create with enriched context
+  //    Use session_id as the canonical key — the same session may be reported by
+  //    different swarms (sessionlog sync picks up the most recently active session
+  //    on the machine, regardless of which sidecar is reporting).
+  const remoteUrl = sessionId
+    ? `map://session/${sessionId}`
+    : `map://trajectory/${swarmId}`;
   const { resource, created } = upsertDiscoveredResource({
     resource_type: 'session',
     name: displayName,
     description,
-    git_remote_url: `map://trajectory/${swarmId}`,
+    git_remote_url: remoteUrl,
     owner_agent_id: agentId,
     scope: 'manual',
-    metadata: { project, branch, template, projectPath, firstPrompt: firstPrompt?.slice(0, 200) },
+    metadata: { project, branch, template, projectPath, sessionId, firstPrompt: firstPrompt?.slice(0, 200) },
   });
 
   return { resourceId: resource.id, created };

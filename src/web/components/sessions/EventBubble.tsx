@@ -110,25 +110,23 @@ export function ToolCallBlock({ block }: { block: SessionContentBlock }) {
     <div>
       <div
         className={clsx(
-          'text-2xs px-2 py-1 rounded flex items-center gap-1.5',
-          isExpandable && 'cursor-pointer',
+          'text-2xs px-2 py-1 rounded flex items-center gap-1.5 transition-colors',
+          isExpandable && 'cursor-pointer hover:bg-white/10',
         )}
         style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
         onClick={isExpandable ? () => setExpanded(!expanded) : undefined}
       >
+        {isExpandable && (
+          expanded ? <ChevronDown className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+        )}
         <Wrench className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
         <span className="font-mono">{tc.toolName}</span>
-        {tc.status && (
+        {tc.status && tc.status !== 'completed' && (
           <span className={clsx(
             'text-2xs px-1 rounded',
-            tc.status === 'completed' ? 'text-emerald-400' : tc.status === 'failed' ? 'text-red-400' : ''
+            tc.status === 'failed' ? 'text-red-400' : 'text-yellow-400'
           )}>
             {tc.status}
-          </span>
-        )}
-        {isExpandable && (
-          <span className="ml-auto">
-            {expanded ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
           </span>
         )}
       </div>
@@ -176,14 +174,14 @@ export function EventBubble({ event, agentIdentity }: { event: SessionEvent; age
     return (
       <div className="flex gap-2.5 items-start">
         <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: 'var(--color-elevated)' }}
+          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5 text-honey-500"
+          style={{ backgroundColor: 'var(--color-accent-bg, rgba(245, 158, 11, 0.1))' }}
         >
-          <User className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+          <User className="w-3 h-3" />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>User</span>
+            <span className="text-2xs font-medium text-honey-500">User</span>
             {event.timestamp && (
               <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
                 <TimeAgo date={event.timestamp} />
@@ -192,7 +190,7 @@ export function EventBubble({ event, agentIdentity }: { event: SessionEvent; age
           </div>
           <div
             className="text-sm rounded-lg px-3 py-2 max-w-[85%]"
-            style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text)' }}
+            style={{ backgroundColor: 'var(--color-accent-bg, rgba(245, 158, 11, 0.08))', color: 'var(--color-text)' }}
           >
             {text ? <MarkdownContent>{text}</MarkdownContent> : <p>(empty)</p>}
           </div>
@@ -293,11 +291,13 @@ export function EventBubble({ event, agentIdentity }: { event: SessionEvent; age
         </div>
         <div className="flex-1 min-w-0">
           <button
-            className="flex items-center gap-1.5 cursor-pointer"
+            className="flex items-center gap-1.5 cursor-pointer px-2 py-1 rounded transition-colors hover:bg-white/10"
+            style={{ backgroundColor: 'var(--color-elevated)' }}
             onClick={() => setExpanded(!expanded)}
           >
+            {expanded ? <ChevronDown className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />}
+            <Terminal className="w-3 h-3 shrink-0 text-blue-400" />
             <span className="text-2xs font-mono text-blue-400">{event.toolName}</span>
-            {expanded ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
           </button>
           {expanded && event.input && (
             <div
@@ -329,9 +329,17 @@ export function EventBubble({ event, agentIdentity }: { event: SessionEvent; age
         </div>
         <div className="flex-1 min-w-0">
           <button
-            className="flex items-center gap-1.5 cursor-pointer"
+            className="flex items-center gap-1.5 cursor-pointer px-2 py-1 rounded transition-colors hover:bg-white/10"
+            style={{ backgroundColor: 'var(--color-elevated)' }}
             onClick={() => setExpanded(!expanded)}
           >
+            {resultText && (
+              expanded ? <ChevronDown className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+            )}
+            {event.isError
+              ? <AlertTriangle className="w-3 h-3 shrink-0 text-red-400" />
+              : <Code className="w-3 h-3 shrink-0 text-emerald-400" />
+            }
             <span className={clsx('text-2xs font-medium', event.isError ? 'text-red-400' : 'text-emerald-400')}>
               {event.isError ? 'Error' : 'Result'}
             </span>
@@ -339,9 +347,6 @@ export function EventBubble({ event, agentIdentity }: { event: SessionEvent; age
               <span className="text-2xs truncate max-w-[200px]" style={{ color: 'var(--color-text-muted)' }}>
                 {truncate(resultText, 60)}
               </span>
-            )}
-            {resultText && (
-              expanded ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
             )}
           </button>
           {expanded && resultText && (

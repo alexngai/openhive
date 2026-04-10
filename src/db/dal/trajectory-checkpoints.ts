@@ -68,6 +68,7 @@ export interface SessionListItem {
   latest_agent: string | null;
   last_synced_at: string | null;
   source_swarm_id: string | null;
+  source_swarm_ids: string[];
 }
 
 // ============================================================================
@@ -233,10 +234,14 @@ export function listAllSessions(limit = 50, offset = 0, swarmId?: string, search
   `).all(...filterParams, limit, offset) as Record<string, unknown>[];
 
   const data: SessionListItem[] = rows.map((row) => {
-    // Get latest agent and token totals for each session
+    // Get latest agent, source swarm, and all distinct swarm IDs for each session
     const latestCheckpoint = db.prepare(
       'SELECT agent, source_swarm_id FROM trajectory_checkpoints WHERE session_resource_id = ? ORDER BY synced_at DESC LIMIT 1'
     ).get(row.id as string) as { agent: string; source_swarm_id: string | null } | undefined;
+
+    const swarmIdRows = db.prepare(
+      'SELECT DISTINCT source_swarm_id FROM trajectory_checkpoints WHERE session_resource_id = ? AND source_swarm_id IS NOT NULL'
+    ).all(row.id as string) as Array<{ source_swarm_id: string }>;
 
     const tokenRows = db.prepare(
       'SELECT token_usage FROM trajectory_checkpoints WHERE session_resource_id = ?'
@@ -268,6 +273,7 @@ export function listAllSessions(limit = 50, offset = 0, swarmId?: string, search
       latest_agent: latestCheckpoint?.agent ?? null,
       last_synced_at: (row.last_synced_at as string) ?? null,
       source_swarm_id: latestCheckpoint?.source_swarm_id ?? null,
+      source_swarm_ids: swarmIdRows.map((r) => r.source_swarm_id),
     };
   });
 
@@ -305,3 +311,4 @@ function safeParseJSON<T>(value: string | null, fallback: T): T {
     return fallback;
   }
 }
+

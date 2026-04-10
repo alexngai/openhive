@@ -101,6 +101,7 @@ const makeSession = (overrides: Record<string, unknown> = {}) => ({
   latest_agent: 'claude',
   last_synced_at: new Date().toISOString(),
   source_swarm_id: 'swarm-1',
+  source_swarm_ids: ['swarm-1'],
   ...overrides,
 });
 

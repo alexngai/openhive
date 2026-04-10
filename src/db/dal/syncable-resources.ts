@@ -80,11 +80,18 @@ export function createResource(input: CreateResourceInput): SyncableResource {
 export function upsertDiscoveredResource(input: CreateResourceInput): { resource: SyncableResource; created: boolean } {
   const db = getDatabase();
 
-  // Check if the resource already exists
-  const existing = db.prepare(`
-    SELECT id FROM syncable_resources
-    WHERE owner_agent_id = ? AND resource_type = ? AND name = ?
-  `).get(input.owner_agent_id, input.resource_type, input.name) as { id: string } | undefined;
+  // Check if the resource already exists.
+  // For sessions, match on git_remote_url (unique per session) to avoid collapsing
+  // multiple sessions with the same display name (e.g., same project/branch).
+  const existing = input.resource_type === 'session' && input.git_remote_url
+    ? db.prepare(`
+        SELECT id FROM syncable_resources
+        WHERE owner_agent_id = ? AND resource_type = ? AND git_remote_url = ?
+      `).get(input.owner_agent_id, input.resource_type, input.git_remote_url) as { id: string } | undefined
+    : db.prepare(`
+        SELECT id FROM syncable_resources
+        WHERE owner_agent_id = ? AND resource_type = ? AND name = ?
+      `).get(input.owner_agent_id, input.resource_type, input.name) as { id: string } | undefined;
 
   if (existing) {
     // Update the existing resource
@@ -114,12 +121,26 @@ export function upsertDiscoveredResource(input: CreateResourceInput): { resource
  * Looks up by git_remote_url pattern (map://trajectory/{swarmId}) which
  * stays stable even when the display name is updated with project context.
  */
-export function findSessionResourceBySwarm(ownerAgentId: string, swarmId: string): SyncableResource | null {
+export function findSessionResourceBySwarm(ownerAgentId: string, swarmId: string, sessionId?: string): SyncableResource | null {
   const db = getDatabase();
-  const remoteUrl = `map://trajectory/${swarmId}`;
+
+  if (sessionId) {
+    // Look up by session_id — the canonical URL is map://session/{sessionId}
+    // This is swarm-independent: the same session_id always maps to the same resource
+    const sessionUrl = `map://session/${sessionId}`;
+    const row = db.prepare(
+      "SELECT * FROM syncable_resources WHERE owner_agent_id = ? AND resource_type = 'session' AND git_remote_url = ?"
+    ).get(ownerAgentId, sessionUrl) as Record<string, unknown> | undefined;
+    if (row) return rowToResource(row);
+    // Don't fall back to legacy URL — a new session_id means a new session
+    return null;
+  }
+
+  // Legacy swarm-level URL (without session_id) for older agents
+  const legacyUrl = `map://trajectory/${swarmId}`;
   const row = db.prepare(
     "SELECT * FROM syncable_resources WHERE owner_agent_id = ? AND resource_type = 'session' AND git_remote_url = ?"
-  ).get(ownerAgentId, remoteUrl) as Record<string, unknown> | undefined;
+  ).get(ownerAgentId, legacyUrl) as Record<string, unknown> | undefined;
   if (!row) return null;
   return rowToResource(row);
 }

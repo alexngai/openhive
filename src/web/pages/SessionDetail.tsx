@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import {
-  Activity, AlertTriangle, ArrowDown, Bot, Brain, ChevronDown, ChevronRight,
+  Activity, AlertTriangle, ArrowDown, ArrowLeft, Bot, Brain, ChevronDown, ChevronRight,
   Clock, Code, Cpu, FileText, GitBranch, GitCommit, Hash,
   MessageSquare, Terminal, User, Wrench,
 } from 'lucide-react';
@@ -11,7 +11,7 @@ import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
 import { AgentAvatar } from '../components/common/AgentAvatar';
 import {
-  formatTokens, extractText, truncate,
+  formatTokens, extractText, truncate, ToolCallBlock,
 } from '../components/sessions/EventBubble';
 import { MarkdownContent } from '../components/sessions/MarkdownContent';
 import type { TrajectoryCheckpoint, SessionEvent, SessionContentBlock, AgentIdentity } from '../lib/api';
@@ -237,93 +237,6 @@ const jsonViewTheme = {
   nullColor: '#9ca3af',
 };
 
-function OutputBlock({ output, status }: { output: string; status?: string }) {
-  // Try to parse as JSON for structured rendering
-  let parsed: unknown = null;
-  try {
-    const trimmed = output.trim();
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-      parsed = JSON.parse(trimmed);
-    }
-  } catch {
-    // Not JSON — render as text
-  }
-
-  const borderClass = status === 'failed' ? 'border-red-400/30' : 'border-emerald-400/30';
-
-  if (parsed) {
-    return (
-      <div
-        className={clsx('text-2xs rounded px-2 py-1.5 overflow-x-auto border-l-2', borderClass)}
-        style={{ backgroundColor: 'var(--color-elevated)' }}
-      >
-        <JsonView src={parsed} collapsed={2} theme="a11y" dark collapseStringsAfterLength={120} style={{ fontSize: '10px', backgroundColor: 'transparent' }} />
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={clsx('text-2xs rounded px-2 py-1.5 overflow-x-auto font-mono border-l-2 whitespace-pre-wrap break-words', borderClass)}
-      style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
-    >
-      {truncate(output, 2000)}
-    </div>
-  );
-}
-
-function ToolCallBlock({ block }: { block: SessionContentBlock }) {
-  const [expanded, setExpanded] = useState(false);
-  const tc = block as SessionContentBlock & { toolCallId?: string; toolName?: string; status?: string; output?: string; input?: Record<string, unknown> };
-  const hasOutput = !!tc.output;
-  const hasInput = tc.input && Object.keys(tc.input).length > 0;
-  const isExpandable = hasOutput || hasInput;
-
-  return (
-    <div>
-      <div
-        className={clsx(
-          'text-2xs px-2 py-1 rounded flex items-center gap-1.5',
-          isExpandable && 'cursor-pointer',
-        )}
-        style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
-        onClick={isExpandable ? () => setExpanded(!expanded) : undefined}
-      >
-        <Wrench className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
-        <span className="font-mono">{tc.toolName}</span>
-        {tc.status && (
-          <span className={clsx(
-            'text-2xs px-1 rounded',
-            tc.status === 'completed' ? 'text-emerald-400' : tc.status === 'failed' ? 'text-red-400' : ''
-          )}>
-            {tc.status}
-          </span>
-        )}
-        {isExpandable && (
-          <span className="ml-auto">
-            {expanded ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
-          </span>
-        )}
-      </div>
-      {expanded && (
-        <div className="mt-1 space-y-1">
-          {hasInput && (
-            <div
-              className="text-2xs rounded px-2 py-1.5 overflow-x-auto"
-              style={{ backgroundColor: 'var(--color-elevated)' }}
-            >
-              <JsonView src={tc.input} collapsed={2} theme="a11y" dark collapseStringsAfterLength={120} style={{ fontSize: '10px', backgroundColor: 'transparent' }} />
-            </div>
-          )}
-          {hasOutput && (
-            <OutputBlock output={tc.output!} status={tc.status} />
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 /** Determine the "author" for grouping consecutive events. */
 function getEventAuthor(event: SessionEvent): string | null {
   switch (event.type) {
@@ -336,7 +249,38 @@ function getEventAuthor(event: SessionEvent): string | null {
   }
 }
 
-function EventBubble({ event, showHeader = true, agentIdentity }: { event: SessionEvent; showHeader?: boolean; agentIdentity?: AgentIdentity }) {
+/** Inline badges for non-noise custom events. Common system events are hidden. */
+const HIDDEN_CUSTOM_EVENTS = new Set(['system', 'file-history-snapshot', 'login', 'init']);
+
+function CustomEventBadges({ events }: { events?: SessionEvent[] }) {
+  if (!events || events.length === 0) return null;
+
+  const typeCounts = new Map<string, number>();
+  for (const e of events) {
+    const label = (e.eventType || e.type).replace(/^claude_/, '');
+    if (HIDDEN_CUSTOM_EVENTS.has(label)) continue;
+    const count = (e.data as Record<string, unknown>)?.count as number | undefined;
+    typeCounts.set(label, (typeCounts.get(label) || 0) + (count && count > 1 ? count : 1));
+  }
+
+  if (typeCounts.size === 0) return null;
+
+  return (
+    <>
+      {Array.from(typeCounts.entries()).map(([label, count]) => (
+        <span
+          key={label}
+          className="text-2xs px-1.5 py-0.5 rounded"
+          style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
+        >
+          {label}{count > 1 ? ` ×${count}` : ''}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function EventBubble({ event, showHeader = true, agentIdentity, customEvents }: { event: SessionEvent; showHeader?: boolean; agentIdentity?: AgentIdentity; customEvents?: SessionEvent[] }) {
   const [expanded, setExpanded] = useState(false);
 
   // Left padding to align content when avatar is hidden
@@ -359,7 +303,7 @@ function EventBubble({ event, showHeader = true, agentIdentity }: { event: Sessi
         <div className={continuationPl}>
           <div
             className="text-sm rounded-lg px-3 py-2 max-w-[85%]"
-            style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text)' }}
+            style={{ backgroundColor: 'var(--color-accent-bg, rgba(245, 158, 11, 0.08))', color: 'var(--color-text)' }}
           >
             {text ? <MarkdownContent>{text}</MarkdownContent> : <p>(empty)</p>}
           </div>
@@ -369,23 +313,24 @@ function EventBubble({ event, showHeader = true, agentIdentity }: { event: Sessi
     return (
       <div className="flex gap-2.5 items-start">
         <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: 'var(--color-elevated)' }}
+          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5 text-honey-500"
+          style={{ backgroundColor: 'var(--color-accent-bg, rgba(245, 158, 11, 0.1))' }}
         >
-          <User className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+          <User className="w-3 h-3" />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>User</span>
+          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+            <span className="text-2xs font-medium text-honey-500">User</span>
             {event.timestamp && (
               <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
                 <TimeAgo date={event.timestamp} />
               </span>
             )}
+            <CustomEventBadges events={customEvents} />
           </div>
           <div
             className="text-sm rounded-lg px-3 py-2 max-w-[85%]"
-            style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text)' }}
+            style={{ backgroundColor: 'var(--color-accent-bg, rgba(245, 158, 11, 0.08))', color: 'var(--color-text)' }}
           >
             {text ? <MarkdownContent>{text}</MarkdownContent> : <p>(empty)</p>}
           </div>
@@ -429,7 +374,7 @@ function EventBubble({ event, showHeader = true, agentIdentity }: { event: Sessi
           </div>
         )}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
+          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
             <span className="text-2xs font-medium text-honey-500">{agentIdentity?.name || 'Assistant'}</span>
             {event.timestamp && (
               <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
@@ -441,6 +386,7 @@ function EventBubble({ event, showHeader = true, agentIdentity }: { event: Sessi
                 {event.stopReason}
               </span>
             )}
+            <CustomEventBadges events={customEvents} />
           </div>
           {content}
         </div>
@@ -619,7 +565,7 @@ function isToolUseOnlyMessage(event: SessionEvent): boolean {
 }
 
 /** Collapsible group for consecutive tool-use assistant messages. */
-function ToolCallGroupBlock({ events }: { events: SessionEvent[] }) {
+function ToolCallGroupBlock({ events, customEvents }: { events: SessionEvent[]; customEvents?: SessionEvent[] }) {
   const [expanded, setExpanded] = useState(false);
 
   // Collect all tool_call content blocks from assistant_message events,
@@ -658,6 +604,7 @@ function ToolCallGroupBlock({ events }: { events: SessionEvent[] }) {
               {name}
             </span>
           ))}
+          <CustomEventBadges events={customEvents} />
         </span>
         {expanded
           ? <ChevronDown className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
@@ -768,17 +715,15 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity }: { ses
   // Events come newest-first from API; reverse for chronological display
   const chronologicalEvents = [...events].reverse();
 
-  // Group consecutive tool-use runs into collapsible groups,
-  // and consecutive custom events into badge rows.
-  // A "tool run" is a sequence of tool-use-only assistant_messages, assistant_thinking,
-  // standalone tool_call/tool_result events, and custom events (which are noise between tool calls).
+  // Group consecutive tool-use runs into collapsible groups.
+  // Custom events are collected and attached to the next non-custom display item
+  // so they render inline in the header rather than as separate rows.
   type ToolGroup = { _toolGroup: true; events: SessionEvent[] };
-  type CustomGroup = { _customGroup: true; events: SessionEvent[] };
-  type DisplayItem = SessionEvent | ToolGroup | CustomGroup;
+  type DisplayItem = (SessionEvent | ToolGroup) & { _customEvents?: SessionEvent[] };
   const displayEvents: DisplayItem[] = [];
 
   let toolRun: SessionEvent[] = [];
-  let customRun: SessionEvent[] = [];
+  let pendingCustom: SessionEvent[] = [];
 
   const isToolRunEvent = (e: SessionEvent) =>
     isToolUseOnlyMessage(e) ||
@@ -799,47 +744,49 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity }: { ses
     return count;
   };
 
+  const attachPending = (item: DisplayItem) => {
+    if (pendingCustom.length > 0) {
+      item._customEvents = pendingCustom;
+      pendingCustom = [];
+    }
+    displayEvents.push(item);
+  };
+
   const flushToolRun = () => {
     if (toolRun.length === 0) return;
     if (countToolCalls(toolRun) > 1) {
-      displayEvents.push({ _toolGroup: true, events: toolRun });
+      attachPending({ _toolGroup: true, events: toolRun } as ToolGroup & { _customEvents?: SessionEvent[] });
     } else {
-      // Not enough tool calls to group — push events individually
       for (const e of toolRun) {
         if (e.type === 'custom') {
-          customRun.push(e);
+          pendingCustom.push(e);
         } else {
-          flushCustomRun();
-          displayEvents.push(e);
+          attachPending(e);
         }
       }
     }
     toolRun = [];
   };
-  const flushCustomRun = () => {
-    if (customRun.length === 0) return;
-    displayEvents.push({ _customGroup: true, events: customRun });
-    customRun = [];
-  };
 
   for (const event of chronologicalEvents) {
     if (toolRun.length > 0 && isToolRunEvent(event)) {
-      // Continue an existing tool run
       toolRun.push(event);
     } else if (isToolUseOnlyMessage(event) || event.type === 'tool_call') {
-      // Start a new tool run
-      flushCustomRun();
       toolRun.push(event);
     } else if (event.type === 'custom') {
-      customRun.push(event);
+      pendingCustom.push(event);
     } else {
       flushToolRun();
-      flushCustomRun();
-      displayEvents.push(event);
+      attachPending(event);
     }
   }
   flushToolRun();
-  flushCustomRun();
+  // Any trailing custom events attach to last item
+  if (pendingCustom.length > 0 && displayEvents.length > 0) {
+    const last = displayEvents[displayEvents.length - 1];
+    last._customEvents = [...(last._customEvents || []), ...pendingCustom];
+    pendingCustom = [];
+  }
 
   return (
     <div>
@@ -905,42 +852,22 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity }: { ses
               lastAuthor = 'assistant';
               return (
                 <div key={`tg-${i}`} className={showHeader ? '' : '-mt-1.5'}>
-                  <ToolCallGroupBlock events={item.events} />
+                  <ToolCallGroupBlock events={item.events} customEvents={item._customEvents} />
                 </div>
               );
             }
 
-            // Custom event badge rows — don't reset author continuity
-            if ('_customGroup' in item) {
-              return (
-                <div key={`cg-${i}`} className="flex flex-wrap gap-1 py-0.5">
-                  {item.events.map((event) => {
-                    const count = (event.data as Record<string, unknown>)?.count as number | undefined;
-                    return (
-                      <span
-                        key={event.id}
-                        className="text-2xs px-2 py-0.5 rounded-full"
-                        style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
-                      >
-                        {event.eventType || event.type}{count && count > 1 ? ` (${count})` : ''}
-                      </span>
-                    );
-                  })}
-                </div>
-              );
-            }
-
-            const event = item;
+            const event = item as SessionEvent & { _customEvents?: SessionEvent[] };
             const author = getEventAuthor(event);
             // System events (token_usage, error) don't reset author grouping
             if (author === null) {
-              return <EventBubble key={event.id} event={event} agentIdentity={agentIdentity} />;
+              return <EventBubble key={event.id} event={event} agentIdentity={agentIdentity} customEvents={event._customEvents} />;
             }
             const showHeader = author !== lastAuthor;
             lastAuthor = author;
             return (
               <div key={event.id} className={showHeader ? '' : '-mt-1.5'}>
-                <EventBubble event={event} showHeader={showHeader} agentIdentity={agentIdentity} />
+                <EventBubble event={event} showHeader={showHeader} agentIdentity={agentIdentity} customEvents={event._customEvents} />
               </div>
             );
           });
@@ -1017,40 +944,28 @@ export function SessionDetail() {
   const hasTrajectorySupport = total > 0;
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-4">
-      {/* Sticky header: session detail + stats + tabs */}
+    <>
+      {/* Full-width sticky header */}
       <div
-        className="sticky top-0 z-10 -mx-4 px-4 pb-0 pt-2"
-        style={{ backgroundColor: 'var(--color-bg)' }}
+        className="sticky top-0 z-10 py-2 px-6 border-b"
+        style={{ backgroundColor: 'var(--color-bg)', borderColor: 'var(--color-border-subtle)' }}
       >
-        {/* Header with inline stats */}
-        <div className="card px-4 py-2.5 mb-3">
-          <div className="flex items-center gap-3">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <h1 className="text-sm font-bold truncate">{resource.name}</h1>
-                <span className="text-2xs px-1.5 py-0.5 rounded bg-honey-500/10 text-honey-500">
-                  session
-                </span>
-              </div>
-              {resource.description && (
-                <p className="text-2xs mt-0.5 truncate" style={{ color: 'var(--color-text-secondary)' }}>
-                  {resource.description}
-                </p>
-              )}
+        <div className="flex items-center gap-3 mb-2">
+          {assistantAgent && (
+            <AgentAvatar name={assistantAgent.name} src={assistantAgent.avatarUrl} size={32} />
+          )}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm font-bold truncate">{resource.name}</h1>
+              <span className="text-2xs px-1.5 py-0.5 rounded bg-honey-500/10 text-honey-500">
+                session
+              </span>
             </div>
             {stats && (
-              <div className="flex items-center gap-3 shrink-0" style={{ color: 'var(--color-text-muted)' }}>
+              <div className="flex items-center gap-2.5 mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
                 <span className="flex items-center gap-1 text-2xs">
-                  <GitCommit className="w-3 h-3" />
-                  {stats.total_checkpoints}
-                </span>
-                <span className="flex items-center gap-1 text-2xs" title="Input tokens">
                   <Cpu className="w-3 h-3" />
-                  {formatTokens(stats.total_input_tokens)} in
-                </span>
-                <span className="flex items-center gap-1 text-2xs" title="Output tokens">
-                  {formatTokens(stats.total_output_tokens)} out
+                  {formatTokens(stats.total_input_tokens)} / {formatTokens(stats.total_output_tokens)}
                 </span>
                 <span className="flex items-center gap-1 text-2xs" title="Files modified">
                   <FileText className="w-3 h-3" />
@@ -1059,73 +974,52 @@ export function SessionDetail() {
               </div>
             )}
           </div>
-        </div>
+          {/* Inline tab group */}
+          <div
+            className="flex items-center rounded-md p-0.5 shrink-0"
+            style={{ backgroundColor: 'var(--color-elevated)' }}
+          >
+            {([
+              { key: 'trajectory', icon: MessageSquare, label: 'Trajectory' },
+              { key: 'checkpoints', icon: GitCommit, label: 'Checkpoints' },
+              { key: 'learning', icon: Brain, label: 'Learning' },
+            ] as const).map(({ key, icon: Icon, label }) => (
+              <button
+                key={key}
+                className={clsx(
+                  'flex items-center gap-1 px-2 py-1 rounded text-2xs font-medium transition-colors cursor-pointer',
+                  tab === key
+                    ? 'bg-honey-500/15 text-honey-500'
+                    : 'hover:text-honey-500/70'
+                )}
+                style={tab !== key ? { color: 'var(--color-text-muted)' } : undefined}
+                onClick={() => setTab(key)}
+              >
+                <Icon className="w-3 h-3" />
+                {label}
+                {key === 'checkpoints' && total > 0 && (
+                  <span className="opacity-70">{total}</span>
+                )}
+              </button>
+            ))}
+          </div>
 
-        {/* Tabs */}
-        <div
-          className="flex items-center gap-1 mb-4 border-b"
-          style={{ borderColor: 'var(--color-border-subtle)' }}
-        >
-        <button
-          className={clsx(
-            'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
-            tab === 'trajectory'
-              ? 'border-honey-500 text-honey-500'
-              : 'border-transparent'
-          )}
-          style={tab !== 'trajectory' ? { color: 'var(--color-text-muted)' } : undefined}
-          onClick={() => setTab('trajectory')}
-        >
-          <span className="flex items-center gap-1.5">
-            <MessageSquare className="w-3.5 h-3.5" />
-            Trajectory
-          </span>
-        </button>
-        <button
-          className={clsx(
-            'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
-            tab === 'checkpoints'
-              ? 'border-honey-500 text-honey-500'
-              : 'border-transparent'
-          )}
-          style={tab !== 'checkpoints' ? { color: 'var(--color-text-muted)' } : undefined}
-          onClick={() => setTab('checkpoints')}
-        >
-          <span className="flex items-center gap-1.5">
-            <GitCommit className="w-3.5 h-3.5" />
-            Checkpoints
-            {total > 0 && <span className="text-2xs opacity-70">({total})</span>}
-          </span>
-        </button>
-        <button
-          className={clsx(
-            'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
-            tab === 'learning'
-              ? 'border-honey-500 text-honey-500'
-              : 'border-transparent'
-          )}
-          style={tab !== 'learning' ? { color: 'var(--color-text-muted)' } : undefined}
-          onClick={() => setTab('learning')}
-        >
-          <span className="flex items-center gap-1.5">
-            <Brain className="w-3.5 h-3.5" />
-            Learning
-          </span>
-        </button>
         </div>
       </div>
 
       {/* Tab content */}
-      {tab === 'checkpoints' && (
-        <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
-      )}
-      {tab === 'trajectory' && (
-        <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} />
-      )}
-      {tab === 'learning' && (
-        <SessionLearningTab sessionId={id!} />
-      )}
-    </div>
+      <div className="max-w-4xl mx-auto px-4 py-4">
+        {tab === 'checkpoints' && (
+          <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
+        )}
+        {tab === 'trajectory' && (
+          <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} />
+        )}
+        {tab === 'learning' && (
+          <SessionLearningTab sessionId={id!} />
+        )}
+      </div>
+    </>
   );
 }
 

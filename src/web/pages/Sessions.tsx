@@ -5,6 +5,7 @@ import { useSessionsList, useSessionsInfinite, useMapSwarms } from '../hooks/use
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { LoadingSpinner, PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
+import { AgentAvatar } from '../components/common/AgentAvatar';
 import { SessionDetail } from './SessionDetail';
 import type { SessionListItem, MapSwarm } from '../lib/api';
 
@@ -25,11 +26,18 @@ function getSessionStatus(
   session: SessionListItem,
   swarmStatusMap: Map<string, MapSwarm['status']>,
 ): SessionStatus {
-  if (session.source_swarm_id) {
-    const swarmStatus = swarmStatusMap.get(session.source_swarm_id);
-    if (swarmStatus === 'online') return 'online';
-    if (swarmStatus === 'unreachable') return 'recent';
+  // Check all contributing swarms, not just the latest
+  const swarmIds = session.source_swarm_ids?.length
+    ? session.source_swarm_ids
+    : session.source_swarm_id ? [session.source_swarm_id] : [];
+
+  let hasUnreachable = false;
+  for (const swarmId of swarmIds) {
+    const status = swarmStatusMap.get(swarmId);
+    if (status === 'online') return 'online';
+    if (status === 'unreachable') hasUnreachable = true;
   }
+  if (hasUnreachable) return 'recent';
 
   // Check recency fallback
   if (session.last_synced_at) {
@@ -44,6 +52,12 @@ const STATUS_COLORS: Record<SessionStatus, string> = {
   online: 'bg-emerald-400',
   recent: 'bg-amber-400',
   stale: 'bg-gray-500',
+};
+
+const STATUS_BORDER_COLORS: Record<SessionStatus, string> = {
+  online: '#34d399',
+  recent: '#fbbf24',
+  stale: 'transparent',
 };
 
 // ============================================================================
@@ -69,19 +83,13 @@ function SidebarItem({
         backgroundColor: isSelected ? 'var(--color-elevated)' : undefined,
       }}
     >
-      <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_COLORS[status]}`} />
+      <AgentAvatar name={session.name} size={24} borderColor={STATUS_BORDER_COLORS[status]} />
       <div className="flex-1 min-w-0">
         <p className="text-xs font-medium truncate" style={{
           color: isSelected ? 'var(--color-text)' : 'var(--color-text-secondary)',
         }}>
           {session.name}
         </p>
-        {session.latest_agent && (
-          <p className="text-2xs truncate flex items-center gap-1 mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-            <User className="w-2.5 h-2.5" />
-            {session.latest_agent}
-          </p>
-        )}
       </div>
     </button>
   );
