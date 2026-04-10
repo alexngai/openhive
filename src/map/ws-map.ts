@@ -23,7 +23,7 @@ import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findN
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph } from './connection-registry.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities } from './connection-registry.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
 import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
@@ -517,18 +517,22 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
       const conn = getInbound(swarmId);
       if (conn) {
-        if (registeredAgent.capabilities) {
-          conn.capabilities = registeredAgent.capabilities;
-        }
-        // Track registered agent on this connection
+        // Track registered agent on this connection (with per-agent capabilities)
         const agentEntry = {
           id: registeredAgent.id || registeredAgent.name || 'unknown',
           name: registeredAgent.name || 'unknown',
           role: registeredAgent.role || 'agent',
           state: 'registered',
           scopes: registeredAgent.scopes || [],
+          capabilities: registeredAgent.capabilities || undefined,
         };
         conn.registeredAgents.set(agentEntry.id, agentEntry);
+
+        // Update connection-level capabilities (kept for backward compat;
+        // getMergedCapabilities() provides the union across all agents)
+        if (registeredAgent.capabilities) {
+          conn.capabilities = registeredAgent.capabilities;
+        }
 
         // Keep DB agent_count in sync with live registrations
         try { updateSwarm(swarmId, { agent_count: conn.registeredAgents.size }); } catch { /* non-critical */ }
@@ -551,9 +555,11 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         }
 
         try {
+          // Persist aggregate capabilities (union across all agents on this connection)
+          const aggCaps = getAggregateCapabilities(swarmId);
           updateSwarm(swarmId, {
             ...(displayName ? { name: displayName } : {}),
-            capabilities: registeredAgent.capabilities || undefined,
+            capabilities: aggCaps || registeredAgent.capabilities || undefined,
             metadata: meta,
           });
         } catch { /* non-critical */ }

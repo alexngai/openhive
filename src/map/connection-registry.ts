@@ -14,6 +14,8 @@ export interface RegisteredAgent {
   role: string;
   state: string;
   scopes: string[];
+  /** Capabilities declared by this specific agent during MAP registration. */
+  capabilities?: Record<string, unknown>;
 }
 
 export interface MapInboundConnection {
@@ -28,7 +30,7 @@ export interface MapInboundConnection {
   expiryNotified?: boolean;
   /** Agents registered on this connection (keyed by agent ID). */
   registeredAgents: Map<string, RegisteredAgent>;
-  /** Agent capabilities declared during MAP registration. */
+  /** Legacy: capabilities from the last agent to register. Prefer per-agent capabilities. */
   capabilities?: Record<string, unknown>;
   /** Default OpenTasks graph for this connection (set via metadata.task_graph on registration). */
   defaultTaskGraph?: { resource_id?: string; path?: string; location_hash?: string };
@@ -61,6 +63,109 @@ export function getInboundCount(): number {
   return inboundConnections.size;
 }
 
+/**
+ * Collect capabilities from all registered agents on a connection.
+ * Returns an array of per-agent capability sets (preserving attribution).
+ * Callers decide how to query: check a specific agent, or any-agent-has.
+ */
+export function getAgentCapabilities(swarmId: string): Array<{ agentId: string; role: string; capabilities: Record<string, unknown> }> {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn) return [];
+
+  const result: Array<{ agentId: string; role: string; capabilities: Record<string, unknown> }> = [];
+  for (const agent of conn.registeredAgents.values()) {
+    if (agent.capabilities) {
+      result.push({ agentId: agent.id, role: agent.role, capabilities: agent.capabilities });
+    }
+  }
+  return result;
+}
+
+/**
+ * Check if ANY agent on the connection declares a specific capability.
+ * Useful for gating operations that can be handled by any agent on the swarm.
+ *
+ * @param path — dot-separated capability path, e.g. 'mail.canJoin', 'trajectory.canServeContent'
+ */
+export function hasCapability(swarmId: string, path: string): boolean {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn) return false;
+
+  const parts = path.split('.');
+
+  // Check per-agent capabilities first
+  for (const agent of conn.registeredAgents.values()) {
+    if (agent.capabilities && checkPath(agent.capabilities, parts)) return true;
+  }
+
+  // Fall back to connection-level capabilities (legacy)
+  if (conn.capabilities && checkPath(conn.capabilities, parts)) return true;
+
+  return false;
+}
+
+function checkPath(obj: Record<string, unknown>, parts: string[]): boolean {
+  let current: unknown = obj;
+  for (const part of parts) {
+    if (!current || typeof current !== 'object') return false;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current === true;
+}
+
+/**
+ * Get the aggregate capabilities to persist to the database.
+ * Collects all per-agent capabilities into a single object for the swarm record.
+ * Uses union semantics: true wins for booleans, arrays are merged.
+ */
+export function getAggregateCapabilities(swarmId: string): Record<string, unknown> | undefined {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn) return undefined;
+
+  const sources: Array<Record<string, unknown>> = [];
+  for (const agent of conn.registeredAgents.values()) {
+    if (agent.capabilities) sources.push(agent.capabilities);
+  }
+
+  if (sources.length === 0) return conn.capabilities;
+  if (sources.length === 1) return sources[0];
+
+  return aggregateCapabilities(sources);
+}
+
+function aggregateCapabilities(sources: Array<Record<string, unknown>>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+
+  for (const source of sources) {
+    for (const [key, value] of Object.entries(source)) {
+      const existing = result[key];
+
+      if (key === 'protocols' && Array.isArray(value)) {
+        const merged = new Set([
+          ...(Array.isArray(existing) ? existing as string[] : []),
+          ...value as string[],
+        ]);
+        result[key] = [...merged];
+      } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const existingObj = (existing && typeof existing === 'object' && !Array.isArray(existing))
+          ? existing as Record<string, unknown>
+          : {};
+        const merged: Record<string, unknown> = { ...existingObj };
+        for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+          if (v === true || merged[k] === undefined) {
+            merged[k] = v;
+          }
+        }
+        result[key] = merged;
+      } else if (value === true || existing === undefined) {
+        result[key] = value;
+      }
+    }
+  }
+
+  return result;
+}
+
 export function setDefaultTaskGraph(swarmId: string, target: { resource_id?: string; path?: string; location_hash?: string }): void {
   const conn = inboundConnections.get(swarmId);
   if (conn) conn.defaultTaskGraph = target;
@@ -84,7 +189,8 @@ export interface ConnectionHealth {
   maxMissedPongs: number;
   tokenExpiresAt?: string;
   registeredAgentCount: number;
-  registeredAgents: Array<{ id: string; name: string; role: string; state: string }>;
+  registeredAgents: Array<{ id: string; name: string; role: string; state: string; capabilities?: Record<string, unknown> }>;
+  /** Aggregate capabilities across all registered agents (union). */
   capabilities?: Record<string, unknown>;
 }
 
@@ -106,9 +212,9 @@ export function getConnectionHealth(swarmId: string, maxMissedPongs: number): Co
     tokenExpiresAt: conn.tokenExpiresAt,
     registeredAgentCount: conn.registeredAgents.size,
     registeredAgents: Array.from(conn.registeredAgents.values()).map(a => ({
-      id: a.id, name: a.name, role: a.role, state: a.state,
+      id: a.id, name: a.name, role: a.role, state: a.state, capabilities: a.capabilities,
     })),
-    capabilities: conn.capabilities,
+    capabilities: getAggregateCapabilities(swarmId) ?? conn.capabilities,
   };
 }
 
