@@ -1443,4 +1443,61 @@ export async function resourceContentRoutes(
     await pushToRemote(localPath);
     return reply.send({ pushed: true });
   });
+
+  fastify.post<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/git-pull', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const { pullFromRemote } = await import('../../sync/git-content.js');
+    const result = await pullFromRemote(localPath);
+    return reply.send(result);
+  });
+
+  // Git log — recent commits
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { limit?: string };
+  }>('/resources/:id/content/opentasks/git-log', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const execFileAsync = promisify(execFile);
+    const limit = Math.min(parseInt(request.query.limit || '20', 10), 100);
+
+    try {
+      const { stdout } = await execFileAsync(
+        'git', ['log', `--max-count=${limit}`, '--format=%H|%an|%ae|%aI|%s'],
+        { cwd: localPath, timeout: 10_000 },
+      );
+      const commits = stdout.trim().split('\n').filter(Boolean).map((line) => {
+        const [hash, author, email, date, ...msgParts] = line.split('|');
+        return { hash, author, email, date, message: msgParts.join('|') };
+      });
+      return reply.send({ commits });
+    } catch {
+      return reply.send({ commits: [] });
+    }
+  });
+
+  // Git force fetch — hard reset to remote HEAD
+  fastify.post<{
+    Params: { id: string };
+  }>('/resources/:id/content/opentasks/git-force-fetch', { preHandler: authMiddleware }, async (request, reply) => {
+    const ctx = await resolveResourceAndPath(request, reply);
+    if (!ctx) return;
+    const { resource, localPath } = ctx;
+    if (!validateOpenTasksResource(resource, reply)) return;
+
+    const { fetchLatest } = await import('../../sync/git-content.js');
+    const result = await fetchLatest(localPath);
+    return reply.send(result);
+  });
 }

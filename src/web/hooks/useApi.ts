@@ -1431,18 +1431,27 @@ export function useRemoveTaskLink(resourceId: string) {
 
 // ── Git Sync for Task Resources ──
 
-export function useGitSyncStatus(resourceId: string, enabled: boolean) {
+export function useGitSyncStatus(resourceId: string, enabled: boolean, pollInterval?: number) {
   return useQuery({
     queryKey: ["git-sync-status", resourceId],
     queryFn: () =>
       api.get<{
         hasUncommittedChanges: boolean;
         unpushedCommits: number;
+        unpulledCommits: number;
         localHead: string | null;
         remoteHead: string | null;
+        uncommittedDetails?: {
+          added: number;
+          modified: number;
+          deleted: number;
+          linesAdded: number;
+          linesDeleted: number;
+        };
       }>(`/resources/${resourceId}/content/opentasks/git-status`),
     enabled,
     staleTime: 30_000,
+    refetchInterval: pollInterval,
   });
 }
 
@@ -1454,6 +1463,68 @@ export function useGitPush(resourceId: string) {
       api.post<{ pushed: boolean }>(`/resources/${resourceId}/content/opentasks/git-push`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["git-sync-status", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+    },
+  });
+}
+
+export function useGitPull(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ pulled: boolean; previousHead: string | null; newHead: string | null }>(
+        `/resources/${resourceId}/content/opentasks/git-pull`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["git-sync-status", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+    },
+  });
+}
+
+export function useGitLog(resourceId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["git-log", resourceId],
+    queryFn: () =>
+      api.get<{ commits: Array<{ hash: string; author: string; email: string; date: string; message: string }> }>(
+        `/resources/${resourceId}/content/opentasks/git-log?limit=20`,
+      ),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useGitForceFetch(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ previousHead: string | null; newHead: string; changed: boolean }>(
+        `/resources/${resourceId}/content/opentasks/git-force-fetch`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["git-sync-status", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["git-log", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-graph", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["opentasks-summary", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["admin-git-sync-status"] });
+    },
+  });
+}
+
+export function useUpdateResource(resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: Record<string, unknown>) =>
+      api.put<Record<string, unknown>>(`/resources/${resourceId}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["resource", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["resources"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-git-sync-status"] });
     },
   });
 }

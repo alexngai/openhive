@@ -8,9 +8,9 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
-import { ChevronDown, Network, LayoutGrid, Check, Settings } from 'lucide-react';
+import { ChevronDown, Network, LayoutGrid, Check, Settings, ArrowDownToLine, ArrowUpFromLine, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
-import { useResource, useResourcesByType } from '../hooks/useApi';
+import { useResource, useResourcesByType, useGitSyncStatus, useGitPull, useGitPush } from '../hooks/useApi';
 import { useQueries } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { useTaskGraph, buildGraphologyGraph, STATUS_COLORS } from '../components/task-graph/useTaskGraph';
@@ -91,6 +91,35 @@ export function TaskGraph() {
   const { data: resource, isLoading: resourceLoading } = useResource(resourceId || '');
   const { graph, isLoading: graphLoading, summary } = useTaskGraph(resourceId || '');
   useTasksRealtime();
+
+  // Git sync status for the primary resource
+  const isRemoteResource = resource && (
+    resource.sync_strategy === 'ls-remote' || resource.sync_strategy === 'mirror' ||
+    !!(resource.metadata as Record<string, unknown> | null)?.opentasks_config
+  );
+  const autoPullEnabled = (() => {
+    const meta = resource?.metadata as Record<string, unknown> | null;
+    const otConfig = meta?.opentasks_config as Record<string, unknown> | undefined;
+    const syncConfig = otConfig?.sync as Record<string, unknown> | undefined;
+    const gitConfig = syncConfig?.git as Record<string, unknown> | undefined;
+    return !!(gitConfig?.autoPull);
+  })();
+
+  // Poll every 30s when auto-pull is enabled, otherwise only on demand
+  const { data: gitStatus } = useGitSyncStatus(
+    resourceId || '', !!isRemoteResource, autoPullEnabled ? 30_000 : undefined,
+  );
+  const gitPull = useGitPull(resourceId || '');
+  const gitPush = useGitPush(resourceId || '');
+  const hasUnpulled = gitStatus && gitStatus.unpulledCommits > 0;
+  const hasUnpushed = gitStatus && (gitStatus.unpushedCommits > 0 || gitStatus.hasUncommittedChanges);
+
+  // Auto-pull: trigger pull when unpulled commits detected
+  useEffect(() => {
+    if (autoPullEnabled && hasUnpulled && !gitPull.isPending) {
+      gitPull.mutate();
+    }
+  }, [autoPullEnabled, hasUnpulled, gitPull.isPending]);
 
   // Fetch graph data for ALL selected resources using useQueries (hook-safe)
   const graphQueryResults = useQueries({
@@ -326,6 +355,51 @@ export function TaskGraph() {
             ))}
             <TaskFilterBar filters={filters} onChange={setFilters} />
             <CreateTaskForm resourceId={resourceId!} />
+
+            {/* Git sync controls */}
+            {isRemoteResource && (
+              <div className="flex items-center gap-1 ml-1">
+                {hasUnpulled && (
+                  <button
+                    onClick={() => gitPull.mutate()}
+                    disabled={gitPull.isPending}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-medium transition-colors hover:bg-blue-500/15"
+                    style={{ color: '#60a5fa', backgroundColor: 'rgba(59, 130, 246, 0.08)' }}
+                    title={`${gitStatus!.unpulledCommits} commit${gitStatus!.unpulledCommits > 1 ? 's' : ''} to pull`}
+                  >
+                    {gitPull.isPending ? (
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <ArrowDownToLine className="w-3 h-3" />
+                    )}
+                    Pull {gitStatus!.unpulledCommits}
+                  </button>
+                )}
+                {hasUnpushed && (
+                  <button
+                    onClick={() => gitPush.mutate()}
+                    disabled={gitPush.isPending}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-medium transition-colors hover:bg-amber-500/15"
+                    style={{ color: '#fbbf24', backgroundColor: 'rgba(245, 158, 11, 0.08)' }}
+                    title={`${gitStatus!.unpushedCommits} commit${gitStatus!.unpushedCommits > 1 ? 's' : ''} to push`}
+                  >
+                    {gitPush.isPending ? (
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <ArrowUpFromLine className="w-3 h-3" />
+                    )}
+                    Push
+                  </button>
+                )}
+                {!hasUnpulled && !hasUnpushed && gitStatus && (
+                  <span className="text-2xs flex items-center gap-1" style={{ color: 'var(--color-text-muted)' }}>
+                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    Synced
+                  </span>
+                )}
+              </div>
+            )}
+
             <Link
               to="/tasks/list"
               className="btn btn-ghost p-1.5"

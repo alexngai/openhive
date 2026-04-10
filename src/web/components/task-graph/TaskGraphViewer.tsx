@@ -111,7 +111,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const supervisorRef = useRef<FA2LayoutSupervisor | null>(null);
-  const physicsRanForNodesRef = useRef<string | null>(null);
+  // physicsRanForNodesRef removed — physics always runs on mount
   const graphRef = useRef<Graph | null>(null);
   const onNodeSelectRef = useRef(onNodeSelect);
   onNodeSelectRef.current = onNodeSelect;
@@ -756,19 +756,11 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     });
     supervisorRef.current = supervisor;
 
-    // Only run physics when the node set changes (new graph or added/removed nodes).
-    // Skip on data-only refreshes (status changes, edge additions) to avoid jitter.
-    const nodeFingerprint = graph.nodes().sort().join(',');
-    const needsLayout = physicsRanForNodesRef.current !== nodeFingerprint;
-    physicsRanForNodesRef.current = nodeFingerprint;
-
-    let settleTimer: ReturnType<typeof setTimeout> | null = null;
-    if (needsLayout) {
-      supervisor.start();
-      settleTimer = setTimeout(() => {
-        supervisor.stop();
-      }, 2000);
-    }
+    // Always run physics on mount, stop after settling
+    supervisor.start();
+    const settleTimer = setTimeout(() => {
+      supervisor.stop();
+    }, 2000);
 
     return () => {
       if (settleTimer) clearTimeout(settleTimer);

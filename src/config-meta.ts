@@ -55,6 +55,7 @@ export const CONFIG_SECTIONS: SectionMeta[] = [
   { key: 'resourceStorage', label: 'Resource Storage', description: 'Cloned resource data storage', group: 'storage' },
 
   // Resources
+  { key: 'autoPull', label: 'Auto-Pull', description: 'Automatic pulling of remote git-backed resources', group: 'resources' },
   { key: 'resourceDiscovery', label: 'Resource Discovery', description: 'Filesystem scanning for memory banks and skills', group: 'resources' },
   { key: 'resourceSync', label: 'Resource Sync', description: 'Sync strategies for remote resources', group: 'resources' },
 ];
@@ -267,6 +268,9 @@ export const FIELD_META: Record<string, FieldMeta> = {
   'resourceDiscovery.openTasksEnabled': { label: 'OpenTasks Enabled' },
 
   // Resource Sync
+  // Auto-Pull
+  'autoPull.intervalMinutes': { label: 'Poll Interval (minutes)', description: 'How often to check remote repos for new commits', restartRequired: true },
+
   'resourceSync.defaultStrategy': { label: 'Default Strategy' },
   'resourceSync.localDiscoveryStrategy': { label: 'Local Discovery Strategy' },
   'resourceSync.lsRemoteTtl': { label: 'ls-remote TTL (seconds)' },

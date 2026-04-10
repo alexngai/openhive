@@ -90,6 +90,7 @@ function AddTaskRepoDialog({
   const [gitSyncEnabled, setGitSyncEnabled] = useState(false);
   const [autoCommit, setAutoCommit] = useState(true);
   const [autoPush, setAutoPush] = useState(false);
+  const [autoPull, setAutoPull] = useState(false);
 
   // Check if the entered path/URL already has a task resource
   const isDuplicate = path.trim() !== '' && existingPaths.has(path.trim());
@@ -129,6 +130,7 @@ function AddTaskRepoDialog({
             enabled: true,
             autoCommit,
             autoPush,
+            autoPull,
             pullOnStartup: true,
           },
         },
@@ -311,6 +313,16 @@ function AddTaskRepoDialog({
                       {!autoPush && (
                         <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
                           Changes are committed locally. Push manually when ready.
+                        </p>
+                      )}
+                      <ToggleSwitch
+                        checked={autoPull}
+                        onChange={setAutoPull}
+                        label="Auto-pull from remote"
+                      />
+                      {autoPull && (
+                        <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+                          Automatically pulls remote changes when detected.
                         </p>
                       )}
                     </div>
@@ -569,7 +581,7 @@ function TaskGraphSettingsDialog({
       const updatedConfig = {
         ...otConfig,
         sync: gitSyncEnabled
-          ? { git: { enabled: true, autoCommit, autoPush, pullOnStartup: true } }
+          ? { git: { enabled: true, autoCommit, autoPush, autoPull, pullOnStartup: true } }
           : undefined,
       };
       data.metadata = { ...meta, opentasks_config: updatedConfig };
@@ -654,6 +666,7 @@ function TaskGraphSettingsDialog({
                       Changes are committed locally. Push manually when ready.
                     </p>
                   )}
+                  <ToggleSwitch checked={autoPull} onChange={setAutoPull} label="Auto-pull from remote" />
                 </div>
               )}
             </div>
