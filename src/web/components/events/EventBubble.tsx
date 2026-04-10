@@ -205,11 +205,15 @@ export function EventBubble({ event, showHeader = true, agentIdentity, customEve
   if (event.type === 'assistant_message') {
     const text = extractText(event.content);
     const toolCalls = event.content?.filter((b) => b.type === 'tool_call') ?? [];
+    const isStreaming = (event as any)._isStreaming === true;
     const content = (
       <>
         {text && (
           <div className="text-sm max-w-[85%]" style={{ color: 'var(--color-text-secondary)' }}>
             <MarkdownContent>{text}</MarkdownContent>
+            {isStreaming && (
+              <span className="inline-block w-2 h-4 ml-0.5 bg-honey-500/60 animate-pulse rounded-sm" />
+            )}
           </div>
         )}
         {toolCalls.length > 0 && (

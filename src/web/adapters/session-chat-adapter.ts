@@ -43,11 +43,11 @@ function mailTurnToChat(turn: MailTurn): ChatMessage {
 
   let content = '';
   const mc = turn.content as MessageContent;
-  if (mc && 'text' in mc && mc.text) {
-    content = mc.text;
-  } else if (typeof mc === 'string') {
+  if (typeof mc === 'string') {
     content = mc;
-  } else {
+  } else if (mc && typeof mc === 'object' && 'text' in mc && mc.text) {
+    content = mc.text;
+  } else if (mc) {
     content = JSON.stringify(mc);
   }
 

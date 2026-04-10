@@ -9,6 +9,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Send, Square, MessageSquare, Mail, Zap, Loader2 } from 'lucide-react';
+import { Shield } from 'lucide-react';
 import type { ChatMode, ChatStatus } from 'swarmcraft/ui/embed';
 import type { SwarmChatCapabilities } from '../../hooks/useSessionChat';
 
@@ -19,6 +20,8 @@ export interface SessionChatInputProps {
   onCancel?: () => Promise<void>;
   /** Published capabilities from the swarm — used for unavailable state messaging */
   capabilities?: SwarmChatCapabilities;
+  /** ACP stream connection error (displayed as hint) */
+  streamError?: string | null;
 }
 
 const MODE_LABELS: Record<ChatMode, { label: string; icon: typeof MessageSquare }> = {
@@ -35,7 +38,7 @@ const MODE_HINTS: Record<ChatMode, string> = {
   unavailable: '',
 };
 
-export function SessionChatInput({ mode, status, onSend, onCancel, capabilities }: SessionChatInputProps) {
+export function SessionChatInput({ mode, status, onSend, onCancel, capabilities, streamError }: SessionChatInputProps) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -163,10 +166,12 @@ export function SessionChatInput({ mode, status, onSend, onCancel, capabilities 
             <ModeIcon className="w-2.5 h-2.5" />
             {modeInfo.label}
           </span>
-          <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-            {isStreaming ? 'Agent is responding...'
-              : status === 'connecting' ? 'Connecting...'
+          <span className="text-2xs" style={{ color: streamError ? 'var(--color-text-error, #ef4444)' : 'var(--color-text-muted)' }}>
+            {streamError ? `Error: ${streamError}`
+              : isStreaming ? 'Agent is responding...'
+              : status === 'connecting' ? 'Connecting to agent...'
               : status === 'detecting' ? 'Detecting channel...'
+              : status === 'error' ? 'Connection error — sending via mail fallback'
               : MODE_HINTS[mode]
             }
           </span>

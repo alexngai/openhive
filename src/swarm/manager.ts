@@ -221,11 +221,47 @@ export class SwarmManager {
       }
     }
 
+    // Pre-register swarm in MAP hub so we can pass a stable swarm_id
+    // to the spawned process. This ensures the sidecar connects with
+    // ?swarm_id= and identity is stable across reconnections.
+    let preRegisteredSwarmId: string | undefined;
+    try {
+      const endpoint = `ws://127.0.0.1:${port}`;
+      const staleSwarm = mapDal.findSwarmByEndpoint(endpoint);
+      if (staleSwarm) {
+        mapDal.deleteSwarm(staleSwarm.id);
+      }
+
+      const mapResult = registerSwarm(agentId, {
+        name,
+        description: input.description,
+        map_endpoint: endpoint,
+        map_transport: 'websocket',
+        capabilities: {
+          observation: true,
+          messaging: true,
+          lifecycle: true,
+        },
+        metadata: {
+          ...(input.metadata ?? {}),
+          hosted: true,
+          provider: providerType,
+        },
+        preauth_key: preauthKeyPlaintext,
+      });
+      preRegisteredSwarmId = mapResult.swarm.id;
+      console.log(`[swarm-manager] Pre-registered swarm with stable ID: ${preRegisteredSwarmId}`);
+    } catch (err) {
+      // Pre-registration is best-effort — sidecar will still auto-register
+      console.warn(`[swarm-manager] Pre-registration failed (sidecar will auto-register): ${(err as Error).message}`);
+    }
+
     const bootstrapToken: BootstrapToken = {
       version: 1,
       openhive_url: this.instanceUrl,
       preauth_key: preauthKeyPlaintext ?? '',
       swarm_name: name,
+      swarm_id: preRegisteredSwarmId,
       adapter,
       adapter_config: input.adapter_config,
       metadata: input.metadata,
@@ -307,34 +343,50 @@ export class SwarmManager {
         return dal.findHostedSwarmById(hosted.id)!;
       }
 
-      // Register in MAP hub (clear stale entry at same endpoint first)
+      // Update MAP hub registration with hosted_swarm_id metadata.
+      // The swarm was pre-registered before spawning (for stable identity).
+      // Now enrich it with the hosted swarm ID and mark as running.
       try {
-        const staleSwarm = mapDal.findSwarmByEndpoint(endpoint);
-        if (staleSwarm) {
-          mapDal.deleteSwarm(staleSwarm.id);
+        if (preRegisteredSwarmId) {
+          // Enrich the pre-registered swarm with hosted metadata
+          mapDal.updateSwarm(preRegisteredSwarmId, {
+            metadata: {
+              ...(input.metadata ?? {}),
+              hosted: true,
+              hosted_swarm_id: hosted.id,
+              provider: providerType,
+            },
+          });
+        } else {
+          // Fallback: pre-registration failed, register now
+          const staleSwarm = mapDal.findSwarmByEndpoint(endpoint);
+          if (staleSwarm) {
+            mapDal.deleteSwarm(staleSwarm.id);
+          }
+
+          const mapResult = registerSwarm(agentId, {
+            name,
+            description: input.description,
+            map_endpoint: endpoint,
+            map_transport: 'websocket',
+            capabilities: {
+              observation: true,
+              messaging: true,
+              lifecycle: true,
+            },
+            metadata: {
+              ...(input.metadata ?? {}),
+              hosted: true,
+              hosted_swarm_id: hosted.id,
+              provider: providerType,
+            },
+            preauth_key: preauthKeyPlaintext,
+          });
+          preRegisteredSwarmId = mapResult.swarm.id;
         }
 
-        const mapResult = registerSwarm(agentId, {
-          name,
-          description: input.description,
-          map_endpoint: endpoint,
-          map_transport: 'websocket',
-          capabilities: {
-            observation: true,
-            messaging: true,
-            lifecycle: true,
-          },
-          metadata: {
-            ...(input.metadata ?? {}),
-            hosted: true,
-            hosted_swarm_id: hosted.id,
-            provider: providerType,
-          },
-          preauth_key: preauthKeyPlaintext,
-        });
-
         dal.updateHostedSwarm(hosted.id, {
-          swarm_id: mapResult.swarm.id,
+          swarm_id: preRegisteredSwarmId,
           endpoint,
           state: 'running',
           error: null,

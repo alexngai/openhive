@@ -207,7 +207,7 @@ describe('SessionChatInput', () => {
   describe('connecting/detecting states', () => {
     it('shows connecting hint', () => {
       render(<SessionChatInput mode="mail" status="connecting" onSend={noop} />);
-      expect(screen.getByText('Connecting...')).toBeDefined();
+      expect(screen.getByText('Connecting to agent...')).toBeDefined();
     });
 
     it('shows detecting hint', () => {

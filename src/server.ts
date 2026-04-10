@@ -336,6 +336,26 @@ export async function createHive(
         pipelineService: sc.pipelineService,
       });
 
+      // Bridge ACP events from SwarmCraft WS (/ws/swarmcraft) to OpenHive WS (/ws).
+      // The frontend's useWebSocket hooks listen on /ws. ACP streaming events
+      // (acp.session.update, acp.prompt.completed, etc.) are broadcast on SwarmCraft's
+      // wsHub. We intercept broadcast() to forward acp.* events to OpenHive's system.
+      const { broadcastToChannel } = await import("./realtime/index.js");
+      const origBroadcast = sc.wsHub.broadcast.bind(sc.wsHub);
+      sc.wsHub.broadcast = (message: any, topic?: string) => {
+        // Forward to original SwarmCraft subscribers
+        origBroadcast(message, topic);
+
+        // Bridge acp.* events to OpenHive's WS
+        if (message?.type && typeof message.type === 'string' && message.type.startsWith('acp.')) {
+          broadcastToChannel('global', {
+            type: message.type,
+            data: message.payload ?? message.data ?? message,
+          });
+        }
+      };
+      console.log('[openhive] ACP event bridge active (SwarmCraft → OpenHive WS)');
+
       // Teardown bridge on server close
       fastify.addHook("onClose", () => {
         bridgeHandle.teardown();

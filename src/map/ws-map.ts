@@ -19,7 +19,7 @@ import { websocketStream } from '@multi-agent-protocol/sdk';
 import { findAgentById, findAgentByApiKey, findOrCreateSwarmHubAgent, getOrCreateLocalAgent } from '../db/dal/agents.js';
 import { validateIngestKey } from '../db/dal/ingest-keys.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
-import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findNodeBySwarmAndAgentId } from '../db/dal/map.js';
+import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findNodeBySwarmAndAgentId, findSwarmById } from '../db/dal/map.js';
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
@@ -115,6 +115,11 @@ async function authenticateToken(token: string): Promise<Agent | null> {
 
 function resolveSwarmOpen(agentId: string, agentName: string, swarmIdHint?: string): { swarmId: string; created: boolean } {
   if (swarmIdHint) {
+    // First try direct lookup by ID (covers pre-registered swarms owned by different agents)
+    const directMatch = findSwarmById(swarmIdHint);
+    if (directMatch) return { swarmId: directMatch.id, created: false };
+
+    // Fall back to owner-scoped search
     const { data: swarms } = listSwarms({ owner_agent_id: agentId, limit: 100 });
     const match = swarms.find((s) => s.id === swarmIdHint);
     if (match) return { swarmId: match.id, created: false };

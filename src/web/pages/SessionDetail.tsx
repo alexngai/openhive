@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   Activity, AlertTriangle, Brain, ChevronDown, ChevronRight,
@@ -234,7 +234,7 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
 
   // Chat integration — gated by published MAP capabilities
   const {
-    chatMode, chatStatus, sendMessage, cancelStream, capabilities,
+    chatMode, chatStatus, sendMessage, cancelStream, capabilities, streamingEvents, streamError,
   } = useSessionChat({ sessionId, sourceSwarmId, enabled: hasTrajectorySupport });
 
   if (!hasTrajectorySupport) {
@@ -264,8 +264,17 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
   }
 
   const pages = data?.pages ?? [];
-  const events = pages.flatMap((page) => page.events);
+  const trajectoryEvents = pages.flatMap((page) => page.events);
   const total = pages[0]?.total ?? 0;
+
+  // Merge ACP streaming events with trajectory events.
+  // Streaming events are already in SessionEvent format from useAcpStream.
+  // Prepend them (newest-first) so EventStream renders them after historical events.
+  const events = useMemo(() => {
+    if (streamingEvents.length === 0) return trajectoryEvents;
+    // Streaming events are in chronological order; reverse for newest-first
+    return [...[...streamingEvents].reverse(), ...trajectoryEvents];
+  }, [trajectoryEvents, streamingEvents]);
 
   return (
     <>
@@ -287,6 +296,7 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
         onSend={sendMessage}
         onCancel={cancelStream}
         capabilities={capabilities}
+        streamError={streamError}
       />
     </>
   );

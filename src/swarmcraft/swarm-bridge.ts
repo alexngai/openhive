@@ -253,6 +253,20 @@ async function connectMapClient(
 
   const mapUrl = deriveMapServerUrl(swarm.map_endpoint);
 
+  // Wait for the swarm's MAP server to be healthy before connecting.
+  // The sidecar connects inbound to the hub immediately on startup, but
+  // the swarm's own MAP server (port+2) may take a few seconds to start.
+  // Without this check, the MAPClientManager connection fails and the
+  // swarm gets a new identity on reconnection.
+  const healthUrl = deriveHealthUrl(swarm.map_endpoint);
+  if (healthUrl) {
+    const healthy = await waitForHealth(healthUrl, 15_000);
+    if (!healthy) {
+      console.warn(`[swarmcraft-bridge] MAP server health check failed for ${swarm.name} at ${healthUrl}, skipping connect`);
+      return;
+    }
+  }
+
   try {
     await mcm.connect({
       id: swarm.id,
@@ -266,4 +280,30 @@ async function connectMapClient(
   } catch (err) {
     console.warn(`[swarmcraft-bridge] MAP client connect to ${swarm.name} failed: ${(err as Error).message}`);
   }
+}
+
+/** Derive the health check URL from a swarm's MAP endpoint. */
+function deriveHealthUrl(baseEndpoint: string): string | null {
+  try {
+    const url = new URL(baseEndpoint);
+    const basePort = parseInt(url.port, 10);
+    if (!Number.isFinite(basePort)) return null;
+    // MAP server is at port+2, health endpoint is HTTP on the same port
+    return `http://${url.hostname}:${basePort + 2}/health`;
+  } catch {
+    return null;
+  }
+}
+
+/** Poll a health endpoint until it returns 200 or timeout. */
+async function waitForHealth(url: string, timeoutMs: number): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return true;
+    } catch { /* not ready yet */ }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
 }
