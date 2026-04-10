@@ -19,7 +19,7 @@ import { websocketStream } from '@multi-agent-protocol/sdk';
 import { findAgentById, findAgentByApiKey, findOrCreateSwarmHubAgent, getOrCreateLocalAgent } from '../db/dal/agents.js';
 import { validateIngestKey } from '../db/dal/ingest-keys.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
-import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm } from '../db/dal/map.js';
+import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findNodeBySwarmAndAgentId } from '../db/dal/map.js';
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
@@ -571,11 +571,56 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     };
     const unsubRegistered = mapServer.eventBus.on('agent.registered', onAgentRegistered);
 
+    // Listen for MAP agent state changes (e.g. active→idle on turn completion)
+    // and propagate to OpenHive's node DB + WebSocket channels.
+    // MAP SDK emits: { type: 'agent.state.changed', data: { agent, previousState }, source: { agentId, sessionId } }
+    const onAgentStateChanged = (event: any) => {
+      const agentData = event?.data?.agent;
+      const previousState = event?.data?.previousState;
+      if (!agentData?.id || !agentData?.state) return;
+
+      const newState = agentData.state;
+      const mapAgentId = agentData.id;
+
+      // Match this event to our connection — check if the agent is registered on this swarm
+      const conn = getInbound(swarmId);
+      if (!conn) return;
+      if (!conn.registeredAgents.has(mapAgentId)) return;
+
+      const agentEntry = conn.registeredAgents.get(mapAgentId);
+      if (agentEntry) {
+        agentEntry.state = newState;
+      }
+
+      // Update the MAP node in the DB if one exists
+      const node = findNodeBySwarmAndAgentId(swarmId, mapAgentId);
+      if (node && node.state !== newState) {
+        try { updateNode(node.id, { state: newState }); } catch { /* non-critical */ }
+      }
+
+      // Broadcast to WebSocket for frontend attention detection
+      const wsEvent = {
+        type: 'node_state_changed' as const,
+        data: {
+          node_id: node?.id || mapAgentId,
+          swarm_id: swarmId,
+          map_agent_id: mapAgentId,
+          old_state: previousState,
+          new_state: newState,
+          needs_attention: ['idle', 'stopped', 'failed'].includes(newState),
+        },
+      };
+      broadcastToChannel(`map:swarm:${swarmId}`, wsEvent);
+      broadcastToChannel('global', wsEvent);
+    };
+    const unsubStateChanged = mapServer.eventBus.on('agent.state.changed', onAgentStateChanged);
+
     console.log(`[ws-map] Swarm ${swarmId} connected inbound (agent: ${agent.name})`);
 
     // Cleanup on close (router.closed as backup — ws 'close' is primary)
     router.closed.then(() => {
       unsubRegistered();
+      unsubStateChanged();
       interceptor.cleanup();
       handleDisconnect();
     });

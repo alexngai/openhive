@@ -6,6 +6,7 @@ import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { LoadingSpinner, PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { AgentAvatar } from '../components/common/AgentAvatar';
+import { useSessionAttentionStore } from '../stores/session-attention';
 import { SessionDetail } from './SessionDetail';
 import type { SessionListItem, MapSwarm } from '../lib/api';
 
@@ -75,15 +76,28 @@ function SidebarItem({
   isSelected: boolean;
   onClick: () => void;
 }) {
+  const { hasAttention, clearAttention } = useSessionAttentionStore();
+  const needsAttention = hasAttention(session.id);
+
+  const handleClick = () => {
+    if (needsAttention) clearAttention(session.id);
+    onClick();
+  };
+
   return (
     <button
-      onClick={onClick}
+      onClick={handleClick}
       className="w-full text-left px-3 py-2 flex items-center gap-2.5 transition-colors cursor-pointer rounded-md"
       style={{
         backgroundColor: isSelected ? 'var(--color-elevated)' : undefined,
       }}
     >
-      <AgentAvatar name={session.name} size={24} borderColor={STATUS_BORDER_COLORS[status]} />
+      <div className="relative shrink-0">
+        <AgentAvatar name={session.name} size={24} borderColor={STATUS_BORDER_COLORS[status]} />
+        {needsAttention && (
+          <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse border border-[var(--color-bg)]" />
+        )}
+      </div>
       <div className="flex-1 min-w-0">
         <p className="text-xs font-medium truncate" style={{
           color: isSelected ? 'var(--color-text)' : 'var(--color-text-secondary)',

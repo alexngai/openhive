@@ -1,30 +1,23 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
-  Activity, AlertTriangle, ArrowDown, ArrowLeft, Bot, Brain, ChevronDown, ChevronRight,
-  Clock, Code, Cpu, FileText, GitBranch, GitCommit, Hash,
-  MessageSquare, Terminal, User, Wrench,
+  Activity, AlertTriangle, Brain, ChevronDown, ChevronRight,
+  Clock, Cpu, FileText, GitBranch, GitCommit, Hash,
+  MessageSquare, User,
 } from 'lucide-react';
 import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants } from '../hooks/useApi';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
-import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
+import { PageLoader } from '../components/common/LoadingSpinner';
 import { AgentAvatar } from '../components/common/AgentAvatar';
-import {
-  formatTokens, extractText, truncate, ToolCallBlock,
-} from '../components/sessions/EventBubble';
-import { MarkdownContent } from '../components/sessions/MarkdownContent';
-import type { TrajectoryCheckpoint, SessionEvent, SessionContentBlock, AgentIdentity } from '../lib/api';
+import { formatTokens } from '../components/events/event-utils';
+import { EventStream } from '../components/events/EventStream';
+import type { TrajectoryCheckpoint, AgentIdentity } from '../lib/api';
+import { useSessionAttentionStore } from '../stores/session-attention';
 import clsx from 'clsx';
 
 // ============================================================================
 // Helpers
-// ============================================================================
-
-// formatTokens, extractText, truncate imported from components/sessions/EventBubble
-
-// ============================================================================
-// Shared Components
 // ============================================================================
 
 type DetailTab = 'checkpoints' | 'trajectory' | 'learning';
@@ -218,409 +211,8 @@ function CheckpointsTab({ checkpoints, total, isLoading }: {
 }
 
 // ============================================================================
-// Trajectory Viewer
+// Trajectory Viewer (thin wrapper around EventStream)
 // ============================================================================
-
-// ============================================================================
-// JSON Viewer
-// ============================================================================
-
-import JsonView from 'react18-json-view';
-import 'react18-json-view/src/style.css';
-
-const jsonViewTheme = {
-  keyColor: '#c084fc',
-  indexColor: '#9ca3af',
-  numberColor: '#60a5fa',
-  stringColor: '#34d399',
-  booleanColor: '#fbbf24',
-  nullColor: '#9ca3af',
-};
-
-/** Determine the "author" for grouping consecutive events. */
-function getEventAuthor(event: SessionEvent): string | null {
-  switch (event.type) {
-    case 'user_message': return 'user';
-    case 'assistant_message':
-    case 'assistant_thinking':
-    case 'tool_call':
-    case 'tool_result': return 'assistant';
-    default: return null; // system-level events don't group
-  }
-}
-
-/** Inline badges for non-noise custom events. Common system events are hidden. */
-const HIDDEN_CUSTOM_EVENTS = new Set(['system', 'file-history-snapshot', 'login', 'init']);
-
-function CustomEventBadges({ events }: { events?: SessionEvent[] }) {
-  if (!events || events.length === 0) return null;
-
-  const typeCounts = new Map<string, number>();
-  for (const e of events) {
-    const label = (e.eventType || e.type).replace(/^claude_/, '');
-    if (HIDDEN_CUSTOM_EVENTS.has(label)) continue;
-    const count = (e.data as Record<string, unknown>)?.count as number | undefined;
-    typeCounts.set(label, (typeCounts.get(label) || 0) + (count && count > 1 ? count : 1));
-  }
-
-  if (typeCounts.size === 0) return null;
-
-  return (
-    <>
-      {Array.from(typeCounts.entries()).map(([label, count]) => (
-        <span
-          key={label}
-          className="text-2xs px-1.5 py-0.5 rounded"
-          style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
-        >
-          {label}{count > 1 ? ` ×${count}` : ''}
-        </span>
-      ))}
-    </>
-  );
-}
-
-function EventBubble({ event, showHeader = true, agentIdentity, customEvents }: { event: SessionEvent; showHeader?: boolean; agentIdentity?: AgentIdentity; customEvents?: SessionEvent[] }) {
-  const [expanded, setExpanded] = useState(false);
-
-  // Left padding to align content when avatar is hidden
-  const continuationPl = 'pl-[34px]';
-
-  if (event.type === 'token_usage') {
-    return (
-      <div className="flex justify-center py-1">
-        <span className="text-2xs px-2 py-0.5 rounded-full" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
-          {formatTokens(event.inputTokens ?? 0)} in / {formatTokens(event.outputTokens ?? 0)} out
-        </span>
-      </div>
-    );
-  }
-
-  if (event.type === 'user_message') {
-    const text = extractText(event.content);
-    if (!showHeader) {
-      return (
-        <div className={continuationPl}>
-          <div
-            className="text-sm rounded-lg px-3 py-2 max-w-[85%]"
-            style={{ backgroundColor: 'var(--color-accent-bg, rgba(245, 158, 11, 0.08))', color: 'var(--color-text)' }}
-          >
-            {text ? <MarkdownContent>{text}</MarkdownContent> : <p>(empty)</p>}
-          </div>
-        </div>
-      );
-    }
-    return (
-      <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5 text-honey-500"
-          style={{ backgroundColor: 'var(--color-accent-bg, rgba(245, 158, 11, 0.1))' }}
-        >
-          <User className="w-3 h-3" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            <span className="text-2xs font-medium text-honey-500">User</span>
-            {event.timestamp && (
-              <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-                <TimeAgo date={event.timestamp} />
-              </span>
-            )}
-            <CustomEventBadges events={customEvents} />
-          </div>
-          <div
-            className="text-sm rounded-lg px-3 py-2 max-w-[85%]"
-            style={{ backgroundColor: 'var(--color-accent-bg, rgba(245, 158, 11, 0.08))', color: 'var(--color-text)' }}
-          >
-            {text ? <MarkdownContent>{text}</MarkdownContent> : <p>(empty)</p>}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (event.type === 'assistant_message') {
-    const text = extractText(event.content);
-    const toolCalls = event.content?.filter((b) => b.type === 'tool_call') ?? [];
-    const content = (
-      <>
-        {text && (
-          <div className="text-sm max-w-[85%]" style={{ color: 'var(--color-text-secondary)' }}>
-            <MarkdownContent>{text}</MarkdownContent>
-          </div>
-        )}
-        {toolCalls.length > 0 && (
-          <div className="mt-1.5 space-y-1">
-            {toolCalls.map((tc, i) => (
-              <ToolCallBlock key={tc.toolCallId || i} block={tc} />
-            ))}
-          </div>
-        )}
-      </>
-    );
-    if (!showHeader) {
-      return <div className={continuationPl}>{content}</div>;
-    }
-    return (
-      <div className="flex gap-2.5 items-start">
-        {agentIdentity ? (
-          <AgentAvatar src={agentIdentity.avatarUrl} name={agentIdentity.name} size={24} className="mt-0.5" />
-        ) : (
-          <div
-            className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-            style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)' }}
-          >
-            <Bot className="w-3 h-3 text-honey-500" />
-          </div>
-        )}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            <span className="text-2xs font-medium text-honey-500">{agentIdentity?.name || 'Assistant'}</span>
-            {event.timestamp && (
-              <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-                <TimeAgo date={event.timestamp} />
-              </span>
-            )}
-            {event.stopReason && event.stopReason !== 'end_turn' && (
-              <span className="text-2xs px-1 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
-                {event.stopReason}
-              </span>
-            )}
-            <CustomEventBadges events={customEvents} />
-          </div>
-          {content}
-        </div>
-      </div>
-    );
-  }
-
-  if (event.type === 'assistant_thinking') {
-    const content = (
-      <>
-        <button
-          className="flex items-center gap-1.5 text-2xs font-medium cursor-pointer"
-          style={{ color: 'var(--color-text-muted)' }}
-          onClick={() => setExpanded(!expanded)}
-        >
-          <span>Thinking</span>
-          {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-        </button>
-        {expanded && event.thinking && (
-          <div
-            className="mt-1 text-xs rounded-lg px-3 py-2 max-w-[85%] border-l-2"
-            style={{
-              backgroundColor: 'var(--color-elevated)',
-              borderColor: 'rgba(139, 92, 246, 0.3)',
-              color: 'var(--color-text-secondary)',
-            }}
-          >
-            <MarkdownContent className="text-xs">{event.thinking}</MarkdownContent>
-          </div>
-        )}
-      </>
-    );
-    if (!showHeader) {
-      return <div className={continuationPl}>{content}</div>;
-    }
-    return (
-      <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: 'rgba(139, 92, 246, 0.15)' }}
-        >
-          <Brain className="w-3 h-3 text-purple-400" />
-        </div>
-        <div className="flex-1 min-w-0">
-          {content}
-        </div>
-      </div>
-    );
-  }
-
-  if (event.type === 'tool_call') {
-    const content = (
-      <>
-        <button
-          className="flex items-center gap-1.5 cursor-pointer"
-          onClick={() => setExpanded(!expanded)}
-        >
-          <span className="text-2xs font-mono text-blue-400">{event.toolName}</span>
-          {expanded ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
-        </button>
-        {expanded && event.input && (
-          <div
-            className="mt-1 max-w-[85%] text-2xs rounded-lg px-3 py-2 overflow-x-auto"
-            style={{ backgroundColor: 'var(--color-elevated)' }}
-          >
-            <JsonView src={event.input} collapsed={2} theme="a11y" dark collapseStringsAfterLength={120} style={{ fontSize: '10px', backgroundColor: 'transparent' }} />
-          </div>
-        )}
-      </>
-    );
-    if (!showHeader) {
-      return <div className={continuationPl}>{content}</div>;
-    }
-    return (
-      <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: 'rgba(59, 130, 246, 0.15)' }}
-        >
-          <Terminal className="w-3 h-3 text-blue-400" />
-        </div>
-        <div className="flex-1 min-w-0">
-          {content}
-        </div>
-      </div>
-    );
-  }
-
-  if (event.type === 'tool_result') {
-    const resultText = extractText(event.content);
-    const content = (
-      <>
-        <button
-          className="flex items-center gap-1.5 cursor-pointer"
-          onClick={() => setExpanded(!expanded)}
-        >
-          <span className={clsx('text-2xs font-medium', event.isError ? 'text-red-400' : 'text-emerald-400')}>
-            {event.isError ? 'Error' : 'Result'}
-          </span>
-          {resultText && (
-            <>
-              {!expanded && (
-                <span className="text-2xs truncate max-w-[200px]" style={{ color: 'var(--color-text-muted)' }}>
-                  {truncate(resultText, 60)}
-                </span>
-              )}
-              {expanded ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
-            </>
-          )}
-        </button>
-        {expanded && resultText && (
-          <pre
-            className="mt-1 text-2xs rounded-lg px-3 py-2 max-w-[85%] overflow-x-auto font-mono"
-            style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
-          >
-            {truncate(resultText, 3000)}
-          </pre>
-        )}
-      </>
-    );
-    if (!showHeader) {
-      return <div className={continuationPl}>{content}</div>;
-    }
-    return (
-      <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: event.isError ? 'rgba(239, 68, 68, 0.15)' : 'rgba(34, 197, 94, 0.15)' }}
-        >
-          {event.isError
-            ? <AlertTriangle className="w-3 h-3 text-red-400" />
-            : <Code className="w-3 h-3 text-emerald-400" />
-          }
-        </div>
-        <div className="flex-1 min-w-0">
-          {content}
-        </div>
-      </div>
-    );
-  }
-
-  if (event.type === 'error') {
-    return (
-      <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: 'rgba(239, 68, 68, 0.15)' }}
-        >
-          <AlertTriangle className="w-3 h-3 text-red-400" />
-        </div>
-        <div className="text-xs text-red-400">
-          Error{event.code ? ` (${event.code})` : ''}: {event.message || 'Unknown error'}
-        </div>
-      </div>
-    );
-  }
-
-  // Fallback for custom/unknown events — show aggregated count if available
-  const count = (event.data as Record<string, unknown>)?.count as number | undefined;
-  return (
-    <div className="flex justify-center py-0.5">
-      <span className="text-2xs px-2 py-0.5 rounded-full" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
-        {event.eventType || event.type}{count && count > 1 ? ` (${count})` : ''}
-      </span>
-    </div>
-  );
-}
-
-/** Check if an assistant_message is tool-use-only (has tool_call blocks, no meaningful text). */
-function isToolUseOnlyMessage(event: SessionEvent): boolean {
-  if (event.type !== 'assistant_message') return false;
-  const toolCalls = event.content?.filter((b) => b.type === 'tool_call') ?? [];
-  if (toolCalls.length === 0) return false;
-  const text = extractText(event.content);
-  return !text || text.trim().length === 0;
-}
-
-/** Collapsible group for consecutive tool-use assistant messages. */
-function ToolCallGroupBlock({ events, customEvents }: { events: SessionEvent[]; customEvents?: SessionEvent[] }) {
-  const [expanded, setExpanded] = useState(false);
-
-  // Collect all tool_call content blocks from assistant_message events,
-  // plus standalone tool_call events as fallback
-  const allToolCalls: SessionContentBlock[] = [];
-  for (const event of events) {
-    if (event.type === 'assistant_message') {
-      const tcs = event.content?.filter((b) => b.type === 'tool_call') ?? [];
-      allToolCalls.push(...tcs);
-    } else if (event.type === 'tool_call') {
-      allToolCalls.push(event as unknown as SessionContentBlock);
-    }
-  }
-
-  const uniqueNames = [...new Set(
-    allToolCalls.map((tc) => (tc as SessionContentBlock & { toolName?: string }).toolName).filter(Boolean),
-  )];
-
-  return (
-    <div className="pl-[34px]">
-      <button
-        className="flex items-center gap-1.5 cursor-pointer w-full"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <Wrench className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
-        <span className="text-2xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-          {allToolCalls.length} tool {allToolCalls.length === 1 ? 'call' : 'calls'}
-        </span>
-        <span className="flex flex-wrap gap-1 flex-1 min-w-0">
-          {uniqueNames.map((name) => (
-            <span
-              key={name}
-              className="text-2xs font-mono px-1.5 py-0.5 rounded"
-              style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
-            >
-              {name}
-            </span>
-          ))}
-          <CustomEventBadges events={customEvents} />
-        </span>
-        {expanded
-          ? <ChevronDown className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
-          : <ChevronRight className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
-        }
-      </button>
-      {expanded && (
-        <div className="mt-1.5 space-y-1.5">
-          {events.map((event) => (
-            <EventBubble key={event.id} event={event} showHeader={false} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity }: { sessionId: string; hasTrajectorySupport: boolean; agentIdentity?: AgentIdentity }) {
   const {
@@ -633,39 +225,6 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity }: { ses
     isFetchingNextPage,
   } = useSessionEvents(sessionId, { enabled: hasTrajectorySupport });
 
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const hasScrolledRef = useRef(false);
-  const [isAtBottom, setIsAtBottom] = useState(true);
-
-  // Track whether the bottom anchor is visible
-  useEffect(() => {
-    const el = bottomRef.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => setIsAtBottom(entry.isIntersecting),
-      { threshold: 0 },
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  const scrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
-
-  // Auto-scroll to bottom on initial load
-  const pages = data?.pages ?? [];
-  const events = pages.flatMap((page) => page.events);
-
-  useEffect(() => {
-    if (events.length > 0 && !hasScrolledRef.current) {
-      hasScrolledRef.current = true;
-      requestAnimationFrame(() => {
-        bottomRef.current?.scrollIntoView({ behavior: 'instant' });
-      });
-    }
-  }, [events.length]);
-
   if (!hasTrajectorySupport) {
     return (
       <div className="card px-6 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
@@ -676,14 +235,6 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity }: { ses
         <p className="text-xs">
           No trajectory data available. The swarm may be offline or no checkpoints have been recorded yet.
         </p>
-      </div>
-    );
-  }
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <LoadingSpinner />
       </div>
     );
   }
@@ -700,199 +251,23 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity }: { ses
     );
   }
 
+  const pages = data?.pages ?? [];
+  const events = pages.flatMap((page) => page.events);
   const total = pages[0]?.total ?? 0;
-  const firstPage = pages[0];
-
-  if (events.length === 0) {
-    return (
-      <div className="card px-6 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
-        <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-40" />
-        <p className="text-xs">No events found in this session.</p>
-      </div>
-    );
-  }
-
-  // Events come newest-first from API; reverse for chronological display
-  const chronologicalEvents = [...events].reverse();
-
-  // Group consecutive tool-use runs into collapsible groups.
-  // Custom events are collected and attached to the next non-custom display item
-  // so they render inline in the header rather than as separate rows.
-  type ToolGroup = { _toolGroup: true; events: SessionEvent[] };
-  type DisplayItem = (SessionEvent | ToolGroup) & { _customEvents?: SessionEvent[] };
-  const displayEvents: DisplayItem[] = [];
-
-  let toolRun: SessionEvent[] = [];
-  let pendingCustom: SessionEvent[] = [];
-
-  const isToolRunEvent = (e: SessionEvent) =>
-    isToolUseOnlyMessage(e) ||
-    e.type === 'tool_call' ||
-    e.type === 'tool_result' ||
-    e.type === 'assistant_thinking' ||
-    e.type === 'custom';
-
-  const countToolCalls = (run: SessionEvent[]) => {
-    let count = 0;
-    for (const e of run) {
-      if (e.type === 'assistant_message') {
-        count += (e.content?.filter((b) => b.type === 'tool_call') ?? []).length;
-      } else if (e.type === 'tool_call') {
-        count += 1;
-      }
-    }
-    return count;
-  };
-
-  const attachPending = (item: DisplayItem) => {
-    if (pendingCustom.length > 0) {
-      item._customEvents = pendingCustom;
-      pendingCustom = [];
-    }
-    displayEvents.push(item);
-  };
-
-  const flushToolRun = () => {
-    if (toolRun.length === 0) return;
-    if (countToolCalls(toolRun) > 1) {
-      attachPending({ _toolGroup: true, events: toolRun } as ToolGroup & { _customEvents?: SessionEvent[] });
-    } else {
-      for (const e of toolRun) {
-        if (e.type === 'custom') {
-          pendingCustom.push(e);
-        } else {
-          attachPending(e);
-        }
-      }
-    }
-    toolRun = [];
-  };
-
-  for (const event of chronologicalEvents) {
-    if (toolRun.length > 0 && isToolRunEvent(event)) {
-      toolRun.push(event);
-    } else if (isToolUseOnlyMessage(event) || event.type === 'tool_call') {
-      toolRun.push(event);
-    } else if (event.type === 'custom') {
-      pendingCustom.push(event);
-    } else {
-      flushToolRun();
-      attachPending(event);
-    }
-  }
-  flushToolRun();
-  // Any trailing custom events attach to last item
-  if (pendingCustom.length > 0 && displayEvents.length > 0) {
-    const last = displayEvents[displayEvents.length - 1];
-    last._customEvents = [...(last._customEvents || []), ...pendingCustom];
-    pendingCustom = [];
-  }
 
   return (
-    <div>
-      <div className="flex items-center gap-2 mb-3">
-        <h2 className="text-sm font-medium flex items-center gap-1.5">
-          <MessageSquare className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-          Agent Trajectory
-          <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>
-            ({total} events)
-          </span>
-        </h2>
-        {firstPage?.format_id && (
-          <span
-            className="text-2xs px-1.5 py-0.5 rounded"
-            style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
-          >
-            {firstPage.format_id}
-          </span>
-        )}
-      </div>
-
-      {/* Load more button for older events */}
-      {isFetchingNextPage && (
-        <div className="flex items-center justify-center py-3">
-          <LoadingSpinner />
-          <span className="ml-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-            Loading older events…
-          </span>
-        </div>
-      )}
-      {hasNextPage && !isFetchingNextPage && (
-        <div className="text-center py-2">
-          <button
-            onClick={() => fetchNextPage()}
-            className="text-2xs px-3 py-1 rounded transition-colors"
-            style={{
-              color: 'var(--color-accent)',
-              backgroundColor: 'var(--color-elevated)',
-              border: '1px solid var(--color-border)',
-            }}
-          >
-            Load older events ({events.length} of {total})
-          </button>
-        </div>
-      )}
-      {!hasNextPage && total > events.length && (
-        <div className="text-center py-2">
-          <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-            All {total} events loaded
-          </span>
-        </div>
-      )}
-
-      <div className="space-y-3">
-        {(() => {
-          // Flatten display items into SessionEvent[] for custom-event grouping,
-          // preserving tool groups as opaque markers
-          let lastAuthor: string | null = null;
-          return displayEvents.map((item, i) => {
-            // Tool call groups
-            if ('_toolGroup' in item) {
-              const showHeader = lastAuthor !== 'assistant';
-              lastAuthor = 'assistant';
-              return (
-                <div key={`tg-${i}`} className={showHeader ? '' : '-mt-1.5'}>
-                  <ToolCallGroupBlock events={item.events} customEvents={item._customEvents} />
-                </div>
-              );
-            }
-
-            const event = item as SessionEvent & { _customEvents?: SessionEvent[] };
-            const author = getEventAuthor(event);
-            // System events (token_usage, error) don't reset author grouping
-            if (author === null) {
-              return <EventBubble key={event.id} event={event} agentIdentity={agentIdentity} customEvents={event._customEvents} />;
-            }
-            const showHeader = author !== lastAuthor;
-            lastAuthor = author;
-            return (
-              <div key={event.id} className={showHeader ? '' : '-mt-1.5'}>
-                <EventBubble event={event} showHeader={showHeader} agentIdentity={agentIdentity} customEvents={event._customEvents} />
-              </div>
-            );
-          });
-        })()}
-      </div>
-
-      {/* Scroll anchor for auto-scroll to bottom */}
-      <div ref={bottomRef} />
-
-      {/* Scroll-to-bottom FAB */}
-      {!isAtBottom && (
-        <button
-          onClick={scrollToBottom}
-          className="fixed bottom-6 right-6 z-20 w-8 h-8 rounded-full flex items-center justify-center shadow transition-all hover:brightness-125 cursor-pointer border"
-          style={{
-            backgroundColor: 'var(--color-elevated)',
-            color: 'var(--color-text-muted)',
-            borderColor: 'var(--color-border-subtle)',
-          }}
-          title="Scroll to bottom"
-        >
-          <ArrowDown className="w-4 h-4" />
-        </button>
-      )}
-    </div>
+    <EventStream
+      events={events}
+      agentIdentity={agentIdentity}
+      isLoading={isLoading}
+      hasMore={hasNextPage}
+      onLoadMore={() => fetchNextPage()}
+      isLoadingMore={isFetchingNextPage}
+      total={total}
+      formatId={pages[0]?.format_id}
+      emptyMessage="No events found in this session."
+      emptyIcon={MessageSquare}
+    />
   );
 }
 
@@ -907,18 +282,21 @@ export function SessionDetail() {
   const { data: checkpointsData, isLoading: checkpointsLoading } = useSessionCheckpoints(id!);
   const { data: stats } = useSessionStats(id!);
   const { data: participantsData } = useSessionParticipants(id!);
+  const { hasAttention, clearAttention } = useSessionAttentionStore();
   useSessionsRealtime();
 
+  // Clear attention when viewing a session
+  useEffect(() => {
+    if (id && hasAttention(id)) clearAttention(id);
+  }, [id, hasAttention, clearAttention]);
+
   // Derive assistant agent identity for the trajectory view.
-  // Uses the session resource name (e.g. "openhive-3 (agents)") for boring-avatar
-  // hashing — this is unique per session and gives each one a distinct avatar.
-  // The checkpoint agent field is generic ("default-sidecar") so we don't use it.
   const assistantAgent: AgentIdentity | undefined = (() => {
     if (resource) {
       return {
         id: resource.owner?.id || resource.owner_agent_id || '',
         name: resource.name,
-        avatarUrl: null, // always use boring-avatar, not account avatar
+        avatarUrl: null,
       };
     }
     return undefined;
@@ -936,11 +314,6 @@ export function SessionDetail() {
 
   const checkpoints = checkpointsData?.data ?? [];
   const total = checkpointsData?.total ?? 0;
-
-  // Determine if trajectory events can be loaded.
-  // Events are available from: local/cloud storage backends, or on-demand from connected swarms.
-  // The backend handles fallback — if no local storage, it requests from the swarm.
-  // We enable the tab whenever there are checkpoints (indicating a session exists).
   const hasTrajectorySupport = total > 0;
 
   return (
@@ -960,6 +333,11 @@ export function SessionDetail() {
               <span className="text-2xs px-1.5 py-0.5 rounded bg-honey-500/10 text-honey-500">
                 session
               </span>
+              {id && hasAttention(id) && (
+                <span className="text-2xs px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 animate-pulse">
+                  Awaiting input
+                </span>
+              )}
             </div>
             {stats && (
               <div className="flex items-center gap-2.5 mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
@@ -1003,7 +381,6 @@ export function SessionDetail() {
               </button>
             ))}
           </div>
-
         </div>
       </div>
 
@@ -1028,7 +405,6 @@ export function SessionDetail() {
 // ============================================================================
 
 function SessionLearningTab({ sessionId }: { sessionId: string }) {
-  // Query the learning health to check if learning is available
   const [learningAvailable, setLearningAvailable] = useState<boolean | null>(null);
   const [learningData, setLearningData] = useState<{
     experiences: any[];
@@ -1036,7 +412,6 @@ function SessionLearningTab({ sessionId }: { sessionId: string }) {
   } | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Fetch learning data on mount
   useEffect(() => {
     let cancelled = false;
     (async () => {

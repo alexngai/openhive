@@ -20,7 +20,7 @@ import type { TrajectoryCheckpointParams, TrajectoryCheckpointResult } from './t
 import { findResourceById, findSessionResourceBySwarm, upsertDiscoveredResource, updateResource } from '../db/dal/syncable-resources.js';
 import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
 import { broadcastToChannel } from '../realtime/index.js';
-import { updateSwarm } from '../db/dal/map.js';
+import { updateSwarm, findNodeBySwarmAndAgentId } from '../db/dal/map.js';
 import { mapHubEvents } from './service.js';
 import { fetchTranscriptFromSwarm } from './trajectory-content.js';
 import { isSessionStorageInitialized, getSessionStorage } from '../sessions/storage/index.js';
@@ -169,26 +169,29 @@ function handleCheckpoint(
 
   // ── Broadcast to WebSocket channels for UI ───────────────────────────
   try {
+    // Two signals for attention detection:
+    // 1. MAP node state (updated by agent.state_changed eventBus handler)
+    const agentNode = findNodeBySwarmAndAgentId(swarmId, agentId);
+    const agentState = agentNode?.state || null;
+    // 2. Sessionlog phase from checkpoint metadata (idle = turn complete)
+    const checkpointPhase = (meta?.phase as string) || null;
+
+    const syncData = {
+      resource_id: resourceId,
+      resource_type: 'session',
+      commit_hash: commitHash,
+      agent_id: agentId,
+      source_swarm_id: swarmId,
+      agent_state: agentState,
+      checkpoint_phase: checkpointPhase,
+    };
     broadcastToChannel(`resource:session:${resourceId}`, {
       type: 'trajectory:sync' as const,
-      data: {
-        resource_id: resourceId,
-        resource_type: 'session',
-        commit_hash: commitHash,
-        agent_id: agentId,
-        source_swarm_id: swarmId,
-      },
+      data: syncData,
     });
-    // Also broadcast to global channel for session list invalidation
     broadcastToChannel('global', {
       type: 'trajectory:sync' as const,
-      data: {
-        resource_id: resourceId,
-        resource_type: 'session',
-        commit_hash: commitHash,
-        agent_id: agentId,
-        source_swarm_id: swarmId,
-      },
+      data: syncData,
     });
   } catch {
     // Non-critical — UI just won't update in realtime

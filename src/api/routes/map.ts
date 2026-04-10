@@ -516,7 +516,26 @@ export async function mapRoutes(
       }
 
       const body = UpdateNodeSchema.parse(request.body);
+      const oldState = node.state;
       const updated = mapDal.updateNode(request.params.id, body);
+
+      // Broadcast node_state_changed on state transitions
+      if (updated && updated.state !== oldState) {
+        const event = {
+          type: 'node_state_changed' as const,
+          data: {
+            node_id: updated.id,
+            swarm_id: node.swarm_id,
+            map_agent_id: node.map_agent_id,
+            old_state: oldState,
+            new_state: updated.state,
+            needs_attention: ['idle', 'stopped', 'failed'].includes(updated.state),
+          },
+        };
+        broadcastToChannel(`map:swarm:${node.swarm_id}`, event);
+        broadcastToChannel('global', event);
+      }
+
       return reply.send(updated);
     } catch (error) {
       return handleMapError(error, reply);
