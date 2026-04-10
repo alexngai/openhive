@@ -35,6 +35,7 @@ import type {
   SessionFormatEntry,
 } from '../../types.js';
 import type { Config } from '../../config.js';
+import { sessionChatRoutes } from './session-chat.js';
 
 // ============================================================================
 // Validation Schemas
@@ -201,6 +202,9 @@ export async function sessionsRoutes(
   fastify: FastifyInstance,
   _options: { config: Config }
 ): Promise<void> {
+
+  // Register session chat sub-routes
+  await sessionChatRoutes(fastify);
 
   // ============================================================================
   // Format Registry Endpoints

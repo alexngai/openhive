@@ -43,7 +43,7 @@ src/
 ├── terminal/          # PTY tunneling to hosted swarms
 ├── events/            # Event normalization and routing
 ├── swarmhub/          # SwarmHub integration (connector, client, routes)
-├── web/               # React frontend (pages, components, hooks, stores)
+├── web/               # React frontend (pages, components, hooks, stores, adapters)
 ├── server.ts          # Fastify server setup and plugin registration
 ├── config.ts          # Configuration loading with Zod validation
 ├── cli.ts             # CLI commands (init, serve, admin, db, network)
@@ -61,7 +61,8 @@ src/
 - **Realtime invalidation**: Frontend React Query caches are invalidated via WebSocket events (`src/web/hooks/useRealtimeInvalidation.ts`) rather than polling. Server broadcasts to channels like `map:discovery`, and per-domain hooks (`useSwarmRealtime`, `useResourcesRealtime`, `useSessionsRealtime`) subscribe and invalidate the relevant query keys.
 - **Swarm lifecycle**: Connected swarms follow the status progression `online` → `unreachable` → `offline`. The server pings WS clients every 30s, refreshing `last_seen_at`. On disconnect, status moves to `unreachable`; a periodic sweep (`markStaleSwarms`) demotes stale swarms to `offline` after `staleThresholdMinutes` (default 5 min).
 - **Session trajectories**: Agent session transcripts are synced via the MAP trajectory protocol. The `trajectory/checkpoint` handler (`src/map/trajectory-handler.ts`) auto-creates session resources and stores checkpoint metadata. Transcript content is served on-demand from connected agents via `trajectory/content.request`/`trajectory/content.response` notifications. Content is cached in session storage for offline access. Five-tier resolution: fresh cache → on-demand from swarm → local sessionlog transcript → stale cache → 503.
-- **Agent capabilities**: Connected agents declare capabilities during MAP registration (e.g., `trajectory.canServeContent`). The hub captures these via the `agent.registered` event and stores on the connection. Capability checks gate expensive operations (content requests only sent to agents that declared support).
+- **Agent capabilities**: Connected agents declare capabilities during MAP registration using the MAP `ParticipantCapabilities` schema. The hub captures these via the `agent.registered` event and stores on the connection + database. Capability checks gate operations (content requests, chat modes). See "Session Chat" section for capability-gated chat.
+- **Event stream components**: Session trajectory rendering is extracted into reusable components under `src/web/components/events/`. `EventStream` is the main container (grouping, auto-scroll, pagination), `EventBubble` renders individual events, `ToolCallGroupBlock` collapses tool runs. These components accept any `SessionEvent[]` source and are used by both the trajectory view and the session chat interface.
 
 ## Session Trajectory Architecture
 
@@ -97,9 +98,13 @@ Content is converted via Claude JSONL adapter → ACP events (user messages, ass
 - `src/map/trajectory-types.ts` — Method set and request/response types
 - `src/sessions/adapters/claude.ts` — Converts Claude Code JSONL transcripts to ACP events, aggregates non-content entries, pairs tool results with tool calls
 - `src/api/routes/sessions.ts` — `/sessions/:id/events` endpoint with 5-tier content resolution, caching to session storage
+- `src/api/routes/session-chat.ts` — `POST /sessions/:id/chat` endpoint for bi-directional session chat (lazy conversation creation + mail turn delivery)
 - `src/db/dal/trajectory-checkpoints.ts` — Checkpoint CRUD and stats aggregation
 - `src/web/pages/Sessions.tsx` — Session list with enriched names
-- `src/web/pages/SessionDetail.tsx` — Trajectory tab (default) with event stream, checkpoints tab, expandable tool calls with JSON viewer
+- `src/web/pages/SessionDetail.tsx` — Trajectory tab with event stream + chat input, checkpoints tab, learning tab
+- `src/web/components/events/` — Reusable event stream rendering (EventStream, EventBubble, ToolCallGroupBlock, CustomEventBadges, event-utils, SessionChatInput)
+- `src/web/hooks/useSessionChat.ts` — Session chat orchestration hook (capability resolution → mode detection → useChatChannel)
+- `src/web/adapters/session-chat-adapter.ts` — ChatChannelAdapter for mail-based session chat
 
 ### Configuration
 
@@ -119,6 +124,50 @@ Content is converted via Claude JSONL adapter → ACP events (user messages, ass
 - `trajectory/content.request` — Hub → agent content request (raw JSON-RPC notification via `onNotification`)
 - `trajectory/content.response` — Agent → hub content delivery (raw JSON-RPC notification via `sendNotification`)
 - Agent capabilities: `trajectory.canReport`, `trajectory.canServeContent`
+
+### Session Chat (Bi-Directional)
+
+The session trajectory view supports bi-directional chat with connected agents. Chat mode is determined by MAP capabilities published during agent registration, following the MAP `ParticipantCapabilities` schema.
+
+#### Capability → Mode Mapping
+
+| MAP Capability | Chat Mode | Transport | Behavior |
+|---|---|---|---|
+| `protocols: ['acp']` | **ACP** | ACP stream via MAP server | Full streaming, bi-directional |
+| `mail: { canJoin: true }` | **Mail** | `POST /sessions/:id/chat` → agent-inbox | Async conversation turns, 5s polling |
+| `messaging: { canReceive: true }` | **Inject** | MAP inject | One-way push, no response channel |
+| None / offline | **Unavailable** | — | Read-only with specific reason |
+
+Detection cascade: ACP → Mail → Inject → Unavailable. Each mode is only attempted if the swarm declares the corresponding capability.
+
+#### Agent Capability Declarations
+
+Agents declare capabilities at MAP registration. The hub stores these on `MapInboundConnection.capabilities` and `map_swarms.capabilities`.
+
+**cc-swarm** declares: `messaging: { canSend, canReceive }`, `mail: { canCreate, canJoin, canViewHistory }` — gets Mail mode.
+
+**macro-agent** declares: same + `protocols: ['acp']`, `acp: { version: '2024-10-07' }` — gets ACP mode (with Mail fallback).
+
+#### Chat Data Flow
+
+```
+User types in SessionChatInput
+  → useSessionChat resolves swarm capabilities via useMapSwarm()
+  → useChatChannel(swarmAgentId, channelConfig) detects mode
+  → ACP: ACPStreamConnection.prompt() → MAP Server → Agent (streaming response)
+  → Mail: SessionChatAdapter.send() → POST /sessions/:id/chat
+    → Lazy conversation creation (mail/create JSON-RPC)
+    → mail_conversation_id stored in session resource metadata
+    → Turn sent via mail/turn JSON-RPC → agent-inbox → agent reads on next prompt
+  → Inject: POST /agents/:id/inject → fire-and-forget
+```
+
+#### Key Files
+
+- `src/web/hooks/useSessionChat.ts` — Resolves `sourceSwarmId` → swarm capabilities → chat mode. Provides `SessionChatAdapter` for mail, passes `swarmAgentId` to `useChatChannel` for ACP/inject.
+- `src/web/components/events/SessionChatInput.tsx` — Sticky bottom input, mode-aware UI with capability-specific unavailable reasons.
+- `src/web/adapters/session-chat-adapter.ts` — `ChatChannelAdapter` implementation routing through `POST /sessions/:id/chat`.
+- `src/api/routes/session-chat.ts` — Backend endpoint: lazy conversation creation, auto-join, turn delivery via `mail/turn` JSON-RPC.
 
 ## Task Coordination Architecture
 
@@ -191,7 +240,7 @@ npm run typecheck    # TypeScript type check
 
 All routes prefixed `/api/v1`. Auth via `Authorization: Bearer <api_key>`. Admin routes require `X-Admin-Key`.
 
-Core route groups: agents, hives, posts, comments, feed, map (swarms, nodes, peers, preauth-keys), resources, swarms (hosting), coordination, admin.
+Core route groups: agents, hives, posts, comments, feed, map (swarms, nodes, peers, preauth-keys), resources, swarms (hosting), coordination, sessions (events, chat, checkpoints), admin.
 
 Sync routes at `/sync/v1` (JSON-RPC 2.0). WebSocket at `/ws`. Discovery at `/.well-known/openhive.json` and `/skill.md`.
 

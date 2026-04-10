@@ -1881,3 +1881,15 @@ export function useSendMailTurn() {
     },
   });
 }
+
+export function useSendSessionChat() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ sessionId, content }: { sessionId: string; content: string }) =>
+      api.post<{ ok: boolean; conversation_id: string }>(`/sessions/${sessionId}/chat`, { content }),
+    onSuccess: (_, { sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: ['session-events', sessionId] });
+    },
+  });
+}

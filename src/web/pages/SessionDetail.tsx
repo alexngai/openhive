@@ -12,8 +12,10 @@ import { PageLoader } from '../components/common/LoadingSpinner';
 import { AgentAvatar } from '../components/common/AgentAvatar';
 import { formatTokens } from '../components/events/event-utils';
 import { EventStream } from '../components/events/EventStream';
+import { SessionChatInput } from '../components/events/SessionChatInput';
 import type { TrajectoryCheckpoint, AgentIdentity } from '../lib/api';
 import { useSessionAttentionStore } from '../stores/session-attention';
+import { useSessionChat } from '../hooks/useSessionChat';
 import clsx from 'clsx';
 
 // ============================================================================
@@ -214,7 +216,12 @@ function CheckpointsTab({ checkpoints, total, isLoading }: {
 // Trajectory Viewer (thin wrapper around EventStream)
 // ============================================================================
 
-function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity }: { sessionId: string; hasTrajectorySupport: boolean; agentIdentity?: AgentIdentity }) {
+function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceSwarmId }: {
+  sessionId: string;
+  hasTrajectorySupport: boolean;
+  agentIdentity?: AgentIdentity;
+  sourceSwarmId?: string | null;
+}) {
   const {
     data,
     isLoading,
@@ -224,6 +231,11 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity }: { ses
     fetchNextPage,
     isFetchingNextPage,
   } = useSessionEvents(sessionId, { enabled: hasTrajectorySupport });
+
+  // Chat integration — gated by published MAP capabilities
+  const {
+    chatMode, chatStatus, sendMessage, cancelStream, capabilities,
+  } = useSessionChat({ sessionId, sourceSwarmId, enabled: hasTrajectorySupport });
 
   if (!hasTrajectorySupport) {
     return (
@@ -256,18 +268,27 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity }: { ses
   const total = pages[0]?.total ?? 0;
 
   return (
-    <EventStream
-      events={events}
-      agentIdentity={agentIdentity}
-      isLoading={isLoading}
-      hasMore={hasNextPage}
-      onLoadMore={() => fetchNextPage()}
-      isLoadingMore={isFetchingNextPage}
-      total={total}
-      formatId={pages[0]?.format_id}
-      emptyMessage="No events found in this session."
-      emptyIcon={MessageSquare}
-    />
+    <>
+      <EventStream
+        events={events}
+        agentIdentity={agentIdentity}
+        isLoading={isLoading}
+        hasMore={hasNextPage}
+        onLoadMore={() => fetchNextPage()}
+        isLoadingMore={isFetchingNextPage}
+        total={total}
+        formatId={pages[0]?.format_id}
+        emptyMessage="No events found in this session."
+        emptyIcon={MessageSquare}
+      />
+      <SessionChatInput
+        mode={chatMode}
+        status={chatStatus}
+        onSend={sendMessage}
+        onCancel={cancelStream}
+        capabilities={capabilities}
+      />
+    </>
   );
 }
 
@@ -315,6 +336,7 @@ export function SessionDetail() {
   const checkpoints = checkpointsData?.data ?? [];
   const total = checkpointsData?.total ?? 0;
   const hasTrajectorySupport = total > 0;
+  const sourceSwarmId = checkpoints[0]?.source_swarm_id ?? null;
 
   return (
     <>
@@ -390,7 +412,7 @@ export function SessionDetail() {
           <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
         )}
         {tab === 'trajectory' && (
-          <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} />
+          <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} sourceSwarmId={sourceSwarmId} />
         )}
         {tab === 'learning' && (
           <SessionLearningTab sessionId={id!} />

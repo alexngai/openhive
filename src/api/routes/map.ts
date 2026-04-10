@@ -53,19 +53,29 @@ import { getSyncListenerStatus } from '../../map/sync-listener.js';
 // Zod Schemas
 // ============================================================================
 
+// Capabilities accept both flat booleans (legacy) and structured objects (MAP ParticipantCapabilities)
+const capabilitiesSchema = z.object({
+  observation: z.union([z.boolean(), z.record(z.unknown())]).optional(),
+  messaging: z.union([z.boolean(), z.record(z.unknown())]).optional(),
+  lifecycle: z.union([z.boolean(), z.record(z.unknown())]).optional(),
+  scopes: z.boolean().optional(),
+  federation: z.boolean().optional(),
+  protocols: z.array(z.string()).optional(),
+  mail: z.object({
+    canCreate: z.boolean().optional(),
+    canJoin: z.boolean().optional(),
+    canInvite: z.boolean().optional(),
+    canViewHistory: z.boolean().optional(),
+    canCreateThreads: z.boolean().optional(),
+  }).optional(),
+}).passthrough();
+
 const RegisterSwarmSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
   map_endpoint: z.string().url(),
   map_transport: z.enum(['websocket', 'http-sse', 'ndjson']).optional(),
-  capabilities: z.object({
-    observation: z.boolean().optional(),
-    messaging: z.boolean().optional(),
-    lifecycle: z.boolean().optional(),
-    scopes: z.boolean().optional(),
-    federation: z.boolean().optional(),
-    protocols: z.array(z.string()).optional(),
-  }).optional(),
+  capabilities: capabilitiesSchema.optional(),
   auth_method: z.enum(['bearer', 'api-key', 'mtls', 'none']).optional(),
   auth_token: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),
@@ -78,14 +88,7 @@ const UpdateSwarmSchema = z.object({
   map_endpoint: z.string().url().optional(),
   map_transport: z.enum(['websocket', 'http-sse', 'ndjson']).optional(),
   status: z.enum(['online', 'offline', 'unreachable']).optional(),
-  capabilities: z.object({
-    observation: z.boolean().optional(),
-    messaging: z.boolean().optional(),
-    lifecycle: z.boolean().optional(),
-    scopes: z.boolean().optional(),
-    federation: z.boolean().optional(),
-    protocols: z.array(z.string()).optional(),
-  }).optional(),
+  capabilities: capabilitiesSchema.optional(),
   auth_method: z.enum(['bearer', 'api-key', 'mtls', 'none']).optional(),
   auth_token: z.string().optional(),
   agent_count: z.number().int().min(0).optional(),
