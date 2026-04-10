@@ -12,7 +12,7 @@ import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { getMailJsonRpc, getMailStorage } from '../../mail/index.js';
 
 const SendChatSchema = z.object({
-  content: z.string().min(1),
+  content: z.string().min(1).max(100_000),
   content_type: z.string().optional(),
   thread_id: z.string().optional(),
   in_reply_to: z.string().optional(),
@@ -48,10 +48,14 @@ export async function sessionChatRoutes(fastify: FastifyInstance): Promise<void>
     }
 
     const jsonRpc = getMailJsonRpc();
-    const metadata = (resource.metadata as Record<string, unknown>) || {};
+    const storage = getMailStorage();
 
-    // Find or create linked conversation
-    let conversationId = metadata.mail_conversation_id as string | undefined;
+    // Find or create linked conversation.
+    // Re-read metadata inside the create path to handle races: if two requests
+    // arrive simultaneously, both see no conversation_id. The first creates one
+    // and stores it in metadata. The second re-reads metadata after creation
+    // and discovers the first's conversation, avoiding a duplicate.
+    let conversationId = getLinkedConversationId(sessionId);
 
     if (!conversationId) {
       // Create conversation lazily on first send
@@ -73,22 +77,42 @@ export async function sessionChatRoutes(fastify: FastifyInstance): Promise<void>
         });
       }
 
-      conversationId = (createRes.result as any).id;
+      const newConvId = (createRes.result as any).id;
 
-      // Store conversation ID in session metadata
-      resourcesDAL.updateResource(sessionId, {
-        metadata: {
-          ...metadata,
-          mail_conversation_id: conversationId,
-        },
+      // Re-read metadata to check if another request won the race
+      const raceCheck = getLinkedConversationId(sessionId);
+      if (raceCheck) {
+        // Another request created a conversation first — use theirs
+        conversationId = raceCheck;
+      } else {
+        conversationId = newConvId;
+        // Store conversation ID in session metadata (atomic merge)
+        const freshResource = resourcesDAL.findResourceById(sessionId);
+        const freshMeta = (freshResource?.metadata as Record<string, unknown>) || {};
+        resourcesDAL.updateResource(sessionId, {
+          metadata: { ...freshMeta, mail_conversation_id: conversationId },
+        });
+      }
+    }
+
+    // Verify conversation still exists (may have been deleted externally)
+    const conv = storage.getConversation(conversationId!);
+    if (!conv) {
+      // Conversation was deleted — clear stale reference and create a new one
+      const freshResource = resourcesDAL.findResourceById(sessionId);
+      const freshMeta = (freshResource?.metadata as Record<string, unknown>) || {};
+      delete freshMeta.mail_conversation_id;
+      resourcesDAL.updateResource(sessionId, { metadata: freshMeta });
+
+      return reply.status(410).send({
+        error: 'CONVERSATION_DELETED',
+        message: 'Linked conversation was deleted. Retry to create a new one.',
       });
     }
 
     // Auto-join as supervisor if not already a participant
-    const storage = getMailStorage();
-    const conv = storage.getConversation(conversationId!);
-    if (conv && !conv.participants.some((p: any) => p.agent_id === agent.id)) {
-      await jsonRpc.handleRequest({
+    if (!conv.participants.some((p: any) => p.agent_id === agent.id)) {
+      const joinRes = await jsonRpc.handleRequest({
         jsonrpc: '2.0',
         id: `join-${Date.now()}`,
         method: 'mail/join',
@@ -98,6 +122,13 @@ export async function sessionChatRoutes(fastify: FastifyInstance): Promise<void>
           role: 'supervisor',
         },
       });
+
+      if (joinRes.error) {
+        return reply.status(500).send({
+          error: 'JOIN_FAILED',
+          message: joinRes.error.message,
+        });
+      }
     }
 
     // Send the turn
@@ -135,15 +166,22 @@ export async function sessionChatRoutes(fastify: FastifyInstance): Promise<void>
   }, async (request, reply) => {
     const resource = resourcesDAL.findResourceById(request.params.id);
     if (!resource || resource.resource_type !== 'session') {
-      return reply.status(404).send({ error: 'NOT_FOUND' });
+      return reply.status(404).send({ error: 'NOT_FOUND', message: 'Session not found' });
     }
 
-    const metadata = (resource.metadata as Record<string, unknown>) || {};
-    const conversationId = metadata.mail_conversation_id as string | undefined;
+    const conversationId = getLinkedConversationId(request.params.id);
 
     return reply.send({
       conversation_id: conversationId ?? null,
       chat_available: !!conversationId,
     });
   });
+}
+
+/** Read mail_conversation_id from session resource metadata. */
+function getLinkedConversationId(sessionId: string): string | undefined {
+  const resource = resourcesDAL.findResourceById(sessionId);
+  if (!resource) return undefined;
+  const metadata = (resource.metadata as Record<string, unknown>) || {};
+  return metadata.mail_conversation_id as string | undefined;
 }

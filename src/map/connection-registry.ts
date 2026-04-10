@@ -107,7 +107,7 @@ export function hasCapability(swarmId: string, path: string): boolean {
 function checkPath(obj: Record<string, unknown>, parts: string[]): boolean {
   let current: unknown = obj;
   for (const part of parts) {
-    if (!current || typeof current !== 'object') return false;
+    if (typeof current !== 'object' || current === null) return false;
     current = (current as Record<string, unknown>)[part];
   }
   return current === true;

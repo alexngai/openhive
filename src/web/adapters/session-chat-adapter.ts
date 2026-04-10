@@ -39,7 +39,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 function mailTurnToChat(turn: MailTurn): ChatMessage {
-  const isSupervisor = turn.participant_id?.includes('human') || turn.content_type === 'supervisor';
+  const isSupervisor = turn.content_type === 'supervisor';
 
   let content = '';
   const mc = turn.content as MessageContent;

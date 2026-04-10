@@ -50,7 +50,8 @@ export interface SwarmChatCapabilities {
   protocols: string[];
 }
 
-function resolveCapabilities(
+/** Exported for testing. Resolves swarm capabilities from MAP data. */
+export function resolveCapabilities(
   swarm: { status: string; capabilities: Record<string, unknown> | null } | undefined,
 ): SwarmChatCapabilities {
   if (!swarm) {

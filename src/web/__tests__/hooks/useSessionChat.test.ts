@@ -1,43 +1,18 @@
 /**
- * Tests for useSessionChat capability resolution logic.
- *
- * We test the resolveCapabilities function indirectly by importing SwarmChatCapabilities
- * and testing the capability → mode mapping logic that drives chat detection.
+ * Tests for useSessionChat capability resolution and mode gating logic.
+ * Imports the REAL resolveCapabilities function (exported for testing).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+// Mock swarmcraft to avoid sigma/WebGL dependency in test environment
+vi.mock('swarmcraft/ui/embed', () => ({
+  useChatChannel: () => ({ mode: 'unavailable', status: 'detecting', send: async () => {} }),
+}));
+
+import { resolveCapabilities } from '../../hooks/useSessionChat';
 import type { SwarmChatCapabilities } from '../../hooks/useSessionChat';
 
-// Replicate resolveCapabilities logic for unit testing.
-// The actual function is internal to useSessionChat but uses the same logic.
-function resolveCapabilities(
-  swarm: { status: string; capabilities: Record<string, unknown> | null } | undefined,
-): SwarmChatCapabilities {
-  if (!swarm) {
-    return { mail: false, messaging: false, supportsAcp: false, connected: false, protocols: [] };
-  }
-
-  const caps = swarm.capabilities || {};
-  const protocols = Array.isArray(caps.protocols) ? (caps.protocols as string[]) : [];
-  const connected = swarm.status === 'online' || swarm.status === 'unreachable';
-
-  const mailCaps = caps.mail as Record<string, unknown> | undefined;
-  const hasMail = !!mailCaps && (mailCaps.canJoin === true || mailCaps.canCreate === true);
-
-  const msgCaps = caps.messaging as Record<string, unknown> | boolean | undefined;
-  const hasMessaging = msgCaps === true || (!!msgCaps && typeof msgCaps === 'object' && (
-    (msgCaps as Record<string, unknown>).canReceive === true
-  ));
-
-  return {
-    mail: hasMail,
-    messaging: hasMessaging,
-    supportsAcp: protocols.includes('acp'),
-    connected,
-    protocols,
-  };
-}
-
-// Test the capability → mode gating logic
+// Test the capability → mode gating logic (matches useSessionChat internals)
 function resolveMode(caps: SwarmChatCapabilities): 'acp' | 'mail' | 'inject' | 'unavailable' {
   if (!caps.connected) return 'unavailable';
   if (caps.supportsAcp) return 'acp'; // ACP tried first in cascade
@@ -64,18 +39,15 @@ describe('resolveCapabilities', () => {
 
   describe('connected status', () => {
     it('online → connected', () => {
-      const caps = resolveCapabilities({ status: 'online', capabilities: {} });
-      expect(caps.connected).toBe(true);
+      expect(resolveCapabilities({ status: 'online', capabilities: {} }).connected).toBe(true);
     });
 
     it('unreachable → connected', () => {
-      const caps = resolveCapabilities({ status: 'unreachable', capabilities: {} });
-      expect(caps.connected).toBe(true);
+      expect(resolveCapabilities({ status: 'unreachable', capabilities: {} }).connected).toBe(true);
     });
 
     it('offline → not connected', () => {
-      const caps = resolveCapabilities({ status: 'offline', capabilities: {} });
-      expect(caps.connected).toBe(false);
+      expect(resolveCapabilities({ status: 'offline', capabilities: {} }).connected).toBe(false);
     });
   });
 
@@ -166,10 +138,7 @@ describe('resolveCapabilities', () => {
     });
 
     it('handles missing protocols field', () => {
-      const caps = resolveCapabilities({
-        status: 'online',
-        capabilities: {},
-      });
+      const caps = resolveCapabilities({ status: 'online', capabilities: {} });
       expect(caps.supportsAcp).toBe(false);
       expect(caps.protocols).toEqual([]);
     });
