@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Tests for useSessionChatRealtime — WebSocket cache invalidation for session chat.
  */

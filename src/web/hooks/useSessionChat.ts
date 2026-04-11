@@ -13,7 +13,7 @@
 import { useMemo, useCallback, useEffect, useRef } from 'react';
 import type { ChatMode, ChatStatus } from 'swarmcraft/ui/embed';
 import { useMapSwarm } from './useApi.js';
-import { useAcpStream } from './useAcpStream.js';
+import { useAcpStream, type AcpPermissionRequest } from './useAcpStream.js';
 import { api } from '../lib/api.js';
 
 export interface UseSessionChatOptions {
@@ -34,6 +34,10 @@ export interface UseSessionChatReturn {
   streamingEvents: import('../lib/api').SessionEvent[];
   /** ACP stream error message (null when no error) */
   streamError: string | null;
+  /** Pending permission requests from ACP agent (tool approval dialogs) */
+  permissions: AcpPermissionRequest[];
+  /** Reply to a permission request */
+  replyPermission: (requestId: string, granted: boolean) => Promise<void>;
 }
 
 export interface SwarmChatCapabilities {
@@ -176,5 +180,7 @@ export function useSessionChat({
     capabilities,
     streamingEvents: acpStream.events,
     streamError: acpStream.error,
+    permissions: acpStream.permissions,
+    replyPermission: acpStream.replyPermission,
   };
 }

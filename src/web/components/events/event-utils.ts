@@ -28,6 +28,30 @@ export function extractText(blocks: SessionContentBlock[] | undefined): string {
     .join('\n');
 }
 
+/**
+ * Deduplicate ACP streaming events against trajectory checkpoint events.
+ * Streaming events that match a trajectory event by type + content prefix
+ * are considered duplicates and filtered out.
+ */
+export function deduplicateStreamingEvents(
+  streamingEvents: SessionEvent[],
+  trajectoryEvents: SessionEvent[],
+): SessionEvent[] {
+  if (streamingEvents.length === 0) return [];
+  if (trajectoryEvents.length === 0) return streamingEvents;
+
+  const trajectoryFingerprints = new Set<string>();
+  for (const e of trajectoryEvents) {
+    const text = e.content?.[0]?.text?.slice(0, 100) ?? '';
+    trajectoryFingerprints.add(`${e.type}:${text}`);
+  }
+
+  return streamingEvents.filter(e => {
+    const text = e.content?.[0]?.text?.slice(0, 100) ?? '';
+    return !trajectoryFingerprints.has(`${e.type}:${text}`);
+  });
+}
+
 export function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return s.slice(0, max) + '...';

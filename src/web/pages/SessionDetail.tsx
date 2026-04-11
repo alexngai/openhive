@@ -3,14 +3,14 @@ import { useParams, Link } from 'react-router-dom';
 import {
   Activity, AlertTriangle, Brain, ChevronDown, ChevronRight,
   Clock, Cpu, FileText, GitBranch, GitCommit, Hash,
-  MessageSquare, User,
+  MessageSquare, ShieldAlert, User,
 } from 'lucide-react';
 import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants } from '../hooks/useApi';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { AgentAvatar } from '../components/common/AgentAvatar';
-import { formatTokens } from '../components/events/event-utils';
+import { formatTokens, deduplicateStreamingEvents } from '../components/events/event-utils';
 import { EventStream } from '../components/events/EventStream';
 import { SessionChatInput } from '../components/events/SessionChatInput';
 import type { TrajectoryCheckpoint, AgentIdentity } from '../lib/api';
@@ -235,6 +235,7 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
   // Chat integration — gated by published MAP capabilities
   const {
     chatMode, chatStatus, sendMessage, cancelStream, capabilities, streamingEvents, streamError,
+    permissions, replyPermission,
   } = useSessionChat({ sessionId, sourceSwarmId, enabled: hasTrajectorySupport });
 
   if (!hasTrajectorySupport) {
@@ -267,13 +268,14 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
   const trajectoryEvents = pages.flatMap((page) => page.events);
   const total = pages[0]?.total ?? 0;
 
-  // Merge ACP streaming events with trajectory events.
-  // Streaming events are already in SessionEvent format from useAcpStream.
-  // Prepend them (newest-first) so EventStream renders them after historical events.
+  // Merge ACP streaming events with trajectory events, deduplicating overlaps.
+  // When ACP streaming is active, the same content may appear in both the
+  // real-time stream and the trajectory checkpoint that arrives shortly after.
   const events = useMemo(() => {
     if (streamingEvents.length === 0) return trajectoryEvents;
-    // Streaming events are in chronological order; reverse for newest-first
-    return [...[...streamingEvents].reverse(), ...trajectoryEvents];
+    const unique = deduplicateStreamingEvents(streamingEvents, trajectoryEvents);
+    if (unique.length === 0) return trajectoryEvents;
+    return [...[...unique].reverse(), ...trajectoryEvents];
   }, [trajectoryEvents, streamingEvents]);
 
   return (
@@ -290,6 +292,37 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
         emptyMessage="No events found in this session."
         emptyIcon={MessageSquare}
       />
+      {permissions.length > 0 && (
+        <div className="border-t px-4 py-3 space-y-2" style={{ borderColor: 'var(--color-border)', background: 'var(--color-bg-secondary)' }}>
+          {permissions.map((perm) => (
+            <div key={perm.requestId} className="flex items-center gap-3 px-3 py-2 rounded-lg border text-sm" style={{ borderColor: 'var(--color-border-warning, var(--color-border))', background: 'var(--color-bg)' }}>
+              <ShieldAlert className="w-4 h-4 shrink-0" style={{ color: 'var(--color-text-warning, var(--color-accent))' }} />
+              <div className="flex-1 min-w-0">
+                <span className="font-medium">Tool approval: </span>
+                <code className="text-xs px-1 py-0.5 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+                  {perm.toolCall?.name ?? 'unknown tool'}
+                </code>
+              </div>
+              <div className="flex gap-1.5 shrink-0">
+                <button
+                  onClick={() => replyPermission(perm.requestId, true)}
+                  className="px-2.5 py-1 text-xs font-medium rounded"
+                  style={{ background: 'var(--color-accent)', color: 'white' }}
+                >
+                  Allow
+                </button>
+                <button
+                  onClick={() => replyPermission(perm.requestId, false)}
+                  className="px-2.5 py-1 text-xs font-medium rounded border"
+                  style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
+                >
+                  Deny
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       <SessionChatInput
         mode={chatMode}
         status={chatStatus}

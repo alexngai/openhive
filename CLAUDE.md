@@ -58,7 +58,7 @@ src/
 - **Config loading**: `src/config.ts` validates all config with Zod. Access config via the validated object, not raw env vars.
 - **Event-driven**: State changes emit events through `src/events/dispatch.ts`. WebSocket and sync both consume these events.
 - **Pluggable providers**: Network providers (Tailscale, Headscale) and swarm providers (local, sandboxed) follow a common interface pattern in their respective directories.
-- **Realtime invalidation**: Frontend React Query caches are invalidated via WebSocket events (`src/web/hooks/useRealtimeInvalidation.ts`) rather than polling. Server broadcasts to channels like `map:discovery`, and per-domain hooks (`useSwarmRealtime`, `useResourcesRealtime`, `useSessionsRealtime`) subscribe and invalidate the relevant query keys.
+- **Realtime invalidation**: Frontend React Query caches are invalidated via WebSocket events (`src/web/hooks/useRealtimeInvalidation.ts`) rather than polling. Server broadcasts to channels like `map:discovery`, and per-domain hooks (`useSwarmRealtime`, `useResourcesRealtime`, `useSessionsRealtime`) subscribe and invalidate the relevant query keys. Channel subscriptions are ref-counted in `useWSStore` so multiple hooks subscribing to the same channel (e.g., `global`) don't unsubscribe prematurely when one unmounts.
 - **Swarm lifecycle**: Connected swarms follow the status progression `online` → `unreachable` → `offline`. The server pings WS clients every 30s, refreshing `last_seen_at`. On disconnect, status moves to `unreachable`; a periodic sweep (`markStaleSwarms`) demotes stale swarms to `offline` after `staleThresholdMinutes` (default 5 min).
 - **Session trajectories**: Agent session transcripts are synced via the MAP trajectory protocol. The `trajectory/checkpoint` handler (`src/map/trajectory-handler.ts`) auto-creates session resources and stores checkpoint metadata. Transcript content is served on-demand from connected agents via `trajectory/content.request`/`trajectory/content.response` notifications. Content is cached in session storage for offline access. Five-tier resolution: fresh cache → on-demand from swarm → local sessionlog transcript → stale cache → 503.
 - **Agent capabilities**: Connected agents declare capabilities during MAP registration using the MAP `ParticipantCapabilities` schema. The hub captures these via the `agent.registered` event and stores on the connection + database. Capability checks gate operations (content requests, chat modes). See "Session Chat" section for capability-gated chat.
@@ -103,7 +103,8 @@ Content is converted via Claude JSONL adapter → ACP events (user messages, ass
 - `src/web/pages/Sessions.tsx` — Session list with enriched names
 - `src/web/pages/SessionDetail.tsx` — Trajectory tab with event stream + chat input, checkpoints tab, learning tab
 - `src/web/components/events/` — Reusable event stream rendering (EventStream, EventBubble, ToolCallGroupBlock, CustomEventBadges, event-utils, SessionChatInput)
-- `src/web/hooks/useSessionChat.ts` — Session chat orchestration hook (capability resolution → mode detection → useChatChannel)
+- `src/web/hooks/useSessionChat.ts` — Session chat orchestration hook (capability resolution → mode detection → ACP/mail dispatch)
+- `src/web/hooks/useAcpStream.ts` — ACP streaming lifecycle: create stream → initialize → session → prompt → accumulate events. Handles text chunks, tool calls, tool results, permission requests
 - `src/web/adapters/session-chat-adapter.ts` — ChatChannelAdapter for mail-based session chat
 
 ### Configuration
@@ -153,21 +154,35 @@ Agents declare capabilities at MAP registration. The hub stores these on `MapInb
 ```
 User types in SessionChatInput
   → useSessionChat resolves swarm capabilities via useMapSwarm()
-  → useChatChannel(swarmAgentId, channelConfig) detects mode
-  → ACP: ACPStreamConnection.prompt() → MAP Server → Agent (streaming response)
-  → Mail: SessionChatAdapter.send() → POST /sessions/:id/chat
+  → Mode detection: protocols includes 'acp' → ACP, mail.canJoin → Mail, messaging.canReceive → Inject
+  → ACP: useAcpStream manages lifecycle
+    → POST /api/swarmcraft/acp/streams (create) → /initialize → /session → /prompt
+    → Streaming response via WebSocket: acp.session.update → text/tool_call/tool_result events
+    → Events bridged: SwarmCraft WS → server.ts interceptor → OpenHive WS (global channel)
+    → Permission requests: acp.permission.request → UI dialog → POST /streams/:id/permission
+  → Mail: POST /sessions/:id/chat
     → Lazy conversation creation (mail/create JSON-RPC)
     → mail_conversation_id stored in session resource metadata
     → Turn sent via mail/turn JSON-RPC → agent-inbox → agent reads on next prompt
   → Inject: POST /agents/:id/inject → fire-and-forget
 ```
 
+#### Event Deduplication
+
+ACP streaming events and trajectory checkpoint data can contain the same content (e.g., a prompt sent via ACP is also recorded in the agent's trajectory). The `deduplicateStreamingEvents()` function in `event-utils.ts` fingerprints events by `type:contentPrefix` (first 100 chars) and filters duplicates before merging into the event stream.
+
+#### ACP Permission Handling
+
+When an ACP agent requests tool approval, SwarmCraft emits `acp.permission.request` via WebSocket. The frontend renders Allow/Deny buttons above the chat input. Replies are sent via `POST /api/swarmcraft/acp/streams/:streamId/permission` with `{ requestId, reply: { outcome: 'approved' | 'denied' } }`. Permissions time out after 5 minutes on the server side.
+
 #### Key Files
 
-- `src/web/hooks/useSessionChat.ts` — Resolves `sourceSwarmId` → swarm capabilities → chat mode. Provides `SessionChatAdapter` for mail, passes `swarmAgentId` to `useChatChannel` for ACP/inject.
+- `src/web/hooks/useSessionChat.ts` — Resolves `sourceSwarmId` → swarm capabilities → chat mode. Dispatches to useAcpStream (ACP) or REST API (mail).
+- `src/web/hooks/useAcpStream.ts` — ACP stream lifecycle, text accumulation, tool call handling, permission request tracking.
 - `src/web/components/events/SessionChatInput.tsx` — Sticky bottom input, mode-aware UI with capability-specific unavailable reasons.
 - `src/web/adapters/session-chat-adapter.ts` — `ChatChannelAdapter` implementation routing through `POST /sessions/:id/chat`.
 - `src/api/routes/session-chat.ts` — Backend endpoint: lazy conversation creation, auto-join, turn delivery via `mail/turn` JSON-RPC.
+- `src/server.ts` — ACP event bridge: intercepts SwarmCraft WS broadcasts, forwards `acp.*` events to OpenHive's global WS channel.
 
 ## Task Coordination Architecture
 

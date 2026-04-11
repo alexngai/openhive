@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Tests for SessionChatAdapter — the mail-based chat adapter for sessions.
  *

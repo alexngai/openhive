@@ -10,6 +10,7 @@ import {
   countToolCalls,
   groupEventsForDisplay,
   groupConsecutiveCustomEvents,
+  deduplicateStreamingEvents,
   HIDDEN_CUSTOM_EVENTS,
 } from '../../../components/events/event-utils';
 
@@ -377,5 +378,71 @@ describe('groupConsecutiveCustomEvents', () => {
     const result = groupConsecutiveCustomEvents(events);
     expect(result).toHaveLength(1);
     expect(Array.isArray(result[0])).toBe(true);
+  });
+});
+
+describe('deduplicateStreamingEvents', () => {
+  it('returns empty array when no streaming events', () => {
+    const trajectory = [makeEvent({ id: '1', type: 'assistant_message', content: [{ type: 'text', text: 'Hello' }] })];
+    expect(deduplicateStreamingEvents([], trajectory)).toEqual([]);
+  });
+
+  it('returns all streaming events when no trajectory events', () => {
+    const streaming = [makeEvent({ id: 'acp-1', type: 'user_message', content: [{ type: 'text', text: 'Hi' }] })];
+    expect(deduplicateStreamingEvents(streaming, [])).toEqual(streaming);
+  });
+
+  it('filters streaming events that match trajectory by type + content', () => {
+    const streaming = [
+      makeEvent({ id: 'acp-msg-1', type: 'assistant_message', content: [{ type: 'text', text: 'Hello world' }] }),
+      makeEvent({ id: 'acp-user-1', type: 'user_message', content: [{ type: 'text', text: 'Test prompt' }] }),
+    ];
+    const trajectory = [
+      makeEvent({ id: 'traj-1', type: 'assistant_message', content: [{ type: 'text', text: 'Hello world' }] }),
+    ];
+
+    const result = deduplicateStreamingEvents(streaming, trajectory);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('acp-user-1');
+  });
+
+  it('keeps streaming events that differ in type', () => {
+    const streaming = [
+      makeEvent({ id: 'acp-tc-1', type: 'tool_call', content: [{ type: 'text', text: 'Read' }] }),
+    ];
+    const trajectory = [
+      makeEvent({ id: 'traj-1', type: 'assistant_message', content: [{ type: 'text', text: 'Read' }] }),
+    ];
+
+    const result = deduplicateStreamingEvents(streaming, trajectory);
+    expect(result).toHaveLength(1);
+  });
+
+  it('matches on first 100 chars of content prefix', () => {
+    const longText = 'A'.repeat(200);
+    const streaming = [
+      makeEvent({ id: 'acp-1', type: 'assistant_message', content: [{ type: 'text', text: longText }] }),
+    ];
+    // Trajectory has same first 100 chars but different tail
+    const trajectory = [
+      makeEvent({ id: 'traj-1', type: 'assistant_message', content: [{ type: 'text', text: longText.slice(0, 100) + 'B'.repeat(100) }] }),
+    ];
+
+    const result = deduplicateStreamingEvents(streaming, trajectory);
+    // Should match since first 100 chars are the same
+    expect(result).toHaveLength(0);
+  });
+
+  it('handles events without content', () => {
+    const streaming = [
+      makeEvent({ id: 'acp-1', type: 'tool_call' }),
+    ];
+    const trajectory = [
+      makeEvent({ id: 'traj-1', type: 'tool_call' }),
+    ];
+
+    // Both fingerprint as "tool_call:" — should be deduped
+    const result = deduplicateStreamingEvents(streaming, trajectory);
+    expect(result).toHaveLength(0);
   });
 });

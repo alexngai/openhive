@@ -34,14 +34,25 @@ export interface UseAcpStreamOptions {
   enabled?: boolean;
 }
 
+export interface AcpPermissionRequest {
+  requestId: string;
+  streamId: string;
+  sessionId?: string;
+  toolCall?: { name: string; input?: unknown };
+}
+
 export interface UseAcpStreamReturn {
   status: AcpStreamState['status'];
   error: string | null;
   /** Streaming events in SessionEvent format — ready for EventStream rendering */
   events: SessionEvent[];
+  /** Pending permission requests from the agent */
+  permissions: AcpPermissionRequest[];
   send: (text: string) => Promise<void>;
   cancel: () => Promise<void>;
   connect: () => Promise<void>;
+  /** Reply to a permission request (grant or deny tool execution) */
+  replyPermission: (requestId: string, granted: boolean) => Promise<void>;
 }
 
 async function scFetch<T>(path: string, options?: RequestInit): Promise<T> {
@@ -78,6 +89,7 @@ export function useAcpStream({
 
   // Events in SessionEvent format — compatible with EventStream/EventBubble
   const [events, setEvents] = useState<SessionEvent[]>([]);
+  const [permissions, setPermissions] = useState<AcpPermissionRequest[]>([]);
   const currentAssistantIdRef = useRef<string | null>(null);
   const streamIdRef = useRef<string | null>(null);
   const eventSeqRef = useRef(0);
@@ -97,7 +109,24 @@ export function useAcpStream({
     const contentText = update?.content?.text ?? update?.text;
     const sessionUpdate = update?.sessionUpdate;
 
-    // Tool call events
+    // Tool call result events (must check before the generic toolCallId check below)
+    if (sessionUpdate === 'tool_call_update' || sessionUpdate === 'tool_call_complete') {
+      const toolCallId = update.toolCallId;
+      if (!toolCallId) return;
+      const seq = eventSeqRef.current++;
+
+      setEvents(prev => [...prev, {
+        id: `acp-tr-${toolCallId}-${seq}`,
+        timestamp: new Date().toISOString(),
+        sequence: seq,
+        type: 'tool_result' as const,
+        content: [{ type: 'text' as const, text: update.rawOutput ?? update.content ?? '' }],
+        isError: update.status === 'error',
+      } as SessionEvent]);
+      return;
+    }
+
+    // Tool call start events
     if (sessionUpdate === 'tool_call' || update?.toolCallId) {
       const toolCallId = update.toolCallId ?? `tc-${Date.now()}`;
       const seq = eventSeqRef.current++;
@@ -120,23 +149,6 @@ export function useAcpStream({
         toolCallId,
         toolName: update.title ?? update.toolName ?? 'tool',
         input: update.rawInput ? JSON.parse(update.rawInput) : undefined,
-      } as SessionEvent]);
-      return;
-    }
-
-    // Tool call update/complete (result)
-    if (sessionUpdate === 'tool_call_update' || sessionUpdate === 'tool_call_complete') {
-      const toolCallId = update.toolCallId;
-      if (!toolCallId) return;
-      const seq = eventSeqRef.current++;
-
-      setEvents(prev => [...prev, {
-        id: `acp-tr-${toolCallId}-${seq}`,
-        timestamp: new Date().toISOString(),
-        sequence: seq,
-        type: 'tool_result' as const,
-        content: [{ type: 'text' as const, text: update.rawOutput ?? update.content ?? '' }],
-        isError: update.status === 'error',
       } as SessionEvent]);
       return;
     }
@@ -198,6 +210,36 @@ export function useAcpStream({
     if (data?.streamId && data.streamId !== streamIdRef.current) return;
     setState(prev => ({ ...prev, status: 'error', error: data?.error ?? 'Stream error' }));
   }, []));
+
+  // Handle permission requests from agent (tool approval)
+  useWSEvent('acp.permission.request', useCallback((data: any) => {
+    if (!streamIdRef.current) return;
+    if (data?.streamId && data.streamId !== streamIdRef.current) return;
+
+    const request: AcpPermissionRequest = {
+      requestId: data?.requestId ?? `perm-${Date.now()}`,
+      streamId: data?.streamId ?? streamIdRef.current!,
+      sessionId: data?.sessionId,
+      toolCall: data?.toolCall,
+    };
+    setPermissions(prev => [...prev, request]);
+  }, []));
+
+  // Reply to a permission request
+  const replyPermission = useCallback(async (requestId: string, granted: boolean) => {
+    if (!state.streamId) return;
+    try {
+      await scFetch(`/acp/streams/${state.streamId}/permission`, {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId,
+          reply: { outcome: granted ? 'approved' : 'denied' },
+        }),
+      });
+    } catch { /* best effort */ }
+    // Remove from pending list
+    setPermissions(prev => prev.filter(p => p.requestId !== requestId));
+  }, [state.streamId]);
 
   // Connect: create stream → initialize → create session
   const connect = useCallback(async () => {
@@ -290,7 +332,16 @@ export function useAcpStream({
       });
       // Response arrives via WebSocket events
     } catch (err) {
-      setState(prev => ({ ...prev, status: 'error', error: (err as Error).message }));
+      const msg = (err as Error).message;
+      // Detect stale stream (server restarted, stream expired)
+      const isStale = msg.includes('not found') || msg.includes('404') || msg.includes('expired');
+      setState(prev => ({
+        ...prev,
+        status: 'error',
+        error: isStale ? 'ACP stream expired — reconnect or use mail fallback' : msg,
+        ...(isStale ? { streamId: null, sessionId: null, initialized: false } : {}),
+      }));
+      if (isStale) streamIdRef.current = null;
     }
   }, [state.streamId, state.sessionId, state.status]);
 
@@ -303,17 +354,36 @@ export function useAcpStream({
     setState(prev => ({ ...prev, status: 'ready' }));
   }, [state.streamId]);
 
+  // Reset ACP stream when disabled (e.g., swarm goes offline mid-chat).
+  // Preserves accumulated events so they remain visible in the UI.
+  useEffect(() => {
+    if (!enabled && state.streamId) {
+      // Best-effort cancel the server-side stream
+      fetch(`${SC_PREFIX}/acp/streams/${state.streamId}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }).catch(() => {});
+      setState(prev => ({ ...prev, status: 'idle', streamId: null, sessionId: null, initialized: false }));
+      streamIdRef.current = null;
+      currentAssistantIdRef.current = null;
+      setPermissions([]);
+    }
+  }, [enabled, state.streamId]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (streamIdRef.current) {
-        fetch(`${SC_PREFIX}/acp/streams/${streamIdRef.current}`, {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-        }).catch(() => {});
+        try {
+          const p = fetch(`${SC_PREFIX}/acp/streams/${streamIdRef.current}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+          });
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        } catch { /* best effort cleanup */ }
       }
     };
   }, []);
 
-  return { status: state.status, error: state.error, events, send, cancel, connect };
+  return { status: state.status, error: state.error, events, permissions, send, cancel, connect, replyPermission };
 }
