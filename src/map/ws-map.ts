@@ -25,6 +25,7 @@ import { isMapSyncMessage } from './sync-listener.js';
 import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
 import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities } from './connection-registry.js';
 import { handleContentResponse } from './trajectory-content.js';
+import { handleTrajectoryRequest } from './trajectory-handler.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
 import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
 import { getMailJsonRpc } from '../mail/index.js';
@@ -33,6 +34,40 @@ import { broadcastToChannel } from '../realtime/index.js';
 import { mapHubEvents } from './service.js';
 import type { Agent } from '../types.js';
 import type { Config } from '../config.js';
+
+// ============================================================================
+// Trajectory Checkpoint Bridge
+// ============================================================================
+
+function handleTrajectoryCheckpoint(
+  params: Record<string, unknown>,
+  swarmId: string,
+  ws: WebSocket,
+  requestId?: string | number | null,
+): void {
+  try {
+    const conn = getInbound(swarmId);
+    const agentId = conn?.agentId ?? swarmId;
+
+    const result = handleTrajectoryRequest('trajectory/checkpoint', params, {
+      swarmId,
+      agentId,
+    });
+    console.log(`[ws-map] trajectory checkpoint processed: resource=${result?.resource_id} created=${result?.created}`);
+
+    // Send JSON-RPC response if this was a request (has id)
+    if (requestId != null) {
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id: requestId, result }));
+    }
+  } catch (err) {
+    console.error(`[ws-map] trajectory checkpoint error:`, (err as Error).message);
+    if (requestId != null) {
+      const code = (err as any).code ?? -32603;
+      const message = (err as Error).message ?? 'Internal error';
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id: requestId, error: { code, message } }));
+    }
+  }
+}
 
 let HEARTBEAT_INTERVAL = 30_000;
 const TOKEN_EXPIRY_WARNING_SECONDS = 300;
@@ -186,6 +221,21 @@ function createNotificationInterceptor(
   const handler = (data: Buffer | string) => {
     try {
       const msg = JSON.parse(data.toString());
+
+      // DEBUG: log all methods from this connection
+      if (msg.method) {
+        console.log(`[ws-map-debug] ${swarmId} method=${msg.method} id=${msg.id ?? 'notification'}`);
+      }
+
+      // Handle trajectory/checkpoint requests before they reach the MAPServer.
+      // These are JSON-RPC requests (have id) sent by the sidecar's callExtension.
+      if (msg.method === 'trajectory/checkpoint' && msg.id != null) {
+        console.log(`[ws-map] trajectory/checkpoint from ${swarmId}, id=${msg.id}`);
+        handleTrajectoryCheckpoint(msg.params as Record<string, unknown>, swarmId, ws, msg.id);
+        // Note: MAPServer will also see this message (we can't prevent it from
+        // the on('message') handler), but it will return an "unknown method" error
+        // which the sidecar ignores since it already got our success response first.
+      }
 
       // Only intercept notifications (no `id` field) that are OpenHive-specific
       if (msg.id != null) return; // Let requests pass through to MAPServer

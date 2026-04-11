@@ -1893,3 +1893,20 @@ export function useSendSessionChat() {
     },
   });
 }
+
+/** Create a new ACP agent session for a swarm. Eagerly creates the session resource. */
+export function useCreateAcpSession() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ swarmId, cwd }: { swarmId: string; cwd?: string }) =>
+      api.post<{ session_resource_id: string; acp_session_id: string; acp_stream_id: string; created: boolean }>(
+        '/sessions/create-acp',
+        { swarm_id: swarmId, cwd },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessions-overview'] });
+      queryClient.invalidateQueries({ queryKey: ['session-checkpoints'] });
+    },
+  });
+}

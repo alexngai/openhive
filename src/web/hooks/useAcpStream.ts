@@ -32,6 +32,10 @@ export interface UseAcpStreamOptions {
   /** Working directory for the ACP session (from session/swarm metadata) */
   cwd?: string;
   enabled?: boolean;
+  /** Attach to an existing ACP stream (created by create-acp endpoint). Skips create/initialize/session. */
+  existingStreamId?: string | null;
+  /** ACP session ID for the existing stream. Required when existingStreamId is set. */
+  existingSessionId?: string | null;
 }
 
 export interface AcpPermissionRequest {
@@ -78,6 +82,8 @@ export function useAcpStream({
   targetAgent,
   cwd,
   enabled = true,
+  existingStreamId,
+  existingSessionId,
 }: UseAcpStreamOptions): UseAcpStreamReturn {
   const [state, setState] = useState<AcpStreamState>({
     streamId: null,
@@ -86,6 +92,23 @@ export function useAcpStream({
     status: 'idle',
     error: null,
   });
+
+  // Attach to an existing stream (created by create-acp endpoint) on mount.
+  // This avoids creating a duplicate stream/subscription on the same MAP connection.
+  const attachedRef = useRef(false);
+  useEffect(() => {
+    if (existingStreamId && existingSessionId && !attachedRef.current) {
+      attachedRef.current = true;
+      streamIdRef.current = existingStreamId;
+      setState({
+        streamId: existingStreamId,
+        sessionId: existingSessionId,
+        initialized: true,
+        status: 'ready',
+        error: null,
+      });
+    }
+  }, [existingStreamId, existingSessionId]);
 
   // Events in SessionEvent format — compatible with EventStream/EventBubble
   const [events, setEvents] = useState<SessionEvent[]>([]);
@@ -243,24 +266,14 @@ export function useAcpStream({
 
   // Connect: create stream → initialize → create session
   const connect = useCallback(async () => {
-    if (!serverId || !enabled) return;
+    if (!serverId || !enabled || !targetAgent) return;
+    // Don't create a new stream if we have an existing one (attach effect handles it)
+    if (existingStreamId) return;
 
     setState(prev => ({ ...prev, status: 'connecting', error: null }));
 
     try {
-      // Resolve target agent if not provided
-      let resolvedTarget = targetAgent;
-      if (!resolvedTarget) {
-        // List agents from the swarm to find a valid target
-        try {
-          const agents = await scFetch<any[]>(`/agents?mapServerId=${serverId}`);
-          const sidecar = agents?.find((a: any) => a.role === 'sidecar' || a.type === 'swarm');
-          resolvedTarget = sidecar?.id ?? agents?.[0]?.id;
-        } catch {
-          // Fall back to serverId
-          resolvedTarget = serverId;
-        }
-      }
+      const resolvedTarget = targetAgent;
 
       // Step 1: Create ACP stream
       const stream = await scFetch<{ streamId: string }>('/acp/streams', {
@@ -275,7 +288,7 @@ export function useAcpStream({
       // Step 2: Initialize
       await scFetch<any>(
         `/acp/streams/${stream.streamId}/initialize`,
-        { method: 'POST' },
+        { method: 'POST', body: '{}' },
       );
 
       // Step 3: Create session
@@ -304,7 +317,7 @@ export function useAcpStream({
         error: (err as Error).message,
       }));
     }
-  }, [serverId, targetAgent, cwd, enabled]);
+  }, [serverId, targetAgent, cwd, enabled, existingStreamId]);
 
   // Send a prompt
   const send = useCallback(async (text: string) => {
@@ -356,8 +369,10 @@ export function useAcpStream({
 
   // Reset ACP stream when disabled (e.g., swarm goes offline mid-chat).
   // Preserves accumulated events so they remain visible in the UI.
+  // Skip reset when we have an existing stream — `enabled` starts false before
+  // async swarm data loads, but we don't want to destroy the pre-created stream.
   useEffect(() => {
-    if (!enabled && state.streamId) {
+    if (!enabled && state.streamId && !existingStreamId) {
       // Best-effort cancel the server-side stream
       fetch(`${SC_PREFIX}/acp/streams/${state.streamId}/cancel`, {
         method: 'POST',
@@ -368,7 +383,7 @@ export function useAcpStream({
       currentAssistantIdRef.current = null;
       setPermissions([]);
     }
-  }, [enabled, state.streamId]);
+  }, [enabled, state.streamId, existingStreamId]);
 
   // Cleanup on unmount
   useEffect(() => {

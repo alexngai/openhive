@@ -1,9 +1,9 @@
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Activity, Bell, ChevronRight, Clock, Cpu, FileText, Globe,
-  Link2, MessageSquare, Monitor, Network, Share2,
+  Link2, MessageSquare, Monitor, Network, Plus, Share2,
   Square, RotateCw, Terminal, Trash2, User, Wifi, WifiOff,
-  CheckCircle2,
+  CheckCircle2, Zap,
 } from 'lucide-react';
 import {
   useMapSwarm, useMapNodes, useHostedSwarms, useSessionsList, useSwarmLogs,
@@ -11,6 +11,7 @@ import {
   useSwarmMessages, useSwarmPeers,
   useEventSubscriptions, useDeliveryLog,
   useConnectionHealth,
+  useCreateAcpSession,
 } from '../hooks/useApi';
 import { useSwarmRealtime, useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -116,17 +117,88 @@ function SwarmInfo({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
       {swarm.capabilities && Object.keys(swarm.capabilities).length > 0 && (
         <div className="mt-3 flex items-center gap-1.5 flex-wrap">
           {Object.entries(swarm.capabilities)
-            .filter(([, v]) => v === true)
-            .map(([key]) => (
-              <span
-                key={key}
-                className="text-2xs px-1.5 py-0.5 rounded capitalize"
-                style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
-              >
-                {key}
-              </span>
-            ))}
+            .filter(([, v]) => v && v !== false)
+            .map(([key]) => {
+              const isProtocol = key === 'protocols';
+              const isAcp = key === 'acp';
+              if (isProtocol) {
+                const protos = swarm.capabilities![key] as string[];
+                return protos.map((p) => (
+                  <span key={p} className="text-2xs px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'var(--color-accent-bg)', color: 'var(--color-accent)' }}>
+                    {p}
+                  </span>
+                ));
+              }
+              if (isAcp) return null; // shown via protocols badge
+              return (
+                <span
+                  key={key}
+                  className="text-2xs px-1.5 py-0.5 rounded capitalize"
+                  style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
+                >
+                  {key}
+                </span>
+              );
+            })}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Capability-Gated Actions ───────────────────────────────────────────────
+
+function SwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
+  const navigate = useNavigate();
+  const createAcpSession = useCreateAcpSession();
+
+  const caps = (swarm.capabilities || {}) as Record<string, unknown>;
+  const protocols = Array.isArray(caps.protocols) ? caps.protocols as string[] : [];
+  const supportsAcp = protocols.includes('acp');
+  const isOnline = swarm.status === 'online' || swarm.status === 'unreachable';
+
+  if (!isOnline || !supportsAcp) return null;
+
+  const projectPath = (caps as any)?.projectPath as string
+    ?? (swarm.metadata as any)?.projectPath as string
+    ?? undefined;
+
+  const handleNewSession = async () => {
+    try {
+      const result = await createAcpSession.mutateAsync({
+        swarmId,
+        cwd: projectPath,
+      });
+      navigate(`/sessions/${result.session_resource_id}`, {
+        state: {
+          acpStreamId: result.acp_stream_id,
+          acpSessionId: result.acp_session_id,
+        },
+      });
+    } catch {
+      // Error shown via mutation state
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        onClick={handleNewSession}
+        disabled={createAcpSession.isPending}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors"
+        style={{ backgroundColor: 'var(--color-accent)', color: 'white' }}
+      >
+        {createAcpSession.isPending ? (
+          <LoadingSpinner size="sm" />
+        ) : (
+          <Zap className="w-3.5 h-3.5" />
+        )}
+        New Agent Session
+      </button>
+      {createAcpSession.isError && (
+        <span className="text-2xs text-red-400">
+          {(createAcpSession.error as Error)?.message || 'Failed to create session'}
+        </span>
       )}
     </div>
   );
@@ -775,6 +847,8 @@ export function SwarmDetail() {
       </div>
 
       <SwarmInfo swarm={swarm} swarmId={id!} />
+
+      <SwarmActions swarm={swarm} swarmId={id!} />
 
       {swarm.status === 'online' && <ConnectionHealthBar swarmId={id!} />}
 

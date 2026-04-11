@@ -212,11 +212,6 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
       verification: {
         strategy: verificationStrategy,
       },
-      rateLimit: {
-        enabled: true,
-        max: 100,
-        timeWindow: '1 minute',
-      },
       storage: {
         type: 'local',
         path: paths.uploads,

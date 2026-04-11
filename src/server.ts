@@ -1,6 +1,5 @@
 import Fastify, { FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
-import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import multipart from "@fastify/multipart";
@@ -156,17 +155,6 @@ export async function createHive(
     });
   }
 
-  // Register rate limiting
-  if (config.rateLimit.enabled) {
-    await fastify.register(rateLimit, {
-      max: config.rateLimit.max,
-      timeWindow: config.rateLimit.timeWindow,
-      keyGenerator: (request) => {
-        // Use agent ID if authenticated, otherwise IP
-        return (request as { agent?: { id: string } }).agent?.id || request.ip;
-      },
-    });
-  }
 
   // Hostname guard — rejects requests with mismatched Host header.
   // Only active in swarmhub auth mode (managed hosting). Skipped in

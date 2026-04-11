@@ -249,10 +249,13 @@ function resolveSessionResource(
   const projectPath = meta?.projectPath as string | undefined;
   const sessionId = checkpoint.session_id as string | undefined;
 
-  // Build a human-readable session name and description
+  // Build a human-readable session name and description.
+  // Include a short session/swarm suffix to avoid UNIQUE constraint collisions
+  // when multiple sessions exist for the same project/branch.
+  const shortId = (sessionId ?? swarmId).slice(-8);
   const sessionName = `session:${swarmId}`;
   const displayName = project
-    ? (branch ? `${project} (${branch})` : project)
+    ? (branch ? `${project} (${branch}) [${shortId}]` : `${project} [${shortId}]`)
     : sessionName;
   const description = firstPrompt
     ? firstPrompt.slice(0, 200)
@@ -279,6 +282,7 @@ function resolveSessionResource(
             template,
             projectPath,
             firstPrompt: firstPrompt?.slice(0, 200),
+            source_swarm_id: swarmId,
           },
         });
       } catch { /* non-critical */ }
@@ -300,7 +304,7 @@ function resolveSessionResource(
     git_remote_url: remoteUrl,
     owner_agent_id: agentId,
     scope: 'manual',
-    metadata: { project, branch, template, projectPath, sessionId, firstPrompt: firstPrompt?.slice(0, 200) },
+    metadata: { project, branch, template, projectPath, sessionId, firstPrompt: firstPrompt?.slice(0, 200), source_swarm_id: swarmId },
   });
 
   return { resourceId: resource.id, created };

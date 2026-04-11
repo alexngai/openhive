@@ -20,6 +20,10 @@ export interface UseSessionChatOptions {
   sessionId: string;
   sourceSwarmId?: string | null;
   enabled?: boolean;
+  /** Existing ACP stream ID (from create-acp endpoint). Avoids creating a duplicate stream. */
+  existingAcpStreamId?: string | null;
+  /** Existing ACP session ID (from create-acp endpoint). */
+  existingAcpSessionId?: string | null;
 }
 
 export interface UseSessionChatReturn {
@@ -88,6 +92,8 @@ export function useSessionChat({
   sessionId,
   sourceSwarmId,
   enabled = true,
+  existingAcpStreamId,
+  existingAcpSessionId,
 }: UseSessionChatOptions): UseSessionChatReturn {
   // Fetch swarm data to check published capabilities.
   const { data: swarm } = useMapSwarm(sourceSwarmId ?? '');
@@ -118,26 +124,50 @@ export function useSessionChat({
   const projectPath = (swarmCaps as any)?.projectPath as string | undefined
     ?? (swarm?.metadata as any)?.projectPath as string | undefined;
 
-  // ACP streaming (only active when mode is 'acp')
+  // Resolve ACP target agent from swarm capabilities.
+  // The swarm's acp.agent field names the MAP agent that handles ACP prompts.
+  // Falls back to the swarm's registered agent name (from MAP node data).
+  const acpTargetAgent = useMemo(() => {
+    if (!capabilities.supportsAcp) return undefined;
+    const acpCaps = (swarmCaps as any)?.acp as Record<string, unknown> | undefined;
+    return (acpCaps?.agent as string) ?? undefined;
+  }, [capabilities.supportsAcp, swarmCaps]);
+
+  // ACP streaming — keep serverId set whenever ACP is supported (even during error/retry)
+  // so connect() can retry. Only disable when the swarm doesn't support ACP at all.
   const acpStream = useAcpStream({
-    serverId: chatMode === 'acp' ? sourceSwarmId! : null,
+    serverId: capabilities.supportsAcp ? sourceSwarmId! : null,
+    targetAgent: acpTargetAgent,
     cwd: projectPath,
-    enabled: chatMode === 'acp',
+    enabled: capabilities.supportsAcp && isConnected,
+    existingStreamId: existingAcpStreamId,
+    existingSessionId: existingAcpSessionId,
   });
 
-  // Auto-connect ACP stream when mode becomes 'acp'
+  // Auto-connect ACP stream when mode becomes 'acp' and target agent is resolved.
+  // Skip if we already attached to an existing stream (from create-acp endpoint).
   const acpConnectedRef = useRef(false);
+  const acpTargetWhenConnected = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (chatMode === 'acp' && !acpConnectedRef.current && acpStream.status === 'idle') {
+    if (chatMode !== 'acp' || !acpTargetAgent) return;
+    // Don't create a new stream if we have an existing one (attach effect handles it)
+    if (existingAcpStreamId) return;
+
+    const shouldConnect = !acpConnectedRef.current && acpStream.status === 'idle';
+    const shouldRetry = acpStream.status === 'error' && acpTargetWhenConnected.current !== acpTargetAgent;
+
+    if (shouldConnect || shouldRetry) {
       acpConnectedRef.current = true;
+      acpTargetWhenConnected.current = acpTargetAgent;
       acpStream.connect();
     }
-  }, [chatMode, acpStream.status, acpStream.connect]);
+  }, [chatMode, acpTargetAgent, acpStream.status, acpStream.connect, existingAcpStreamId]);
 
   // Reset connection tracking when mode changes away from ACP
   useEffect(() => {
     if (chatMode !== 'acp') {
       acpConnectedRef.current = false;
+      acpTargetWhenConnected.current = undefined;
     }
   }, [chatMode]);
 

@@ -95,7 +95,7 @@ describe('useAcpStream', () => {
 
     it('registers WebSocket event handlers', () => {
       renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
 
@@ -107,13 +107,12 @@ describe('useAcpStream', () => {
 
   describe('connect', () => {
     it('creates stream, initializes, and creates session', async () => {
-      queueFetchResponse({ data: [] }); // agent list query
       queueFetchResponse({ data: { streamId: 'stream-1' } }); // create stream
       queueFetchResponse({ data: { agentInfo: { name: 'test' } } }); // initialize
       queueFetchResponse({ data: { sessionId: 'session-1' } }); // create session
 
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
 
@@ -130,7 +129,7 @@ describe('useAcpStream', () => {
       queueFetchResponse({ error: 'Connection refused' }, false, 503); // create stream fails
 
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
 
@@ -160,7 +159,6 @@ describe('useAcpStream', () => {
   describe('WebSocket text accumulation', () => {
     // Helper: connect the stream so streamIdRef is set and WS events are processed
     async function connectStream(result: any) {
-      queueFetchResponse({ data: [] }); // agent list
       queueFetchResponse({ data: { streamId: 'stream-ws' } });
       queueFetchResponse({ data: { agentInfo: { name: 'test' } } });
       queueFetchResponse({ data: { sessionId: 'session-ws' } });
@@ -169,7 +167,7 @@ describe('useAcpStream', () => {
 
     it('creates new assistant message on first text chunk', async () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
       await connectStream(result);
@@ -184,7 +182,7 @@ describe('useAcpStream', () => {
 
     it('accumulates text chunks into same message', async () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
       await connectStream(result);
@@ -199,7 +197,7 @@ describe('useAcpStream', () => {
 
     it('marks streaming message with _isStreaming', async () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
       await connectStream(result);
@@ -212,7 +210,7 @@ describe('useAcpStream', () => {
 
     it('finalizes message on prompt completed', async () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
       await connectStream(result);
@@ -234,7 +232,6 @@ describe('useAcpStream', () => {
 
   describe('WebSocket tool call handling', () => {
     async function connectStream(result: any) {
-      queueFetchResponse({ data: [] });
       queueFetchResponse({ data: { streamId: 'stream-tc' } });
       queueFetchResponse({ data: { agentInfo: { name: 'test' } } });
       queueFetchResponse({ data: { sessionId: 'session-tc' } });
@@ -243,7 +240,7 @@ describe('useAcpStream', () => {
 
     it('creates tool_call event', async () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
       await connectStream(result);
@@ -260,7 +257,7 @@ describe('useAcpStream', () => {
 
     it('creates tool_result event on tool_call_complete', async () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
       await connectStream(result);
@@ -282,7 +279,7 @@ describe('useAcpStream', () => {
 
     it('creates both tool_call and text events in sequence', async () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
       await connectStream(result);
@@ -306,14 +303,13 @@ describe('useAcpStream', () => {
   describe('send', () => {
     it('adds user message and sends prompt', async () => {
       // Setup connected state
-      queueFetchResponse({ data: [] }); // agent list
       queueFetchResponse({ data: { streamId: 'stream-1' } });
       queueFetchResponse({ data: { agentInfo: { name: 'test' } } });
       queueFetchResponse({ data: { sessionId: 'session-1' } });
       queueFetchResponse({ data: { stopReason: 'end_turn' } }); // prompt response
 
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
 
@@ -332,7 +328,7 @@ describe('useAcpStream', () => {
 
     it('does nothing when not ready', async () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
 
@@ -346,7 +342,7 @@ describe('useAcpStream', () => {
   describe('error handling', () => {
     it('sets error on stream error event', () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
 
@@ -363,13 +359,12 @@ describe('useAcpStream', () => {
 
   describe('event format', () => {
     it('produces SessionEvent-compatible events', async () => {
-      queueFetchResponse({ data: [] });
       queueFetchResponse({ data: { streamId: 'stream-fmt' } });
       queueFetchResponse({ data: { agentInfo: { name: 'test' } } });
       queueFetchResponse({ data: { sessionId: 'session-fmt' } });
 
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
 
@@ -390,7 +385,6 @@ describe('useAcpStream', () => {
 
   describe('permission handling', () => {
     async function connectStream(result: any) {
-      queueFetchResponse({ data: [] });
       queueFetchResponse({ data: { streamId: 'stream-perm' } });
       queueFetchResponse({ data: { agentInfo: { name: 'test' } } });
       queueFetchResponse({ data: { sessionId: 'session-perm' } });
@@ -399,7 +393,7 @@ describe('useAcpStream', () => {
 
     it('starts with empty permissions', () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
       expect(result.current.permissions).toEqual([]);
@@ -407,7 +401,7 @@ describe('useAcpStream', () => {
 
     it('accumulates permission requests', async () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
       await connectStream(result);
@@ -429,7 +423,7 @@ describe('useAcpStream', () => {
 
     it('removes permission after reply', async () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
       await connectStream(result);
@@ -452,7 +446,7 @@ describe('useAcpStream', () => {
 
     it('ignores permission events for other streams', async () => {
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
       await connectStream(result);
@@ -468,13 +462,12 @@ describe('useAcpStream', () => {
 
   describe('disconnect handling', () => {
     it('resets to idle when disabled after connection', async () => {
-      queueFetchResponse({ data: [] });
       queueFetchResponse({ data: { streamId: 'stream-dc' } });
       queueFetchResponse({ data: { agentInfo: { name: 'test' } } });
       queueFetchResponse({ data: { sessionId: 'session-dc' } });
 
       const { result, rerender } = renderHook(
-        ({ enabled }) => useAcpStream({ serverId: 'swarm-1', enabled }),
+        ({ enabled }) => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled }),
         { wrapper: createWrapper(), initialProps: { enabled: true } },
       );
 
@@ -489,13 +482,12 @@ describe('useAcpStream', () => {
     });
 
     it('preserves accumulated events after disable', async () => {
-      queueFetchResponse({ data: [] });
       queueFetchResponse({ data: { streamId: 'stream-dc2' } });
       queueFetchResponse({ data: { agentInfo: { name: 'test' } } });
       queueFetchResponse({ data: { sessionId: 'session-dc2' } });
 
       const { result, rerender } = renderHook(
-        ({ enabled }) => useAcpStream({ serverId: 'swarm-1', enabled }),
+        ({ enabled }) => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled }),
         { wrapper: createWrapper(), initialProps: { enabled: true } },
       );
 
@@ -515,13 +507,12 @@ describe('useAcpStream', () => {
     });
 
     it('clears pending permissions on disable', async () => {
-      queueFetchResponse({ data: [] });
       queueFetchResponse({ data: { streamId: 'stream-dc3' } });
       queueFetchResponse({ data: { agentInfo: { name: 'test' } } });
       queueFetchResponse({ data: { sessionId: 'session-dc3' } });
 
       const { result, rerender } = renderHook(
-        ({ enabled }) => useAcpStream({ serverId: 'swarm-1', enabled }),
+        ({ enabled }) => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled }),
         { wrapper: createWrapper(), initialProps: { enabled: true } },
       );
 
@@ -538,13 +529,12 @@ describe('useAcpStream', () => {
 
   describe('stale stream recovery', () => {
     it('detects stale stream on send failure', async () => {
-      queueFetchResponse({ data: [] });
       queueFetchResponse({ data: { streamId: 'stream-stale' } });
       queueFetchResponse({ data: { agentInfo: { name: 'test' } } });
       queueFetchResponse({ data: { sessionId: 'session-stale' } });
 
       const { result } = renderHook(
-        () => useAcpStream({ serverId: 'swarm-1', enabled: true }),
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
         { wrapper: createWrapper() },
       );
 

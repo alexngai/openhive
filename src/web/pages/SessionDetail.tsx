@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useLocation } from 'react-router-dom';
 import {
   Activity, AlertTriangle, Brain, ChevronDown, ChevronRight,
   Clock, Cpu, FileText, GitBranch, GitCommit, Hash,
@@ -216,11 +216,13 @@ function CheckpointsTab({ checkpoints, total, isLoading }: {
 // Trajectory Viewer (thin wrapper around EventStream)
 // ============================================================================
 
-function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceSwarmId }: {
+function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceSwarmId, existingAcpStreamId, existingAcpSessionId }: {
   sessionId: string;
   hasTrajectorySupport: boolean;
   agentIdentity?: AgentIdentity;
   sourceSwarmId?: string | null;
+  existingAcpStreamId?: string | null;
+  existingAcpSessionId?: string | null;
 }) {
   const {
     data,
@@ -236,7 +238,20 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
   const {
     chatMode, chatStatus, sendMessage, cancelStream, capabilities, streamingEvents, streamError,
     permissions, replyPermission,
-  } = useSessionChat({ sessionId, sourceSwarmId, enabled: hasTrajectorySupport });
+  } = useSessionChat({ sessionId, sourceSwarmId, enabled: hasTrajectorySupport, existingAcpStreamId, existingAcpSessionId });
+
+  const pages = data?.pages ?? [];
+  const trajectoryEvents = pages.flatMap((page) => page.events);
+  const total = pages[0]?.total ?? 0;
+
+  // Merge ACP streaming events with trajectory events, deduplicating overlaps.
+  // Must be called unconditionally (before early returns) to satisfy Rules of Hooks.
+  const events = useMemo(() => {
+    if (streamingEvents.length === 0) return trajectoryEvents;
+    const unique = deduplicateStreamingEvents(streamingEvents, trajectoryEvents);
+    if (unique.length === 0) return trajectoryEvents;
+    return [...[...unique].reverse(), ...trajectoryEvents];
+  }, [trajectoryEvents, streamingEvents]);
 
   if (!hasTrajectorySupport) {
     return (
@@ -252,31 +267,27 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
     );
   }
 
-  if (isError) {
+  if (isError && events.length === 0) {
     return (
-      <div className="card px-6 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
-        <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-40" />
-        <p className="text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-          Could not load trajectory
-        </p>
-        <p className="text-xs">{(error as Error)?.message || 'Unknown error'}</p>
-      </div>
+      <>
+        <div className="card px-6 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
+          <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-40" />
+          <p className="text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+            Could not load trajectory
+          </p>
+          <p className="text-xs">{(error as Error)?.message || 'Unknown error'}</p>
+        </div>
+        <SessionChatInput
+          mode={chatMode}
+          status={chatStatus}
+          onSend={sendMessage}
+          onCancel={cancelStream}
+          capabilities={capabilities}
+          streamError={streamError}
+        />
+      </>
     );
   }
-
-  const pages = data?.pages ?? [];
-  const trajectoryEvents = pages.flatMap((page) => page.events);
-  const total = pages[0]?.total ?? 0;
-
-  // Merge ACP streaming events with trajectory events, deduplicating overlaps.
-  // When ACP streaming is active, the same content may appear in both the
-  // real-time stream and the trajectory checkpoint that arrives shortly after.
-  const events = useMemo(() => {
-    if (streamingEvents.length === 0) return trajectoryEvents;
-    const unique = deduplicateStreamingEvents(streamingEvents, trajectoryEvents);
-    if (unique.length === 0) return trajectoryEvents;
-    return [...[...unique].reverse(), ...trajectoryEvents];
-  }, [trajectoryEvents, streamingEvents]);
 
   return (
     <>
@@ -341,7 +352,10 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
 
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
+  const location = useLocation();
   const [tab, setTab] = useState<DetailTab>('trajectory');
+  // ACP stream IDs from navigation state (immediate, no async wait)
+  const navState = location.state as { acpStreamId?: string; acpSessionId?: string } | null;
   const { data: resource, isLoading: resourceLoading } = useResource(id!);
   const { data: checkpointsData, isLoading: checkpointsLoading } = useSessionCheckpoints(id!);
   const { data: stats } = useSessionStats(id!);
@@ -378,8 +392,16 @@ export function SessionDetail() {
 
   const checkpoints = checkpointsData?.data ?? [];
   const total = checkpointsData?.total ?? 0;
-  const hasTrajectorySupport = total > 0;
-  const sourceSwarmId = checkpoints[0]?.source_swarm_id ?? null;
+  const meta = (resource?.metadata ?? {}) as Record<string, unknown>;
+  const sourceSwarmId = checkpoints[0]?.source_swarm_id
+    ?? (meta.source_swarm_id as string)
+    ?? null;
+  // Existing ACP stream/session from create-acp endpoint (avoids duplicate stream creation).
+  // Prefer navigation state (available immediately) over async metadata.
+  const existingAcpStreamId = navState?.acpStreamId ?? (meta.acpStreamId as string) ?? null;
+  const existingAcpSessionId = navState?.acpSessionId ?? (meta.sessionId as string) ?? null;
+  // Enable trajectory/chat for sessions with checkpoints OR eagerly-created ACP sessions
+  const hasTrajectorySupport = total > 0 || !!sourceSwarmId;
 
   return (
     <>
@@ -455,7 +477,7 @@ export function SessionDetail() {
           <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
         )}
         {tab === 'trajectory' && (
-          <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} sourceSwarmId={sourceSwarmId} />
+          <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} sourceSwarmId={sourceSwarmId} existingAcpStreamId={existingAcpStreamId} existingAcpSessionId={existingAcpSessionId} />
         )}
         {tab === 'learning' && (
           <SessionLearningTab sessionId={id!} />
