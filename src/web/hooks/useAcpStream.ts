@@ -36,6 +36,12 @@ export interface UseAcpStreamOptions {
   existingStreamId?: string | null;
   /** ACP session ID for the existing stream. Required when existingStreamId is set. */
   existingSessionId?: string | null;
+  /**
+   * Underlying Claude Code session UUID. Passed to ACP loadSession via _meta
+   * so the agent can replay history from its on-disk transcript even after
+   * a process restart (when its in-memory session mapping is gone).
+   */
+  providerSessionId?: string | null;
 }
 
 export interface AcpPermissionRequest {
@@ -84,6 +90,7 @@ export function useAcpStream({
   enabled = true,
   existingStreamId,
   existingSessionId,
+  providerSessionId,
 }: UseAcpStreamOptions): UseAcpStreamReturn {
   const [state, setState] = useState<AcpStreamState>({
     streamId: null,
@@ -95,6 +102,9 @@ export function useAcpStream({
 
   // Attach to an existing stream (created by create-acp endpoint) on mount.
   // This avoids creating a duplicate stream/subscription on the same MAP connection.
+  // Also call session/load so the agent replays prior session/update notifications —
+  // the acp.session.update WebSocket handler below accumulates them into state
+  // exactly as if they were live events, reconstructing the conversation.
   const attachedRef = useRef(false);
   useEffect(() => {
     if (existingStreamId && existingSessionId && !attachedRef.current) {
@@ -107,8 +117,53 @@ export function useAcpStream({
         status: 'ready',
         error: null,
       });
+
+      // Ask the agent to replay the session's history via session/update notifications.
+      // The existing WebSocket handler will accumulate them into `events` state.
+      // Passes provider_session_id via _meta so the agent can recover history
+      // from its on-disk JSONL even if its in-memory session mapping is gone
+      // (e.g., after a process restart).
+      (async () => {
+        try {
+          await scFetch(`/acp/streams/${existingStreamId}/session/load`, {
+            method: 'POST',
+            body: JSON.stringify({
+              sessionId: existingSessionId,
+              cwd: cwd ?? '.',
+              mcpServers: [],
+              ...(providerSessionId
+                ? { _meta: { provider_session_id: providerSessionId } }
+                : {}),
+            }),
+          });
+        } catch (err) {
+          const msg = (err as Error).message || '';
+          // If the underlying MAP connection is dead (agent restarted, stream
+          // aborted), the URL's streamId/sessionId are stale. Reset attachment
+          // so the auto-connect path creates a fresh stream+session. History
+          // from the prior session can't be recovered — it lived in the dead
+          // agent process — but the chat becomes usable again.
+          const isDead =
+            msg.toLowerCase().includes('connection closed') ||
+            msg.toLowerCase().includes('session not found') ||
+            msg.toLowerCase().includes('stream') && msg.toLowerCase().includes('closed');
+          if (isDead) {
+            attachedRef.current = false;
+            streamIdRef.current = null;
+            setState({
+              streamId: null,
+              sessionId: null,
+              initialized: false,
+              status: 'idle',
+              error: null,
+            });
+          }
+          // Otherwise non-fatal — agent may not support loadSession, or history
+          // may be empty. The user can still interact with the live stream.
+        }
+      })();
     }
-  }, [existingStreamId, existingSessionId]);
+  }, [existingStreamId, existingSessionId, cwd]);
 
   // Events in SessionEvent format — compatible with EventStream/EventBubble
   const [events, setEvents] = useState<SessionEvent[]>([]);
@@ -193,7 +248,33 @@ export function useAcpStream({
       return;
     }
 
-    // Text content — accumulate into current assistant message
+    // User message text — emitted during session/load replay to reconstruct
+    // historical user prompts (live prompts are handled by the UI directly,
+    // not via session/update). Each user_message_chunk becomes its own bubble.
+    if (contentText && sessionUpdate === 'user_message_chunk') {
+      // Finalize any current streaming assistant message before the user bubble
+      if (currentAssistantIdRef.current) {
+        setEvents(prev => prev.map(e =>
+          e.id === currentAssistantIdRef.current
+            ? { ...e, _isStreaming: undefined } as any
+            : e
+        ));
+        currentAssistantIdRef.current = null;
+      }
+      const seq = eventSeqRef.current++;
+      setEvents(prev => [...prev, {
+        id: `acp-user-${Date.now()}-${seq}`,
+        timestamp: new Date().toISOString(),
+        sequence: seq,
+        type: 'user_message' as const,
+        content: [{ type: 'text' as const, text: contentText }],
+      } as SessionEvent]);
+      return;
+    }
+
+    // Agent/assistant text content — accumulate into current streaming bubble.
+    // Chunks without an explicit sessionUpdate type (e.g., generic content_chunk)
+    // also fall here for backwards compat.
     if (contentText) {
       setEvents(prev => {
         const currentId = currentAssistantIdRef.current;
@@ -342,6 +423,19 @@ export function useAcpStream({
   // Send a prompt
   const send = useCallback(async (text: string) => {
     if (!state.streamId || !state.sessionId || state.status !== 'ready') return;
+
+    // Finalize any currently streaming assistant bubble before appending the
+    // new user message. Prevents the next prompt's agent chunks from
+    // concatenating into the prior assistant bubble if prompt.completed
+    // didn't fire cleanly (e.g. during attached-stream edge cases).
+    if (currentAssistantIdRef.current) {
+      setEvents(prev => prev.map(e =>
+        e.id === currentAssistantIdRef.current
+          ? { ...e, _isStreaming: undefined } as any
+          : e
+      ));
+      currentAssistantIdRef.current = null;
+    }
 
     // Add user message as SessionEvent
     const seq = eventSeqRef.current++;

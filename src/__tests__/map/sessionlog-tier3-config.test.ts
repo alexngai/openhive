@@ -276,7 +276,11 @@ describe('Tier 3: configurable sessionlog lookup', () => {
     }
   });
 
-  it('returns 503 when session state not found in any location', async () => {
+  it('returns empty events (200) when session state not found in any location', async () => {
+    // Previously returned 503, but that blocked the UI from loading on ACP
+    // sessions where checkpoints haven't fired yet. The client should fall back
+    // to ACP session/load for live history replay. Empty events is the correct
+    // response when no on-disk transcript is available.
     const r = handleTrajectoryRequest(
       'trajectory/checkpoint',
       {
@@ -292,7 +296,10 @@ describe('Tier 3: configurable sessionlog lookup', () => {
       method: 'GET',
       url: `/api/v1/sessions/${r.resource_id}/events?limit=10`,
     });
-    expect(res.statusCode).toBe(503);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.events).toEqual([]);
+    expect(body.total).toBe(0);
   });
 
   it('resolves sessionlog from resource projectPath metadata', async () => {

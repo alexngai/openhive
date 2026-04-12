@@ -155,9 +155,19 @@ function SwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) 
   const caps = (swarm.capabilities || {}) as Record<string, unknown>;
   const protocols = Array.isArray(caps.protocols) ? caps.protocols as string[] : [];
   const supportsAcp = protocols.includes('acp');
+  // Fallback: swarms that can spawn ACP coordinators on demand (e.g., macro-agent)
+  // declare `canHostAcp: true` on a registered agent's metadata (typically the
+  // sidecar). This lets us show the "New Agent Session" button before any
+  // coordinator has been spawned — the backend /sessions/create-acp endpoint
+  // handles the on-demand spawn via _macro/spawnAgent.
+  const registeredAgents = (swarm as any)?.registered_agents as Array<{
+    metadata?: Record<string, unknown>;
+  }> | undefined;
+  const canHostAcp = Array.isArray(registeredAgents)
+    && registeredAgents.some(a => a.metadata?.canHostAcp === true);
   const isOnline = swarm.status === 'online' || swarm.status === 'unreachable';
 
-  if (!isOnline || !supportsAcp) return null;
+  if (!isOnline || (!supportsAcp && !canHostAcp)) return null;
 
   const projectPath = (caps as any)?.projectPath as string
     ?? (swarm.metadata as any)?.projectPath as string

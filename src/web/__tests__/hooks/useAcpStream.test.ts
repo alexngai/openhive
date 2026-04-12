@@ -230,6 +230,124 @@ describe('useAcpStream', () => {
     });
   });
 
+  describe('session/load replay (user_message_chunk handling)', () => {
+    async function connectStream(result: any) {
+      queueFetchResponse({ data: { streamId: 'stream-ws' } });
+      queueFetchResponse({ data: { agentInfo: { name: 'test' } } });
+      queueFetchResponse({ data: { sessionId: 'session-ws' } });
+      await act(async () => { await result.current.connect(); });
+    }
+
+    it('emits user_message event for replayed user_message_chunk', async () => {
+      const { result } = renderHook(
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
+        { wrapper: createWrapper() },
+      );
+      await connectStream(result);
+
+      const handler = eventHandlers.get('acp.session.update')!;
+      act(() => {
+        handler({
+          update: {
+            sessionUpdate: 'user_message_chunk',
+            content: { type: 'text', text: 'Reply with: hi' },
+          },
+        });
+      });
+
+      expect(result.current.events).toHaveLength(1);
+      expect(result.current.events[0].type).toBe('user_message');
+      expect(result.current.events[0].content?.[0]?.text).toBe('Reply with: hi');
+    });
+
+    it('reconstructs alternating user/assistant conversation on replay', async () => {
+      const { result } = renderHook(
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
+        { wrapper: createWrapper() },
+      );
+      await connectStream(result);
+
+      const handler = eventHandlers.get('acp.session.update')!;
+
+      // Simulate session/load replay: user prompt → agent response chunks → user prompt → agent
+      act(() => {
+        handler({
+          update: {
+            sessionUpdate: 'user_message_chunk',
+            content: { type: 'text', text: 'hello' },
+          },
+        });
+      });
+      act(() => {
+        handler({
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'hi ' },
+          },
+        });
+      });
+      act(() => {
+        handler({
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'there' },
+          },
+        });
+      });
+      act(() => {
+        handler({
+          update: {
+            sessionUpdate: 'user_message_chunk',
+            content: { type: 'text', text: 'how are you' },
+          },
+        });
+      });
+
+      // Expect 3 distinct events: user, assistant (concatenated), user
+      expect(result.current.events).toHaveLength(3);
+      expect(result.current.events[0].type).toBe('user_message');
+      expect(result.current.events[0].content?.[0]?.text).toBe('hello');
+      expect(result.current.events[1].type).toBe('assistant_message');
+      expect(result.current.events[1].content?.[0]?.text).toBe('hi there');
+      expect(result.current.events[2].type).toBe('user_message');
+      expect(result.current.events[2].content?.[0]?.text).toBe('how are you');
+    });
+
+    it('does not concatenate user text into preceding assistant bubble', async () => {
+      const { result } = renderHook(
+        () => useAcpStream({ serverId: 'swarm-1', targetAgent: 'macro-agent', enabled: true }),
+        { wrapper: createWrapper() },
+      );
+      await connectStream(result);
+
+      const handler = eventHandlers.get('acp.session.update')!;
+      // Prior assistant streaming bubble
+      act(() => {
+        handler({
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'Here you go.' },
+          },
+        });
+      });
+      // Then a new user message — must start a fresh bubble, not append
+      act(() => {
+        handler({
+          update: {
+            sessionUpdate: 'user_message_chunk',
+            content: { type: 'text', text: 'Thanks!' },
+          },
+        });
+      });
+
+      expect(result.current.events).toHaveLength(2);
+      expect(result.current.events[0].type).toBe('assistant_message');
+      expect(result.current.events[0].content?.[0]?.text).toBe('Here you go.');
+      expect(result.current.events[1].type).toBe('user_message');
+      expect(result.current.events[1].content?.[0]?.text).toBe('Thanks!');
+    });
+  });
+
   describe('WebSocket tool call handling', () => {
     async function connectStream(result: any) {
       queueFetchResponse({ data: { streamId: 'stream-tc' } });

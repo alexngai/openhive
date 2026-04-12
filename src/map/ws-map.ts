@@ -673,12 +673,32 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     };
     const unsubStateChanged = mapServer.eventBus.on('agent.state.changed', onAgentStateChanged);
 
+    // Listen for metadata updates (e.g. sidecar publishes canHostAcp post-connect).
+    // The MAP SDK's register() doesn't forward the `metadata` field from connect
+    // options, so the sidecar calls updateMetadata() after connecting. We update
+    // the cached per-agent metadata so the /map/swarms/:id endpoint returns
+    // current values in registered_agents[].metadata (used by the UI to detect
+    // swarms that can spawn ACP coordinators on demand).
+    const onAgentMetadataChanged = (event: any) => {
+      const agentData = event?.data?.agent;
+      if (!agentData?.id) return;
+
+      const conn = getInbound(swarmId);
+      if (!conn) return;
+      const entry = conn.registeredAgents.get(agentData.id);
+      if (!entry) return;
+
+      entry.metadata = agentData.metadata || {};
+    };
+    const unsubMetadataChanged = mapServer.eventBus.on('agent.metadata.changed', onAgentMetadataChanged);
+
     console.log(`[ws-map] Swarm ${swarmId} connected inbound (agent: ${agent.name})`);
 
     // Cleanup on close (router.closed as backup — ws 'close' is primary)
     router.closed.then(() => {
       unsubRegistered();
       unsubStateChanged();
+      unsubMetadataChanged();
       interceptor.cleanup();
       handleDisconnect();
     });

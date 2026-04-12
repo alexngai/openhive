@@ -216,13 +216,14 @@ function CheckpointsTab({ checkpoints, total, isLoading }: {
 // Trajectory Viewer (thin wrapper around EventStream)
 // ============================================================================
 
-function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceSwarmId, existingAcpStreamId, existingAcpSessionId }: {
+function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceSwarmId, existingAcpStreamId, existingAcpSessionId, providerSessionId }: {
   sessionId: string;
   hasTrajectorySupport: boolean;
   agentIdentity?: AgentIdentity;
   sourceSwarmId?: string | null;
   existingAcpStreamId?: string | null;
   existingAcpSessionId?: string | null;
+  providerSessionId?: string | null;
 }) {
   const {
     data,
@@ -238,7 +239,7 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
   const {
     chatMode, chatStatus, sendMessage, cancelStream, capabilities, streamingEvents, streamError,
     permissions, replyPermission,
-  } = useSessionChat({ sessionId, sourceSwarmId, enabled: hasTrajectorySupport, existingAcpStreamId, existingAcpSessionId });
+  } = useSessionChat({ sessionId, sourceSwarmId, enabled: hasTrajectorySupport, existingAcpStreamId, existingAcpSessionId, providerSessionId });
 
   const pages = data?.pages ?? [];
   const trajectoryEvents = pages.flatMap((page) => page.events);
@@ -398,6 +399,10 @@ export function SessionDetail() {
   // URL search params survive page reloads; metadata is the async fallback.
   const existingAcpStreamId = searchParams.get('streamId') ?? (meta.acpStreamId as string) ?? null;
   const existingAcpSessionId = searchParams.get('sessionId') ?? (meta.sessionId as string) ?? null;
+  // Provider session ID (Claude Code's UUID) enables the macro-agent to recover
+  // history from its on-disk JSONL via ACP loadSession._meta, even across its
+  // own process restarts.
+  const providerSessionId = (meta.provider_session_id as string) ?? null;
   // Enable trajectory/chat for sessions with checkpoints OR eagerly-created ACP sessions
   const hasTrajectorySupport = total > 0 || !!sourceSwarmId;
 
@@ -475,7 +480,7 @@ export function SessionDetail() {
           <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
         )}
         {tab === 'trajectory' && (
-          <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} sourceSwarmId={sourceSwarmId} existingAcpStreamId={existingAcpStreamId} existingAcpSessionId={existingAcpSessionId} />
+          <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} sourceSwarmId={sourceSwarmId} existingAcpStreamId={existingAcpStreamId} existingAcpSessionId={existingAcpSessionId} providerSessionId={providerSessionId} />
         )}
         {tab === 'learning' && (
           <SessionLearningTab sessionId={id!} />

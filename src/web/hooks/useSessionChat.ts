@@ -24,6 +24,9 @@ export interface UseSessionChatOptions {
   existingAcpStreamId?: string | null;
   /** Existing ACP session ID (from create-acp endpoint). */
   existingAcpSessionId?: string | null;
+  /** Underlying Claude Code session UUID. Passed via ACP loadSession._meta for
+   *  cross-restart history recovery (agent reads its own JSONL). */
+  providerSessionId?: string | null;
 }
 
 export interface UseSessionChatReturn {
@@ -94,6 +97,7 @@ export function useSessionChat({
   enabled = true,
   existingAcpStreamId,
   existingAcpSessionId,
+  providerSessionId,
 }: UseSessionChatOptions): UseSessionChatReturn {
   // Fetch swarm data to check published capabilities.
   const { data: swarm } = useMapSwarm(sourceSwarmId ?? '');
@@ -155,16 +159,21 @@ export function useSessionChat({
     enabled: capabilities.supportsAcp && isConnected,
     existingStreamId: existingAcpStreamId,
     existingSessionId: existingAcpSessionId,
+    providerSessionId,
   });
 
   // Auto-connect ACP stream when mode becomes 'acp' and target agent is resolved.
-  // Skip if we already attached to an existing stream (from create-acp endpoint).
+  // Skip if we already attached to an existing stream (status != idle means the
+  // attach effect in useAcpStream is handling it). If the attach fails because
+  // the existing stream is dead, useAcpStream resets status to 'idle' — and we
+  // fall through to create a fresh stream.
   const acpConnectedRef = useRef(false);
   const acpTargetWhenConnected = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (chatMode !== 'acp' || !acpTargetAgent) return;
-    // Don't create a new stream if we have an existing one (attach effect handles it)
-    if (existingAcpStreamId) return;
+    // Attach effect is handling the existing stream — only skip while it's
+    // still active. If it reset to idle (stale/dead stream), fall through.
+    if (existingAcpStreamId && acpStream.status !== 'idle') return;
 
     const shouldConnect = !acpConnectedRef.current && acpStream.status === 'idle';
     const shouldRetry = acpStream.status === 'error' && acpTargetWhenConnected.current !== acpTargetAgent;

@@ -95,6 +95,20 @@ export function getAgentCapabilities(swarmId: string): Array<{ agentId: string; 
  * that resolves there — the hub-assigned id won't.
  */
 export function findAcpAgent(swarmId: string): string | undefined {
+  const info = findAcpAgentInfo(swarmId);
+  return info?.targetId;
+}
+
+/**
+ * Find the first ACP-capable agent along with its metadata. Used when the
+ * caller needs more than just the target ID — e.g., provider_session_id for
+ * associating OpenHive sessions with the underlying Claude Code transcript.
+ */
+export function findAcpAgentInfo(swarmId: string): {
+  targetId: string;
+  hubAgentId: string;
+  metadata: Record<string, unknown> | undefined;
+} | undefined {
   const conn = inboundConnections.get(swarmId);
   if (!conn) return undefined;
 
@@ -104,7 +118,8 @@ export function findAcpAgent(swarmId: string): string | undefined {
     const protocols = Array.isArray(caps.protocols) ? caps.protocols as string[] : [];
     if (protocols.includes('acp')) {
       const localMapId = agent.metadata?.localMapId;
-      return (typeof localMapId === 'string' && localMapId) ? localMapId : agent.id;
+      const targetId = (typeof localMapId === 'string' && localMapId) ? localMapId : agent.id;
+      return { targetId, hubAgentId: agent.id, metadata: agent.metadata };
     }
   }
   return undefined;

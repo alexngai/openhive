@@ -15,7 +15,7 @@ import { findSwarmById } from '../../db/dal/map.js';
 import { getDatabase } from '../../db/index.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import { fetchTranscriptFromSwarm } from '../../map/trajectory-content.js';
-import { findAcpAgent } from '../../map/connection-registry.js';
+import { findAcpAgent, findAcpAgentInfo } from '../../map/connection-registry.js';
 import {
   detectFormatExtended,
   getSupportedFormats,
@@ -692,9 +692,17 @@ export async function sessionsRoutes(
       }
 
       if (!content) {
-        return reply.status(503).send({
-          error: 'Service Unavailable',
-          message: 'Session content not available. The swarm may be offline.',
+        // No trajectory transcript available yet. This is the normal case for
+        // ACP sessions before any checkpoint has been persisted — the client
+        // should then call ACP session/load on the stream to replay history
+        // from the agent. Returning 200 with empty events lets the session
+        // detail page load cleanly instead of blocking on a 503.
+        return reply.send({
+          format_id: formatId,
+          total: 0,
+          limit,
+          offset,
+          events: [],
         });
       }
 
@@ -1468,6 +1476,16 @@ export async function sessionsRoutes(
         const shortId = acpSessionId.slice(-8);
         const displayName = `${project} [${shortId}]`;
 
+        // Capture the underlying Claude Code session ID from the coordinator's
+        // per-agent metadata. This gives us a durable link so we can later read
+        // the JSONL transcript at ~/.claude/projects/{encoded-cwd}/{id}.jsonl
+        // to recover history if the agent process dies.
+        const acpInfo = findAcpAgentInfo(swarm_id);
+        const providerSessionId =
+          typeof acpInfo?.metadata?.provider_session_id === 'string'
+            ? (acpInfo.metadata.provider_session_id as string)
+            : undefined;
+
         const { resource, created } = resourcesDAL.upsertDiscoveredResource({
           resource_type: 'session',
           name: displayName,
@@ -1481,6 +1499,7 @@ export async function sessionsRoutes(
             sessionId: acpSessionId,
             source_swarm_id: swarm_id,
             acpStreamId: stream.streamId,
+            ...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
           },
         });
 
