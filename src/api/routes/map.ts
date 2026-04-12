@@ -281,7 +281,8 @@ export async function mapRoutes(
     const conn = getInbound(request.params.id);
     const registeredAgents = conn
       ? Array.from(conn.registeredAgents.values()).map(a => ({
-          id: a.id, name: a.name, role: a.role, state: a.state, capabilities: a.capabilities,
+          id: a.id, name: a.name, role: a.role, state: a.state,
+          capabilities: a.capabilities, metadata: a.metadata,
         }))
       : [];
 

@@ -1390,16 +1390,50 @@ export async function sessionsRoutes(
         return reply.status(404).send({ error: 'Swarm not found' });
       }
 
-      // Resolve ACP target from per-agent capabilities on the live connection
-      const acpAgent = findAcpAgent(swarm_id);
-      if (!acpAgent) {
-        return reply.status(400).send({ error: 'No ACP-capable agent registered on this swarm' });
-      }
-
       // Access SwarmCraft's ACP stream manager via the fastify instance
       const sc = (fastify as any).swarmcraft;
       if (!sc?.acpStreamManager) {
         return reply.status(503).send({ error: 'SwarmCraft ACP not available' });
+      }
+
+      // Resolve ACP target from per-agent capabilities on the live connection.
+      // If no ACP-capable agent is registered yet, spawn a coordinator on demand
+      // via _macro/spawnAgent and use its returned MAP ID as the target.
+      let acpAgent = findAcpAgent(swarm_id);
+      if (!acpAgent) {
+        const mapClient = sc.mapClientManager?.getClient(swarm_id);
+        if (!mapClient) {
+          return reply.status(503).send({
+            error: 'No ACP-capable agent registered and MAP client unavailable to spawn one',
+          });
+        }
+        try {
+          const spawnCwd = cwd
+            ?? (swarm.metadata as Record<string, unknown>)?.projectPath as string
+            ?? undefined;
+          const spawnResult = await mapClient.callExtension('_macro/spawnAgent', {
+            role: 'coordinator',
+            task: 'Head manager',
+            cwd: spawnCwd,
+          }) as { agent?: { id?: string } };
+          const spawnedId = spawnResult?.agent?.id;
+          if (!spawnedId) {
+            return reply.status(503).send({ error: 'Failed to spawn coordinator agent' });
+          }
+          // Prefer the locally resolved ID once the lifecycle bridge registers it
+          // on the hub, but fall back to the spawn response's MAP ID immediately.
+          const deadline = Date.now() + 2000;
+          while (Date.now() < deadline) {
+            const resolved = findAcpAgent(swarm_id);
+            if (resolved) { acpAgent = resolved; break; }
+            await new Promise((r) => setTimeout(r, 50));
+          }
+          if (!acpAgent) acpAgent = spawnedId;
+        } catch (err) {
+          return reply.status(503).send({
+            error: `Failed to spawn ACP coordinator: ${(err as Error).message}`,
+          });
+        }
       }
 
       try {

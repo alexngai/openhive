@@ -125,10 +125,15 @@ export function useSessionChat({
     ?? (swarm?.metadata as any)?.projectPath as string | undefined;
 
   // Resolve ACP target agent from per-agent capabilities on the live connection.
-  // The swarm response includes registered_agents with per-agent capabilities.
-  // Find the first agent that declares protocols: ['acp'].
+  // The swarm response includes registered_agents with per-agent capabilities + metadata.
+  // ACP streams are created against the swarm's own MAP server, so we need the
+  // agent's ID on THAT server (localMapId in metadata) — not the hub-assigned id.
   const registeredAgents = (swarm as any)?.registered_agents as Array<{
-    id: string; name: string; role: string; capabilities?: Record<string, unknown>;
+    id: string;
+    name: string;
+    role: string;
+    capabilities?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
   }> | undefined;
   const acpTargetAgent = useMemo(() => {
     if (!capabilities.supportsAcp || !registeredAgents) return undefined;
@@ -136,7 +141,9 @@ export function useSessionChat({
       const protos = a.capabilities?.protocols;
       return Array.isArray(protos) && (protos as string[]).includes('acp');
     });
-    return acpAgent?.id ?? undefined;
+    if (!acpAgent) return undefined;
+    const localMapId = acpAgent.metadata?.localMapId;
+    return (typeof localMapId === 'string' && localMapId) ? localMapId : acpAgent.id;
   }, [capabilities.supportsAcp, registeredAgents]);
 
   // ACP streaming — keep serverId set whenever ACP is supported (even during error/retry)

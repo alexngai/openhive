@@ -568,7 +568,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
       const conn = getInbound(swarmId);
       if (conn) {
-        // Track registered agent on this connection (with per-agent capabilities)
+        // Track registered agent on this connection (with per-agent capabilities + metadata)
         const agentEntry = {
           id: registeredAgent.id || registeredAgent.name || 'unknown',
           name: registeredAgent.name || 'unknown',
@@ -576,6 +576,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
           state: 'registered',
           scopes: registeredAgent.scopes || [],
           capabilities: registeredAgent.capabilities || undefined,
+          metadata: registeredAgent.metadata || undefined,
         };
         conn.registeredAgents.set(agentEntry.id, agentEntry);
 
