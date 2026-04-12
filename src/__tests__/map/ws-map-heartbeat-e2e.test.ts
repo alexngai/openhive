@@ -21,6 +21,7 @@ import * as agentsDAL from '../../db/dal/agents.js';
 import * as mapDAL from '../../db/dal/map.js';
 import { createIngestKey } from '../../db/dal/ingest-keys.js';
 import { setupMapWebSocket, stopMapWebSocket, setHeartbeatInterval } from '../../map/ws-map.js';
+import { ConfigSchema } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 // ============================================================================
@@ -115,10 +116,25 @@ describe('E2E: MAP WebSocket Heartbeat', () => {
     // Set short heartbeat interval BEFORE setting up the WebSocket
     setHeartbeatInterval(HEARTBEAT_MS);
 
+    const config = ConfigSchema.parse({
+      port: SERVER_PORT,
+      host: '127.0.0.1',
+      database: TEST_DB_PATH,
+      instance: { name: 'Heartbeat E2E' },
+      admin: { createOnStartup: false },
+      auth: { mode: 'local' },
+      rateLimit: { enabled: false },
+      mapHub: {
+        enabled: true,
+        trustModel: 'open',
+        missedPongsBeforeTerminate: 3,
+      },
+    });
+
     // Build Fastify app
     app = Fastify({ logger: false });
     await app.register(websocket);
-    setupMapWebSocket(app);
+    setupMapWebSocket(app, config);
 
     await app.listen({ port: SERVER_PORT, host: '127.0.0.1' });
   });
@@ -229,9 +245,10 @@ describe('E2E: MAP WebSocket Heartbeat', () => {
     // Small delay for the close handler to update the DB
     await sleep(100);
 
-    // After disconnect, swarm should be marked offline
+    // After disconnect, swarm should be marked unreachable (the periodic
+    // markStaleSwarms sweep later promotes unreachable → offline)
     const swarmOffline = mapDAL.findSwarmById(swarm3.id);
-    expect(swarmOffline?.status).toBe('offline');
+    expect(swarmOffline?.status).toBe('unreachable');
   }, 10_000);
 
   // ─────────────────────────────────────────────────────────────

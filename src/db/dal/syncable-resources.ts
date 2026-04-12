@@ -141,8 +141,17 @@ export function findSessionResourceBySwarm(ownerAgentId: string, swarmId: string
   const row = db.prepare(
     "SELECT * FROM syncable_resources WHERE owner_agent_id = ? AND resource_type = 'session' AND git_remote_url = ?"
   ).get(ownerAgentId, legacyUrl) as Record<string, unknown> | undefined;
-  if (!row) return null;
-  return rowToResource(row);
+  if (row) return rowToResource(row);
+
+  // Fallback: find the most recent session resource created by this swarm
+  // (handles the case where the resource was created with a session-specific URL
+  // but the current checkpoint doesn't include a session_id)
+  const fallbackRow = db.prepare(
+    "SELECT * FROM syncable_resources WHERE owner_agent_id = ? AND resource_type = 'session' AND json_extract(metadata, '$.source_swarm_id') = ? ORDER BY updated_at DESC LIMIT 1"
+  ).get(ownerAgentId, swarmId) as Record<string, unknown> | undefined;
+  if (fallbackRow) return rowToResource(fallbackRow);
+
+  return null;
 }
 
 export function findResourceById(id: string): SyncableResource | null {

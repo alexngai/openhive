@@ -82,6 +82,23 @@ export function getAgentCapabilities(swarmId: string): Array<{ agentId: string; 
 }
 
 /**
+ * Find the first agent on the connection that supports ACP.
+ * Returns the agent's MAP-assigned ID, or undefined if none found.
+ */
+export function findAcpAgent(swarmId: string): string | undefined {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn) return undefined;
+
+  for (const agent of conn.registeredAgents.values()) {
+    const caps = agent.capabilities;
+    if (!caps) continue;
+    const protocols = Array.isArray(caps.protocols) ? caps.protocols as string[] : [];
+    if (protocols.includes('acp')) return agent.id;
+  }
+  return undefined;
+}
+
+/**
  * Check if ANY agent on the connection declares a specific capability.
  * Useful for gating operations that can be handled by any agent on the swarm.
  *

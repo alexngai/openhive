@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useParams, Link, useLocation } from 'react-router-dom';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
   Activity, AlertTriangle, Brain, ChevronDown, ChevronRight,
   Clock, Cpu, FileText, GitBranch, GitCommit, Hash,
@@ -352,10 +352,8 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
 
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
-  const location = useLocation();
+  const [searchParams] = useSearchParams();
   const [tab, setTab] = useState<DetailTab>('trajectory');
-  // ACP stream IDs from navigation state (immediate, no async wait)
-  const navState = location.state as { acpStreamId?: string; acpSessionId?: string } | null;
   const { data: resource, isLoading: resourceLoading } = useResource(id!);
   const { data: checkpointsData, isLoading: checkpointsLoading } = useSessionCheckpoints(id!);
   const { data: stats } = useSessionStats(id!);
@@ -397,9 +395,9 @@ export function SessionDetail() {
     ?? (meta.source_swarm_id as string)
     ?? null;
   // Existing ACP stream/session from create-acp endpoint (avoids duplicate stream creation).
-  // Prefer navigation state (available immediately) over async metadata.
-  const existingAcpStreamId = navState?.acpStreamId ?? (meta.acpStreamId as string) ?? null;
-  const existingAcpSessionId = navState?.acpSessionId ?? (meta.sessionId as string) ?? null;
+  // URL search params survive page reloads; metadata is the async fallback.
+  const existingAcpStreamId = searchParams.get('streamId') ?? (meta.acpStreamId as string) ?? null;
+  const existingAcpSessionId = searchParams.get('sessionId') ?? (meta.sessionId as string) ?? null;
   // Enable trajectory/chat for sessions with checkpoints OR eagerly-created ACP sessions
   const hasTrajectorySupport = total > 0 || !!sourceSwarmId;
 

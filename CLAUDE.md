@@ -124,7 +124,7 @@ Content is converted via Claude JSONL adapter → ACP events (user messages, ass
 - `trajectory/checkpoint` — Agent → hub checkpoint storage (registered as MAPServer additionalHandler)
 - `trajectory/content.request` — Hub → agent content request (raw JSON-RPC notification via `onNotification`)
 - `trajectory/content.response` — Agent → hub content delivery (raw JSON-RPC notification via `sendNotification`)
-- Agent capabilities: `trajectory.canReport`, `trajectory.canServeContent`
+- Per-agent capabilities (declared via `map/agents/register`): `trajectory.canReport`, `trajectory.canServeContent`, `protocols: ['acp']`, `acp: { version }`. The hub aggregates per-agent capabilities into the swarm record via `getAggregateCapabilities()`.
 
 ### Session Chat (Bi-Directional)
 
@@ -143,20 +143,26 @@ Detection cascade: ACP → Mail → Inject → Unavailable. Each mode is only at
 
 #### Agent Capability Declarations
 
-Agents declare capabilities at MAP registration. The hub stores these on `MapInboundConnection.capabilities` and `map_swarms.capabilities`.
+Capabilities are declared **per-agent** at MAP registration, not per-swarm. When an agent registers on the hub via `map/agents/register`, it declares its own `ParticipantCapabilities`. The hub stores these per-agent on `MapInboundConnection.registeredAgents` and aggregates them (union semantics) into the swarm's `map_swarms.capabilities` record via `getAggregateCapabilities()`.
 
-**cc-swarm** declares: `messaging: { canSend, canReceive }`, `mail: { canCreate, canJoin, canViewHistory }` — gets Mail mode.
+**cc-swarm** declares (connection-level): `messaging: { canSend, canReceive }`, `mail: { canCreate, canJoin, canViewHistory }` — gets Mail mode.
 
-**macro-agent** declares: same + `protocols: ['acp']`, `acp: { version: '2024-10-07' }` — gets ACP mode (with Mail fallback).
+**macro-agent** declares per-agent capabilities via the lifecycle bridge:
+- **Coordinators** (head managers): `protocols: ['acp']`, `acp: { version: '2024-10-07' }`, `messaging: { canReceive: true }` — gets ACP mode.
+- **Workers**: `messaging: { canReceive: true }` only.
+- **Connection-level** (sidecar): `messaging`, `mail`, `trajectory`, `tasks` — no ACP (ACP is agent-level).
+
+ACP target resolution: The frontend reads `registered_agents` from `GET /map/swarms/:id` and finds the first agent with `protocols: ['acp']`. The backend (`POST /sessions/create-acp`) resolves via `findAcpAgent()` from the connection registry.
 
 #### Chat Data Flow
 
 ```
 User types in SessionChatInput
   → useSessionChat resolves swarm capabilities via useMapSwarm()
-  → Mode detection: protocols includes 'acp' → ACP, mail.canJoin → Mail, messaging.canReceive → Inject
+  → Mode detection: aggregated protocols includes 'acp' → ACP, mail.canJoin → Mail, messaging.canReceive → Inject
+  → ACP target resolved from registered_agents (first agent with protocols: ['acp'])
   → ACP: useAcpStream manages lifecycle
-    → POST /api/swarmcraft/acp/streams (create) → /initialize → /session → /prompt
+    → POST /api/swarmcraft/acp/streams (create with targetAgent = MAP agent ID) → /initialize → /session → /prompt
     → Streaming response via WebSocket: acp.session.update → text/tool_call/tool_result events
     → Events bridged: SwarmCraft WS → server.ts interceptor → OpenHive WS (global channel)
     → Permission requests: acp.permission.request → UI dialog → POST /streams/:id/permission
@@ -177,11 +183,13 @@ When an ACP agent requests tool approval, SwarmCraft emits `acp.permission.reque
 
 #### Key Files
 
-- `src/web/hooks/useSessionChat.ts` — Resolves `sourceSwarmId` → swarm capabilities → chat mode. Dispatches to useAcpStream (ACP) or REST API (mail).
+- `src/web/hooks/useSessionChat.ts` — Resolves `sourceSwarmId` → swarm capabilities → chat mode. Resolves ACP target from `registered_agents`. Dispatches to useAcpStream (ACP) or REST API (mail).
 - `src/web/hooks/useAcpStream.ts` — ACP stream lifecycle, text accumulation, tool call handling, permission request tracking.
 - `src/web/components/events/SessionChatInput.tsx` — Sticky bottom input, mode-aware UI with capability-specific unavailable reasons.
 - `src/web/adapters/session-chat-adapter.ts` — `ChatChannelAdapter` implementation routing through `POST /sessions/:id/chat`.
 - `src/api/routes/session-chat.ts` — Backend endpoint: lazy conversation creation, auto-join, turn delivery via `mail/turn` JSON-RPC.
+- `src/api/routes/sessions.ts` — `POST /sessions/create-acp` resolves ACP target agent via `findAcpAgent()` from per-agent capabilities on the live connection.
+- `src/map/connection-registry.ts` — Inbound connection tracking, per-agent capability storage, `findAcpAgent()` for ACP target resolution, `getAggregateCapabilities()` for swarm-level capability union.
 - `src/server.ts` — ACP event bridge: intercepts SwarmCraft WS broadcasts, forwards `acp.*` events to OpenHive's global WS channel.
 
 ## Task Coordination Architecture

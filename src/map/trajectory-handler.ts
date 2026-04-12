@@ -224,20 +224,15 @@ function resolveSessionResource(
 ): { resourceId: string; created: boolean } {
   const { swarmId, agentId } = context;
 
-  // 1. Explicit resource_id — but verify session_id matches if provided.
-  //    The sidecar caches resource_id, but the sessionlog may switch to a
-  //    different session between checkpoints. If session_id doesn't match,
-  //    fall through to resolution.
+  // 1. Explicit resource_id — honour it directly.
+  //    The sidecar caches resource_id and sends it on subsequent checkpoints.
+  //    Trust the agent: if it says "store here", store here.
   if (params.resource_id) {
     const existing = findResourceById(params.resource_id);
-    if (existing && existing.resource_type === 'session') {
-      const sessionId = checkpoint.session_id as string | undefined;
-      const existingSessionId = (existing.metadata as Record<string, unknown>)?.sessionId as string | undefined;
-      if (!sessionId || !existingSessionId || sessionId === existingSessionId) {
-        return { resourceId: params.resource_id, created: false };
-      }
-      // session_id mismatch — fall through to resolve the correct resource
+    if (!existing || existing.resource_type !== 'session') {
+      throw new TrajectoryRequestError(-32602, `Resource not found or not a session: ${params.resource_id}`);
     }
+    return { resourceId: params.resource_id, created: false };
   }
 
   // Extract context from checkpoint metadata for display

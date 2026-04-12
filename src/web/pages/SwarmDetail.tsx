@@ -169,12 +169,11 @@ function SwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) 
         swarmId,
         cwd: projectPath,
       });
-      navigate(`/sessions/${result.session_resource_id}`, {
-        state: {
-          acpStreamId: result.acp_stream_id,
-          acpSessionId: result.acp_session_id,
-        },
+      const params = new URLSearchParams({
+        streamId: result.acp_stream_id,
+        sessionId: result.acp_session_id,
       });
+      navigate(`/sessions/${result.session_resource_id}?${params}`);
     } catch {
       // Error shown via mutation state
     }

@@ -116,21 +116,38 @@ export function useAcpStream({
   const currentAssistantIdRef = useRef<string | null>(null);
   const streamIdRef = useRef<string | null>(null);
   const eventSeqRef = useRef(0);
+  // Dedup: MAP SDK can deliver duplicate session updates. Track last seen
+  // update fingerprint to skip exact duplicates.
+  const lastUpdateFingerprintRef = useRef<string | null>(null);
 
   // Subscribe to OpenHive's global channel where ACP events are bridged
   useSubscribe(state.streamId ? ['global'] : []);
 
   // Handle streaming session updates (text chunks + tool calls)
-  useWSEvent('acp.session.update', useCallback((data: any) => {
+  // useWSEvent passes the full WSEvent ({type, data, channel, timestamp}),
+  // so unwrap .data first to get the ACP payload.
+  useWSEvent('acp.session.update', useCallback((msg: any) => {
     if (!streamIdRef.current) return;
+    const data = msg?.data ?? msg;
     if (data?.streamId && data.streamId !== streamIdRef.current) return;
 
     const update = data?.update ?? data?.payload?.update ?? data;
     if (!update) return;
 
-    // Extract content from various update shapes
-    const contentText = update?.content?.text ?? update?.text;
-    const sessionUpdate = update?.sessionUpdate;
+    // Deduplicate: MAP SDK may deliver each session update twice.
+    // Fingerprint by JSON-serializing the update and skip exact duplicates.
+    const fingerprint = JSON.stringify(update);
+    if (fingerprint === lastUpdateFingerprintRef.current) {
+      lastUpdateFingerprintRef.current = null; // Reset so triple+ duplicates still work
+      return;
+    }
+    lastUpdateFingerprintRef.current = fingerprint;
+
+    // Extract content from various update shapes.
+    // ACP content_chunk updates: { type: 'content_chunk', chunk: { type: 'text', text: '...' } }
+    // Fallbacks for other shapes: update.content.text, update.text
+    const contentText = update?.chunk?.text ?? update?.content?.text ?? update?.text;
+    const sessionUpdate = update?.sessionUpdate ?? update?.type;
 
     // Tool call result events (must check before the generic toolCallId check below)
     if (sessionUpdate === 'tool_call_update' || sessionUpdate === 'tool_call_complete') {
@@ -212,7 +229,8 @@ export function useAcpStream({
   }, []));
 
   // Handle stream completion
-  useWSEvent('acp.prompt.completed', useCallback((data: any) => {
+  useWSEvent('acp.prompt.completed', useCallback((msg: any) => {
+    const data = msg?.data ?? msg;
     if (data?.streamId && data.streamId !== streamIdRef.current) return;
 
     // Finalize current streaming message
@@ -229,13 +247,15 @@ export function useAcpStream({
   }, []));
 
   // Handle errors
-  useWSEvent('acp.stream.error', useCallback((data: any) => {
+  useWSEvent('acp.stream.error', useCallback((msg: any) => {
+    const data = msg?.data ?? msg;
     if (data?.streamId && data.streamId !== streamIdRef.current) return;
     setState(prev => ({ ...prev, status: 'error', error: data?.error ?? 'Stream error' }));
   }, []));
 
   // Handle permission requests from agent (tool approval)
-  useWSEvent('acp.permission.request', useCallback((data: any) => {
+  useWSEvent('acp.permission.request', useCallback((msg: any) => {
+    const data = msg?.data ?? msg;
     if (!streamIdRef.current) return;
     if (data?.streamId && data.streamId !== streamIdRef.current) return;
 
@@ -385,20 +405,8 @@ export function useAcpStream({
     }
   }, [enabled, state.streamId, existingStreamId]);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (streamIdRef.current) {
-        try {
-          const p = fetch(`${SC_PREFIX}/acp/streams/${streamIdRef.current}`, {
-            method: 'DELETE',
-            headers: { 'Content-Type': 'application/json' },
-          });
-          if (p && typeof p.catch === 'function') p.catch(() => {});
-        } catch { /* best effort cleanup */ }
-      }
-    };
-  }, []);
+  // Streams persist across navigations — server-side cleanup handles stale
+  // streams (create-acp closes old streams before creating new ones).
 
   return { status: state.status, error: state.error, events, permissions, send, cancel, connect, replyPermission };
 }

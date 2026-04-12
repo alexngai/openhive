@@ -334,8 +334,10 @@ export async function createHive(
         // Forward to original SwarmCraft subscribers
         origBroadcast(message, topic);
 
-        // Bridge acp.* events to OpenHive's WS
-        if (message?.type && typeof message.type === 'string' && message.type.startsWith('acp.')) {
+        // Bridge acp.* events to OpenHive's WS.
+        // Only forward from the 'acp' topic to avoid duplicates — SwarmCraft
+        // broadcasts each ACP event to both 'events' and 'acp' topics.
+        if (topic === 'acp' && message?.type && typeof message.type === 'string' && message.type.startsWith('acp.')) {
           broadcastToChannel('global', {
             type: message.type,
             data: message.payload ?? message.data ?? message,
@@ -692,7 +694,7 @@ export async function createHive(
 
       // Try to listen, auto-increment port if configured one is taken
       let port = config.port;
-      const maxPortAttempts = 10;
+      const maxPortAttempts = process.env.NODE_ENV === 'production' ? 10 : 1;
       let address!: string;
 
       for (let attempt = 0; attempt < maxPortAttempts; attempt++) {

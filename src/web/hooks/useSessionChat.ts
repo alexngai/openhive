@@ -124,14 +124,20 @@ export function useSessionChat({
   const projectPath = (swarmCaps as any)?.projectPath as string | undefined
     ?? (swarm?.metadata as any)?.projectPath as string | undefined;
 
-  // Resolve ACP target agent from swarm capabilities.
-  // The swarm's acp.agent field names the MAP agent that handles ACP prompts.
-  // Falls back to the swarm's registered agent name (from MAP node data).
+  // Resolve ACP target agent from per-agent capabilities on the live connection.
+  // The swarm response includes registered_agents with per-agent capabilities.
+  // Find the first agent that declares protocols: ['acp'].
+  const registeredAgents = (swarm as any)?.registered_agents as Array<{
+    id: string; name: string; role: string; capabilities?: Record<string, unknown>;
+  }> | undefined;
   const acpTargetAgent = useMemo(() => {
-    if (!capabilities.supportsAcp) return undefined;
-    const acpCaps = (swarmCaps as any)?.acp as Record<string, unknown> | undefined;
-    return (acpCaps?.agent as string) ?? undefined;
-  }, [capabilities.supportsAcp, swarmCaps]);
+    if (!capabilities.supportsAcp || !registeredAgents) return undefined;
+    const acpAgent = registeredAgents.find(a => {
+      const protos = a.capabilities?.protocols;
+      return Array.isArray(protos) && (protos as string[]).includes('acp');
+    });
+    return acpAgent?.id ?? undefined;
+  }, [capabilities.supportsAcp, registeredAgents]);
 
   // ACP streaming — keep serverId set whenever ACP is supported (even during error/retry)
   // so connect() can retry. Only disable when the swarm doesn't support ACP at all.

@@ -15,6 +15,7 @@ import { findSwarmById } from '../../db/dal/map.js';
 import { getDatabase } from '../../db/index.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import { fetchTranscriptFromSwarm } from '../../map/trajectory-content.js';
+import { findAcpAgent } from '../../map/connection-registry.js';
 import {
   detectFormatExtended,
   getSupportedFormats,
@@ -1389,15 +1390,10 @@ export async function sessionsRoutes(
         return reply.status(404).send({ error: 'Swarm not found' });
       }
 
-      const caps = (swarm.capabilities || {}) as Record<string, unknown>;
-      const protocols = Array.isArray(caps.protocols) ? caps.protocols as string[] : [];
-      if (!protocols.includes('acp')) {
-        return reply.status(400).send({ error: 'Swarm does not support ACP' });
-      }
-
-      const acpAgent = (caps.acp as Record<string, unknown>)?.agent as string | undefined;
+      // Resolve ACP target from per-agent capabilities on the live connection
+      const acpAgent = findAcpAgent(swarm_id);
       if (!acpAgent) {
-        return reply.status(400).send({ error: 'Swarm does not declare acp.agent capability' });
+        return reply.status(400).send({ error: 'No ACP-capable agent registered on this swarm' });
       }
 
       // Access SwarmCraft's ACP stream manager via the fastify instance

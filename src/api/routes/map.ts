@@ -46,7 +46,7 @@ import {
 import { createSwarmToken, delegateToken, revokeToken } from '../../map/token-service.js';
 import type { Config } from '../../config.js';
 import { broadcastToChannel } from '../../realtime/index.js';
-import { getAllConnectionHealth, getConnectionHealth } from '../../map/connection-registry.js';
+import { getAllConnectionHealth, getConnectionHealth, getInbound } from '../../map/connection-registry.js';
 import { getSyncListenerStatus } from '../../map/sync-listener.js';
 
 // ============================================================================
@@ -276,7 +276,16 @@ export async function mapRoutes(
     if (!pub) {
       return reply.status(404).send({ error: 'Not Found', message: 'Swarm not found' });
     }
-    return reply.send(pub);
+
+    // Enrich with live registered agents from the connection registry
+    const conn = getInbound(request.params.id);
+    const registeredAgents = conn
+      ? Array.from(conn.registeredAgents.values()).map(a => ({
+          id: a.id, name: a.name, role: a.role, state: a.state, capabilities: a.capabilities,
+        }))
+      : [];
+
+    return reply.send({ ...pub, registered_agents: registeredAgents });
   });
 
   // PUT /map/swarms/:id -- Update swarm

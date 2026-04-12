@@ -222,10 +222,6 @@ function createNotificationInterceptor(
     try {
       const msg = JSON.parse(data.toString());
 
-      // DEBUG: log all methods from this connection
-      if (msg.method) {
-        console.log(`[ws-map-debug] ${swarmId} method=${msg.method} id=${msg.id ?? 'notification'}`);
-      }
 
       // Handle trajectory/checkpoint requests before they reach the MAPServer.
       // These are JSON-RPC requests (have id) sent by the sidecar's callExtension.
