@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import {
   readConfig,
+  readLocalConfig,
   writeConfig,
   resolveDescriptors,
   findDescriptor,
@@ -108,6 +109,78 @@ describe('swarmkit/config-io', () => {
       };
 
       expect(readConfig(desc)).toEqual({});
+    });
+  });
+
+  // ─── readLocalConfig ────────────────────────────────────────
+
+  describe('readLocalConfig', () => {
+    it('should read settings.local.json when present', () => {
+      const configDir = path.join(tmpDir, 'sl');
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(configDir, 'settings.local.json'),
+        JSON.stringify({ sessionRepo: { localPath: '/Users/alex/sessions' } }),
+      );
+
+      const desc: PackageConfigDescriptor = {
+        packageName: 'sessionlog',
+        scope: 'project',
+        configDir,
+        configFile: 'settings.json',
+        format: 'json',
+        exists: false,
+        localFile: 'settings.local.json',
+      };
+
+      expect(readLocalConfig(desc)).toEqual({
+        sessionRepo: { localPath: '/Users/alex/sessions' },
+      });
+    });
+
+    it('should return {} when localFile is undefined', () => {
+      const desc: PackageConfigDescriptor = {
+        packageName: 'minimem',
+        scope: 'project',
+        configDir: tmpDir,
+        configFile: 'config.json',
+        format: 'json',
+        exists: true,
+      };
+      expect(readLocalConfig(desc)).toEqual({});
+    });
+
+    it('should return {} when the local file does not exist', () => {
+      const configDir = path.join(tmpDir, 'sl-missing');
+      fs.mkdirSync(configDir, { recursive: true });
+
+      const desc: PackageConfigDescriptor = {
+        packageName: 'sessionlog',
+        scope: 'project',
+        configDir,
+        configFile: 'settings.json',
+        format: 'json',
+        exists: false,
+        localFile: 'settings.local.json',
+      };
+      expect(readLocalConfig(desc)).toEqual({});
+    });
+
+    it('should return {} for corrupt local JSON', () => {
+      const configDir = path.join(tmpDir, 'sl-bad');
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(path.join(configDir, 'settings.local.json'), '{not json');
+
+      const desc: PackageConfigDescriptor = {
+        packageName: 'sessionlog',
+        scope: 'project',
+        configDir,
+        configFile: 'settings.json',
+        format: 'json',
+        exists: false,
+        localFile: 'settings.local.json',
+      };
+      expect(readLocalConfig(desc)).toEqual({});
     });
   });
 
@@ -241,6 +314,19 @@ describe('swarmkit/config-io', () => {
       const projectRoot = path.join(tmpDir, 'sl');
       const descriptors = resolveDescriptors('sessionlog', projectRoot, true);
       expect(descriptors[0].configFile).toBe('settings.json');
+    });
+
+    it('should populate localFile for sessionlog (project scope)', () => {
+      const projectRoot = path.join(tmpDir, 'sl-local');
+      const descriptors = resolveDescriptors('sessionlog', projectRoot, true);
+      const project = descriptors.find((d) => d.scope === 'project');
+      expect(project?.localFile).toBe('settings.local.json');
+    });
+
+    it('should not populate localFile for packages without one', () => {
+      const projectRoot = path.join(tmpDir, 'mm');
+      const descriptors = resolveDescriptors('minimem', projectRoot, true);
+      expect(descriptors[0].localFile).toBeUndefined();
     });
 
     it('should use YAML for self-driving-repo', () => {

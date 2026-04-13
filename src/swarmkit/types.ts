@@ -32,6 +32,9 @@ export interface PackageConfigDescriptor {
   format: ConfigFormat;
   /** Whether the file currently exists on disk */
   exists: boolean;
+  /** Optional sibling file for machine-specific overrides (e.g. settings.local.json).
+   *  Same format as configFile. Read-merged over configFile (local wins). */
+  localFile?: string;
 }
 
 // ─── SwarmKit global state ──────────────────────────────────────
@@ -86,6 +89,9 @@ export interface PackageConfigResponse {
   category: PackageCategory;
   description: string;
   config: Record<string, unknown>;
+  /** Raw contents of the sibling local file (e.g. settings.local.json) when present.
+   *  UI uses this to detect which keys came from the machine-specific file. */
+  localConfig?: Record<string, unknown>;
   meta: PackageMeta;
   installed: boolean;
   configPath: string | null;

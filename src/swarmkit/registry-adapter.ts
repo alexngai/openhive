@@ -9,15 +9,9 @@
 import {
   PACKAGES,
   INTEGRATIONS,
-  getActiveIntegrations as swarmkitGetActiveIntegrations,
   getAllPackageNames,
   CATEGORY_ORDER,
   CATEGORY_LABELS,
-} from 'swarmkit';
-import type {
-  PackageDefinition,
-  InlineOption,
-  Integration,
 } from 'swarmkit';
 import type {
   PackageCategory,
@@ -44,7 +38,6 @@ export function buildPackageMeta(
   const def = PACKAGES[packageName];
   if (!def) return null;
 
-  const installed = new Set(installedPackages);
   const fields: Record<string, PackageFieldMeta> = {};
   const options: SerializedInlineOption[] = [];
 

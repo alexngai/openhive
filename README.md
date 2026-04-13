@@ -177,6 +177,7 @@ graph TB
 - **Swarm hosting**: spawns OpenSwarm processes locally, monitors health, auto-restarts, injects credentials
 - **Resource sync**: memory banks, skills, tasks, and sessions from the `minimem` / `skill-tree` / `opentasks` ecosystem
 - **Session trajectories**: view agent session transcripts (user messages, assistant responses, tool calls) synced from Claude Code via sessionlog and the MAP trajectory protocol. Sessions show project name, git branch, and first prompt. Transcript content is fetched on-demand from connected agents or served from local cache.
+- **SwarmKit config management**: Settings → SwarmKit tab edits configs for installed packages (`opentasks`, `minimem`, `sessionlog`, `openteams`, `claude-code-swarm`, …) directly on disk. Sessionlog's machine-specific overrides (`settings.local.json`) are detected automatically — fields whose current value came from the local file render with a `[local]` badge and save back to the local file; committable fields stay in `settings.json`.
 - **Platform bridges**: connect a hive to Slack or Discord
 - **Mesh networking**: Tailscale Cloud or self-hosted Headscale for secure inter-swarm L3 connectivity
 - **Terminal access**: PTY tunneling to hosted swarms via WebSocket (`/ws/terminal`)

@@ -12,6 +12,7 @@ import { deepMerge } from '../config-persistence.js';
 import { expandDotNotation } from './utils.js';
 import {
   readConfig,
+  readLocalConfig,
   writeConfig,
   resolveDescriptors,
   findDescriptor,
@@ -211,12 +212,23 @@ export class SwarmKitConfigManager {
     // Determine which scope to serve
     if (scope) {
       const desc = findDescriptor(descriptors, scope);
+      let config: Record<string, unknown> = desc?.configFile ? readConfig(desc) : {};
+      let localConfig: Record<string, unknown> | undefined;
+      // Layer machine-specific local overrides on top of project-scope config
+      if (desc?.localFile && scope === 'project') {
+        const raw = readLocalConfig(desc);
+        if (Object.keys(raw).length > 0) {
+          localConfig = raw;
+          config = deepMerge(config, raw);
+        }
+      }
       return {
         packageName,
         scope,
         category: meta.category,
         description: meta.description,
-        config: desc?.configFile ? readConfig(desc) : {},
+        config,
+        ...(localConfig ? { localConfig } : {}),
         meta,
         installed,
         configPath: desc ? `${desc.configDir}/${desc.configFile}` : null,
@@ -230,6 +242,7 @@ export class SwarmKitConfigManager {
     let config: Record<string, unknown> = {};
     let configPath: string | null = null;
     let effectiveScope: PackageScope = 'project';
+    let localConfig: Record<string, unknown> | undefined;
 
     if (globalDesc?.configFile) {
       config = readConfig(globalDesc);
@@ -242,6 +255,14 @@ export class SwarmKitConfigManager {
       configPath = `${projectDesc.configDir}/${projectDesc.configFile}`;
       effectiveScope = 'project';
     }
+    // Machine-specific overrides win over everything
+    if (projectDesc?.localFile) {
+      const raw = readLocalConfig(projectDesc);
+      if (Object.keys(raw).length > 0) {
+        localConfig = raw;
+        config = deepMerge(config, raw);
+      }
+    }
 
     return {
       packageName,
@@ -249,6 +270,7 @@ export class SwarmKitConfigManager {
       category: meta.category,
       description: meta.description,
       config,
+      ...(localConfig ? { localConfig } : {}),
       meta,
       installed,
       configPath,
@@ -270,12 +292,18 @@ export class SwarmKitConfigManager {
 
   /**
    * Update a package's config. Writes to the specific scope's file.
+   *
+   * When `localUpdates` is provided and the descriptor has a `localFile`
+   * (e.g. sessionlog's settings.local.json), those keys are written to the
+   * local file instead of the main config file. The caller decides the
+   * routing; the manager just obeys.
    */
   updatePackageConfig(
     packageName: string,
     projectRoot: string | null,
     scope: PackageScope,
     updates: Record<string, unknown>,
+    localUpdates?: Record<string, unknown>,
   ): { success: boolean; message?: string } {
     const usePrefix = this.getUsePrefix();
     const descriptors = resolveDescriptors(packageName, projectRoot, usePrefix);
@@ -288,10 +316,26 @@ export class SwarmKitConfigManager {
       return { success: false, message: `${packageName} has no config file (directory-only package)` };
     }
 
-    // Read current, merge updates, write back
-    const current = readConfig(desc);
-    const merged = deepMerge(current, expandDotNotation(updates));
-    writeConfig(desc, merged);
+    // Main-file updates
+    if (Object.keys(updates).length > 0) {
+      const current = readConfig(desc);
+      const merged = deepMerge(current, expandDotNotation(updates));
+      writeConfig(desc, merged);
+    }
+
+    // Local-file updates (machine-specific overrides)
+    if (localUpdates && Object.keys(localUpdates).length > 0) {
+      if (!desc.localFile) {
+        return {
+          success: false,
+          message: `${packageName} does not support local-file overrides`,
+        };
+      }
+      const localDesc = { ...desc, configFile: desc.localFile };
+      const currentLocal = readConfig(localDesc);
+      const mergedLocal = deepMerge(currentLocal, expandDotNotation(localUpdates));
+      writeConfig(localDesc, mergedLocal);
+    }
 
     return { success: true };
   }
