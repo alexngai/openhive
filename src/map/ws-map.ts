@@ -692,6 +692,39 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     };
     const unsubMetadataChanged = mapServer.eventBus.on('agent.metadata.changed', onAgentMetadataChanged);
 
+    // Listen for MAP agent unregistration (e.g. when a coordinator is terminated
+    // via _macro/terminateAgent and the lifecycle bridge calls map/agents/unregister).
+    // MAP SDK emits: { type: 'agent.unregistered', data: { agentId, agent }, source: { agentId, sessionId } }
+    const onAgentUnregistered = (event: any) => {
+      const agentId = event?.data?.agentId ?? event?.data?.agent?.id;
+      if (!agentId) return;
+
+      const conn = getInbound(swarmId);
+      if (!conn) return;
+      if (!conn.registeredAgents.has(agentId)) return;
+
+      conn.registeredAgents.delete(agentId);
+      console.log(`[ws-map] Agent unregistered on ${swarmId}: ${agentId}`);
+
+      // Keep DB agent_count in sync
+      try { updateSwarm(swarmId, { agent_count: conn.registeredAgents.size }); } catch { /* non-critical */ }
+
+      // Refresh aggregate capabilities since the removed agent's capabilities no longer contribute
+      try {
+        const aggCaps = getAggregateCapabilities(swarmId);
+        updateSwarm(swarmId, { capabilities: aggCaps || undefined });
+      } catch { /* non-critical */ }
+
+      // Broadcast to frontend so the UI can refresh the registered_agents list
+      const wsEvent = {
+        type: 'agent_unregistered' as const,
+        data: { swarm_id: swarmId, agent_id: agentId },
+      };
+      broadcastToChannel(`map:swarm:${swarmId}`, wsEvent);
+      broadcastToChannel('global', wsEvent);
+    };
+    const unsubUnregistered = mapServer.eventBus.on('agent.unregistered', onAgentUnregistered);
+
     console.log(`[ws-map] Swarm ${swarmId} connected inbound (agent: ${agent.name})`);
 
     // Cleanup on close (router.closed as backup — ws 'close' is primary)
@@ -699,6 +732,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       unsubRegistered();
       unsubStateChanged();
       unsubMetadataChanged();
+      unsubUnregistered();
       interceptor.cleanup();
       handleDisconnect();
     });

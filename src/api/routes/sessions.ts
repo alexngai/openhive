@@ -15,7 +15,7 @@ import { findSwarmById } from '../../db/dal/map.js';
 import { getDatabase } from '../../db/index.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import { fetchTranscriptFromSwarm } from '../../map/trajectory-content.js';
-import { findAcpAgent, findAcpAgentInfo } from '../../map/connection-registry.js';
+import { findAcpAgentInfo, getInbound } from '../../map/connection-registry.js';
 import {
   detectFormatExtended,
   getSupportedFormats,
@@ -1381,20 +1381,26 @@ export async function sessionsRoutes(
     }
   );
 
-  // Create a new ACP agent session for a swarm.
-  // Eagerly creates the session resource + ACP stream so the user can navigate
-  // to the session immediately and start chatting.
+  // Open an ACP session against an already-registered ACP-capable agent on
+  // a swarm. Eagerly creates the session resource + ACP stream so the user
+  // can navigate to the session immediately and start chatting.
   //
-  // Optional `agent_id` targets a specific ACP-capable agent on the swarm
-  // (e.g., a specific coordinator in a macro-agent swarm with multiple
-  // coordinators). When omitted, falls back to the first ACP-capable agent.
-  fastify.post<{ Body: { swarm_id: string; cwd?: string; agent_id?: string } }>(
-    '/sessions/create-acp',
+  // `agent_id` is required — pass the hub's agent id (preferred) or the
+  // agent's localMapId. The caller is expected to have already spawned the
+  // agent via POST /map/swarms/:id/agents (or it was spawned elsewhere).
+  //
+  // Callers that want a one-click "spawn + connect" flow should chain the
+  // two endpoints client-side.
+  fastify.post<{ Body: { swarm_id: string; agent_id: string; cwd?: string } }>(
+    '/sessions/acp-connect',
     { preHandler: authMiddleware },
     async (request, reply) => {
-      const { swarm_id, cwd, agent_id } = request.body || {};
+      const { swarm_id, agent_id, cwd } = request.body || ({} as any);
       if (!swarm_id) {
         return reply.status(400).send({ error: 'swarm_id is required' });
+      }
+      if (!agent_id) {
+        return reply.status(400).send({ error: 'agent_id is required' });
       }
 
       const swarm = findSwarmById(swarm_id);
@@ -1408,51 +1414,55 @@ export async function sessionsRoutes(
         return reply.status(503).send({ error: 'SwarmCraft ACP not available' });
       }
 
-      // If the caller specified a specific agent, target it directly.
-      // The caller (frontend) is expected to pass the agent's localMapId or
-      // whatever ID resolves on the swarm's own MAP server — it already has
-      // that info from the registered_agents array returned by /map/swarms/:id.
-      // This lets a user start an ACP session with one specific coordinator
-      // in a multi-coordinator swarm.
-      //
-      // Otherwise fall back to auto-picking the first ACP-capable agent on
-      // the inbound connection. If none is registered yet, spawn a coordinator
-      // on demand via _macro/spawnAgent and use its returned MAP ID.
-      let acpAgent: string | undefined = agent_id || findAcpAgent(swarm_id);
+      // Resolve target cwd. Reused for both the ACP session's cwd parameter
+      // AND for display-name inference below. Matches macro-agent's
+      // getOrCreateHeadManager cwd so we reuse the agent's existing head
+      // manager rather than causing it to spawn a duplicate.
+      const swarmMeta = (swarm.metadata as Record<string, unknown>) || {};
+      const targetCwd = cwd
+        ?? (typeof swarmMeta.cwd === 'string' ? swarmMeta.cwd : undefined)
+        ?? (typeof swarmMeta.projectPath === 'string' ? swarmMeta.projectPath : undefined)
+        ?? '.';
+
+      // Resolve the agent on the hub. Accept either the hub-assigned id or
+      // the agent's localMapId (as published in registered_agents[].metadata).
+      // Normalize to the localMapId (what the swarm's own MAP server routes on)
+      // before opening the stream.
+      const inboundConn = getInbound(swarm_id);
+      let acpAgent: string | undefined;
+      let targetAgentEntry: { name?: string; metadata?: Record<string, unknown> } | undefined;
+      if (inboundConn) {
+        const direct = inboundConn.registeredAgents.get(agent_id);
+        if (direct) {
+          targetAgentEntry = direct;
+          const lm = direct.metadata?.localMapId;
+          acpAgent = typeof lm === 'string' ? lm : agent_id;
+        } else {
+          for (const entry of inboundConn.registeredAgents.values()) {
+            if (entry.metadata?.localMapId === agent_id) {
+              targetAgentEntry = entry;
+              acpAgent = agent_id;
+              break;
+            }
+          }
+        }
+      }
       if (!acpAgent) {
-        const mapClient = sc.mapClientManager?.getClient(swarm_id);
-        if (!mapClient) {
-          return reply.status(503).send({
-            error: 'No ACP-capable agent registered and MAP client unavailable to spawn one',
-          });
-        }
-        try {
-          const spawnCwd = cwd
-            ?? (swarm.metadata as Record<string, unknown>)?.projectPath as string
-            ?? undefined;
-          const spawnResult = await mapClient.callExtension('_macro/spawnAgent', {
-            role: 'coordinator',
-            task: 'Head manager',
-            cwd: spawnCwd,
-          }) as { agent?: { id?: string } };
-          const spawnedId = spawnResult?.agent?.id;
-          if (!spawnedId) {
-            return reply.status(503).send({ error: 'Failed to spawn coordinator agent' });
-          }
-          // Prefer the locally resolved ID once the lifecycle bridge registers it
-          // on the hub, but fall back to the spawn response's MAP ID immediately.
-          const deadline = Date.now() + 2000;
-          while (Date.now() < deadline) {
-            const resolved = findAcpAgent(swarm_id);
-            if (resolved) { acpAgent = resolved; break; }
-            await new Promise((r) => setTimeout(r, 50));
-          }
-          if (!acpAgent) acpAgent = spawnedId;
-        } catch (err) {
-          return reply.status(503).send({
-            error: `Failed to spawn ACP coordinator: ${(err as Error).message}`,
-          });
-        }
+        return reply.status(404).send({
+          error: `Agent ${agent_id} not registered on swarm ${swarm_id}`,
+        });
+      }
+
+      // Guard: agent must declare ACP support. Early 400 is friendlier than
+      // letting the stream handshake fail partway through.
+      const agentCaps = (targetAgentEntry as any)?.capabilities as Record<string, unknown> | undefined;
+      const agentProtocols = Array.isArray(agentCaps?.protocols)
+        ? (agentCaps!.protocols as string[])
+        : [];
+      if (!agentProtocols.includes('acp')) {
+        return reply.status(400).send({
+          error: `Agent ${agent_id} does not advertise ACP support`,
+        });
       }
 
       try {
@@ -1470,10 +1480,11 @@ export async function sessionsRoutes(
         // 2. Initialize
         await sc.acpStreamManager.initialize(stream.streamId);
 
-        // 3. Create ACP session (this spawns the agent inside macro-agent)
-        const projectPath = cwd
-          ?? (swarm.metadata as Record<string, unknown>)?.projectPath as string
-          ?? '.';
+        // 3. Create ACP session (this spawns the agent inside macro-agent
+        //    via getOrCreateHeadManager). Reuse the same cwd as the spawn
+        //    above so getOrCreateHeadManager finds the existing head manager
+        //    and doesn't spawn a second coordinator.
+        const projectPath = targetCwd;
         const sessionResult = await sc.acpStreamManager.newSession(stream.streamId, {
           cwd: projectPath,
           mcpServers: [],
@@ -1481,21 +1492,32 @@ export async function sessionsRoutes(
 
         const acpSessionId = sessionResult.sessionId;
 
-        // 4. Eagerly create the session resource
-        const remoteUrl = `map://session/${acpSessionId}`;
-        const project = projectPath.split('/').pop() ?? 'session';
-        const shortId = acpSessionId.slice(-8);
-        const displayName = `${project} [${shortId}]`;
+        // Pull display metadata from the agent entry we already resolved
+        // before the stream handshake. Fall back to the first ACP-capable
+        // agent for provider_session_id if the targeted agent hasn't
+        // published one yet.
+        const coordinatorName = (targetAgentEntry as any)?.name as string | undefined;
+        let providerSessionId: string | undefined;
+        const psidFromTarget = targetAgentEntry?.metadata?.provider_session_id;
+        if (typeof psidFromTarget === 'string') {
+          providerSessionId = psidFromTarget;
+        } else {
+          const fallback = findAcpAgentInfo(swarm_id);
+          const psid = fallback?.metadata?.provider_session_id;
+          if (typeof psid === 'string') providerSessionId = psid;
+        }
 
-        // Capture the underlying Claude Code session ID from the coordinator's
-        // per-agent metadata. This gives us a durable link so we can later read
-        // the JSONL transcript at ~/.claude/projects/{encoded-cwd}/{id}.jsonl
-        // to recover history if the agent process dies.
-        const acpInfo = findAcpAgentInfo(swarm_id);
-        const providerSessionId =
-          typeof acpInfo?.metadata?.provider_session_id === 'string'
-            ? (acpInfo.metadata.provider_session_id as string)
-            : undefined;
+        // 4. Eagerly create the session resource. Build a display name that
+        // prefers the coordinator's name when the project name is uninformative
+        // (empty, "." or "/"), so a user with multiple sessions can tell them
+        // apart by which coordinator they're with.
+        const remoteUrl = `map://session/${acpSessionId}`;
+        const projectFromPath = projectPath.split('/').filter(Boolean).pop() ?? '';
+        const isBadProject = !projectFromPath || projectFromPath === '.' || projectFromPath === '..';
+        const shortId = acpSessionId.slice(-8);
+        const nameBase = isBadProject ? (coordinatorName ?? 'session') : projectFromPath;
+        const displayName = `${nameBase} [${shortId}]`;
+        const project = isBadProject ? 'session' : projectFromPath;
 
         const { resource, created } = resourcesDAL.upsertDiscoveredResource({
           resource_type: 'session',

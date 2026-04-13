@@ -289,6 +289,126 @@ export async function mapRoutes(
     return reply.send({ ...pub, registered_agents: registeredAgents });
   });
 
+  // POST /map/swarms/:id/agents -- Spawn a new agent on a hostable swarm.
+  // Proxies to `_macro/spawnAgent` via SwarmCraft's MAP client. Pure lifecycle
+  // action: creates the agent and registers it with the hub, but does NOT
+  // open an ACP session. Use POST /sessions/acp-connect with the returned
+  // agent id to start a chat session.
+  fastify.post<{
+    Params: { id: string };
+    Body?: { role?: string; cwd?: string; task?: string };
+  }>(
+    '/map/swarms/:id/agents',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const swarmId = request.params.id;
+      const role = request.body?.role ?? 'coordinator';
+      const task = request.body?.task ?? 'Spawned via hub';
+
+      const swarm = mapDal.findSwarmById(swarmId);
+      if (!swarm) {
+        return reply.status(404).send({ error: 'Swarm not found' });
+      }
+
+      const sc = (fastify as any).swarmcraft;
+      if (!sc?.mapClientManager) {
+        return reply.status(503).send({ error: 'SwarmCraft MAP client not available' });
+      }
+      const mapClient = sc.mapClientManager.getClient(swarmId);
+      if (!mapClient) {
+        return reply.status(503).send({ error: 'MAP client not connected to this swarm' });
+      }
+
+      // Resolve cwd from request → swarm.metadata.cwd → swarm.metadata.projectPath → '.'
+      const swarmMeta = (swarm.metadata as Record<string, unknown>) || {};
+      const cwd = request.body?.cwd
+        ?? (typeof swarmMeta.cwd === 'string' ? swarmMeta.cwd : undefined)
+        ?? (typeof swarmMeta.projectPath === 'string' ? swarmMeta.projectPath : undefined)
+        ?? '.';
+
+      try {
+        const result = await mapClient.callExtension('_macro/spawnAgent', {
+          role,
+          task,
+          cwd,
+        }) as { agent?: { id?: string; name?: string; localId?: string } };
+        const spawnedId = result?.agent?.id;
+        if (!spawnedId) {
+          return reply.status(502).send({ error: 'Spawn returned no agent id' });
+        }
+
+        // Wait briefly for the lifecycle bridge to register the agent on the
+        // hub so the returned hub_agent_id is usable immediately by the caller.
+        const deadline = Date.now() + 2000;
+        let hubAgentId: string | undefined;
+        while (Date.now() < deadline) {
+          const conn = getInbound(swarmId);
+          if (conn) {
+            for (const [id, entry] of conn.registeredAgents) {
+              const md = entry.metadata as Record<string, unknown> | undefined;
+              if (md?.localMapId === spawnedId) { hubAgentId = id; break; }
+            }
+          }
+          if (hubAgentId) break;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+
+        return reply.send({
+          agent_id: hubAgentId ?? spawnedId,
+          local_map_id: spawnedId,
+          name: result?.agent?.name,
+          role,
+          cwd,
+        });
+      } catch (err) {
+        return reply.status(500).send({ error: (err as Error).message });
+      }
+    },
+  );
+
+  // POST /map/swarms/:id/agents/:agentId/stop -- Stop a specific agent on a swarm.
+  // Proxies to the swarm's MAP server via SwarmCraft's MAP client, calling the
+  // _macro/terminateAgent extension. Resolves the agent's localMapId from the
+  // registered_agents metadata when possible; otherwise uses the provided id.
+  fastify.post<{ Params: { id: string; agentId: string }; Body?: { reason?: string } }>(
+    '/map/swarms/:id/agents/:agentId/stop',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const swarmId = request.params.id;
+      const hubAgentId = request.params.agentId;
+      const reason = request.body?.reason ?? 'cancelled';
+
+      const sc = (fastify as any).swarmcraft;
+      if (!sc?.mapClientManager) {
+        return reply.status(503).send({ error: 'SwarmCraft MAP client not available' });
+      }
+      const mapClient = sc.mapClientManager.getClient(swarmId);
+      if (!mapClient) {
+        return reply.status(503).send({ error: 'MAP client not connected to this swarm' });
+      }
+
+      // Resolve the agent's local MAP ID. Prefer registered_agents metadata
+      // (hub's view) which has localMapId stored. Fall back to the provided id.
+      const conn = getInbound(swarmId);
+      const entry = conn?.registeredAgents.get(hubAgentId);
+      const localMapId = entry?.metadata?.localMapId;
+      const targetId = (typeof localMapId === 'string' && localMapId) ? localMapId : hubAgentId;
+
+      try {
+        const result = await mapClient.callExtension('_macro/terminateAgent', {
+          agentId: targetId,
+          reason,
+        }) as { success?: boolean; error?: string };
+        if (result?.success === false) {
+          return reply.status(500).send({ error: result.error || 'Failed to stop agent' });
+        }
+        return reply.send({ success: true });
+      } catch (err) {
+        return reply.status(500).send({ error: (err as Error).message });
+      }
+    },
+  );
+
   // PUT /map/swarms/:id -- Update swarm
   fastify.put<{ Params: { id: string } }>('/map/swarms/:id', {
     preHandler: [authMiddleware],

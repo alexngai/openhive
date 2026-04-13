@@ -1894,19 +1894,80 @@ export function useSendSessionChat() {
   });
 }
 
-/** Create a new ACP agent session for a swarm. Eagerly creates the session resource. */
-export function useCreateAcpSession() {
+/**
+ * Spawn a new agent on a swarm via its sidecar. Pure lifecycle action — no
+ * session or ACP stream is created. Chain with `useConnectAcp` if you want
+ * a one-click "spawn + chat" flow.
+ */
+export function useSpawnAgent() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ swarmId, cwd, agentId }: { swarmId: string; cwd?: string; agentId?: string }) =>
+    mutationFn: ({
+      swarmId,
+      role,
+      cwd,
+      task,
+    }: {
+      swarmId: string;
+      role?: string;
+      cwd?: string;
+      task?: string;
+    }) =>
+      api.post<{
+        agent_id: string;
+        local_map_id: string;
+        name?: string;
+        role: string;
+        cwd: string;
+      }>(`/map/swarms/${swarmId}/agents`, {
+        ...(role ? { role } : {}),
+        ...(cwd ? { cwd } : {}),
+        ...(task ? { task } : {}),
+      }),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['map-swarm', vars.swarmId] });
+      queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
+    },
+  });
+}
+
+/**
+ * Open an ACP session against an already-registered agent on a swarm.
+ * `agentId` is required (pass the hub agent id or the localMapId). Eagerly
+ * creates the OpenHive session resource so the UI can navigate to it.
+ */
+export function useConnectAcp() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ swarmId, agentId, cwd }: { swarmId: string; agentId: string; cwd?: string }) =>
       api.post<{ session_resource_id: string; acp_session_id: string; acp_stream_id: string; created: boolean }>(
-        '/sessions/create-acp',
-        { swarm_id: swarmId, cwd, ...(agentId ? { agent_id: agentId } : {}) },
+        '/sessions/acp-connect',
+        { swarm_id: swarmId, agent_id: agentId, ...(cwd ? { cwd } : {}) },
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions-overview'] });
       queryClient.invalidateQueries({ queryKey: ['session-checkpoints'] });
+    },
+  });
+}
+
+/**
+ * Stop a specific agent on a swarm. Proxies to the macro-agent's
+ * `_macro/terminateAgent` extension via SwarmCraft's MAP client.
+ */
+export function useStopAgent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ swarmId, agentId, reason }: { swarmId: string; agentId: string; reason?: string }) =>
+      api.post<{ success: boolean }>(
+        `/map/swarms/${swarmId}/agents/${agentId}/stop`,
+        { ...(reason ? { reason } : {}) },
+      ),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['map-swarm', vars.swarmId] });
+      queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
     },
   });
 }
