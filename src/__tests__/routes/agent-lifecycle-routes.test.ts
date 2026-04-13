@@ -74,7 +74,7 @@ function seedInboundConnection(
   opts: {
     withCoordinator?: {
       hubId: string;
-      localMapId: string;
+      peerMapId: string;
       name?: string;
       providerSessionId?: string;
     };
@@ -101,7 +101,7 @@ function seedInboundConnection(
   });
 
   if (opts.withCoordinator) {
-    const { hubId, localMapId, name, providerSessionId } = opts.withCoordinator;
+    const { hubId, peerMapId, name, providerSessionId } = opts.withCoordinator;
     conn.registeredAgents.set(hubId, {
       id: hubId,
       name: name ?? 'test-coord',
@@ -114,8 +114,8 @@ function seedInboundConnection(
         acp: { version: '2024-10-07' },
       },
       metadata: {
-        localMapId,
-        localAgentId: 'agent_local_1',
+        peerMapId,
+        peerAgentId: 'agent_local_1',
         ...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
       },
     });
@@ -285,7 +285,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
           // on the hub shortly after _macro/spawnAgent returns.
           setTimeout(() => {
             seedInboundConnection(swarm.id, {
-              withCoordinator: { hubId: spawnHubUlid, localMapId: spawnLocalUlid, name: 'spawned' },
+              withCoordinator: { hubId: spawnHubUlid, peerMapId: spawnLocalUlid, name: 'spawned' },
             });
           }, 10);
           return { agent: { id: spawnLocalUlid, name: 'spawned', localId: 'agent_local_1' } };
@@ -302,7 +302,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.agent_id).toBe(spawnHubUlid);
-      expect(body.local_map_id).toBe(spawnLocalUlid);
+      expect(body.peer_map_id).toBe(spawnLocalUlid);
       expect(body.role).toBe('coordinator');
       // cwd should have been resolved from swarm.metadata.cwd
       expect(body.cwd).toBe('/tmp/spawn-test');
@@ -328,7 +328,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
       expect(body.role).toBe('coordinator');
       // Stub returns 'spawn-local-ulid' — no hub id available, so it's echoed
       expect(body.agent_id).toBe('spawn-local-ulid');
-      expect(body.local_map_id).toBe('spawn-local-ulid');
+      expect(body.peer_map_id).toBe('spawn-local-ulid');
       // Falls back to '.' when neither body nor swarm metadata supply a cwd
       expect(body.cwd).toBe('.');
     });
@@ -353,18 +353,18 @@ describe('agent lifecycle + ACP-connect routes', () => {
       expect(res.statusCode).toBe(503);
     });
 
-    it('resolves the agent localMapId from metadata before terminating', async () => {
+    it('resolves the agent peerMapId from metadata before terminating', async () => {
       const swarm = mapDal.createSwarm(ownerAgent.id, {
         name: 'stop-success',
         map_endpoint: 'ws://127.0.0.1:9904',
       });
       seedInboundConnection(swarm.id, {
-        withCoordinator: { hubId: 'hub-1', localMapId: 'local-1', name: 'agent-1' },
+        withCoordinator: { hubId: 'hub-1', peerMapId: 'local-1', name: 'agent-1' },
       });
 
       const callExtension = vi.fn(async (method: string, params: any) => {
         expect(method).toBe('_macro/terminateAgent');
-        expect(params.agentId).toBe('local-1'); // localMapId, not the hub id
+        expect(params.agentId).toBe('local-1'); // peerMapId, not the hub id
         return { success: true };
       });
       sc.mapClientManager.getClient.mockReturnValueOnce({ callExtension });
@@ -380,7 +380,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
       expect(callExtension).toHaveBeenCalledOnce();
     });
 
-    it('uses the provided id as a fallback when no localMapId is present', async () => {
+    it('uses the provided id as a fallback when no peerMapId is present', async () => {
       const swarm = mapDal.createSwarm(ownerAgent.id, {
         name: 'stop-no-localmap',
         map_endpoint: 'ws://127.0.0.1:9905',
@@ -468,7 +468,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
         state: 'registered',
         scopes: [],
         capabilities: { messaging: { canReceive: true } }, // no protocols: ['acp']
-        metadata: { localMapId: 'local-noacp' },
+        metadata: { peerMapId: 'local-noacp' },
       });
 
       const res = await app.inject({
@@ -481,7 +481,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
       expect(res.json().error).toMatch(/ACP/);
     });
 
-    it('accepts a localMapId as agent_id and normalizes to it for the stream', async () => {
+    it('accepts a peerMapId as agent_id and normalizes to it for the stream', async () => {
       const swarm = mapDal.createSwarm(ownerAgent.id, {
         name: 'acp-localmap',
         map_endpoint: 'ws://127.0.0.1:9908',
@@ -489,7 +489,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
       seedInboundConnection(swarm.id, {
         withCoordinator: {
           hubId: 'hub-acp-1',
-          localMapId: 'local-acp-1',
+          peerMapId: 'local-acp-1',
           name: 'coord',
           providerSessionId: 'provider-xyz',
         },
@@ -499,7 +499,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
         method: 'POST',
         url: '/api/v1/sessions/acp-connect',
         headers: auth(),
-        // Caller supplies the localMapId — handler should accept and use it
+        // Caller supplies the peerMapId — handler should accept and use it
         payload: { swarm_id: swarm.id, agent_id: 'local-acp-1' },
       });
 
@@ -509,7 +509,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
       expect(body.acp_stream_id).toBe('acp-stream-1');
       expect(body.session_resource_id).toMatch(/^res_/);
 
-      // createStream was called with the localMapId
+      // createStream was called with the peerMapId
       expect(sc.acpStreamManager.createStream).toHaveBeenCalledWith(swarm.id, 'local-acp-1');
     });
 
@@ -519,7 +519,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
         map_endpoint: 'ws://127.0.0.1:9909',
       });
       seedInboundConnection(swarm.id, {
-        withCoordinator: { hubId: 'hub-ns', localMapId: 'local-ns' },
+        withCoordinator: { hubId: 'hub-ns', peerMapId: 'local-ns' },
       });
 
       const callExtension = vi.fn(async () => ({ agent: { id: 'should-not-be-called' } }));
@@ -544,7 +544,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
         map_endpoint: 'ws://127.0.0.1:9910',
       });
       seedInboundConnection(swarm.id, {
-        withCoordinator: { hubId: 'hub-ce', localMapId: 'local-ce' },
+        withCoordinator: { hubId: 'hub-ce', peerMapId: 'local-ce' },
       });
 
       sc.acpStreamManager.listStreams.mockReturnValueOnce([

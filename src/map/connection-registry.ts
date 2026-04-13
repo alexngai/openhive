@@ -17,9 +17,10 @@ export interface RegisteredAgent {
   /** Capabilities declared by this specific agent during MAP registration. */
   capabilities?: Record<string, unknown>;
   /**
-   * Metadata from the agent's registration. May include `localMapId`, which
+   * Metadata from the agent's registration. May include `peerMapId`, which
    * identifies the agent on the swarm's own MAP server — the correct target
-   * for ACP routing (different from this `id` which is the hub's ULID).
+   * for ACP routing (different from this `id` which is the hub's ULID), and
+   * `peerAgentId`, the agent's internal store id on the peer.
    */
   metadata?: Record<string, unknown>;
 }
@@ -62,7 +63,7 @@ export function registerInbound(swarmId: string, conn: MapInboundConnection): vo
   const existing = inboundConnections.get(swarmId);
   if (existing) {
     // Seed the new connection's registeredAgents from the prior (possibly
-    // stale) connection so brief reconnects don't lose localMapId,
+    // stale) connection so brief reconnects don't lose peerMapId,
     // provider_session_id, capabilities, etc. until agents re-register.
     for (const [id, agent] of existing.registeredAgents) {
       if (!conn.registeredAgents.has(id)) {
@@ -153,7 +154,7 @@ export function getAgentCapabilities(swarmId: string): Array<{ agentId: string; 
 
 /**
  * Find the first agent on the connection that supports ACP.
- * Returns the ID to target on the swarm's own MAP server (localMapId from
+ * Returns the ID to target on the swarm's own MAP server (peerMapId from
  * metadata when available; falls back to the hub-assigned id). ACP streams
  * are created against the swarm's MAP server, so targeting requires an ID
  * that resolves there — the hub-assigned id won't.
@@ -181,8 +182,8 @@ export function findAcpAgentInfo(swarmId: string): {
     if (!caps) continue;
     const protocols = Array.isArray(caps.protocols) ? caps.protocols as string[] : [];
     if (protocols.includes('acp')) {
-      const localMapId = agent.metadata?.localMapId;
-      const targetId = (typeof localMapId === 'string' && localMapId) ? localMapId : agent.id;
+      const peerMapId = agent.metadata?.peerMapId;
+      const targetId = (typeof peerMapId === 'string' && peerMapId) ? peerMapId : agent.id;
       return { targetId, hubAgentId: agent.id, metadata: agent.metadata };
     }
   }

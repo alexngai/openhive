@@ -1916,7 +1916,7 @@ export function useSpawnAgent() {
     }) =>
       api.post<{
         agent_id: string;
-        local_map_id: string;
+        peer_map_id: string;
         name?: string;
         role: string;
         cwd: string;
@@ -1934,7 +1934,7 @@ export function useSpawnAgent() {
 
 /**
  * Open an ACP session against an already-registered agent on a swarm.
- * `agentId` is required (pass the hub agent id or the localMapId). Eagerly
+ * `agentId` is required (pass the hub agent id or the peerMapId). Eagerly
  * creates the OpenHive session resource so the UI can navigate to it.
  */
 export function useConnectAcp() {

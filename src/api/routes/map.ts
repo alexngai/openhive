@@ -346,7 +346,7 @@ export async function mapRoutes(
           if (conn) {
             for (const [id, entry] of conn.registeredAgents) {
               const md = entry.metadata as Record<string, unknown> | undefined;
-              if (md?.localMapId === spawnedId) { hubAgentId = id; break; }
+              if (md?.peerMapId === spawnedId) { hubAgentId = id; break; }
             }
           }
           if (hubAgentId) break;
@@ -355,7 +355,7 @@ export async function mapRoutes(
 
         return reply.send({
           agent_id: hubAgentId ?? spawnedId,
-          local_map_id: spawnedId,
+          peer_map_id: spawnedId,
           name: result?.agent?.name,
           role,
           cwd,
@@ -368,7 +368,7 @@ export async function mapRoutes(
 
   // POST /map/swarms/:id/agents/:agentId/stop -- Stop a specific agent on a swarm.
   // Proxies to the swarm's MAP server via SwarmCraft's MAP client, calling the
-  // _macro/terminateAgent extension. Resolves the agent's localMapId from the
+  // _macro/terminateAgent extension. Resolves the agent's peerMapId from the
   // registered_agents metadata when possible; otherwise uses the provided id.
   fastify.post<{ Params: { id: string; agentId: string }; Body?: { reason?: string } }>(
     '/map/swarms/:id/agents/:agentId/stop',
@@ -387,12 +387,13 @@ export async function mapRoutes(
         return reply.status(503).send({ error: 'MAP client not connected to this swarm' });
       }
 
-      // Resolve the agent's local MAP ID. Prefer registered_agents metadata
-      // (hub's view) which has localMapId stored. Fall back to the provided id.
+      // Resolve the agent's peer MAP id (the ULID on the swarm's own MAP
+      // server). Prefer registered_agents metadata (hub's view) which has
+      // peerMapId stored. Fall back to the provided id.
       const conn = getInbound(swarmId);
       const entry = conn?.registeredAgents.get(hubAgentId);
-      const localMapId = entry?.metadata?.localMapId;
-      const targetId = (typeof localMapId === 'string' && localMapId) ? localMapId : hubAgentId;
+      const peerMapId = entry?.metadata?.peerMapId;
+      const targetId = (typeof peerMapId === 'string' && peerMapId) ? peerMapId : hubAgentId;
 
       try {
         const result = await mapClient.callExtension('_macro/terminateAgent', {

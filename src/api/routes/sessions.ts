@@ -1386,7 +1386,7 @@ export async function sessionsRoutes(
   // can navigate to the session immediately and start chatting.
   //
   // `agent_id` is required — pass the hub's agent id (preferred) or the
-  // agent's localMapId. The caller is expected to have already spawned the
+  // agent's peerMapId. The caller is expected to have already spawned the
   // agent via POST /map/swarms/:id/agents (or it was spawned elsewhere).
   //
   // Callers that want a one-click "spawn + connect" flow should chain the
@@ -1425,8 +1425,8 @@ export async function sessionsRoutes(
         ?? '.';
 
       // Resolve the agent on the hub. Accept either the hub-assigned id or
-      // the agent's localMapId (as published in registered_agents[].metadata).
-      // Normalize to the localMapId (what the swarm's own MAP server routes on)
+      // the agent's peerMapId (as published in registered_agents[].metadata).
+      // Normalize to the peerMapId (what the swarm's own MAP server routes on)
       // before opening the stream.
       const inboundConn = getInbound(swarm_id);
       let acpAgent: string | undefined;
@@ -1435,11 +1435,11 @@ export async function sessionsRoutes(
         const direct = inboundConn.registeredAgents.get(agent_id);
         if (direct) {
           targetAgentEntry = direct;
-          const lm = direct.metadata?.localMapId;
-          acpAgent = typeof lm === 'string' ? lm : agent_id;
+          const pm = direct.metadata?.peerMapId;
+          acpAgent = typeof pm === 'string' ? pm : agent_id;
         } else {
           for (const entry of inboundConn.registeredAgents.values()) {
-            if (entry.metadata?.localMapId === agent_id) {
+            if (entry.metadata?.peerMapId === agent_id) {
               targetAgentEntry = entry;
               acpAgent = agent_id;
               break;

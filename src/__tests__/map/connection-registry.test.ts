@@ -146,7 +146,7 @@ describe('connection-registry health', () => {
         state: 'registered',
         scopes: [],
         capabilities: { protocols: ['acp'], acp: { version: '2024-10-07' } },
-        metadata: { localMapId: 'map-local-1', provider_session_id: 'uuid-xyz' },
+        metadata: { peerMapId: 'map-local-1', provider_session_id: 'uuid-xyz' },
       });
       registerInbound('swarm-stale', createConn('swarm-stale', { registeredAgents: agents }));
 
@@ -178,7 +178,7 @@ describe('connection-registry health', () => {
         state: 'registered',
         scopes: [],
         capabilities: { protocols: ['acp'], acp: { version: '2024-10-07' } },
-        metadata: { localMapId: 'map-local-2', provider_session_id: 'uuid-abc' },
+        metadata: { peerMapId: 'map-local-2', provider_session_id: 'uuid-abc' },
       });
       registerInbound('swarm-reconnect', createConn('swarm-reconnect', { registeredAgents: agents }));
 

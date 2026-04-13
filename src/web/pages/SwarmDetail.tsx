@@ -517,10 +517,10 @@ function RegisteredAgentCard({
   // the whole swarm's hub connection. Use Swarms page controls for that.
   const canStop = agent.role !== 'sidecar';
 
-  // Prefer localMapId as the targetable ID on the swarm's own MAP server; fall
+  // Prefer peerMapId as the targetable ID on the swarm's own MAP server; fall
   // back to the hub-assigned ID.
   const targetAgentId =
-    (typeof agent.metadata?.localMapId === 'string' && (agent.metadata.localMapId as string)) ||
+    (typeof agent.metadata?.peerMapId === 'string' && (agent.metadata.peerMapId as string)) ||
     agent.id;
 
   const handleChat = async () => {
