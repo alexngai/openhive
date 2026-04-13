@@ -166,10 +166,9 @@ describe('CLI', () => {
       expect(fs.existsSync(outputPath)).toBe(true);
 
       const content = fs.readFileSync(outputPath, 'utf-8');
-      expect(content).toContain('module.exports');
-      expect(content).toContain('port');
-      expect(content).toContain('database');
-      expect(content).toContain('rateLimit');
+      expect(content).toContain('"port"');
+      expect(content).toContain('"database"');
+      expect(content).toContain('"database"');
     });
 
     it('should refuse to overwrite an existing file', () => {

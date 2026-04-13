@@ -137,10 +137,11 @@ export async function daemonUpdateTask(
             transition: { id: taskId, action: action as 'start' | 'complete' | 'block' | 'reopen' | 'close' },
           });
           if (!result.success) {
-            throw new TaskDaemonError('OPERATION_FAILED', result.error || 'Transition failed');
+            // Semantic transition not valid for current state — fall back to direct update
+            await client.updateNode(taskId, { status: updates.status });
           }
-        } catch (err) {
-          if (err instanceof TaskDaemonError) throw err;
+        } catch {
+          // Transition threw — fall back to direct update
           await client.updateNode(taskId, { status: updates.status });
         }
       } else {
@@ -164,6 +165,134 @@ export async function daemonUpdateTask(
       assignee: updates.assignee ?? null,
       meta: updates.meta,
     };
+  }, opentasksDir);
+}
+
+export async function daemonCreateContext(
+  socketPath: string,
+  params: { title: string; content?: string; priority?: number; tags?: string[] },
+  opentasksDir?: string,
+): Promise<{ id: string; title: string; type: string }> {
+  return withDaemon(socketPath, async (client) => {
+    const node = await client.createNode({
+      type: 'context',
+      title: params.title,
+      content: params.content,
+      priority: params.priority,
+      tags: params.tags,
+    });
+    const n = node as Record<string, unknown>;
+    return { id: n.id as string, title: (n.title as string) || params.title, type: 'context' };
+  }, opentasksDir);
+}
+
+export async function daemonCreateContextFile(
+  socketPath: string,
+  params: { filePath: string; title?: string; commit?: string },
+  opentasksDir?: string,
+): Promise<{ id: string; title: string; type: string }> {
+  return withDaemon(socketPath, async (client) => {
+    const node = await client.createContextFile({
+      filePath: params.filePath,
+      title: params.title,
+      commit: params.commit,
+    } as any);
+    const n = node as Record<string, unknown>;
+    return { id: n.id as string, title: (n.title as string) || params.filePath, type: 'context' };
+  }, opentasksDir);
+}
+
+export async function daemonResolveContextFile(
+  socketPath: string,
+  nodeId: string,
+  opentasksDir?: string,
+): Promise<{ content: string; drifted: boolean; filePath: string; commit: string; contentHash: string }> {
+  return withDaemon(socketPath, async (client) => {
+    const result = await client.resolveContextFile(nodeId);
+    return result as any;
+  }, opentasksDir);
+}
+
+export async function daemonCheckContextDrift(
+  socketPath: string,
+  nodeId: string,
+  opentasksDir?: string,
+): Promise<{ drifted: boolean; currentHash: string; capturedHash?: string }> {
+  return withDaemon(socketPath, async (client) => {
+    const result = await client.checkContextFileDrift(nodeId);
+    return result as any;
+  }, opentasksDir);
+}
+
+export async function daemonSyncContextFile(
+  socketPath: string,
+  nodeId: string,
+  force?: boolean,
+  opentasksDir?: string,
+): Promise<{ id: string; title: string }> {
+  return withDaemon(socketPath, async (client) => {
+    const result = await client.syncContextFile(nodeId, { force } as any);
+    const n = result as Record<string, unknown>;
+    return { id: n.id as string, title: (n.title as string) || '' };
+  }, opentasksDir);
+}
+
+export async function daemonContextSummary(
+  socketPath: string,
+  params?: { taskId?: string; tags?: string[]; branch?: string; limit?: number },
+  opentasksDir?: string,
+): Promise<Record<string, unknown>> {
+  return withDaemon(socketPath, async (client) => {
+    const result = await client.contextSummary(params as any);
+    return result as Record<string, unknown>;
+  }, opentasksDir);
+}
+
+export async function daemonDeleteTask(
+  socketPath: string,
+  taskId: string,
+  options?: { hard?: boolean },
+  opentasksDir?: string,
+): Promise<void> {
+  return withDaemon(socketPath, async (client) => {
+    await client.deleteNode(taskId, { hard: options?.hard ?? false });
+  }, opentasksDir);
+}
+
+export async function daemonCreateLink(
+  socketPath: string,
+  params: { fromId: string; toId: string; type: string; metadata?: Record<string, unknown> },
+  opentasksDir?: string,
+): Promise<{ edgeId?: string }> {
+  return withDaemon(socketPath, async (client) => {
+    const result = await client.link({
+      fromId: params.fromId,
+      toId: params.toId,
+      type: params.type as any,
+      metadata: params.metadata,
+    });
+    if (!result.success) {
+      throw new TaskDaemonError('OPERATION_FAILED', result.error || 'Link creation failed');
+    }
+    return { edgeId: result.edgeId };
+  }, opentasksDir);
+}
+
+export async function daemonRemoveLink(
+  socketPath: string,
+  params: { fromId: string; toId: string; type: string },
+  opentasksDir?: string,
+): Promise<void> {
+  return withDaemon(socketPath, async (client) => {
+    const result = await client.link({
+      fromId: params.fromId,
+      toId: params.toId,
+      type: params.type as any,
+      remove: true,
+    });
+    if (!result.success) {
+      throw new TaskDaemonError('OPERATION_FAILED', result.error || 'Link removal failed');
+    }
   }, opentasksDir);
 }
 
@@ -226,25 +355,31 @@ export async function daemonGetGraph(
 ): Promise<{ nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] }> {
   return withDaemon(socketPath, async (client) => {
     const nodesResult = await client.query({ nodes: { archived: false }, limit: 5000, verbose: true });
-    const edgesResult = await client.query({ edges: {}, limit: 10000 });
 
     const nodes = (nodesResult.items as unknown as Record<string, unknown>[]).map((n) => ({
       id: n.id,
       type: n.type,
       title: n.title,
       description: n.content ?? n.description,
+      content: n.content,
       status: n.status,
       priority: n.priority,
       archived: n.archived,
       assignee: n.assignee,
+      tags: n.tags,
+      metadata: n.metadata,
       created_at: n.created_at ?? n.createdAt,
       updated_at: n.updated_at ?? n.updatedAt,
     }));
 
-    const edges = (edgesResult.items as EdgeSummary[]).map((e) => ({
+    const edgesResult = await client.query({ edges: {}, limit: 10000 });
+    // Strip any resource-prefixed IDs (e.g. "res_xxx:t-4iwf" → "t-4iwf")
+    // that may have been stored by the multi-graph UI
+    const stripPrefix = (id: string) => id.includes(':') ? id.split(':').pop()! : id;
+    const edges = ((edgesResult.items as EdgeSummary[]) ?? []).map((e) => ({
       id: e.id,
-      from_id: e.fromId,
-      to_id: e.toId,
+      from_id: stripPrefix(e.fromId),
+      to_id: stripPrefix(e.toId),
       type: e.type,
     }));
 
@@ -351,27 +486,5 @@ export async function daemonGetStatus(
 // Socket Path Resolution
 // ============================================================================
 
-/**
- * Resolve the daemon socket path for an .opentasks directory.
- * Reads config.json for explicit socketPath, falls back to daemon.sock.
- */
-export function resolveDaemonSocket(opentasksDir: string): string {
-  const configPath = join(opentasksDir, 'config.json');
-  if (existsSync(configPath)) {
-    try {
-      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-      if (config.daemon?.socketPath) return config.daemon.socketPath;
-    } catch { /* fall through */ }
-  }
-
-  // Standard location: daemon.sock directly in the .opentasks directory
-  const directSocket = join(opentasksDir, 'daemon.sock');
-  if (existsSync(directSocket)) return directSocket;
-
-  // Fallback: nested .opentasks/daemon.sock (created when daemon was previously
-  // started with cwd inside the .opentasks dir instead of the project root)
-  const nestedSocket = join(opentasksDir, '.opentasks', 'daemon.sock');
-  if (existsSync(nestedSocket)) return nestedSocket;
-
-  return directSocket;
-}
+// Re-export from lifecycle to avoid duplication
+export { resolveDaemonSocket } from './task-daemon-lifecycle.js';

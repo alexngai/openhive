@@ -92,15 +92,6 @@ export const ConfigSchema = z.object({
     })
     .default({}),
 
-  rateLimit: z
-    .object({
-      enabled: z.boolean().default(true),
-      max: z
-        .number()
-        .default(process.env.NODE_ENV === "production" ? 100 : 1000),
-      timeWindow: z.string().default("1 minute"),
-    })
-    .default({}),
 
   federation: z
     .object({
@@ -138,6 +129,14 @@ export const ConfigSchema = z.object({
   auth: z
     .object({
       mode: z.enum(["local", "swarmhub"]).default("local"),
+    })
+    .default({}),
+
+  // Auto-pull configuration for remote task graphs
+  autoPull: z
+    .object({
+      /** Poll interval in minutes for checking remote task graphs (default: 2) */
+      intervalMinutes: z.number().min(0.5).default(2),
     })
     .default({}),
 
@@ -744,11 +743,6 @@ export function generateSampleConfig(): string {
     },
     admin: {
       createOnStartup: true,
-    },
-    rateLimit: {
-      enabled: true,
-      max: process.env.NODE_ENV === "production" ? 100 : 1000,
-      timeWindow: "1 minute",
     },
     federation: {
       enabled: false,

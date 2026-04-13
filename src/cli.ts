@@ -212,11 +212,6 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
       verification: {
         strategy: verificationStrategy,
       },
-      rateLimit: {
-        enabled: true,
-        max: 100,
-        timeWindow: '1 minute',
-      },
       storage: {
         type: 'local',
         path: paths.uploads,
@@ -327,7 +322,8 @@ async function startServer(opts: StartOptions): Promise<string> {
       // "Previous process hasn't exited yet" and MaxListenersExceeded warnings.
       // SIGINT (Ctrl+C) still gets a full graceful shutdown.
       const isTermSignal = signal === 'SIGTERM';
-      const timeoutMs = isTermSignal ? 2_000 : 10_000;
+      const isDev = process.env.NODE_ENV !== 'production';
+      const timeoutMs = isTermSignal ? (isDev ? 5_000 : 2_000) : 10_000;
 
       if (!isTermSignal) {
         console.log('\n\n  Shutting down...');

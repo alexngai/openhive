@@ -32,16 +32,16 @@ import { initializeLocalSessionStorage } from '../../sessions/storage/index.js';
 import { handleTrajectoryRequest } from '../../map/trajectory-handler.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-// cc-swarm real function
-// @ts-expect-error — .mjs import
-import { buildTrajectoryCheckpoint } from 'claude-code-swarm/src/sessionlog.mjs';
+// cc-swarm real function — import from references/ (published package doesn't export src/)
+// @ts-expect-error — .mjs import from references
+import { buildTrajectoryCheckpoint } from '../../../references/claude-code-swarm/src/sessionlog.mjs';
 
 vi.mock('../../realtime/index.js', () => ({
   broadcastToChannel: vi.fn(),
 }));
 
 // Mock cc-swarm config for buildTrajectoryCheckpoint
-vi.mock('claude-code-swarm/src/config.mjs', () => ({
+vi.mock('../../../references/claude-code-swarm/src/config.mjs', () => ({
   readConfig: () => ({ sessionlog: { enabled: true, sync: 'metrics', mode: 'plugin' } }),
   resolveTeamName: () => 'e2e-team',
   resolveScope: () => 'swarm:e2e-team',
@@ -491,8 +491,11 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
     }
   });
 
-  it('Tier 5: returns 503 when nothing is available', async () => {
-    // Create a session with no cache, no swarm, no local sessionlog
+  it('Tier 5: returns empty events (200) when nothing is available', async () => {
+    // Previously Tier 5 returned 503, but that blocked the UI from loading on
+    // live ACP sessions where no transcript has been checkpointed yet. The
+    // client falls back to ACP session/load for live replay. Empty events is
+    // the correct response when no on-disk transcript exists.
     const r = handleTrajectoryRequest(
       'trajectory/checkpoint',
       {
@@ -505,9 +508,10 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
     resourcesDAL.updateResource(r.resource_id, { metadata: {} });
 
     const res = await app.inject({ method: 'GET', url: `/api/v1/sessions/${r.resource_id}/events` });
-    expect(res.statusCode).toBe(503);
+    expect(res.statusCode).toBe(200);
 
     const body = JSON.parse(res.body);
-    expect(body.message).toContain('not available');
+    expect(body.events).toEqual([]);
+    expect(body.total).toBe(0);
   });
 });

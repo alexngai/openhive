@@ -35,6 +35,9 @@ export function useTasksRealtime() {
   useWSEvent('task.assigned', handleTaskEvent);
   useWSEvent('task.status', handleTaskEvent);
   useWSEvent('task.completed', handleTaskEvent);
+  useWSEvent('task.deleted', handleTaskEvent);
+  useWSEvent('task.linked', handleTaskEvent);
+  useWSEvent('task.unlinked', handleTaskEvent);
 }
 
 /** @deprecated Use useTasksRealtime instead */

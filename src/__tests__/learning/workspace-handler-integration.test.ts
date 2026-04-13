@@ -66,7 +66,7 @@ function createMockSwarmWithHandler(): WebSocket & { sentMessages: string[] } {
     // Parse and handle workspace.execute messages
     try {
       const msg = JSON.parse(data);
-      if (msg.method === 'x-openhive/learning.workspace.execute') {
+      if (msg.method === 'x-workspace/task.execute') {
         const params = msg.params;
 
         // Simulate analyst agent: write output files to cwd
@@ -171,7 +171,7 @@ describe('Workspace Handler Integration', () => {
     // Verify the MAP message was sent correctly
     expect(ws.sentMessages.length).toBe(1);
     const sent = JSON.parse(ws.sentMessages[0]);
-    expect(sent.method).toBe('x-openhive/learning.workspace.execute');
+    expect(sent.method).toBe('x-workspace/task.execute');
     expect(sent.params.prompt).toContain('Analyze the trajectories');
     expect(sent.params.cwd).toBe(workspaceDir);
   });
@@ -185,7 +185,7 @@ describe('Workspace Handler Integration', () => {
       ws.sentMessages.push(data);
       // Simulate failure response
       const msg = JSON.parse(data);
-      if (msg.method === 'x-openhive/learning.workspace.execute') {
+      if (msg.method === 'x-workspace/task.execute') {
         setTimeout(() => {
           handleWorkspaceResult({
             request_id: msg.params.request_id,

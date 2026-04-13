@@ -5,14 +5,16 @@
  *
  * Task events use generic MAP scope messages (task.created, task.assigned,
  * task.status) — the format used by cc-swarm and macro-agent task bridges.
- * Task events route to the OpenTasks compat shim.
+ *
+ * The hub acts as a relay: it emits hub events (for internal consumers like
+ * SwarmCraft and the learning engine) and broadcasts to WebSocket subscribers.
+ * It does NOT persist task state — agents own their task graphs via their
+ * local OpenTasks daemons, and sync between them via pushSyncEvent.
  *
  * Context sharing and messaging are handled by agent-inbox (not here).
  */
 
-import { shimTaskAssign, shimTaskStatus } from './compat.js';
 import { mapHubEvents } from '../map/service.js';
-import type { TaskStatusParams } from './types.js';
 
 // =============================================================================
 // MAP Scope Task Messages (from cc-swarm / macro-agent)
@@ -35,7 +37,7 @@ export function isMapTaskEvent(data: unknown): boolean {
 
 /**
  * Handle an inbound MAP scope task event from a swarm.
- * Routes to the OpenTasks compat shim and emits hub events.
+ * Emits hub events for internal consumers and lets ws-map.ts handle broadcasts.
  */
 export function handleMapTaskEvent(
   payload: Record<string, unknown>,
@@ -45,22 +47,6 @@ export function handleMapTaskEvent(
     case 'task.created': {
       const task = payload.task as Record<string, unknown> | undefined;
       if (!task?.title) return;
-
-      const shimNodeId = shimTaskAssign(
-        {
-          task_id: (task.id as string) ?? '',
-          title: task.title as string,
-          description: (task.description as string) ?? '',
-          priority: 'medium',
-          assigned_by: sourceSwarmId,
-          assigned_to_swarm: (task.assignee as string) ?? sourceSwarmId,
-          hive_id: '',
-        },
-        sourceSwarmId,
-      );
-      if (shimNodeId) {
-        console.log(`[coordination] task.created "${task.title}" → OpenTasks node ${shimNodeId}`);
-      }
 
       mapHubEvents.emit('task_assigned', {
         task_id: task.id,
@@ -91,20 +77,6 @@ export function handleMapTaskEvent(
       const current = payload.current as string | undefined;
       const previous = payload.previous as string | undefined;
       if (!taskId || !current) return;
-
-      const shimHandled = shimTaskStatus(
-        {
-          task_id: taskId,
-          status: current as TaskStatusParams['status'],
-          progress: payload.progress as number | undefined,
-          result: payload.result as Record<string, unknown> | undefined,
-          error: payload.error as string | undefined,
-        },
-        taskId,
-      );
-      if (shimHandled) {
-        console.log(`[coordination] task.status ${previous} → ${current} for ${taskId}`);
-      }
 
       mapHubEvents.emit('task_status_changed', {
         task_id: taskId,

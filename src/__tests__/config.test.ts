@@ -14,7 +14,6 @@ describe('Configuration', () => {
       expect(config.instance.name).toBe('OpenHive');
       expect(config.instance.public).toBe(true);
       expect(config.auth.mode).toBe('local');
-      expect(config.rateLimit.enabled).toBe(true);
       expect(config.federation.enabled).toBe(false);
     });
 
@@ -105,19 +104,6 @@ describe('Configuration', () => {
       }).toThrow();
     });
 
-    it('should parse rate limit config', () => {
-      const config = ConfigSchema.parse({
-        rateLimit: {
-          enabled: false,
-          max: 50,
-          timeWindow: '30 seconds',
-        },
-      });
-
-      expect(config.rateLimit.enabled).toBe(false);
-      expect(config.rateLimit.max).toBe(50);
-      expect(config.rateLimit.timeWindow).toBe('30 seconds');
-    });
 
     it('should parse federation config', () => {
       const config = ConfigSchema.parse({

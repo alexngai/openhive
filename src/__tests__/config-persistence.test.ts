@@ -139,13 +139,13 @@ describe('config-persistence', () => {
         port: 3000,
         instance: { name: 'MyHive', description: 'Test', public: true },
         learning: { enabled: false },
-        rateLimit: { enabled: true, max: 100 },
+        cors: { enabled: true },
       };
       writeConfigFile(filePath, initial);
 
       // Read, merge updates, write back
       const current = readConfigFile(filePath);
-      const updates = { learning: { enabled: true }, rateLimit: { max: 200 } };
+      const updates = { learning: { enabled: true }, cors: { origin: '*' } };
       const merged = deepMerge(current, updates);
       writeConfigFile(filePath, merged);
 
@@ -155,7 +155,7 @@ describe('config-persistence', () => {
         port: 3000,
         instance: { name: 'MyHive', description: 'Test', public: true },
         learning: { enabled: true },
-        rateLimit: { enabled: true, max: 200 },
+        cors: { enabled: true, origin: '*' },
       });
     });
   });

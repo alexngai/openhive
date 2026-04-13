@@ -166,6 +166,7 @@ export type WSEventType =
   | 'swarm_heartbeat'
   | 'swarm_joined_hive'
   | 'swarm_left_hive'
+  | 'agent_unregistered'
   // Swarm hosting events
   | 'swarm_spawned'
   | 'swarm_stopped'

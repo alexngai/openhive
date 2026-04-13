@@ -2,9 +2,10 @@
  * CreateTaskForm — Inline form for creating a new task in an OpenTasks resource.
  */
 
-import { useState } from 'react';
-import { Plus, X } from 'lucide-react';
-import { useCreateOpenTask } from '../../hooks/useApi';
+import { useState } from "react";
+import { Plus, X } from "lucide-react";
+import { useCreateOpenTask } from "../../hooks/useApi";
+import { Dialog } from "../common/Dialog";
 
 interface Props {
   resourceId: string;
@@ -13,9 +14,10 @@ interface Props {
 
 export function CreateTaskForm({ resourceId, onCreated }: Props) {
   const [open, setOpen] = useState(false);
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [priority, setPriority] = useState(0);
+  const [assignee, setAssignee] = useState("");
 
   const createTask = useCreateOpenTask(resourceId);
 
@@ -28,12 +30,14 @@ export function CreateTaskForm({ resourceId, onCreated }: Props) {
         title: title.trim(),
         description: description.trim() || undefined,
         priority,
+        assignee: assignee.trim() || undefined,
       },
       {
         onSuccess: () => {
-          setTitle('');
-          setDescription('');
+          setTitle("");
+          setDescription("");
           setPriority(0);
+          setAssignee("");
           setOpen(false);
           onCreated?.();
         },
@@ -41,81 +45,115 @@ export function CreateTaskForm({ resourceId, onCreated }: Props) {
     );
   };
 
-  if (!open) {
-    return (
+  return (
+    <>
       <button
         onClick={() => setOpen(true)}
-        className="btn-ghost text-xs flex items-center gap-1.5 px-2 py-1"
+        className="btn btn-primary flex items-center gap-1.5 text-xs"
       >
         <Plus className="w-3 h-3" />
         New Task
       </button>
-    );
-  }
 
-  return (
-    <form onSubmit={handleSubmit} className="card p-3 space-y-2">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium">New Task</span>
-        <button type="button" onClick={() => setOpen(false)} className="btn-ghost p-0.5">
-          <X className="w-3.5 h-3.5" />
-        </button>
-      </div>
+      <Dialog open={open} onClose={() => setOpen(false)} maxWidth="max-w-md">
+        <form onSubmit={handleSubmit}>
+          <div className="flex items-center justify-between p-4 border-b border-[var(--color-border-subtle)]">
+            <span className="text-sm font-semibold">New Task</span>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="p-1 rounded hover:bg-white/5"
+            >
+              <X
+                className="w-4 h-4"
+                style={{ color: "var(--color-text-muted)" }}
+              />
+            </button>
+          </div>
 
-      <input
-        type="text"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        placeholder="Task title"
-        className="input text-xs w-full"
-        autoFocus
-      />
+          <div className="p-4 space-y-3">
+            <div>
+              <label className="text-xs font-medium block mb-1.5">Title</label>
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Task title"
+                className="input text-sm w-full"
+                autoFocus
+              />
+            </div>
 
-      <textarea
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder="Description (optional)"
-        className="input text-xs w-full resize-none"
-        rows={2}
-      />
+            <div>
+              <label className="text-xs font-medium block mb-1.5">
+                Description
+              </label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Optional"
+                className="input text-sm w-full resize-none"
+                rows={3}
+              />
+            </div>
 
-      <div className="flex items-center gap-2">
-        <label className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>Priority</label>
-        <select
-          value={priority}
-          onChange={(e) => setPriority(Number(e.target.value))}
-          className="input text-2xs px-1.5 py-0.5"
-        >
-          <option value={0}>Default (0)</option>
-          <option value={1}>Low (1)</option>
-          <option value={2}>Medium (2)</option>
-          <option value={3}>High (3)</option>
-          <option value={4}>Critical (4)</option>
-        </select>
-      </div>
+            <div>
+              <label className="text-xs font-medium block mb-1.5">
+                Assignee
+              </label>
+              <input
+                type="text"
+                value={assignee}
+                onChange={(e) => setAssignee(e.target.value)}
+                placeholder="Optional"
+                className="input text-sm w-full"
+              />
+            </div>
 
-      <div className="flex items-center justify-end gap-2 pt-1">
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          className="btn-ghost text-2xs px-2 py-1"
-        >
-          Cancel
-        </button>
-        <button
-          type="submit"
-          disabled={!title.trim() || createTask.isPending}
-          className="btn-primary text-2xs px-3 py-1"
-        >
-          {createTask.isPending ? 'Creating...' : 'Create'}
-        </button>
-      </div>
+            <div>
+              <label className="text-xs font-medium block mb-1.5">
+                Priority
+              </label>
+              <select
+                value={priority}
+                onChange={(e) => setPriority(Number(e.target.value))}
+                className="input text-sm w-full"
+              >
+                <option value={0}>Default</option>
+                <option value={1}>Low</option>
+                <option value={2}>Medium</option>
+                <option value={3}>High</option>
+                <option value={4}>Critical</option>
+              </select>
+            </div>
 
-      {createTask.isError && (
-        <p className="text-2xs text-red-400">
-          {createTask.error instanceof Error ? createTask.error.message : 'Failed to create task'}
-        </p>
-      )}
-    </form>
+            {createTask.isError && (
+              <p className="text-xs text-red-400">
+                {createTask.error instanceof Error
+                  ? createTask.error.message
+                  : "Failed to create task"}
+              </p>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2 p-4 border-t border-[var(--color-border-subtle)]">
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="btn btn-ghost text-xs"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!title.trim() || createTask.isPending}
+              className="btn btn-primary text-xs"
+            >
+              {createTask.isPending ? "Creating..." : "Create Task"}
+            </button>
+          </div>
+        </form>
+      </Dialog>
+    </>
   );
 }

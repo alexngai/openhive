@@ -19,12 +19,13 @@ import { websocketStream } from '@multi-agent-protocol/sdk';
 import { findAgentById, findAgentByApiKey, findOrCreateSwarmHubAgent, getOrCreateLocalAgent } from '../db/dal/agents.js';
 import { validateIngestKey } from '../db/dal/ingest-keys.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
-import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm } from '../db/dal/map.js';
+import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findNodeBySwarmAndAgentId, findSwarmById } from '../db/dal/map.js';
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph } from './connection-registry.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities } from './connection-registry.js';
 import { handleContentResponse } from './trajectory-content.js';
+import { handleTrajectoryRequest } from './trajectory-handler.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
 import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
 import { getMailJsonRpc } from '../mail/index.js';
@@ -33,6 +34,40 @@ import { broadcastToChannel } from '../realtime/index.js';
 import { mapHubEvents } from './service.js';
 import type { Agent } from '../types.js';
 import type { Config } from '../config.js';
+
+// ============================================================================
+// Trajectory Checkpoint Bridge
+// ============================================================================
+
+function handleTrajectoryCheckpoint(
+  params: Record<string, unknown>,
+  swarmId: string,
+  ws: WebSocket,
+  requestId?: string | number | null,
+): void {
+  try {
+    const conn = getInbound(swarmId);
+    const agentId = conn?.agentId ?? swarmId;
+
+    const result = handleTrajectoryRequest('trajectory/checkpoint', params, {
+      swarmId,
+      agentId,
+    });
+    console.log(`[ws-map] trajectory checkpoint processed: resource=${result?.resource_id} created=${result?.created}`);
+
+    // Send JSON-RPC response if this was a request (has id)
+    if (requestId != null) {
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id: requestId, result }));
+    }
+  } catch (err) {
+    console.error(`[ws-map] trajectory checkpoint error:`, (err as Error).message);
+    if (requestId != null) {
+      const code = (err as any).code ?? -32603;
+      const message = (err as Error).message ?? 'Internal error';
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id: requestId, error: { code, message } }));
+    }
+  }
+}
 
 let HEARTBEAT_INTERVAL = 30_000;
 const TOKEN_EXPIRY_WARNING_SECONDS = 300;
@@ -115,6 +150,11 @@ async function authenticateToken(token: string): Promise<Agent | null> {
 
 function resolveSwarmOpen(agentId: string, agentName: string, swarmIdHint?: string): { swarmId: string; created: boolean } {
   if (swarmIdHint) {
+    // First try direct lookup by ID (covers pre-registered swarms owned by different agents)
+    const directMatch = findSwarmById(swarmIdHint);
+    if (directMatch) return { swarmId: directMatch.id, created: false };
+
+    // Fall back to owner-scoped search
     const { data: swarms } = listSwarms({ owner_agent_id: agentId, limit: 100 });
     const match = swarms.find((s) => s.id === swarmIdHint);
     if (match) return { swarmId: match.id, created: false };
@@ -182,6 +222,17 @@ function createNotificationInterceptor(
     try {
       const msg = JSON.parse(data.toString());
 
+
+      // Handle trajectory/checkpoint requests before they reach the MAPServer.
+      // These are JSON-RPC requests (have id) sent by the sidecar's callExtension.
+      if (msg.method === 'trajectory/checkpoint' && msg.id != null) {
+        console.log(`[ws-map] trajectory/checkpoint from ${swarmId}, id=${msg.id}`);
+        handleTrajectoryCheckpoint(msg.params as Record<string, unknown>, swarmId, ws, msg.id);
+        // Note: MAPServer will also see this message (we can't prevent it from
+        // the on('message') handler), but it will return an "unknown method" error
+        // which the sidecar ignores since it already got our success response first.
+      }
+
       // Only intercept notifications (no `id` field) that are OpenHive-specific
       if (msg.id != null) return; // Let requests pass through to MAPServer
 
@@ -246,9 +297,52 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     const taskTypes = new Set(['task.created', 'task.assigned', 'task.status']);
     if (!taskTypes.has(payload.type)) return;
 
-    // Extract source swarm ID from the message sender
-    const sourceSwarmId = typeof message.from === 'string' ? message.from : 'unknown';
-    handleMapTaskEvent(payload, sourceSwarmId);
+    // Resolve the OpenHive agent ID from the MAP message sender.
+    // message.from is the MAP session agent ID (a ULID assigned by MAPServer),
+    // not the OpenHive swarmId or agentId. We need to find which inbound
+    // connection this MAP agent belongs to, then use its OpenHive agentId.
+    const mapFrom = typeof message.from === 'string' ? message.from : 'unknown';
+    let resolvedAgentId = mapFrom;
+
+    // Try direct lookup (message.from might be a swarmId)
+    const directConn = getInbound(mapFrom);
+    if (directConn) {
+      resolvedAgentId = directConn.agentId;
+    } else {
+      // Search all connections — message.from might be a MAP session agent ID
+      // or a registered agent name. Check both registeredAgents and the ULID match.
+      for (const [, conn] of getAllInbound()) {
+        if (conn.registeredAgents.has(mapFrom)) {
+          resolvedAgentId = conn.agentId;
+          break;
+        }
+      }
+      // Fallback: the MAP session agent ID doesn't directly map to our registry.
+      // Try matching via the event's session metadata or by finding the connection
+      // whose router session owns this agent.
+      if (resolvedAgentId === mapFrom) {
+        const sessionId = event?.data?.sessionId ?? event?.sessionId;
+        for (const [, conn] of getAllInbound()) {
+          // Check if any registered agent on this connection matches
+          for (const [, regAgent] of conn.registeredAgents) {
+            if (regAgent.id === mapFrom || regAgent.name === mapFrom) {
+              resolvedAgentId = conn.agentId;
+              break;
+            }
+          }
+          if (resolvedAgentId !== mapFrom) break;
+        }
+        // Last resort: if still unresolved and only one connection, use it
+        if (resolvedAgentId === mapFrom) {
+          const allInbound = getAllInbound();
+          if (allInbound.size === 1) {
+            resolvedAgentId = [...allInbound.values()][0].agentId;
+          }
+        }
+      }
+    }
+
+    handleMapTaskEvent(payload, resolvedAgentId);
   });
 
   fastify.get('/ws/map', { websocket: true }, async (socket, request) => {
@@ -474,18 +568,23 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
       const conn = getInbound(swarmId);
       if (conn) {
-        if (registeredAgent.capabilities) {
-          conn.capabilities = registeredAgent.capabilities;
-        }
-        // Track registered agent on this connection
+        // Track registered agent on this connection (with per-agent capabilities + metadata)
         const agentEntry = {
           id: registeredAgent.id || registeredAgent.name || 'unknown',
           name: registeredAgent.name || 'unknown',
           role: registeredAgent.role || 'agent',
           state: 'registered',
           scopes: registeredAgent.scopes || [],
+          capabilities: registeredAgent.capabilities || undefined,
+          metadata: registeredAgent.metadata || undefined,
         };
         conn.registeredAgents.set(agentEntry.id, agentEntry);
+
+        // Update connection-level capabilities (kept for backward compat;
+        // getMergedCapabilities() provides the union across all agents)
+        if (registeredAgent.capabilities) {
+          conn.capabilities = registeredAgent.capabilities;
+        }
 
         // Keep DB agent_count in sync with live registrations
         try { updateSwarm(swarmId, { agent_count: conn.registeredAgents.size }); } catch { /* non-critical */ }
@@ -508,9 +607,11 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         }
 
         try {
+          // Persist aggregate capabilities (union across all agents on this connection)
+          const aggCaps = getAggregateCapabilities(swarmId);
           updateSwarm(swarmId, {
             ...(displayName ? { name: displayName } : {}),
-            capabilities: registeredAgent.capabilities || undefined,
+            capabilities: aggCaps || registeredAgent.capabilities || undefined,
             metadata: meta,
           });
         } catch { /* non-critical */ }
@@ -528,11 +629,110 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     };
     const unsubRegistered = mapServer.eventBus.on('agent.registered', onAgentRegistered);
 
+    // Listen for MAP agent state changes (e.g. active→idle on turn completion)
+    // and propagate to OpenHive's node DB + WebSocket channels.
+    // MAP SDK emits: { type: 'agent.state.changed', data: { agent, previousState }, source: { agentId, sessionId } }
+    const onAgentStateChanged = (event: any) => {
+      const agentData = event?.data?.agent;
+      const previousState = event?.data?.previousState;
+      if (!agentData?.id || !agentData?.state) return;
+
+      const newState = agentData.state;
+      const mapAgentId = agentData.id;
+
+      // Match this event to our connection — check if the agent is registered on this swarm
+      const conn = getInbound(swarmId);
+      if (!conn) return;
+      if (!conn.registeredAgents.has(mapAgentId)) return;
+
+      const agentEntry = conn.registeredAgents.get(mapAgentId);
+      if (agentEntry) {
+        agentEntry.state = newState;
+      }
+
+      // Update the MAP node in the DB if one exists
+      const node = findNodeBySwarmAndAgentId(swarmId, mapAgentId);
+      if (node && node.state !== newState) {
+        try { updateNode(node.id, { state: newState }); } catch { /* non-critical */ }
+      }
+
+      // Broadcast to WebSocket for frontend attention detection
+      const wsEvent = {
+        type: 'node_state_changed' as const,
+        data: {
+          node_id: node?.id || mapAgentId,
+          swarm_id: swarmId,
+          map_agent_id: mapAgentId,
+          old_state: previousState,
+          new_state: newState,
+          needs_attention: ['idle', 'stopped', 'failed'].includes(newState),
+        },
+      };
+      broadcastToChannel(`map:swarm:${swarmId}`, wsEvent);
+      broadcastToChannel('global', wsEvent);
+    };
+    const unsubStateChanged = mapServer.eventBus.on('agent.state.changed', onAgentStateChanged);
+
+    // Listen for metadata updates (e.g. sidecar publishes canHostAcp post-connect).
+    // The MAP SDK's register() doesn't forward the `metadata` field from connect
+    // options, so the sidecar calls updateMetadata() after connecting. We update
+    // the cached per-agent metadata so the /map/swarms/:id endpoint returns
+    // current values in registered_agents[].metadata (used by the UI to detect
+    // swarms that can spawn ACP coordinators on demand).
+    const onAgentMetadataChanged = (event: any) => {
+      const agentData = event?.data?.agent;
+      if (!agentData?.id) return;
+
+      const conn = getInbound(swarmId);
+      if (!conn) return;
+      const entry = conn.registeredAgents.get(agentData.id);
+      if (!entry) return;
+
+      entry.metadata = agentData.metadata || {};
+    };
+    const unsubMetadataChanged = mapServer.eventBus.on('agent.metadata.changed', onAgentMetadataChanged);
+
+    // Listen for MAP agent unregistration (e.g. when a coordinator is terminated
+    // via _macro/terminateAgent and the lifecycle bridge calls map/agents/unregister).
+    // MAP SDK emits: { type: 'agent.unregistered', data: { agentId, agent }, source: { agentId, sessionId } }
+    const onAgentUnregistered = (event: any) => {
+      const agentId = event?.data?.agentId ?? event?.data?.agent?.id;
+      if (!agentId) return;
+
+      const conn = getInbound(swarmId);
+      if (!conn) return;
+      if (!conn.registeredAgents.has(agentId)) return;
+
+      conn.registeredAgents.delete(agentId);
+      console.log(`[ws-map] Agent unregistered on ${swarmId}: ${agentId}`);
+
+      // Keep DB agent_count in sync
+      try { updateSwarm(swarmId, { agent_count: conn.registeredAgents.size }); } catch { /* non-critical */ }
+
+      // Refresh aggregate capabilities since the removed agent's capabilities no longer contribute
+      try {
+        const aggCaps = getAggregateCapabilities(swarmId);
+        updateSwarm(swarmId, { capabilities: aggCaps || undefined });
+      } catch { /* non-critical */ }
+
+      // Broadcast to frontend so the UI can refresh the registered_agents list
+      const wsEvent = {
+        type: 'agent_unregistered' as const,
+        data: { swarm_id: swarmId, agent_id: agentId },
+      };
+      broadcastToChannel(`map:swarm:${swarmId}`, wsEvent);
+      broadcastToChannel('global', wsEvent);
+    };
+    const unsubUnregistered = mapServer.eventBus.on('agent.unregistered', onAgentUnregistered);
+
     console.log(`[ws-map] Swarm ${swarmId} connected inbound (agent: ${agent.name})`);
 
     // Cleanup on close (router.closed as backup — ws 'close' is primary)
     router.closed.then(() => {
       unsubRegistered();
+      unsubStateChanged();
+      unsubMetadataChanged();
+      unsubUnregistered();
       interceptor.cleanup();
       handleDisconnect();
     });

@@ -613,9 +613,13 @@ export interface OpenTasksGraphNode {
   type: string;
   title?: string;
   description?: string;
+  content?: string;
   status?: string;
   priority?: number;
   archived?: boolean;
+  assignee?: string | null;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;
@@ -764,6 +768,8 @@ export interface SessionListItem {
   total_output_tokens: number;
   latest_agent: string | null;
   last_synced_at: string | null;
+  source_swarm_id: string | null;
+  source_swarm_ids: string[];
 }
 
 // Session event types (ACP-compatible)
@@ -811,6 +817,12 @@ export interface SessionContentBlock {
   mimeType?: string;
   uri?: string;
   name?: string;
+}
+
+export interface AgentIdentity {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
 }
 
 export interface SessionEventsResponse {

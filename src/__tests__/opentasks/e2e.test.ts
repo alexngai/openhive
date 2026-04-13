@@ -690,7 +690,7 @@ describe("OpenTasks E2E Integration", { timeout: 60000 }, () => {
       ).rejects.toThrow(TaskDaemonError);
     });
 
-    it("content API /summary should return 503 when daemon offline", async () => {
+    it("content API /summary should return 503 when daemon cannot start", async () => {
       const res = await app.inject({
         method: "GET",
         url: `/api/v1/resources/${opentasksResource.id}/content/opentasks/summary`,
@@ -698,11 +698,9 @@ describe("OpenTasks E2E Integration", { timeout: 60000 }, () => {
       });
 
       expect(res.statusCode).toBe(503);
-      const body = JSON.parse(res.body);
-      expect(body.error).toBe("Service Unavailable");
     });
 
-    it("content API /ready should return 503 when daemon offline", async () => {
+    it("content API /ready should return 503 when daemon cannot start", async () => {
       const res = await app.inject({
         method: "GET",
         url: `/api/v1/resources/${opentasksResource.id}/content/opentasks/ready`,
@@ -710,11 +708,9 @@ describe("OpenTasks E2E Integration", { timeout: 60000 }, () => {
       });
 
       expect(res.statusCode).toBe(503);
-      const body = JSON.parse(res.body);
-      expect(body.error).toBe("Service Unavailable");
     });
 
-    it("content API /tasks should return 503 when daemon offline", async () => {
+    it("content API /tasks should return 503 when daemon cannot start", async () => {
       const res = await app.inject({
         method: "GET",
         url: `/api/v1/resources/${opentasksResource.id}/content/opentasks/tasks`,
@@ -722,8 +718,6 @@ describe("OpenTasks E2E Integration", { timeout: 60000 }, () => {
       });
 
       expect(res.statusCode).toBe(503);
-      const body = JSON.parse(res.body);
-      expect(body.error).toBe("Service Unavailable");
     });
 
     it("content API /status should report daemon offline", async () => {

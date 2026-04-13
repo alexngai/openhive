@@ -28,7 +28,6 @@ function createTestConfig(overrides?: Partial<Config>): Config {
     instance: { name: 'ConfigTest', description: 'Test instance' },
     admin: { createOnStartup: false, key: ADMIN_KEY },
     auth: { mode: 'local' },
-    rateLimit: { enabled: true, max: 100, timeWindow: '1 minute' },
     learning: { enabled: false },
     mapHub: { iamSecret: 'test-iam-secret-123' },
     ...overrides,
@@ -91,7 +90,6 @@ describe('Admin Config API', () => {
       expect(body.instance.name).toBe('ConfigTest');
       expect(body.mapHub).toBeDefined();
       expect(body.learning).toBeDefined();
-      expect(body.rateLimit).toBeDefined();
 
       // Should include _meta
       expect(body._meta).toBeDefined();
@@ -244,7 +242,7 @@ describe('Admin Config API', () => {
         url: '/api/v1/admin/config',
         headers: { 'x-admin-key': ADMIN_KEY },
         payload: {
-          rateLimit: { max: 200 },
+          cors: { enabled: true },
         },
       });
 
@@ -271,12 +269,11 @@ describe('Admin Config API', () => {
 
       // Simulate what PATCH does: merge and write back
       const { deepMerge } = await import('../config-persistence.js');
-      const merged = deepMerge(current, { rateLimit: { max: 500 } });
+      const merged = deepMerge(current, { instance: { description: 'Updated' } });
       writeConfigFile(configFilePath, merged);
 
       const updated = readConfigFile(configFilePath);
-      expect((updated.rateLimit as Record<string, unknown>).max).toBe(500);
-      expect((updated.rateLimit as Record<string, unknown>).enabled).toBe(true);
+      expect((updated.instance as Record<string, unknown>).description).toBe('Updated');
       expect((updated.instance as Record<string, unknown>).name).toBe('FileTest');
     });
 
@@ -284,20 +281,19 @@ describe('Admin Config API', () => {
       const config = createTestConfig();
       const app = await createTestApp(config);
 
-      // Update only one field within rateLimit
+      // Update only one field within instance
       await app.inject({
         method: 'PATCH',
         url: '/api/v1/admin/config',
         headers: { 'x-admin-key': ADMIN_KEY },
         payload: {
-          rateLimit: { max: 50 },
+          cors: { enabled: true },
         },
       });
 
       // Other fields should be preserved
-      expect(config.rateLimit.enabled).toBe(true);
-      expect(config.rateLimit.timeWindow).toBe('1 minute');
-      expect(config.rateLimit.max).toBe(50);
+      expect(config.instance.name).toBe('ConfigTest');
+      expect(config.instance.description).toBe('Test instance');
 
       await app.close();
     });

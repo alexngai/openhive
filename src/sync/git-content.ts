@@ -186,6 +186,185 @@ export async function fetchLatest(
   };
 }
 
+// ============================================================================
+// Git Write Operations (commit + push for task graph sync)
+// ============================================================================
+
+export interface GitSyncStatus {
+  hasUncommittedChanges: boolean;
+  unpushedCommits: number;
+  unpulledCommits: number;
+  localHead: string | null;
+  remoteHead: string | null;
+  /** Breakdown of uncommitted changes (only present when hasUncommittedChanges is true) */
+  uncommittedDetails?: {
+    added: number;
+    modified: number;
+    deleted: number;
+    linesAdded: number;
+    linesDeleted: number;
+  };
+}
+
+/**
+ * Check git sync status of a clone — uncommitted changes + unpushed commits.
+ */
+export async function getGitSyncStatus(clonePath: string): Promise<GitSyncStatus> {
+  const localHead = await getLocalHead(clonePath);
+  let hasUncommittedChanges = false;
+  let unpushedCommits = 0;
+  let remoteHead: string | null = null;
+
+  // Check for uncommitted changes
+  let uncommittedDetails: GitSyncStatus['uncommittedDetails'];
+  try {
+    const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
+      cwd: clonePath, timeout: 5_000,
+    });
+    const lines = stdout.trim().split('\n').filter(Boolean);
+    hasUncommittedChanges = lines.length > 0;
+
+    if (hasUncommittedChanges) {
+      let added = 0, modified = 0, deleted = 0;
+      for (const line of lines) {
+        const code = line.slice(0, 2);
+        if (code.includes('A') || code === '??') added++;
+        else if (code.includes('D')) deleted++;
+        else modified++;
+      }
+
+      // Get line-level diff stats
+      let linesAdded = 0, linesDeleted = 0;
+      try {
+        const { stdout: diffStat } = await execFileAsync(
+          'git', ['diff', '--numstat', 'HEAD'],
+          { cwd: clonePath, timeout: 5_000 },
+        );
+        for (const dl of diffStat.trim().split('\n').filter(Boolean)) {
+          const [a, d] = dl.split('\t');
+          if (a !== '-') linesAdded += parseInt(a, 10) || 0;
+          if (d !== '-') linesDeleted += parseInt(d, 10) || 0;
+        }
+        // Also count untracked files
+        const { stdout: untrackedStat } = await execFileAsync(
+          'git', ['diff', '--numstat', '--no-index', '/dev/null', '--'],
+          { cwd: clonePath, timeout: 5_000 },
+        ).catch(() => ({ stdout: '' }));
+        // untracked stats are harder — just count lines from status
+      } catch { /* diff failed, that's ok */ }
+
+      uncommittedDetails = { added, modified, deleted, linesAdded, linesDeleted };
+    }
+  } catch { /* assume no changes */ }
+
+  // Check for unpushed commits (local vs remote tracking branch)
+  try {
+    const { stdout } = await execFileAsync(
+      'git', ['rev-list', '--count', '@{upstream}..HEAD'],
+      { cwd: clonePath, timeout: 5_000 },
+    );
+    unpushedCommits = parseInt(stdout.trim(), 10) || 0;
+  } catch { /* no upstream or no commits */ }
+
+  // Get remote HEAD for comparison
+  try {
+    const { stdout } = await execFileAsync(
+      'git', ['rev-parse', '@{upstream}'],
+      { cwd: clonePath, timeout: 5_000 },
+    );
+    remoteHead = stdout.trim() || null;
+  } catch { /* no upstream */ }
+
+  // Check for unpulled commits (remote has commits we don't)
+  let unpulledCommits = 0;
+  try {
+    // Fetch to ensure we have latest remote refs
+    await execFileAsync('git', ['fetch', 'origin'], { cwd: clonePath, timeout: 10_000 });
+    const { stdout } = await execFileAsync(
+      'git', ['rev-list', '--count', 'HEAD..@{upstream}'],
+      { cwd: clonePath, timeout: 5_000 },
+    );
+    unpulledCommits = parseInt(stdout.trim(), 10) || 0;
+  } catch { /* no upstream or fetch failed */ }
+
+  return { hasUncommittedChanges, unpushedCommits, unpulledCommits, localHead, remoteHead, uncommittedDetails };
+}
+
+/**
+ * Commit all opentasks-related changes in a clone.
+ * Stages graph.jsonl and config.json in both root and .opentasks/ subdirectory.
+ * Returns the new commit hash or null if nothing to commit.
+ */
+export async function commitChanges(
+  clonePath: string,
+  message = 'Update task graph',
+): Promise<string | null> {
+  // Stage all opentasks-related files (could be at root or in .opentasks/)
+  const filesToStage = [
+    'graph.jsonl', 'config.json',
+    '.opentasks/graph.jsonl', '.opentasks/config.json', '.opentasks/.gitignore',
+  ];
+  for (const file of filesToStage) {
+    try {
+      await execFileAsync('git', ['add', '--', file], { cwd: clonePath, timeout: 5_000 });
+    } catch { /* file may not exist — skip */ }
+  }
+
+  // Check if there's anything staged
+  try {
+    await execFileAsync('git', ['diff', '--cached', '--quiet'], {
+      cwd: clonePath, timeout: 5_000,
+    });
+    // Exit 0 means no staged changes
+    return null;
+  } catch {
+    // Exit 1 means there ARE staged changes — commit them
+  }
+
+  await execFileAsync('git', ['commit', '-m', message], {
+    cwd: clonePath, timeout: 10_000,
+  });
+
+  return getLocalHead(clonePath);
+}
+
+/**
+ * Push local commits to the remote.
+ */
+export async function pullFromRemote(
+  clonePath: string,
+  timeout: number = GIT_TIMEOUT,
+): Promise<{ pulled: boolean; previousHead: string | null; newHead: string | null }> {
+  const previousHead = await getLocalHead(clonePath);
+
+  // Fetch first to update tracking refs
+  await execFileAsync('git', ['fetch', 'origin'], {
+    cwd: clonePath, timeout,
+  });
+
+  // Merge fast-forward only — avoids conflicts
+  try {
+    await execFileAsync('git', ['merge', '--ff-only', '@{upstream}'], {
+      cwd: clonePath, timeout: 10_000,
+    });
+  } catch {
+    // ff-only failed — could be diverged. Return without merge.
+    return { pulled: false, previousHead, newHead: previousHead };
+  }
+
+  const newHead = await getLocalHead(clonePath);
+  return { pulled: newHead !== previousHead, previousHead, newHead };
+}
+
+export async function pushToRemote(
+  clonePath: string,
+  timeout: number = GIT_TIMEOUT,
+): Promise<void> {
+  await execFileAsync('git', ['push'], {
+    cwd: clonePath, timeout,
+  });
+}
+
 /**
  * Resolve the graph.jsonl path within a clone or local directory.
  * Checks for graph.jsonl directly, then in .opentasks/ subdirectory.

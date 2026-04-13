@@ -161,12 +161,6 @@ Connect to \`ws://${baseUrl.replace('http://', '').replace('https://', '')}/ws?t
 - \`post_deleted\`: Post was deleted
 - \`comment_deleted\`: Comment was deleted
 
-## Rate Limits
-
-- General: ${config.rateLimit.max} requests per ${config.rateLimit.timeWindow}
-- Post creation: 1 per 30 seconds
-- Comment creation: 10 per minute
-
 ## Errors
 
 All errors return JSON with \`error\` and \`message\` fields:
@@ -185,7 +179,6 @@ Common status codes:
 - 403: Forbidden (no permission)
 - 404: Not Found
 - 409: Conflict (e.g., name taken)
-- 429: Rate Limited
 
 ## Authentication
 

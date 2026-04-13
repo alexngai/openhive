@@ -12,6 +12,8 @@
 import { EventEmitter } from 'node:events';
 import type { Storage, MailJsonRpcServer } from 'agent-inbox';
 import { broadcastToChannel } from '../realtime/index.js';
+import { getAllInbound, hasCapability } from '../map/connection-registry.js';
+import { sendToSwarm } from '../map/sync-listener.js';
 
 let mailStorage: Storage | null = null;
 let mailJsonRpc: MailJsonRpcServer | null = null;
@@ -113,6 +115,11 @@ function setupEventForwarding(events: EventEmitter): void {
         data: turn,
       });
     }
+
+    // Forward turn to connected swarms that have mail capability.
+    // This bridges the hub's mail system to agent sidecars so they can
+    // receive conversation turns via their MAP WebSocket connection.
+    forwardTurnToSwarms(turn);
   });
 
   events.on('mail.participant.joined', (data) => {
@@ -128,4 +135,47 @@ function setupEventForwarding(events: EventEmitter): void {
       data,
     });
   });
+}
+
+/**
+ * Forward a mail turn to connected swarms that declare mail capability.
+ * Sends a JSON-RPC notification so the sidecar's mail handler can process it.
+ *
+ * This bridges the gap between OpenHive's mail module (hub-side) and
+ * agent sidecars (connected via MAP WebSocket). Without this, turns
+ * stored in the hub's agent-inbox are only visible via REST/WebSocket
+ * polling — sidecars never receive them proactively.
+ */
+function forwardTurnToSwarms(turn: any): void {
+  try {
+    const inbound = getAllInbound();
+    for (const [swarmId] of inbound) {
+      // Only forward to swarms that declared mail capabilities
+      if (!hasCapability(swarmId, 'mail.canJoin')) continue;
+
+      // Don't echo turns back to the sender's swarm
+      // (participant_id is the agent who sent the turn)
+      const conn = inbound.get(swarmId);
+      if (conn) {
+        const senderIsOnThisSwarm = conn.registeredAgents.has(turn.participant_id);
+        if (senderIsOnThisSwarm) continue;
+      }
+
+      sendToSwarm(swarmId, {
+        jsonrpc: '2.0',
+        method: 'mail/turn.received',
+        params: {
+          conversation_id: turn.conversation_id,
+          turn_id: turn.id,
+          participant_id: turn.participant_id,
+          content_type: turn.content_type,
+          content: turn.content,
+          thread_id: turn.thread_id,
+          created_at: turn.created_at,
+        },
+      });
+    }
+  } catch {
+    // Non-critical — don't crash on forwarding failures
+  }
 }

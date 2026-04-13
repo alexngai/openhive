@@ -31,7 +31,6 @@ export const CONFIG_SECTIONS: SectionMeta[] = [
   // General
   { key: 'instance', label: 'Instance', description: 'Instance identity and branding', group: 'general' },
   { key: 'cors', label: 'CORS', description: 'Cross-origin request policy', group: 'general' },
-  { key: 'rateLimit', label: 'Rate Limiting', description: 'Request throttling', group: 'general' },
 
   // Swarms
   { key: 'mapHub', label: 'MAP Hub', description: 'Multi-Agent Protocol hub for swarm coordination', group: 'swarms' },
@@ -55,6 +54,7 @@ export const CONFIG_SECTIONS: SectionMeta[] = [
   { key: 'resourceStorage', label: 'Resource Storage', description: 'Cloned resource data storage', group: 'storage' },
 
   // Resources
+  { key: 'autoPull', label: 'Auto-Pull', description: 'Automatic pulling of remote git-backed resources', group: 'resources' },
   { key: 'resourceDiscovery', label: 'Resource Discovery', description: 'Filesystem scanning for memory banks and skills', group: 'resources' },
   { key: 'resourceSync', label: 'Resource Sync', description: 'Sync strategies for remote resources', group: 'resources' },
 ];
@@ -151,10 +151,6 @@ export const FIELD_META: Record<string, FieldMeta> = {
   'cors.enabled': { label: 'Enabled', restartRequired: true },
   'cors.origin': { label: 'Allowed Origins', description: 'true for all, or specific origins', restartRequired: true },
 
-  // Rate Limiting
-  'rateLimit.enabled': { label: 'Enabled' },
-  'rateLimit.max': { label: 'Max Requests', description: 'Maximum requests per time window' },
-  'rateLimit.timeWindow': { label: 'Time Window', description: 'e.g. "1 minute"' },
 
   // Auth
   'auth.mode': { label: 'Auth Mode', readOnly: true, restartRequired: true },
@@ -267,6 +263,9 @@ export const FIELD_META: Record<string, FieldMeta> = {
   'resourceDiscovery.openTasksEnabled': { label: 'OpenTasks Enabled' },
 
   // Resource Sync
+  // Auto-Pull
+  'autoPull.intervalMinutes': { label: 'Poll Interval (minutes)', description: 'How often to check remote repos for new commits', restartRequired: true },
+
   'resourceSync.defaultStrategy': { label: 'Default Strategy' },
   'resourceSync.localDiscoveryStrategy': { label: 'Local Discovery Strategy' },
   'resourceSync.lsRemoteTtl': { label: 'ls-remote TTL (seconds)' },
