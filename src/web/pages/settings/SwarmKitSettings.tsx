@@ -86,6 +86,18 @@ export function SwarmKitSettings({ isAdmin }: { isAdmin: boolean }) {
     enabled: !!status?.installed,
   });
 
+  const initAllMutation = useMutation({
+    mutationFn: () =>
+      api.post('/admin/swarmkit/init-all', { projectRoot: selectedProject }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['swarmkit-packages'] });
+      toast.success('All packages initialized');
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to initialize');
+    },
+  });
+
   if (statusLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -111,18 +123,6 @@ export function SwarmKitSettings({ isAdmin }: { isAdmin: boolean }) {
       </div>
     );
   }
-
-  const initAllMutation = useMutation({
-    mutationFn: () =>
-      api.post('/admin/swarmkit/init-all', { projectRoot: selectedProject }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['swarmkit-packages'] });
-      toast.success('All packages initialized');
-    },
-    onError: (err) => {
-      toast.error(err instanceof Error ? err.message : 'Failed to initialize');
-    },
-  });
 
   const packages = packagesData?.packages ?? [];
 

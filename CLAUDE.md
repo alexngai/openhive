@@ -63,6 +63,7 @@ src/
 - **Session trajectories**: Agent session transcripts are synced via the MAP trajectory protocol. The `trajectory/checkpoint` handler (`src/map/trajectory-handler.ts`) auto-creates session resources and stores checkpoint metadata. Transcript content is served on-demand from connected agents via `trajectory/content.request`/`trajectory/content.response` notifications. Content is cached in session storage for offline access. Five-tier resolution: fresh cache → on-demand from swarm → local sessionlog transcript → stale cache → 503.
 - **Agent capabilities**: Connected agents declare capabilities during MAP registration using the MAP `ParticipantCapabilities` schema. The hub captures these via the `agent.registered` event and stores on the connection + database. Capability checks gate operations (content requests, chat modes). See "Session Chat" section for capability-gated chat.
 - **Event stream components**: Session trajectory rendering is extracted into reusable components under `src/web/components/events/`. `EventStream` is the main container (grouping, auto-scroll, pagination), `EventBubble` renders individual events, `ToolCallGroupBlock` collapses tool runs. These components accept any `SessionEvent[]` source and are used by both the trajectory view and the session chat interface.
+- **SwarmKit config proxy**: `src/swarmkit/` reads and writes SwarmKit package configs (opentasks, minimem, sessionlog, etc.) directly on disk. OpenHive holds no config state of its own — every read hits the file, every write goes back to the file. The admin API under `/admin/swarmkit/*` exposes this to the Settings UI. Packages that declare a `localFile` in `PackageFileSpec` (currently only sessionlog → `settings.local.json`) get a second layer merged on read (local wins) and a split write path (see "SwarmKit Config Management" section).
 
 ## Session Trajectory Architecture
 
@@ -247,6 +248,33 @@ Agents sync tasks between each other via `pushSyncEvent` (in cc-swarm's `opentas
 - `task.linked` → `tools.link` (creates blocking edge)
 
 This runs during the agent's `UserPromptSubmit` hook when incoming task events are read from the inbox.
+
+## SwarmKit Config Management
+
+OpenHive acts as a read/write proxy for SwarmKit package configs — the Settings UI edits files owned by sessionlog, opentasks, minimem, etc. The hub never caches config; every UI action hits disk.
+
+### Machine-specific overrides (`settings.local.json`)
+
+Sessionlog stores config in two files:
+
+- `.swarm/sessionlog/settings.json` — committed, shared across teammates
+- `.swarm/sessionlog/settings.local.json` — gitignored, per-machine overrides (local wins at runtime)
+
+OpenHive's SwarmKit UI supports this split without any routing metadata. The flow:
+
+1. **Read** — `getPackageConfig` reads both files and returns a `config` (merged) plus `localConfig` (raw local file) on the API response. The UI sees the effective value.
+2. **Badge** — each inline option in `SwarmKitPackageCard` checks `pkg.localConfig` for its key. If present, renders a `[local]` badge next to the field label. Pure detection — no hardcoded list of "local-only" keys.
+3. **Write** — on save, the UI splits the diff into `updates` (→ main file) and `localUpdates` (→ local file) based on file-of-origin. `updatePackageConfig` obeys the split. Fresh keys (not in either file) default to main.
+
+**Design property — no state in openhive:** the routing rule is "write it back where you found it." The UI owns the detection; the server is pure file I/O. No `local: true` flag on swarmkit's registry, no openhive-side field list, no sessionlog export needed.
+
+### Key Files
+
+- `src/swarmkit/config-io.ts` — file I/O. `PackageFileSpec.localFile` declares the sibling local file. `readConfig` / `readLocalConfig` / `writeConfig` are format-agnostic (JSON/YAML) and atomic.
+- `src/swarmkit/manager.ts` — `getPackageConfig` merges `settings.local.json` over `settings.json` for sessionlog and surfaces `localConfig`. `updatePackageConfig(name, root, scope, updates, localUpdates?)` routes writes to the correct file.
+- `src/swarmkit/types.ts` — `PackageConfigDescriptor.localFile?`, `PackageConfigResponse.localConfig?`.
+- `src/api/routes/swarmkit-config.ts` — `PATCH /admin/swarmkit/packages/:name` accepts optional `localUpdates` on the request body.
+- `src/web/pages/settings/SwarmKitPackageCard.tsx` — `isLocalKey(key)` detects from `pkg.localConfig`; `PackageConfigField` renders the `[local]` badge; `handleSave` splits the diff.
 
 ## Development
 

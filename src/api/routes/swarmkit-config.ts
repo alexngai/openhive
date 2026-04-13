@@ -25,6 +25,8 @@ const addProjectSchema = z.object({
 const updatePackageSchema = z.object({
   scope: z.enum(['global', 'project']),
   updates: z.record(z.unknown()),
+  /** Keys to route to the sibling local file (e.g. settings.local.json). */
+  localUpdates: z.record(z.unknown()).optional(),
   projectRoot: z.string().optional(),
 });
 
@@ -157,16 +159,18 @@ export async function swarmkitConfigRoutes(
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid request' });
     }
-    const { scope, updates, projectRoot } = parsed.data;
+    const { scope, updates, localUpdates, projectRoot } = parsed.data;
 
     // Strip sentinel values (don't overwrite secrets)
     const cleaned = stripSentinels(updates);
+    const cleanedLocal = localUpdates ? stripSentinels(localUpdates) : undefined;
 
     const result = manager.updatePackageConfig(
       name,
       projectRoot ?? null,
       scope,
       cleaned,
+      cleanedLocal,
     );
 
     if (!result.success) {
