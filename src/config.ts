@@ -132,6 +132,14 @@ export const ConfigSchema = z.object({
     })
     .default({}),
 
+  // Auto-pull configuration for remote task graphs
+  autoPull: z
+    .object({
+      /** Poll interval in minutes for checking remote task graphs (default: 2) */
+      intervalMinutes: z.number().min(0.5).default(2),
+    })
+    .default({}),
+
   // MAP Hub configuration (headscale-style coordination for MAP swarms)
   mapHub: z
     .object({

@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes, Globe } from 'lucide-react';
+import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes, Globe, GitBranch } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores/auth';
 import { useThemeStore } from '../stores/theme';
@@ -11,6 +11,9 @@ import { LoadingSpinner } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { SwarmKitSettings } from './settings/SwarmKitSettings';
 import { SwarmHubSettings } from './settings/SwarmHubSettings';
+import { Dialog } from '../components/common/Dialog';
+import { useGitLog, useGitForceFetch, useGitPull as useGitPullHook, useGitPush as useGitPushHook, useUpdateResource } from '../hooks/useApi';
+import { ArrowDownToLine, ArrowUpFromLine, RotateCcw, ExternalLink, Unlink } from 'lucide-react';
 import clsx from 'clsx';
 
 export function Settings() {
@@ -32,6 +35,7 @@ export function Settings() {
     { id: 'server' as const, label: 'Server', icon: Server },
     { id: 'swarmkit' as const, label: 'SwarmKit', icon: Boxes },
     { id: 'swarmhub' as const, label: 'SwarmHub', icon: Globe },
+    { id: 'git-sync' as const, label: 'Git Sync', icon: GitBranch },
   ];
 
   return (
@@ -70,6 +74,7 @@ export function Settings() {
           {activeTab === 'server' && <ServerSettings isAdmin={!!agent.is_admin} />}
           {activeTab === 'swarmkit' && <SwarmKitSettings isAdmin={!!agent.is_admin} />}
           {activeTab === 'swarmhub' && <SwarmHubSettings />}
+          {activeTab === 'git-sync' && <GitSyncSettings />}
         </div>
       </div>
     </div>
@@ -1335,5 +1340,492 @@ function KeyCard({
         )}
       </div>
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Git Sync Settings
+// ═══════════════════════════════════════════════════════════════
+
+interface GitSyncResource {
+  id: string;
+  name: string;
+  resource_type: string;
+  local_path: string | null;
+  autoPull: boolean;
+  sync_status: {
+    hasUncommittedChanges: boolean;
+    unpushedCommits: number;
+    unpulledCommits: number;
+    localHead: string | null;
+    remoteHead: string | null;
+    uncommittedDetails?: {
+      added: number;
+      modified: number;
+      deleted: number;
+      linesAdded: number;
+      linesDeleted: number;
+    };
+  } | null;
+  error?: string;
+}
+
+const RESOURCE_TYPE_LABELS: Record<string, { label: string; color: string }> = {
+  task: { label: 'Tasks', color: '#f59e0b' },
+  memory_bank: { label: 'Memory', color: '#3b82f6' },
+  skill: { label: 'Skill', color: '#8b5cf6' },
+  playbook: { label: 'Playbook', color: '#10b981' },
+};
+
+function GitSyncSettings() {
+  const { data, isLoading, refetch } = useQuery<{ resources: GitSyncResource[] }>({
+    queryKey: ['admin-git-sync-status'],
+    queryFn: () => api.get('/admin/git-sync-status'),
+    staleTime: 30_000,
+  });
+
+  const resources = data?.resources || [];
+  const hasResources = resources.length > 0;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold">Git Sync</h2>
+          <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+            Git-backed resources with pull/push status. Auto-pull interval is configurable in Server &gt; Auto-Pull.
+          </p>
+        </div>
+        <button
+          onClick={() => refetch()}
+          className="btn-ghost p-1.5 rounded"
+          title="Refresh status"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} style={{ color: 'var(--color-text-muted)' }} />
+        </button>
+      </div>
+
+      {isLoading && !data && (
+        <div className="flex items-center gap-2 py-4">
+          <div className="w-3 h-3 rounded-full bg-gray-500/30 animate-pulse" />
+          <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Loading git status...</span>
+        </div>
+      )}
+
+      {!isLoading && !hasResources && (
+        <div className="text-center py-6">
+          <GitBranch className="w-6 h-6 mx-auto mb-2" style={{ color: 'var(--color-text-muted)' }} />
+          <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>No git-backed resources found</p>
+        </div>
+      )}
+
+      {hasResources && (
+        <div className="space-y-2">
+          {resources.map((r) => (
+            <GitSyncResourceRow key={r.id} resource={r} />
+          ))}
+        </div>
+      )}
+
+      {/* Summary */}
+      {hasResources && (
+        <div className="pt-3 border-t flex items-center gap-4 text-2xs" style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text-muted)' }}>
+          <span>{resources.length} git-backed resource{resources.length !== 1 ? 's' : ''}</span>
+          <span>{resources.filter((r) => r.autoPull).length} with auto-pull</span>
+          <span>{resources.filter((r) => r.sync_status && r.sync_status.unpulledCommits > 0).length} with updates available</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GitSyncResourceRow({ resource }: { resource: GitSyncResource }) {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const queryClient = useQueryClient();
+  const pullMutation = useMutation({
+    mutationFn: () => api.post(`/resources/${resource.id}/content/opentasks/git-pull`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-git-sync-status'] });
+      toast.success('Pulled', `Pulled updates for "${resource.name}"`);
+    },
+    onError: () => {
+      toast.error('Pull failed', `Could not pull "${resource.name}"`);
+    },
+  });
+
+  const typeInfo = RESOURCE_TYPE_LABELS[resource.resource_type] || { label: resource.resource_type, color: '#6b7280' };
+  const status = resource.sync_status;
+  const hasError = !!resource.error;
+  const unpulled = status?.unpulledCommits ?? 0;
+  const unpushed = status?.unpushedCommits ?? 0;
+  const uncommitted = status?.hasUncommittedChanges ?? false;
+  const isSynced = !hasError && status && unpulled === 0 && unpushed === 0 && !uncommitted;
+
+  return (
+    <>
+      <div
+        className="flex items-center gap-3 p-3 rounded-lg cursor-pointer hover:ring-1 hover:ring-white/10 transition-all"
+        style={{ backgroundColor: 'var(--color-elevated)' }}
+        onClick={() => setDialogOpen(true)}
+      >
+        {/* Status dot */}
+        <div
+          className={clsx('w-2 h-2 rounded-full shrink-0', {
+            'bg-emerald-400': isSynced,
+            'bg-blue-400': unpulled > 0,
+            'bg-amber-400': unpushed > 0 || uncommitted,
+            'bg-red-400': hasError,
+          })}
+        />
+
+        {/* Info */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium truncate">{resource.name}</span>
+            <span
+              className="text-2xs px-1.5 py-0.5 rounded-full"
+              style={{ backgroundColor: `${typeInfo.color}15`, color: typeInfo.color }}
+            >
+              {typeInfo.label}
+            </span>
+            {resource.autoPull && (
+              <span className="text-2xs px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400">
+                Auto-pull
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+            {hasError && <span className="text-red-400">{resource.error}</span>}
+            {isSynced && <span>Up to date</span>}
+            {unpulled > 0 && <span className="text-blue-400">{unpulled} to pull</span>}
+            {unpushed > 0 && <span className="text-amber-400">{unpushed} to push</span>}
+            {uncommitted && (
+              <span className="text-amber-400">
+                {status?.uncommittedDetails
+                  ? `${status.uncommittedDetails.added + status.uncommittedDetails.modified + status.uncommittedDetails.deleted} file${(status.uncommittedDetails.added + status.uncommittedDetails.modified + status.uncommittedDetails.deleted) !== 1 ? 's' : ''} changed`
+                  : 'Uncommitted changes'}
+                {status?.uncommittedDetails && (status.uncommittedDetails.linesAdded > 0 || status.uncommittedDetails.linesDeleted > 0) && (
+                  <span className="ml-1">
+                    {status.uncommittedDetails.linesAdded > 0 && <span className="text-emerald-400">+{status.uncommittedDetails.linesAdded}</span>}
+                    {status.uncommittedDetails.linesAdded > 0 && status.uncommittedDetails.linesDeleted > 0 && ' '}
+                    {status.uncommittedDetails.linesDeleted > 0 && <span className="text-red-400">-{status.uncommittedDetails.linesDeleted}</span>}
+                  </span>
+                )}
+              </span>
+            )}
+            {status?.localHead && (
+              <span className="font-mono">{status.localHead.slice(0, 7)}</span>
+            )}
+          </div>
+          {resource.local_path && (
+            <div className="mt-0.5 text-2xs font-mono truncate" style={{ color: 'var(--color-text-muted)', opacity: 0.6 }}>
+              {resource.local_path}
+            </div>
+          )}
+        </div>
+
+        {/* Quick pull */}
+        {unpulled > 0 && (
+          <button
+            onClick={(e) => { e.stopPropagation(); pullMutation.mutate(); }}
+            disabled={pullMutation.isPending}
+            className="text-2xs px-2.5 py-1 rounded-md font-medium transition-colors hover:bg-blue-500/15"
+            style={{ color: '#60a5fa', backgroundColor: 'rgba(59, 130, 246, 0.08)' }}
+          >
+            {pullMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : 'Pull'}
+          </button>
+        )}
+
+        <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+      </div>
+
+      {dialogOpen && (
+        <GitSyncManageDialog resource={resource} onClose={() => setDialogOpen(false)} />
+      )}
+    </>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Git Sync Management Dialog
+// ═══════════════════════════════════════════════════════════════
+
+function GitSyncManageDialog({ resource, onClose }: { resource: GitSyncResource; onClose: () => void }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [tab, setTab] = useState<'config' | 'log'>('config');
+  const [confirmForce, setConfirmForce] = useState(false);
+  const [confirmUnlink, setConfirmUnlink] = useState(false);
+
+  const status = resource.sync_status;
+  const unpulled = status?.unpulledCommits ?? 0;
+  const unpushed = status?.unpushedCommits ?? 0;
+  const uncommitted = status?.hasUncommittedChanges ?? false;
+
+  const gitPull = useGitPullHook(resource.id);
+  const gitPush = useGitPushHook(resource.id);
+  const forceFetch = useGitForceFetch(resource.id);
+  const updateResource = useUpdateResource(resource.id);
+  const { data: logData, isLoading: logLoading } = useGitLog(resource.id, tab === 'log');
+
+  // Extract current sync config from resource metadata
+  const meta = resource as any;
+  const otConfig = meta?.opentasks_config || meta?.metadata?.opentasks_config;
+  const syncGit = otConfig?.sync?.git || meta?.metadata?.sync?.git || {};
+  const [autoCommit, setAutoCommit] = useState<boolean>(!!syncGit.autoCommit);
+  const [autoPush, setAutoPush] = useState<boolean>(!!syncGit.autoPush);
+  const [autoPullLocal, setAutoPullLocal] = useState<boolean>(resource.autoPull);
+
+  const saveConfig = () => {
+    // Build updated metadata with new sync config
+    const currentMeta = (meta?.metadata || {}) as Record<string, unknown>;
+    const currentOtConfig = (currentMeta.opentasks_config || {}) as Record<string, unknown>;
+    const currentSync = (currentOtConfig.sync || {}) as Record<string, unknown>;
+    const currentGit = (currentSync.git || {}) as Record<string, unknown>;
+
+    const updatedMeta = {
+      ...currentMeta,
+      opentasks_config: {
+        ...currentOtConfig,
+        sync: {
+          ...currentSync,
+          git: { ...currentGit, autoCommit, autoPush, autoPull: autoPullLocal },
+        },
+      },
+    };
+
+    updateResource.mutate({ metadata: updatedMeta }, {
+      onSuccess: () => {
+        toast.success('Saved', 'Sync config updated');
+        queryClient.invalidateQueries({ queryKey: ['admin-git-sync-status'] });
+      },
+    });
+  };
+
+  const handleForceFetch = () => {
+    forceFetch.mutate(undefined, {
+      onSuccess: (data) => {
+        toast.success('Force fetched', data.changed ? `Reset to ${data.newHead?.slice(0, 7)}` : 'Already at latest');
+        setConfirmForce(false);
+      },
+      onError: () => toast.error('Failed', 'Force fetch failed'),
+    });
+  };
+
+  const handleUnlink = () => {
+    updateResource.mutate({ local_path: null, sync_strategy: 'metadata' }, {
+      onSuccess: () => {
+        toast.success('Unlinked', 'Git backing removed');
+        queryClient.invalidateQueries({ queryKey: ['admin-git-sync-status'] });
+        onClose();
+      },
+    });
+  };
+
+  const typeInfo = RESOURCE_TYPE_LABELS[resource.resource_type] || { label: resource.resource_type, color: '#6b7280' };
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="max-w-lg">
+      <div className="p-4 border-b flex items-center justify-between" style={{ borderColor: 'var(--color-border-subtle)' }}>
+        <div className="flex items-center gap-2">
+          <GitBranch className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+          <span className="text-sm font-semibold">{resource.name}</span>
+          <span className="text-2xs px-1.5 py-0.5 rounded-full" style={{ backgroundColor: `${typeInfo.color}15`, color: typeInfo.color }}>
+            {typeInfo.label}
+          </span>
+        </div>
+        <button onClick={onClose} className="p-1 rounded hover:bg-white/5">
+          <X className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+        </button>
+      </div>
+
+      {/* Tab bar */}
+      <div className="flex border-b px-4" style={{ borderColor: 'var(--color-border-subtle)' }}>
+        {(['config', 'log'] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={clsx('px-3 py-2 text-xs font-medium border-b-2 transition-colors -mb-px', {
+              'border-honey-500 text-honey-500': tab === t,
+              'border-transparent': tab !== t,
+            })}
+            style={tab !== t ? { color: 'var(--color-text-muted)' } : undefined}
+          >
+            {t === 'config' ? 'Config & Actions' : 'Commit Log'}
+          </button>
+        ))}
+      </div>
+
+      <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+        {tab === 'config' && (
+          <>
+            {/* Status overview */}
+            <div className="space-y-1">
+              <div className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Status</div>
+              <div className="flex flex-wrap gap-2 text-2xs">
+                {status && unpulled === 0 && unpushed === 0 && !uncommitted && (
+                  <span className="flex items-center gap-1 text-emerald-400"><div className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Up to date</span>
+                )}
+                {unpulled > 0 && <span className="text-blue-400">{unpulled} commit{unpulled > 1 ? 's' : ''} to pull</span>}
+                {unpushed > 0 && <span className="text-amber-400">{unpushed} commit{unpushed > 1 ? 's' : ''} to push</span>}
+                {uncommitted && <span className="text-amber-400">Uncommitted changes</span>}
+                {resource.error && <span className="text-red-400">{resource.error}</span>}
+              </div>
+              {status?.uncommittedDetails && (
+                <div className="flex items-center gap-3 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+                  {status.uncommittedDetails.added > 0 && <span className="text-emerald-400">{status.uncommittedDetails.added} added</span>}
+                  {status.uncommittedDetails.modified > 0 && <span className="text-blue-400">{status.uncommittedDetails.modified} modified</span>}
+                  {status.uncommittedDetails.deleted > 0 && <span className="text-red-400">{status.uncommittedDetails.deleted} deleted</span>}
+                  {(status.uncommittedDetails.linesAdded > 0 || status.uncommittedDetails.linesDeleted > 0) && (
+                    <span>
+                      {status.uncommittedDetails.linesAdded > 0 && <span className="text-emerald-400">+{status.uncommittedDetails.linesAdded}</span>}
+                      {status.uncommittedDetails.linesAdded > 0 && status.uncommittedDetails.linesDeleted > 0 && ' / '}
+                      {status.uncommittedDetails.linesDeleted > 0 && <span className="text-red-400">-{status.uncommittedDetails.linesDeleted}</span>}
+                      <span> lines</span>
+                    </span>
+                  )}
+                </div>
+              )}
+              {status?.localHead && (
+                <div className="text-2xs font-mono" style={{ color: 'var(--color-text-muted)' }}>
+                  Local: {status.localHead.slice(0, 7)}{status.remoteHead ? ` · Remote: ${status.remoteHead.slice(0, 7)}` : ''}
+                </div>
+              )}
+              {resource.local_path && (
+                <div className="text-2xs font-mono" style={{ color: 'var(--color-text-muted)', opacity: 0.6 }}>
+                  {resource.local_path}
+                </div>
+              )}
+            </div>
+
+            {/* Sync config toggles */}
+            <div className="space-y-2">
+              <div className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Sync Configuration</div>
+              <label className="flex items-center justify-between cursor-pointer">
+                <span className="text-xs">Auto-commit on save</span>
+                <input type="checkbox" checked={autoCommit} onChange={(e) => setAutoCommit(e.target.checked)} className="accent-honey-500" />
+              </label>
+              <label className="flex items-center justify-between cursor-pointer">
+                <span className="text-xs">Auto-push to remote</span>
+                <input type="checkbox" checked={autoPush} onChange={(e) => setAutoPush(e.target.checked)} className="accent-honey-500" />
+              </label>
+              <label className="flex items-center justify-between cursor-pointer">
+                <span className="text-xs">Auto-pull from remote</span>
+                <input type="checkbox" checked={autoPullLocal} onChange={(e) => setAutoPullLocal(e.target.checked)} className="accent-honey-500" />
+              </label>
+              <button
+                onClick={saveConfig}
+                disabled={updateResource.isPending}
+                className="btn btn-primary text-2xs px-3 py-1"
+              >
+                {updateResource.isPending ? 'Saving...' : 'Save Config'}
+              </button>
+            </div>
+
+            {/* Actions */}
+            <div className="space-y-2">
+              <div className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Actions</div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => { gitPull.mutate(); }}
+                  disabled={gitPull.isPending || unpulled === 0}
+                  className="flex items-center gap-1.5 text-2xs px-3 py-1.5 rounded-md font-medium transition-colors hover:bg-blue-500/15 disabled:opacity-40"
+                  style={{ color: '#60a5fa', backgroundColor: 'rgba(59, 130, 246, 0.08)' }}
+                >
+                  {gitPull.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <ArrowDownToLine className="w-3 h-3" />}
+                  Pull
+                </button>
+                <button
+                  onClick={() => { gitPush.mutate(); }}
+                  disabled={gitPush.isPending || (unpushed === 0 && !uncommitted)}
+                  className="flex items-center gap-1.5 text-2xs px-3 py-1.5 rounded-md font-medium transition-colors hover:bg-amber-500/15 disabled:opacity-40"
+                  style={{ color: '#fbbf24', backgroundColor: 'rgba(245, 158, 11, 0.08)' }}
+                >
+                  {gitPush.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <ArrowUpFromLine className="w-3 h-3" />}
+                  Push
+                </button>
+                {resource.resource_type === 'task' && (
+                  <button
+                    onClick={() => { navigate(`/tasks?g=${resource.id}`); onClose(); }}
+                    className="flex items-center gap-1.5 text-2xs px-3 py-1.5 rounded-md font-medium transition-colors hover:bg-white/5"
+                    style={{ color: 'var(--color-text-muted)' }}
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    Open Graph
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Danger zone */}
+            <div className="pt-3 border-t space-y-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
+              <div className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Danger Zone</div>
+              {!confirmForce ? (
+                <button
+                  onClick={() => setConfirmForce(true)}
+                  className="flex items-center gap-1.5 text-2xs px-3 py-1.5 rounded-md font-medium text-red-400/70 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Force Fetch (reset to remote)
+                </button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="text-2xs text-red-400">This will discard all local changes. Continue?</span>
+                  <button onClick={handleForceFetch} disabled={forceFetch.isPending} className="text-2xs px-2 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30">
+                    {forceFetch.isPending ? '...' : 'Confirm'}
+                  </button>
+                  <button onClick={() => setConfirmForce(false)} className="text-2xs px-2 py-0.5 rounded hover:bg-white/10" style={{ color: 'var(--color-text-muted)' }}>Cancel</button>
+                </div>
+              )}
+              {!confirmUnlink ? (
+                <button
+                  onClick={() => setConfirmUnlink(true)}
+                  className="flex items-center gap-1.5 text-2xs px-3 py-1.5 rounded-md font-medium text-red-400/70 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                >
+                  <Unlink className="w-3 h-3" />
+                  Unlink Git Backing
+                </button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="text-2xs text-red-400">Remove git backing? Resource becomes metadata-only.</span>
+                  <button onClick={handleUnlink} disabled={updateResource.isPending} className="text-2xs px-2 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30">
+                    {updateResource.isPending ? '...' : 'Unlink'}
+                  </button>
+                  <button onClick={() => setConfirmUnlink(false)} className="text-2xs px-2 py-0.5 rounded hover:bg-white/10" style={{ color: 'var(--color-text-muted)' }}>Cancel</button>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {tab === 'log' && (
+          <div className="space-y-1">
+            {logLoading && (
+              <div className="flex items-center gap-2 py-4">
+                <div className="w-3 h-3 rounded-full bg-gray-500/30 animate-pulse" />
+                <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Loading commits...</span>
+              </div>
+            )}
+            {logData?.commits?.length === 0 && (
+              <p className="text-xs py-4 text-center" style={{ color: 'var(--color-text-muted)' }}>No commits found</p>
+            )}
+            {logData?.commits?.map((commit) => (
+              <div key={commit.hash} className="flex gap-3 py-2 border-b last:border-0" style={{ borderColor: 'var(--color-border-subtle)' }}>
+                <span className="text-2xs font-mono shrink-0 pt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                  {commit.hash.slice(0, 7)}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs truncate">{commit.message}</p>
+                  <div className="flex items-center gap-2 text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                    <span>{commit.author}</span>
+                    <span>{new Date(commit.date).toLocaleDateString()}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </Dialog>
   );
 }

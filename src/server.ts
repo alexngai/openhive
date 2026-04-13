@@ -35,6 +35,7 @@ import {
   stopLocalResourceWatchers,
 } from "./sync/local-resource-watcher.js";
 import { markStaleSwarms } from "./map/service.js";
+import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
 import { initMail } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
 import { initTokenService, loadRevocations, setPersistence } from "./map/token-service.js";
@@ -735,6 +736,9 @@ export async function createHive(
         }
       }, sweepMinutes * 60 * 1000);
 
+      // Start auto-pull service for remote task graphs
+      startAutoPull(config.autoPull.intervalMinutes * 60 * 1000);
+
       return address;
     },
 
@@ -743,6 +747,7 @@ export async function createHive(
         clearInterval(staleSweepTimer);
         staleSweepTimer = null;
       }
+      stopAutoPull();
       stopHeartbeat();
 
       // Synchronous cleanup

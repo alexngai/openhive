@@ -535,4 +535,68 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
       return reply.send({ ...buildConfigResponse(), restartRequired });
     },
   );
+
+  // GET /admin/git-sync-status — overview of all git-backed resources and their pull status
+  fastify.get('/admin/git-sync-status', { preHandler: authMiddleware }, async (_request, reply) => {
+    const { getDatabase } = await import('../../db/index.js');
+    const { getGitSyncStatus } = await import('../../sync/git-content.js');
+
+    const db = getDatabase();
+    const rows = db.prepare(
+      `SELECT * FROM syncable_resources WHERE local_path IS NOT NULL AND local_path != ''`,
+    ).all() as Record<string, unknown>[];
+
+    const results: Array<{
+      id: string;
+      name: string;
+      resource_type: string;
+      local_path: string | null;
+      autoPull: boolean;
+      sync_status: {
+        hasUncommittedChanges: boolean;
+        unpushedCommits: number;
+        unpulledCommits: number;
+        localHead: string | null;
+        remoteHead: string | null;
+      } | null;
+      error?: string;
+    }> = [];
+
+    for (const row of rows) {
+      const localPath = row.local_path as string;
+      let meta: Record<string, unknown> | null = null;
+      try {
+        meta = row.metadata ? JSON.parse(row.metadata as string) : null;
+      } catch { /* ignore */ }
+
+      // Check if autoPull is enabled
+      let autoPull = false;
+      if (meta) {
+        const otConfig = meta.opentasks_config as Record<string, unknown> | undefined;
+        const syncGit = (otConfig?.sync as Record<string, unknown> | undefined)?.git as Record<string, unknown> | undefined;
+        const genericGit = (meta.sync as Record<string, unknown> | undefined)?.git as Record<string, unknown> | undefined;
+        autoPull = !!(syncGit?.autoPull || genericGit?.autoPull || meta.autoPull);
+      }
+
+      let syncStatus = null;
+      let error: string | undefined;
+      try {
+        syncStatus = await getGitSyncStatus(localPath);
+      } catch (err) {
+        error = (err as Error).message;
+      }
+
+      results.push({
+        id: row.id as string,
+        name: row.name as string,
+        resource_type: row.resource_type as string,
+        local_path: localPath,
+        autoPull,
+        sync_status: syncStatus,
+        error,
+      });
+    }
+
+    return reply.send({ resources: results });
+  });
 }
