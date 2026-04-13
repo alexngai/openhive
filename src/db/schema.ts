@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -1129,6 +1129,63 @@ CREATE TABLE IF NOT EXISTS map_revoked_tokens (
   revoked_at TEXT DEFAULT (datetime('now')),
   reason TEXT
 );
+`;
+
+// Migration V30: Relax UNIQUE constraint on syncable_resources for session scoping
+// Sessions are now scoped per-swarm via git_remote_url (map://session/{sessionId}),
+// not by (owner_agent_id, resource_type, name) which caused collisions when multiple
+// agents worked on the same project directory.
+export const MIGRATION_V30_SESSION_RESOURCE_SCOPING = `
+-- Recreate syncable_resources without the old UNIQUE(owner_agent_id, resource_type, name) constraint
+CREATE TABLE IF NOT EXISTS syncable_resources_new (
+  id TEXT PRIMARY KEY,
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session')),
+  name TEXT NOT NULL,
+  description TEXT,
+  git_remote_url TEXT NOT NULL,
+  webhook_secret TEXT,
+  visibility TEXT DEFAULT 'private'
+    CHECK (visibility IN ('private', 'shared', 'public')),
+  last_commit_hash TEXT,
+  last_push_by TEXT,
+  last_push_at TEXT,
+  owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  scope TEXT DEFAULT 'manual'
+    CHECK (scope IN ('global', 'project', 'agent', 'manual')),
+  sync_strategy TEXT DEFAULT 'metadata'
+    CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle')),
+  local_path TEXT,
+  metadata TEXT,
+  origin_instance_id TEXT,
+  origin_resource_id TEXT,
+  sync_event_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Copy all data from old table
+INSERT OR IGNORE INTO syncable_resources_new SELECT * FROM syncable_resources;
+
+-- Swap tables
+DROP TABLE IF EXISTS syncable_resources;
+ALTER TABLE syncable_resources_new RENAME TO syncable_resources;
+
+-- New UNIQUE constraint: scope by git_remote_url (canonical session identifier) where available
+CREATE UNIQUE INDEX IF NOT EXISTS idx_syncable_resources_git_url
+  ON syncable_resources(owner_agent_id, resource_type, git_remote_url)
+  WHERE git_remote_url IS NOT NULL;
+
+-- Keep name-based index for lookups (non-unique)
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_name_lookup
+  ON syncable_resources(owner_agent_id, resource_type, name);
+
+-- Recreate other indexes that were on the old table
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_owner ON syncable_resources(owner_agent_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type ON syncable_resources(resource_type);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_visibility ON syncable_resources(visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_resources(resource_type, visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
 `;
 
 // Populate FTS tables from existing data

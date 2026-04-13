@@ -1772,6 +1772,32 @@ export function useSessionsList(options?: {
   });
 }
 
+export function useSessionsInfinite(options?: {
+  limit?: number;
+  search?: string;
+}) {
+  const { limit = 30, search } = options || {};
+
+  return useInfiniteQuery({
+    queryKey: ["sessions-overview-infinite", { limit, search }],
+    queryFn: ({ pageParam = 0 }) => {
+      const params = new URLSearchParams();
+      params.set("limit", String(limit));
+      params.set("offset", String(pageParam));
+      if (search) params.set("search", search);
+      return api.get<{ data: SessionListItem[]; total: number }>(
+        `/sessions/overview?${params.toString()}`,
+      );
+    },
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((n, p) => n + p.data.length, 0);
+      return loaded < lastPage.total ? loaded : undefined;
+    },
+    initialPageParam: 0,
+    staleTime: 30_000,
+  });
+}
+
 export function useSessionCheckpoints(
   id: string,
   options?: { limit?: number },
@@ -1793,6 +1819,26 @@ export function useSessionStats(id: string) {
     queryKey: ["session-stats", id],
     queryFn: () => api.get<SessionStats>(`/sessions/${id}/trajectory-stats`),
     enabled: !!id,
+  });
+}
+
+export function useSessionParticipants(id: string) {
+  return useQuery({
+    queryKey: ["session-participants", id],
+    queryFn: () =>
+      api.get<{
+        participants: Array<{
+          id: string;
+          session_resource_id: string;
+          agent_id: string;
+          role: string;
+          joined_at: string;
+          agent_name: string;
+          agent_avatar_url: string | null;
+        }>;
+      }>(`/sessions/${id}/participants`),
+    enabled: !!id,
+    staleTime: 5 * 60 * 1000,
   });
 }
 
@@ -1903,6 +1949,96 @@ export function useSendMailTurn() {
         queryKey: ["mail-turns", conversationId],
       });
       queryClient.invalidateQueries({ queryKey: ["mail-conversations"] });
+    },
+  });
+}
+
+export function useSendSessionChat() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ sessionId, content }: { sessionId: string; content: string }) =>
+      api.post<{ ok: boolean; conversation_id: string }>(`/sessions/${sessionId}/chat`, { content }),
+    onSuccess: (_, { sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: ['session-events', sessionId] });
+    },
+  });
+}
+
+/**
+ * Spawn a new agent on a swarm via its sidecar. Pure lifecycle action — no
+ * session or ACP stream is created. Chain with `useConnectAcp` if you want
+ * a one-click "spawn + chat" flow.
+ */
+export function useSpawnAgent() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      swarmId,
+      role,
+      cwd,
+      task,
+    }: {
+      swarmId: string;
+      role?: string;
+      cwd?: string;
+      task?: string;
+    }) =>
+      api.post<{
+        agent_id: string;
+        peer_map_id: string;
+        name?: string;
+        role: string;
+        cwd: string;
+      }>(`/map/swarms/${swarmId}/agents`, {
+        ...(role ? { role } : {}),
+        ...(cwd ? { cwd } : {}),
+        ...(task ? { task } : {}),
+      }),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['map-swarm', vars.swarmId] });
+      queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
+    },
+  });
+}
+
+/**
+ * Open an ACP session against an already-registered agent on a swarm.
+ * `agentId` is required (pass the hub agent id or the peerMapId). Eagerly
+ * creates the OpenHive session resource so the UI can navigate to it.
+ */
+export function useConnectAcp() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ swarmId, agentId, cwd }: { swarmId: string; agentId: string; cwd?: string }) =>
+      api.post<{ session_resource_id: string; acp_session_id: string; acp_stream_id: string; created: boolean }>(
+        '/sessions/acp-connect',
+        { swarm_id: swarmId, agent_id: agentId, ...(cwd ? { cwd } : {}) },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessions-overview'] });
+      queryClient.invalidateQueries({ queryKey: ['session-checkpoints'] });
+    },
+  });
+}
+
+/**
+ * Stop a specific agent on a swarm. Proxies to the macro-agent's
+ * `_macro/terminateAgent` extension via SwarmCraft's MAP client.
+ */
+export function useStopAgent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ swarmId, agentId, reason }: { swarmId: string; agentId: string; reason?: string }) =>
+      api.post<{ success: boolean }>(
+        `/map/swarms/${swarmId}/agents/${agentId}/stop`,
+        { ...(reason ? { reason } : {}) },
+      ),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['map-swarm', vars.swarmId] });
+      queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
     },
   });
 }

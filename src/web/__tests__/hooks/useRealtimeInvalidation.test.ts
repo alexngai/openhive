@@ -155,7 +155,8 @@ describe('useRealtimeInvalidation', () => {
 
       const registeredEvents = mockUseWSEvent.mock.calls.map((call) => call[0]);
       expect(registeredEvents).toContain('trajectory:sync');
-      expect(registeredEvents).toHaveLength(1);
+      expect(registeredEvents).toContain('node_state_changed');
+      expect(registeredEvents).toHaveLength(2);
     });
 
     it('invalidates session query keys on trajectory:sync event', () => {

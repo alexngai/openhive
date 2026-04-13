@@ -11,6 +11,8 @@ interface WSMessage {
 interface WSState {
   isConnected: boolean;
   channels: Set<string>;
+  /** Reference counts for channel subscriptions (multiple hooks can subscribe to same channel) */
+  channelRefs: Map<string, number>;
   listeners: Map<string, Set<(data: unknown) => void>>;
   setConnected: (connected: boolean) => void;
   addChannel: (channel: string) => void;
@@ -23,20 +25,32 @@ interface WSState {
 export const useWSStore = create<WSState>((set, get) => ({
   isConnected: false,
   channels: new Set(),
+  channelRefs: new Map(),
   listeners: new Map(),
 
   setConnected: (connected) => set({ isConnected: connected }),
 
   addChannel: (channel) =>
-    set((state) => ({
-      channels: new Set([...state.channels, channel]),
-    })),
+    set((state) => {
+      const refs = new Map(state.channelRefs);
+      refs.set(channel, (refs.get(channel) ?? 0) + 1);
+      return { channels: new Set([...state.channels, channel]), channelRefs: refs };
+    }),
 
   removeChannel: (channel) =>
     set((state) => {
+      const refs = new Map(state.channelRefs);
+      const count = (refs.get(channel) ?? 1) - 1;
+      if (count > 0) {
+        // Other subscribers still active — keep channel, update refcount
+        refs.set(channel, count);
+        return { channelRefs: refs };
+      }
+      // Last subscriber — actually remove channel
+      refs.delete(channel);
       const channels = new Set(state.channels);
       channels.delete(channel);
-      return { channels };
+      return { channels, channelRefs: refs };
     }),
 
   addListener: (event, callback) => {
@@ -200,14 +214,16 @@ export function useSubscribe(channels: string[]) {
     }
 
     return () => {
-      // Remove channels from store
+      // Remove channels from store (ref-counted)
       channels.forEach((channel) => removeChannel(channel));
 
-      // Unsubscribe via WebSocket
-      if (globalWs?.readyState === WebSocket.OPEN) {
+      // Only send unsubscribe for channels that were actually removed (refcount hit 0)
+      const { channelRefs } = useWSStore.getState();
+      const toUnsub = channels.filter((ch) => !channelRefs.has(ch));
+      if (toUnsub.length > 0 && globalWs?.readyState === WebSocket.OPEN) {
         globalWs.send(JSON.stringify({
           type: 'unsubscribe',
-          channels,
+          channels: toUnsub,
         }));
       }
     };

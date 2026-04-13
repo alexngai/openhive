@@ -80,14 +80,36 @@ export function createResource(input: CreateResourceInput): SyncableResource {
 export function upsertDiscoveredResource(input: CreateResourceInput): { resource: SyncableResource; created: boolean } {
   const db = getDatabase();
 
-  // Check if the resource already exists
-  const existing = db.prepare(`
-    SELECT id FROM syncable_resources
-    WHERE owner_agent_id = ? AND resource_type = ? AND name = ?
-  `).get(input.owner_agent_id, input.resource_type, input.name) as { id: string } | undefined;
+  // Check if the resource already exists.
+  // For sessions, match on git_remote_url (unique per session) to avoid collapsing
+  // multiple sessions with the same display name (e.g., same project/branch).
+  const existing = input.resource_type === 'session' && input.git_remote_url
+    ? db.prepare(`
+        SELECT id FROM syncable_resources
+        WHERE owner_agent_id = ? AND resource_type = ? AND git_remote_url = ?
+      `).get(input.owner_agent_id, input.resource_type, input.git_remote_url) as { id: string } | undefined
+    : db.prepare(`
+        SELECT id FROM syncable_resources
+        WHERE owner_agent_id = ? AND resource_type = ? AND name = ?
+      `).get(input.owner_agent_id, input.resource_type, input.name) as { id: string } | undefined;
 
   if (existing) {
-    // Update the existing resource
+    // Merge metadata on update so fields set in a prior call (like
+    // `provider_session_id`, which anchors durable history recovery) aren't
+    // silently clobbered when a subsequent upsert provides fewer fields.
+    // Callers that want to remove a key must set it to null explicitly.
+    let mergedMetadata: Record<string, unknown> | null | undefined = input.metadata;
+    if (input.metadata) {
+      const existingRow = db.prepare(`SELECT metadata FROM syncable_resources WHERE id = ?`)
+        .get(existing.id) as { metadata: string | null } | undefined;
+      let existingMeta: Record<string, unknown> = {};
+      if (existingRow?.metadata) {
+        try {
+          existingMeta = JSON.parse(existingRow.metadata) as Record<string, unknown>;
+        } catch { /* corrupt JSON — treat as empty */ }
+      }
+      mergedMetadata = { ...existingMeta, ...input.metadata };
+    }
     db.prepare(`
       UPDATE syncable_resources
       SET git_remote_url = ?, description = ?, scope = ?, sync_strategy = COALESCE(?, sync_strategy), local_path = COALESCE(?, local_path), metadata = ?, updated_at = datetime('now')
@@ -98,7 +120,7 @@ export function upsertDiscoveredResource(input: CreateResourceInput): { resource
       input.scope || 'manual',
       input.sync_strategy !== undefined ? input.sync_strategy : null,
       input.local_path !== undefined ? input.local_path : null,
-      input.metadata ? JSON.stringify(input.metadata) : null,
+      mergedMetadata ? JSON.stringify(mergedMetadata) : null,
       existing.id
     );
     return { resource: findResourceById(existing.id)!, created: false };
@@ -114,14 +136,37 @@ export function upsertDiscoveredResource(input: CreateResourceInput): { resource
  * Looks up by git_remote_url pattern (map://trajectory/{swarmId}) which
  * stays stable even when the display name is updated with project context.
  */
-export function findSessionResourceBySwarm(ownerAgentId: string, swarmId: string): SyncableResource | null {
+export function findSessionResourceBySwarm(ownerAgentId: string, swarmId: string, sessionId?: string): SyncableResource | null {
   const db = getDatabase();
-  const remoteUrl = `map://trajectory/${swarmId}`;
+
+  if (sessionId) {
+    // Look up by session_id — the canonical URL is map://session/{sessionId}
+    // This is swarm-independent: the same session_id always maps to the same resource
+    const sessionUrl = `map://session/${sessionId}`;
+    const row = db.prepare(
+      "SELECT * FROM syncable_resources WHERE owner_agent_id = ? AND resource_type = 'session' AND git_remote_url = ?"
+    ).get(ownerAgentId, sessionUrl) as Record<string, unknown> | undefined;
+    if (row) return rowToResource(row);
+    // Don't fall back to legacy URL — a new session_id means a new session
+    return null;
+  }
+
+  // Legacy swarm-level URL (without session_id) for older agents
+  const legacyUrl = `map://trajectory/${swarmId}`;
   const row = db.prepare(
     "SELECT * FROM syncable_resources WHERE owner_agent_id = ? AND resource_type = 'session' AND git_remote_url = ?"
-  ).get(ownerAgentId, remoteUrl) as Record<string, unknown> | undefined;
-  if (!row) return null;
-  return rowToResource(row);
+  ).get(ownerAgentId, legacyUrl) as Record<string, unknown> | undefined;
+  if (row) return rowToResource(row);
+
+  // Fallback: find the most recent session resource created by this swarm
+  // (handles the case where the resource was created with a session-specific URL
+  // but the current checkpoint doesn't include a session_id)
+  const fallbackRow = db.prepare(
+    "SELECT * FROM syncable_resources WHERE owner_agent_id = ? AND resource_type = 'session' AND json_extract(metadata, '$.source_swarm_id') = ? ORDER BY updated_at DESC LIMIT 1"
+  ).get(ownerAgentId, swarmId) as Record<string, unknown> | undefined;
+  if (fallbackRow) return rowToResource(fallbackRow);
+
+  return null;
 }
 
 export function findResourceById(id: string): SyncableResource | null {

@@ -238,7 +238,8 @@ describe('Trajectory Handler', () => {
 
       const resource = resourcesDAL.findResourceById(result.resource_id);
       expect(resource).toBeDefined();
-      expect(resource!.name).toBe('my-app (main)');
+      // displayName includes a short suffix from swarmId to avoid UNIQUE collisions
+      expect(resource!.name).toBe('my-app (main) [ich-test]');
     });
 
     it('uses firstPrompt as session description', () => {

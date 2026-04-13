@@ -15,7 +15,7 @@
 
 import WebSocket from 'ws';
 import { nanoid } from 'nanoid';
-import { getInbound } from './connection-registry.js';
+import { getInbound, hasCapability } from './connection-registry.js';
 import { listCheckpointsForSession } from '../db/dal/trajectory-checkpoints.js';
 
 const CONTENT_REQUEST_TIMEOUT_MS = 10_000;
@@ -81,9 +81,8 @@ export async function fetchTranscriptFromSwarm(
   const conn = getInbound(swarmId);
   if (!conn || conn.ws.readyState !== WebSocket.OPEN) return null;
 
-  // Check if the swarm declared trajectory content serving capability
-  const trajCaps = conn.capabilities?.trajectory as Record<string, unknown> | undefined;
-  if (!trajCaps?.canServeContent) return null;
+  // Check if any agent on the swarm declared trajectory content serving capability
+  if (!hasCapability(swarmId, 'trajectory.canServeContent')) return null;
 
   const checkpointId = checkpoints[0].checkpoint_id;
   const requestId = `content-${nanoid(8)}`;

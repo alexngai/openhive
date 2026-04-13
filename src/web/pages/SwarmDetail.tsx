@@ -1,9 +1,9 @@
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Activity, Bell, ChevronRight, Clock, Cpu, FileText, Globe,
-  Link2, MessageSquare, Monitor, Network, Share2,
+  Link2, MessageSquare, Monitor, Network, Plus, Share2,
   Square, RotateCw, Terminal, Trash2, User, Wifi, WifiOff,
-  CheckCircle2,
+  CheckCircle2, Zap,
 } from 'lucide-react';
 import {
   useMapSwarm, useMapNodes, useHostedSwarms, useSessionsList, useSwarmLogs,
@@ -11,6 +11,9 @@ import {
   useSwarmMessages, useSwarmPeers,
   useEventSubscriptions, useDeliveryLog,
   useConnectionHealth,
+  useSpawnAgent,
+  useConnectAcp,
+  useStopAgent,
 } from '../hooks/useApi';
 import { useSwarmRealtime, useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -116,17 +119,112 @@ function SwarmInfo({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
       {swarm.capabilities && Object.keys(swarm.capabilities).length > 0 && (
         <div className="mt-3 flex items-center gap-1.5 flex-wrap">
           {Object.entries(swarm.capabilities)
-            .filter(([, v]) => v === true)
-            .map(([key]) => (
-              <span
-                key={key}
-                className="text-2xs px-1.5 py-0.5 rounded capitalize"
-                style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
-              >
-                {key}
-              </span>
-            ))}
+            .filter(([, v]) => v && v !== false)
+            .map(([key]) => {
+              const isProtocol = key === 'protocols';
+              const isAcp = key === 'acp';
+              if (isProtocol) {
+                const protos = swarm.capabilities![key] as string[];
+                return protos.map((p) => (
+                  <span key={p} className="text-2xs px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'var(--color-accent-bg)', color: 'var(--color-accent)' }}>
+                    {p}
+                  </span>
+                ));
+              }
+              if (isAcp) return null; // shown via protocols badge
+              return (
+                <span
+                  key={key}
+                  className="text-2xs px-1.5 py-0.5 rounded capitalize"
+                  style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
+                >
+                  {key}
+                </span>
+              );
+            })}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Capability-Gated Actions ───────────────────────────────────────────────
+
+function SwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
+  const navigate = useNavigate();
+  const spawnAgent = useSpawnAgent();
+  const connectAcp = useConnectAcp();
+
+  const caps = (swarm.capabilities || {}) as Record<string, unknown>;
+  const protocols = Array.isArray(caps.protocols) ? caps.protocols as string[] : [];
+  const supportsAcp = protocols.includes('acp');
+  // Fallback: swarms that can spawn ACP coordinators on demand (e.g., macro-agent)
+  // declare `canHostAcp: true` on a registered agent's metadata (typically the
+  // sidecar). This lets us show the "New Agent Session" button before any
+  // coordinator has been spawned.
+  const registeredAgents = (swarm as any)?.registered_agents as Array<{
+    metadata?: Record<string, unknown>;
+  }> | undefined;
+  const canHostAcp = Array.isArray(registeredAgents)
+    && registeredAgents.some(a => a.metadata?.canHostAcp === true);
+  const isOnline = swarm.status === 'online' || swarm.status === 'unreachable';
+
+  if (!isOnline || (!supportsAcp && !canHostAcp)) return null;
+
+  const projectPath = (caps as any)?.projectPath as string
+    ?? (swarm.metadata as any)?.projectPath as string
+    ?? undefined;
+
+  // One-click "spawn + connect": spawns a coordinator, then immediately opens
+  // an ACP session against it. Backend endpoints are independent — see
+  // RegisteredAgentCard for the connect-only path.
+  const handleNewSession = async () => {
+    try {
+      const spawned = await spawnAgent.mutateAsync({
+        swarmId,
+        role: 'coordinator',
+        cwd: projectPath,
+        task: 'Head manager',
+      });
+      const result = await connectAcp.mutateAsync({
+        swarmId,
+        agentId: spawned.agent_id,
+        cwd: projectPath,
+      });
+      const params = new URLSearchParams({
+        streamId: result.acp_stream_id,
+        sessionId: result.acp_session_id,
+      });
+      navigate(`/sessions/${result.session_resource_id}?${params}`);
+    } catch {
+      // Error shown via mutation state
+    }
+  };
+
+  const isPending = spawnAgent.isPending || connectAcp.isPending;
+  const errorMessage =
+    (spawnAgent.error as Error | undefined)?.message
+    ?? (connectAcp.error as Error | undefined)?.message;
+
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        onClick={handleNewSession}
+        disabled={isPending}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors"
+        style={{ backgroundColor: 'var(--color-accent)', color: 'white' }}
+      >
+        {isPending ? (
+          <LoadingSpinner size="sm" />
+        ) : (
+          <Zap className="w-3.5 h-3.5" />
+        )}
+        New Agent Session
+      </button>
+      {(spawnAgent.isError || connectAcp.isError) && errorMessage && (
+        <span className="text-2xs text-red-400">
+          {errorMessage || 'Failed to create session'}
+        </span>
       )}
     </div>
   );
@@ -377,6 +475,161 @@ function NodesSection({ swarmId }: { swarmId: string }) {
       <div className="space-y-1">
         {nodes.map((node) => (
           <NodeCard key={node.id} node={node} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Live registered agents (per-agent ACP chat) ─────────────────────────────
+
+interface LiveRegisteredAgent {
+  id: string;
+  name: string;
+  role: string;
+  state: string;
+  capabilities?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Per-agent card that surfaces live capabilities and — for ACP-capable agents —
+ * a "Chat" button that creates an ACP session targeting that specific agent
+ * (useful when a swarm has multiple coordinators and the user wants to pick).
+ */
+function RegisteredAgentCard({
+  agent,
+  swarmId,
+  projectPath,
+}: {
+  agent: LiveRegisteredAgent;
+  swarmId: string;
+  projectPath?: string;
+}) {
+  const navigate = useNavigate();
+  const connectAcp = useConnectAcp();
+  const stopAgent = useStopAgent();
+
+  const caps = agent.capabilities ?? {};
+  const protocols = Array.isArray(caps.protocols) ? (caps.protocols as string[]) : [];
+  const supportsAcp = protocols.includes('acp');
+  // Don't offer a Stop button for the sidecar — stopping it would take down
+  // the whole swarm's hub connection. Use Swarms page controls for that.
+  const canStop = agent.role !== 'sidecar';
+
+  // Prefer peerMapId as the targetable ID on the swarm's own MAP server; fall
+  // back to the hub-assigned ID.
+  const targetAgentId =
+    (typeof agent.metadata?.peerMapId === 'string' && (agent.metadata.peerMapId as string)) ||
+    agent.id;
+
+  const handleChat = async () => {
+    try {
+      const result = await connectAcp.mutateAsync({
+        swarmId,
+        cwd: projectPath,
+        agentId: targetAgentId,
+      });
+      const params = new URLSearchParams({
+        streamId: result.acp_stream_id,
+        sessionId: result.acp_session_id,
+      });
+      navigate(`/sessions/${result.session_resource_id}?${params}`);
+    } catch {
+      // Error state is rendered below via the mutation's isError flag
+    }
+  };
+
+  const handleStop = async () => {
+    try {
+      await stopAgent.mutateAsync({ swarmId, agentId: agent.id, reason: 'cancelled' });
+      toast.success('Agent stopped', `"${agent.name || agent.id}" was terminated.`);
+    } catch (err) {
+      toast.error('Stop failed', (err as Error).message);
+    }
+  };
+
+  return (
+    <div className="card px-3 py-2">
+      <div className="flex items-center gap-3">
+        <div
+          className="w-7 h-7 rounded flex items-center justify-center shrink-0"
+          style={{ backgroundColor: 'var(--color-elevated)' }}
+        >
+          <User className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium truncate">{agent.name || agent.id}</span>
+            <span className="text-2xs px-1.5 py-0.5 rounded capitalize" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
+              {agent.role}
+            </span>
+            {protocols.map((p) => (
+              <span
+                key={p}
+                className="text-2xs px-1.5 py-0.5 rounded font-medium"
+                style={{ backgroundColor: 'var(--color-accent-bg)', color: 'var(--color-accent)' }}
+              >
+                {p}
+              </span>
+            ))}
+          </div>
+          <div className="mt-0.5 text-2xs font-mono truncate" style={{ color: 'var(--color-text-muted)' }}>
+            {agent.id}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {supportsAcp && (
+            <button
+              onClick={handleChat}
+              disabled={connectAcp.isPending}
+              className="inline-flex items-center gap-1 px-2 py-1 text-2xs font-medium rounded-md transition-colors"
+              style={{ backgroundColor: 'var(--color-accent)', color: 'white' }}
+              title="Start ACP session with this agent"
+            >
+              {connectAcp.isPending ? (
+                <LoadingSpinner size="sm" />
+              ) : (
+                <Zap className="w-3 h-3" />
+              )}
+              Chat
+            </button>
+          )}
+          {canStop && (
+            <button
+              onClick={handleStop}
+              disabled={stopAgent.isPending}
+              className="btn btn-ghost p-1.5 text-red-400 hover:bg-red-500/10"
+              title="Stop agent"
+            >
+              {stopAgent.isPending ? <LoadingSpinner size="sm" /> : <Square className="w-3 h-3" />}
+            </button>
+          )}
+        </div>
+      </div>
+      {connectAcp.isError && (
+        <div className="mt-1.5 text-2xs text-red-400">
+          {(connectAcp.error as Error)?.message || 'Failed to create session'}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RegisteredAgentsSection({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
+  const agents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined;
+  if (!agents || agents.length === 0) return null;
+
+  const projectPath =
+    (swarm.capabilities as any)?.projectPath as string | undefined ??
+    (swarm.metadata as any)?.projectPath as string | undefined;
+
+  return (
+    <div className="mt-4">
+      <SectionHeading icon={User} label="Registered Agents" count={agents.length} />
+      <div className="space-y-1">
+        {agents.map((agent) => (
+          <RegisteredAgentCard key={agent.id} agent={agent} swarmId={swarmId} projectPath={projectPath} />
         ))}
       </div>
     </div>
@@ -776,11 +1029,15 @@ export function SwarmDetail() {
 
       <SwarmInfo swarm={swarm} swarmId={id!} />
 
+      <SwarmActions swarm={swarm} swarmId={id!} />
+
       {swarm.status === 'online' && <ConnectionHealthBar swarmId={id!} />}
 
       {hosted && <HostedInfo hosted={hosted} />}
 
       <NodesSection swarmId={id!} />
+
+      <RegisteredAgentsSection swarm={swarm} swarmId={id!} />
 
       <SessionsSection swarmId={id!} />
 

@@ -53,13 +53,21 @@ export interface MapSwarm {
 }
 
 export interface MapSwarmCapabilities {
-  observation?: boolean;
-  messaging?: boolean;
-  lifecycle?: boolean;
+  observation?: boolean | { canObserve?: boolean; canQuery?: boolean };
+  messaging?: boolean | { canSend?: boolean; canReceive?: boolean; canBroadcast?: boolean };
+  lifecycle?: boolean | { canSpawn?: boolean; canStop?: boolean };
   scopes?: boolean;
   federation?: boolean;
   hive_sync?: boolean;
   protocols?: string[]; // e.g. ['acp', 'a2a']
+  /** Mail protocol capabilities (agent-inbox conversations) */
+  mail?: {
+    canCreate?: boolean;
+    canJoin?: boolean;
+    canInvite?: boolean;
+    canViewHistory?: boolean;
+    canCreateThreads?: boolean;
+  };
 }
 
 export interface CoordinationCapability {

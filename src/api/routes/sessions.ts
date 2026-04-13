@@ -15,6 +15,7 @@ import { findSwarmById } from '../../db/dal/map.js';
 import { getDatabase } from '../../db/index.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import { fetchTranscriptFromSwarm } from '../../map/trajectory-content.js';
+import { findAcpAgentInfo, getInbound } from '../../map/connection-registry.js';
 import {
   detectFormatExtended,
   getSupportedFormats,
@@ -35,6 +36,7 @@ import type {
   SessionFormatEntry,
 } from '../../types.js';
 import type { Config } from '../../config.js';
+import { sessionChatRoutes } from './session-chat.js';
 
 // ============================================================================
 // Validation Schemas
@@ -201,6 +203,9 @@ export async function sessionsRoutes(
   fastify: FastifyInstance,
   _options: { config: Config }
 ): Promise<void> {
+
+  // Register session chat sub-routes
+  await sessionChatRoutes(fastify);
 
   // ============================================================================
   // Format Registry Endpoints
@@ -687,9 +692,17 @@ export async function sessionsRoutes(
       }
 
       if (!content) {
-        return reply.status(503).send({
-          error: 'Service Unavailable',
-          message: 'Session content not available. The swarm may be offline.',
+        // No trajectory transcript available yet. This is the normal case for
+        // ACP sessions before any checkpoint has been persisted — the client
+        // should then call ACP session/load on the stream to replay history
+        // from the agent. Returning 200 with empty events lets the session
+        // detail page load cleanly instead of blocking on a 503.
+        return reply.send({
+          format_id: formatId,
+          total: 0,
+          limit,
+          offset,
+          events: [],
         });
       }
 
@@ -907,7 +920,10 @@ export async function sessionsRoutes(
       }
 
       const db = getDatabase();
-      const checkpoints = db
+
+      // Query both manual checkpoints (session_checkpoints) and
+      // trajectory checkpoints (trajectory_checkpoints) from agent sidecars.
+      const manualCheckpoints = db
         .prepare(
           `
         SELECT sc.*, a.name as creator_name
@@ -919,7 +935,39 @@ export async function sessionsRoutes(
         )
         .all(resource.id) as Array<SessionCheckpoint & { creator_name: string | null }>;
 
-      return reply.send({ checkpoints });
+      const trajectoryCheckpoints = db
+        .prepare(
+          `
+        SELECT id, session_resource_id, checkpoint_id, commit_hash, agent,
+               branch, files_touched, checkpoints_count, token_usage,
+               source_swarm_id, source_agent_id
+        FROM trajectory_checkpoints
+        WHERE session_resource_id = ?
+        ORDER BY rowid
+      `
+        )
+        .all(resource.id) as Array<Record<string, unknown>>;
+
+      // Merge both sources — trajectory checkpoints are normalized to match the API shape
+      const checkpoints = [
+        ...manualCheckpoints,
+        ...trajectoryCheckpoints.map((tc) => ({
+          id: tc.id,
+          session_resource_id: tc.session_resource_id,
+          checkpoint_id: tc.checkpoint_id,
+          commit_hash: tc.commit_hash,
+          agent: tc.agent,
+          branch: tc.branch,
+          files_touched: typeof tc.files_touched === 'string' ? JSON.parse(tc.files_touched as string) : tc.files_touched,
+          checkpoints_count: tc.checkpoints_count,
+          token_usage: typeof tc.token_usage === 'string' ? JSON.parse(tc.token_usage as string) : tc.token_usage,
+          source_swarm_id: tc.source_swarm_id,
+          source_agent_id: tc.source_agent_id,
+          creator_name: tc.agent,
+        })),
+      ];
+
+      return reply.send({ checkpoints, data: checkpoints, total: checkpoints.length });
     }
   );
 
@@ -1285,13 +1333,14 @@ export async function sessionsRoutes(
   // ============================================================================
 
   // List all sessions with trajectory checkpoint stats
-  fastify.get<{ Querystring: { limit?: number; offset?: number; swarm_id?: string } }>(
+  fastify.get<{ Querystring: { limit?: number; offset?: number; swarm_id?: string; search?: string } }>(
     '/sessions/overview',
     async (request, reply) => {
       const limit = Math.min(Number(request.query.limit) || 50, 100);
       const offset = Number(request.query.offset) || 0;
       const swarmId = request.query.swarm_id || undefined;
-      const result = trajectoryDAL.listAllSessions(limit, offset, swarmId);
+      const search = request.query.search?.trim() || undefined;
+      const result = trajectoryDAL.listAllSessions(limit, offset, swarmId, search);
       return reply.send(result);
     }
   );
@@ -1329,6 +1378,182 @@ export async function sessionsRoutes(
 
       const stats = trajectoryDAL.getSessionStats(resource.id);
       return reply.send(stats);
+    }
+  );
+
+  // Open an ACP session against an already-registered ACP-capable agent on
+  // a swarm. Eagerly creates the session resource + ACP stream so the user
+  // can navigate to the session immediately and start chatting.
+  //
+  // `agent_id` is required — pass the hub's agent id (preferred) or the
+  // agent's peerMapId. The caller is expected to have already spawned the
+  // agent via POST /map/swarms/:id/agents (or it was spawned elsewhere).
+  //
+  // Callers that want a one-click "spawn + connect" flow should chain the
+  // two endpoints client-side.
+  fastify.post<{ Body: { swarm_id: string; agent_id: string; cwd?: string } }>(
+    '/sessions/acp-connect',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { swarm_id, agent_id, cwd } = request.body || ({} as any);
+      if (!swarm_id) {
+        return reply.status(400).send({ error: 'swarm_id is required' });
+      }
+      if (!agent_id) {
+        return reply.status(400).send({ error: 'agent_id is required' });
+      }
+
+      const swarm = findSwarmById(swarm_id);
+      if (!swarm) {
+        return reply.status(404).send({ error: 'Swarm not found' });
+      }
+
+      // Access SwarmCraft's ACP stream manager via the fastify instance
+      const sc = (fastify as any).swarmcraft;
+      if (!sc?.acpStreamManager) {
+        return reply.status(503).send({ error: 'SwarmCraft ACP not available' });
+      }
+
+      // Resolve target cwd. Reused for both the ACP session's cwd parameter
+      // AND for display-name inference below. Matches macro-agent's
+      // getOrCreateHeadManager cwd so we reuse the agent's existing head
+      // manager rather than causing it to spawn a duplicate.
+      const swarmMeta = (swarm.metadata as Record<string, unknown>) || {};
+      const targetCwd = cwd
+        ?? (typeof swarmMeta.cwd === 'string' ? swarmMeta.cwd : undefined)
+        ?? (typeof swarmMeta.projectPath === 'string' ? swarmMeta.projectPath : undefined)
+        ?? '.';
+
+      // Resolve the agent on the hub. Accept either the hub-assigned id or
+      // the agent's peerMapId (as published in registered_agents[].metadata).
+      // Normalize to the peerMapId (what the swarm's own MAP server routes on)
+      // before opening the stream.
+      const inboundConn = getInbound(swarm_id);
+      let acpAgent: string | undefined;
+      let targetAgentEntry: { name?: string; metadata?: Record<string, unknown> } | undefined;
+      if (inboundConn) {
+        const direct = inboundConn.registeredAgents.get(agent_id);
+        if (direct) {
+          targetAgentEntry = direct;
+          const pm = direct.metadata?.peerMapId;
+          acpAgent = typeof pm === 'string' ? pm : agent_id;
+        } else {
+          for (const entry of inboundConn.registeredAgents.values()) {
+            if (entry.metadata?.peerMapId === agent_id) {
+              targetAgentEntry = entry;
+              acpAgent = agent_id;
+              break;
+            }
+          }
+        }
+      }
+      if (!acpAgent) {
+        return reply.status(404).send({
+          error: `Agent ${agent_id} not registered on swarm ${swarm_id}`,
+        });
+      }
+
+      // Guard: agent must declare ACP support. Early 400 is friendlier than
+      // letting the stream handshake fail partway through.
+      const agentCaps = (targetAgentEntry as any)?.capabilities as Record<string, unknown> | undefined;
+      const agentProtocols = Array.isArray(agentCaps?.protocols)
+        ? (agentCaps!.protocols as string[])
+        : [];
+      if (!agentProtocols.includes('acp')) {
+        return reply.status(400).send({
+          error: `Agent ${agent_id} does not advertise ACP support`,
+        });
+      }
+
+      try {
+        // 0. Close any existing ACP streams for this server to prevent
+        //    subscription iterator interference on the shared MAP connection.
+        const existing = sc.acpStreamManager.listStreams()
+          .filter((s: any) => s.serverId === swarm_id && !s.isClosed);
+        for (const s of existing) {
+          try { await sc.acpStreamManager.closeStream(s.streamId); } catch { /* best effort */ }
+        }
+
+        // 1. Create ACP stream
+        const stream = await sc.acpStreamManager.createStream(swarm_id, acpAgent);
+
+        // 2. Initialize
+        await sc.acpStreamManager.initialize(stream.streamId);
+
+        // 3. Create ACP session (this spawns the agent inside macro-agent
+        //    via getOrCreateHeadManager). Reuse the same cwd as the spawn
+        //    above so getOrCreateHeadManager finds the existing head manager
+        //    and doesn't spawn a second coordinator.
+        const projectPath = targetCwd;
+        const sessionResult = await sc.acpStreamManager.newSession(stream.streamId, {
+          cwd: projectPath,
+          mcpServers: [],
+        });
+
+        const acpSessionId = sessionResult.sessionId;
+
+        // Pull display metadata from the agent entry we already resolved
+        // before the stream handshake. Fall back to the first ACP-capable
+        // agent for provider_session_id if the targeted agent hasn't
+        // published one yet.
+        const coordinatorName = (targetAgentEntry as any)?.name as string | undefined;
+        let providerSessionId: string | undefined;
+        const psidFromTarget = targetAgentEntry?.metadata?.provider_session_id;
+        if (typeof psidFromTarget === 'string') {
+          providerSessionId = psidFromTarget;
+        } else {
+          const fallback = findAcpAgentInfo(swarm_id);
+          const psid = fallback?.metadata?.provider_session_id;
+          if (typeof psid === 'string') providerSessionId = psid;
+        }
+
+        // 4. Eagerly create the session resource. Build a display name that
+        // prefers the coordinator's name when the project name is uninformative
+        // (empty, "." or "/"), so a user with multiple sessions can tell them
+        // apart by which coordinator they're with.
+        const remoteUrl = `map://session/${acpSessionId}`;
+        const projectFromPath = projectPath.split('/').filter(Boolean).pop() ?? '';
+        const isBadProject = !projectFromPath || projectFromPath === '.' || projectFromPath === '..';
+        const shortId = acpSessionId.slice(-8);
+        const nameBase = isBadProject ? (coordinatorName ?? 'session') : projectFromPath;
+        const displayName = `${nameBase} [${shortId}]`;
+        const project = isBadProject ? 'session' : projectFromPath;
+
+        const { resource, created } = resourcesDAL.upsertDiscoveredResource({
+          resource_type: 'session',
+          name: displayName,
+          description: `ACP session with ${swarm.name}`,
+          git_remote_url: remoteUrl,
+          owner_agent_id: request.agent!.id,
+          scope: 'manual',
+          metadata: {
+            project,
+            projectPath,
+            sessionId: acpSessionId,
+            source_swarm_id: swarm_id,
+            acpStreamId: stream.streamId,
+            ...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
+          },
+        });
+
+        // 5. Broadcast so the sessions list updates in real-time
+        broadcastToChannel('global', {
+          type: 'trajectory:sync',
+          data: { session_resource_id: resource.id },
+        });
+
+        return reply.send({
+          session_resource_id: resource.id,
+          acp_session_id: acpSessionId,
+          acp_stream_id: stream.streamId,
+          created,
+        });
+      } catch (err) {
+        return reply.status(500).send({
+          error: 'Failed to create ACP session',
+          message: (err as Error).message,
+        });
+      }
     }
   );
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Zap, Square, RotateCw, Terminal, ChevronDown, ChevronUp, Plus, X, Cpu,
@@ -614,13 +614,24 @@ export function ConnectFormDialog({ onClose }: { onClose: () => void }) {
 // Swarm Cards
 // =============================================================================
 
-function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
+function HostedSwarmCard({ swarm, linkedMapSwarm }: { swarm: HostedSwarm; linkedMapSwarm?: MapSwarm }) {
   const [showLogs, setShowLogs] = useState(false);
   const navigate = useNavigate();
   const stopMutation = useStopSwarm();
   const restartMutation = useRestartSwarm();
   const removeMutation = useRemoveSwarm();
   const { data: logs } = useSwarmLogs(showLogs ? swarm.id : null);
+
+  // If there's a linked MAP swarm record (the same macro-agent process seen by
+  // SwarmCraft via outbound MAP, or the sidecar's inbound registration), use
+  // its ID for navigation so the SwarmDetail page shows live agent data. Also
+  // surface agent count + capabilities so the merged card carries the info
+  // that used to live under "Registered".
+  const targetSwarmId = swarm.swarm_id ?? linkedMapSwarm?.id ?? swarm.id;
+  const agentCount = linkedMapSwarm?.agent_count ?? 0;
+  const mapStatus = linkedMapSwarm?.status;
+  const caps = (linkedMapSwarm?.capabilities || {}) as Record<string, unknown>;
+  const protocols = Array.isArray(caps.protocols) ? (caps.protocols as string[]) : [];
 
   const canStop = swarm.state === 'running' || swarm.state === 'unhealthy' || swarm.state === 'starting';
   const canRestart = swarm.state === 'stopped' || swarm.state === 'failed';
@@ -655,7 +666,7 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
   };
 
   return (
-    <div className="card card-hover px-3 py-2.5 cursor-pointer group" onClick={() => navigate(`/swarms/${swarm.swarm_id || swarm.id}`)}>
+    <div className="card card-hover px-3 py-2.5 cursor-pointer group" onClick={() => navigate(`/swarms/${targetSwarmId}`)}>
       <div className="flex items-center gap-3">
         <div
           className="w-8 h-8 rounded-md flex items-center justify-center shrink-0"
@@ -668,6 +679,7 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium font-mono truncate group-hover:text-honey-500 transition-colors">{swarm.id}</span>
             <HostedStateBadge state={swarm.state} />
+            {mapStatus && <MapStatusBadge status={mapStatus} />}
             <span className="text-2xs px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
               {swarm.provider === 'local-sandboxed' ? 'local' : swarm.provider}
             </span>
@@ -675,10 +687,25 @@ function HostedSwarmCard({ swarm }: { swarm: HostedSwarm }) {
             {swarm.endpoint === 'local-hub' && (
               <span className="text-2xs px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">local</span>
             )}
+            {protocols.map((p) => (
+              <span
+                key={p}
+                className="text-2xs px-1.5 py-0.5 rounded font-medium"
+                style={{ backgroundColor: 'var(--color-accent-bg)', color: 'var(--color-accent)' }}
+              >
+                {p}
+              </span>
+            ))}
           </div>
           <div className="flex items-center gap-2 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
             <span className="truncate">{swarm.name}</span>
             {swarm.assigned_port && <><span className="opacity-30">&middot;</span><span>:{swarm.assigned_port}</span></>}
+            {agentCount > 0 && (
+              <>
+                <span className="opacity-30">&middot;</span>
+                <span>{agentCount} agent{agentCount === 1 ? '' : 's'}</span>
+              </>
+            )}
             <span className="opacity-30">&middot;</span>
             <TimeAgo date={swarm.updated_at > swarm.created_at ? swarm.updated_at : swarm.created_at} />
           </div>
@@ -931,10 +958,36 @@ export function Swarms() {
   const [showOffline, setShowOffline] = useState(false);
   const [formMode, setFormMode] = useState<FormMode>('none');
 
+  // Dedup: a hosted swarm and its registered entry (the MAP server SwarmCraft
+  // discovers outbound, or the sidecar's inbound record) represent the SAME
+  // macro-agent process. Hide the registered entry and display only the hosted
+  // card (which inherits the live agent data via its linked MAP swarm).
+  //
+  // Match by: hosted.swarm_id → registered.id (inbound sidecar link), OR
+  //           hosted.endpoint === registered.map_endpoint (outbound match).
+  const hostedLinkedSwarmIds = useMemo(() => {
+    const ids = new Set<string>();
+    const endpoints = new Set<string>();
+    for (const h of hostedSwarms ?? []) {
+      if (h.swarm_id) ids.add(h.swarm_id);
+      if (h.endpoint) endpoints.add(h.endpoint);
+    }
+    if (mapSwarms) {
+      for (const s of mapSwarms) {
+        if (endpoints.has(s.map_endpoint)) ids.add(s.id);
+      }
+    }
+    return ids;
+  }, [hostedSwarms, mapSwarms]);
+
   // Filter registered swarms ('unreachable' = recently disconnected, show with online)
-  const onlineSwarms = mapSwarms?.filter((s) => s.status === 'online' || s.status === 'unreachable');
-  const offlineSwarms = mapSwarms?.filter((s) => s.status === 'offline');
-  const visibleMapSwarms = showOffline ? mapSwarms : onlineSwarms;
+  const onlineSwarms = mapSwarms?.filter(
+    (s) => (s.status === 'online' || s.status === 'unreachable') && !hostedLinkedSwarmIds.has(s.id),
+  );
+  const offlineSwarms = mapSwarms?.filter((s) => s.status === 'offline' && !hostedLinkedSwarmIds.has(s.id));
+  const visibleMapSwarms = showOffline
+    ? mapSwarms?.filter((s) => !hostedLinkedSwarmIds.has(s.id))
+    : onlineSwarms;
 
   // Auto-collapse empty sections (only before user has toggled)
   const hostedExpanded = showHosted ?? (hostedLoading || (hostedSwarms != null && hostedSwarms.length > 0));
@@ -989,9 +1042,14 @@ export function Swarms() {
           <PageLoader />
         ) : hostedSwarms && hostedSwarms.length > 0 ? (
           <div className="space-y-1 mb-4">
-            {hostedSwarms.map((swarm) => (
-              <HostedSwarmCard key={swarm.id} swarm={swarm} />
-            ))}
+            {hostedSwarms.map((swarm) => {
+              // Find the linked registered MAP swarm record so the card can
+              // surface live status, agent count, and capabilities inline.
+              const linked = mapSwarms?.find(
+                (s) => (swarm.swarm_id && s.id === swarm.swarm_id) || s.map_endpoint === swarm.endpoint,
+              );
+              return <HostedSwarmCard key={swarm.id} swarm={swarm} linkedMapSwarm={linked} />;
+            })}
           </div>
         ) : (
           <div className="mb-4">

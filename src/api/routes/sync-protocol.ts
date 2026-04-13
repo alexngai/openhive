@@ -8,7 +8,7 @@
 import { FastifyInstance } from 'fastify';
 import { HandshakeSchema, PushEventsSchema, PullEventsQuerySchema, HeartbeatSchema } from '../schemas/sync.js';
 import { getSyncService } from '../../sync/service.js';
-import { syncAuthMiddleware, syncRateLimitMiddleware } from '../../sync/middleware.js';
+import { syncAuthMiddleware } from '../../sync/middleware.js';
 import * as syncGroupsDAL from '../../db/dal/sync-groups.js';
 import * as syncPeersDAL from '../../db/dal/sync-peers.js';
 import * as hivesDAL from '../../db/dal/hives.js';
@@ -17,7 +17,7 @@ export async function syncProtocolRoutes(fastify: FastifyInstance): Promise<void
   // POST /sync/v1/handshake — initiate peer connection
   // GAP-2: When handshake_secret is configured, require it via X-Handshake-Secret header
   // NEW-4: Add rate limiting to prevent brute-force enumeration and resource exhaustion
-  fastify.post('/handshake', { preHandler: [syncRateLimitMiddleware] }, async (request, reply) => {
+  fastify.post('/handshake', async (request, reply) => {
     const syncService = getSyncService();
     if (!syncService) {
       return reply.status(503).send({ error: 'Service Unavailable', message: 'Sync is not enabled' });
@@ -49,7 +49,7 @@ export async function syncProtocolRoutes(fastify: FastifyInstance): Promise<void
   });
 
   // GET /sync/v1/groups/:id/events — pull events (authenticated)
-  fastify.get<{ Params: { id: string } }>('/groups/:id/events', { preHandler: [syncAuthMiddleware, syncRateLimitMiddleware] }, async (request, reply) => {
+  fastify.get<{ Params: { id: string } }>('/groups/:id/events', { preHandler: [syncAuthMiddleware] }, async (request, reply) => {
     const syncService = getSyncService();
     if (!syncService) {
       return reply.status(503).send({ error: 'Service Unavailable', message: 'Sync is not enabled' });
@@ -73,7 +73,7 @@ export async function syncProtocolRoutes(fastify: FastifyInstance): Promise<void
   });
 
   // POST /sync/v1/groups/:id/events — push events (authenticated)
-  fastify.post<{ Params: { id: string } }>('/groups/:id/events', { preHandler: [syncAuthMiddleware, syncRateLimitMiddleware] }, async (request, reply) => {
+  fastify.post<{ Params: { id: string } }>('/groups/:id/events', { preHandler: [syncAuthMiddleware] }, async (request, reply) => {
     const syncService = getSyncService();
     if (!syncService) {
       return reply.status(503).send({ error: 'Service Unavailable', message: 'Sync is not enabled' });

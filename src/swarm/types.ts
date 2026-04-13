@@ -37,6 +37,8 @@ export interface BootstrapToken {
   preauth_key: string;
   /** Name for the swarm */
   swarm_name: string;
+  /** Pre-registered swarm ID for stable identity across reconnections */
+  swarm_id?: string;
   /** OpenSwarm adapter to use (e.g. 'macro-agent') */
   adapter: string;
   /** Adapter-specific configuration */
