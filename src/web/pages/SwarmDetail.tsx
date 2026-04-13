@@ -1,6 +1,6 @@
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
-  ArrowLeft, Activity, Bell, ChevronRight, Clock, Cpu, FileText, Globe,
+  ArrowLeft, Activity, Bell, ChevronRight, ChevronDown, ChevronUp, Clock, Cpu, FileText, Globe,
   Link2, MessageSquare, Monitor, Network, Plus, Share2,
   Square, RotateCw, Terminal, Trash2, User, Wifi, WifiOff,
   CheckCircle2, Zap,
@@ -63,10 +63,78 @@ function EmptyState({ message }: { message: string }) {
 
 // ─── Swarm Info ──────────────────────────────────────────────────────────────
 
-function SwarmInfo({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
+function formatUptime(seconds: number): string {
+  if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  if (seconds >= 60) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${seconds}s`;
+}
+
+/**
+ * Compact unified header for the swarm detail page. Merges what used to be
+ * three separate cards (identity + connection health + hosted instance) into
+ * one dense strip: identifiers above, health/hosted stats below, lifecycle
+ * actions inline with the title.
+ */
+function SwarmHeader({
+  swarm,
+  swarmId,
+  hosted,
+}: {
+  swarm: MapSwarm;
+  swarmId: string;
+  hosted?: HostedSwarm;
+}) {
+  const navigate = useNavigate();
   const { data: health } = useConnectionHealth(swarmId);
+  const stopMutation = useStopSwarm();
+  const restartMutation = useRestartSwarm();
+  const removeMutation = useRemoveSwarm();
+
+  const canStop = hosted && (hosted.state === 'running' || hosted.state === 'unhealthy' || hosted.state === 'starting');
+  const canRestart = hosted && (hosted.state === 'stopped' || hosted.state === 'failed');
+  const canRemove = hosted && (hosted.state === 'stopped' || hosted.state === 'failed');
+  const isTransitioning = stopMutation.isPending || restartMutation.isPending || removeMutation.isPending;
+
+  const handleStop = async () => {
+    if (!hosted) return;
+    try {
+      await stopMutation.mutateAsync(hosted.id);
+      toast.success('Swarm stopped', `"${hosted.name}" has been stopped.`);
+    } catch (err) {
+      toast.error('Stop failed', (err as Error).message);
+    }
+  };
+  const handleRestart = async () => {
+    if (!hosted) return;
+    try {
+      await restartMutation.mutateAsync(hosted.id);
+      toast.success('Swarm restarted', `"${hosted.name}" is restarting.`);
+    } catch (err) {
+      toast.error('Restart failed', (err as Error).message);
+    }
+  };
+  const handleRemove = async () => {
+    if (!hosted) return;
+    try {
+      await removeMutation.mutateAsync(hosted.id);
+      toast.success('Swarm removed', `"${hosted.name}" has been removed.`);
+      navigate('/swarms');
+    } catch (err) {
+      toast.error('Remove failed', (err as Error).message);
+    }
+  };
+
+  const uptime = health?.connectedAt
+    ? Math.floor((Date.now() - new Date(health.connectedAt).getTime()) / 1000)
+    : 0;
+  const isDegraded = (health?.missedPongs ?? 0) > 0;
+  const healthPct = health
+    ? Math.max(0, Math.round((1 - health.missedPongs / health.maxMissedPongs) * 100))
+    : 100;
+
   return (
     <div className="card px-4 py-3">
+      {/* Row 1: identity + badges + lifecycle actions */}
       <div className="flex items-start gap-3">
         <div
           className="w-10 h-10 rounded-md flex items-center justify-center shrink-0"
@@ -78,24 +146,34 @@ function SwarmInfo({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-lg font-bold truncate">{swarm.name}</h2>
             <MapStatusBadge status={swarm.status} missedPongs={health?.missedPongs} />
+            {hosted && <HostedStateBadge state={hosted.state} />}
             {swarm.map_endpoint === 'hub-inbound' && (
               <span className="text-2xs px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">inbound</span>
             )}
             {swarm.map_endpoint === 'local-hub' && (
               <span className="text-2xs px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">local</span>
             )}
+            {hosted?.provider === 'local-sandboxed' && <SandboxBadge />}
           </div>
           {swarm.description && (
             <p className="text-sm mt-1" style={{ color: 'var(--color-text-secondary)' }}>
               {swarm.description}
             </p>
           )}
+          {/* Row 2: identifiers, endpoint, hosted id, hives, last-seen */}
           <div className="flex items-center gap-3 mt-2 text-2xs flex-wrap" style={{ color: 'var(--color-text-muted)' }}>
-            <span className="font-mono">{swarm.id}</span>
+            <span className="font-mono truncate max-w-[220px]">{swarm.id}</span>
             {swarm.map_endpoint !== 'hub-inbound' && swarm.map_endpoint !== 'local-hub' && (
-              <span className="font-mono truncate max-w-[250px]">{swarm.map_endpoint}</span>
+              <span className="font-mono truncate max-w-[220px]">{swarm.map_endpoint}</span>
             )}
-            <span>{swarm.agent_count} agent{swarm.agent_count !== 1 ? 's' : ''}</span>
+            {hosted && (
+              <>
+                <span className="opacity-30">·</span>
+                <span className="font-mono truncate max-w-[180px]" title={`Hosted ${hosted.id}`}>{hosted.id}</span>
+                <span>{hosted.provider === 'local-sandboxed' ? 'local' : hosted.provider}</span>
+                {hosted.assigned_port && <span>:{hosted.assigned_port}</span>}
+              </>
+            )}
             {swarm.hives.length > 0 && <span>{swarm.hives.join(', ')}</span>}
             {swarm.last_seen_at && (
               <span className="flex items-center gap-1">
@@ -105,25 +183,40 @@ function SwarmInfo({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
             )}
           </div>
         </div>
-        <div className="shrink-0">
+        {/* Right rail: lifecycle action icons + connectivity indicator */}
+        <div className="flex items-center gap-1 shrink-0">
+          {canStop && (
+            <button onClick={handleStop} disabled={isTransitioning} className="btn btn-ghost p-1.5 text-red-400 hover:bg-red-500/10" title="Stop hosted swarm">
+              {stopMutation.isPending ? <LoadingSpinner size="sm" /> : <Square className="w-3.5 h-3.5" />}
+            </button>
+          )}
+          {canRestart && (
+            <button onClick={handleRestart} disabled={isTransitioning} className="btn btn-ghost p-1.5 hover:bg-emerald-500/10" style={{ color: 'var(--color-text-secondary)' }} title="Restart hosted swarm">
+              {restartMutation.isPending ? <LoadingSpinner size="sm" /> : <RotateCw className="w-3.5 h-3.5" />}
+            </button>
+          )}
+          {canRemove && (
+            <button onClick={handleRemove} disabled={isTransitioning} className="btn btn-ghost p-1.5 text-red-400 hover:bg-red-500/10" title="Remove hosted swarm">
+              {removeMutation.isPending ? <LoadingSpinner size="sm" /> : <Trash2 className="w-3.5 h-3.5" />}
+            </button>
+          )}
           {swarm.status === 'online' ? (
-            <Wifi className="w-4 h-4 text-emerald-400" />
+            <Wifi className="w-4 h-4 text-emerald-400 ml-1" />
           ) : swarm.status === 'unreachable' ? (
-            <WifiOff className="w-4 h-4 text-red-400" />
+            <WifiOff className="w-4 h-4 text-red-400 ml-1" />
           ) : (
-            <WifiOff className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+            <WifiOff className="w-4 h-4 ml-1" style={{ color: 'var(--color-text-muted)' }} />
           )}
         </div>
       </div>
 
+      {/* Row 3: capabilities (compact pill strip) */}
       {swarm.capabilities && Object.keys(swarm.capabilities).length > 0 && (
-        <div className="mt-3 flex items-center gap-1.5 flex-wrap">
+        <div className="mt-2.5 flex items-center gap-1.5 flex-wrap">
           {Object.entries(swarm.capabilities)
             .filter(([, v]) => v && v !== false)
             .map(([key]) => {
-              const isProtocol = key === 'protocols';
-              const isAcp = key === 'acp';
-              if (isProtocol) {
+              if (key === 'protocols') {
                 const protos = swarm.capabilities![key] as string[];
                 return protos.map((p) => (
                   <span key={p} className="text-2xs px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'var(--color-accent-bg)', color: 'var(--color-accent)' }}>
@@ -131,7 +224,7 @@ function SwarmInfo({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
                   </span>
                 ));
               }
-              if (isAcp) return null; // shown via protocols badge
+              if (key === 'acp') return null; // shown via protocols badge
               return (
                 <span
                   key={key}
@@ -142,6 +235,58 @@ function SwarmInfo({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
                 </span>
               );
             })}
+        </div>
+      )}
+
+      {/* Row 4: inline health stats (uptime / last activity / agents / transport) */}
+      {health && (
+        <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--color-border)' }}>
+          {/* Thin health bar — yellow when pongs missed, otherwise emerald */}
+          <div className="w-full h-0.5 rounded-full mb-2" style={{ backgroundColor: 'var(--color-elevated)' }}>
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${isDegraded ? 'bg-amber-400' : 'bg-emerald-400'}`}
+              style={{ width: `${healthPct}%` }}
+            />
+          </div>
+          <div className="flex items-center gap-4 text-2xs flex-wrap" style={{ color: 'var(--color-text-muted)' }}>
+            <span>
+              <span className="font-medium" style={{ color: 'var(--color-text-secondary)' }}>Uptime </span>
+              {formatUptime(uptime)}
+            </span>
+            <span className="opacity-30">·</span>
+            <span>
+              <span className="font-medium" style={{ color: 'var(--color-text-secondary)' }}>Last </span>
+              <TimeAgo date={health.lastMessageAt} />
+            </span>
+            <span className="opacity-30">·</span>
+            <span>
+              <span className="font-medium" style={{ color: 'var(--color-text-secondary)' }}>Agents </span>
+              {health.registeredAgentCount}
+            </span>
+            <span className="opacity-30">·</span>
+            <span>
+              <span className="font-medium" style={{ color: 'var(--color-text-secondary)' }}>Transport </span>
+              {health.transport}
+              {health.tokenExpiresAt && (
+                <span className="ml-1 text-amber-400" title={`Token expires: ${health.tokenExpiresAt}`}>(token)</span>
+              )}
+            </span>
+            {isDegraded && (
+              <>
+                <span className="opacity-30">·</span>
+                <span className="text-amber-400 font-medium">
+                  {health.missedPongs}/{health.maxMissedPongs} pongs missed
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Error banner from hosted lifecycle */}
+      {hosted?.error && (
+        <div className="mt-2 px-2 py-1.5 bg-red-500/10 border border-red-500/20 rounded text-2xs text-red-400">
+          {hosted.error}
         </div>
       )}
     </div>
@@ -212,7 +357,7 @@ function SwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) 
         onClick={handleNewSession}
         disabled={isPending}
         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors"
-        style={{ backgroundColor: 'var(--color-accent)', color: 'white' }}
+        style={{ backgroundColor: 'var(--color-accent)', color: 'black' }}
       >
         {isPending ? (
           <LoadingSpinner size="sm" />
@@ -230,180 +375,81 @@ function SwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) 
   );
 }
 
-// ─── Connection Health ──────────────────────────────────────────────────────
 
-function ConnectionHealthBar({ swarmId }: { swarmId: string }) {
-  const { data: health } = useConnectionHealth(swarmId);
-  if (!health) return null;
+// ─── Terminal Section ────────────────────────────────────────────────────────
 
-  const uptime = health.connectedAt
-    ? Math.floor((Date.now() - new Date(health.connectedAt).getTime()) / 1000)
-    : 0;
-  const formatUptime = (s: number) => {
-    if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
-    if (s >= 60) return `${Math.floor(s / 60)}m ${s % 60}s`;
-    return `${s}s`;
-  };
-
-  const isDegraded = health.missedPongs > 0;
-  const healthPct = Math.max(0, Math.round((1 - health.missedPongs / health.maxMissedPongs) * 100));
+function TerminalSection({ hosted }: { hosted: HostedSwarm }) {
+  const navigate = useNavigate();
+  if (hosted.state !== 'running') return null;
 
   return (
-    <div className="card px-4 py-3">
-      <div className="flex items-center gap-2 mb-2">
-        <Activity className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-        <span className="text-xs font-semibold">Connection Health</span>
-        {isDegraded && (
-          <span className="text-2xs px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-medium">
-            {health.missedPongs}/{health.maxMissedPongs} pongs missed
-          </span>
-        )}
+    <button
+      onClick={() => navigate(`/terminal/${hosted.id}`)}
+      className="mt-4 w-full card card-hover px-3 py-2.5 flex items-center gap-3 text-left transition-colors group"
+      aria-label="Open TUI in a dedicated view"
+    >
+      <div
+        className="w-7 h-7 rounded flex items-center justify-center shrink-0"
+        style={{ backgroundColor: 'var(--color-elevated)' }}
+      >
+        <Terminal className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
       </div>
-
-      {/* Health bar */}
-      <div className="w-full h-1.5 rounded-full mb-3" style={{ backgroundColor: 'var(--color-elevated)' }}>
-        <div
-          className={`h-full rounded-full transition-all duration-500 ${
-            isDegraded ? 'bg-amber-400' : 'bg-emerald-400'
-          }`}
-          style={{ width: `${healthPct}%` }}
-        />
-      </div>
-
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-        <div>
-          <div className="font-medium mb-0.5" style={{ color: 'var(--color-text-secondary)' }}>Uptime</div>
-          {formatUptime(uptime)}
-        </div>
-        <div>
-          <div className="font-medium mb-0.5" style={{ color: 'var(--color-text-secondary)' }}>Last Activity</div>
-          <TimeAgo date={health.lastMessageAt} />
-        </div>
-        <div>
-          <div className="font-medium mb-0.5" style={{ color: 'var(--color-text-secondary)' }}>Agents</div>
-          {health.registeredAgentCount}
-        </div>
-        <div>
-          <div className="font-medium mb-0.5" style={{ color: 'var(--color-text-secondary)' }}>Transport</div>
-          {health.transport}
-          {health.tokenExpiresAt && (
-            <span className="ml-1 text-amber-400" title={`Token expires: ${health.tokenExpiresAt}`}>
-              (token)
-            </span>
-          )}
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">Open Terminal</div>
+        <div className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+          Attach to the hosted process to tail output and drive the TUI.
         </div>
       </div>
-    </div>
+      <ChevronRight
+        className="w-3.5 h-3.5 shrink-0 group-hover:text-honey-500 transition-colors"
+        style={{ color: 'var(--color-text-muted)' }}
+      />
+    </button>
   );
 }
 
-// ─── Hosted Info ─────────────────────────────────────────────────────────────
+// ─── Logs Section ────────────────────────────────────────────────────────────
 
-function HostedInfo({ hosted }: { hosted: HostedSwarm }) {
-  const navigate = useNavigate();
-  const [showLogs, setShowLogs] = useState(false);
-  const stopMutation = useStopSwarm();
-  const restartMutation = useRestartSwarm();
-  const removeMutation = useRemoveSwarm();
-  const { data: logs } = useSwarmLogs(showLogs ? hosted.id : null);
-
-  const canStop = hosted.state === 'running' || hosted.state === 'unhealthy' || hosted.state === 'starting';
-  const canRestart = hosted.state === 'stopped' || hosted.state === 'failed';
-  const canRemove = hosted.state === 'stopped' || hosted.state === 'failed';
-  const isTransitioning = stopMutation.isPending || restartMutation.isPending || removeMutation.isPending;
-
-  const handleStop = async () => {
-    try {
-      await stopMutation.mutateAsync(hosted.id);
-      toast.success('Swarm stopped', `"${hosted.name}" has been stopped.`);
-    } catch (err) {
-      toast.error('Stop failed', (err as Error).message);
-    }
-  };
-
-  const handleRestart = async () => {
-    try {
-      await restartMutation.mutateAsync(hosted.id);
-      toast.success('Swarm restarted', `"${hosted.name}" is restarting.`);
-    } catch (err) {
-      toast.error('Restart failed', (err as Error).message);
-    }
-  };
-
-  const handleRemove = async () => {
-    try {
-      await removeMutation.mutateAsync(hosted.id);
-      toast.success('Swarm removed', `"${hosted.name}" has been removed.`);
-      navigate('/swarms');
-    } catch (err) {
-      toast.error('Remove failed', (err as Error).message);
-    }
-  };
+function LogsSection({ hosted }: { hosted: HostedSwarm }) {
+  const [expanded, setExpanded] = useState(false);
+  const { data: logs, isLoading } = useSwarmLogs(expanded ? hosted.id : null);
 
   return (
-    <div className="card px-4 py-3">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold flex items-center gap-2">
-          <Cpu className="w-4 h-4 text-honey-500" />
-          Hosted Instance
-        </h3>
-        <HostedStateBadge state={hosted.state} />
-      </div>
-
-      <div className="flex items-center gap-3 text-2xs flex-wrap" style={{ color: 'var(--color-text-muted)' }}>
-        <span className="font-mono">{hosted.id}</span>
-        <span>{hosted.provider === 'local-sandboxed' ? 'local' : hosted.provider}</span>
-        {hosted.provider === 'local-sandboxed' && <SandboxBadge />}
-        {hosted.assigned_port && <span>:{hosted.assigned_port}</span>}
-        <TimeAgo date={hosted.updated_at > hosted.created_at ? hosted.updated_at : hosted.created_at} />
-      </div>
-
-      {hosted.error && (
-        <div className="mt-2 px-2 py-1.5 bg-red-500/10 border border-red-500/20 rounded text-2xs text-red-400">
-          {hosted.error}
-        </div>
-      )}
-
-      <div className="flex items-center gap-1 mt-3">
-        {canStop && (
-          <button onClick={handleStop} disabled={isTransitioning} className="btn btn-ghost p-1.5 text-red-400 hover:bg-red-500/10" title="Stop">
-            {stopMutation.isPending ? <LoadingSpinner size="sm" /> : <Square className="w-3.5 h-3.5" />}
-          </button>
-        )}
-        {canRestart && (
-          <button onClick={handleRestart} disabled={isTransitioning} className="btn btn-ghost p-1.5 hover:bg-emerald-500/10" style={{ color: 'var(--color-text-secondary)' }} title="Restart">
-            {restartMutation.isPending ? <LoadingSpinner size="sm" /> : <RotateCw className="w-3.5 h-3.5" />}
-          </button>
-        )}
-        {canRemove && (
-          <button onClick={handleRemove} disabled={isTransitioning} className="btn btn-ghost p-1.5 text-red-400 hover:bg-red-500/10" title="Remove">
-            {removeMutation.isPending ? <LoadingSpinner size="sm" /> : <Trash2 className="w-3.5 h-3.5" />}
-          </button>
-        )}
-        {hosted.state === 'running' && (
-          <button onClick={() => navigate(`/terminal/${hosted.id}`)} className="btn btn-ghost p-1.5 hover:bg-purple-500/10" style={{ color: 'var(--color-text-secondary)' }} title="Open TUI">
-            <Terminal className="w-3.5 h-3.5" />
-          </button>
-        )}
-        <button
-          onClick={() => setShowLogs(!showLogs)}
-          className={`btn btn-ghost p-1.5 ${showLogs ? 'text-honey-500' : ''}`}
-          style={!showLogs ? { color: 'var(--color-text-secondary)' } : undefined}
-          title="Toggle logs"
+    <div className="mt-4">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full card card-hover px-3 py-2.5 flex items-center gap-3 text-left transition-colors group"
+        aria-expanded={expanded}
+        aria-controls="logs-panel"
+      >
+        <div
+          className="w-7 h-7 rounded flex items-center justify-center shrink-0"
+          style={{ backgroundColor: 'var(--color-elevated)' }}
         >
-          <FileText className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      {showLogs && (
-        <div className="mt-2">
-          <pre
-            className="p-2 rounded text-2xs overflow-x-auto max-h-48 overflow-y-auto font-mono"
-            style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
-          >
-            {logs || '(no logs available)'}
-          </pre>
+          <FileText className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
         </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">
+            {expanded ? 'Hide Logs' : 'Show Logs'}
+          </div>
+          <div className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+            Process logs, refreshed every 5 seconds while visible.
+          </div>
+        </div>
+        {expanded ? (
+          <ChevronUp className="w-3.5 h-3.5 shrink-0 group-hover:text-honey-500 transition-colors" style={{ color: 'var(--color-text-muted)' }} />
+        ) : (
+          <ChevronDown className="w-3.5 h-3.5 shrink-0 group-hover:text-honey-500 transition-colors" style={{ color: 'var(--color-text-muted)' }} />
+        )}
+      </button>
+      {expanded && (
+        <pre
+          id="logs-panel"
+          className="mt-2 p-2 rounded text-2xs overflow-x-auto max-h-64 overflow-y-auto font-mono"
+          style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+        >
+          {isLoading ? 'Loading…' : (logs || '(no logs available)')}
+        </pre>
       )}
     </div>
   );
@@ -584,7 +630,7 @@ function RegisteredAgentCard({
               onClick={handleChat}
               disabled={connectAcp.isPending}
               className="inline-flex items-center gap-1 px-2 py-1 text-2xs font-medium rounded-md transition-colors"
-              style={{ backgroundColor: 'var(--color-accent)', color: 'white' }}
+              style={{ backgroundColor: 'var(--color-accent)', color: 'black' }}
               title="Start ACP session with this agent"
             >
               {connectAcp.isPending ? (
@@ -617,21 +663,49 @@ function RegisteredAgentCard({
 }
 
 function RegisteredAgentsSection({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
-  const agents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined;
-  if (!agents || agents.length === 0) return null;
+  const agents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined ?? [];
 
   const projectPath =
     (swarm.capabilities as any)?.projectPath as string | undefined ??
     (swarm.metadata as any)?.projectPath as string | undefined;
 
+  // Mirror SwarmActions' visibility predicate so we know whether to render
+  // the section for swarms with no agents yet (sidecar-only). A macro-agent
+  // swarm that advertises `canHostAcp` on its sidecar can spawn coordinators
+  // on demand — in that case we still show the section so the "New Agent
+  // Session" button is reachable.
+  const caps = (swarm.capabilities || {}) as Record<string, unknown>;
+  const protocols = Array.isArray(caps.protocols) ? (caps.protocols as string[]) : [];
+  const supportsAcp = protocols.includes('acp');
+  const canHostAcp = (agents ?? []).some(
+    (a) => (a.metadata as any)?.canHostAcp === true,
+  );
+  const isOnline = swarm.status === 'online' || swarm.status === 'unreachable';
+  const showActions = isOnline && (supportsAcp || canHostAcp);
+
+  if (agents.length === 0 && !showActions) return null;
+
   return (
     <div className="mt-4">
-      <SectionHeading icon={User} label="Registered Agents" count={agents.length} />
-      <div className="space-y-1">
-        {agents.map((agent) => (
-          <RegisteredAgentCard key={agent.id} agent={agent} swarmId={swarmId} projectPath={projectPath} />
-        ))}
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-sm font-semibold flex items-center gap-2">
+          <User className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+          Registered Agents
+          {agents.length > 0 && (
+            <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>{agents.length}</span>
+          )}
+        </h3>
+        <SwarmActions swarm={swarm} swarmId={swarmId} />
       </div>
+      {agents.length > 0 ? (
+        <div className="space-y-1">
+          {agents.map((agent) => (
+            <RegisteredAgentCard key={agent.id} agent={agent} swarmId={swarmId} projectPath={projectPath} />
+          ))}
+        </div>
+      ) : (
+        <EmptyState message="No agents yet. Start a new agent session to spawn a coordinator." />
+      )}
     </div>
   );
 }
@@ -977,8 +1051,9 @@ export function SwarmDetail() {
   const { data: hostedSwarms } = useHostedSwarms();
   useSwarmRealtime();
 
-  // Find matching hosted swarm (by swarm_id linking to MAP registration)
-  const hosted = hostedSwarms?.data?.find(
+  // Find matching hosted swarm (by swarm_id linking to MAP registration).
+  // useHostedSwarms has `select: d => d.data`, so `hostedSwarms` is the array.
+  const hosted = hostedSwarms?.find(
     (h) => h.swarm_id === id || h.id === id
   );
 
@@ -1027,13 +1102,11 @@ export function SwarmDetail() {
         </Link>
       </div>
 
-      <SwarmInfo swarm={swarm} swarmId={id!} />
+      <SwarmHeader swarm={swarm} swarmId={id!} hosted={hosted} />
 
-      <SwarmActions swarm={swarm} swarmId={id!} />
+      {hosted && <TerminalSection hosted={hosted} />}
 
-      {swarm.status === 'online' && <ConnectionHealthBar swarmId={id!} />}
-
-      {hosted && <HostedInfo hosted={hosted} />}
+      {hosted && <LogsSection hosted={hosted} />}
 
       <NodesSection swarmId={id!} />
 
