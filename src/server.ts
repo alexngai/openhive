@@ -1,6 +1,5 @@
 import Fastify, { FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
-import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import multipart from "@fastify/multipart";
@@ -156,17 +155,6 @@ export async function createHive(
     });
   }
 
-  // Register rate limiting
-  if (config.rateLimit.enabled) {
-    await fastify.register(rateLimit, {
-      max: config.rateLimit.max,
-      timeWindow: config.rateLimit.timeWindow,
-      keyGenerator: (request) => {
-        // Use agent ID if authenticated, otherwise IP
-        return (request as { agent?: { id: string } }).agent?.id || request.ip;
-      },
-    });
-  }
 
   // Hostname guard — rejects requests with mismatched Host header.
   // Only active in swarmhub auth mode (managed hosting). Skipped in
@@ -335,6 +323,28 @@ export async function createHive(
         mapClientManager: sc.mapClientManager,
         pipelineService: sc.pipelineService,
       });
+
+      // Bridge ACP events from SwarmCraft WS (/ws/swarmcraft) to OpenHive WS (/ws).
+      // The frontend's useWebSocket hooks listen on /ws. ACP streaming events
+      // (acp.session.update, acp.prompt.completed, etc.) are broadcast on SwarmCraft's
+      // wsHub. We intercept broadcast() to forward acp.* events to OpenHive's system.
+      const { broadcastToChannel } = await import("./realtime/index.js");
+      const origBroadcast = sc.wsHub.broadcast.bind(sc.wsHub);
+      sc.wsHub.broadcast = (message: any, topic?: string) => {
+        // Forward to original SwarmCraft subscribers
+        origBroadcast(message, topic);
+
+        // Bridge acp.* events to OpenHive's WS.
+        // Only forward from the 'acp' topic to avoid duplicates — SwarmCraft
+        // broadcasts each ACP event to both 'events' and 'acp' topics.
+        if (topic === 'acp' && message?.type && typeof message.type === 'string' && message.type.startsWith('acp.')) {
+          broadcastToChannel('global', {
+            type: message.type,
+            data: message.payload ?? message.data ?? message,
+          });
+        }
+      };
+      console.log('[openhive] ACP event bridge active (SwarmCraft → OpenHive WS)');
 
       // Teardown bridge on server close
       fastify.addHook("onClose", () => {
@@ -684,7 +694,7 @@ export async function createHive(
 
       // Try to listen, auto-increment port if configured one is taken
       let port = config.port;
-      const maxPortAttempts = 10;
+      const maxPortAttempts = process.env.NODE_ENV === 'production' ? 10 : 1;
       let address!: string;
 
       for (let attempt = 0; attempt < maxPortAttempts; attempt++) {

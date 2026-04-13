@@ -1,29 +1,25 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useState, useEffect, useMemo } from 'react';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
-  Activity, AlertTriangle, ArrowLeft, Bot, Brain, ChevronDown, ChevronRight,
-  Clock, Code, Cpu, FileText, GitBranch, GitCommit, Hash,
-  MessageSquare, Terminal, User, Wrench,
+  Activity, AlertTriangle, Brain, ChevronDown, ChevronRight,
+  Clock, Cpu, FileText, GitBranch, GitCommit, Hash,
+  MessageSquare, ShieldAlert, User,
 } from 'lucide-react';
-import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents } from '../hooks/useApi';
+import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants } from '../hooks/useApi';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
-import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
-import {
-  EventBubble, ToolCallBlock,
-  formatTokens, extractText, truncate, groupConsecutiveCustomEvents,
-} from '../components/sessions/EventBubble';
-import type { TrajectoryCheckpoint, SessionEvent, SessionContentBlock } from '../lib/api';
+import { PageLoader } from '../components/common/LoadingSpinner';
+import { AgentAvatar } from '../components/common/AgentAvatar';
+import { formatTokens, deduplicateStreamingEvents } from '../components/events/event-utils';
+import { EventStream } from '../components/events/EventStream';
+import { SessionChatInput } from '../components/events/SessionChatInput';
+import type { TrajectoryCheckpoint, AgentIdentity } from '../lib/api';
+import { useSessionAttentionStore } from '../stores/session-attention';
+import { useSessionChat } from '../hooks/useSessionChat';
 import clsx from 'clsx';
 
 // ============================================================================
 // Helpers
-// ============================================================================
-
-// formatTokens, extractText, truncate imported from components/sessions/EventBubble
-
-// ============================================================================
-// Shared Components
 // ============================================================================
 
 type DetailTab = 'checkpoints' | 'trajectory' | 'learning';
@@ -217,361 +213,18 @@ function CheckpointsTab({ checkpoints, total, isLoading }: {
 }
 
 // ============================================================================
-// Trajectory Viewer
+// Trajectory Viewer (thin wrapper around EventStream)
 // ============================================================================
 
-// ============================================================================
-// JSON Viewer
-// ============================================================================
-
-import JsonView from 'react18-json-view';
-import 'react18-json-view/src/style.css';
-
-const jsonViewTheme = {
-  keyColor: '#c084fc',
-  indexColor: '#9ca3af',
-  numberColor: '#60a5fa',
-  stringColor: '#34d399',
-  booleanColor: '#fbbf24',
-  nullColor: '#9ca3af',
-};
-
-function OutputBlock({ output, status }: { output: string; status?: string }) {
-  // Try to parse as JSON for structured rendering
-  let parsed: unknown = null;
-  try {
-    const trimmed = output.trim();
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-      parsed = JSON.parse(trimmed);
-    }
-  } catch {
-    // Not JSON — render as text
-  }
-
-  const borderClass = status === 'failed' ? 'border-red-400/30' : 'border-emerald-400/30';
-
-  if (parsed) {
-    return (
-      <div
-        className={clsx('text-2xs rounded px-2 py-1.5 overflow-x-auto border-l-2', borderClass)}
-        style={{ backgroundColor: 'var(--color-elevated)' }}
-      >
-        <JsonView src={parsed} collapsed={2} theme="a11y" dark collapseStringsAfterLength={120} style={{ fontSize: '10px', backgroundColor: 'transparent' }} />
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={clsx('text-2xs rounded px-2 py-1.5 overflow-x-auto font-mono border-l-2 whitespace-pre-wrap break-words', borderClass)}
-      style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
-    >
-      {truncate(output, 2000)}
-    </div>
-  );
-}
-
-function ToolCallBlock({ block }: { block: SessionContentBlock }) {
-  const [expanded, setExpanded] = useState(false);
-  const tc = block as SessionContentBlock & { toolCallId?: string; toolName?: string; status?: string; output?: string; input?: Record<string, unknown> };
-  const hasOutput = !!tc.output;
-  const hasInput = tc.input && Object.keys(tc.input).length > 0;
-  const isExpandable = hasOutput || hasInput;
-
-  return (
-    <div>
-      <div
-        className={clsx(
-          'text-2xs px-2 py-1 rounded flex items-center gap-1.5',
-          isExpandable && 'cursor-pointer',
-        )}
-        style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
-        onClick={isExpandable ? () => setExpanded(!expanded) : undefined}
-      >
-        <Wrench className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
-        <span className="font-mono">{tc.toolName}</span>
-        {tc.status && (
-          <span className={clsx(
-            'text-2xs px-1 rounded',
-            tc.status === 'completed' ? 'text-emerald-400' : tc.status === 'failed' ? 'text-red-400' : ''
-          )}>
-            {tc.status}
-          </span>
-        )}
-        {isExpandable && (
-          <span className="ml-auto">
-            {expanded ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
-          </span>
-        )}
-      </div>
-      {expanded && (
-        <div className="mt-1 space-y-1">
-          {hasInput && (
-            <div
-              className="text-2xs rounded px-2 py-1.5 overflow-x-auto"
-              style={{ backgroundColor: 'var(--color-elevated)' }}
-            >
-              <JsonView src={tc.input} collapsed={2} theme="a11y" dark collapseStringsAfterLength={120} style={{ fontSize: '10px', backgroundColor: 'transparent' }} />
-            </div>
-          )}
-          {hasOutput && (
-            <OutputBlock output={tc.output!} status={tc.status} />
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EventBubble({ event }: { event: SessionEvent }) {
-  const [expanded, setExpanded] = useState(false);
-
-  if (event.type === 'token_usage') {
-    return (
-      <div className="flex justify-center py-1">
-        <span className="text-2xs px-2 py-0.5 rounded-full" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
-          {formatTokens(event.inputTokens ?? 0)} in / {formatTokens(event.outputTokens ?? 0)} out
-        </span>
-      </div>
-    );
-  }
-
-  if (event.type === 'user_message') {
-    const text = extractText(event.content);
-    return (
-      <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: 'var(--color-elevated)' }}
-        >
-          <User className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>User</span>
-            {event.timestamp && (
-              <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-                <TimeAgo date={event.timestamp} />
-              </span>
-            )}
-          </div>
-          <div
-            className="text-sm rounded-lg px-3 py-2 max-w-[85%]"
-            style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text)' }}
-          >
-            <p className="whitespace-pre-wrap break-words">{text || '(empty)'}</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (event.type === 'assistant_message') {
-    const text = extractText(event.content);
-    const toolCalls = event.content?.filter((b) => b.type === 'tool_call') ?? [];
-    return (
-      <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)' }}
-        >
-          <Bot className="w-3 h-3 text-honey-500" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-2xs font-medium text-honey-500">Assistant</span>
-            {event.timestamp && (
-              <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-                <TimeAgo date={event.timestamp} />
-              </span>
-            )}
-            {event.stopReason && event.stopReason !== 'end_turn' && (
-              <span className="text-2xs px-1 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
-                {event.stopReason}
-              </span>
-            )}
-          </div>
-          {text && (
-            <div className="text-sm max-w-[85%]" style={{ color: 'var(--color-text-secondary)' }}>
-              <p className="whitespace-pre-wrap break-words">{text}</p>
-            </div>
-          )}
-          {toolCalls.length > 0 && (
-            <div className="mt-1.5 space-y-1">
-              {toolCalls.map((tc, i) => (
-                <ToolCallBlock key={tc.toolCallId || i} block={tc} />
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  if (event.type === 'assistant_thinking') {
-    return (
-      <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: 'rgba(139, 92, 246, 0.15)' }}
-        >
-          <Brain className="w-3 h-3 text-purple-400" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <button
-            className="flex items-center gap-1.5 text-2xs font-medium cursor-pointer"
-            style={{ color: 'var(--color-text-muted)' }}
-            onClick={() => setExpanded(!expanded)}
-          >
-            <span>Thinking</span>
-            {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-          </button>
-          {expanded && event.thinking && (
-            <div
-              className="mt-1 text-xs rounded-lg px-3 py-2 max-w-[85%] border-l-2"
-              style={{
-                backgroundColor: 'var(--color-elevated)',
-                borderColor: 'rgba(139, 92, 246, 0.3)',
-                color: 'var(--color-text-secondary)',
-              }}
-            >
-              <p className="whitespace-pre-wrap break-words">{event.thinking}</p>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  if (event.type === 'tool_call') {
-    return (
-      <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: 'rgba(59, 130, 246, 0.15)' }}
-        >
-          <Terminal className="w-3 h-3 text-blue-400" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <button
-            className="flex items-center gap-1.5 cursor-pointer"
-            onClick={() => setExpanded(!expanded)}
-          >
-            <span className="text-2xs font-mono text-blue-400">{event.toolName}</span>
-            {expanded ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
-          </button>
-          {expanded && event.input && (
-            <div
-              className="mt-1 max-w-[85%] text-2xs rounded-lg px-3 py-2 overflow-x-auto"
-              style={{ backgroundColor: 'var(--color-elevated)' }}
-            >
-              <JsonView src={event.input} collapsed={2} theme="a11y" dark collapseStringsAfterLength={120} style={{ fontSize: '10px', backgroundColor: 'transparent' }} />
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  if (event.type === 'tool_result') {
-    const resultText = extractText(event.content);
-    return (
-      <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: event.isError ? 'rgba(239, 68, 68, 0.15)' : 'rgba(34, 197, 94, 0.15)' }}
-        >
-          {event.isError
-            ? <AlertTriangle className="w-3 h-3 text-red-400" />
-            : <Code className="w-3 h-3 text-emerald-400" />
-          }
-        </div>
-        <div className="flex-1 min-w-0">
-          <button
-            className="flex items-center gap-1.5 cursor-pointer"
-            onClick={() => setExpanded(!expanded)}
-          >
-            <span className={clsx('text-2xs font-medium', event.isError ? 'text-red-400' : 'text-emerald-400')}>
-              {event.isError ? 'Error' : 'Result'}
-            </span>
-            {resultText && (
-              <>
-                {!expanded && (
-                  <span className="text-2xs truncate max-w-[200px]" style={{ color: 'var(--color-text-muted)' }}>
-                    {truncate(resultText, 60)}
-                  </span>
-                )}
-                {expanded ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} /> : <ChevronRight className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
-              </>
-            )}
-          </button>
-          {expanded && resultText && (
-            <pre
-              className="mt-1 text-2xs rounded-lg px-3 py-2 max-w-[85%] overflow-x-auto font-mono"
-              style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
-            >
-              {truncate(resultText, 3000)}
-            </pre>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  if (event.type === 'error') {
-    return (
-      <div className="flex gap-2.5 items-start">
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-          style={{ backgroundColor: 'rgba(239, 68, 68, 0.15)' }}
-        >
-          <AlertTriangle className="w-3 h-3 text-red-400" />
-        </div>
-        <div className="text-xs text-red-400">
-          Error{event.code ? ` (${event.code})` : ''}: {event.message || 'Unknown error'}
-        </div>
-      </div>
-    );
-  }
-
-  // Fallback for custom/unknown events — show aggregated count if available
-  const count = (event.data as Record<string, unknown>)?.count as number | undefined;
-  return (
-    <div className="flex justify-center py-0.5">
-      <span className="text-2xs px-2 py-0.5 rounded-full" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
-        {event.eventType || event.type}{count && count > 1 ? ` (${count})` : ''}
-      </span>
-    </div>
-  );
-}
-
-/**
- * Group consecutive custom events into arrays for inline badge rendering.
- * Non-custom events pass through as individual items.
- */
-function groupConsecutiveCustomEvents(events: SessionEvent[]): (SessionEvent | SessionEvent[])[] {
-  const result: (SessionEvent | SessionEvent[])[] = [];
-  let currentGroup: SessionEvent[] = [];
-
-  for (const event of events) {
-    if (event.type === 'custom') {
-      currentGroup.push(event);
-    } else {
-      if (currentGroup.length > 0) {
-        result.push(currentGroup);
-        currentGroup = [];
-      }
-      result.push(event);
-    }
-  }
-  if (currentGroup.length > 0) {
-    result.push(currentGroup);
-  }
-
-  return result;
-}
-
-function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string; hasTrajectorySupport: boolean }) {
+function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceSwarmId, existingAcpStreamId, existingAcpSessionId, providerSessionId }: {
+  sessionId: string;
+  hasTrajectorySupport: boolean;
+  agentIdentity?: AgentIdentity;
+  sourceSwarmId?: string | null;
+  existingAcpStreamId?: string | null;
+  existingAcpSessionId?: string | null;
+  providerSessionId?: string | null;
+}) {
   const {
     data,
     isLoading,
@@ -582,43 +235,24 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string;
     isFetchingNextPage,
   } = useSessionEvents(sessionId, { enabled: hasTrajectorySupport });
 
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const sentinelRef = useRef<HTMLDivElement>(null);
-  const hasScrolledRef = useRef(false);
+  // Chat integration — gated by published MAP capabilities
+  const {
+    chatMode, chatStatus, sendMessage, cancelStream, capabilities, streamingEvents, streamError,
+    permissions, replyPermission,
+  } = useSessionChat({ sessionId, sourceSwarmId, enabled: hasTrajectorySupport, existingAcpStreamId, existingAcpSessionId, providerSessionId });
 
-  // Auto-scroll to bottom on initial load
   const pages = data?.pages ?? [];
-  const events = pages.flatMap((page) => page.events);
+  const trajectoryEvents = pages.flatMap((page) => page.events);
+  const total = pages[0]?.total ?? 0;
 
-  useEffect(() => {
-    if (events.length > 0 && !hasScrolledRef.current) {
-      hasScrolledRef.current = true;
-      // Small delay to let DOM render
-      requestAnimationFrame(() => {
-        bottomRef.current?.scrollIntoView({ behavior: 'instant' });
-      });
-    }
-  }, [events.length]);
-
-  // Intersection observer: auto-fetch older events when sentinel is visible
-  const sentinelCallbackRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      sentinelRef.current = node;
-      if (!node) return;
-
-      const observer = new IntersectionObserver(
-        (entries) => {
-          if (entries[0]?.isIntersecting && hasNextPage && !isFetchingNextPage) {
-            fetchNextPage();
-          }
-        },
-        { rootMargin: '200px 0px 0px 0px' },
-      );
-      observer.observe(node);
-      return () => observer.disconnect();
-    },
-    [hasNextPage, isFetchingNextPage, fetchNextPage],
-  );
+  // Merge ACP streaming events with trajectory events, deduplicating overlaps.
+  // Must be called unconditionally (before early returns) to satisfy Rules of Hooks.
+  const events = useMemo(() => {
+    if (streamingEvents.length === 0) return trajectoryEvents;
+    const unique = deduplicateStreamingEvents(streamingEvents, trajectoryEvents);
+    if (unique.length === 0) return trajectoryEvents;
+    return [...[...unique].reverse(), ...trajectoryEvents];
+  }, [trajectoryEvents, streamingEvents]);
 
   if (!hasTrajectorySupport) {
     return (
@@ -634,115 +268,82 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string;
     );
   }
 
-  if (isLoading) {
+  if (isError && events.length === 0) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <LoadingSpinner />
-      </div>
+      <>
+        <div className="card px-6 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
+          <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-40" />
+          <p className="text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+            Could not load trajectory
+          </p>
+          <p className="text-xs">{(error as Error)?.message || 'Unknown error'}</p>
+        </div>
+        <SessionChatInput
+          mode={chatMode}
+          status={chatStatus}
+          onSend={sendMessage}
+          onCancel={cancelStream}
+          capabilities={capabilities}
+          streamError={streamError}
+        />
+      </>
     );
   }
-
-  if (isError) {
-    return (
-      <div className="card px-6 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
-        <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-40" />
-        <p className="text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-          Could not load trajectory
-        </p>
-        <p className="text-xs">{(error as Error)?.message || 'Unknown error'}</p>
-      </div>
-    );
-  }
-
-  const total = pages[0]?.total ?? 0;
-  const firstPage = pages[0];
-
-  if (events.length === 0) {
-    return (
-      <div className="card px-6 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
-        <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-40" />
-        <p className="text-xs">No events found in this session.</p>
-      </div>
-    );
-  }
-
-  // Events come newest-first from API; reverse for chronological display
-  const displayEvents = [...events].reverse();
 
   return (
-    <div>
-      <div className="flex items-center gap-2 mb-3">
-        <h2 className="text-sm font-medium flex items-center gap-1.5">
-          <MessageSquare className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-          Agent Trajectory
-          <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>
-            ({total} events)
-          </span>
-        </h2>
-        {firstPage?.format_id && (
-          <span
-            className="text-2xs px-1.5 py-0.5 rounded"
-            style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
-          >
-            {firstPage.format_id}
-          </span>
-        )}
-      </div>
-
-      {/* Sentinel for upward infinite scroll */}
-      <div ref={sentinelCallbackRef}>
-        {isFetchingNextPage && (
-          <div className="flex items-center justify-center py-3">
-            <LoadingSpinner />
-            <span className="ml-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-              Loading older events…
-            </span>
-          </div>
-        )}
-        {hasNextPage && !isFetchingNextPage && (
-          <div className="text-center py-2">
-            <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-              Showing {events.length} of {total} events — scroll up for more
-            </span>
-          </div>
-        )}
-        {!hasNextPage && total > events.length && (
-          <div className="text-center py-2">
-            <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-              All {total} events loaded
-            </span>
-          </div>
-        )}
-      </div>
-
-      <div className="space-y-3">
-        {groupConsecutiveCustomEvents(displayEvents).map((item, i) => {
-          if (Array.isArray(item)) {
-            // Group of consecutive custom events — render inline as badges
-            return (
-              <div key={`group-${i}`} className="flex flex-wrap gap-1 py-0.5">
-                {item.map((event) => {
-                  const count = (event.data as Record<string, unknown>)?.count as number | undefined;
-                  return (
-                    <span
-                      key={event.id}
-                      className="text-2xs px-2 py-0.5 rounded-full"
-                      style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
-                    >
-                      {event.eventType || event.type}{count && count > 1 ? ` (${count})` : ''}
-                    </span>
-                  );
-                })}
+    <>
+      <EventStream
+        events={events}
+        agentIdentity={agentIdentity}
+        isLoading={isLoading}
+        hasMore={hasNextPage}
+        onLoadMore={() => fetchNextPage()}
+        isLoadingMore={isFetchingNextPage}
+        total={total}
+        formatId={pages[0]?.format_id}
+        emptyMessage="No events found in this session."
+        emptyIcon={MessageSquare}
+      />
+      {permissions.length > 0 && (
+        <div className="border-t px-4 py-3 space-y-2" style={{ borderColor: 'var(--color-border)', background: 'var(--color-bg-secondary)' }}>
+          {permissions.map((perm) => (
+            <div key={perm.requestId} className="flex items-center gap-3 px-3 py-2 rounded-lg border text-sm" style={{ borderColor: 'var(--color-border-warning, var(--color-border))', background: 'var(--color-bg)' }}>
+              <ShieldAlert className="w-4 h-4 shrink-0" style={{ color: 'var(--color-text-warning, var(--color-accent))' }} />
+              <div className="flex-1 min-w-0">
+                <span className="font-medium">Tool approval: </span>
+                <code className="text-xs px-1 py-0.5 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+                  {perm.toolCall?.name ?? 'unknown tool'}
+                </code>
               </div>
-            );
-          }
-          return <EventBubble key={item.id} event={item} />;
-        })}
-      </div>
-
-      {/* Scroll anchor for auto-scroll to bottom */}
-      <div ref={bottomRef} />
-    </div>
+              <div className="flex gap-1.5 shrink-0">
+                <button
+                  onClick={() => replyPermission(perm.requestId, true)}
+                  className="px-2.5 py-1 text-xs font-medium rounded"
+                  style={{ background: 'var(--color-accent)', color: 'white' }}
+                >
+                  Allow
+                </button>
+                <button
+                  onClick={() => replyPermission(perm.requestId, false)}
+                  className="px-2.5 py-1 text-xs font-medium rounded border"
+                  style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
+                >
+                  Deny
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <SessionChatInput
+        mode={chatMode}
+        status={chatStatus}
+        onSend={sendMessage}
+        onCancel={cancelStream}
+        capabilities={capabilities}
+        streamError={streamError}
+      />
+    </>
   );
 }
 
@@ -752,79 +353,87 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport }: { sessionId: string;
 
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
   const [tab, setTab] = useState<DetailTab>('trajectory');
   const { data: resource, isLoading: resourceLoading } = useResource(id!);
   const { data: checkpointsData, isLoading: checkpointsLoading } = useSessionCheckpoints(id!);
   const { data: stats } = useSessionStats(id!);
+  const { data: participantsData } = useSessionParticipants(id!);
+  const { hasAttention, clearAttention } = useSessionAttentionStore();
   useSessionsRealtime();
+
+  // Clear attention when viewing a session
+  useEffect(() => {
+    if (id && hasAttention(id)) clearAttention(id);
+  }, [id, hasAttention, clearAttention]);
+
+  // Derive assistant agent identity for the trajectory view.
+  const assistantAgent: AgentIdentity | undefined = (() => {
+    if (resource) {
+      return {
+        id: resource.owner?.id || resource.owner_agent_id || '',
+        name: resource.name,
+        avatarUrl: null,
+      };
+    }
+    return undefined;
+  })();
 
   if (resourceLoading) return <PageLoader />;
 
   if (!resource) {
     return (
-      <div className="max-w-4xl mx-auto px-4 py-12 text-center">
+      <div className="px-4 py-12 text-center">
         <p style={{ color: 'var(--color-text-muted)' }}>Session not found.</p>
-        <Link to="/sessions" className="text-honey-500 text-sm mt-2 inline-block">
-          Back to Sessions
-        </Link>
       </div>
     );
   }
 
   const checkpoints = checkpointsData?.data ?? [];
   const total = checkpointsData?.total ?? 0;
-
-  // Determine if trajectory events can be loaded.
-  // Events are available from: local/cloud storage backends, or on-demand from connected swarms.
-  // The backend handles fallback — if no local storage, it requests from the swarm.
-  // We enable the tab whenever there are checkpoints (indicating a session exists).
-  const hasTrajectorySupport = total > 0;
+  const meta = (resource?.metadata ?? {}) as Record<string, unknown>;
+  const sourceSwarmId = checkpoints[0]?.source_swarm_id
+    ?? (meta.source_swarm_id as string)
+    ?? null;
+  // Existing ACP stream/session from create-acp endpoint (avoids duplicate stream creation).
+  // URL search params survive page reloads; metadata is the async fallback.
+  const existingAcpStreamId = searchParams.get('streamId') ?? (meta.acpStreamId as string) ?? null;
+  const existingAcpSessionId = searchParams.get('sessionId') ?? (meta.sessionId as string) ?? null;
+  // Provider session ID (Claude Code's UUID) enables the macro-agent to recover
+  // history from its on-disk JSONL via ACP loadSession._meta, even across its
+  // own process restarts.
+  const providerSessionId = (meta.provider_session_id as string) ?? null;
+  // Enable trajectory/chat for sessions with checkpoints OR eagerly-created ACP sessions
+  const hasTrajectorySupport = total > 0 || !!sourceSwarmId;
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6">
-      {/* Back link */}
-      <Link
-        to="/sessions"
-        className="inline-flex items-center gap-1 text-xs mb-4 hover:text-honey-500 transition-colors"
-        style={{ color: 'var(--color-text-muted)' }}
-      >
-        <ArrowLeft className="w-3 h-3" />
-        Sessions
-      </Link>
-
-      {/* Sticky header: session detail + stats + tabs */}
+    <>
+      {/* Full-width sticky header */}
       <div
-        className="sticky top-0 z-10 -mx-4 px-4 pb-0 pt-2"
-        style={{ backgroundColor: 'var(--color-bg)' }}
+        className="sticky top-0 z-10 py-2 px-6 border-b"
+        style={{ backgroundColor: 'var(--color-bg)', borderColor: 'var(--color-border-subtle)' }}
       >
-        {/* Header with inline stats */}
-        <div className="card px-4 py-2.5 mb-3">
-          <div className="flex items-center gap-3">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <h1 className="text-sm font-bold truncate">{resource.name}</h1>
-                <span className="text-2xs px-1.5 py-0.5 rounded bg-honey-500/10 text-honey-500">
-                  session
+        <div className="flex items-center gap-3 mb-2">
+          {assistantAgent && (
+            <AgentAvatar name={assistantAgent.name} src={assistantAgent.avatarUrl} size={32} />
+          )}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm font-bold truncate">{resource.name}</h1>
+              <span className="text-2xs px-1.5 py-0.5 rounded bg-honey-500/10 text-honey-500">
+                session
+              </span>
+              {id && hasAttention(id) && (
+                <span className="text-2xs px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 animate-pulse">
+                  Awaiting input
                 </span>
-              </div>
-              {resource.description && (
-                <p className="text-2xs mt-0.5 truncate" style={{ color: 'var(--color-text-secondary)' }}>
-                  {resource.description}
-                </p>
               )}
             </div>
             {stats && (
-              <div className="flex items-center gap-3 shrink-0" style={{ color: 'var(--color-text-muted)' }}>
+              <div className="flex items-center gap-2.5 mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
                 <span className="flex items-center gap-1 text-2xs">
-                  <GitCommit className="w-3 h-3" />
-                  {stats.total_checkpoints}
-                </span>
-                <span className="flex items-center gap-1 text-2xs" title="Input tokens">
                   <Cpu className="w-3 h-3" />
-                  {formatTokens(stats.total_input_tokens)} in
-                </span>
-                <span className="flex items-center gap-1 text-2xs" title="Output tokens">
-                  {formatTokens(stats.total_output_tokens)} out
+                  {formatTokens(stats.total_input_tokens)} / {formatTokens(stats.total_output_tokens)}
                 </span>
                 <span className="flex items-center gap-1 text-2xs" title="Files modified">
                   <FileText className="w-3 h-3" />
@@ -833,73 +442,51 @@ export function SessionDetail() {
               </div>
             )}
           </div>
-        </div>
-
-        {/* Tabs */}
-        <div
-          className="flex items-center gap-1 mb-4 border-b"
-          style={{ borderColor: 'var(--color-border-subtle)' }}
-        >
-        <button
-          className={clsx(
-            'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
-            tab === 'trajectory'
-              ? 'border-honey-500 text-honey-500'
-              : 'border-transparent'
-          )}
-          style={tab !== 'trajectory' ? { color: 'var(--color-text-muted)' } : undefined}
-          onClick={() => setTab('trajectory')}
-        >
-          <span className="flex items-center gap-1.5">
-            <MessageSquare className="w-3.5 h-3.5" />
-            Trajectory
-          </span>
-        </button>
-        <button
-          className={clsx(
-            'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
-            tab === 'checkpoints'
-              ? 'border-honey-500 text-honey-500'
-              : 'border-transparent'
-          )}
-          style={tab !== 'checkpoints' ? { color: 'var(--color-text-muted)' } : undefined}
-          onClick={() => setTab('checkpoints')}
-        >
-          <span className="flex items-center gap-1.5">
-            <GitCommit className="w-3.5 h-3.5" />
-            Checkpoints
-            {total > 0 && <span className="text-2xs opacity-70">({total})</span>}
-          </span>
-        </button>
-        <button
-          className={clsx(
-            'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer',
-            tab === 'learning'
-              ? 'border-honey-500 text-honey-500'
-              : 'border-transparent'
-          )}
-          style={tab !== 'learning' ? { color: 'var(--color-text-muted)' } : undefined}
-          onClick={() => setTab('learning')}
-        >
-          <span className="flex items-center gap-1.5">
-            <Brain className="w-3.5 h-3.5" />
-            Learning
-          </span>
-        </button>
+          {/* Inline tab group */}
+          <div
+            className="flex items-center rounded-md p-0.5 shrink-0"
+            style={{ backgroundColor: 'var(--color-elevated)' }}
+          >
+            {([
+              { key: 'trajectory', icon: MessageSquare, label: 'Trajectory' },
+              { key: 'checkpoints', icon: GitCommit, label: 'Checkpoints' },
+              { key: 'learning', icon: Brain, label: 'Learning' },
+            ] as const).map(({ key, icon: Icon, label }) => (
+              <button
+                key={key}
+                className={clsx(
+                  'flex items-center gap-1 px-2 py-1 rounded text-2xs font-medium transition-colors cursor-pointer',
+                  tab === key
+                    ? 'bg-honey-500/15 text-honey-500'
+                    : 'hover:text-honey-500/70'
+                )}
+                style={tab !== key ? { color: 'var(--color-text-muted)' } : undefined}
+                onClick={() => setTab(key)}
+              >
+                <Icon className="w-3 h-3" />
+                {label}
+                {key === 'checkpoints' && total > 0 && (
+                  <span className="opacity-70">{total}</span>
+                )}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
       {/* Tab content */}
-      {tab === 'checkpoints' && (
-        <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
-      )}
-      {tab === 'trajectory' && (
-        <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} />
-      )}
-      {tab === 'learning' && (
-        <SessionLearningTab sessionId={id!} />
-      )}
-    </div>
+      <div className="max-w-4xl mx-auto px-4 py-4">
+        {tab === 'checkpoints' && (
+          <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
+        )}
+        {tab === 'trajectory' && (
+          <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} sourceSwarmId={sourceSwarmId} existingAcpStreamId={existingAcpStreamId} existingAcpSessionId={existingAcpSessionId} providerSessionId={providerSessionId} />
+        )}
+        {tab === 'learning' && (
+          <SessionLearningTab sessionId={id!} />
+        )}
+      </div>
+    </>
   );
 }
 
@@ -908,7 +495,6 @@ export function SessionDetail() {
 // ============================================================================
 
 function SessionLearningTab({ sessionId }: { sessionId: string }) {
-  // Query the learning health to check if learning is available
   const [learningAvailable, setLearningAvailable] = useState<boolean | null>(null);
   const [learningData, setLearningData] = useState<{
     experiences: any[];
@@ -916,7 +502,6 @@ function SessionLearningTab({ sessionId }: { sessionId: string }) {
   } | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Fetch learning data on mount
   useEffect(() => {
     let cancelled = false;
     (async () => {

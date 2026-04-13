@@ -1,7 +1,7 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Menu, X, Zap,
-  User, Search, Activity, MessageSquare, ChevronLeft, ChevronDown,
+  User, Activity, MessageSquare, ChevronLeft, ChevronDown,
   ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -50,17 +50,10 @@ export function Sidebar() {
   const navigate = useNavigate();
   const { agent, isAuthenticated, authMode } = useAuthStore();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem('sidebar-collapsed') === 'true'; } catch { return false; }
+  });
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(loadSectionState);
-
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (searchQuery.trim()) {
-      navigate(`/search?q=${encodeURIComponent(searchQuery.trim())}`);
-      setMobileOpen(false);
-    }
-  };
 
   const toggleSection = useCallback((id: string) => {
     setExpandedSections((prev) => {
@@ -108,7 +101,11 @@ export function Sidebar() {
     <>
       {/* Logo + Brand (toggles sidebar) */}
       <button
-        onClick={() => setCollapsed(!collapsed)}
+        onClick={() => {
+          const next = !collapsed;
+          setCollapsed(next);
+          try { localStorage.setItem('sidebar-collapsed', String(next)); } catch { /* ignore */ }
+        }}
         className={clsx(
           'hidden lg:flex items-center border-b shrink-0 cursor-pointer transition-colors duration-80 w-full',
           collapsed ? 'justify-center gap-1.5 px-2 py-4' : 'gap-2.5 px-4 py-4'
@@ -138,41 +135,7 @@ export function Sidebar() {
         </Link>
       </div>
 
-      {/* Search */}
-      {collapsed ? (
-        <div className="px-1 pt-3 pb-1">
-          <Link
-            to="/search"
-            onClick={() => setMobileOpen(false)}
-            className={clsx(
-              'flex flex-col items-center gap-0.5 rounded-md px-1 py-1.5 mx-0.5 text-center cursor-pointer transition-colors duration-80',
-              location.pathname === '/search' ? 'bg-honey-500/10 text-honey-500' : ''
-            )}
-            style={location.pathname !== '/search' ? { color: 'var(--color-text-secondary)' } : undefined}
-            onMouseEnter={(e) => { if (location.pathname !== '/search') { e.currentTarget.style.backgroundColor = 'var(--color-hover)'; e.currentTarget.style.color = 'var(--color-text)'; } }}
-            onMouseLeave={(e) => { if (location.pathname !== '/search') { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; } }}
-          >
-            <Search className="w-5 h-5 shrink-0" />
-            <span className="text-2xs leading-tight">Search</span>
-          </Link>
-        </div>
-      ) : (
-        <form onSubmit={handleSearch} className="px-3 pt-3 pb-1">
-          <div className="relative">
-            <Search
-              className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5"
-              style={{ color: 'var(--color-text-muted)' }}
-            />
-            <input
-              type="text"
-              placeholder="Search..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full input pl-7 py-1 text-sm h-7"
-            />
-          </div>
-        </form>
-      )}
+
 
       {/* Navigation */}
       <nav className={clsx('flex-1 overflow-y-auto py-2', collapsed ? 'px-1 space-y-0.5' : 'px-0')}>
@@ -190,13 +153,20 @@ export function Sidebar() {
                       onClick={() => setMobileOpen(false)}
                       className={clsx(
                         'flex flex-col items-center gap-0.5 rounded-md px-1 py-1.5 mx-0.5 text-center cursor-pointer transition-colors duration-80',
-                        location.pathname === item.to ? 'bg-honey-500/10 text-honey-500' : ''
+                        (location.pathname === item.to || location.pathname.startsWith(item.to + '/')) ? 'bg-honey-500/10 text-honey-500' : ''
                       )}
-                      style={location.pathname !== item.to ? { color: 'var(--color-text-secondary)' } : undefined}
-                      onMouseEnter={(e) => { if (location.pathname !== item.to) { e.currentTarget.style.backgroundColor = 'var(--color-hover)'; e.currentTarget.style.color = 'var(--color-text)'; } }}
-                      onMouseLeave={(e) => { if (location.pathname !== item.to) { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; } }}
+                      style={!(location.pathname === item.to || location.pathname.startsWith(item.to + '/')) ? { color: 'var(--color-text-secondary)' } : undefined}
+                      onMouseEnter={(e) => { if (!(location.pathname === item.to || location.pathname.startsWith(item.to + '/'))) { e.currentTarget.style.backgroundColor = 'var(--color-hover)'; e.currentTarget.style.color = 'var(--color-text)'; } }}
+                      onMouseLeave={(e) => { if (!(location.pathname === item.to || location.pathname.startsWith(item.to + '/'))) { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; } }}
                     >
-                      <item.icon className="w-5 h-5 shrink-0" />
+                      <div className="relative">
+                        <item.icon className="w-5 h-5 shrink-0" />
+                        {item.badge != null && (
+                          <span className="absolute -top-1.5 -right-2.5 text-[9px] font-medium px-1 py-px rounded-full bg-honey-500/15 text-honey-500 leading-none min-w-[14px] text-center">
+                            {item.badge}
+                          </span>
+                        )}
+                      </div>
                       <span className="text-2xs leading-tight truncate w-full">{item.label}</span>
                     </Link>
                   ))}
@@ -230,7 +200,7 @@ export function Sidebar() {
                           onClick={() => setMobileOpen(false)}
                           className={clsx(
                             'sidebar-item',
-                            location.pathname === item.to && 'active'
+                            (location.pathname === item.to || location.pathname.startsWith(item.to + '/')) && 'active'
                           )}
                         >
                           <item.icon className="w-4 h-4 shrink-0" />

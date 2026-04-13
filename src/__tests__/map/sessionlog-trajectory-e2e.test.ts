@@ -491,8 +491,11 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
     }
   });
 
-  it('Tier 5: returns 503 when nothing is available', async () => {
-    // Create a session with no cache, no swarm, no local sessionlog
+  it('Tier 5: returns empty events (200) when nothing is available', async () => {
+    // Previously Tier 5 returned 503, but that blocked the UI from loading on
+    // live ACP sessions where no transcript has been checkpointed yet. The
+    // client falls back to ACP session/load for live replay. Empty events is
+    // the correct response when no on-disk transcript exists.
     const r = handleTrajectoryRequest(
       'trajectory/checkpoint',
       {
@@ -505,9 +508,10 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
     resourcesDAL.updateResource(r.resource_id, { metadata: {} });
 
     const res = await app.inject({ method: 'GET', url: `/api/v1/sessions/${r.resource_id}/events` });
-    expect(res.statusCode).toBe(503);
+    expect(res.statusCode).toBe(200);
 
     const body = JSON.parse(res.body);
-    expect(body.message).toContain('not available');
+    expect(body.events).toEqual([]);
+    expect(body.total).toBe(0);
   });
 });

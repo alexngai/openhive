@@ -10,6 +10,7 @@ import {
   MIGRATION_V27_SYNC_STRATEGY,
   MIGRATION_V28_DROP_COORDINATION_TASKS,
   MIGRATION_V29_MAP_REVOKED_TOKENS,
+  MIGRATION_V30_SESSION_RESOURCE_SCOPING,
 } from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
@@ -228,6 +229,8 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   28: MIGRATION_V28_DROP_COORDINATION_TASKS,
   // Version 29: Persistent token revocation for MAP hub
   29: MIGRATION_V29_MAP_REVOKED_TOKENS,
+  // Version 30: Relax UNIQUE constraint on syncable_resources for per-swarm session scoping
+  30: MIGRATION_V30_SESSION_RESOURCE_SCOPING,
 };
 
 /** Get the SQL for a specific migration version.

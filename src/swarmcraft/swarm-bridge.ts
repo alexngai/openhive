@@ -7,7 +7,7 @@
  */
 
 import { mapHubEvents } from '../map/service.js';
-import { listSwarms, discoverNodes } from '../db/dal/map.js';
+import { listSwarms, discoverNodes, updateSwarm, findSwarmById } from '../db/dal/map.js';
 import {
   agentIdFromSwarm,
   agentIdFromNode,
@@ -16,6 +16,7 @@ import {
 } from './constants.js';
 import type { BridgeContext } from './types.js';
 import type { MapSwarm } from '../map/types.js';
+import type { EventEmitter } from 'events';
 
 interface SwarmBridgeHandle {
   teardown(): void;
@@ -27,9 +28,10 @@ interface SwarmBridgeHandle {
  */
 export async function setupSwarmBridge(
   ctx: BridgeContext,
-  mapClientManager?: { connect(opts: Record<string, unknown>): Promise<void> },
+  mapClientManager?: { connect(opts: Record<string, unknown>): Promise<void> } & Partial<EventEmitter>,
 ): Promise<SwarmBridgeHandle> {
   const listeners: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
+  const mcmListeners: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
 
   function on(event: string, fn: (...args: unknown[]) => void) {
     mapHubEvents.on(event, fn);
@@ -57,13 +59,22 @@ export async function setupSwarmBridge(
       // Use the swarm's own ID as mapServerId so SwarmCraft's ACP manager
       // can find the correct MAP ClientConnection via getClient(serverId)
       const serverId = ev.swarm_id;
+
+      // Read actual capabilities from the hub's swarm record (set during MAP registration)
+      // instead of hardcoding, so ACP/mail/messaging capabilities are preserved.
+      const swarmRecord = findSwarmById(ev.swarm_id);
+      const hubCaps = swarmRecord?.capabilities as Record<string, unknown> | null;
+      const caps = hubCaps
+        ? Object.keys(hubCaps).filter(k => hubCaps[k])
+        : ['observation', 'messaging', 'lifecycle'];
+
       await ctx.db.agents.create({
         id: agentId,
         name: ev.name,
         type: 'swarm',
         mapServerId: serverId,
         state: 'active',
-        capabilities: ['observation', 'messaging', 'lifecycle'],
+        capabilities: caps,
         stateMetadata: {
           source: 'openhive-hub',
           swarmId: ev.swarm_id,
@@ -130,10 +141,86 @@ export async function setupSwarmBridge(
     }
   });
 
+  // ── Forward remote agent capabilities to hub swarm record ──────────
+  // When SwarmCraft's MAPClientManager connects outbound to a swarm's
+  // MAP server, it syncs the agent list and receives agent_registered events.
+  // Merge the remote agents' declared capabilities (e.g., protocols: ['acp'],
+  // mail, messaging) into the hub's swarm record so capability-gated features
+  // (ACP chat, mail chat) work for outbound-connected swarms.
+  if (mapClientManager?.on) {
+    const mergeAgentCaps = (serverId: string, agentCaps: Record<string, unknown>) => {
+      try {
+        const swarm = findSwarmById(serverId);
+        if (!swarm) return;
+
+        const existing = (swarm.capabilities || {}) as Record<string, unknown>;
+        const merged = { ...existing };
+        let changed = false;
+
+        for (const [key, val] of Object.entries(agentCaps)) {
+          if (key === 'protocols' && Array.isArray(val)) {
+            const existingProtos = Array.isArray(existing.protocols) ? existing.protocols as string[] : [];
+            const union = [...new Set([...existingProtos, ...val as string[]])];
+            if (union.length !== existingProtos.length) {
+              merged.protocols = union;
+              changed = true;
+            }
+          } else if (val && typeof val === 'object' && !Array.isArray(val)) {
+            const existingVal = existing[key];
+            if (!existingVal || typeof existingVal !== 'object') {
+              merged[key] = val;
+              changed = true;
+            } else {
+              merged[key] = { ...(existingVal as Record<string, unknown>), ...(val as Record<string, unknown>) };
+              changed = true;
+            }
+          } else if (!(key in existing)) {
+            merged[key] = val;
+            changed = true;
+          }
+        }
+
+        if (changed) {
+          updateSwarm(serverId, { capabilities: merged as any });
+          console.log(`[swarmcraft-bridge] Merged remote agent capabilities into swarm ${swarm.name}: ${Object.keys(agentCaps).join(', ')}`);
+        }
+      } catch (err) {
+        console.warn(`[swarmcraft-bridge] Failed to merge remote agent caps: ${(err as Error).message}`);
+      }
+    };
+
+    // On individual agent registration
+    const onRemoteAgent = (e: unknown) => {
+      const ev = e as { serverId: string; agent: { capabilities?: Record<string, unknown> } };
+      if (!ev?.serverId || !ev?.agent?.capabilities) return;
+      mergeAgentCaps(ev.serverId, ev.agent.capabilities);
+    };
+    mapClientManager.on('agent.registered', onRemoteAgent);
+    mcmListeners.push({ event: 'agent.registered', fn: onRemoteAgent });
+
+    // On initial agent sync after connect — merge capabilities from all existing agents
+    const onAgentsSynced = (e: unknown) => {
+      const ev = e as { serverId: string; agents: Array<{ capabilities?: Record<string, unknown> }> };
+      if (!ev?.serverId || !Array.isArray(ev.agents)) return;
+      for (const agent of ev.agents) {
+        if (agent.capabilities) {
+          mergeAgentCaps(ev.serverId, agent.capabilities);
+        }
+      }
+    };
+    mapClientManager.on('agents.synced', onAgentsSynced);
+    mcmListeners.push({ event: 'agents.synced', fn: onAgentsSynced });
+  }
+
   return {
     teardown() {
       for (const { event, fn } of listeners) {
         mapHubEvents.removeListener(event, fn);
+      }
+      if (mapClientManager?.removeListener) {
+        for (const { event, fn } of mcmListeners) {
+          mapClientManager.removeListener(event, fn);
+        }
       }
     },
   };
@@ -253,6 +340,20 @@ async function connectMapClient(
 
   const mapUrl = deriveMapServerUrl(swarm.map_endpoint);
 
+  // Wait for the swarm's MAP server to be healthy before connecting.
+  // The sidecar connects inbound to the hub immediately on startup, but
+  // the swarm's own MAP server (port+2) may take a few seconds to start.
+  // Without this check, the MAPClientManager connection fails and the
+  // swarm gets a new identity on reconnection.
+  const healthUrl = deriveHealthUrl(swarm.map_endpoint);
+  if (healthUrl) {
+    const healthy = await waitForHealth(healthUrl, 15_000);
+    if (!healthy) {
+      console.warn(`[swarmcraft-bridge] MAP server health check failed for ${swarm.name} at ${healthUrl}, skipping connect`);
+      return;
+    }
+  }
+
   try {
     await mcm.connect({
       id: swarm.id,
@@ -261,9 +362,40 @@ async function connectMapClient(
       auth: !swarm.auth_method || swarm.auth_method === 'none'
         ? { method: 'none' }
         : { method: swarm.auth_method, token: undefined },
+      // Skip the event subscription on this connection. The subscription's
+      // async event iterator interferes with RPC request/response correlation,
+      // causing map/send and map/subscribe to time out. ACP streams create
+      // their own subscriptions which must be the only active iterator.
+      skipSubscription: true,
     });
     console.log(`[swarmcraft-bridge] MAP client connected to ${swarm.name} at ${mapUrl}`);
   } catch (err) {
     console.warn(`[swarmcraft-bridge] MAP client connect to ${swarm.name} failed: ${(err as Error).message}`);
   }
+}
+
+/** Derive the health check URL from a swarm's MAP endpoint. */
+function deriveHealthUrl(baseEndpoint: string): string | null {
+  try {
+    const url = new URL(baseEndpoint);
+    const basePort = parseInt(url.port, 10);
+    if (!Number.isFinite(basePort)) return null;
+    // MAP server is at port+2, health endpoint is HTTP on the same port
+    return `http://${url.hostname}:${basePort + 2}/health`;
+  } catch {
+    return null;
+  }
+}
+
+/** Poll a health endpoint until it returns 200 or timeout. */
+async function waitForHealth(url: string, timeoutMs: number): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return true;
+    } catch { /* not ready yet */ }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
 }

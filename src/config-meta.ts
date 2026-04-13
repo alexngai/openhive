@@ -31,7 +31,6 @@ export const CONFIG_SECTIONS: SectionMeta[] = [
   // General
   { key: 'instance', label: 'Instance', description: 'Instance identity and branding', group: 'general' },
   { key: 'cors', label: 'CORS', description: 'Cross-origin request policy', group: 'general' },
-  { key: 'rateLimit', label: 'Rate Limiting', description: 'Request throttling', group: 'general' },
 
   // Swarms
   { key: 'mapHub', label: 'MAP Hub', description: 'Multi-Agent Protocol hub for swarm coordination', group: 'swarms' },
@@ -151,10 +150,6 @@ export const FIELD_META: Record<string, FieldMeta> = {
   'cors.enabled': { label: 'Enabled', restartRequired: true },
   'cors.origin': { label: 'Allowed Origins', description: 'true for all, or specific origins', restartRequired: true },
 
-  // Rate Limiting
-  'rateLimit.enabled': { label: 'Enabled' },
-  'rateLimit.max': { label: 'Max Requests', description: 'Maximum requests per time window' },
-  'rateLimit.timeWindow': { label: 'Time Window', description: 'e.g. "1 minute"' },
 
   // Auth
   'auth.mode': { label: 'Auth Mode', readOnly: true, restartRequired: true },

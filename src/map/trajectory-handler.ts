@@ -20,7 +20,7 @@ import type { TrajectoryCheckpointParams, TrajectoryCheckpointResult } from './t
 import { findResourceById, findSessionResourceBySwarm, upsertDiscoveredResource, updateResource } from '../db/dal/syncable-resources.js';
 import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
 import { broadcastToChannel } from '../realtime/index.js';
-import { updateSwarm } from '../db/dal/map.js';
+import { updateSwarm, findNodeBySwarmAndAgentId } from '../db/dal/map.js';
 import { mapHubEvents } from './service.js';
 import { fetchTranscriptFromSwarm } from './trajectory-content.js';
 import { isSessionStorageInitialized, getSessionStorage } from '../sessions/storage/index.js';
@@ -169,26 +169,29 @@ function handleCheckpoint(
 
   // ── Broadcast to WebSocket channels for UI ───────────────────────────
   try {
+    // Two signals for attention detection:
+    // 1. MAP node state (updated by agent.state_changed eventBus handler)
+    const agentNode = findNodeBySwarmAndAgentId(swarmId, agentId);
+    const agentState = agentNode?.state || null;
+    // 2. Sessionlog phase from checkpoint metadata (idle = turn complete)
+    const checkpointPhase = (meta?.phase as string) || null;
+
+    const syncData = {
+      resource_id: resourceId,
+      resource_type: 'session',
+      commit_hash: commitHash,
+      agent_id: agentId,
+      source_swarm_id: swarmId,
+      agent_state: agentState,
+      checkpoint_phase: checkpointPhase,
+    };
     broadcastToChannel(`resource:session:${resourceId}`, {
       type: 'trajectory:sync' as const,
-      data: {
-        resource_id: resourceId,
-        resource_type: 'session',
-        commit_hash: commitHash,
-        agent_id: agentId,
-        source_swarm_id: swarmId,
-      },
+      data: syncData,
     });
-    // Also broadcast to global channel for session list invalidation
     broadcastToChannel('global', {
       type: 'trajectory:sync' as const,
-      data: {
-        resource_id: resourceId,
-        resource_type: 'session',
-        commit_hash: commitHash,
-        agent_id: agentId,
-        source_swarm_id: swarmId,
-      },
+      data: syncData,
     });
   } catch {
     // Non-critical — UI just won't update in realtime
@@ -221,14 +224,13 @@ function resolveSessionResource(
 ): { resourceId: string; created: boolean } {
   const { swarmId, agentId } = context;
 
-  // 1. Explicit resource_id
+  // 1. Explicit resource_id — honour it directly.
+  //    The sidecar caches resource_id and sends it on subsequent checkpoints.
+  //    Trust the agent: if it says "store here", store here.
   if (params.resource_id) {
     const existing = findResourceById(params.resource_id);
-    if (!existing) {
-      throw new TrajectoryRequestError(-32602, `Resource not found: ${params.resource_id}`);
-    }
-    if (existing.resource_type !== 'session') {
-      throw new TrajectoryRequestError(-32602, `Resource ${params.resource_id} is not a session`);
+    if (!existing || existing.resource_type !== 'session') {
+      throw new TrajectoryRequestError(-32602, `Resource not found or not a session: ${params.resource_id}`);
     }
     return { resourceId: params.resource_id, created: false };
   }
@@ -240,18 +242,22 @@ function resolveSessionResource(
   const firstPrompt = meta?.firstPrompt as string | undefined;
   const template = meta?.template as string | undefined;
   const projectPath = meta?.projectPath as string | undefined;
+  const sessionId = checkpoint.session_id as string | undefined;
 
-  // Build a human-readable session name and description
+  // Build a human-readable session name and description.
+  // Include a short session/swarm suffix to avoid UNIQUE constraint collisions
+  // when multiple sessions exist for the same project/branch.
+  const shortId = (sessionId ?? swarmId).slice(-8);
   const sessionName = `session:${swarmId}`;
   const displayName = project
-    ? (branch ? `${project} (${branch})` : project)
+    ? (branch ? `${project} (${branch}) [${shortId}]` : `${project} [${shortId}]`)
     : sessionName;
   const description = firstPrompt
     ? firstPrompt.slice(0, 200)
     : `Trajectory session for ${(checkpoint.agent as string) || swarmId}`;
 
-  // 2. Look up by swarm (via git_remote_url pattern)
-  const existing = findSessionResourceBySwarm(agentId, swarmId);
+  // 2. Look up by swarm + session_id (via git_remote_url pattern)
+  const existing = findSessionResourceBySwarm(agentId, swarmId, sessionId);
   if (existing) {
     // Update name/description with latest context (first prompt, branch may arrive after creation)
     const existingMeta = (existing.metadata as Record<string, unknown>) || {};
@@ -271,6 +277,7 @@ function resolveSessionResource(
             template,
             projectPath,
             firstPrompt: firstPrompt?.slice(0, 200),
+            source_swarm_id: swarmId,
           },
         });
       } catch { /* non-critical */ }
@@ -279,14 +286,20 @@ function resolveSessionResource(
   }
 
   // 3. Auto-create with enriched context
+  //    Use session_id as the canonical key — the same session may be reported by
+  //    different swarms (sessionlog sync picks up the most recently active session
+  //    on the machine, regardless of which sidecar is reporting).
+  const remoteUrl = sessionId
+    ? `map://session/${sessionId}`
+    : `map://trajectory/${swarmId}`;
   const { resource, created } = upsertDiscoveredResource({
     resource_type: 'session',
     name: displayName,
     description,
-    git_remote_url: `map://trajectory/${swarmId}`,
+    git_remote_url: remoteUrl,
     owner_agent_id: agentId,
     scope: 'manual',
-    metadata: { project, branch, template, projectPath, firstPrompt: firstPrompt?.slice(0, 200) },
+    metadata: { project, branch, template, projectPath, sessionId, firstPrompt: firstPrompt?.slice(0, 200), source_swarm_id: swarmId },
   });
 
   return { resourceId: resource.id, created };

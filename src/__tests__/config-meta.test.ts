@@ -48,7 +48,7 @@ describe('config-meta', () => {
     it('should not include non-secret fields', () => {
       expect(SECRET_PATHS.has('instance.name')).toBe(false);
       expect(SECRET_PATHS.has('learning.enabled')).toBe(false);
-      expect(SECRET_PATHS.has('rateLimit.max')).toBe(false);
+      expect(SECRET_PATHS.has('cors.enabled')).toBe(false);
     });
   });
 
@@ -74,7 +74,7 @@ describe('config-meta', () => {
 
     it('should not match unrelated paths', () => {
       expect(matchesPath('instance.name', SECRET_PATHS)).toBe(false);
-      expect(matchesPath('rateLimit.max', RESTART_REQUIRED_PATHS)).toBe(false);
+      expect(matchesPath('cors.enabled', RESTART_REQUIRED_PATHS)).toBe(false);
     });
   });
 

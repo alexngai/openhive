@@ -768,6 +768,8 @@ export interface SessionListItem {
   total_output_tokens: number;
   latest_agent: string | null;
   last_synced_at: string | null;
+  source_swarm_id: string | null;
+  source_swarm_ids: string[];
 }
 
 // Session event types (ACP-compatible)
@@ -815,6 +817,12 @@ export interface SessionContentBlock {
   mimeType?: string;
   uri?: string;
   name?: string;
+}
+
+export interface AgentIdentity {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
 }
 
 export interface SessionEventsResponse {

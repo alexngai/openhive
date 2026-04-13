@@ -131,4 +131,87 @@ describe('connection-registry health', () => {
       expect(all[0].maxMissedPongs).toBe(7);
     });
   });
+
+  describe('stale grace period (Fix C)', () => {
+    it('unregister marks connection stale but keeps metadata for grace period', async () => {
+      const { registerInbound, unregisterInbound, getInbound, getInboundIncludingStale, findAcpAgentInfo } =
+        await import('../../map/connection-registry.js');
+
+      // Register a connection with ACP-capable agent metadata
+      const agents = new Map();
+      agents.set('coord-1', {
+        id: 'coord-1',
+        name: 'coordinator',
+        role: 'coordinator',
+        state: 'registered',
+        scopes: [],
+        capabilities: { protocols: ['acp'], acp: { version: '2024-10-07' } },
+        metadata: { peerMapId: 'map-local-1', provider_session_id: 'uuid-xyz' },
+      });
+      registerInbound('swarm-stale', createConn('swarm-stale', { registeredAgents: agents }));
+
+      // Baseline: findAcpAgentInfo returns the agent
+      expect(findAcpAgentInfo('swarm-stale')?.targetId).toBe('map-local-1');
+
+      // Unregister (simulates WS close). Active queries return undefined
+      unregisterInbound('swarm-stale');
+      expect(getInbound('swarm-stale')).toBeUndefined();
+      expect(findAcpAgentInfo('swarm-stale')).toBeUndefined();
+
+      // But metadata is still preserved for grace-period access
+      const stale = getInboundIncludingStale('swarm-stale');
+      expect(stale).toBeDefined();
+      expect(stale!.isStale).toBe(true);
+      expect(stale!.registeredAgents.get('coord-1')?.metadata?.provider_session_id).toBe('uuid-xyz');
+    });
+
+    it('reconnecting with same swarmId carries over registeredAgents from stale', async () => {
+      const { registerInbound, unregisterInbound, findAcpAgentInfo } =
+        await import('../../map/connection-registry.js');
+
+      // First connection with coordinator
+      const agents = new Map();
+      agents.set('coord-2', {
+        id: 'coord-2',
+        name: 'coordinator',
+        role: 'coordinator',
+        state: 'registered',
+        scopes: [],
+        capabilities: { protocols: ['acp'], acp: { version: '2024-10-07' } },
+        metadata: { peerMapId: 'map-local-2', provider_session_id: 'uuid-abc' },
+      });
+      registerInbound('swarm-reconnect', createConn('swarm-reconnect', { registeredAgents: agents }));
+
+      // Disconnect (marks stale)
+      unregisterInbound('swarm-reconnect');
+      expect(findAcpAgentInfo('swarm-reconnect')).toBeUndefined();
+
+      // Reconnect with fresh (empty) registeredAgents — emulating a new sidecar WS
+      // before the lifecycle bridge has had a chance to re-register agents.
+      registerInbound(
+        'swarm-reconnect',
+        createConn('swarm-reconnect', { registeredAgents: new Map() }),
+      );
+
+      // The prior metadata should be carried over — findAcpAgentInfo works immediately
+      const info = findAcpAgentInfo('swarm-reconnect');
+      expect(info).toBeDefined();
+      expect(info!.targetId).toBe('map-local-2');
+      expect(info!.metadata?.provider_session_id).toBe('uuid-abc');
+    });
+
+    it('re-registration clears stale flag', async () => {
+      const { registerInbound, unregisterInbound, getInbound, getInboundIncludingStale } =
+        await import('../../map/connection-registry.js');
+
+      registerInbound('swarm-clear', createConn('swarm-clear'));
+      unregisterInbound('swarm-clear');
+      expect(getInboundIncludingStale('swarm-clear')?.isStale).toBe(true);
+
+      // Reconnect — the new connection should be active (not stale)
+      registerInbound('swarm-clear', createConn('swarm-clear'));
+      expect(getInbound('swarm-clear')).toBeDefined();
+      expect(getInboundIncludingStale('swarm-clear')?.isStale).toBeUndefined();
+    });
+  });
 });

@@ -46,26 +46,36 @@ import {
 import { createSwarmToken, delegateToken, revokeToken } from '../../map/token-service.js';
 import type { Config } from '../../config.js';
 import { broadcastToChannel } from '../../realtime/index.js';
-import { getAllConnectionHealth, getConnectionHealth } from '../../map/connection-registry.js';
+import { getAllConnectionHealth, getConnectionHealth, getInbound } from '../../map/connection-registry.js';
 import { getSyncListenerStatus } from '../../map/sync-listener.js';
 
 // ============================================================================
 // Zod Schemas
 // ============================================================================
 
+// Capabilities accept both flat booleans (legacy) and structured objects (MAP ParticipantCapabilities)
+const capabilitiesSchema = z.object({
+  observation: z.union([z.boolean(), z.record(z.unknown())]).optional(),
+  messaging: z.union([z.boolean(), z.record(z.unknown())]).optional(),
+  lifecycle: z.union([z.boolean(), z.record(z.unknown())]).optional(),
+  scopes: z.boolean().optional(),
+  federation: z.boolean().optional(),
+  protocols: z.array(z.string()).optional(),
+  mail: z.object({
+    canCreate: z.boolean().optional(),
+    canJoin: z.boolean().optional(),
+    canInvite: z.boolean().optional(),
+    canViewHistory: z.boolean().optional(),
+    canCreateThreads: z.boolean().optional(),
+  }).optional(),
+}).passthrough();
+
 const RegisterSwarmSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
   map_endpoint: z.string().url(),
   map_transport: z.enum(['websocket', 'http-sse', 'ndjson']).optional(),
-  capabilities: z.object({
-    observation: z.boolean().optional(),
-    messaging: z.boolean().optional(),
-    lifecycle: z.boolean().optional(),
-    scopes: z.boolean().optional(),
-    federation: z.boolean().optional(),
-    protocols: z.array(z.string()).optional(),
-  }).optional(),
+  capabilities: capabilitiesSchema.optional(),
   auth_method: z.enum(['bearer', 'api-key', 'mtls', 'none']).optional(),
   auth_token: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),
@@ -78,14 +88,7 @@ const UpdateSwarmSchema = z.object({
   map_endpoint: z.string().url().optional(),
   map_transport: z.enum(['websocket', 'http-sse', 'ndjson']).optional(),
   status: z.enum(['online', 'offline', 'unreachable']).optional(),
-  capabilities: z.object({
-    observation: z.boolean().optional(),
-    messaging: z.boolean().optional(),
-    lifecycle: z.boolean().optional(),
-    scopes: z.boolean().optional(),
-    federation: z.boolean().optional(),
-    protocols: z.array(z.string()).optional(),
-  }).optional(),
+  capabilities: capabilitiesSchema.optional(),
   auth_method: z.enum(['bearer', 'api-key', 'mtls', 'none']).optional(),
   auth_token: z.string().optional(),
   agent_count: z.number().int().min(0).optional(),
@@ -273,8 +276,139 @@ export async function mapRoutes(
     if (!pub) {
       return reply.status(404).send({ error: 'Not Found', message: 'Swarm not found' });
     }
-    return reply.send(pub);
+
+    // Enrich with live registered agents from the connection registry
+    const conn = getInbound(request.params.id);
+    const registeredAgents = conn
+      ? Array.from(conn.registeredAgents.values()).map(a => ({
+          id: a.id, name: a.name, role: a.role, state: a.state,
+          capabilities: a.capabilities, metadata: a.metadata,
+        }))
+      : [];
+
+    return reply.send({ ...pub, registered_agents: registeredAgents });
   });
+
+  // POST /map/swarms/:id/agents -- Spawn a new agent on a hostable swarm.
+  // Proxies to `_macro/spawnAgent` via SwarmCraft's MAP client. Pure lifecycle
+  // action: creates the agent and registers it with the hub, but does NOT
+  // open an ACP session. Use POST /sessions/acp-connect with the returned
+  // agent id to start a chat session.
+  fastify.post<{
+    Params: { id: string };
+    Body?: { role?: string; cwd?: string; task?: string };
+  }>(
+    '/map/swarms/:id/agents',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const swarmId = request.params.id;
+      const role = request.body?.role ?? 'coordinator';
+      const task = request.body?.task ?? 'Spawned via hub';
+
+      const swarm = mapDal.findSwarmById(swarmId);
+      if (!swarm) {
+        return reply.status(404).send({ error: 'Swarm not found' });
+      }
+
+      const sc = (fastify as any).swarmcraft;
+      if (!sc?.mapClientManager) {
+        return reply.status(503).send({ error: 'SwarmCraft MAP client not available' });
+      }
+      const mapClient = sc.mapClientManager.getClient(swarmId);
+      if (!mapClient) {
+        return reply.status(503).send({ error: 'MAP client not connected to this swarm' });
+      }
+
+      // Resolve cwd from request → swarm.metadata.cwd → swarm.metadata.projectPath → '.'
+      const swarmMeta = (swarm.metadata as Record<string, unknown>) || {};
+      const cwd = request.body?.cwd
+        ?? (typeof swarmMeta.cwd === 'string' ? swarmMeta.cwd : undefined)
+        ?? (typeof swarmMeta.projectPath === 'string' ? swarmMeta.projectPath : undefined)
+        ?? '.';
+
+      try {
+        const result = await mapClient.callExtension('_macro/spawnAgent', {
+          role,
+          task,
+          cwd,
+        }) as { agent?: { id?: string; name?: string; localId?: string } };
+        const spawnedId = result?.agent?.id;
+        if (!spawnedId) {
+          return reply.status(502).send({ error: 'Spawn returned no agent id' });
+        }
+
+        // Wait briefly for the lifecycle bridge to register the agent on the
+        // hub so the returned hub_agent_id is usable immediately by the caller.
+        const deadline = Date.now() + 2000;
+        let hubAgentId: string | undefined;
+        while (Date.now() < deadline) {
+          const conn = getInbound(swarmId);
+          if (conn) {
+            for (const [id, entry] of conn.registeredAgents) {
+              const md = entry.metadata as Record<string, unknown> | undefined;
+              if (md?.peerMapId === spawnedId) { hubAgentId = id; break; }
+            }
+          }
+          if (hubAgentId) break;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+
+        return reply.send({
+          agent_id: hubAgentId ?? spawnedId,
+          peer_map_id: spawnedId,
+          name: result?.agent?.name,
+          role,
+          cwd,
+        });
+      } catch (err) {
+        return reply.status(500).send({ error: (err as Error).message });
+      }
+    },
+  );
+
+  // POST /map/swarms/:id/agents/:agentId/stop -- Stop a specific agent on a swarm.
+  // Proxies to the swarm's MAP server via SwarmCraft's MAP client, calling the
+  // _macro/terminateAgent extension. Resolves the agent's peerMapId from the
+  // registered_agents metadata when possible; otherwise uses the provided id.
+  fastify.post<{ Params: { id: string; agentId: string }; Body?: { reason?: string } }>(
+    '/map/swarms/:id/agents/:agentId/stop',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const swarmId = request.params.id;
+      const hubAgentId = request.params.agentId;
+      const reason = request.body?.reason ?? 'cancelled';
+
+      const sc = (fastify as any).swarmcraft;
+      if (!sc?.mapClientManager) {
+        return reply.status(503).send({ error: 'SwarmCraft MAP client not available' });
+      }
+      const mapClient = sc.mapClientManager.getClient(swarmId);
+      if (!mapClient) {
+        return reply.status(503).send({ error: 'MAP client not connected to this swarm' });
+      }
+
+      // Resolve the agent's peer MAP id (the ULID on the swarm's own MAP
+      // server). Prefer registered_agents metadata (hub's view) which has
+      // peerMapId stored. Fall back to the provided id.
+      const conn = getInbound(swarmId);
+      const entry = conn?.registeredAgents.get(hubAgentId);
+      const peerMapId = entry?.metadata?.peerMapId;
+      const targetId = (typeof peerMapId === 'string' && peerMapId) ? peerMapId : hubAgentId;
+
+      try {
+        const result = await mapClient.callExtension('_macro/terminateAgent', {
+          agentId: targetId,
+          reason,
+        }) as { success?: boolean; error?: string };
+        if (result?.success === false) {
+          return reply.status(500).send({ error: result.error || 'Failed to stop agent' });
+        }
+        return reply.send({ success: true });
+      } catch (err) {
+        return reply.status(500).send({ error: (err as Error).message });
+      }
+    },
+  );
 
   // PUT /map/swarms/:id -- Update swarm
   fastify.put<{ Params: { id: string } }>('/map/swarms/:id', {
@@ -516,7 +650,26 @@ export async function mapRoutes(
       }
 
       const body = UpdateNodeSchema.parse(request.body);
+      const oldState = node.state;
       const updated = mapDal.updateNode(request.params.id, body);
+
+      // Broadcast node_state_changed on state transitions
+      if (updated && updated.state !== oldState) {
+        const event = {
+          type: 'node_state_changed' as const,
+          data: {
+            node_id: updated.id,
+            swarm_id: node.swarm_id,
+            map_agent_id: node.map_agent_id,
+            old_state: oldState,
+            new_state: updated.state,
+            needs_attention: ['idle', 'stopped', 'failed'].includes(updated.state),
+          },
+        };
+        broadcastToChannel(`map:swarm:${node.swarm_id}`, event);
+        broadcastToChannel('global', event);
+      }
+
       return reply.send(updated);
     } catch (error) {
       return handleMapError(error, reply);
