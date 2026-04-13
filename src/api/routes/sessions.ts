@@ -1384,11 +1384,15 @@ export async function sessionsRoutes(
   // Create a new ACP agent session for a swarm.
   // Eagerly creates the session resource + ACP stream so the user can navigate
   // to the session immediately and start chatting.
-  fastify.post<{ Body: { swarm_id: string; cwd?: string } }>(
+  //
+  // Optional `agent_id` targets a specific ACP-capable agent on the swarm
+  // (e.g., a specific coordinator in a macro-agent swarm with multiple
+  // coordinators). When omitted, falls back to the first ACP-capable agent.
+  fastify.post<{ Body: { swarm_id: string; cwd?: string; agent_id?: string } }>(
     '/sessions/create-acp',
     { preHandler: authMiddleware },
     async (request, reply) => {
-      const { swarm_id, cwd } = request.body || {};
+      const { swarm_id, cwd, agent_id } = request.body || {};
       if (!swarm_id) {
         return reply.status(400).send({ error: 'swarm_id is required' });
       }
@@ -1404,10 +1408,17 @@ export async function sessionsRoutes(
         return reply.status(503).send({ error: 'SwarmCraft ACP not available' });
       }
 
-      // Resolve ACP target from per-agent capabilities on the live connection.
-      // If no ACP-capable agent is registered yet, spawn a coordinator on demand
-      // via _macro/spawnAgent and use its returned MAP ID as the target.
-      let acpAgent = findAcpAgent(swarm_id);
+      // If the caller specified a specific agent, target it directly.
+      // The caller (frontend) is expected to pass the agent's localMapId or
+      // whatever ID resolves on the swarm's own MAP server — it already has
+      // that info from the registered_agents array returned by /map/swarms/:id.
+      // This lets a user start an ACP session with one specific coordinator
+      // in a multi-coordinator swarm.
+      //
+      // Otherwise fall back to auto-picking the first ACP-capable agent on
+      // the inbound connection. If none is registered yet, spawn a coordinator
+      // on demand via _macro/spawnAgent and use its returned MAP ID.
+      let acpAgent: string | undefined = agent_id || findAcpAgent(swarm_id);
       if (!acpAgent) {
         const mapClient = sc.mapClientManager?.getClient(swarm_id);
         if (!mapClient) {

@@ -94,7 +94,22 @@ export function upsertDiscoveredResource(input: CreateResourceInput): { resource
       `).get(input.owner_agent_id, input.resource_type, input.name) as { id: string } | undefined;
 
   if (existing) {
-    // Update the existing resource
+    // Merge metadata on update so fields set in a prior call (like
+    // `provider_session_id`, which anchors durable history recovery) aren't
+    // silently clobbered when a subsequent upsert provides fewer fields.
+    // Callers that want to remove a key must set it to null explicitly.
+    let mergedMetadata: Record<string, unknown> | null | undefined = input.metadata;
+    if (input.metadata) {
+      const existingRow = db.prepare(`SELECT metadata FROM syncable_resources WHERE id = ?`)
+        .get(existing.id) as { metadata: string | null } | undefined;
+      let existingMeta: Record<string, unknown> = {};
+      if (existingRow?.metadata) {
+        try {
+          existingMeta = JSON.parse(existingRow.metadata) as Record<string, unknown>;
+        } catch { /* corrupt JSON — treat as empty */ }
+      }
+      mergedMetadata = { ...existingMeta, ...input.metadata };
+    }
     db.prepare(`
       UPDATE syncable_resources
       SET git_remote_url = ?, description = ?, scope = ?, sync_strategy = COALESCE(?, sync_strategy), local_path = COALESCE(?, local_path), metadata = ?, updated_at = datetime('now')
@@ -105,7 +120,7 @@ export function upsertDiscoveredResource(input: CreateResourceInput): { resource
       input.scope || 'manual',
       input.sync_strategy !== undefined ? input.sync_strategy : null,
       input.local_path !== undefined ? input.local_path : null,
-      input.metadata ? JSON.stringify(input.metadata) : null,
+      mergedMetadata ? JSON.stringify(mergedMetadata) : null,
       existing.id
     );
     return { resource: findResourceById(existing.id)!, created: false };

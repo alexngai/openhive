@@ -464,6 +464,136 @@ function NodesSection({ swarmId }: { swarmId: string }) {
   );
 }
 
+// ─── Live registered agents (per-agent ACP chat) ─────────────────────────────
+
+interface LiveRegisteredAgent {
+  id: string;
+  name: string;
+  role: string;
+  state: string;
+  capabilities?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Per-agent card that surfaces live capabilities and — for ACP-capable agents —
+ * a "Chat" button that creates an ACP session targeting that specific agent
+ * (useful when a swarm has multiple coordinators and the user wants to pick).
+ */
+function RegisteredAgentCard({
+  agent,
+  swarmId,
+  projectPath,
+}: {
+  agent: LiveRegisteredAgent;
+  swarmId: string;
+  projectPath?: string;
+}) {
+  const navigate = useNavigate();
+  const createAcpSession = useCreateAcpSession();
+
+  const caps = agent.capabilities ?? {};
+  const protocols = Array.isArray(caps.protocols) ? (caps.protocols as string[]) : [];
+  const supportsAcp = protocols.includes('acp');
+
+  // Prefer localMapId as the targetable ID on the swarm's own MAP server; fall
+  // back to the hub-assigned ID.
+  const targetAgentId =
+    (typeof agent.metadata?.localMapId === 'string' && (agent.metadata.localMapId as string)) ||
+    agent.id;
+
+  const handleChat = async () => {
+    try {
+      const result = await createAcpSession.mutateAsync({
+        swarmId,
+        cwd: projectPath,
+        agentId: targetAgentId,
+      });
+      const params = new URLSearchParams({
+        streamId: result.acp_stream_id,
+        sessionId: result.acp_session_id,
+      });
+      navigate(`/sessions/${result.session_resource_id}?${params}`);
+    } catch {
+      // Error state is rendered below via the mutation's isError flag
+    }
+  };
+
+  return (
+    <div className="card px-3 py-2">
+      <div className="flex items-center gap-3">
+        <div
+          className="w-7 h-7 rounded flex items-center justify-center shrink-0"
+          style={{ backgroundColor: 'var(--color-elevated)' }}
+        >
+          <User className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium truncate">{agent.name || agent.id}</span>
+            <span className="text-2xs px-1.5 py-0.5 rounded capitalize" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
+              {agent.role}
+            </span>
+            {protocols.map((p) => (
+              <span
+                key={p}
+                className="text-2xs px-1.5 py-0.5 rounded font-medium"
+                style={{ backgroundColor: 'var(--color-accent-bg)', color: 'var(--color-accent)' }}
+              >
+                {p}
+              </span>
+            ))}
+          </div>
+          <div className="mt-0.5 text-2xs font-mono truncate" style={{ color: 'var(--color-text-muted)' }}>
+            {agent.id}
+          </div>
+        </div>
+        {supportsAcp && (
+          <button
+            onClick={handleChat}
+            disabled={createAcpSession.isPending}
+            className="inline-flex items-center gap-1 px-2 py-1 text-2xs font-medium rounded-md transition-colors"
+            style={{ backgroundColor: 'var(--color-accent)', color: 'white' }}
+            title="Start ACP session with this agent"
+          >
+            {createAcpSession.isPending ? (
+              <LoadingSpinner size="sm" />
+            ) : (
+              <Zap className="w-3 h-3" />
+            )}
+            Chat
+          </button>
+        )}
+      </div>
+      {createAcpSession.isError && (
+        <div className="mt-1.5 text-2xs text-red-400">
+          {(createAcpSession.error as Error)?.message || 'Failed to create session'}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RegisteredAgentsSection({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
+  const agents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined;
+  if (!agents || agents.length === 0) return null;
+
+  const projectPath =
+    (swarm.capabilities as any)?.projectPath as string | undefined ??
+    (swarm.metadata as any)?.projectPath as string | undefined;
+
+  return (
+    <div className="mt-4">
+      <SectionHeading icon={User} label="Registered Agents" count={agents.length} />
+      <div className="space-y-1">
+        {agents.map((agent) => (
+          <RegisteredAgentCard key={agent.id} agent={agent} swarmId={swarmId} projectPath={projectPath} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Messages Section ────────────────────────────────────────────────────────
 
 function MessageCard({ message, swarmId }: { message: SwarmMessage; swarmId: string }) {
@@ -864,6 +994,8 @@ export function SwarmDetail() {
       {hosted && <HostedInfo hosted={hosted} />}
 
       <NodesSection swarmId={id!} />
+
+      <RegisteredAgentsSection swarm={swarm} swarmId={id!} />
 
       <SessionsSection swarmId={id!} />
 

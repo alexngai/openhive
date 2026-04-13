@@ -40,33 +40,97 @@ export interface MapInboundConnection {
   capabilities?: Record<string, unknown>;
   /** Default OpenTasks graph for this connection (set via metadata.task_graph on registration). */
   defaultTaskGraph?: { resource_id?: string; path?: string; location_hash?: string };
+  /**
+   * When true, the WS has closed but we're retaining metadata (registeredAgents,
+   * capabilities) for a grace period to survive brief sidecar reconnects. Active
+   * connection queries (getInbound) skip stale entries; metadata-only reads can
+   * opt into stale data via getInboundIncludingStale.
+   */
+  isStale?: boolean;
 }
+
+/**
+ * Grace period to retain a connection's metadata after its WS closes. Allows a
+ * reconnecting sidecar to inherit the prior registeredAgents so clients don't
+ * see a brief metadata vacuum between disconnect and agent re-registration.
+ */
+const STALE_GRACE_MS = 30_000;
 
 const inboundConnections: Map<string, MapInboundConnection> = new Map();
 
 export function registerInbound(swarmId: string, conn: MapInboundConnection): void {
-  // Close existing connection for this swarm if present
   const existing = inboundConnections.get(swarmId);
-  if (existing && existing.ws !== conn.ws) {
-    try { existing.ws.close(); } catch { /* ignore */ }
+  if (existing) {
+    // Seed the new connection's registeredAgents from the prior (possibly
+    // stale) connection so brief reconnects don't lose localMapId,
+    // provider_session_id, capabilities, etc. until agents re-register.
+    for (const [id, agent] of existing.registeredAgents) {
+      if (!conn.registeredAgents.has(id)) {
+        conn.registeredAgents.set(id, agent);
+      }
+    }
+    // If the existing is an active connection (not stale), close its WS.
+    if (existing.ws !== conn.ws && !existing.isStale) {
+      try { existing.ws.close(); } catch { /* ignore */ }
+    }
   }
   inboundConnections.set(swarmId, conn);
 }
 
 export function unregisterInbound(swarmId: string): void {
-  inboundConnections.delete(swarmId);
+  const conn = inboundConnections.get(swarmId);
+  if (!conn) return;
+  // Mark as stale rather than deleting immediately. Keep metadata in place so
+  // a reconnecting sidecar inherits registeredAgents through registerInbound's
+  // carry-over. After STALE_GRACE_MS, sweep if still stale (not replaced).
+  conn.isStale = true;
+  setTimeout(() => {
+    const current = inboundConnections.get(swarmId);
+    if (current === conn && current.isStale) {
+      inboundConnections.delete(swarmId);
+    }
+  }, STALE_GRACE_MS);
 }
 
+/**
+ * Get an active inbound connection. Skips stale entries — callers that need to
+ * send WS messages should use this. For metadata-only reads during the stale
+ * grace period, use `getInboundIncludingStale`.
+ */
 export function getInbound(swarmId: string): MapInboundConnection | undefined {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn || conn.isStale) return undefined;
+  return conn;
+}
+
+/**
+ * Like `getInbound` but also returns connections in the stale grace period.
+ * Safe for reading registeredAgents/capabilities/metadata — but do NOT use the
+ * returned `ws` (it's closed if isStale is true).
+ */
+export function getInboundIncludingStale(swarmId: string): MapInboundConnection | undefined {
   return inboundConnections.get(swarmId);
 }
 
+/**
+ * Returns active (non-stale) inbound connections. Iteration/usage helpers
+ * filter stale entries so existing callers see pre-stale-grace behavior.
+ */
 export function getAllInbound(): Map<string, MapInboundConnection> {
-  return inboundConnections;
+  const result = new Map<string, MapInboundConnection>();
+  for (const [id, conn] of inboundConnections) {
+    if (!conn.isStale) result.set(id, conn);
+  }
+  return result;
 }
 
 export function getInboundCount(): number {
-  return inboundConnections.size;
+  // Count only non-stale; stale entries are invisible to health reporting.
+  let n = 0;
+  for (const conn of inboundConnections.values()) {
+    if (!conn.isStale) n++;
+  }
+  return n;
 }
 
 /**
@@ -76,7 +140,7 @@ export function getInboundCount(): number {
  */
 export function getAgentCapabilities(swarmId: string): Array<{ agentId: string; role: string; capabilities: Record<string, unknown> }> {
   const conn = inboundConnections.get(swarmId);
-  if (!conn) return [];
+  if (!conn || conn.isStale) return [];
 
   const result: Array<{ agentId: string; role: string; capabilities: Record<string, unknown> }> = [];
   for (const agent of conn.registeredAgents.values()) {
@@ -110,7 +174,7 @@ export function findAcpAgentInfo(swarmId: string): {
   metadata: Record<string, unknown> | undefined;
 } | undefined {
   const conn = inboundConnections.get(swarmId);
-  if (!conn) return undefined;
+  if (!conn || conn.isStale) return undefined;
 
   for (const agent of conn.registeredAgents.values()) {
     const caps = agent.capabilities;
@@ -133,7 +197,7 @@ export function findAcpAgentInfo(swarmId: string): {
  */
 export function hasCapability(swarmId: string, path: string): boolean {
   const conn = inboundConnections.get(swarmId);
-  if (!conn) return false;
+  if (!conn || conn.isStale) return false;
 
   const parts = path.split('.');
 
@@ -164,7 +228,7 @@ function checkPath(obj: Record<string, unknown>, parts: string[]): boolean {
  */
 export function getAggregateCapabilities(swarmId: string): Record<string, unknown> | undefined {
   const conn = inboundConnections.get(swarmId);
-  if (!conn) return undefined;
+  if (!conn || conn.isStale) return undefined;
 
   const sources: Array<Record<string, unknown>> = [];
   for (const agent of conn.registeredAgents.values()) {
@@ -243,7 +307,7 @@ export interface ConnectionHealth {
  */
 export function getConnectionHealth(swarmId: string, maxMissedPongs: number): ConnectionHealth | undefined {
   const conn = inboundConnections.get(swarmId);
-  if (!conn) return undefined;
+  if (!conn || conn.isStale) return undefined;
 
   return {
     swarmId: conn.swarmId,
@@ -267,7 +331,8 @@ export function getConnectionHealth(swarmId: string, maxMissedPongs: number): Co
  */
 export function getAllConnectionHealth(maxMissedPongs: number): ConnectionHealth[] {
   const results: ConnectionHealth[] = [];
-  for (const swarmId of inboundConnections.keys()) {
+  for (const [swarmId, conn] of inboundConnections) {
+    if (conn.isStale) continue; // Don't report stale connections in health
     const health = getConnectionHealth(swarmId, maxMissedPongs);
     if (health) results.push(health);
   }

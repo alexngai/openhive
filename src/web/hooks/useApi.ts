@@ -1899,10 +1899,10 @@ export function useCreateAcpSession() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ swarmId, cwd }: { swarmId: string; cwd?: string }) =>
+    mutationFn: ({ swarmId, cwd, agentId }: { swarmId: string; cwd?: string; agentId?: string }) =>
       api.post<{ session_resource_id: string; acp_session_id: string; acp_stream_id: string; created: boolean }>(
         '/sessions/create-acp',
-        { swarm_id: swarmId, cwd },
+        { swarm_id: swarmId, cwd, ...(agentId ? { agent_id: agentId } : {}) },
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions-overview'] });

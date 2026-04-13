@@ -143,10 +143,13 @@ export function useAcpStream({
           // so the auto-connect path creates a fresh stream+session. History
           // from the prior session can't be recovered — it lived in the dead
           // agent process — but the chat becomes usable again.
+          const lower = msg.toLowerCase();
           const isDead =
-            msg.toLowerCase().includes('connection closed') ||
-            msg.toLowerCase().includes('session not found') ||
-            msg.toLowerCase().includes('stream') && msg.toLowerCase().includes('closed');
+            lower.includes('connection closed') ||
+            lower.includes('session not found') ||
+            lower.includes('not found') ||  // generic fallback: "ACP stream X not found" etc.
+            lower.includes('expired') ||
+            (lower.includes('stream') && lower.includes('closed'));
           if (isDead) {
             attachedRef.current = false;
             streamIdRef.current = null;
@@ -157,6 +160,27 @@ export function useAcpStream({
               status: 'idle',
               error: null,
             });
+            // Strip the dead streamId/sessionId from the URL so a reload
+            // doesn't re-attach to the same stale references. We replace (not
+            // push) so the back button isn't polluted. Auto-connect will
+            // create a fresh stream via the normal flow.
+            try {
+              if (typeof window !== 'undefined' && window.history?.replaceState) {
+                const url = new URL(window.location.href);
+                let changed = false;
+                if (url.searchParams.has('streamId')) {
+                  url.searchParams.delete('streamId');
+                  changed = true;
+                }
+                if (url.searchParams.has('sessionId')) {
+                  url.searchParams.delete('sessionId');
+                  changed = true;
+                }
+                if (changed) {
+                  window.history.replaceState({}, '', url.toString());
+                }
+              }
+            } catch { /* best-effort URL cleanup */ }
           }
           // Otherwise non-fatal — agent may not support loadSession, or history
           // may be empty. The user can still interact with the live stream.
