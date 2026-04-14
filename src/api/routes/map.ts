@@ -244,9 +244,17 @@ export async function mapRoutes(
       offset: parseIntParam(offset),
     });
 
-    // Enrich with hive names
+    // Enrich with hive names + live registered_agents (so the swarm list can
+    // render per-agent actions inline without an N+1 detail fetch).
     const data = result.data.map((s) => {
       const hives = mapDal.getSwarmHiveNames(s.id);
+      const conn = getInbound(s.id);
+      const registered_agents = conn
+        ? Array.from(conn.registeredAgents.values()).map((a) => ({
+            id: a.id, name: a.name, role: a.role, state: a.state,
+            capabilities: a.capabilities, metadata: a.metadata,
+          }))
+        : [];
       return {
         id: s.id,
         name: s.name,
@@ -261,6 +269,7 @@ export async function mapRoutes(
         scope_count: s.scope_count,
         metadata: s.metadata,
         hives,
+        registered_agents,
         created_at: s.created_at,
       };
     });

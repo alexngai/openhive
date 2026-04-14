@@ -19,6 +19,7 @@ import { useOpenTasksGraph, useUpdateOpenTaskStatus } from '../../hooks/useApi';
 import { TaskGraphSidebar } from './TaskGraphSidebar';
 import { applyTaskFilters } from './TaskFilterBar';
 import { useTasksRealtime } from '../../hooks/useMapTasks';
+import { SwarmChip } from '../swarm/SwarmChip';
 import type { OpenTasksGraphNode } from '../../lib/api';
 
 // ============================================================================
@@ -181,9 +182,9 @@ function DraggableTaskCard({
           {node.id.length > 12 ? node.id.slice(-8) : node.id}
         </span>
         {(node as any).assignee && (
-          <span className="text-2xs ml-auto" style={{ color: 'var(--color-text-muted)' }}>
-            @{(node as any).assignee}
-          </span>
+          <div className="ml-auto">
+            <SwarmChip assignee={(node as any).assignee} size="sm" />
+          </div>
         )}
       </div>
     </div>

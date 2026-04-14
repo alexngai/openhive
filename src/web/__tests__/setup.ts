@@ -35,3 +35,15 @@ global.IntersectionObserver = vi.fn().mockImplementation(() => ({
   unobserve: vi.fn(),
   disconnect: vi.fn(),
 }));
+
+// jsdom doesn't define WebGL globals. Sigma.js (transitively imported by
+// SessionDetail / TaskGraph) references them at module-load time on some
+// platforms, throwing ReferenceError before any test runs. Stubbing as a
+// noop class is enough to satisfy `instanceof` checks and constructor refs.
+class FakeWebGLContext {}
+if (typeof (globalThis as { WebGL2RenderingContext?: unknown }).WebGL2RenderingContext === 'undefined') {
+  (globalThis as { WebGL2RenderingContext: unknown }).WebGL2RenderingContext = FakeWebGLContext;
+}
+if (typeof (globalThis as { WebGLRenderingContext?: unknown }).WebGLRenderingContext === 'undefined') {
+  (globalThis as { WebGLRenderingContext: unknown }).WebGLRenderingContext = FakeWebGLContext;
+}

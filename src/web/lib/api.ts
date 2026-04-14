@@ -196,6 +196,15 @@ export interface HostedSwarm {
   updated_at: string;
 }
 
+export interface MapRegisteredAgent {
+  id: string;
+  name: string;
+  role: string;
+  state: string;
+  capabilities?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
 export interface MapSwarm {
   id: string;
   name: string;
@@ -210,6 +219,8 @@ export interface MapSwarm {
   scope_count: number;
   metadata: Record<string, unknown> | null;
   hives: string[];
+  /** Live registered agents on the connection (present on list + detail). */
+  registered_agents?: MapRegisteredAgent[];
   created_at: string;
 }
 

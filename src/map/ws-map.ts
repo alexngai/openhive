@@ -383,6 +383,10 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
             type: 'swarm_offline',
             data: { swarm_id: sid },
           });
+          broadcastToChannel('map:discovery', {
+            type: 'swarm.status_changed',
+            data: { swarm_id: sid, status: 'unreachable' },
+          });
           mapHubEvents.emit('swarm_offline', { swarm_id: sid });
         }
       } catch { /* */ }
@@ -479,6 +483,12 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
           registeredAgents: new Map(),
         });
         heartbeatSwarm(swarmId);
+        try {
+          broadcastToChannel('map:discovery', {
+            type: 'swarm.status_changed',
+            data: { swarm_id: swarmId, status: 'online' },
+          });
+        } catch { /* non-critical */ }
 
         // Set up notification interceptor now that we know the swarmId
         const interceptor = createNotificationInterceptor(ws, swarmId);
@@ -521,6 +531,12 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       registeredAgents: new Map(),
     });
     heartbeatSwarm(swarmId);
+    try {
+      broadcastToChannel('map:discovery', {
+        type: 'swarm.status_changed',
+        data: { swarm_id: swarmId, status: 'online' },
+      });
+    } catch { /* non-critical */ }
 
     // Send hub/welcome (open mode clients expect this)
     sendJsonRpc(ws, 'hub/welcome', {
@@ -788,6 +804,10 @@ function startMapHeartbeat(): void {
               broadcastToChannel('map:discovery', {
                 type: 'swarm_offline',
                 data: { swarm_id: swarmId },
+              });
+              broadcastToChannel('map:discovery', {
+                type: 'swarm.status_changed',
+                data: { swarm_id: swarmId, status: 'unreachable' },
               });
               mapHubEvents.emit('swarm_offline', { swarm_id: swarmId });
             }

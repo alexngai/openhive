@@ -115,7 +115,7 @@
     "sigma": "^3.0.2",
     "skill-tree": "^0.1.7",
     "skill-tree-indexer": "^0.2.2",
-    "swarmcraft": "^0.1.7",
+    "swarmcraft": "^0.1.8",
     "swarmkit": "^0.1.0",
     "turndown": "^7.2.4",
     "unique-names-generator": "^4.7.1",

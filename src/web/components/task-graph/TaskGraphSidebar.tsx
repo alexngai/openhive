@@ -8,7 +8,9 @@ import { X, CheckCircle2, PlayCircle, AlertTriangle, XCircle, Circle, Trash2, Li
 import { TiptapEditor, useEditorViewMode } from '../common/TiptapEditor';
 import { FileText, Eye } from 'lucide-react';
 import clsx from 'clsx';
-import { useUpdateOpenTaskStatus, useUpdateOpenTask, useDeleteOpenTask, useCreateTaskLink, useRemoveTaskLink, useResolveContextFile, useCheckContextDrift, useSyncContextFile } from '../../hooks/useApi';
+import { useUpdateOpenTaskStatus, useUpdateOpenTask, useDeleteOpenTask, useCreateTaskLink, useRemoveTaskLink, useResolveContextFile, useCheckContextDrift, useSyncContextFile, useMapSwarms } from '../../hooks/useApi';
+import { AssigneeCombobox } from '../swarm/AssigneeCombobox';
+import { resolveAssigneeSwarm } from '../swarm/SwarmChip';
 import type { OpenTasksGraphNode, OpenTasksGraphEdge } from '../../lib/api';
 
 // ============================================================================
@@ -208,26 +210,13 @@ export function TaskGraphSidebar({ node, selectedEdge, resourceId, onClose, onSe
           </button>
         </div>
 
-        {/* Assignee — inline editable for tasks */}
+        {/* Assignee — swarm-aware combobox for tasks */}
         {node.type === 'task' && (
-          <div>
-            <div className="text-2xs font-medium mb-1" style={{ color: 'var(--color-text-muted)' }}>Assignee</div>
-            <input
-              type="text"
-              defaultValue={(node as any).assignee || ''}
-              key={node.id + '-assignee'}
-              onBlur={(e) => {
-                const newAssignee = e.target.value.trim();
-                if (newAssignee !== ((node as any).assignee || '')) {
-                  updateTask.mutate({ nodeId: node.id, assignee: newAssignee || null });
-                }
-              }}
-              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-              placeholder="Unassigned"
-              className="text-xs w-full bg-transparent border-none outline-none hover:bg-white/5 focus:bg-white/5 rounded px-1 -ml-1 py-0.5 transition-colors"
-              style={{ color: 'var(--color-text-secondary)' }}
-            />
-          </div>
+          <AssigneeField
+            nodeId={node.id}
+            currentAssignee={(node as any).assignee || null}
+            onChange={(next) => updateTask.mutate({ nodeId: node.id, assignee: next })}
+          />
         )}
 
         {/* Status badge */}
@@ -344,9 +333,6 @@ export function TaskGraphSidebar({ node, selectedEdge, resourceId, onClose, onSe
           <div className="space-y-1">
             <DetailRow label="ID" value={node.id} mono />
             <DetailRow label="Type" value={node.type} />
-            {(node as any).assignee && (
-              <DetailRow label="Assignee" value={(node as any).assignee} />
-            )}
             {node.created_at && (
               <DetailRow label="Created" value={new Date(node.created_at).toLocaleString()} />
             )}
@@ -648,6 +634,32 @@ function DependenciesSection({
             <p className="text-2xs text-red-400">{(createLink.error as Error).message}</p>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+function AssigneeField({
+  nodeId,
+  currentAssignee,
+  onChange,
+}: {
+  nodeId: string;
+  currentAssignee: string | null;
+  onChange: (next: string | null) => void;
+}) {
+  const { data: swarms } = useMapSwarms();
+  const matched = resolveAssigneeSwarm(currentAssignee, swarms);
+  const offline = matched && matched.status !== 'online';
+
+  return (
+    <div key={nodeId + '-assignee'}>
+      <div className="text-2xs font-medium mb-1" style={{ color: 'var(--color-text-muted)' }}>Assignee</div>
+      <AssigneeCombobox value={currentAssignee} onChange={onChange} />
+      {offline && (
+        <p className="text-2xs mt-1 text-amber-400/80">
+          Swarm is {matched.status} — assignment will sync when it reconnects.
+        </p>
       )}
     </div>
   );

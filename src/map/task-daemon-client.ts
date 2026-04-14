@@ -153,6 +153,8 @@ export async function daemonUpdateTask(
     if (updates.title !== undefined) nodeUpdates.title = updates.title;
     if (updates.description !== undefined) nodeUpdates.content = updates.description;
     if (updates.assignee !== undefined) nodeUpdates.assignee = updates.assignee;
+    // OpenTasks merges `metadata` with existing metadata server-side.
+    if (updates.meta !== undefined) nodeUpdates.metadata = updates.meta;
     if (Object.keys(nodeUpdates).length > 0) {
       await client.updateNode(taskId, nodeUpdates);
     }
@@ -165,6 +167,43 @@ export async function daemonUpdateTask(
       assignee: updates.assignee ?? null,
       meta: updates.meta,
     };
+  }, opentasksDir);
+}
+
+/**
+ * Append file paths to a task's metadata.files array (deduped).
+ *
+ * Used by the trajectory-handler enrichment path: when a session checkpoint
+ * arrives with files_touched and names the task it was working on, those
+ * files get woven into the task graph so consumers (e.g. swarmcraft's task
+ * overlay) can position tasks at the centroid of the code they affect.
+ *
+ * Merge strategy: read current metadata.files, union with `files`, write back.
+ * No-op if the union equals the existing array.
+ */
+export async function daemonAppendTaskFiles(
+  socketPath: string,
+  taskId: string,
+  files: string[],
+  opentasksDir?: string,
+): Promise<{ added: string[]; total: number }> {
+  return withDaemon(socketPath, async (client) => {
+    const node = (await client.getNode(taskId)) as Record<string, unknown> | null;
+    if (!node) throw new TaskDaemonError('NOT_FOUND', `Task not found: ${taskId}`);
+
+    const existingMeta = (node.metadata as Record<string, unknown> | undefined) ?? {};
+    const existingFiles = Array.isArray(existingMeta.files)
+      ? (existingMeta.files as unknown[]).filter((v): v is string => typeof v === 'string')
+      : [];
+    const merged = Array.from(new Set([...existingFiles, ...files.filter((f) => typeof f === 'string' && f.length > 0)]));
+    const added = merged.filter((f) => !existingFiles.includes(f));
+    if (added.length === 0) return { added: [], total: existingFiles.length };
+
+    // CRITICAL: opentasks updateNode REPLACES metadata (applyUpdates does
+    // `changes.metadata = updates.metadata`). Spread the existing keys so we
+    // don't wipe anything else the task carries in its metadata bag.
+    await client.updateNode(taskId, { metadata: { ...existingMeta, files: merged } });
+    return { added, total: merged.length };
   }, opentasksDir);
 }
 
