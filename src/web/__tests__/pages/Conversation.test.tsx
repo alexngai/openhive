@@ -72,6 +72,15 @@ const mockUseChatChannel = vi.fn(() => ({
 
 vi.mock('swarmcraft/ui/embed', () => ({
   useChatChannel: (opts: unknown) => mockUseChatChannel(opts),
+  ChatMessageList: ({ channel }: { channel: unknown }) => (
+    <div data-testid="chat-message-list" data-has-channel={channel ? 'true' : 'false'} />
+  ),
+  ChatInput: ({ channel }: { channel: unknown }) => (
+    <div data-testid="chat-input" data-has-channel={channel ? 'true' : 'false'} />
+  ),
+  PermissionDialog: ({ channel }: { channel: unknown }) => (
+    <div data-testid="permission-dialog" data-has-channel={channel ? 'true' : 'false'} />
+  ),
 }));
 
 vi.mock('../../lib/chat/resolvers', () => ({
@@ -81,25 +90,6 @@ vi.mock('../../lib/chat/resolvers', () => ({
 
 vi.mock('../../adapters/openhive-adapters', () => ({
   useOpenHiveAdapters: vi.fn(() => []),
-}));
-
-// The three channel-consumer components render no-op stubs in tests.
-vi.mock('../../components/events/EventStream', () => ({
-  EventStream: ({ channel }: { channel: unknown }) => (
-    <div data-testid="event-stream" data-has-channel={channel ? 'true' : 'false'} />
-  ),
-}));
-
-vi.mock('../../components/events/SessionChatInput', () => ({
-  SessionChatInput: ({ channel }: { channel: unknown }) => (
-    <div data-testid="session-chat-input" data-has-channel={channel ? 'true' : 'false'} />
-  ),
-}));
-
-vi.mock('../../components/events/PermissionDialog', () => ({
-  PermissionDialog: ({ channel }: { channel: unknown }) => (
-    <div data-testid="permission-dialog" data-has-channel={channel ? 'true' : 'false'} />
-  ),
 }));
 
 // ── Helpers ──
@@ -191,11 +181,11 @@ describe('Conversation Page', () => {
       expect(typeof opts?.resolveCapabilities).toBe('function');
     });
 
-    it('renders the channel-driven EventStream / PermissionDialog / SessionChatInput', () => {
+    it('renders the channel-driven ChatMessageList / PermissionDialog / ChatInput', () => {
       renderConversation();
-      expect(screen.getByTestId('event-stream').getAttribute('data-has-channel')).toBe('true');
+      expect(screen.getByTestId('chat-message-list').getAttribute('data-has-channel')).toBe('true');
       expect(screen.getByTestId('permission-dialog').getAttribute('data-has-channel')).toBe('true');
-      expect(screen.getByTestId('session-chat-input').getAttribute('data-has-channel')).toBe('true');
+      expect(screen.getByTestId('chat-input').getAttribute('data-has-channel')).toBe('true');
     });
   });
 

@@ -44,12 +44,6 @@ vi.mock('../../components/common/LoadingSpinner', () => ({
   LoadingSpinner: () => <div data-testid="loading-spinner">Loading...</div>,
 }));
 
-vi.mock('../../components/sessions/EventBubble', () => ({
-  formatTokens: (n: number) => String(n),
-  extractText: () => '',
-  truncate: (s: string) => s,
-}));
-
 vi.mock('../../components/sessions/MarkdownContent', () => ({
   MarkdownContent: ({ content }: { content: string }) => <div>{content}</div>,
 }));

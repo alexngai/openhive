@@ -62,7 +62,7 @@ src/
 - **Swarm lifecycle**: Connected swarms follow the status progression `online` → `unreachable` → `offline`. The server pings WS clients every 30s, refreshing `last_seen_at`. On disconnect, status moves to `unreachable`; a periodic sweep (`markStaleSwarms`) demotes stale swarms to `offline` after `staleThresholdMinutes` (default 5 min).
 - **Session trajectories**: Agent session transcripts are synced via the MAP trajectory protocol. The `trajectory/checkpoint` handler (`src/map/trajectory-handler.ts`) auto-creates session resources and stores checkpoint metadata. Transcript content is served on-demand from connected agents via `trajectory/content.request`/`trajectory/content.response` notifications. Content is cached in session storage for offline access. Five-tier resolution: fresh cache → on-demand from swarm → local sessionlog transcript → stale cache → 503.
 - **Agent capabilities**: Connected agents declare capabilities during MAP registration using the MAP `ParticipantCapabilities` schema. The hub captures these via the `agent.registered` event and stores on the connection + database. Capability checks gate operations (content requests, chat modes). See "Session Chat" section for capability-gated chat.
-- **Event stream components**: Session trajectory rendering is extracted into reusable components under `src/web/components/events/`. `EventStream` is the main container (grouping, auto-scroll, pagination), `EventBubble` renders individual events, `ToolCallGroupBlock` collapses tool runs. These components accept any `SessionEvent[]` source and are used by both the trajectory view and the session chat interface.
+- **Unified chat components**: All four chat surfaces (Sessions trajectory, Conversation, Agent profile, SwarmDetail) render via swarmcraft's `ChatMessageList` + `ChatInput` + `PermissionDialog` + `ChatBubble` from `swarmcraft/ui/embed`. The trajectory renderer (formerly a custom `EventStream` family under `src/web/components/events/`) has been retired; OpenHive converts its `SessionEvent[]` into swarmcraft's `ChatMessage[]` via `src/web/lib/chat/session-events.ts` and feeds the unified `ChatMessageList` with `groupConsecutiveTools`, `continuationHeaders`, `initialAutoScroll="instant"`, pagination, and the sticky-external `PermissionDialog` variant. See "Chat (Unified across Sessions, Messages, Agent, SwarmDetail)" section.
 - **SwarmKit config proxy**: `src/swarmkit/` reads and writes SwarmKit package configs (opentasks, minimem, sessionlog, etc.) directly on disk. OpenHive holds no config state of its own — every read hits the file, every write goes back to the file. The admin API under `/admin/swarmkit/*` exposes this to the Settings UI. Packages that declare a `localFile` in `PackageFileSpec` (currently only sessionlog → `settings.local.json`) get a second layer merged on read (local wins) and a split write path (see "SwarmKit Config Management" section).
 
 ## Session Trajectory Architecture
@@ -102,8 +102,8 @@ Content is converted via Claude JSONL adapter → ACP events (user messages, ass
 - `src/api/routes/session-chat.ts` — `POST /sessions/:id/chat` endpoint for bi-directional session chat (lazy conversation creation + mail turn delivery)
 - `src/db/dal/trajectory-checkpoints.ts` — Checkpoint CRUD and stats aggregation
 - `src/web/pages/Sessions.tsx` — Session list with enriched names
-- `src/web/pages/SessionDetail.tsx` — Trajectory tab with event stream + chat input, checkpoints tab, learning tab
-- `src/web/components/events/` — Reusable event stream rendering (EventStream, EventBubble, ToolCallGroupBlock, CustomEventBadges, event-utils, SessionChatInput, PermissionDialog)
+- `src/web/pages/SessionDetail.tsx` — Trajectory tab wiring swarmcraft's `ChatMessageList` + `ChatInput` + `PermissionDialog`, checkpoints tab, learning tab
+- `src/web/lib/chat/session-events.ts` — Lossless `SessionEvent[] → ChatMessage[]` converter, pairs `tool_call` + `tool_result` events by `toolCallId` into `ACPToolCall` with populated output/status
 - `src/web/lib/chat/resolvers.ts` — Capability resolvers for Session and Conversation targets (`useSessionCapabilityResolver`, `useConversationCapabilityResolver`) + target constructors
 - `src/web/adapters/openhive-adapters.ts` — `useOpenHiveAdapters()` hook assembling ACP + Mail adapters against OpenHive endpoints
 - `src/web/adapters/openhive-acp-service.ts` — AcpServiceLike implementation: REST lifecycle + WS subscription + event accumulation + prepareSubscription buffer flush
@@ -169,12 +169,17 @@ ACP target resolution: The frontend reads `registered_agents` from `GET /map/swa
 |---|---|---|---|
 | `pages/SessionDetail.tsx` | `SessionTarget` (sessionId + swarmId + optional resume) | `useSessionCapabilityResolver` (reads swarm + registered_agents) | `useOpenHiveAdapters` (ACP + Mail) |
 | `pages/Conversation.tsx` | `ConversationTarget` | `useConversationCapabilityResolver` (mail-only gate on conversation.status) | `useOpenHiveAdapters` |
-| `pages/Agent.tsx` | `AgentTarget` (agentName) | inline resolver (mail-only for non-human accounts) | `useOpenHiveAdapters` |
 | `pages/SwarmDetail.tsx` (`ComposeMessageSection`) | `AgentTarget` (swarmId) | inline pass-through (always available) | `[createCoordinationChatAdapter]` |
 
-All four render via channel-driven primitives from `swarmcraft/ui/embed`
-(`ChatMessageList` + `ChatInput`, or OpenHive's `EventStream` + `SessionChatInput`
-+ `PermissionDialog` for trajectory-aware surfaces).
+All three surfaces render via a single component family from
+`swarmcraft/ui/embed`: `ChatMessageList` + `ChatInput` + `PermissionDialog` +
+`ChatBubble` + `ToolCallGroupBlock` + `MarkdownContent`. Trajectory-specific
+features (tool-call run grouping, "Load older" pagination, continuation
+headers, sticky-external permissions, markdown styling) are opt-in props on
+the same components rather than a separate component family.
+
+`pages/Agent.tsx` (social-layer profile page) has no chat card — it's not
+reachable from the primary nav in local mode and was removed as unused.
 
 #### Chat Data Flow
 
@@ -182,7 +187,7 @@ Sessions, Messages, Agent, and SwarmDetail all use the unified `useChatChannel`
 contract from `swarmcraft/ui/embed`. The flow:
 
 ```
-User types in SessionChatInput / ChatInput
+User types in swarmcraft ChatInput
   → useChatChannel({ target, adapters, resolveCapabilities })
   → Capability resolver (useSessionCapabilityResolver / useConversationCapabilityResolver)
       reads useMapSwarm() / useMailConversation() and returns { acp?, mail?, inject? }
@@ -192,13 +197,20 @@ User types in SessionChatInput / ChatInput
     → /initialize → /session (or /session/load for resume) → /prompt (body: { message })
     → prepareSubscription() buffers WS events that arrive before subscribe() attaches
     → Streaming via WS: acp.session.update → text chunk accumulation, tool calls,
-      permission.request → PermissionDialog → /streams/:id/permission
+      permission.request → swarmcraft PermissionDialog (sticky-external variant)
+      → /streams/:id/permission
   → Mail (createMailAdapter):
     → SessionTarget: POST /sessions/:id/chat (lazy-creates linked conversation)
     → ConversationTarget: POST /mail/conversations/:id/turns
     → 5s polling via adapter.getMessages
   → Optimistic user echo: useChatChannel appends local-user-* message before adapter.send;
     rollback on send failure; replaced by server version when getMessages refreshes (mail)
+
+For the Sessions trajectory tab specifically, trajectory events from
+`useSessionEvents` are converted via `sessionEventsToChatMessages()` (in
+`src/web/lib/chat/session-events.ts`) and merged with live `channel.messages`
+using swarmcraft's `deduplicateChatMessages` helper before being passed to
+`ChatMessageList` with `groupConsecutiveTools={true}`.
 ```
 
 #### Event Deduplication
@@ -209,11 +221,13 @@ Two dedup layers protect against duplicates:
    time-windowed Map keyed by full-update JSON fingerprint. MAP SDK sometimes
    delivers the same `session/update` 2×; within `DEDUP_WINDOW_MS` (200ms) the
    duplicate is silently dropped. Handles 1×/2×/N× delivery safely.
-2. **Trajectory ↔ streaming merge dedup** (`event-utils.ts`
-   `deduplicateStreamingEvents`) — when `EventStream` merges `channel.messages`
-   with trajectory checkpoint events, a channel-derived event matching a
-   trajectory event by `type:FNV-1a(fullContent)` is suppressed. Full-content
-   hash avoids false positives from agents sharing boilerplate prefaces.
+2. **Trajectory ↔ streaming merge dedup** (swarmcraft's
+   `deduplicateChatMessages` in `swarmcraft/ui/embed`) — when SessionDetail
+   merges `channel.messages` (live/streaming) with trajectory checkpoint
+   events (converted to ChatMessages), a live message matching an existing
+   trajectory message by `contentType:role:FNV-1a(content)` is suppressed.
+   Full-content hash avoids false positives from agents sharing boilerplate
+   prefaces.
 
 #### ACP Permission Handling
 
@@ -222,13 +236,14 @@ When an ACP agent requests tool approval, SwarmCraft emits `acp.permission.reque
 #### Key Files
 
 - `src/web/lib/chat/resolvers.ts` — `useSessionCapabilityResolver` (reads swarm + registered_agents for peerMapId), `useConversationCapabilityResolver`, target constructors.
+- `src/web/lib/chat/session-events.ts` — `sessionEventsToChatMessages()` lossless converter from OpenHive's `SessionEvent[]` to swarmcraft's `ChatMessage[]`. Pairs `tool_call` + `tool_result` by `toolCallId`.
 - `src/web/adapters/openhive-adapters.ts` — `useOpenHiveAdapters()` builds `[createAcpAdapter, createMailAdapter]` against OpenHive endpoints (inject dropped — no backing route).
 - `src/web/adapters/openhive-acp-service.ts` — AcpServiceLike: REST lifecycle + WS subscription + text-chunk accumulation + `prepareSubscription()` buffer flush for loadSession replay race.
-- `src/web/components/events/SessionChatInput.tsx` — Sticky bottom input with mode badge, capability-specific unavailable reasons, send-error surfacing.
-- `src/web/components/events/PermissionDialog.tsx` — OpenHive-styled tool approval UI reading `channel.permissions` and calling `channel.replyPermission`.
 - `references/swarmcraft/src/ui/hooks/useChatChannel.ts` — Target-based channel hook: probes adapters, wires callbacks into React state, manages subscription/polling lifecycle, optimistic user echo with rollback.
 - `references/swarmcraft/src/ui/adapters/{mail,inject,acp,http}.ts` — Reusable adapter factories (ApiConfig-parameterized). Both OpenHive and SwarmCraft construct adapter sets from these.
-- `references/swarmcraft/src/ui/components/chat/{AgentChat,ChatMessageList,ChatInput,PermissionDialog,QuestionDialog}.tsx` — Channel-driven rendering primitives.
+- `references/swarmcraft/src/ui/components/chat/{AgentChat,ChatMessageList,ChatInput,PermissionDialog,QuestionDialog,ChatBubble,ToolCallGroupBlock,MarkdownContent}.tsx` — Channel-driven rendering primitives, all consumed directly by OpenHive.
+- `references/swarmcraft/src/ui/utils/chat-events.ts` — `deduplicateChatMessages`, `groupMessagesForDisplay`, `formatTokens`, and other host-agnostic helpers.
+- `references/swarmcraft/src/ui/embed.css` — ships `.swarmcraft-markdown` rules for chat-bubble markdown styling; imported once in Layout.
 - `src/api/routes/session-chat.ts` — Backend endpoint: lazy conversation creation, auto-join, turn delivery via `mail/turn` JSON-RPC.
 - `src/api/routes/sessions.ts` — `POST /sessions/create-acp` resolves ACP target agent via `findAcpAgent()` from per-agent capabilities on the live connection.
 - `src/map/connection-registry.ts` — Inbound connection tracking, per-agent capability storage, `findAcpAgent()` for ACP target resolution, `getAggregateCapabilities()` for swarm-level capability union.
