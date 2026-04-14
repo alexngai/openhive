@@ -18,11 +18,12 @@ import type Graph from "graphology";
 import { TaskGraphSidebar, type SelectedEdge } from "./TaskGraphSidebar";
 import { STATUS_COLORS } from "./useTaskGraph";
 import NodeSquareProgram from "./NodeSquareProgram";
-import { ZoomIn, ZoomOut, Maximize2, GitFork } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize2, GitFork, Palette } from "lucide-react";
 import { applySigmaPerfSettings } from "../../utils/sigmaPerf";
 import { GraphActionBar, type LinkModeState } from "./GraphActionBar";
-import { useCreateTaskLink } from "../../hooks/useApi";
-import type { OpenTasksGraphNode } from "../../lib/api";
+import { useCreateTaskLink, useMapSwarms } from "../../hooks/useApi";
+import { resolveAssigneeSwarm } from "../swarm/SwarmChip";
+import type { OpenTasksGraphNode, MapSwarm } from "../../lib/api";
 
 interface Props {
   graph: Graph;
@@ -35,6 +36,23 @@ interface Props {
 }
 
 const MAX_LABEL_LENGTH = 28;
+
+/** Palette used for "color by swarm" mode. */
+const SWARM_PALETTE = [
+  "#f59e0b", "#3b82f6", "#10b981", "#8b5cf6", "#ec4899",
+  "#06b6d4", "#ef4444", "#84cc16", "#f97316", "#14b8a6",
+];
+
+const SWARM_UNASSIGNED_COLOR = "#4b5563";
+
+/** Stable swarm-id → color mapping (deterministic hash into palette). */
+function swarmColorFor(swarmId: string): string {
+  let h = 0;
+  for (let i = 0; i < swarmId.length; i++) {
+    h = ((h << 5) - h + swarmId.charCodeAt(i)) | 0;
+  }
+  return SWARM_PALETTE[Math.abs(h) % SWARM_PALETTE.length];
+}
 
 /** Truncate label text with ellipsis */
 function truncateLabel(label: string): string {
@@ -140,6 +158,13 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     linkTypeRef.current = type;
     setLinkType(type);
   }, []);
+  const [colorMode, setColorMode] = useState<"status" | "swarm">(() => {
+    try {
+      const stored = localStorage.getItem("openhive-task-color-mode");
+      return stored === "swarm" ? "swarm" : "status";
+    } catch { return "status"; }
+  });
+  const { data: swarms } = useMapSwarms();
   const createLink = useCreateTaskLink(resourceId);
   const createLinkRef = useRef(createLink);
   createLinkRef.current = createLink;
@@ -873,6 +898,34 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     sigma.refresh({ skipIndexation: true });
   }, [hoveredNode, hoveredEdge, depthFilter, selectedNode, graph, linkMode]);
 
+  // Recolor graph nodes based on colorMode (status vs. swarm)
+  useEffect(() => {
+    if (!graph) return;
+    graph.forEachNode((nodeKey, attrs) => {
+      const data = (attrs as { _data?: OpenTasksGraphNode })._data;
+      let nextColor: string;
+      if (colorMode === "swarm" && data?.type === "task") {
+        const swarm = resolveAssigneeSwarm((data as any).assignee, swarms);
+        nextColor = swarm ? swarmColorFor(swarm.id) : SWARM_UNASSIGNED_COLOR;
+      } else {
+        const status = (attrs as { status?: string }).status || "open";
+        nextColor = STATUS_COLORS[status] || STATUS_COLORS.open;
+      }
+      if ((attrs as { color?: string }).color !== nextColor) {
+        graph.setNodeAttribute(nodeKey, "color", nextColor);
+      }
+    });
+    sigmaRef.current?.refresh();
+  }, [colorMode, swarms, graph]);
+
+  const toggleColorMode = useCallback(() => {
+    setColorMode((prev) => {
+      const next = prev === "status" ? "swarm" : "status";
+      try { localStorage.setItem("openhive-task-color-mode", next); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+
   const handleZoomIn = useCallback(() => {
     const sigma = sigmaRef.current;
     if (!sigma) return;
@@ -1020,7 +1073,61 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
           >
             <Maximize2 className="w-4 h-4" />
           </button>
+          <button
+            onClick={toggleColorMode}
+            className="btn-ghost p-1.5 rounded"
+            style={{
+              backgroundColor: "var(--color-surface)",
+              color: colorMode === "swarm" ? "var(--color-honey-500, #f59e0b)" : undefined,
+            }}
+            title={`Color by: ${colorMode === "swarm" ? "swarm" : "status"} (click to toggle)`}
+          >
+            <Palette className="w-4 h-4" />
+          </button>
         </div>
+
+        {/* Color-by-swarm legend */}
+        {colorMode === "swarm" && swarms && swarms.length > 0 && (
+          <div
+            className="absolute top-3 right-3 flex flex-col gap-1 px-2 py-1.5 rounded-lg max-h-[60%] overflow-y-auto"
+            style={{
+              backgroundColor: "var(--color-surface)",
+              border: "1px solid var(--color-border-subtle)",
+            }}
+          >
+            <div className="text-2xs font-medium" style={{ color: "var(--color-text-muted)" }}>
+              Color by swarm
+            </div>
+            {swarms.map((s: MapSwarm) => (
+              <div key={s.id} className="flex items-center gap-1.5 text-2xs">
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: swarmColorFor(s.id) }}
+                />
+                <span className="truncate max-w-[120px]">{s.name}</span>
+                <span className="opacity-50">·</span>
+                <span
+                  className={
+                    s.status === "online"
+                      ? "text-emerald-400"
+                      : s.status === "unreachable"
+                        ? "text-amber-400"
+                        : "opacity-50"
+                  }
+                >
+                  {s.status}
+                </span>
+              </div>
+            ))}
+            <div className="flex items-center gap-1.5 text-2xs pt-1 border-t" style={{ borderColor: "var(--color-border-subtle)" }}>
+              <span
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{ backgroundColor: SWARM_UNASSIGNED_COLOR }}
+              />
+              <span style={{ color: "var(--color-text-muted)" }}>Unassigned / other</span>
+            </div>
+          </div>
+        )}
 
         {/* Depth filter (shown when a node is selected) */}
         {selectedNode && (

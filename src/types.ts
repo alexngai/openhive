@@ -161,6 +161,7 @@ export type WSEventType =
   // MAP Hub events
   | 'swarm_registered'
   | 'swarm_offline'
+  | 'swarm.status_changed'
   | 'node_registered'
   | 'node_state_changed'
   | 'swarm_heartbeat'
