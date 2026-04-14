@@ -335,6 +335,40 @@ export async function remoteUpdateTaskFields(
   return (result.node as Record<string, unknown>) ?? null;
 }
 
+/**
+ * Create an edge between two nodes on a remote swarm's graph.
+ */
+export async function remoteCreateLink(
+  swarmId: string,
+  fromId: string,
+  toId: string,
+  type: string,
+  metadata?: Record<string, unknown>,
+): Promise<{ edgeId?: string } | null> {
+  const result = await sendRequest(swarmId, 'opentasks/link.request', {
+    link: { fromId, toId, type, metadata },
+  });
+  if (!result) return null;
+  if (result.success === false) return null;
+  return { edgeId: result.edgeId as string | undefined };
+}
+
+/**
+ * Remove an edge between two nodes on a remote swarm's graph.
+ */
+export async function remoteRemoveLink(
+  swarmId: string,
+  fromId: string,
+  toId: string,
+  type: string,
+): Promise<boolean> {
+  const result = await sendRequest(swarmId, 'opentasks/link.request', {
+    link: { fromId, toId, type, remove: true },
+  });
+  if (!result) return false;
+  return result.success !== false;
+}
+
 function statusToAction(status: string): string {
   const map: Record<string, string> = {
     in_progress: 'start', completed: 'complete', closed: 'close',

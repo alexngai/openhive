@@ -77,9 +77,7 @@ export function useOpenTasksAggregated() {
     staleTime: 60_000,
   });
 
-  const resources = (resourcesData?.data ?? []).filter(
-    (r) => r.local_path || r.sync_strategy === 'local',
-  );
+  const resources = resourcesData?.data ?? [];
   const resourceIds = resources.map(r => r.id);
 
   // Step 2: Fetch tasks from each resource's OpenTasks graph
@@ -168,11 +166,13 @@ export function useOpenTasksAggregated() {
     },
 
     assignTask: async (taskId: string, agentId: string): Promise<void> => {
-      // OpenTasks doesn't have a direct assign endpoint via the REST API,
-      // so we update the task metadata. For now, this is a no-op placeholder
-      // since the kanban UI primarily uses status transitions.
-      void taskId;
-      void agentId;
+      const { resourceId, nodeId } = parseTaskId(taskId);
+      if (!resourceId) throw new Error('Invalid task ID');
+      await api.patch(
+        `/resources/${resourceId}/content/opentasks/tasks/${nodeId}`,
+        { assignee: agentId },
+      );
+      queryClient.invalidateQueries({ queryKey: ['opentasks-aggregated'] });
     },
 
     updateStatus: async (taskId: string, status: string): Promise<void> => {

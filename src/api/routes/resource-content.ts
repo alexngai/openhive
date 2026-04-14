@@ -935,26 +935,38 @@ export async function resourceContentRoutes(
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
 
-    if (!localPath) {
-      return reply.send({ items: [], daemon_connected: false, message: 'Resource path not available locally' });
-    }
+    const limit = Math.min(Math.max(request.query.limit || 50, 1), 200);
+    const offset = request.query.offset || 0;
 
-    const { daemonQueryNodes, daemonGetSummary, resolveDaemonSocket, TaskDaemonError } = await import('../../map/task-daemon-client.js');
-    const socketPath = resolveDaemonSocket(localPath);
-    try {
-      const result = await daemonQueryNodes(socketPath, {
-        type: 'task', status: request.query.status, archived: false,
-        limit: Math.min(Math.max(request.query.limit || 50, 1), 200),
-        offset: request.query.offset || 0,
-      }, localPath);
-
-      return reply.send({ items: result.items || [], daemon_connected: true });
-    } catch (err) {
-      if (err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING') {
-        return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon could not be started for this resource' });
+    // Local daemon path
+    if (localPath) {
+      const { daemonQueryNodes, resolveDaemonSocket, TaskDaemonError } = await import('../../map/task-daemon-client.js');
+      const socketPath = resolveDaemonSocket(localPath);
+      try {
+        const result = await daemonQueryNodes(socketPath, {
+          type: 'task', status: request.query.status, archived: false,
+          limit, offset,
+        }, localPath);
+        return reply.send({ items: result.items || [], daemon_connected: true });
+      } catch (err) {
+        if (!(err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING')) throw err;
+        // Fall through to remote
       }
-      throw err;
     }
+
+    // Remote swarm path
+    const { findSwarmForResource, remoteQueryTasks } = await import('../../map/opentasks-remote.js');
+    const swarmId = findSwarmForResource(resource);
+    if (swarmId) {
+      const filter: Record<string, unknown> = { offset };
+      if (request.query.status) filter.status = request.query.status;
+      const result = await remoteQueryTasks(swarmId, filter, limit);
+      if (result) {
+        return reply.send({ items: result.items, daemon_connected: true, source: 'remote' });
+      }
+    }
+
+    return reply.send({ items: [], daemon_connected: false, message: 'No local daemon and no connected swarm available' });
   });
 
   fastify.get<{
@@ -965,14 +977,23 @@ export async function resourceContentRoutes(
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
 
-    if (!localPath) {
-      return reply.send({ daemon_connected: false, running: false, message: 'Resource path not available locally' });
+    // Local daemon path
+    if (localPath) {
+      const { daemonGetStatus, resolveDaemonSocket } = await import('../../map/task-daemon-client.js');
+      const socketPath = resolveDaemonSocket(localPath);
+      const status = await daemonGetStatus(socketPath, localPath);
+      return reply.send(status);
     }
 
-    const { daemonGetStatus, resolveDaemonSocket } = await import('../../map/task-daemon-client.js');
-    const socketPath = resolveDaemonSocket(localPath);
-    const status = await daemonGetStatus(socketPath, localPath);
-    return reply.send(status);
+    // Remote swarm path — daemon runs on the connected swarm; if the swarm is
+    // reachable, the daemon is considered available.
+    const { findSwarmForResource } = await import('../../map/opentasks-remote.js');
+    const swarmId = findSwarmForResource(resource);
+    if (swarmId) {
+      return reply.send({ daemon_connected: true, running: true, source: 'remote', swarm_id: swarmId });
+    }
+
+    return reply.send({ daemon_connected: false, running: false, message: 'No local daemon and no connected swarm available' });
   });
 
   fastify.get<{
@@ -1021,7 +1042,7 @@ export async function resourceContentRoutes(
     title: z.string().min(1).max(500),
     description: z.string().max(5000).optional(),
     status: z.string().optional(),
-    priority: z.number().int().min(0).max(10).optional(),
+    priority: z.number().int().min(0).max(4).optional(),
     assignee: z.string().max(200).optional().nullable(),
     metadata: z.record(z.unknown()).optional(),
   });
@@ -1030,7 +1051,7 @@ export async function resourceContentRoutes(
     status: z.string().min(1).optional(),
     title: z.string().min(1).max(500).optional(),
     description: z.string().max(5000).optional().nullable(),
-    priority: z.number().int().min(0).max(10).optional(),
+    priority: z.number().int().min(0).max(4).optional(),
     assignee: z.string().max(200).optional().nullable(),
     result: z.record(z.unknown()).optional(),
     error: z.string().optional(),
@@ -1041,7 +1062,7 @@ export async function resourceContentRoutes(
   fastify.post<{
     Params: { id: string };
   }>('/resources/:id/content/opentasks/tasks', { preHandler: authMiddleware }, async (request, reply) => {
-    const ctx = await resolveResourceAndPath(request, reply);
+    const ctx = await resolveResourceForOpenTasks(request, reply);
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
@@ -1057,22 +1078,47 @@ export async function resourceContentRoutes(
       throw error;
     }
 
-    // Route through the OpenTasks daemon for persistence
-    const { daemonCreateTask: createFn, resolveDaemonSocket: resolveSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
-    const socketPath = resolveSocket(localPath);
-    try {
-      const task = await createFn(socketPath, { title: body.title, description: body.description, status: body.status || 'open', priority: body.priority, assignee: body.assignee ?? undefined }, localPath);
-      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.created', data: { task: { id: task.id, title: task.title, status: task.status } } }); } catch { /* best effort */ }
-      return reply.status(201).send({ node_id: task.id, status: task.status });
-    } catch (err) {
-      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
-      throw err;
+    const taskParams = {
+      title: body.title,
+      description: body.description,
+      status: body.status || 'open',
+      priority: body.priority,
+      assignee: body.assignee ?? undefined,
+    };
+
+    // Local daemon path
+    if (localPath) {
+      const { daemonCreateTask: createFn, resolveDaemonSocket: resolveSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+      const socketPath = resolveSocket(localPath);
+      try {
+        const task = await createFn(socketPath, taskParams, localPath);
+        try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.created', data: { task: { id: task.id, title: task.title, status: task.status } } }); } catch { /* best effort */ }
+        return reply.status(201).send({ node_id: task.id, status: task.status });
+      } catch (err) {
+        if (!(err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING')) throw err;
+        // Fall through to remote
+      }
     }
+
+    // Remote swarm path
+    const { findSwarmForResource, remoteCreateTask } = await import('../../map/opentasks-remote.js');
+    const swarmId = findSwarmForResource(resource);
+    if (swarmId) {
+      const node = await remoteCreateTask(swarmId, taskParams);
+      if (node) {
+        const id = node.id as string;
+        const status = (node.status as string) ?? taskParams.status;
+        try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.created', data: { task: { id, title: node.title as string, status } } }); } catch { /* best effort */ }
+        return reply.status(201).send({ node_id: id, status });
+      }
+    }
+
+    return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running and no connected swarm is available' });
   });
   fastify.patch<{
     Params: { id: string; nodeId: string };
   }>('/resources/:id/content/opentasks/tasks/:nodeId', { preHandler: authMiddleware }, async (request, reply) => {
-    const ctx = await resolveResourceAndPath(request, reply);
+    const ctx = await resolveResourceForOpenTasks(request, reply);
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
@@ -1088,34 +1134,78 @@ export async function resourceContentRoutes(
       throw error;
     }
 
-    const { daemonUpdateTask: updateFn, resolveDaemonSocket: resolveSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
-    const socketPath = resolveSocket(localPath);
-    try {
-      await updateFn(socketPath, request.params.nodeId, {
-        status: body.status,
-        title: body.title,
-        description: body.description ?? undefined,
-        assignee: body.assignee,
-      }, localPath);
+    // Local daemon path
+    if (localPath) {
+      const { daemonUpdateTask: updateFn, resolveDaemonSocket: resolveSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+      const socketPath = resolveSocket(localPath);
+      try {
+        await updateFn(socketPath, request.params.nodeId, {
+          status: body.status,
+          title: body.title,
+          description: body.description ?? undefined,
+          assignee: body.assignee,
+        }, localPath);
+        if (body.status) {
+          try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.status', data: { taskId: request.params.nodeId, current: body.status } }); } catch { /* best effort */ }
+        }
+        return reply.send({ node_id: request.params.nodeId, previous_status: null, new_status: body.status ?? null });
+      } catch (err) {
+        if (!(err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING')) throw err;
+        // Fall through to remote
+      }
+    }
+
+    // Remote swarm path — fields go through graph.update.request, status through task.request.
+    // Apply fields first so the broadcast reflects the new status if both present.
+    const { findSwarmForResource, remoteUpdateTask, remoteUpdateTaskFields } = await import('../../map/opentasks-remote.js');
+    const swarmId = findSwarmForResource(resource);
+    if (swarmId) {
+      const hasFieldUpdate =
+        body.title !== undefined ||
+        body.description !== undefined ||
+        body.assignee !== undefined ||
+        body.priority !== undefined;
+
+      let updated: Record<string, unknown> | null = null;
+      if (hasFieldUpdate) {
+        updated = await remoteUpdateTaskFields(swarmId, request.params.nodeId, {
+          title: body.title,
+          description: body.description ?? undefined,
+          assignee: body.assignee ?? undefined,
+          priority: body.priority,
+        });
+        if (!updated) {
+          return reply.status(503).send({ error: 'Service Unavailable', message: 'Remote swarm did not respond' });
+        }
+      }
       if (body.status) {
+        updated = await remoteUpdateTask(swarmId, request.params.nodeId, body.status);
+        if (!updated) {
+          return reply.status(503).send({ error: 'Service Unavailable', message: 'Remote swarm did not respond' });
+        }
         try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.status', data: { taskId: request.params.nodeId, current: body.status } }); } catch { /* best effort */ }
       }
-      return reply.send({ node_id: request.params.nodeId, previous_status: null, new_status: body.status ?? null });
-    } catch (err) {
-      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
-      throw err;
+      if (updated) {
+        return reply.send({ node_id: request.params.nodeId, previous_status: null, new_status: body.status ?? null });
+      }
     }
+
+    return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running and no connected swarm is available' });
   });
 
-  // Delete task node
+  // Delete task node — local-only. opentasks 0.1.0 has no graph.delete.request
+  // method on the MAP connector, so remote deletes need an upstream change.
   fastify.delete<{
     Params: { id: string; nodeId: string };
     Querystring: { hard?: string };
   }>('/resources/:id/content/opentasks/tasks/:nodeId', { preHandler: authMiddleware }, async (request, reply) => {
-    const ctx = await resolveResourceAndPath(request, reply);
+    const ctx = await resolveResourceForOpenTasks(request, reply);
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
+    if (!localPath) {
+      return reply.status(501).send({ error: 'Not Implemented', message: 'Deleting tasks on a remote swarm is not yet supported (opentasks lacks graph.delete.request)' });
+    }
 
     if (isReadOnlyResource(resource)) {
       return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
@@ -1141,7 +1231,7 @@ export async function resourceContentRoutes(
   const CreateContextNodeSchema = z.object({
     title: z.string().min(1).max(500),
     content: z.string().max(50000).optional(),
-    priority: z.number().int().min(0).max(10).optional(),
+    priority: z.number().int().min(0).max(4).optional(),
     tags: z.array(z.string().max(50)).max(20).optional(),
   });
 
@@ -1323,7 +1413,7 @@ export async function resourceContentRoutes(
   fastify.post<{
     Params: { id: string; nodeId: string };
   }>('/resources/:id/content/opentasks/tasks/:nodeId/links', { preHandler: authMiddleware }, async (request, reply) => {
-    const ctx = await resolveResourceAndPath(request, reply);
+    const ctx = await resolveResourceForOpenTasks(request, reply);
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
@@ -1339,21 +1429,37 @@ export async function resourceContentRoutes(
       throw error;
     }
 
-    const { daemonCreateLink, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
-    const socketPath = resolveDaemonSocket(localPath);
-    try {
-      const result = await daemonCreateLink(socketPath, {
-        fromId: request.params.nodeId,
-        toId: body.targetId,
-        type: body.type,
-        metadata: body.metadata,
-      }, localPath);
-      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.linked', data: { fromId: request.params.nodeId, toId: body.targetId, edgeType: body.type } }); } catch { /* best effort */ }
-      return reply.status(201).send({ edge_id: result.edgeId, from_id: request.params.nodeId, to_id: body.targetId, type: body.type });
-    } catch (err) {
-      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running' });
-      throw err;
+    // Local daemon path
+    if (localPath) {
+      const { daemonCreateLink, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+      const socketPath = resolveDaemonSocket(localPath);
+      try {
+        const result = await daemonCreateLink(socketPath, {
+          fromId: request.params.nodeId,
+          toId: body.targetId,
+          type: body.type,
+          metadata: body.metadata,
+        }, localPath);
+        try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.linked', data: { fromId: request.params.nodeId, toId: body.targetId, edgeType: body.type } }); } catch { /* best effort */ }
+        return reply.status(201).send({ edge_id: result.edgeId, from_id: request.params.nodeId, to_id: body.targetId, type: body.type });
+      } catch (err) {
+        if (!(err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING')) throw err;
+        // Fall through to remote
+      }
     }
+
+    // Remote swarm path
+    const { findSwarmForResource, remoteCreateLink } = await import('../../map/opentasks-remote.js');
+    const swarmId = findSwarmForResource(resource);
+    if (swarmId) {
+      const result = await remoteCreateLink(swarmId, request.params.nodeId, body.targetId, body.type, body.metadata);
+      if (result) {
+        try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.linked', data: { fromId: request.params.nodeId, toId: body.targetId, edgeType: body.type } }); } catch { /* best effort */ }
+        return reply.status(201).send({ edge_id: result.edgeId, from_id: request.params.nodeId, to_id: body.targetId, type: body.type });
+      }
+    }
+
+    return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running and no connected swarm is available' });
   });
 
   // Remove a link from nodeId to targetId
@@ -1361,7 +1467,7 @@ export async function resourceContentRoutes(
     Params: { id: string; nodeId: string; targetId: string };
     Querystring: { type?: string };
   }>('/resources/:id/content/opentasks/tasks/:nodeId/links/:targetId', { preHandler: authMiddleware }, async (request, reply) => {
-    const ctx = await resolveResourceAndPath(request, reply);
+    const ctx = await resolveResourceForOpenTasks(request, reply);
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
@@ -1371,20 +1477,37 @@ export async function resourceContentRoutes(
     }
 
     const edgeType = request.query.type || 'blocks';
-    const { daemonRemoveLink, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
-    const socketPath = resolveDaemonSocket(localPath);
-    try {
-      await daemonRemoveLink(socketPath, {
-        fromId: request.params.nodeId,
-        toId: request.params.targetId,
-        type: edgeType,
-      }, localPath);
-      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.unlinked', data: { fromId: request.params.nodeId, toId: request.params.targetId, edgeType } }); } catch { /* best effort */ }
-      return reply.send({ removed: true });
-    } catch (err) {
-      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running' });
-      throw err;
+
+    // Local daemon path
+    if (localPath) {
+      const { daemonRemoveLink, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+      const socketPath = resolveDaemonSocket(localPath);
+      try {
+        await daemonRemoveLink(socketPath, {
+          fromId: request.params.nodeId,
+          toId: request.params.targetId,
+          type: edgeType,
+        }, localPath);
+        try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.unlinked', data: { fromId: request.params.nodeId, toId: request.params.targetId, edgeType } }); } catch { /* best effort */ }
+        return reply.send({ removed: true });
+      } catch (err) {
+        if (!(err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING')) throw err;
+        // Fall through to remote
+      }
     }
+
+    // Remote swarm path
+    const { findSwarmForResource, remoteRemoveLink } = await import('../../map/opentasks-remote.js');
+    const swarmId = findSwarmForResource(resource);
+    if (swarmId) {
+      const ok = await remoteRemoveLink(swarmId, request.params.nodeId, request.params.targetId, edgeType);
+      if (ok) {
+        try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.unlinked', data: { fromId: request.params.nodeId, toId: request.params.targetId, edgeType } }); } catch { /* best effort */ }
+        return reply.send({ removed: true });
+      }
+    }
+
+    return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running and no connected swarm is available' });
   });
 
   // ============================================================================
