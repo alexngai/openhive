@@ -6,11 +6,48 @@
  */
 
 import type { SessionEvent, SessionContentBlock } from '../../lib/api';
+import type { ChatMessage } from 'swarmcraft/ui/embed';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export type ToolGroup = { _toolGroup: true; events: SessionEvent[] };
 export type DisplayItem = (SessionEvent | ToolGroup) & { _customEvents?: SessionEvent[] };
+
+// ── ChatMessage → SessionEvent conversion ──────────────────────────────────
+
+/**
+ * Convert a ChatMessage (from useChatChannel) into a SessionEvent so it can
+ * be merged into the trajectory EventStream.
+ *
+ * Skipped contentTypes:
+ *   - 'event' — tool calls / tool results; trajectory checkpoints render
+ *     these with full input/output metadata, double-rendering would be worse.
+ *   - 'data' / 'reference' — structured payloads that don't have a natural
+ *     plain-text rendering in the trajectory view. The raw ChatMessage is
+ *     still visible in non-trajectory surfaces (ChatMessageList); skipping
+ *     here avoids dumping JSON into the assistant/user bubble pipeline.
+ */
+export function chatMessageToSessionEvent(m: ChatMessage, index: number): SessionEvent | null {
+  if (m.contentType !== 'text') return null;
+  const role = m.role === 'user' || m.role === 'supervisor' ? 'user_message' : 'assistant_message';
+  return {
+    id: `chat-${m.id}`,
+    timestamp: new Date(m.timestamp).toISOString(),
+    sequence: index,
+    type: role as SessionEvent['type'],
+    content: [{ type: 'text', text: m.content }],
+    ...(m.isStreaming ? { _isStreaming: true } : {}),
+  } as SessionEvent;
+}
+
+export function chatMessagesToSessionEvents(messages: ChatMessage[]): SessionEvent[] {
+  const out: SessionEvent[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const ev = chatMessageToSessionEvent(messages[i], i);
+    if (ev) out.push(ev);
+  }
+  return out;
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -29,9 +66,24 @@ export function extractText(blocks: SessionContentBlock[] | undefined): string {
 }
 
 /**
+ * 32-bit FNV-1a hash — deterministic, fast, no crypto import. Good enough to
+ * avoid false-positive dedupe collisions from agents that share boilerplate
+ * prefaces across turns.
+ */
+function fnv1a(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/**
  * Deduplicate ACP streaming events against trajectory checkpoint events.
- * Streaming events that match a trajectory event by type + content prefix
- * are considered duplicates and filtered out.
+ * Fingerprint uses type + full-content hash (not just prefix) so two
+ * assistant messages that start with the same boilerplate but diverge later
+ * are correctly treated as distinct events.
  */
 export function deduplicateStreamingEvents(
   streamingEvents: SessionEvent[],
@@ -40,16 +92,15 @@ export function deduplicateStreamingEvents(
   if (streamingEvents.length === 0) return [];
   if (trajectoryEvents.length === 0) return streamingEvents;
 
-  const trajectoryFingerprints = new Set<string>();
-  for (const e of trajectoryEvents) {
-    const text = e.content?.[0]?.text?.slice(0, 100) ?? '';
-    trajectoryFingerprints.add(`${e.type}:${text}`);
-  }
+  const fingerprint = (e: SessionEvent) => {
+    const text = e.content?.[0]?.text ?? '';
+    return `${e.type}:${fnv1a(text)}`;
+  };
 
-  return streamingEvents.filter(e => {
-    const text = e.content?.[0]?.text?.slice(0, 100) ?? '';
-    return !trajectoryFingerprints.has(`${e.type}:${text}`);
-  });
+  const trajectoryFingerprints = new Set<string>();
+  for (const e of trajectoryEvents) trajectoryFingerprints.add(fingerprint(e));
+
+  return streamingEvents.filter((e) => !trajectoryFingerprints.has(fingerprint(e)));
 }
 
 export function truncate(s: string, max: number): string {

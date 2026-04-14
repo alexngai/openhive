@@ -9,18 +9,20 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Send, Square, MessageSquare, Mail, Zap, Loader2 } from 'lucide-react';
-import { Shield } from 'lucide-react';
-import type { ChatMode, ChatStatus } from 'swarmcraft/ui/embed';
-import type { SwarmChatCapabilities } from '../../hooks/useSessionChat';
+import type { ChatChannel, ChatCapabilities, ChatMode, ChatStatus } from 'swarmcraft/ui/embed';
 
 export interface SessionChatInputProps {
-  mode: ChatMode;
-  status: ChatStatus;
-  onSend: (text: string) => Promise<void>;
+  /** Preferred: pass a full ChatChannel — mode/status/onSend/onCancel/capabilities derived from it */
+  channel?: ChatChannel;
+
+  // A la carte props (overrides channel fields)
+  mode?: ChatMode;
+  status?: ChatStatus;
+  onSend?: (text: string) => Promise<void>;
   onCancel?: () => Promise<void>;
   /** Published capabilities from the swarm — used for unavailable state messaging */
-  capabilities?: SwarmChatCapabilities;
-  /** ACP stream connection error (displayed as hint) */
+  capabilities?: ChatCapabilities;
+  /** Error detail to surface in the hint line (defaults to channel.statusDetail) */
   streamError?: string | null;
 }
 
@@ -38,9 +40,19 @@ const MODE_HINTS: Record<ChatMode, string> = {
   unavailable: '',
 };
 
-export function SessionChatInput({ mode, status, onSend, onCancel, capabilities, streamError }: SessionChatInputProps) {
+export function SessionChatInput(props: SessionChatInputProps) {
+  const {
+    channel,
+    mode = channel?.mode ?? 'unavailable',
+    status = channel?.status ?? 'detecting',
+    onSend = channel?.send ?? (async () => { throw new Error('SessionChatInput: no send handler'); }),
+    onCancel = channel?.cancel,
+    capabilities = channel?.capabilities,
+    streamError = (channel?.status === 'error' ? channel?.statusDetail : null) ?? null,
+  } = props;
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-resize textarea
@@ -55,9 +67,13 @@ export function SessionChatInput({ mode, status, onSend, onCancel, capabilities,
     const trimmed = text.trim();
     if (!trimmed || sending) return;
     setSending(true);
+    setSendError(null);
     try {
       await onSend(trimmed);
       setText('');
+    } catch (err) {
+      // Preserve text so the user can retry. Surface the error in the hint line.
+      setSendError((err as Error)?.message ?? 'Failed to send');
     } finally {
       setSending(false);
     }
@@ -76,7 +92,7 @@ export function SessionChatInput({ mode, status, onSend, onCancel, capabilities,
     if (capabilities) {
       if (!capabilities.connected) {
         reason = 'Agent is offline';
-      } else if (!capabilities.mail && !capabilities.messaging && !capabilities.supportsAcp) {
+      } else if (!capabilities.mail && !capabilities.inject && !capabilities.acp) {
         reason = 'Agent does not publish chat capabilities (mail, messaging, or ACP)';
       }
     }
@@ -166,8 +182,9 @@ export function SessionChatInput({ mode, status, onSend, onCancel, capabilities,
             <ModeIcon className="w-2.5 h-2.5" />
             {modeInfo.label}
           </span>
-          <span className="text-2xs" style={{ color: streamError ? 'var(--color-text-error, #ef4444)' : 'var(--color-text-muted)' }}>
-            {streamError ? `Error: ${streamError}`
+          <span className="text-2xs" style={{ color: (streamError || sendError) ? 'var(--color-text-error, #ef4444)' : 'var(--color-text-muted)' }}>
+            {sendError ? `Send failed: ${sendError}`
+              : streamError ? `Error: ${streamError}`
               : isStreaming ? 'Agent is responding...'
               : status === 'connecting' ? 'Connecting to agent...'
               : status === 'detecting' ? 'Detecting channel...'

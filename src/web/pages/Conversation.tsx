@@ -1,14 +1,17 @@
 import { useParams, Link } from 'react-router-dom';
 import { MessageSquare, ArrowLeft, Users } from 'lucide-react';
+import { useMemo, useCallback } from 'react';
 import { useMailConversation } from '../hooks/useApi';
 import { useSubscribe, useWSEvent } from '../hooks/useWebSocket';
 import { useQueryClient } from '@tanstack/react-query';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
-import { useCallback, useMemo } from 'react';
-import { AgentChat } from 'swarmcraft/ui/embed';
-import type { ChatChannelConfig } from 'swarmcraft/ui/embed';
-import { createMailChatAdapter } from '../adapters/mail-chat-adapter';
+import { useChatChannel } from 'swarmcraft/ui/embed';
+import { useConversationCapabilityResolver, conversationTarget } from '../lib/chat/resolvers';
+import { useOpenHiveAdapters } from '../adapters/openhive-adapters';
+import { EventStream } from '../components/events/EventStream';
+import { SessionChatInput } from '../components/events/SessionChatInput';
+import { PermissionDialog } from '../components/events/PermissionDialog';
 
 export function Conversation() {
   const { id } = useParams<{ id: string }>();
@@ -26,16 +29,21 @@ export function Conversation() {
   useWSEvent('mail.participant.joined', invalidate);
   useWSEvent('mail.closed', invalidate);
 
+  // Chat channel — mail-only for conversations
+  const adapters = useOpenHiveAdapters();
+  const resolveCapabilities = useConversationCapabilityResolver(id);
+  const target = useMemo(
+    () => id ? conversationTarget(id) : null,
+    [id],
+  );
+  const channel = useChatChannel({
+    target,
+    adapters,
+    resolveCapabilities,
+  });
+
   const conversation = data?.conversation;
   const threads = data?.threads ?? [];
-
-  // Build a mail adapter for this specific conversation
-  const channelConfig: ChatChannelConfig = useMemo(() => ({
-    adapters: [createMailChatAdapter({ conversationId: id })],
-  }), [id]);
-
-  // Use the first participant as the "agent" — AgentChat needs an agentId
-  const agentId = conversation?.participants?.[0]?.agent_id ?? id ?? null;
 
   if (isLoading) return <PageLoader />;
 
@@ -108,14 +116,17 @@ export function Conversation() {
         </div>
       </div>
 
-      {/* Chat — powered by AgentChat with MailChatAdapter */}
-      <div className="flex-1 min-h-0">
-        <AgentChat
-          agentId={agentId}
-          channelConfig={channelConfig}
-          showHeader={false}
+      {/* Chat — channel-driven: EventStream + PermissionDialog + SessionChatInput */}
+      <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
+        <EventStream
+          events={[]}
+          channel={channel}
+          emptyMessage="No messages in this conversation yet."
+          emptyIcon={MessageSquare}
         />
       </div>
+      <PermissionDialog channel={channel} />
+      <SessionChatInput channel={channel} />
     </div>
   );
 }
