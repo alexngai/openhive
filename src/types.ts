@@ -162,6 +162,13 @@ export type WSEventType =
   | 'swarm_registered'
   | 'swarm_offline'
   | 'swarm.status_changed'
+  // OpenTasks broadcast events (see api/routes/resource-content.ts).
+  | 'task.created'
+  | 'task.status'
+  | 'task.assigned'
+  | 'task.deleted'
+  | 'task.linked'
+  | 'task.unlinked'
   | 'node_registered'
   | 'node_state_changed'
   | 'swarm_heartbeat'

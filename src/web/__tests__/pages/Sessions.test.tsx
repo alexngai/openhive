@@ -160,8 +160,9 @@ describe('Sessions page', () => {
       mockUseMapSwarms.mockReturnValue({ data: [onlineSwarm] });
       renderSessions();
 
-      expect(screen.getByText('my-project (main)')).toBeDefined();
-      expect(screen.getByText('claude')).toBeDefined();
+      // Sidebar shows session.name only (post-refactor — `latest_agent` moved
+      // out of the sidebar item into the main grid).
+      expect(screen.getAllByText('my-project (main)').length).toBeGreaterThan(0);
     });
 
     it('shows active session count in sidebar header', () => {

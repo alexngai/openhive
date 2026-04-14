@@ -62,16 +62,15 @@ describe('Dashboard', () => {
     expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeDefined();
   });
 
-  it('renders quick action links to /swarms', () => {
+  it('renders Spawn / Connect quick action buttons (open dialogs in-place)', () => {
+    // Post-refactor: these are buttons that open SpawnFormDialog /
+    // ConnectFormDialog inline, not <Link>s navigating to /swarms.
     renderWithProviders(<Dashboard />);
-    const links = screen.getAllByRole('link');
-    const spawnLink = links.find((l) => l.textContent?.includes('Spawn'));
-    const connectLink = links.find((l) => l.textContent?.includes('Connect'));
-
-    expect(spawnLink).toBeDefined();
-    expect(spawnLink!.getAttribute('href')).toBe('/swarms?action=spawn');
-    expect(connectLink).toBeDefined();
-    expect(connectLink!.getAttribute('href')).toBe('/swarms?action=connect');
+    const buttons = screen.getAllByRole('button');
+    const spawnButton = buttons.find((b) => b.textContent?.trim() === 'Spawn');
+    const connectButton = buttons.find((b) => b.textContent?.trim() === 'Connect');
+    expect(spawnButton).toBeDefined();
+    expect(connectButton).toBeDefined();
   });
 
   it('renders all dashboard sections', () => {

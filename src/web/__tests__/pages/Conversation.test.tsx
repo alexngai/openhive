@@ -55,14 +55,50 @@ vi.mock('../../hooks/useWebSocket', () => ({
   useWSEvent: vi.fn(),
 }));
 
-// Mock AgentChat — the chat UI itself is tested in swarmcraft (101 tests).
-// Here we only verify that Conversation.tsx renders the header correctly
-// and passes the right props.
+// Mock the chat channel wiring. Conversation was refactored from AgentChat to
+// the channel-based contract (useChatChannel + openhive adapters). We capture
+// the props passed into useChatChannel so tests can assert the wiring.
+const mockUseChatChannel = vi.fn(() => ({
+  messages: [],
+  status: 'idle',
+  mode: 'mail',
+  sendText: vi.fn(),
+  cancel: vi.fn(),
+  pendingPermission: null,
+  replyPermission: vi.fn(),
+  pendingQuestion: null,
+  replyQuestion: vi.fn(),
+}));
+
 vi.mock('swarmcraft/ui/embed', () => ({
-  AgentChat: ({ agentId, showHeader }: { agentId: string | null; showHeader?: boolean }) => (
-    <div data-testid="agent-chat" data-agent-id={agentId} data-show-header={showHeader}>
-      AgentChat mock
-    </div>
+  useChatChannel: (opts: unknown) => mockUseChatChannel(opts),
+}));
+
+vi.mock('../../lib/chat/resolvers', () => ({
+  useConversationCapabilityResolver: vi.fn(() => () => undefined),
+  conversationTarget: (id: string) => ({ kind: 'conversation', conversationId: id }),
+}));
+
+vi.mock('../../adapters/openhive-adapters', () => ({
+  useOpenHiveAdapters: vi.fn(() => []),
+}));
+
+// The three channel-consumer components render no-op stubs in tests.
+vi.mock('../../components/events/EventStream', () => ({
+  EventStream: ({ channel }: { channel: unknown }) => (
+    <div data-testid="event-stream" data-has-channel={channel ? 'true' : 'false'} />
+  ),
+}));
+
+vi.mock('../../components/events/SessionChatInput', () => ({
+  SessionChatInput: ({ channel }: { channel: unknown }) => (
+    <div data-testid="session-chat-input" data-has-channel={channel ? 'true' : 'false'} />
+  ),
+}));
+
+vi.mock('../../components/events/PermissionDialog', () => ({
+  PermissionDialog: ({ channel }: { channel: unknown }) => (
+    <div data-testid="permission-dialog" data-has-channel={channel ? 'true' : 'false'} />
   ),
 }));
 
@@ -135,19 +171,31 @@ describe('Conversation Page', () => {
     });
   });
 
-  // ── AgentChat integration ──
+  // ── Chat channel integration ──
 
-  describe('AgentChat integration', () => {
-    it('renders AgentChat with the first participant as agentId', () => {
-      renderConversation();
-      const chat = screen.getByTestId('agent-chat');
-      expect(chat.getAttribute('data-agent-id')).toBe('agent-alpha');
+  describe('Chat channel integration', () => {
+    it('wires useChatChannel with a conversation target matching the URL id', () => {
+      renderConversation('conv-test-1');
+      const opts = mockUseChatChannel.mock.calls.at(-1)?.[0] as
+        | { target?: { kind: string; conversationId: string } }
+        | undefined;
+      expect(opts?.target).toEqual({ kind: 'conversation', conversationId: 'conv-test-1' });
     });
 
-    it('passes showHeader=false to AgentChat (header is rendered by Conversation)', () => {
+    it('passes the openhive adapter set + capability resolver into the channel', () => {
       renderConversation();
-      const chat = screen.getByTestId('agent-chat');
-      expect(chat.getAttribute('data-show-header')).toBe('false');
+      const opts = mockUseChatChannel.mock.calls.at(-1)?.[0] as
+        | { adapters?: unknown; resolveCapabilities?: unknown }
+        | undefined;
+      expect(opts?.adapters).toBeDefined();
+      expect(typeof opts?.resolveCapabilities).toBe('function');
+    });
+
+    it('renders the channel-driven EventStream / PermissionDialog / SessionChatInput', () => {
+      renderConversation();
+      expect(screen.getByTestId('event-stream').getAttribute('data-has-channel')).toBe('true');
+      expect(screen.getByTestId('permission-dialog').getAttribute('data-has-channel')).toBe('true');
+      expect(screen.getByTestId('session-chat-input').getAttribute('data-has-channel')).toBe('true');
     });
   });
 
