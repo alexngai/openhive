@@ -21,6 +21,9 @@ interface PackageData {
   category: string;
   description: string;
   config: Record<string, unknown>;
+  /** Raw contents of the sibling local-override file (e.g. settings.local.json).
+   *  Undefined when the package has no local file or none exists on disk. */
+  localConfig?: Record<string, unknown>;
   meta: {
     name: string;
     description: string;
@@ -43,22 +46,39 @@ export function SwarmKitPackageCard({
   isAdmin: boolean;
 }) {
   const queryClient = useQueryClient();
-  const [localConfig, setLocalConfig] = useState<Record<string, unknown>>(pkg.config);
+  const [formConfig, setFormConfig] = useState<Record<string, unknown>>(pkg.config);
   const [activeScope, setActiveScope] = useState<string>(pkg.scope);
   const [isDirty, setIsDirty] = useState(false);
 
-  // Sync local state when props change (e.g., project selector changes, external save)
+  // Sync form state when props change (e.g., project selector changes, external save)
   useEffect(() => {
-    setLocalConfig(pkg.config);
+    setFormConfig(pkg.config);
     setActiveScope(pkg.scope);
     setIsDirty(false);
   }, [pkg.config, pkg.scope]);
 
+  // A key "is local" if its current value lives in the local override file.
+  // This is pure detection-from-state: no hardcoded field lists.
+  const isLocalKey = useCallback(
+    (key: string): boolean => {
+      if (!pkg.localConfig) return false;
+      return getNestedValue(pkg.localConfig, key) !== undefined;
+    },
+    [pkg.localConfig],
+  );
+
   const saveMutation = useMutation({
-    mutationFn: (payload: { updates: Record<string, unknown>; scope: string }) =>
+    mutationFn: (payload: {
+      updates: Record<string, unknown>;
+      localUpdates?: Record<string, unknown>;
+      scope: string;
+    }) =>
       api.patch(`/admin/swarmkit/packages/${pkg.packageName}`, {
         scope: payload.scope,
         updates: payload.updates,
+        ...(payload.localUpdates && Object.keys(payload.localUpdates).length > 0
+          ? { localUpdates: payload.localUpdates }
+          : {}),
         projectRoot,
       }),
     onSuccess: () => {
@@ -91,7 +111,7 @@ export function SwarmKitPackageCard({
 
   const handleFieldChange = useCallback(
     (key: string, value: unknown) => {
-      setLocalConfig((prev) => {
+      setFormConfig((prev) => {
         const updated = { ...prev };
         setNestedValue(updated, key, value);
         return updated;
@@ -102,22 +122,29 @@ export function SwarmKitPackageCard({
   );
 
   const handleSave = () => {
-    // Build diff: only include changed values
-    const diff: Record<string, unknown> = {};
+    // Build diff and split by file-of-origin: keys whose current value came
+    // from the local override file stay there; everything else goes to the
+    // main config file. Fresh keys (not in either file) default to main.
+    const updates: Record<string, unknown> = {};
+    const localUpdates: Record<string, unknown> = {};
     for (const opt of pkg.meta.inlineOptions) {
-      const current = getNestedValue(localConfig, opt.key);
+      const current = getNestedValue(formConfig, opt.key);
       const original = getNestedValue(pkg.config, opt.key);
       if (current !== original && current !== SECRET_SENTINEL) {
-        diff[opt.key] = current;
+        if (isLocalKey(opt.key)) {
+          localUpdates[opt.key] = current;
+        } else {
+          updates[opt.key] = current;
+        }
       }
     }
-    if (Object.keys(diff).length > 0) {
-      saveMutation.mutate({ updates: diff, scope: activeScope });
+    if (Object.keys(updates).length > 0 || Object.keys(localUpdates).length > 0) {
+      saveMutation.mutate({ updates, localUpdates, scope: activeScope });
     }
   };
 
   const handleReset = () => {
-    setLocalConfig(pkg.config);
+    setFormConfig(pkg.config);
     setIsDirty(false);
   };
 
@@ -218,8 +245,9 @@ export function SwarmKitPackageCard({
             <PackageConfigField
               key={opt.key}
               option={opt}
-              value={getNestedValue(localConfig, opt.key)}
+              value={getNestedValue(formConfig, opt.key)}
               isSecret={pkg.meta.fields[opt.key]?.secret}
+              isLocal={isLocalKey(opt.key)}
               disabled={disabled}
               onChange={(val) => handleFieldChange(opt.key, val)}
             />
@@ -259,12 +287,14 @@ function PackageConfigField({
   option,
   value,
   isSecret,
+  isLocal,
   disabled,
   onChange,
 }: {
   option: InlineOption;
   value: unknown;
   isSecret?: boolean;
+  isLocal?: boolean;
   disabled: boolean;
   onChange: (val: unknown) => void;
 }) {
@@ -283,6 +313,15 @@ function PackageConfigField({
               style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'rgb(239, 68, 68)', fontSize: '9px' }}
             >
               secret
+            </span>
+          )}
+          {isLocal && (
+            <span
+              className="text-2xs px-1 py-0 rounded"
+              style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', color: 'rgb(59, 130, 246)', fontSize: '9px' }}
+              title="Stored in settings.local.json — machine-specific, gitignored"
+            >
+              local
             </span>
           )}
         </div>

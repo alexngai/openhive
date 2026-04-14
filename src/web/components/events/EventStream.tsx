@@ -10,8 +10,14 @@
 
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { ArrowDown, MessageSquare } from 'lucide-react';
+import type { ChatChannel } from 'swarmcraft/ui/embed';
 import type { SessionEvent, AgentIdentity } from '../../lib/api';
-import { groupEventsForDisplay, getEventAuthor } from './event-utils';
+import {
+  chatMessagesToSessionEvents,
+  deduplicateStreamingEvents,
+  groupEventsForDisplay,
+  getEventAuthor,
+} from './event-utils';
 import type { DisplayItem } from './event-utils';
 import { EventBubble } from './EventBubble';
 import { ToolCallGroupBlock } from './ToolCallGroupBlock';
@@ -20,6 +26,11 @@ import { LoadingSpinner } from '../common/LoadingSpinner';
 export interface EventStreamProps {
   /** Flat event array in API order (newest-first). Reversed internally to chronological. */
   events: SessionEvent[];
+  /**
+   * Optional ChatChannel — its live messages are merged with `events`
+   * (deduplicated against trajectory events using prefix matching).
+   */
+  channel?: ChatChannel;
   agentIdentity?: AgentIdentity;
 
   // Pagination
@@ -42,6 +53,7 @@ export interface EventStreamProps {
 
 export function EventStream({
   events,
+  channel,
   agentIdentity,
   isLoading,
   hasMore,
@@ -74,18 +86,32 @@ export function EventStream({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
-  // Auto-scroll to bottom on initial load
+  // Auto-scroll to bottom on initial load (driven by any rendered event,
+  // trajectory or channel-derived).
+  const hasAnyEvent = events.length > 0 || (channel?.messages.length ?? 0) > 0;
   useEffect(() => {
-    if (events.length > 0 && !hasScrolledRef.current) {
+    if (hasAnyEvent && !hasScrolledRef.current) {
       hasScrolledRef.current = true;
       requestAnimationFrame(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'instant' });
       });
     }
-  }, [events.length]);
+  }, [hasAnyEvent]);
+
+  // Merge channel messages (if provided) into the event stream. Channel
+  // messages are newest-last; trajectory events are newest-first. We produce
+  // the same newest-first shape after deduplication.
+  const mergedEvents = useMemo(() => {
+    if (!channel || channel.messages.length === 0) return events;
+    const channelAsEvents = chatMessagesToSessionEvents(channel.messages);
+    const unique = deduplicateStreamingEvents(channelAsEvents, events);
+    if (unique.length === 0) return events;
+    // `events` is newest-first (API order); prepend reversed unique channel events
+    return [...[...unique].reverse(), ...events];
+  }, [events, channel?.messages]);
 
   // Events come newest-first from API; reverse for chronological display
-  const chronologicalEvents = useMemo(() => [...events].reverse(), [events]);
+  const chronologicalEvents = useMemo(() => [...mergedEvents].reverse(), [mergedEvents]);
 
   // Group tool runs and attach custom events
   const displayEvents = useMemo(
@@ -101,7 +127,7 @@ export function EventStream({
     );
   }
 
-  if (events.length === 0) {
+  if (mergedEvents.length === 0) {
     return (
       <div className="card px-6 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
         <EmptyIcon className="w-8 h-8 mx-auto mb-2 opacity-40" />

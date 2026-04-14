@@ -1,21 +1,23 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
-  Zap, Square, RotateCw, Terminal, ChevronDown, ChevronUp, Plus, X, Cpu,
-  Link2, Globe, Wifi, WifiOff, Settings2, Trash2, FileText, Shield, GitBranch, Monitor,
+  Zap, Square, RotateCw, ChevronDown, ChevronUp, Plus, X, Cpu,
+  Link2, Globe, Wifi, WifiOff, Settings2, Trash2, Shield, GitBranch, Monitor,
+  User, UserRoundPlus,
 } from 'lucide-react';
 import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-generator';
 import { toast } from '../stores/toast';
 import {
-  useHostedSwarms, useSpawnSwarm, useStopSwarm, useRestartSwarm, useRemoveSwarm, useSwarmLogs,
+  useHostedSwarms, useSpawnSwarm, useStopSwarm, useRestartSwarm, useRemoveSwarm,
   useMapSwarms, useConnectSwarm, useHives,
+  useSpawnAgent, useConnectAcp,
 } from '../hooks/useApi';
 import { useSwarmRealtime } from '../hooks/useRealtimeInvalidation';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
 import { Dialog } from '../components/common/Dialog';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { HostedStateBadge, MapStatusBadge, SandboxBadge, SectionLabel } from '../components/swarm/StatusBadges';
-import type { HostedSwarm, MapSwarm } from '../lib/api';
+import type { HostedSwarm, MapSwarm, MapRegisteredAgent } from '../lib/api';
 import clsx from 'clsx';
 
 const PROVIDERS = [
@@ -614,13 +616,124 @@ export function ConnectFormDialog({ onClose }: { onClose: () => void }) {
 // Swarm Cards
 // =============================================================================
 
+/**
+ * One registered agent rendered inline under a swarm card. Shows name, role,
+ * and compact Chat/Stop actions — no swarm-detail round-trip needed.
+ * Sidecars are filtered out by the caller.
+ */
+function InlineAgentRow({
+  swarmId,
+  agent,
+  projectPath,
+}: {
+  swarmId: string;
+  agent: MapRegisteredAgent;
+  projectPath?: string;
+}) {
+  const navigate = useNavigate();
+  const connectAcp = useConnectAcp();
+
+  const protocols = Array.isArray(agent.capabilities?.protocols)
+    ? (agent.capabilities!.protocols as string[])
+    : [];
+  const supportsAcp = protocols.includes('acp');
+
+  // Prefer peerMapId (the targetable ID on the swarm's own MAP server); fall
+  // back to the hub-assigned id. Same precedence SwarmDetail uses.
+  const targetAgentId =
+    (typeof agent.metadata?.peerMapId === 'string' && (agent.metadata.peerMapId as string)) ||
+    agent.id;
+
+  const handleChat = async (e: React.MouseEvent) => {
+    // Prevent the parent swarm card from navigating to the detail page.
+    e.stopPropagation();
+    if (!supportsAcp || connectAcp.isPending) return;
+    try {
+      const result = await connectAcp.mutateAsync({
+        swarmId,
+        agentId: targetAgentId,
+        cwd: projectPath,
+      });
+      const params = new URLSearchParams({
+        streamId: result.acp_stream_id,
+        sessionId: result.acp_session_id,
+      });
+      navigate(`/sessions/${result.session_resource_id}?${params}`);
+    } catch (err) {
+      toast.error('Chat failed', (err as Error).message);
+    }
+  };
+
+  // The whole row becomes the CTA when the agent supports ACP. We make the
+  // hover effect deliberately strong (bg + border + text color) so it reads
+  // as an obviously interactive affordance — not a passive row.
+  const isClickable = supportsAcp;
+
+  const content = (
+    <>
+      {connectAcp.isPending
+        ? <LoadingSpinner size="sm" />
+        : <User className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />}
+      <span
+        className={`font-medium truncate max-w-[160px] ${isClickable ? 'group-hover:text-honey-500 transition-colors' : ''}`}
+      >
+        {agent.name || agent.id}
+      </span>
+      <span className="px-1 py-0.5 rounded capitalize" style={{ color: 'var(--color-text-muted)' }}>
+        {agent.role}
+      </span>
+      {protocols.map((p) => (
+        <span
+          key={p}
+          className="px-1 py-0.5 rounded font-medium"
+          style={{ backgroundColor: 'var(--color-accent-bg)', color: 'var(--color-accent)' }}
+        >
+          {p}
+        </span>
+      ))}
+    </>
+  );
+
+  if (isClickable) {
+    return (
+      <div
+        // Default bg/border moved to arbitrary Tailwind values so the
+        // `hover:bg-*` / `hover:border-*` utilities actually win — inline
+        // `style={{ backgroundColor }}` would otherwise beat them on
+        // specificity and the hover state would be invisible.
+        // Ring on hover adds an outer glow for an extra bump of affordance.
+        className="inline-flex items-center gap-2 px-2 py-1 rounded text-2xs transition-all cursor-pointer group border bg-[var(--color-elevated)] border-[var(--color-border)] ring-1 ring-transparent hover:bg-honey-500/10 hover:border-honey-500/50 hover:ring-honey-500/20"
+        role="button"
+        tabIndex={0}
+        onClick={handleChat}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') handleChat(e as unknown as React.MouseEvent);
+        }}
+        title="Start ACP chat session with this agent"
+        aria-label={`Start ACP chat session with ${agent.name || agent.id}`}
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="inline-flex items-center gap-2 px-2 py-1 rounded text-2xs border border-transparent bg-[var(--color-elevated)]"
+      onClick={(e) => e.stopPropagation()}
+    >
+      {content}
+    </div>
+  );
+}
+
 function HostedSwarmCard({ swarm, linkedMapSwarm }: { swarm: HostedSwarm; linkedMapSwarm?: MapSwarm }) {
-  const [showLogs, setShowLogs] = useState(false);
   const navigate = useNavigate();
   const stopMutation = useStopSwarm();
   const restartMutation = useRestartSwarm();
   const removeMutation = useRemoveSwarm();
-  const { data: logs } = useSwarmLogs(showLogs ? swarm.id : null);
+  const spawnAgent = useSpawnAgent();
+  const connectAcp = useConnectAcp();
 
   // If there's a linked MAP swarm record (the same macro-agent process seen by
   // SwarmCraft via outbound MAP, or the sidecar's inbound registration), use
@@ -637,6 +750,48 @@ function HostedSwarmCard({ swarm, linkedMapSwarm }: { swarm: HostedSwarm; linked
   const canRestart = swarm.state === 'stopped' || swarm.state === 'failed';
   const canRemove = swarm.state === 'stopped' || swarm.state === 'failed';
   const isTransitioning = stopMutation.isPending || restartMutation.isPending || removeMutation.isPending;
+
+  // "New Agent Session" is surfaced on the card when the hosted swarm is
+  // running AND the linked MAP swarm advertises ACP OR has a sidecar that
+  // declares `canHostAcp` (i.e. macro-agent can spawn a coordinator on
+  // demand). Same visibility predicate as SwarmDetail's SwarmActions, just
+  // reconstructed from the list-view data.
+  const registeredAgents = ((linkedMapSwarm as any)?.registered_agents ?? []) as Array<{ metadata?: Record<string, unknown> }>;
+  const canHostAcp = registeredAgents.some((a) => a.metadata?.canHostAcp === true);
+  const supportsAcp = protocols.includes('acp');
+  const isLinkedOnline = mapStatus === 'online' || mapStatus === 'unreachable';
+  const canStartAgentSession =
+    swarm.state === 'running' && isLinkedOnline && (supportsAcp || canHostAcp);
+
+  const projectPath =
+    ((linkedMapSwarm?.capabilities as any)?.projectPath as string | undefined) ??
+    ((linkedMapSwarm?.metadata as any)?.projectPath as string | undefined) ??
+    ((linkedMapSwarm?.metadata as any)?.cwd as string | undefined);
+
+  const handleNewAgentSession = async () => {
+    if (!targetSwarmId) return;
+    try {
+      const spawned = await spawnAgent.mutateAsync({
+        swarmId: targetSwarmId,
+        role: 'coordinator',
+        cwd: projectPath,
+        task: 'Head manager',
+      });
+      const result = await connectAcp.mutateAsync({
+        swarmId: targetSwarmId,
+        agentId: spawned.agent_id,
+        cwd: projectPath,
+      });
+      const params = new URLSearchParams({
+        streamId: result.acp_stream_id,
+        sessionId: result.acp_session_id,
+      });
+      navigate(`/sessions/${result.session_resource_id}?${params}`);
+    } catch (err) {
+      toast.error('New session failed', (err as Error).message);
+    }
+  };
+  const isStarting = spawnAgent.isPending || connectAcp.isPending;
 
   const handleStop = async () => {
     try {
@@ -712,6 +867,18 @@ function HostedSwarmCard({ swarm, linkedMapSwarm }: { swarm: HostedSwarm; linked
         </div>
 
         <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+          {canStartAgentSession && (
+            <button
+              onClick={handleNewAgentSession}
+              disabled={isStarting || isTransitioning}
+              className="btn btn-ghost p-1.5 hover:bg-honey-500/10"
+              style={{ color: 'var(--color-accent)' }}
+              title="Spawn a new agent and start a session"
+              aria-label="Spawn a new agent and start a session"
+            >
+              {isStarting ? <LoadingSpinner size="sm" /> : <UserRoundPlus className="w-3 h-3" />}
+            </button>
+          )}
           {canStop && (
             <button
               onClick={handleStop}
@@ -743,47 +910,35 @@ function HostedSwarmCard({ swarm, linkedMapSwarm }: { swarm: HostedSwarm; linked
               {removeMutation.isPending ? <LoadingSpinner size="sm" /> : <Trash2 className="w-3 h-3" />}
             </button>
           )}
-          {swarm.state === 'running' && (
-            <button
-              onClick={() => navigate(`/terminal/${swarm.id}`)}
-              className="btn btn-ghost p-1.5 hover:bg-purple-500/10"
-              style={{ color: 'var(--color-text-secondary)' }}
-              title="Open TUI"
-            >
-              <Terminal className="w-3 h-3" />
-            </button>
-          )}
-          <button
-            onClick={() => setShowLogs(!showLogs)}
-            className={clsx('btn btn-ghost p-1.5', showLogs ? 'text-honey-500' : '')}
-            style={!showLogs ? { color: 'var(--color-text-secondary)' } : undefined}
-            title="Toggle logs"
-          >
-            <FileText className="w-3 h-3" />
-          </button>
         </div>
       </div>
+
+      {/* Inline registered agents (excluding sidecars). Lets users chat with
+          or stop a specific coordinator without clicking through to detail.
+          Only show when the hosted swarm is actively running — for stopped
+          swarms the MAP record may still list stale agents. */}
+      {swarm.state === 'running' && isLinkedOnline && (() => {
+        const liveAgents = registeredAgents.filter(
+          (a) => (a as MapRegisteredAgent).role !== 'sidecar',
+        ) as MapRegisteredAgent[];
+        if (liveAgents.length === 0) return null;
+        return (
+          <div className="mt-2 pl-11 flex flex-col items-start gap-1">
+            {liveAgents.map((a) => (
+              <InlineAgentRow
+                key={a.id}
+                swarmId={targetSwarmId}
+                agent={a}
+                projectPath={projectPath}
+              />
+            ))}
+          </div>
+        );
+      })()}
 
       {swarm.error && (
         <div className="mt-2 px-2 py-1.5 bg-red-500/10 border border-red-500/20 rounded text-2xs text-red-400">
           {swarm.error}
-        </div>
-      )}
-
-      {showLogs && (
-        <div className="mt-2">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Logs</span>
-            <button onClick={() => setShowLogs(false)} className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-              <ChevronUp className="w-3 h-3" />
-            </button>
-          </div>
-          <pre
-            className="p-2 rounded text-2xs overflow-x-auto max-h-48 overflow-y-auto font-mono"
-            style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
-          >
-            {logs || '(no logs available)'}
-          </pre>
         </div>
       )}
 

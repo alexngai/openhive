@@ -3,19 +3,22 @@ import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
   Activity, AlertTriangle, Brain, ChevronDown, ChevronRight,
   Clock, Cpu, FileText, GitBranch, GitCommit, Hash,
-  MessageSquare, ShieldAlert, User,
+  MessageSquare, User,
 } from 'lucide-react';
 import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants } from '../hooks/useApi';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { AgentAvatar } from '../components/common/AgentAvatar';
-import { formatTokens, deduplicateStreamingEvents } from '../components/events/event-utils';
+import { formatTokens } from '../components/events/event-utils';
 import { EventStream } from '../components/events/EventStream';
 import { SessionChatInput } from '../components/events/SessionChatInput';
+import { PermissionDialog } from '../components/events/PermissionDialog';
 import type { TrajectoryCheckpoint, AgentIdentity } from '../lib/api';
 import { useSessionAttentionStore } from '../stores/session-attention';
-import { useSessionChat } from '../hooks/useSessionChat';
+import { useChatChannel } from 'swarmcraft/ui/embed';
+import { useSessionCapabilityResolver, sessionTarget } from '../lib/chat/resolvers';
+import { useOpenHiveAdapters } from '../adapters/openhive-adapters';
 import clsx from 'clsx';
 
 // ============================================================================
@@ -235,24 +238,55 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
     isFetchingNextPage,
   } = useSessionEvents(sessionId, { enabled: hasTrajectorySupport });
 
-  // Chat integration — gated by published MAP capabilities
-  const {
-    chatMode, chatStatus, sendMessage, cancelStream, capabilities, streamingEvents, streamError,
-    permissions, replyPermission,
-  } = useSessionChat({ sessionId, sourceSwarmId, enabled: hasTrajectorySupport, existingAcpStreamId, existingAcpSessionId, providerSessionId });
+  // Chat channel — target-based. Resolves capabilities from the source swarm
+  // and dispatches to ACP/Mail/Inject adapters.
+  const adapters = useOpenHiveAdapters();
+  const resolveCapabilities = useSessionCapabilityResolver(sourceSwarmId ?? undefined);
+  const target = useMemo(
+    () => sourceSwarmId
+      ? sessionTarget(sessionId, sourceSwarmId, {
+          acpStreamId: existingAcpStreamId ?? undefined,
+          acpSessionId: existingAcpSessionId ?? undefined,
+          providerSessionId: providerSessionId ?? undefined,
+        })
+      : null,
+    [sessionId, sourceSwarmId, existingAcpStreamId, existingAcpSessionId, providerSessionId],
+  );
+  const channel = useChatChannel({
+    target,
+    adapters,
+    resolveCapabilities,
+    enabled: hasTrajectorySupport,
+  });
+
+  // Dead-stream URL cleanup: if we came in with ?streamId/?sessionId but the
+  // channel didn't settle on ACP mode (meaning resume failed and we fell back
+  // to mail/unavailable), scrub those params so a reload creates a fresh stream.
+  useEffect(() => {
+    const hadResume = existingAcpStreamId && existingAcpSessionId;
+    if (!hadResume) return;
+    if (channel.status !== 'ready' && channel.status !== 'streaming') return;
+    if (channel.mode === 'acp') return;
+    try {
+      if (typeof window !== 'undefined' && window.history?.replaceState) {
+        const url = new URL(window.location.href);
+        let changed = false;
+        if (url.searchParams.has('streamId')) {
+          url.searchParams.delete('streamId');
+          changed = true;
+        }
+        if (url.searchParams.has('sessionId')) {
+          url.searchParams.delete('sessionId');
+          changed = true;
+        }
+        if (changed) window.history.replaceState({}, '', url.toString());
+      }
+    } catch { /* best-effort URL cleanup */ }
+  }, [channel.mode, channel.status, existingAcpStreamId, existingAcpSessionId]);
 
   const pages = data?.pages ?? [];
   const trajectoryEvents = pages.flatMap((page) => page.events);
   const total = pages[0]?.total ?? 0;
-
-  // Merge ACP streaming events with trajectory events, deduplicating overlaps.
-  // Must be called unconditionally (before early returns) to satisfy Rules of Hooks.
-  const events = useMemo(() => {
-    if (streamingEvents.length === 0) return trajectoryEvents;
-    const unique = deduplicateStreamingEvents(streamingEvents, trajectoryEvents);
-    if (unique.length === 0) return trajectoryEvents;
-    return [...[...unique].reverse(), ...trajectoryEvents];
-  }, [trajectoryEvents, streamingEvents]);
 
   if (!hasTrajectorySupport) {
     return (
@@ -268,7 +302,7 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
     );
   }
 
-  if (isError && events.length === 0) {
+  if (isError && trajectoryEvents.length === 0) {
     return (
       <>
         <div className="card px-6 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
@@ -278,14 +312,7 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
           </p>
           <p className="text-xs">{(error as Error)?.message || 'Unknown error'}</p>
         </div>
-        <SessionChatInput
-          mode={chatMode}
-          status={chatStatus}
-          onSend={sendMessage}
-          onCancel={cancelStream}
-          capabilities={capabilities}
-          streamError={streamError}
-        />
+        <SessionChatInput channel={channel} />
       </>
     );
   }
@@ -293,7 +320,8 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
   return (
     <>
       <EventStream
-        events={events}
+        events={trajectoryEvents}
+        channel={channel}
         agentIdentity={agentIdentity}
         isLoading={isLoading}
         hasMore={hasNextPage}
@@ -304,45 +332,8 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
         emptyMessage="No events found in this session."
         emptyIcon={MessageSquare}
       />
-      {permissions.length > 0 && (
-        <div className="border-t px-4 py-3 space-y-2" style={{ borderColor: 'var(--color-border)', background: 'var(--color-bg-secondary)' }}>
-          {permissions.map((perm) => (
-            <div key={perm.requestId} className="flex items-center gap-3 px-3 py-2 rounded-lg border text-sm" style={{ borderColor: 'var(--color-border-warning, var(--color-border))', background: 'var(--color-bg)' }}>
-              <ShieldAlert className="w-4 h-4 shrink-0" style={{ color: 'var(--color-text-warning, var(--color-accent))' }} />
-              <div className="flex-1 min-w-0">
-                <span className="font-medium">Tool approval: </span>
-                <code className="text-xs px-1 py-0.5 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
-                  {perm.toolCall?.name ?? 'unknown tool'}
-                </code>
-              </div>
-              <div className="flex gap-1.5 shrink-0">
-                <button
-                  onClick={() => replyPermission(perm.requestId, true)}
-                  className="px-2.5 py-1 text-xs font-medium rounded"
-                  style={{ background: 'var(--color-accent)', color: 'white' }}
-                >
-                  Allow
-                </button>
-                <button
-                  onClick={() => replyPermission(perm.requestId, false)}
-                  className="px-2.5 py-1 text-xs font-medium rounded border"
-                  style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
-                >
-                  Deny
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      <SessionChatInput
-        mode={chatMode}
-        status={chatStatus}
-        onSend={sendMessage}
-        onCancel={cancelStream}
-        capabilities={capabilities}
-        streamError={streamError}
-      />
+      <PermissionDialog channel={channel} />
+      <SessionChatInput channel={channel} />
     </>
   );
 }

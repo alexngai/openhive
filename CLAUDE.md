@@ -63,6 +63,7 @@ src/
 - **Session trajectories**: Agent session transcripts are synced via the MAP trajectory protocol. The `trajectory/checkpoint` handler (`src/map/trajectory-handler.ts`) auto-creates session resources and stores checkpoint metadata. Transcript content is served on-demand from connected agents via `trajectory/content.request`/`trajectory/content.response` notifications. Content is cached in session storage for offline access. Five-tier resolution: fresh cache → on-demand from swarm → local sessionlog transcript → stale cache → 503.
 - **Agent capabilities**: Connected agents declare capabilities during MAP registration using the MAP `ParticipantCapabilities` schema. The hub captures these via the `agent.registered` event and stores on the connection + database. Capability checks gate operations (content requests, chat modes). See "Session Chat" section for capability-gated chat.
 - **Event stream components**: Session trajectory rendering is extracted into reusable components under `src/web/components/events/`. `EventStream` is the main container (grouping, auto-scroll, pagination), `EventBubble` renders individual events, `ToolCallGroupBlock` collapses tool runs. These components accept any `SessionEvent[]` source and are used by both the trajectory view and the session chat interface.
+- **SwarmKit config proxy**: `src/swarmkit/` reads and writes SwarmKit package configs (opentasks, minimem, sessionlog, etc.) directly on disk. OpenHive holds no config state of its own — every read hits the file, every write goes back to the file. The admin API under `/admin/swarmkit/*` exposes this to the Settings UI. Packages that declare a `localFile` in `PackageFileSpec` (currently only sessionlog → `settings.local.json`) get a second layer merged on read (local wins) and a split write path (see "SwarmKit Config Management" section).
 
 ## Session Trajectory Architecture
 
@@ -102,10 +103,11 @@ Content is converted via Claude JSONL adapter → ACP events (user messages, ass
 - `src/db/dal/trajectory-checkpoints.ts` — Checkpoint CRUD and stats aggregation
 - `src/web/pages/Sessions.tsx` — Session list with enriched names
 - `src/web/pages/SessionDetail.tsx` — Trajectory tab with event stream + chat input, checkpoints tab, learning tab
-- `src/web/components/events/` — Reusable event stream rendering (EventStream, EventBubble, ToolCallGroupBlock, CustomEventBadges, event-utils, SessionChatInput)
-- `src/web/hooks/useSessionChat.ts` — Session chat orchestration hook (capability resolution → mode detection → ACP/mail dispatch)
-- `src/web/hooks/useAcpStream.ts` — ACP streaming lifecycle: create stream → initialize → session → prompt → accumulate events. Handles text chunks, tool calls, tool results, permission requests
-- `src/web/adapters/session-chat-adapter.ts` — ChatChannelAdapter for mail-based session chat
+- `src/web/components/events/` — Reusable event stream rendering (EventStream, EventBubble, ToolCallGroupBlock, CustomEventBadges, event-utils, SessionChatInput, PermissionDialog)
+- `src/web/lib/chat/resolvers.ts` — Capability resolvers for Session and Conversation targets (`useSessionCapabilityResolver`, `useConversationCapabilityResolver`) + target constructors
+- `src/web/adapters/openhive-adapters.ts` — `useOpenHiveAdapters()` hook assembling ACP + Mail adapters against OpenHive endpoints
+- `src/web/adapters/openhive-acp-service.ts` — AcpServiceLike implementation: REST lifecycle + WS subscription + event accumulation + prepareSubscription buffer flush
+- Chat contract (in `swarmcraft/ui/embed`): `useChatChannel`, `ChatTarget`, `ChatAdapter`, `ChatCapabilities` — unified across Sessions, Messages, Agent, SwarmDetail
 
 ### Configuration
 
@@ -126,20 +128,27 @@ Content is converted via Claude JSONL adapter → ACP events (user messages, ass
 - `trajectory/content.response` — Agent → hub content delivery (raw JSON-RPC notification via `sendNotification`)
 - Per-agent capabilities (declared via `map/agents/register`): `trajectory.canReport`, `trajectory.canServeContent`, `protocols: ['acp']`, `acp: { version }`. The hub aggregates per-agent capabilities into the swarm record via `getAggregateCapabilities()`.
 
-### Session Chat (Bi-Directional)
+### Chat (Unified across Sessions, Messages, Agent, SwarmDetail)
 
-The session trajectory view supports bi-directional chat with connected agents. Chat mode is determined by MAP capabilities published during agent registration, following the MAP `ParticipantCapabilities` schema.
+All four chat surfaces (Sessions trajectory, Messages conversation, Agent
+profile, SwarmDetail coordination) share a single contract defined in
+`swarmcraft/ui/embed` and consumed via `useChatChannel({ target, adapters,
+resolveCapabilities })`. Chat mode is determined by MAP capabilities
+published during agent registration, following the MAP
+`ParticipantCapabilities` schema.
 
 #### Capability → Mode Mapping
 
 | MAP Capability | Chat Mode | Transport | Behavior |
 |---|---|---|---|
-| `protocols: ['acp']` | **ACP** | ACP stream via MAP server | Full streaming, bi-directional |
-| `mail: { canJoin: true }` | **Mail** | `POST /sessions/:id/chat` → agent-inbox | Async conversation turns, 5s polling |
-| `messaging: { canReceive: true }` | **Inject** | MAP inject | One-way push, no response channel |
+| `protocols: ['acp']` (per-agent) | **ACP** | ACP stream via MAP server | Full streaming, bi-directional |
+| `mail: { canJoin: true }` | **Mail** | `POST /sessions/:id/chat` or `/mail/conversations/:id/turns` | Async turns, 5s polling, optimistic echo |
+| `messaging: { canReceive: true }` | **Inject** | MAP inject | Contract-supported; OpenHive doesn't currently expose the route so the adapter is omitted |
 | None / offline | **Unavailable** | — | Read-only with specific reason |
 
-Detection cascade: ACP → Mail → Inject → Unavailable. Each mode is only attempted if the swarm declares the corresponding capability.
+Detection cascade: ACP → Mail → (Inject) → Unavailable. Adapters are probed in
+priority order; each adapter's `canHandle(target, caps)` decides whether it
+can serve the target.
 
 #### Agent Capability Declarations
 
@@ -154,28 +163,57 @@ Capabilities are declared **per-agent** at MAP registration, not per-swarm. When
 
 ACP target resolution: The frontend reads `registered_agents` from `GET /map/swarms/:id` and finds the first agent with `protocols: ['acp']`. The backend (`POST /sessions/create-acp`) resolves via `findAcpAgent()` from the connection registry.
 
+#### Caller Sites
+
+| Page | Target | Capability resolver | Adapter set |
+|---|---|---|---|
+| `pages/SessionDetail.tsx` | `SessionTarget` (sessionId + swarmId + optional resume) | `useSessionCapabilityResolver` (reads swarm + registered_agents) | `useOpenHiveAdapters` (ACP + Mail) |
+| `pages/Conversation.tsx` | `ConversationTarget` | `useConversationCapabilityResolver` (mail-only gate on conversation.status) | `useOpenHiveAdapters` |
+| `pages/Agent.tsx` | `AgentTarget` (agentName) | inline resolver (mail-only for non-human accounts) | `useOpenHiveAdapters` |
+| `pages/SwarmDetail.tsx` (`ComposeMessageSection`) | `AgentTarget` (swarmId) | inline pass-through (always available) | `[createCoordinationChatAdapter]` |
+
+All four render via channel-driven primitives from `swarmcraft/ui/embed`
+(`ChatMessageList` + `ChatInput`, or OpenHive's `EventStream` + `SessionChatInput`
++ `PermissionDialog` for trajectory-aware surfaces).
+
 #### Chat Data Flow
 
+Sessions, Messages, Agent, and SwarmDetail all use the unified `useChatChannel`
+contract from `swarmcraft/ui/embed`. The flow:
+
 ```
-User types in SessionChatInput
-  → useSessionChat resolves swarm capabilities via useMapSwarm()
-  → Mode detection: aggregated protocols includes 'acp' → ACP, mail.canJoin → Mail, messaging.canReceive → Inject
-  → ACP target resolved from registered_agents (first agent with protocols: ['acp'])
-  → ACP: useAcpStream manages lifecycle
-    → POST /api/swarmcraft/acp/streams (create with targetAgent = MAP agent ID) → /initialize → /session → /prompt
-    → Streaming response via WebSocket: acp.session.update → text/tool_call/tool_result events
-    → Events bridged: SwarmCraft WS → server.ts interceptor → OpenHive WS (global channel)
-    → Permission requests: acp.permission.request → UI dialog → POST /streams/:id/permission
-  → Mail: POST /sessions/:id/chat
-    → Lazy conversation creation (mail/create JSON-RPC)
-    → mail_conversation_id stored in session resource metadata
-    → Turn sent via mail/turn JSON-RPC → agent-inbox → agent reads on next prompt
-  → Inject: POST /agents/:id/inject → fire-and-forget
+User types in SessionChatInput / ChatInput
+  → useChatChannel({ target, adapters, resolveCapabilities })
+  → Capability resolver (useSessionCapabilityResolver / useConversationCapabilityResolver)
+      reads useMapSwarm() / useMailConversation() and returns { acp?, mail?, inject? }
+  → Adapter detection: first adapter.canHandle(target, caps) wins
+  → ACP (createAcpAdapter): backed by openhive-acp-service.ts
+    → POST /api/swarmcraft/acp/streams (targetAgent = peerMapId from registered_agents)
+    → /initialize → /session (or /session/load for resume) → /prompt (body: { message })
+    → prepareSubscription() buffers WS events that arrive before subscribe() attaches
+    → Streaming via WS: acp.session.update → text chunk accumulation, tool calls,
+      permission.request → PermissionDialog → /streams/:id/permission
+  → Mail (createMailAdapter):
+    → SessionTarget: POST /sessions/:id/chat (lazy-creates linked conversation)
+    → ConversationTarget: POST /mail/conversations/:id/turns
+    → 5s polling via adapter.getMessages
+  → Optimistic user echo: useChatChannel appends local-user-* message before adapter.send;
+    rollback on send failure; replaced by server version when getMessages refreshes (mail)
 ```
 
 #### Event Deduplication
 
-ACP streaming events and trajectory checkpoint data can contain the same content (e.g., a prompt sent via ACP is also recorded in the agent's trajectory). The `deduplicateStreamingEvents()` function in `event-utils.ts` fingerprints events by `type:contentPrefix` (first 100 chars) and filters duplicates before merging into the event stream.
+Two dedup layers protect against duplicates:
+
+1. **ACP WS delivery dedup** (`openhive-acp-service.ts` `isDuplicate`) —
+   time-windowed Map keyed by full-update JSON fingerprint. MAP SDK sometimes
+   delivers the same `session/update` 2×; within `DEDUP_WINDOW_MS` (200ms) the
+   duplicate is silently dropped. Handles 1×/2×/N× delivery safely.
+2. **Trajectory ↔ streaming merge dedup** (`event-utils.ts`
+   `deduplicateStreamingEvents`) — when `EventStream` merges `channel.messages`
+   with trajectory checkpoint events, a channel-derived event matching a
+   trajectory event by `type:FNV-1a(fullContent)` is suppressed. Full-content
+   hash avoids false positives from agents sharing boilerplate prefaces.
 
 #### ACP Permission Handling
 
@@ -183,10 +221,14 @@ When an ACP agent requests tool approval, SwarmCraft emits `acp.permission.reque
 
 #### Key Files
 
-- `src/web/hooks/useSessionChat.ts` — Resolves `sourceSwarmId` → swarm capabilities → chat mode. Resolves ACP target from `registered_agents`. Dispatches to useAcpStream (ACP) or REST API (mail).
-- `src/web/hooks/useAcpStream.ts` — ACP stream lifecycle, text accumulation, tool call handling, permission request tracking.
-- `src/web/components/events/SessionChatInput.tsx` — Sticky bottom input, mode-aware UI with capability-specific unavailable reasons.
-- `src/web/adapters/session-chat-adapter.ts` — `ChatChannelAdapter` implementation routing through `POST /sessions/:id/chat`.
+- `src/web/lib/chat/resolvers.ts` — `useSessionCapabilityResolver` (reads swarm + registered_agents for peerMapId), `useConversationCapabilityResolver`, target constructors.
+- `src/web/adapters/openhive-adapters.ts` — `useOpenHiveAdapters()` builds `[createAcpAdapter, createMailAdapter]` against OpenHive endpoints (inject dropped — no backing route).
+- `src/web/adapters/openhive-acp-service.ts` — AcpServiceLike: REST lifecycle + WS subscription + text-chunk accumulation + `prepareSubscription()` buffer flush for loadSession replay race.
+- `src/web/components/events/SessionChatInput.tsx` — Sticky bottom input with mode badge, capability-specific unavailable reasons, send-error surfacing.
+- `src/web/components/events/PermissionDialog.tsx` — OpenHive-styled tool approval UI reading `channel.permissions` and calling `channel.replyPermission`.
+- `references/swarmcraft/src/ui/hooks/useChatChannel.ts` — Target-based channel hook: probes adapters, wires callbacks into React state, manages subscription/polling lifecycle, optimistic user echo with rollback.
+- `references/swarmcraft/src/ui/adapters/{mail,inject,acp,http}.ts` — Reusable adapter factories (ApiConfig-parameterized). Both OpenHive and SwarmCraft construct adapter sets from these.
+- `references/swarmcraft/src/ui/components/chat/{AgentChat,ChatMessageList,ChatInput,PermissionDialog,QuestionDialog}.tsx` — Channel-driven rendering primitives.
 - `src/api/routes/session-chat.ts` — Backend endpoint: lazy conversation creation, auto-join, turn delivery via `mail/turn` JSON-RPC.
 - `src/api/routes/sessions.ts` — `POST /sessions/create-acp` resolves ACP target agent via `findAcpAgent()` from per-agent capabilities on the live connection.
 - `src/map/connection-registry.ts` — Inbound connection tracking, per-agent capability storage, `findAcpAgent()` for ACP target resolution, `getAggregateCapabilities()` for swarm-level capability union.
@@ -247,6 +289,33 @@ Agents sync tasks between each other via `pushSyncEvent` (in cc-swarm's `opentas
 - `task.linked` → `tools.link` (creates blocking edge)
 
 This runs during the agent's `UserPromptSubmit` hook when incoming task events are read from the inbox.
+
+## SwarmKit Config Management
+
+OpenHive acts as a read/write proxy for SwarmKit package configs — the Settings UI edits files owned by sessionlog, opentasks, minimem, etc. The hub never caches config; every UI action hits disk.
+
+### Machine-specific overrides (`settings.local.json`)
+
+Sessionlog stores config in two files:
+
+- `.swarm/sessionlog/settings.json` — committed, shared across teammates
+- `.swarm/sessionlog/settings.local.json` — gitignored, per-machine overrides (local wins at runtime)
+
+OpenHive's SwarmKit UI supports this split without any routing metadata. The flow:
+
+1. **Read** — `getPackageConfig` reads both files and returns a `config` (merged) plus `localConfig` (raw local file) on the API response. The UI sees the effective value.
+2. **Badge** — each inline option in `SwarmKitPackageCard` checks `pkg.localConfig` for its key. If present, renders a `[local]` badge next to the field label. Pure detection — no hardcoded list of "local-only" keys.
+3. **Write** — on save, the UI splits the diff into `updates` (→ main file) and `localUpdates` (→ local file) based on file-of-origin. `updatePackageConfig` obeys the split. Fresh keys (not in either file) default to main.
+
+**Design property — no state in openhive:** the routing rule is "write it back where you found it." The UI owns the detection; the server is pure file I/O. No `local: true` flag on swarmkit's registry, no openhive-side field list, no sessionlog export needed.
+
+### Key Files
+
+- `src/swarmkit/config-io.ts` — file I/O. `PackageFileSpec.localFile` declares the sibling local file. `readConfig` / `readLocalConfig` / `writeConfig` are format-agnostic (JSON/YAML) and atomic.
+- `src/swarmkit/manager.ts` — `getPackageConfig` merges `settings.local.json` over `settings.json` for sessionlog and surfaces `localConfig`. `updatePackageConfig(name, root, scope, updates, localUpdates?)` routes writes to the correct file.
+- `src/swarmkit/types.ts` — `PackageConfigDescriptor.localFile?`, `PackageConfigResponse.localConfig?`.
+- `src/api/routes/swarmkit-config.ts` — `PATCH /admin/swarmkit/packages/:name` accepts optional `localUpdates` on the request body.
+- `src/web/pages/settings/SwarmKitPackageCard.tsx` — `isLocalKey(key)` detects from `pkg.localConfig`; `PackageConfigField` renders the `[local]` badge; `handleSave` splits the diff.
 
 ## Development
 

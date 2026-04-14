@@ -133,6 +133,49 @@ describe('swarmkit/manager', () => {
       const result = manager.getPackageConfig('minimem', projectRoot, 'project');
       expect(result!.scope).toBe('project');
     });
+
+    it('should merge sessionlog settings.local.json over settings.json', () => {
+      fs.writeFileSync(
+        path.join(projectRoot, '.swarm', 'sessionlog', 'settings.local.json'),
+        JSON.stringify({ sessionRepo: { localPath: '/Users/alex/sessions' } }),
+      );
+
+      const result = manager.getPackageConfig('sessionlog', projectRoot)!;
+      expect(result.config).toEqual({
+        enabled: false,
+        strategy: 'manual-commit',
+        sessionRepo: { localPath: '/Users/alex/sessions' },
+      });
+      expect(result.localConfig).toEqual({
+        sessionRepo: { localPath: '/Users/alex/sessions' },
+      });
+    });
+
+    it('should let settings.local.json override settings.json for colliding keys', () => {
+      fs.writeFileSync(
+        path.join(projectRoot, '.swarm', 'sessionlog', 'settings.json'),
+        JSON.stringify({ enabled: true, sessionRepo: { remote: 'git@github:org/s.git' } }),
+      );
+      fs.writeFileSync(
+        path.join(projectRoot, '.swarm', 'sessionlog', 'settings.local.json'),
+        JSON.stringify({ sessionRepo: { localPath: '/Users/alex/sessions' } }),
+      );
+
+      const result = manager.getPackageConfig('sessionlog', projectRoot)!;
+      // remote from project, localPath from local — merged
+      expect(result.config).toEqual({
+        enabled: true,
+        sessionRepo: {
+          remote: 'git@github:org/s.git',
+          localPath: '/Users/alex/sessions',
+        },
+      });
+    });
+
+    it('should omit localConfig when no settings.local.json exists', () => {
+      const result = manager.getPackageConfig('sessionlog', projectRoot)!;
+      expect(result.localConfig).toBeUndefined();
+    });
   });
 
   // ─── getAllPackageConfigs ────────────────────────────────────
@@ -192,6 +235,76 @@ describe('swarmkit/manager', () => {
       );
       expect(result.success).toBe(false);
       expect(result.message).toContain('no config file');
+    });
+
+    it('should write localUpdates to settings.local.json for sessionlog', () => {
+      const result = manager.updatePackageConfig(
+        'sessionlog',
+        projectRoot,
+        'project',
+        { 'sessionRepo.remote': 'git@github:org/s.git' },
+        { 'sessionRepo.localPath': '/Users/alex/sessions' },
+      );
+
+      expect(result.success).toBe(true);
+
+      const mainRaw = JSON.parse(
+        fs.readFileSync(
+          path.join(projectRoot, '.swarm', 'sessionlog', 'settings.json'),
+          'utf-8',
+        ),
+      );
+      const localRaw = JSON.parse(
+        fs.readFileSync(
+          path.join(projectRoot, '.swarm', 'sessionlog', 'settings.local.json'),
+          'utf-8',
+        ),
+      );
+
+      // project-file keys don't leak into local, and vice versa
+      expect(mainRaw.sessionRepo).toEqual({ remote: 'git@github:org/s.git' });
+      expect(localRaw.sessionRepo).toEqual({ localPath: '/Users/alex/sessions' });
+    });
+
+    it('should accept localUpdates only (no main updates)', () => {
+      const result = manager.updatePackageConfig(
+        'sessionlog',
+        projectRoot,
+        'project',
+        {},
+        { 'sessionRepo.localPath': '/Users/alex/sessions' },
+      );
+
+      expect(result.success).toBe(true);
+
+      // Main file untouched
+      const mainRaw = JSON.parse(
+        fs.readFileSync(
+          path.join(projectRoot, '.swarm', 'sessionlog', 'settings.json'),
+          'utf-8',
+        ),
+      );
+      expect(mainRaw).toEqual({ enabled: false, strategy: 'manual-commit' });
+
+      const localRaw = JSON.parse(
+        fs.readFileSync(
+          path.join(projectRoot, '.swarm', 'sessionlog', 'settings.local.json'),
+          'utf-8',
+        ),
+      );
+      expect(localRaw.sessionRepo.localPath).toBe('/Users/alex/sessions');
+    });
+
+    it('should reject localUpdates for packages without a local file', () => {
+      const result = manager.updatePackageConfig(
+        'minimem',
+        projectRoot,
+        'project',
+        {},
+        { 'hybrid.vectorWeight': 0.9 },
+      );
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('does not support local-file overrides');
     });
   });
 
