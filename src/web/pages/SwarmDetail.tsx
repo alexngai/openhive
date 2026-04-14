@@ -24,9 +24,15 @@ import type {
   MapSwarm, MapNode, HostedSwarm, SessionListItem,
   SwarmMessage, SwarmPeer, EventSubscription, DeliveryLogEntry,
 } from '../lib/api';
-import { useState, useMemo } from 'react';
-import { AgentChat } from 'swarmcraft/ui/embed';
-import type { ChatChannelConfig } from 'swarmcraft/ui/embed';
+import { useCallback, useState, useMemo } from 'react';
+import {
+  ChatMessageList,
+  ChatInput,
+  useChatChannel,
+  type CapabilityResolver,
+  type ChatAdapter,
+  type ChatTarget,
+} from 'swarmcraft/ui/embed';
 import { createCoordinationChatAdapter } from '../adapters/coordination-chat-adapter';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -762,10 +768,30 @@ function MessageCard({ message, swarmId }: { message: SwarmMessage; swarmId: str
 function ComposeMessageSection({ swarmId }: { swarmId: string }) {
   const [expanded, setExpanded] = useState(false);
 
-  // Use the swarm itself as the "from" identity for coordination messages
-  const channelConfig: ChatChannelConfig = useMemo(() => ({
-    adapters: [createCoordinationChatAdapter({ fromSwarmId: swarmId })],
-  }), [swarmId]);
+  const adapters = useMemo<ChatAdapter[]>(
+    () => [createCoordinationChatAdapter({ fromSwarmId: swarmId })],
+    [swarmId],
+  );
+  const target = useMemo<ChatTarget>(
+    () => ({ kind: 'agent', agentId: swarmId }),
+    [swarmId],
+  );
+  // Coordination messaging is always available between swarms — the adapter
+  // doesn't need MAP capability gating.
+  const resolveCapabilities = useCallback<CapabilityResolver>(
+    () => ({
+      available: true,
+      connected: true,
+      mail: { canJoin: true, canCreate: true },
+    }),
+    [],
+  );
+
+  const channel = useChatChannel({
+    target: expanded ? target : null,
+    adapters,
+    resolveCapabilities,
+  });
 
   return (
     <div className="mb-3">
@@ -778,13 +804,9 @@ function ComposeMessageSection({ swarmId }: { swarmId: string }) {
         {expanded ? 'Hide' : 'Send'} Coordination Message
       </button>
       {expanded && (
-        <div className="card mt-1 overflow-hidden h-52">
-          <AgentChat
-            agentId={swarmId}
-            channelConfig={channelConfig}
-            showHeader={false}
-            compact
-          />
+        <div className="card mt-1 overflow-hidden h-52 flex flex-col">
+          <ChatMessageList channel={channel} compact />
+          <ChatInput channel={channel} compact />
         </div>
       )}
     </div>
