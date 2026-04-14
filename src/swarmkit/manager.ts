@@ -83,7 +83,7 @@ export class SwarmKitConfigManager {
     return this.readGlobal().installedPackages ?? [];
   }
 
-  private getUsePrefix(): boolean {
+  getUsePrefix(): boolean {
     return this.readGlobal().usePrefix ?? true;
   }
 
