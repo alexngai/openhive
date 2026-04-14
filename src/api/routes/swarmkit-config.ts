@@ -10,6 +10,8 @@ import { z } from 'zod';
 import { authMiddleware, requireAdmin } from '../middleware/auth.js';
 import { SwarmKitConfigManager } from '../../swarmkit/manager.js';
 import { getNestedValue, setNestedValue } from '../../swarmkit/utils.js';
+import { probeSessionRepoStatus } from '../../swarmkit/sessionlog-repo-status.js';
+import { fetchRepo, pushRepo, cloneRepo } from '../../swarmkit/sessionlog-repo-actions.js';
 import { resolveDataDir } from '../../data-dir.js';
 import type { Config } from '../../config.js';
 import type { PackageScope } from '../../swarmkit/types.js';
@@ -301,6 +303,50 @@ export async function swarmkitConfigRoutes(
     return {
       results: manager.runDoctor(projectRoot ?? null),
     };
+  });
+
+  // ─── Sessionlog session-repo status ───────────────────────
+
+  fastify.get('/admin/swarmkit/sessionlog/repo-status', {
+    preHandler: adminAuth,
+  }, async (request, reply) => {
+    const { projectRoot } = request.query as { projectRoot?: string };
+    if (!projectRoot) {
+      return reply.status(400).send({ error: 'projectRoot is required' });
+    }
+    return probeSessionRepoStatus(projectRoot, manager.getUsePrefix());
+  });
+
+  const repoActionBodySchema = z.object({ projectRoot: z.string().min(1) });
+
+  fastify.post('/admin/swarmkit/sessionlog/repo/fetch', {
+    preHandler: adminAuth,
+  }, async (request, reply) => {
+    const parsed = repoActionBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid request' });
+    }
+    return fetchRepo(parsed.data.projectRoot, manager.getUsePrefix());
+  });
+
+  fastify.post('/admin/swarmkit/sessionlog/repo/push', {
+    preHandler: adminAuth,
+  }, async (request, reply) => {
+    const parsed = repoActionBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid request' });
+    }
+    return pushRepo(parsed.data.projectRoot, manager.getUsePrefix());
+  });
+
+  fastify.post('/admin/swarmkit/sessionlog/repo/clone', {
+    preHandler: adminAuth,
+  }, async (request, reply) => {
+    const parsed = repoActionBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid request' });
+    }
+    return cloneRepo(parsed.data.projectRoot, manager.getUsePrefix());
   });
 }
 

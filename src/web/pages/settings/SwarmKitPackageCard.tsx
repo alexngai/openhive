@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Package, Save, RotateCcw, FolderPlus } from 'lucide-react';
 import { api } from '../../lib/api';
 import { toast } from '../../stores/toast';
+import { SessionlogRepoStatus } from './SessionlogRepoStatus';
 import clsx from 'clsx';
 
 const SECRET_SENTINEL = '********';
@@ -269,6 +270,11 @@ export function SwarmKitPackageCard({
           <FolderPlus className="w-3 h-3" />
           {initMutation.isPending ? 'Initializing...' : 'Initialize'}
         </button>
+      )}
+
+      {/* Sessionlog-specific session-repo status panel */}
+      {pkg.packageName === 'sessionlog' && projectRoot && (
+        <SessionlogRepoStatus projectRoot={projectRoot} />
       )}
 
       {/* Config path */}
