@@ -289,8 +289,15 @@ export function markStaleSwarms(staleThresholdMinutes: number = 5): number {
   `).run(`-${staleThresholdMinutes} minutes`);
 
   // Emit for SwarmCraft bridge and learning engine ingestion
+  // + broadcast on map:discovery so WS subscribers (incl. swarmcraft) see the transition.
   for (const row of staleRows) {
     mapHubEvents.emit('swarm_offline', { swarm_id: row.id });
+    try {
+      broadcastToChannel('map:discovery', {
+        type: 'swarm.status_changed',
+        data: { swarm_id: row.id, status: 'offline' },
+      });
+    } catch { /* non-critical */ }
   }
 
   return result.changes;

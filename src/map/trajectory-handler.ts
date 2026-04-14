@@ -18,6 +18,8 @@ import { nanoid } from 'nanoid';
 import { TRAJECTORY_METHODS } from './trajectory-types.js';
 import type { TrajectoryCheckpointParams, TrajectoryCheckpointResult } from './trajectory-types.js';
 import { findResourceById, findSessionResourceBySwarm, upsertDiscoveredResource, updateResource } from '../db/dal/syncable-resources.js';
+import { resolveLocalPath } from '../api/routes/_resource-helpers.js';
+import { daemonAppendTaskFiles, resolveDaemonSocket } from './task-daemon-client.js';
 import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import { updateSwarm, findNodeBySwarmAndAgentId } from '../db/dal/map.js';
@@ -138,6 +140,22 @@ function handleCheckpoint(
     created,
   });
 
+  // ── Enrich task graph with files_touched (Phase 3 files contract) ────
+  //
+  // Contract: an agent that knows the task it's working on can include
+  //   checkpoint.metadata.task_ref = { resource_id, node_id }
+  // in its trajectory checkpoint. When that + files_touched are present,
+  // the hub merges those paths into task.metadata.files (deduped). This
+  // unblocks the swarmcraft task overlay's centroid positioning for tasks
+  // that originate from active coding sessions. Fire-and-forget.
+  try {
+    const touched = (checkpoint.files_touched as string[] | undefined) ?? [];
+    const taskRef = meta?.task_ref as { resource_id?: string; node_id?: string } | undefined;
+    if (touched.length > 0 && taskRef?.resource_id && taskRef.node_id) {
+      void enrichTaskFiles(taskRef.resource_id, taskRef.node_id, touched);
+    }
+  } catch { /* non-critical */ }
+
   // ── Proactively cache transcript content ─────────────────────────────
   //    Fetch the transcript from the (still-connected) swarm and cache it
   //    so the UI can load it even after the swarm disconnects.
@@ -203,6 +221,70 @@ function handleCheckpoint(
     created,
     checkpoint_id: checkpointId,
   };
+}
+
+// ============================================================================
+// Task File Enrichment
+// ============================================================================
+
+/**
+ * Per-key serialization primitive. Returns a function that chains its input
+ * onto the existing promise for `key` — operations with the same key run
+ * sequentially; different keys run in parallel. Entries are garbage-collected
+ * from `chains` once their tail settles.
+ *
+ * Exported for testing.
+ */
+export function createPerKeyMutex(): <T>(key: string, fn: () => Promise<T>) => Promise<T> {
+  const chains = new Map<string, Promise<unknown>>();
+  return <T>(key: string, fn: () => Promise<T>): Promise<T> => {
+    const prev = chains.get(key) ?? Promise.resolve();
+    const next = prev.then(fn, fn); // on prev reject, still run fn (advisory)
+    chains.set(key, next);
+    // Cleanup must not produce an "unhandled rejection" when `next` rejects,
+    // so swallow the settled value inside the bookkeeping chain. Callers
+    // still see the original `next` and can `.catch()` or `await` it.
+    next.catch(() => {}).finally(() => {
+      if (chains.get(key) === next) chains.delete(key);
+    });
+    return next;
+  };
+}
+
+/**
+ * Per-task mutex for the append pipeline. Bursts of checkpoints for the
+ * same (resource_id, node_id) serialize here so read-modify-write operations
+ * can't race. Different tasks remain parallel.
+ */
+const runSerialized = createPerKeyMutex();
+
+/**
+ * Append files_touched to a task's metadata.files. Resolves the OpenTasks
+ * resource on disk, connects to the local daemon, and merges via the
+ * daemonAppendTaskFiles helper. Silent on error — enrichment is advisory.
+ *
+ * Serialized per (resource_id, node_id) so bursts of checkpoints for the
+ * same task can't race each other.
+ *
+ * Exported for testing; not part of the public trajectory-handler API.
+ */
+export function enrichTaskFiles(
+  resourceId: string,
+  taskNodeId: string,
+  files: string[],
+): Promise<void> {
+  return runSerialized(`${resourceId}::${taskNodeId}`, async () => {
+    try {
+      const resource = findResourceById(resourceId);
+      if (!resource || resource.resource_type !== 'task') return;
+      const localPath = resolveLocalPath(resource);
+      if (!localPath) return;
+      const socketPath = resolveDaemonSocket(localPath);
+      await daemonAppendTaskFiles(socketPath, taskNodeId, files, localPath);
+    } catch {
+      // Non-critical. Enrichment is opportunistic; the task remains valid without it.
+    }
+  });
 }
 
 // ============================================================================

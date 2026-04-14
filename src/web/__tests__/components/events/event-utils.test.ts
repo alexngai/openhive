@@ -418,18 +418,33 @@ describe('deduplicateStreamingEvents', () => {
     expect(result).toHaveLength(1);
   });
 
-  it('matches on first 100 chars of content prefix', () => {
-    const longText = 'A'.repeat(200);
+  it('does NOT match on prefix alone — divergent tails are kept (post-refactor: full-content hash)', () => {
+    // Behavior changed: dedup now hashes the full content string so two events
+    // that share a long prefix but diverge later are treated as distinct.
+    const sharedPrefix = 'A'.repeat(100);
     const streaming = [
-      makeEvent({ id: 'acp-1', type: 'assistant_message', content: [{ type: 'text', text: longText }] }),
+      makeEvent({ id: 'acp-1', type: 'assistant_message', content: [{ type: 'text', text: sharedPrefix + 'TAIL-A' }] }),
     ];
-    // Trajectory has same first 100 chars but different tail
     const trajectory = [
-      makeEvent({ id: 'traj-1', type: 'assistant_message', content: [{ type: 'text', text: longText.slice(0, 100) + 'B'.repeat(100) }] }),
+      makeEvent({ id: 'traj-1', type: 'assistant_message', content: [{ type: 'text', text: sharedPrefix + 'TAIL-B' }] }),
     ];
 
     const result = deduplicateStreamingEvents(streaming, trajectory);
-    // Should match since first 100 chars are the same
+    // Tails differ → distinct events → streaming kept
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('acp-1');
+  });
+
+  it('matches when full content is identical', () => {
+    const text = 'A'.repeat(200);
+    const streaming = [
+      makeEvent({ id: 'acp-1', type: 'assistant_message', content: [{ type: 'text', text }] }),
+    ];
+    const trajectory = [
+      makeEvent({ id: 'traj-1', type: 'assistant_message', content: [{ type: 'text', text }] }),
+    ];
+
+    const result = deduplicateStreamingEvents(streaming, trajectory);
     expect(result).toHaveLength(0);
   });
 
