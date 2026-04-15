@@ -13,6 +13,8 @@ import {
   MIGRATION_V30_SESSION_RESOURCE_SCOPING,
   MIGRATION_V31_CASCADE_PROJECTIONS,
   MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
+  MIGRATION_V33_CASCADE_OPERATIONS,
+  MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
 } from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
@@ -237,6 +239,11 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   31: MIGRATION_V31_CASCADE_PROJECTIONS,
   // Version 32: Add 'federated' sync_strategy for MAP-owned remote task graphs
   32: MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
+  // Version 33: cascade_operations audit log for cascade.completed events
+  33: MIGRATION_V33_CASCADE_OPERATIONS,
+  // Version 34: cascade_pushes + cascade_queue_entries projections for
+  // trunk pushes (stream.pushed) and merge queue observability (queue.*)
+  34: MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
 };
 
 /** Get the SQL for a specific migration version.

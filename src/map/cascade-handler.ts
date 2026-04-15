@@ -25,9 +25,15 @@ import type {
   StreamCommittedParams,
   StreamMergedParams,
   StreamConflictedParams,
+  StreamConflictResolvedParams,
   StreamAbandonedParams,
+  StreamPushedParams,
   CascadeRebasedParams,
   CascadeCompletedParams,
+  QueueAddedParams,
+  QueueReadyParams,
+  QueueCancelledParams,
+  QueueRemovedParams,
   TaskRef,
   EventMetadata,
 } from './cascade-types.js';
@@ -39,6 +45,10 @@ import {
   recordCommit,
   recordMerge,
   recordConflict,
+  recordCascadeOperation,
+  markConflictResolved,
+  recordPush,
+  upsertQueueEntry,
   getStreamBySwarmAndId,
   type CascadeStream,
 } from '../db/dal/cascade-streams.js';
@@ -67,12 +77,27 @@ export function handleCascadeRequest(
       return handleStreamMerged(params as StreamMergedParams, context);
     case 'stream.conflicted':
       return handleStreamConflicted(params as StreamConflictedParams, context);
+    case 'stream.conflict_resolved':
+      return handleStreamConflictResolved(
+        params as StreamConflictResolvedParams,
+        context
+      );
     case 'stream.abandoned':
       return handleStreamAbandoned(params as StreamAbandonedParams, context);
+    case 'stream.pushed':
+      return handleStreamPushed(params as StreamPushedParams, context);
     case 'cascade.rebased':
       return handleCascadeRebased(params as CascadeRebasedParams, context);
     case 'cascade.completed':
       return handleCascadeCompleted(params as CascadeCompletedParams, context);
+    case 'queue.added':
+      return handleQueueEvent('queued', params as QueueAddedParams, context);
+    case 'queue.ready':
+      return handleQueueEvent('ready', params as QueueReadyParams, context);
+    case 'queue.cancelled':
+      return handleQueueEvent('cancelled', params as QueueCancelledParams, context);
+    case 'queue.removed':
+      return handleQueueEvent('removed', params as QueueRemovedParams, context);
     default:
       throw new CascadeRequestError(-32601, `Unknown cascade method: ${method}`);
   }
@@ -227,9 +252,12 @@ function handleStreamMerged(
     throw new CascadeRequestError(-32602, 'Invalid params: missing merge_commit');
   }
 
-  // Source may be a stream or a worker branch; only upsert projection rows
-  // for things that look like real stream ids (not worker:wt-* ids).
-  const isWorkerSource = params.source_stream_id.startsWith('worker/') ||
+  // Source may be a stream or a worker branch. Detect via the explicit
+  // strategy field set by tracker.completeTask ('task-merge'); fall back to
+  // the legacy `worker/` / `worker:` prefix heuristic for callers that
+  // don't populate strategy (older runtimes, manual mergeStream emissions).
+  const isWorkerSource = params.strategy === 'task-merge' ||
+    params.source_stream_id.startsWith('worker/') ||
     params.source_stream_id.startsWith('worker:');
 
   const sourceStream = isWorkerSource
@@ -347,6 +375,69 @@ function handleStreamConflicted(
   });
 
   return { ok: true, stream_row_id: stream.id, created };
+}
+
+// ============================================================================
+// stream.conflict_resolved
+// ============================================================================
+//
+// Closes the loop opened by stream.conflicted: a recovery strategy or human
+// resolved the conflict, so cascade_conflicts.status should move from
+// pending → resolved. Also revives the stream's status if it was marked
+// 'conflicted' (and isn't already terminal like merged/abandoned).
+
+function handleStreamConflictResolved(
+  params: StreamConflictResolvedParams,
+  context: CascadeRequestContext
+): CascadeEventAck {
+  if (!params?.stream_id || typeof params.stream_id !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing stream_id');
+  }
+  if (!params.conflict_id || typeof params.conflict_id !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing conflict_id');
+  }
+  if (!params.resolution_method || typeof params.resolution_method !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing resolution_method');
+  }
+
+  const updated = markConflictResolved({
+    source_swarm_id: context.swarmId,
+    stream_id: params.stream_id,
+    conflict_id: params.conflict_id,
+    resolution_method: params.resolution_method,
+    resolved_by: params.resolved_by,
+    resolution_summary: params.resolution_summary,
+  });
+
+  // Revive stream status if conflicted and no other open conflicts remain.
+  const stream = getStreamBySwarmAndId(context.swarmId, params.stream_id);
+  if (stream?.status === 'conflicted') {
+    updateStreamStatus(stream.id, 'active');
+  }
+
+  emitHubEvent('cascade_stream_conflict_resolved', {
+    source_swarm_id: context.swarmId,
+    stream_row_id: stream?.id ?? null,
+    stream_id: params.stream_id,
+    conflict_id: params.conflict_id,
+    resolution_method: params.resolution_method,
+    resolved_by: params.resolved_by,
+    resolution_summary: params.resolution_summary,
+    matched_conflict: updated,
+  });
+
+  if (stream) {
+    broadcast(stream, 'cascade:stream_conflict_resolved', {
+      stream_row_id: stream.id,
+      stream_id: params.stream_id,
+      conflict_id: params.conflict_id,
+      resolution_method: params.resolution_method,
+      resolved_by: params.resolved_by,
+      source_swarm_id: stream.source_swarm_id,
+    });
+  }
+
+  return { ok: true, stream_row_id: stream?.id };
 }
 
 // ============================================================================
@@ -486,11 +577,34 @@ function handleCascadeCompleted(
 
   // Look up the root stream row if it exists (may not if the hub hasn't
   // seen stream.opened yet for some reason). Missing root is non-fatal —
-  // we still broadcast the event.
+  // we still record the audit row and broadcast the event.
   const rootStream = getStreamBySwarmAndId(context.swarmId, params.root_stream_id);
+
+  // Persist to the cascade_operations audit log. Best-effort: if the write
+  // fails (e.g., schema migration not applied), still emit + broadcast so
+  // live consumers don't lose visibility.
+  let operationId: string | undefined;
+  try {
+    const op = recordCascadeOperation({
+      source_swarm_id: context.swarmId,
+      root_stream_id: params.root_stream_id,
+      root_stream_row_id: rootStream?.id,
+      agent_id: params.agent_id,
+      strategy: params.strategy,
+      updated_streams: params.updated_streams,
+      failed_streams: params.failed_streams ?? [],
+      skipped_streams: params.skipped_streams ?? [],
+      deferred_streams: params.deferred_streams,
+      metadata: params.metadata,
+    });
+    operationId = op.id;
+  } catch {
+    // Non-critical for live observability.
+  }
 
   const summary = {
     source_swarm_id: context.swarmId,
+    operation_id: operationId,
     root_stream_id: params.root_stream_id,
     root_stream_row_id: rootStream?.id ?? null,
     agent_id: params.agent_id,
@@ -518,6 +632,138 @@ function handleCascadeCompleted(
   }
 
   return { ok: true, stream_row_id: rootStream?.id };
+}
+
+// ============================================================================
+// stream.pushed (trunk-style push to a remote)
+// ============================================================================
+
+function handleStreamPushed(
+  params: StreamPushedParams,
+  context: CascadeRequestContext
+): CascadeEventAck {
+  if (!params?.stream_id || typeof params.stream_id !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing stream_id');
+  }
+  if (!params.pushed_commit || typeof params.pushed_commit !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing pushed_commit');
+  }
+  if (!params.remote_ref || typeof params.remote_ref !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing remote_ref');
+  }
+
+  const stream = ensureStreamRow(
+    context.swarmId,
+    params.stream_id,
+    params.agent_id ?? context.agentId ?? 'unknown'
+  );
+
+  const push = recordPush({
+    source_swarm_id: context.swarmId,
+    stream_row_id: stream.id,
+    stream_id: params.stream_id,
+    agent_id: params.agent_id,
+    pushed_commit: params.pushed_commit,
+    remote: params.remote ?? 'origin',
+    remote_ref: params.remote_ref,
+    strategy: params.strategy,
+    metadata: params.metadata,
+  });
+
+  emitHubEvent('cascade_stream_pushed', {
+    source_swarm_id: context.swarmId,
+    push_row_id: push.id,
+    stream_row_id: stream.id,
+    stream_id: stream.stream_id,
+    pushed_commit: push.pushed_commit,
+    remote: push.remote,
+    remote_ref: push.remote_ref,
+    strategy: push.strategy,
+    agent_id: push.agent_id,
+  });
+
+  broadcast(stream, 'cascade:stream_pushed', {
+    stream_row_id: stream.id,
+    stream_id: stream.stream_id,
+    pushed_commit: push.pushed_commit,
+    remote: push.remote,
+    remote_ref: push.remote_ref,
+    strategy: push.strategy,
+    source_swarm_id: stream.source_swarm_id,
+  });
+
+  return { ok: true, stream_row_id: stream.id };
+}
+
+// ============================================================================
+// queue.added / queue.ready / queue.cancelled / queue.removed
+// ============================================================================
+
+function handleQueueEvent(
+  status: 'queued' | 'ready' | 'cancelled' | 'removed',
+  params: QueueAddedParams | QueueReadyParams | QueueCancelledParams | QueueRemovedParams,
+  context: CascadeRequestContext
+): CascadeEventAck {
+  if (!params?.entry_id || typeof params.entry_id !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing entry_id');
+  }
+  if (!params.stream_id || typeof params.stream_id !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing stream_id');
+  }
+  if (!params.target_branch || typeof params.target_branch !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing target_branch');
+  }
+
+  const stream = ensureStreamRow(
+    context.swarmId,
+    params.stream_id,
+    context.agentId ?? 'unknown'
+  );
+
+  const entry = upsertQueueEntry({
+    source_swarm_id: context.swarmId,
+    entry_id: params.entry_id,
+    stream_id: params.stream_id,
+    stream_row_id: stream.id,
+    target_branch: params.target_branch,
+    status,
+    reason: (params as QueueCancelledParams).reason,
+    outcome: (params as QueueRemovedParams).outcome,
+    metadata: params.metadata,
+  });
+
+  const eventName = `cascade_queue_${status}`;
+  emitHubEvent(eventName, {
+    source_swarm_id: context.swarmId,
+    entry_row_id: entry.id,
+    entry_id: entry.entry_id,
+    stream_row_id: stream.id,
+    stream_id: stream.stream_id,
+    target_branch: entry.target_branch,
+    status: entry.status,
+  });
+
+  const wsType = (`cascade:queue_${status}` as CascadeWSEventType);
+  try {
+    const wsMessage = {
+      type: wsType,
+      data: {
+        entry_row_id: entry.id,
+        entry_id: entry.entry_id,
+        stream_row_id: stream.id,
+        stream_id: stream.stream_id,
+        target_branch: entry.target_branch,
+        status: entry.status,
+        source_swarm_id: stream.source_swarm_id,
+      },
+    } as const;
+    broadcastToChannel(`cascade:swarm:${context.swarmId}`, wsMessage);
+    broadcastToChannel('global', wsMessage);
+  } catch {
+    // Non-critical
+  }
+
+  return { ok: true, stream_row_id: stream.id };
 }
 
 // ============================================================================
@@ -553,9 +799,15 @@ type CascadeWSEventType =
   | 'cascade:stream_committed'
   | 'cascade:stream_merged'
   | 'cascade:stream_conflicted'
+  | 'cascade:stream_conflict_resolved'
   | 'cascade:stream_abandoned'
   | 'cascade:stream_rebased'
-  | 'cascade:completed';
+  | 'cascade:stream_pushed'
+  | 'cascade:completed'
+  | 'cascade:queue_queued'
+  | 'cascade:queue_ready'
+  | 'cascade:queue_cancelled'
+  | 'cascade:queue_removed';
 
 function broadcast(
   stream: CascadeStream,

@@ -24,6 +24,9 @@ import {
   getStreamBySwarmAndId,
   listChangesForStream,
   listConflictsForStream,
+  listCascadeOperations,
+  listPushes,
+  listQueueEntries,
   getCommitRangeForTask,
 } from '../../db/dal/cascade-streams.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
@@ -495,6 +498,31 @@ describe('Cascade Handler', () => {
       expect(result.ok).toBe(true);
     });
 
+    it('persists to cascade_operations audit log', () => {
+      handleCascadeRequest(
+        CASCADE_METHODS.CASCADE_COMPLETED,
+        {
+          root_stream_id: 'audit-root',
+          agent_id: 'auditor',
+          strategy: 'skip_conflicting',
+          updated_streams: ['s1', 's2'],
+          failed_streams: [{ stream_id: 's3', reason: 'conflict' }],
+          skipped_streams: ['s4'],
+          deferred_streams: ['s5'],
+        },
+        { swarmId, agentId }
+      );
+
+      const ops = listCascadeOperations({ source_swarm_id: swarmId });
+      const audit = ops.find((o) => o.root_stream_id === 'audit-root');
+      expect(audit).toBeDefined();
+      expect(audit!.strategy).toBe('skip_conflicting');
+      expect(audit!.updated_streams).toEqual(['s1', 's2']);
+      expect(audit!.failed_streams).toEqual([{ stream_id: 's3', reason: 'conflict' }]);
+      expect(audit!.skipped_streams).toEqual(['s4']);
+      expect(audit!.deferred_streams).toEqual(['s5']);
+    });
+
     it('rejects missing root_stream_id or updated_streams', () => {
       expect(() =>
         handleCascadeRequest(
@@ -511,6 +539,151 @@ describe('Cascade Handler', () => {
           { swarmId, agentId }
         )
       ).toThrow(CascadeRequestError);
+    });
+  });
+
+  describe('x-cascade/stream.pushed', () => {
+    it('records a push entry for trunk-style flows', () => {
+      handleCascadeRequest(
+        CASCADE_METHODS.STREAM_OPENED,
+        { stream_id: 'push-s1', name: 'trunk', agent_id: 'a' },
+        { swarmId, agentId }
+      );
+      handleCascadeRequest(
+        CASCADE_METHODS.STREAM_PUSHED,
+        {
+          stream_id: 'push-s1',
+          agent_id: 'a',
+          pushed_commit: 'sha-pushed',
+          remote: 'origin',
+          remote_ref: 'main',
+          strategy: 'direct-push',
+        },
+        { swarmId, agentId }
+      );
+
+      const pushes = listPushes({ source_swarm_id: swarmId });
+      const audit = pushes.find((p) => p.stream_id === 'push-s1');
+      expect(audit).toBeDefined();
+      expect(audit!.pushed_commit).toBe('sha-pushed');
+      expect(audit!.remote).toBe('origin');
+      expect(audit!.remote_ref).toBe('main');
+      expect(audit!.strategy).toBe('direct-push');
+    });
+  });
+
+  describe('x-cascade/queue.* event chain', () => {
+    it('tracks status transitions queued → ready → removed via upsert', () => {
+      handleCascadeRequest(
+        CASCADE_METHODS.STREAM_OPENED,
+        { stream_id: 'q-s1', name: 'queueable', agent_id: 'a' },
+        { swarmId, agentId }
+      );
+
+      // 1. Added → status='queued'
+      handleCascadeRequest(
+        CASCADE_METHODS.QUEUE_ADDED,
+        { entry_id: 'qe-1', stream_id: 'q-s1', target_branch: 'main' },
+        { swarmId, agentId }
+      );
+      let entries = listQueueEntries({ source_swarm_id: swarmId });
+      let entry = entries.find((e) => e.entry_id === 'qe-1');
+      expect(entry?.status).toBe('queued');
+
+      // 2. Ready
+      handleCascadeRequest(
+        CASCADE_METHODS.QUEUE_READY,
+        { entry_id: 'qe-1', stream_id: 'q-s1', target_branch: 'main' },
+        { swarmId, agentId }
+      );
+      entries = listQueueEntries({ source_swarm_id: swarmId });
+      entry = entries.find((e) => e.entry_id === 'qe-1');
+      expect(entry?.status).toBe('ready');
+
+      // 3. Removed (with outcome)
+      handleCascadeRequest(
+        CASCADE_METHODS.QUEUE_REMOVED,
+        {
+          entry_id: 'qe-1',
+          stream_id: 'q-s1',
+          target_branch: 'main',
+          outcome: 'merged',
+        },
+        { swarmId, agentId }
+      );
+      entries = listQueueEntries({ source_swarm_id: swarmId });
+      entry = entries.find((e) => e.entry_id === 'qe-1');
+      expect(entry?.status).toBe('removed');
+      expect(entry?.outcome).toBe('merged');
+    });
+
+    it('queue.cancelled records reason', () => {
+      handleCascadeRequest(
+        CASCADE_METHODS.STREAM_OPENED,
+        { stream_id: 'q-s2', name: 'cancellable', agent_id: 'a' },
+        { swarmId, agentId }
+      );
+      handleCascadeRequest(
+        CASCADE_METHODS.QUEUE_ADDED,
+        { entry_id: 'qe-2', stream_id: 'q-s2', target_branch: 'main' },
+        { swarmId, agentId }
+      );
+      handleCascadeRequest(
+        CASCADE_METHODS.QUEUE_CANCELLED,
+        {
+          entry_id: 'qe-2',
+          stream_id: 'q-s2',
+          target_branch: 'main',
+          reason: 'operator decision',
+        },
+        { swarmId, agentId }
+      );
+
+      const entries = listQueueEntries({ source_swarm_id: swarmId, status: 'cancelled' });
+      const entry = entries.find((e) => e.entry_id === 'qe-2');
+      expect(entry).toBeDefined();
+      expect(entry!.reason).toBe('operator decision');
+    });
+  });
+
+  describe('x-cascade/stream.conflict_resolved', () => {
+    it('marks an existing conflict resolved and revives stream status', () => {
+      handleCascadeRequest(
+        CASCADE_METHODS.STREAM_OPENED,
+        { stream_id: 'cr-s1', name: 'cr-stream', agent_id: 'a' },
+        { swarmId, agentId }
+      );
+      handleCascadeRequest(
+        CASCADE_METHODS.STREAM_CONFLICTED,
+        {
+          stream_id: 'cr-s1',
+          conflict_id: 'cf-resolved-1',
+          conflicted_files: ['x.ts'],
+          source: 'sync',
+        },
+        { swarmId, agentId }
+      );
+      const before = getStreamBySwarmAndId(swarmId, 'cr-s1');
+      expect(before?.status).toBe('conflicted');
+
+      handleCascadeRequest(
+        CASCADE_METHODS.STREAM_CONFLICT_RESOLVED,
+        {
+          stream_id: 'cr-s1',
+          conflict_id: 'cf-resolved-1',
+          resolution_method: 'auto-resolve',
+          resolved_by: 'system',
+          resolution_summary: 'merged with -X ours',
+        },
+        { swarmId, agentId }
+      );
+
+      const after = getStreamBySwarmAndId(swarmId, 'cr-s1');
+      expect(after?.status).toBe('active');
+      const conflicts = listConflictsForStream(after!.id);
+      const resolved = conflicts.find((c) => c.conflict_id === 'cf-resolved-1');
+      expect(resolved?.status).toBe('resolved');
+      expect(resolved?.resolved_at).not.toBeNull();
     });
   });
 

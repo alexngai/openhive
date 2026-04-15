@@ -213,9 +213,15 @@ export type WSEventType =
   | 'cascade:stream_committed'
   | 'cascade:stream_merged'
   | 'cascade:stream_conflicted'
+  | 'cascade:stream_conflict_resolved'
   | 'cascade:stream_abandoned'
   | 'cascade:stream_rebased'
-  | 'cascade:completed';
+  | 'cascade:stream_pushed'
+  | 'cascade:completed'
+  | 'cascade:queue_queued'
+  | 'cascade:queue_ready'
+  | 'cascade:queue_cancelled'
+  | 'cascade:queue_removed';
 
 export interface WSEvent {
   type: WSEventType;

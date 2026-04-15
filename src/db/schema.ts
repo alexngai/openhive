@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 32;
+export const SCHEMA_VERSION = 34;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -597,6 +597,74 @@ CREATE TABLE IF NOT EXISTS cascade_conflicts (
 
 CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_stream ON cascade_conflicts(stream_row_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_status ON cascade_conflicts(status);
+
+-- Cascade rebase walk audit log (one row per cascade.completed event).
+-- Lets operators answer "did this cascade succeed" + "what is recent
+-- cascade activity" without replaying events. Per-stream effects already
+-- live in cascade_changes / cascade_merges; this table is summary-level only.
+CREATE TABLE IF NOT EXISTS cascade_operations (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT NOT NULL,
+  root_stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  root_stream_id TEXT NOT NULL,
+  agent_id TEXT,
+  strategy TEXT NOT NULL,
+  updated_streams TEXT NOT NULL DEFAULT '[]',
+  failed_streams TEXT NOT NULL DEFAULT '[]',
+  skipped_streams TEXT NOT NULL DEFAULT '[]',
+  deferred_streams TEXT,
+  metadata TEXT,
+  completed_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_operations_swarm ON cascade_operations(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_operations_root ON cascade_operations(root_stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_operations_completed_at ON cascade_operations(completed_at DESC);
+
+-- Trunk-style remote pushes (append-only audit). Trunk teams using
+-- direct-push / optimistic-push landing strategies push to a remote ref
+-- rather than merging into another stream. cascade_merges doesn't capture
+-- those events; this table does.
+CREATE TABLE IF NOT EXISTS cascade_pushes (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT NOT NULL,
+  stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  stream_id TEXT NOT NULL,
+  agent_id TEXT,
+  pushed_commit TEXT NOT NULL,
+  remote TEXT NOT NULL,
+  remote_ref TEXT NOT NULL,
+  strategy TEXT,
+  metadata TEXT,
+  pushed_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_pushes_swarm ON cascade_pushes(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_pushes_stream ON cascade_pushes(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_pushes_pushed_at ON cascade_pushes(pushed_at DESC);
+
+-- Merge queue entries (state-tracking projection for queue.* events).
+-- Status reflects latest observed transition: queued → ready → removed.
+-- Cancelled is terminal.
+CREATE TABLE IF NOT EXISTS cascade_queue_entries (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT NOT NULL,
+  entry_id TEXT NOT NULL,
+  stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  stream_id TEXT NOT NULL,
+  target_branch TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  reason TEXT,
+  outcome TEXT,
+  metadata TEXT,
+  added_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(source_swarm_id, entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_queue_swarm ON cascade_queue_entries(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_queue_status ON cascade_queue_entries(status);
+CREATE INDEX IF NOT EXISTS idx_cascade_queue_target ON cascade_queue_entries(target_branch);
 `;
 
 export const SEED_DATA = `
@@ -1419,6 +1487,73 @@ CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_re
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
+`;
+
+// Migration V34: cascade_pushes + cascade_queue_entries projections for
+// trunk-style flows (direct-push / optimistic-push) and merge queue
+// observability (queue.added/ready/cancelled/removed).
+export const MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE = `
+CREATE TABLE IF NOT EXISTS cascade_pushes (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT NOT NULL,
+  stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  stream_id TEXT NOT NULL,
+  agent_id TEXT,
+  pushed_commit TEXT NOT NULL,
+  remote TEXT NOT NULL,
+  remote_ref TEXT NOT NULL,
+  strategy TEXT,
+  metadata TEXT,
+  pushed_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_pushes_swarm ON cascade_pushes(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_pushes_stream ON cascade_pushes(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_pushes_pushed_at ON cascade_pushes(pushed_at DESC);
+
+CREATE TABLE IF NOT EXISTS cascade_queue_entries (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT NOT NULL,
+  entry_id TEXT NOT NULL,
+  stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  stream_id TEXT NOT NULL,
+  target_branch TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  reason TEXT,
+  outcome TEXT,
+  metadata TEXT,
+  added_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(source_swarm_id, entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_queue_swarm ON cascade_queue_entries(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_queue_status ON cascade_queue_entries(status);
+CREATE INDEX IF NOT EXISTS idx_cascade_queue_target ON cascade_queue_entries(target_branch);
+`;
+
+// Migration V33: cascade_operations audit log for cascade.completed events.
+// Stores one row per cascadeRebase walk so operators can answer "did this
+// cascade succeed", "what's the recent cascade activity", etc.
+export const MIGRATION_V33_CASCADE_OPERATIONS = `
+CREATE TABLE IF NOT EXISTS cascade_operations (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT NOT NULL,
+  root_stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  root_stream_id TEXT NOT NULL,
+  agent_id TEXT,
+  strategy TEXT NOT NULL,
+  updated_streams TEXT NOT NULL DEFAULT '[]',
+  failed_streams TEXT NOT NULL DEFAULT '[]',
+  skipped_streams TEXT NOT NULL DEFAULT '[]',
+  deferred_streams TEXT,
+  metadata TEXT,
+  completed_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_operations_swarm ON cascade_operations(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_operations_root ON cascade_operations(root_stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_operations_completed_at ON cascade_operations(completed_at DESC);
 `;
 
 // Populate FTS tables from existing data

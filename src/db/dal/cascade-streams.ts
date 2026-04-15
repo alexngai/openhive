@@ -87,6 +87,15 @@ export interface CascadeConflict {
   resolved_at: string | null;
 }
 
+export interface MarkConflictResolvedInput {
+  source_swarm_id: string;
+  stream_id: string;
+  conflict_id: string;
+  resolution_method: string;
+  resolved_by?: string;
+  resolution_summary?: string;
+}
+
 export interface CascadeCommitRange {
   stream_row_id: string;
   stream_id: string;
@@ -161,6 +170,34 @@ export interface RecordConflictInput {
   target_commit?: string;
   source?: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface RecordCascadeOperationInput {
+  source_swarm_id: string;
+  root_stream_id: string;
+  root_stream_row_id?: string;
+  agent_id?: string;
+  strategy: string;
+  updated_streams: string[];
+  failed_streams: Array<{ stream_id: string; reason: string }>;
+  skipped_streams: string[];
+  deferred_streams?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface CascadeOperation {
+  id: string;
+  source_swarm_id: string;
+  root_stream_row_id: string | null;
+  root_stream_id: string;
+  agent_id: string | null;
+  strategy: string;
+  updated_streams: string[];
+  failed_streams: Array<{ stream_id: string; reason: string }>;
+  skipped_streams: string[];
+  deferred_streams: string[] | null;
+  metadata: Record<string, unknown> | null;
+  completed_at: string;
 }
 
 // ============================================================================
@@ -623,6 +660,376 @@ export function recordConflict(input: RecordConflictInput): {
   return { conflict: rowToConflict(row), created: true };
 }
 
+function rowToCascadeOperation(row: Row): CascadeOperation {
+  return {
+    id: row.id as string,
+    source_swarm_id: row.source_swarm_id as string,
+    root_stream_row_id: (row.root_stream_row_id as string | null) ?? null,
+    root_stream_id: row.root_stream_id as string,
+    agent_id: (row.agent_id as string | null) ?? null,
+    strategy: row.strategy as string,
+    updated_streams: parseJsonArray(row.updated_streams),
+    failed_streams: (() => {
+      const parsed = parseJsonObject(row.failed_streams as unknown);
+      // failed_streams is stored as a JSON array; parseJsonObject returns
+      // null for arrays (since the helper assumes object). Fall back to a
+      // direct parse with array typing.
+      try {
+        const arr = JSON.parse((row.failed_streams as string) || '[]');
+        return Array.isArray(arr) ? arr : [];
+      } catch {
+        return parsed ? [] : [];
+      }
+    })(),
+    skipped_streams: parseJsonArray(row.skipped_streams),
+    deferred_streams: row.deferred_streams
+      ? parseJsonArray(row.deferred_streams)
+      : null,
+    metadata: parseJsonObject(row.metadata),
+    completed_at: row.completed_at as string,
+  };
+}
+
+/**
+ * Append a row to the cascade_operations audit log. Always inserts (no
+ * idempotency key) — each cascade.completed event is a distinct walk.
+ */
+export function recordCascadeOperation(input: RecordCascadeOperationInput): CascadeOperation {
+  const db = getDatabase();
+  const id = nanoid();
+  db.prepare(
+    `INSERT INTO cascade_operations (
+      id, source_swarm_id, root_stream_row_id, root_stream_id, agent_id,
+      strategy, updated_streams, failed_streams, skipped_streams,
+      deferred_streams, metadata
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    input.source_swarm_id,
+    input.root_stream_row_id ?? null,
+    input.root_stream_id,
+    input.agent_id ?? null,
+    input.strategy,
+    JSON.stringify(input.updated_streams),
+    JSON.stringify(input.failed_streams),
+    JSON.stringify(input.skipped_streams),
+    input.deferred_streams ? JSON.stringify(input.deferred_streams) : null,
+    input.metadata ? JSON.stringify(input.metadata) : null
+  );
+  const row = db.prepare(`SELECT * FROM cascade_operations WHERE id = ?`).get(id) as Row;
+  return rowToCascadeOperation(row);
+}
+
+export function listCascadeOperations(options: {
+  source_swarm_id?: string;
+  root_stream_row_id?: string;
+  limit?: number;
+  offset?: number;
+} = {}): CascadeOperation[] {
+  const db = getDatabase();
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (options.source_swarm_id) {
+    where.push('source_swarm_id = ?');
+    params.push(options.source_swarm_id);
+  }
+  if (options.root_stream_row_id) {
+    where.push('root_stream_row_id = ?');
+    params.push(options.root_stream_row_id);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const limit = Math.max(1, Math.min(options.limit ?? 50, 500));
+  const offset = Math.max(0, options.offset ?? 0);
+  const rows = db
+    .prepare(
+      `SELECT * FROM cascade_operations ${whereSql}
+       ORDER BY completed_at DESC
+       LIMIT ? OFFSET ?`
+    )
+    .all(...params, limit, offset) as Row[];
+  return rows.map(rowToCascadeOperation);
+}
+
+/**
+ * Mark a conflict as resolved (via stream.conflict_resolved event). Updates
+ * the existing row in-place; if the conflict isn't found (event arrived
+ * before the conflict was projected, or stream.conflicted was missed),
+ * silently returns false so callers can decide how to react.
+ */
+export function markConflictResolved(input: MarkConflictResolvedInput): boolean {
+  const db = getDatabase();
+  // Resolve via stream + conflict_id, scoped to the swarm.
+  const row = db
+    .prepare(
+      `SELECT c.* FROM cascade_conflicts c
+       JOIN cascade_streams s ON s.id = c.stream_row_id
+       WHERE s.source_swarm_id = ?
+         AND s.stream_id = ?
+         AND c.conflict_id = ?`
+    )
+    .get(input.source_swarm_id, input.stream_id, input.conflict_id) as Row | undefined;
+  if (!row) return false;
+
+  // Stash resolution context in metadata so listings/UIs can show how it
+  // was resolved without a separate column.
+  const existingMeta = parseJsonObject(row.metadata) ?? {};
+  const newMeta = {
+    ...existingMeta,
+    resolution_method: input.resolution_method,
+    resolved_by: input.resolved_by,
+    resolution_summary: input.resolution_summary,
+  };
+
+  db.prepare(
+    `UPDATE cascade_conflicts
+     SET status = 'resolved', resolved_at = datetime('now'), metadata = ?
+     WHERE id = ?`
+  ).run(JSON.stringify(newMeta), row.id);
+  return true;
+}
+
+// ============================================================================
+// Pushes (trunk-style remote pushes from direct-push / optimistic-push)
+// ============================================================================
+
+export interface CascadePush {
+  id: string;
+  source_swarm_id: string;
+  stream_row_id: string | null;
+  stream_id: string;
+  agent_id: string | null;
+  pushed_commit: string;
+  remote: string;
+  remote_ref: string;
+  strategy: string | null;
+  metadata: Record<string, unknown> | null;
+  pushed_at: string;
+}
+
+export interface RecordPushInput {
+  source_swarm_id: string;
+  stream_row_id?: string;
+  stream_id: string;
+  agent_id?: string;
+  pushed_commit: string;
+  remote: string;
+  remote_ref: string;
+  strategy?: string;
+  metadata?: Record<string, unknown>;
+}
+
+function rowToPush(row: Row): CascadePush {
+  return {
+    id: row.id as string,
+    source_swarm_id: row.source_swarm_id as string,
+    stream_row_id: (row.stream_row_id as string | null) ?? null,
+    stream_id: row.stream_id as string,
+    agent_id: (row.agent_id as string | null) ?? null,
+    pushed_commit: row.pushed_commit as string,
+    remote: row.remote as string,
+    remote_ref: row.remote_ref as string,
+    strategy: (row.strategy as string | null) ?? null,
+    metadata: parseJsonObject(row.metadata),
+    pushed_at: row.pushed_at as string,
+  };
+}
+
+export function recordPush(input: RecordPushInput): CascadePush {
+  const db = getDatabase();
+  const id = nanoid();
+  db.prepare(
+    `INSERT INTO cascade_pushes (
+      id, source_swarm_id, stream_row_id, stream_id, agent_id,
+      pushed_commit, remote, remote_ref, strategy, metadata
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    input.source_swarm_id,
+    input.stream_row_id ?? null,
+    input.stream_id,
+    input.agent_id ?? null,
+    input.pushed_commit,
+    input.remote,
+    input.remote_ref,
+    input.strategy ?? null,
+    input.metadata ? JSON.stringify(input.metadata) : null
+  );
+  const row = db.prepare(`SELECT * FROM cascade_pushes WHERE id = ?`).get(id) as Row;
+  return rowToPush(row);
+}
+
+export function listPushes(options: {
+  source_swarm_id?: string;
+  stream_row_id?: string;
+  limit?: number;
+  offset?: number;
+} = {}): CascadePush[] {
+  const db = getDatabase();
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (options.source_swarm_id) {
+    where.push('source_swarm_id = ?');
+    params.push(options.source_swarm_id);
+  }
+  if (options.stream_row_id) {
+    where.push('stream_row_id = ?');
+    params.push(options.stream_row_id);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const limit = Math.max(1, Math.min(options.limit ?? 50, 500));
+  const offset = Math.max(0, options.offset ?? 0);
+  const rows = db
+    .prepare(
+      `SELECT * FROM cascade_pushes ${whereSql}
+       ORDER BY pushed_at DESC
+       LIMIT ? OFFSET ?`
+    )
+    .all(...params, limit, offset) as Row[];
+  return rows.map(rowToPush);
+}
+
+// ============================================================================
+// Queue entries (merge queue projection: queue.added/ready/cancelled/removed)
+// ============================================================================
+
+export interface CascadeQueueEntry {
+  id: string;
+  source_swarm_id: string;
+  entry_id: string;
+  stream_row_id: string | null;
+  stream_id: string;
+  target_branch: string;
+  status: string;
+  reason: string | null;
+  outcome: string | null;
+  metadata: Record<string, unknown> | null;
+  added_at: string;
+  updated_at: string;
+}
+
+function rowToQueueEntry(row: Row): CascadeQueueEntry {
+  return {
+    id: row.id as string,
+    source_swarm_id: row.source_swarm_id as string,
+    entry_id: row.entry_id as string,
+    stream_row_id: (row.stream_row_id as string | null) ?? null,
+    stream_id: row.stream_id as string,
+    target_branch: row.target_branch as string,
+    status: row.status as string,
+    reason: (row.reason as string | null) ?? null,
+    outcome: (row.outcome as string | null) ?? null,
+    metadata: parseJsonObject(row.metadata),
+    added_at: row.added_at as string,
+    updated_at: row.updated_at as string,
+  };
+}
+
+export interface UpsertQueueEntryInput {
+  source_swarm_id: string;
+  entry_id: string;
+  stream_id: string;
+  stream_row_id?: string;
+  target_branch: string;
+  status: 'queued' | 'ready' | 'cancelled' | 'removed';
+  reason?: string;
+  outcome?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Upsert a queue entry. Idempotent on (source_swarm_id, entry_id). Status
+ * transitions follow the natural ordering queued → ready → removed; cancelled
+ * is terminal. We trust the latest event over older state.
+ */
+export function upsertQueueEntry(input: UpsertQueueEntryInput): CascadeQueueEntry {
+  const db = getDatabase();
+  const existing = db
+    .prepare(
+      `SELECT * FROM cascade_queue_entries WHERE source_swarm_id = ? AND entry_id = ?`
+    )
+    .get(input.source_swarm_id, input.entry_id) as Row | undefined;
+
+  if (existing) {
+    db.prepare(
+      `UPDATE cascade_queue_entries
+       SET status = ?,
+           reason = COALESCE(?, reason),
+           outcome = COALESCE(?, outcome),
+           metadata = COALESCE(?, metadata),
+           updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(
+      input.status,
+      input.reason ?? null,
+      input.outcome ?? null,
+      input.metadata ? JSON.stringify(input.metadata) : null,
+      existing.id
+    );
+    const row = db
+      .prepare(`SELECT * FROM cascade_queue_entries WHERE id = ?`)
+      .get(existing.id) as Row;
+    return rowToQueueEntry(row);
+  }
+
+  const id = nanoid();
+  db.prepare(
+    `INSERT INTO cascade_queue_entries (
+      id, source_swarm_id, entry_id, stream_row_id, stream_id, target_branch,
+      status, reason, outcome, metadata
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    input.source_swarm_id,
+    input.entry_id,
+    input.stream_row_id ?? null,
+    input.stream_id,
+    input.target_branch,
+    input.status,
+    input.reason ?? null,
+    input.outcome ?? null,
+    input.metadata ? JSON.stringify(input.metadata) : null
+  );
+  const row = db
+    .prepare(`SELECT * FROM cascade_queue_entries WHERE id = ?`)
+    .get(id) as Row;
+  return rowToQueueEntry(row);
+}
+
+export function listQueueEntries(options: {
+  source_swarm_id?: string;
+  status?: string;
+  target_branch?: string;
+  limit?: number;
+  offset?: number;
+} = {}): CascadeQueueEntry[] {
+  const db = getDatabase();
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (options.source_swarm_id) {
+    where.push('source_swarm_id = ?');
+    params.push(options.source_swarm_id);
+  }
+  if (options.status) {
+    where.push('status = ?');
+    params.push(options.status);
+  }
+  if (options.target_branch) {
+    where.push('target_branch = ?');
+    params.push(options.target_branch);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const limit = Math.max(1, Math.min(options.limit ?? 100, 500));
+  const offset = Math.max(0, options.offset ?? 0);
+  const rows = db
+    .prepare(
+      `SELECT * FROM cascade_queue_entries ${whereSql}
+       ORDER BY added_at DESC
+       LIMIT ? OFFSET ?`
+    )
+    .all(...params, limit, offset) as Row[];
+  return rows.map(rowToQueueEntry);
+}
+
 export function listConflictsForStream(stream_row_id: string): CascadeConflict[] {
   const db = getDatabase();
   const rows = db
@@ -673,12 +1080,19 @@ export function listOpenConflicts(options: {
  *
  * This is the primary query for the Phase 3 changelog artifact: close a task,
  * get a commit range for free.
+ *
+ * `commitsLimit` caps the per-stream `commits[]` array (default 500). Use
+ * smaller values for paginated UI queries; the changelog generator reads
+ * the unbounded result via the markdown rendering path.
  */
 export function getCommitRangeForTask(
   task_resource_id: string,
-  task_node_id: string
+  task_node_id: string,
+  options: { commitsLimit?: number; commitsOffset?: number } = {}
 ): CascadeCommitRange[] {
   const db = getDatabase();
+  const limit = Math.max(1, Math.min(options.commitsLimit ?? 500, 5000));
+  const offset = Math.max(0, options.commitsOffset ?? 0);
 
   // Find streams linked to this task. A change carries task_ref; streams may
   // also have a direct task_ref from stream.opened metadata.
@@ -702,16 +1116,18 @@ export function getCommitRangeForTask(
     const stream = rowToStream(streamRow);
 
     // Only include changes that carry the task_ref (drops stream-scoped
-    // noise when a stream was linked late).
+    // noise when a stream was linked late). Apply pagination here so each
+    // stream's commit list stays bounded.
     const changeRows = db
       .prepare(
         `SELECT * FROM cascade_changes
          WHERE stream_row_id = ?
            AND task_resource_id = ?
            AND task_node_id = ?
-         ORDER BY synced_at ASC`
+         ORDER BY synced_at ASC
+         LIMIT ? OFFSET ?`
       )
-      .all(stream.id, task_resource_id, task_node_id) as Row[];
+      .all(stream.id, task_resource_id, task_node_id, limit, offset) as Row[];
 
     // Fall back to all commits on the stream if none carry the task_ref but
     // the stream itself is task-linked.
@@ -724,9 +1140,10 @@ export function getCommitRangeForTask(
             .prepare(
               `SELECT * FROM cascade_changes
                WHERE stream_row_id = ?
-               ORDER BY synced_at ASC`
+               ORDER BY synced_at ASC
+               LIMIT ? OFFSET ?`
             )
-            .all(stream.id) as Row[])
+            .all(stream.id, limit, offset) as Row[])
         : [];
 
     const changes = effectiveChangeRows.map(rowToChange);
