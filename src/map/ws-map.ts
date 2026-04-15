@@ -36,6 +36,23 @@ import type { Agent } from '../types.js';
 import type { Config } from '../config.js';
 
 // ============================================================================
+// SwarmCraft graph projection filter
+// ============================================================================
+
+/**
+ * Roles that should NOT appear as selectable nodes in the SwarmCraft agent
+ * graph even though they're tracked on the MAP connection.
+ *   - `sidecar` — plumbing / not a user-facing agent
+ *   - `subagent` — short-lived spawned helpers (e.g. Claude's Explore tool);
+ *     including them would churn the graph as they come and go per turn.
+ * Other roles (orchestrator, coordinator, integrator, worker, agent, etc.)
+ * are persisted and lifecycle-tracked by the SwarmCraft bridge.
+ */
+function isGraphHiddenRole(role: string | undefined): boolean {
+  return role === 'sidecar' || role === 'subagent';
+}
+
+// ============================================================================
 // Trajectory Checkpoint Bridge
 // ============================================================================
 
@@ -374,6 +391,21 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       const current = getInbound(sid);
       if (current && current.ws !== ws) return;
 
+      // Cascade node_unregistered for every graph-visible agent on this swarm
+      // so the SwarmCraft agent graph marks them stopped when the swarm drops
+      // (the MAP SDK does not reliably emit agent.unregistered on session
+      // close, so we do it here explicitly before tearing down the connection).
+      if (current) {
+        for (const [agentEntryId, entry] of current.registeredAgents) {
+          if (isGraphHiddenRole(entry.role)) continue;
+          mapHubEvents.emit('node_unregistered', {
+            node_id: agentEntryId,
+            swarm_id: sid,
+            map_agent_id: agentEntryId,
+          });
+        }
+      }
+
       clearHeartbeatDebounce(sid);
       unregisterInbound(sid);
       try {
@@ -604,6 +636,25 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
         // Keep DB agent_count in sync with live registrations
         try { updateSwarm(swarmId, { agent_count: conn.registeredAgents.size }); } catch { /* non-critical */ }
+
+        // Project into the SwarmCraft agent graph so child agents (coordinators,
+        // integrators, workers) become selectable nodes. Skip infrastructure
+        // roles (sidecar — not a user-facing agent) and transient roles
+        // (subagent — short-lived spawned helpers that would churn the graph).
+        // Capabilities are forwarded so SwarmCraft's capability resolver can
+        // detect ACP/mail/messaging without re-probing the MAP connection.
+        if (!isGraphHiddenRole(agentEntry.role)) {
+          mapHubEvents.emit('node_registered', {
+            node_id: agentEntry.id,
+            swarm_id: swarmId,
+            map_agent_id: agentEntry.id,
+            name: agentEntry.name,
+            role: agentEntry.role,
+            state: agentEntry.state,
+            capabilities: agentEntry.capabilities,
+            metadata: agentEntry.metadata,
+          });
+        }
       }
 
       // Enrich swarm record with agent metadata (project, branch, template)
@@ -686,6 +737,18 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       };
       broadcastToChannel(`map:swarm:${swarmId}`, wsEvent);
       broadcastToChannel('global', wsEvent);
+
+      // Propagate state changes to the SwarmCraft agent graph for the same
+      // roles we project on register (skip sidecar + subagent).
+      if (!isGraphHiddenRole(agentEntry?.role)) {
+        mapHubEvents.emit('node_state_changed', {
+          node_id: mapAgentId,
+          swarm_id: swarmId,
+          map_agent_id: mapAgentId,
+          previous_state: previousState,
+          new_state: newState,
+        });
+      }
     };
     const unsubStateChanged = mapServer.eventBus.on('agent.state.changed', onAgentStateChanged);
 
@@ -719,6 +782,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       if (!conn) return;
       if (!conn.registeredAgents.has(agentId)) return;
 
+      const removedEntry = conn.registeredAgents.get(agentId);
       conn.registeredAgents.delete(agentId);
       console.log(`[ws-map] Agent unregistered on ${swarmId}: ${agentId}`);
 
@@ -738,6 +802,15 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       };
       broadcastToChannel(`map:swarm:${swarmId}`, wsEvent);
       broadcastToChannel('global', wsEvent);
+
+      // Remove from the SwarmCraft agent graph for roles we project.
+      if (!isGraphHiddenRole(removedEntry?.role)) {
+        mapHubEvents.emit('node_unregistered', {
+          node_id: agentId,
+          swarm_id: swarmId,
+          map_agent_id: agentId,
+        });
+      }
     };
     const unsubUnregistered = mapServer.eventBus.on('agent.unregistered', onAgentUnregistered);
 
