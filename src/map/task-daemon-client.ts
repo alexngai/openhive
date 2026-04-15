@@ -9,7 +9,8 @@
  */
 
 import { join } from 'node:path';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
+import type { Context, ContextSummaryResult } from 'opentasks';
 /** Task status values used throughout the daemon client. */
 export type MAPTaskStatus = 'open' | 'in_progress' | 'blocked' | 'completed' | 'failed';
 
@@ -211,17 +212,18 @@ export async function daemonCreateContext(
   socketPath: string,
   params: { title: string; content?: string; priority?: number; tags?: string[] },
   opentasksDir?: string,
-): Promise<{ id: string; title: string; type: string }> {
+): Promise<{ id: string; title: string; type: 'context' }> {
   return withDaemon(socketPath, async (client) => {
+    // createNode returns Node (Context | Task | Feedback | ExternalNode);
+    // type: 'context' narrows it to Context.
     const node = await client.createNode({
       type: 'context',
       title: params.title,
       content: params.content,
       priority: params.priority,
       tags: params.tags,
-    });
-    const n = node as Record<string, unknown>;
-    return { id: n.id as string, title: (n.title as string) || params.title, type: 'context' };
+    }) as Context;
+    return { id: node.id, title: node.title || params.title, type: 'context' };
   }, opentasksDir);
 }
 
@@ -229,15 +231,10 @@ export async function daemonCreateContextFile(
   socketPath: string,
   params: { filePath: string; title?: string; commit?: string },
   opentasksDir?: string,
-): Promise<{ id: string; title: string; type: string }> {
+): Promise<{ id: string; title: string; type: 'context' }> {
   return withDaemon(socketPath, async (client) => {
-    const node = await client.createContextFile({
-      filePath: params.filePath,
-      title: params.title,
-      commit: params.commit,
-    } as any);
-    const n = node as Record<string, unknown>;
-    return { id: n.id as string, title: (n.title as string) || params.filePath, type: 'context' };
+    const node = await client.createContextFile(params);
+    return { id: node.id, title: node.title || params.filePath, type: 'context' };
   }, opentasksDir);
 }
 
@@ -248,7 +245,13 @@ export async function daemonResolveContextFile(
 ): Promise<{ content: string; drifted: boolean; filePath: string; commit: string; contentHash: string }> {
   return withDaemon(socketPath, async (client) => {
     const result = await client.resolveContextFile(nodeId);
-    return result as any;
+    return {
+      content: result.content,
+      drifted: result.drifted,
+      filePath: result.filePath,
+      commit: result.commit,
+      contentHash: result.contentHash,
+    };
   }, opentasksDir);
 }
 
@@ -259,7 +262,11 @@ export async function daemonCheckContextDrift(
 ): Promise<{ drifted: boolean; currentHash: string; capturedHash?: string }> {
   return withDaemon(socketPath, async (client) => {
     const result = await client.checkContextFileDrift(nodeId);
-    return result as any;
+    return {
+      drifted: result.drifted,
+      currentHash: result.currentHash,
+      capturedHash: result.capturedHash,
+    };
   }, opentasksDir);
 }
 
@@ -270,9 +277,8 @@ export async function daemonSyncContextFile(
   opentasksDir?: string,
 ): Promise<{ id: string; title: string }> {
   return withDaemon(socketPath, async (client) => {
-    const result = await client.syncContextFile(nodeId, { force } as any);
-    const n = result as Record<string, unknown>;
-    return { id: n.id as string, title: (n.title as string) || '' };
+    const node = await client.syncContextFile(nodeId, { force });
+    return { id: node.id, title: node.title || '' };
   }, opentasksDir);
 }
 
@@ -280,10 +286,9 @@ export async function daemonContextSummary(
   socketPath: string,
   params?: { taskId?: string; tags?: string[]; branch?: string; limit?: number },
   opentasksDir?: string,
-): Promise<Record<string, unknown>> {
+): Promise<ContextSummaryResult> {
   return withDaemon(socketPath, async (client) => {
-    const result = await client.contextSummary(params as any);
-    return result as Record<string, unknown>;
+    return await client.contextSummary(params);
   }, opentasksDir);
 }
 

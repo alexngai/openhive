@@ -30,8 +30,7 @@ import { mapRoutes } from '../../api/routes/map.js';
 import { initMail, getMailStorage } from '../../mail/index.js';
 import { setupMapWebSocket, stopMapWebSocket, setHeartbeatInterval } from '../../map/ws-map.js';
 import { getAllInbound, hasCapability } from '../../map/connection-registry.js';
-import { findSwarmById } from '../../db/dal/map.js';
-import { ConfigSchema, type Config } from '../../config.js';
+import { ConfigSchema } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 // ============================================================================

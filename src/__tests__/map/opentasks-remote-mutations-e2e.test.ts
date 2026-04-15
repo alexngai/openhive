@@ -24,7 +24,7 @@ import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { createIngestKey } from '../../db/dal/ingest-keys.js';
 import { setupMapWebSocket, stopMapWebSocket } from '../../map/ws-map.js';
 import { getAllInbound, setDefaultTaskGraph } from '../../map/connection-registry.js';
-import { ConfigSchema, type Config } from '../../config.js';
+import { ConfigSchema } from '../../config.js';
 import { resourceContentRoutes } from '../../api/routes/resource-content.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
 
@@ -89,6 +89,7 @@ const sidecarExists = fs.existsSync(SIDECAR_SCRIPT);
 describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks Mutations via MAP', { timeout: 60000 }, () => {
   let app: FastifyInstance;
   let testAgent: { id: string; apiKey: string };
+  let testAgentFull: any;
   let ingestToken: string;
   let sidecar: {
     pid: number; child: ChildProcess; socketPath: string;
@@ -110,6 +111,7 @@ describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks Mutations via MAP', { tim
       description: 'E2E remote mutations',
     });
     testAgent = { id: agent.id, apiKey };
+    testAgentFull = agent;
     const { plaintext_key } = createIngestKey(agent.id, { label: 'remote-mut', agent_id: agent.id });
     ingestToken = plaintext_key;
 
@@ -189,8 +191,8 @@ describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks Mutations via MAP', { tim
     app = Fastify({ logger: false });
     await app.register(websocket);
     setupMapWebSocket(app, config);
-    app.decorateRequest('agent', null);
-    setLocalAgent(testAgent.id);
+    app.decorateRequest('agent');
+    setLocalAgent(testAgentFull);
     await app.register(async (api) => {
       await api.register(resourceContentRoutes, { config });
     }, { prefix: '/api/v1' });
@@ -440,7 +442,7 @@ describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks Mutations via MAP', { tim
 
     await sleep(200);
     const node = await otStore.getNode(node_id);
-    expect(node?.status).toBe('in_progress');
+    expect((node as any)?.status).toBe('in_progress');
   });
 
   it('PATCH /tasks/:nodeId updates fields via remote graph.update.request', async () => {
@@ -512,17 +514,35 @@ describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks Mutations via MAP', { tim
     expect(JSON.parse(delRes.body).removed).toBe(true);
   });
 
-  it('DELETE /tasks/:nodeId returns 501 for remote (upstream limitation)', async () => {
+  it('DELETE /tasks/:nodeId removes a task on remote graph', async () => {
     await ensureSidecarConnected();
 
-    const res = await app.inject({
+    // Create a task to delete
+    const createRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      payload: { title: 'Delete-target task' },
+    });
+    const { node_id } = JSON.parse(createRes.body);
+    expect(await otStore.getNode(node_id)).toBeDefined();
+
+    // Soft delete via REST → remote
+    const delRes = await app.inject({
       method: 'DELETE',
-      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/some-node-id`,
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${node_id}`,
       headers: { Authorization: `Bearer ${testAgent.apiKey}` },
     });
+    expect(delRes.statusCode).toBe(200);
+    const body = JSON.parse(delRes.body);
+    expect(body.deleted).toBe(true);
+    expect(body.node_id).toBe(node_id);
 
-    expect(res.statusCode).toBe(501);
-    const body = JSON.parse(res.body);
-    expect(body.message).toMatch(/graph\.delete\.request/);
+    // Verify in upstream daemon's store — soft delete archives the node
+    await sleep(200);
+    const after = await otStore.getNode(node_id) as any;
+    if (after !== null) {
+      expect(after.archived).toBe(true);
+    }
   });
 });

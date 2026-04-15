@@ -34,7 +34,7 @@ import { createIngestKey } from '../../db/dal/ingest-keys.js';
 import { setupMapWebSocket, stopMapWebSocket } from '../../map/ws-map.js';
 import { setupWebSocket, stopHeartbeat } from '../../realtime/index.js';
 import { getAllInbound, setDefaultTaskGraph } from '../../map/connection-registry.js';
-import { ConfigSchema, type Config } from '../../config.js';
+import { ConfigSchema } from '../../config.js';
 import { resourceContentRoutes } from '../../api/routes/resource-content.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
 
@@ -122,6 +122,7 @@ const sidecarExists = fs.existsSync(SIDECAR_SCRIPT);
 describe.skipIf(!sidecarExists)('E2E: Hook Chain + pushSyncEvent', { timeout: 60000 }, () => {
   let app: FastifyInstance;
   let agent: { id: string; apiKey: string; ingestToken: string };
+  let agentFull: any;
   let otStore: GraphStore;
   let otServer: IPCServer;
   let daemonSocketPath: string;
@@ -144,6 +145,7 @@ describe.skipIf(!sidecarExists)('E2E: Hook Chain + pushSyncEvent', { timeout: 60
     const a = await agentsDAL.createAgent({ name: 'hook-chain-agent', description: 'Hook chain test' });
     const ik = createIngestKey(a.agent.id, { label: 'hook', agent_id: a.agent.id });
     agent = { id: a.agent.id, apiKey: a.apiKey, ingestToken: ik.plaintext_key };
+    agentFull = a.agent;
 
     // Start OpenTasks daemon
     opentasksDir = path.join(TEST_ROOT, '.opentasks');
@@ -177,7 +179,7 @@ describe.skipIf(!sidecarExists)('E2E: Hook Chain + pushSyncEvent', { timeout: 60
     const nativeProvider = createNativeProvider(otStore);
     const registry = createProviderRegistry();
     registry.register(nativeProvider);
-    const providerStore = createProviderAwareStore(otStore, { providers: registry });
+    const providerStore = createProviderAwareStore(otStore, { registry });
 
     const flushMgr = createDaemonFlushManager(
       { debounceMs: 50, maxDelayMs: 100 },
@@ -233,8 +235,8 @@ describe.skipIf(!sidecarExists)('E2E: Hook Chain + pushSyncEvent', { timeout: 60
     await app.register(websocket);
     setupWebSocket(app);
     setupMapWebSocket(app, config);
-    app.decorateRequest('agent', null);
-    setLocalAgent(agent.id);
+    app.decorateRequest('agent');
+    setLocalAgent(agentFull);
     await app.register(async (api) => {
       await api.register(resourceContentRoutes, { config });
     }, { prefix: '/api/v1' });
@@ -385,7 +387,7 @@ describe.skipIf(!sidecarExists)('E2E: Hook Chain + pushSyncEvent', { timeout: 60
       await sleep(1000);
 
       // Verify WS observer sees status update
-      const statusBroadcast = observerMessages.find(
+      observerMessages.find(
         (m) => m.type === 'task.status' && m.channel === 'map:tasks',
       );
       // The hub's message.sent handler calls handleMapTaskEvent which emits to broadcastToChannel

@@ -245,12 +245,7 @@ export async function getGitSyncStatus(clonePath: string): Promise<GitSyncStatus
           if (a !== '-') linesAdded += parseInt(a, 10) || 0;
           if (d !== '-') linesDeleted += parseInt(d, 10) || 0;
         }
-        // Also count untracked files
-        const { stdout: untrackedStat } = await execFileAsync(
-          'git', ['diff', '--numstat', '--no-index', '/dev/null', '--'],
-          { cwd: clonePath, timeout: 5_000 },
-        ).catch(() => ({ stdout: '' }));
-        // untracked stats are harder — just count lines from status
+        // Untracked stats are harder than the diff path — just count from status above.
       } catch { /* diff failed, that's ok */ }
 
       uncommittedDetails = { added, modified, deleted, linesAdded, linesDeleted };

@@ -336,6 +336,22 @@ export async function remoteUpdateTaskFields(
 }
 
 /**
+ * Delete a task on a remote swarm's graph via the opentasks/graph.delete.request method.
+ * Requires opentasks >= 0.1.1 on the swarm side.
+ */
+export async function remoteDeleteTask(
+  swarmId: string,
+  taskId: string,
+  options?: { hard?: boolean },
+): Promise<boolean> {
+  const result = await sendRequest(swarmId, 'opentasks/graph.delete.request', {
+    delete: { id: taskId, options },
+  });
+  if (!result) return false;
+  return result.deleted === true;
+}
+
+/**
  * Create an edge between two nodes on a remote swarm's graph.
  */
 export async function remoteCreateLink(

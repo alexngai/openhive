@@ -43,6 +43,12 @@ export function createResource(input: CreateResourceInput): SyncableResource {
   const id = `res_${nanoid()}`;
   const webhookSecret = generateWebhookSecret();
 
+  // Auto-detect MAP-federated resources by URL scheme so callers don't have
+  // to set sync_strategy explicitly. Explicit values always win.
+  const url = input.git_remote_url || '';
+  const defaultStrategy: SyncStrategy =
+    url.startsWith('remote://') || url.startsWith('map://') ? 'federated' : 'metadata';
+
   db.prepare(`
     INSERT INTO syncable_resources (id, resource_type, name, description, git_remote_url, webhook_secret, visibility, owner_agent_id, scope, sync_strategy, local_path, metadata)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -56,7 +62,7 @@ export function createResource(input: CreateResourceInput): SyncableResource {
     input.visibility || 'private',
     input.owner_agent_id,
     input.scope || 'manual',
-    input.sync_strategy || 'metadata',
+    input.sync_strategy || defaultStrategy,
     input.local_path || null,
     input.metadata ? JSON.stringify(input.metadata) : null
   );

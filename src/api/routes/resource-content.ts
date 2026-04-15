@@ -1029,9 +1029,17 @@ export async function resourceContentRoutes(
 
   // OpenTasks mutations
 
-  /** Check if a resource is read-only (ls-remote/mirror without git sync enabled) */
+  /** Check if a resource is read-only.
+   *  - 'federated' resources go through the owning swarm and are always writable.
+   *  - Git-mirrored ('ls-remote' / 'mirror') without git sync enabled are read-only.
+   *  - Legacy fallback: federated resources predating the 'federated' strategy
+   *    are detected by URL scheme (remote:// / map://) so old data still works.
+   */
   function isReadOnlyResource(resource: SyncableResource): boolean {
+    if (resource.sync_strategy === 'federated') return false;
     if (resource.sync_strategy !== 'ls-remote' && resource.sync_strategy !== 'mirror') return false;
+    const url = resource.git_remote_url || '';
+    if (url.startsWith('remote://') || url.startsWith('map://')) return false;
     const meta = resource.metadata as Record<string, unknown> | null;
     const otConfig = meta?.opentasks_config as Record<string, unknown> | undefined;
     const gitSync = otConfig?.sync as Record<string, unknown> | undefined;
@@ -1193,8 +1201,8 @@ export async function resourceContentRoutes(
     return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running and no connected swarm is available' });
   });
 
-  // Delete task node — local-only. opentasks 0.1.0 has no graph.delete.request
-  // method on the MAP connector, so remote deletes need an upstream change.
+  // Delete task node. Tries local daemon first, then falls back to remote swarm
+  // via opentasks/graph.delete.request (requires opentasks >= 0.1.1 on the swarm).
   fastify.delete<{
     Params: { id: string; nodeId: string };
     Querystring: { hard?: string };
@@ -1203,25 +1211,40 @@ export async function resourceContentRoutes(
     if (!ctx) return;
     const { resource, localPath } = ctx;
     if (!validateOpenTasksResource(resource, reply)) return;
-    if (!localPath) {
-      return reply.status(501).send({ error: 'Not Implemented', message: 'Deleting tasks on a remote swarm is not yet supported (opentasks lacks graph.delete.request)' });
-    }
 
     if (isReadOnlyResource(resource)) {
       return reply.status(403).send({ error: 'Forbidden', message: 'This task graph is read-only.' });
     }
 
     const hard = request.query.hard === 'true';
-    const { daemonDeleteTask, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
-    const socketPath = resolveDaemonSocket(localPath);
-    try {
-      await daemonDeleteTask(socketPath, request.params.nodeId, { hard }, localPath);
-      try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.deleted', data: { taskId: request.params.nodeId, hard } }); } catch { /* best effort */ }
-      return reply.send({ deleted: true, node_id: request.params.nodeId, hard });
-    } catch (err) {
-      if (err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING') return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running for this resource' });
-      throw err;
+
+    // Local daemon path
+    if (localPath) {
+      const { daemonDeleteTask, resolveDaemonSocket, TaskDaemonError: DaemonErr } = await import('../../map/task-daemon-client.js');
+      const socketPath = resolveDaemonSocket(localPath);
+      try {
+        await daemonDeleteTask(socketPath, request.params.nodeId, { hard }, localPath);
+        try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.deleted', data: { taskId: request.params.nodeId, hard } }); } catch { /* best effort */ }
+        return reply.send({ deleted: true, node_id: request.params.nodeId, hard });
+      } catch (err) {
+        if (!(err instanceof DaemonErr && err.code === 'DAEMON_NOT_RUNNING')) throw err;
+        // Fall through to remote
+      }
     }
+
+    // Remote swarm path
+    const { findSwarmForResource, remoteDeleteTask } = await import('../../map/opentasks-remote.js');
+    const swarmId = findSwarmForResource(resource);
+    if (swarmId) {
+      const ok = await remoteDeleteTask(swarmId, request.params.nodeId, { hard });
+      if (ok) {
+        try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.deleted', data: { taskId: request.params.nodeId, hard } }); } catch { /* best effort */ }
+        return reply.send({ deleted: true, node_id: request.params.nodeId, hard });
+      }
+      return reply.status(503).send({ error: 'Service Unavailable', message: 'Remote swarm did not respond (or opentasks <0.1.1 on swarm)' });
+    }
+
+    return reply.status(503).send({ error: 'Service Unavailable', message: 'OpenTasks daemon is not running and no connected swarm is available' });
   });
 
   // ============================================================================
