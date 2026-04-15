@@ -2,7 +2,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Menu, X, Zap,
   User, Activity, MessageSquare, ChevronLeft, ChevronDown,
-  ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings,
+  ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings, FileText,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
@@ -80,6 +80,7 @@ export function Sidebar() {
       label: 'Control Plane',
       items: [
         { to: '/', icon: LayoutDashboard, label: 'Overview' },
+        { to: '/specs', icon: FileText, label: 'Specs' },
         { to: '/tasks', icon: ListTodo, label: 'Tasks' },
         { to: '/swarms', icon: Zap, label: 'Swarms', badge: onlineSwarmCount || undefined },
         { to: '/sessions', icon: Activity, label: 'Sessions' },

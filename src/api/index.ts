@@ -24,6 +24,7 @@ import { mailRoutes } from "./routes/mail.js";
 import { learningRoutes } from "./routes/learning.js";
 import { swarmkitConfigRoutes } from "./routes/swarmkit-config.js";
 import { skillManagementRoutes } from "./routes/skill-management.js";
+import { specsRoutes } from "./routes/specs.js";
 import type { Config } from "../config.js";
 import type { BridgeManager } from "../bridge/manager.js";
 import type { SwarmHubConnector } from "../swarmhub/connector.js";
@@ -76,6 +77,7 @@ export async function registerRoutes(
       await api.register(learningRoutes, { config });
       await api.register(swarmkitConfigRoutes, { config });
       await api.register(skillManagementRoutes, { config });
+      await api.register(specsRoutes, { config });
       if (swarmhubConnector) {
         const { swarmhubRoutes, swarmhubWebhookRoutes } =
           await import("../swarmhub/routes.js");

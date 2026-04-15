@@ -11,6 +11,7 @@
 import { MAPServer } from '@multi-agent-protocol/sdk/server';
 import { verifyToken } from './token-service.js';
 import { MAP_TASK_METHOD_SET, handleTaskRequest, MAPTaskRequestError, TaskDaemonError } from './task-handler.js';
+import { MAP_SPEC_METHOD_SET, handleSpecRequest, MAPSpecRequestError } from './spec-handler.js';
 import { TRAJECTORY_METHOD_SET } from './trajectory-types.js';
 import { handleTrajectoryRequest, TrajectoryRequestError } from './trajectory-handler.js';
 import type { Config } from '../config.js';
@@ -77,6 +78,26 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
         return await handleTaskRequest(method, params, { swarmId, agentId });
       } catch (err) {
         if (err instanceof MAPTaskRequestError) {
+          throw Object.assign(new Error(err.message), { code: err.code });
+        } else if (err instanceof TaskDaemonError) {
+          const codeMap: Record<string, number> = { DAEMON_NOT_RUNNING: -32003, NOT_FOUND: -32001, OPERATION_FAILED: -32000 };
+          const code = codeMap[err.code] ?? -32000;
+          throw Object.assign(new Error(err.message), { code });
+        }
+        throw err;
+      }
+    };
+  }
+
+  // ── MAP Spec Methods ────────────────────────────────────────────
+  for (const method of MAP_SPEC_METHOD_SET) {
+    handlers[method] = async (params: any, ctx: any) => {
+      const swarmId = ctx.session?.metadata?.swarmId;
+      const agentId = ctx.session?.metadata?.agentId;
+      try {
+        return await handleSpecRequest(method, params, { swarmId, agentId });
+      } catch (err) {
+        if (err instanceof MAPSpecRequestError) {
           throw Object.assign(new Error(err.message), { code: err.code });
         } else if (err instanceof TaskDaemonError) {
           const codeMap: Record<string, number> = { DAEMON_NOT_RUNNING: -32003, NOT_FOUND: -32001, OPERATION_FAILED: -32000 };

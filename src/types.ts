@@ -169,6 +169,10 @@ export type WSEventType =
   | 'task.deleted'
   | 'task.linked'
   | 'task.unlinked'
+  // Spec broadcast events (see api/routes/specs.ts and map/spec-handler.ts)
+  | 'spec.created'
+  | 'spec.updated'
+  | 'spec.deleted'
   | 'node_registered'
   | 'node_state_changed'
   | 'swarm_heartbeat'
