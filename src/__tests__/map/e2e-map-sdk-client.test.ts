@@ -178,8 +178,10 @@ describe('E2E: MAP SDK AgentConnection — Open Mode', () => {
       name: 'meta-worker',
       role: 'analyst',
       capabilities: {
-        'trajectory.canReport': true,
-        'trajectory.canServeContent': true,
+        trajectory: {
+          canReport: true,
+          canRequestContent: true,
+        },
       },
       metadata: {
         project: 'openhive',
@@ -191,7 +193,7 @@ describe('E2E: MAP SDK AgentConnection — Open Mode', () => {
 
     await waitFor(() => {
       const conn = getAllInbound().get(swarmId);
-      return conn?.registeredAgents.size > 0;
+      return (conn?.registeredAgents.size ?? 0) > 0;
     });
 
     const conn = getAllInbound().get(swarmId);
@@ -449,7 +451,7 @@ describe.skip('E2E: MAP SDK AgentConnection — Verified Mode', () => {
     // Step 2: Authenticate with swarm token
     const authResult = await agent.authenticate({
       method: connectResult.authRequired!.methods[0],
-      credential: swarmToken,
+      token: swarmToken,
     });
     expect(authResult.success).toBe(true);
 
@@ -487,7 +489,7 @@ describe.skip('E2E: MAP SDK AgentConnection — Verified Mode', () => {
     const connectResult = await agent.connectOnly();
     await agent.authenticate({
       method: connectResult.authRequired!.methods[0],
-      credential: swarmToken,
+      token: swarmToken,
     });
     await agent.register();
     activeAgents.push(agent);

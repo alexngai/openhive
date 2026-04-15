@@ -27,6 +27,8 @@ import {
   remoteQueryTasks,
   remoteCreateTask,
   remoteUpdateTask,
+  remoteAssignTask,
+  remoteUpdateTaskFields,
 } from './opentasks-remote.js';
 import { getSyncOrchestrator } from '../sync/sync-orchestrator.js';
 import * as resourcesDAL from '../db/dal/syncable-resources.js';
@@ -269,8 +271,9 @@ export async function handleTaskRequest(
       if (target.type === 'local') {
         result = await daemonAssignTask(target.socketPath, p.taskId as string, p.agentId as string, target.localPath);
       } else {
-        // Remote assign not yet supported via connector — would need opentasks/task.request
-        throw new MAPTaskRequestError(-32002, 'Task assignment on remote graphs is not yet supported');
+        const remote = await remoteAssignTask(target.swarmId, p.taskId as string, p.agentId as string);
+        if (!remote) throw new MAPTaskRequestError(-32003, 'Remote swarm did not respond');
+        result = remote;
       }
 
       try {
@@ -297,12 +300,36 @@ export async function handleTaskRequest(
           meta: p.meta as Record<string, unknown>,
         }, target.localPath);
       } else {
+        const hasFieldUpdate =
+          p.title !== undefined ||
+          p.description !== undefined ||
+          p.assignee !== undefined ||
+          p.priority !== undefined ||
+          p.meta !== undefined;
+
+        // Status is a semantic transition (via task.request); other fields go
+        // through graph.update.request. If both are present, apply fields first
+        // so the final returned node reflects the new status.
+        if (hasFieldUpdate) {
+          const fieldResult = await remoteUpdateTaskFields(target.swarmId, p.taskId as string, {
+            title: p.title as string | undefined,
+            description: p.description as string | undefined,
+            assignee: p.assignee as string | undefined,
+            priority: p.priority as number | undefined,
+            meta: p.meta as Record<string, unknown> | undefined,
+          });
+          if (!fieldResult) throw new MAPTaskRequestError(-32003, 'Remote swarm did not respond');
+          result = fieldResult;
+        }
+
         if (p.status) {
-          const remote = await remoteUpdateTask(target.swarmId, p.taskId as string, p.status as string);
-          if (!remote) throw new MAPTaskRequestError(-32003, 'Remote swarm did not respond');
-          result = remote;
-        } else {
-          throw new MAPTaskRequestError(-32002, 'Non-status updates on remote graphs are not yet supported');
+          const statusResult = await remoteUpdateTask(target.swarmId, p.taskId as string, p.status as string);
+          if (!statusResult) throw new MAPTaskRequestError(-32003, 'Remote swarm did not respond');
+          result = statusResult;
+        }
+
+        if (!result) {
+          throw new MAPTaskRequestError(-32602, 'Invalid params: no updates specified');
         }
       }
 

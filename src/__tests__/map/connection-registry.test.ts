@@ -5,7 +5,7 @@
  * correct structured data including missedPongs from WebSocket state.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   registerInbound,
   unregisterInbound,

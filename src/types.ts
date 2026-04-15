@@ -175,6 +175,8 @@ export type WSEventType =
   | 'swarm_joined_hive'
   | 'swarm_left_hive'
   | 'agent_unregistered'
+  | 'connection_degraded'
+  | 'connection_recovered'
   // Swarm hosting events
   | 'swarm_spawned'
   | 'swarm_stopped'
@@ -305,7 +307,7 @@ export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session' 
 export type ResourceVisibility = 'private' | 'shared' | 'public';
 export type ResourcePermission = 'read' | 'write' | 'admin';
 export type ResourceScope = 'global' | 'project' | 'agent' | 'manual';
-export type SyncStrategy = 'metadata' | 'local' | 'ls-remote' | 'mirror' | 'bundle';
+export type SyncStrategy = 'metadata' | 'local' | 'ls-remote' | 'mirror' | 'bundle' | 'federated';
 
 export interface SyncableResource {
   id: string;

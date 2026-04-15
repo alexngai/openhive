@@ -13,12 +13,10 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { WebSocket } from 'ws';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import { getOrCreateLocalAgent } from '../../db/dal/agents.js';
-import { createSwarm, heartbeatSwarm, findSwarmById } from '../../db/dal/map.js';
+import { createSwarm } from '../../db/dal/map.js';
 import {
-  registerInbound,
   unregisterInbound,
   getAllInbound,
-  type MapInboundConnection,
 } from '../../map/connection-registry.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
@@ -42,7 +40,7 @@ const TEST_DB_PATH = testDbPath(TEST_ROOT, 'heartbeat-tolerance.db');
 // Create a mock WebSocket with controllable pong behavior
 function createMockWs(): any {
   const ws = {
-    readyState: WebSocket.OPEN,
+    readyState: WebSocket.OPEN as number,
     isAlive: true,
     missedPongs: 0,
     sentMessages: [] as string[],

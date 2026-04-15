@@ -57,7 +57,7 @@ async function createTestApp(config: Config): Promise<FastifyInstance> {
 
   // The swarmkit routes use adminAuth which needs authMiddleware.
   // authMiddleware expects request.agent to be decorated.
-  app.decorateRequest('agent', null);
+  app.decorateRequest('agent');
 
   await app.register(
     async (api) => {

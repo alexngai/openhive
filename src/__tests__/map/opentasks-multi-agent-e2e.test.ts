@@ -30,7 +30,7 @@ import { createIngestKey } from '../../db/dal/ingest-keys.js';
 import { setupMapWebSocket, stopMapWebSocket } from '../../map/ws-map.js';
 import { setupWebSocket, stopHeartbeat } from '../../realtime/index.js';
 import { getAllInbound, setDefaultTaskGraph } from '../../map/connection-registry.js';
-import { ConfigSchema, type Config } from '../../config.js';
+import { ConfigSchema } from '../../config.js';
 import { resourceContentRoutes } from '../../api/routes/resource-content.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
 
@@ -142,6 +142,7 @@ describe.skipIf(!sidecarExists)('E2E: Multi-Agent Task Round-Trip', { timeout: 6
     const a1 = await agentsDAL.createAgent({ name: 'multi-agent-A', description: 'Agent A' });
     const ik1 = createIngestKey(a1.agent.id, { label: 'multi-a', agent_id: a1.agent.id });
     agentA = { id: a1.agent.id, apiKey: a1.apiKey, ingestToken: ik1.plaintext_key };
+    const agentAFull = a1.agent;
 
     const a2 = await agentsDAL.createAgent({ name: 'multi-agent-B', description: 'Agent B' });
     const ik2 = createIngestKey(a2.agent.id, { label: 'multi-b', agent_id: a2.agent.id });
@@ -179,7 +180,7 @@ describe.skipIf(!sidecarExists)('E2E: Multi-Agent Task Round-Trip', { timeout: 6
     const nativeProvider = createNativeProvider(otStore);
     const registry = createProviderRegistry();
     registry.register(nativeProvider);
-    const providerStore = createProviderAwareStore(otStore, { providers: registry });
+    const providerStore = createProviderAwareStore(otStore, { registry });
 
     const flushMgr = createDaemonFlushManager(
       { debounceMs: 50, maxDelayMs: 100 },
@@ -239,8 +240,8 @@ describe.skipIf(!sidecarExists)('E2E: Multi-Agent Task Round-Trip', { timeout: 6
     setupWebSocket(app);          // /ws — realtime broadcasts
     setupMapWebSocket(app, config); // /ws/map — MAP protocol
 
-    app.decorateRequest('agent', null);
-    setLocalAgent(agentA.id);
+    app.decorateRequest('agent');
+    setLocalAgent(agentAFull);
     await app.register(async (api) => {
       await api.register(resourceContentRoutes, { config });
     }, { prefix: '/api/v1' });
@@ -358,8 +359,6 @@ describe.skipIf(!sidecarExists)('E2E: Multi-Agent Task Round-Trip', { timeout: 6
     });
 
     it('POST create task → subscriber receives task.created broadcast', async () => {
-      const beforeCount = messages.length;
-
       // Create task via REST
       const res = await app.inject({
         method: 'POST',
@@ -458,7 +457,7 @@ describe.skipIf(!sidecarExists)('E2E: Multi-Agent Task Round-Trip', { timeout: 6
 
     it('sidecar sends task via MAP → hub stores in graph → observer gets broadcast', async () => {
       // Use the sidecar's MAP connection to send a scope message with task event
-      const resp = await sendSidecarCommand(sidecarA!.socketPath, {
+      await sendSidecarCommand(sidecarA!.socketPath, {
         action: 'bridge',
         event: {
           type: 'task.created',

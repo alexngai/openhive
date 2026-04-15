@@ -11,7 +11,7 @@
  * 5. Debounced heartbeat — DB writes are batched
  */
 
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import WebSocket from 'ws';
@@ -20,7 +20,7 @@ import * as agentsDAL from '../../db/dal/agents.js';
 import { createIngestKey } from '../../db/dal/ingest-keys.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
 import { setupMapWebSocket, stopMapWebSocket, setHeartbeatInterval } from '../../map/ws-map.js';
-import { getAllInbound, getConnectionHealth } from '../../map/connection-registry.js';
+import { getAllInbound } from '../../map/connection-registry.js';
 import { findSwarmById } from '../../db/dal/map.js';
 import { mapRoutes } from '../../api/routes/map.js';
 import { ConfigSchema, type Config } from '../../config.js';
@@ -98,7 +98,6 @@ describe('Connection Persistence E2E', () => {
   let app: FastifyInstance;
   let config: Config;
   let ingestToken: string;
-  let agentId: string;
   const clientHandles: ClientHandle[] = [];
 
   beforeAll(async () => {
@@ -109,8 +108,6 @@ describe('Connection Persistence E2E', () => {
       name: 'conn-persist-e2e-agent',
       description: 'Agent for connection persistence e2e tests',
     });
-    agentId = agent.id;
-
     const { plaintext_key } = createIngestKey(agent.id, {
       label: 'conn-persist-e2e',
       agent_id: agent.id,
