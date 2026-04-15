@@ -12,6 +12,7 @@ import {
   MIGRATION_V29_MAP_REVOKED_TOKENS,
   MIGRATION_V30_SESSION_RESOURCE_SCOPING,
   MIGRATION_V31_CASCADE_PROJECTIONS,
+  MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
 } from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
@@ -234,6 +235,8 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   30: MIGRATION_V30_SESSION_RESOURCE_SCOPING,
   // Version 31: Cascade projection tables for x-cascade/* MAP events
   31: MIGRATION_V31_CASCADE_PROJECTIONS,
+  // Version 32: Add 'federated' sync_strategy for MAP-owned remote task graphs
+  32: MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
 };
 
 /** Get the SQL for a specific migration version.

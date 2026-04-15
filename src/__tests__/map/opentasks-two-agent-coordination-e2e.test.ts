@@ -143,7 +143,6 @@ describe.skipIf(!sidecarExists)('E2E: Two-Agent Task Coordination', { timeout: 6
   let sidecarA: SidecarInstance;
   let sidecarB: SidecarInstance;
   let resourceA: { id: string };
-  let resourceB: { id: string };
 
   let wsObserver: WebSocket;
   let observerMessages: Array<Record<string, unknown>>;
@@ -182,7 +181,7 @@ describe.skipIf(!sidecarExists)('E2E: Two-Agent Task Coordination', { timeout: 6
     const nativeProvider = createNativeProvider(store);
     const registry = createProviderRegistry();
     registry.register(nativeProvider);
-    const providerStore = createProviderAwareStore(store, { providers: registry });
+    const providerStore = createProviderAwareStore(store, { registry });
 
     const flushMgr = createDaemonFlushManager(
       { debounceMs: 50, maxDelayMs: 100 },
@@ -289,6 +288,7 @@ describe.skipIf(!sidecarExists)('E2E: Two-Agent Task Coordination', { timeout: 6
     const a1 = await agentsDAL.createAgent({ name: 'coord-agent-A', description: 'Agent A' });
     const ik1 = createIngestKey(a1.agent.id, { label: 'coord-a', agent_id: a1.agent.id });
     agentA = { id: a1.agent.id, apiKey: a1.apiKey, ingestToken: ik1.plaintext_key };
+    const agentAFull = a1.agent;
 
     const a2 = await agentsDAL.createAgent({ name: 'coord-agent-B', description: 'Agent B' });
     const ik2 = createIngestKey(a2.agent.id, { label: 'coord-b', agent_id: a2.agent.id });
@@ -306,7 +306,7 @@ describe.skipIf(!sidecarExists)('E2E: Two-Agent Task Coordination', { timeout: 6
       local_path: daemonA.opentasksDir,
       metadata: { opentasks: true, location_hash: daemonA.locationHash },
     });
-    resourceB = resourcesDAL.createResource({
+    resourcesDAL.createResource({
       resource_type: 'task', name: 'agent-b-graph',
       git_remote_url: daemonB.opentasksDir, visibility: 'shared',
       owner_agent_id: agentB.id, sync_strategy: 'local',
@@ -328,8 +328,8 @@ describe.skipIf(!sidecarExists)('E2E: Two-Agent Task Coordination', { timeout: 6
     await app.register(websocket);
     setupWebSocket(app);
     setupMapWebSocket(app, config);
-    app.decorateRequest('agent', null);
-    setLocalAgent(agentA.id);
+    app.decorateRequest('agent');
+    setLocalAgent(agentAFull);
     await app.register(async (api) => {
       await api.register(resourceContentRoutes, { config });
     }, { prefix: '/api/v1' });
@@ -435,7 +435,7 @@ describe.skipIf(!sidecarExists)('E2E: Two-Agent Task Coordination', { timeout: 6
     await sleep(1500);
 
     // Verify observer received broadcast
-    const broadcast = observerMessages.find(
+    observerMessages.find(
       m => m.type === 'task.created' && m.channel === 'map:tasks',
     );
     // The broadcast comes from hub's message.sent interceptor
@@ -474,7 +474,7 @@ describe.skipIf(!sidecarExists)('E2E: Two-Agent Task Coordination', { timeout: 6
     await sleep(1500);
 
     // Verify observer sees status change
-    const statusBroadcast = observerMessages.find(
+    observerMessages.find(
       m => m.type === 'task.status' && m.channel === 'map:tasks',
     );
     // Hub's message.sent interceptor should have processed this
@@ -494,7 +494,7 @@ describe.skipIf(!sidecarExists)('E2E: Two-Agent Task Coordination', { timeout: 6
     await sleep(1500);
 
     // The sidecar emits both task.status AND task.completed for terminal states
-    const statusEvent = observerMessages.find(
+    observerMessages.find(
       m => m.type === 'task.status' && m.channel === 'map:tasks',
     );
     // task.completed is also emitted by the sidecar

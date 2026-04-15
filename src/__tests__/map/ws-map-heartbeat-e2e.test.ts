@@ -32,7 +32,6 @@ const TEST_ROOT = testRoot('ws-map-heartbeat-e2e');
 const TEST_DB_PATH = testDbPath(TEST_ROOT, 'heartbeat-e2e.db');
 const SERVER_PORT = 19620;
 const HEARTBEAT_MS = 500; // Short interval for fast tests
-const HEARTBEAT_TIMEOUT = HEARTBEAT_MS * 2; // 1s — server terminates after this
 
 // ============================================================================
 // Helpers

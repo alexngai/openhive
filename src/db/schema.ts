@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 32;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -203,7 +203,7 @@ CREATE TABLE IF NOT EXISTS syncable_resources (
     CHECK (scope IN ('global', 'project', 'agent', 'manual')),
   -- Sync strategy: how content is acquired and kept current
   sync_strategy TEXT DEFAULT 'metadata'
-    CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle')),
+    CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle', 'federated')),
   -- Local filesystem path (for local reads or clone location)
   local_path TEXT,
   -- Resource-specific metadata stored as JSON
@@ -1369,6 +1369,56 @@ CREATE TABLE IF NOT EXISTS cascade_conflicts (
 
 CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_stream ON cascade_conflicts(stream_row_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_status ON cascade_conflicts(status);
+`;
+
+// Migration V32: Add 'federated' to sync_strategy CHECK constraint for MAP-owned
+// remote task graphs. Existing rows tagged 'ls-remote' / 'metadata' that are
+// actually federated continue to work via the URL-scheme fallback in
+// isReadOnlyResource and elsewhere.
+export const MIGRATION_V32_FEDERATED_SYNC_STRATEGY = `
+CREATE TABLE IF NOT EXISTS syncable_resources_v32 (
+  id TEXT PRIMARY KEY,
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session')),
+  name TEXT NOT NULL,
+  description TEXT,
+  git_remote_url TEXT NOT NULL,
+  webhook_secret TEXT,
+  visibility TEXT DEFAULT 'private'
+    CHECK (visibility IN ('private', 'shared', 'public')),
+  last_commit_hash TEXT,
+  last_push_by TEXT,
+  last_push_at TEXT,
+  owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  scope TEXT DEFAULT 'manual'
+    CHECK (scope IN ('global', 'project', 'agent', 'manual')),
+  sync_strategy TEXT DEFAULT 'metadata'
+    CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle', 'federated')),
+  local_path TEXT,
+  metadata TEXT,
+  origin_instance_id TEXT,
+  origin_resource_id TEXT,
+  sync_event_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+INSERT OR IGNORE INTO syncable_resources_v32 SELECT * FROM syncable_resources;
+
+DROP TABLE IF EXISTS syncable_resources;
+ALTER TABLE syncable_resources_v32 RENAME TO syncable_resources;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_syncable_resources_git_url
+  ON syncable_resources(owner_agent_id, resource_type, git_remote_url)
+  WHERE git_remote_url IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_name_lookup
+  ON syncable_resources(owner_agent_id, resource_type, name);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_owner ON syncable_resources(owner_agent_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type ON syncable_resources(resource_type);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_visibility ON syncable_resources(visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_resources(resource_type, visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
 `;
 
 // Populate FTS tables from existing data

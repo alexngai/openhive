@@ -45,6 +45,7 @@ function sleep(ms: number): Promise<void> {
 describe('OpenTasks Daemon Integration', { timeout: 30000 }, () => {
   let app: FastifyInstance;
   let testAgent: { id: string; apiKey: string };
+  let testAgentFull: any;
   let otStore: GraphStore;
   let otServer: IPCServer;
   let daemonSocketPath: string;
@@ -61,6 +62,7 @@ describe('OpenTasks Daemon Integration', { timeout: 30000 }, () => {
       description: 'Agent for daemon integration tests',
     });
     testAgent = { id: agent.id, apiKey };
+    testAgentFull = agent;
 
     // Set up OpenTasks daemon via API
     opentasksDir = path.join(TEST_ROOT, '.opentasks');
@@ -95,7 +97,7 @@ describe('OpenTasks Daemon Integration', { timeout: 30000 }, () => {
     const nativeProvider = createNativeProvider(otStore);
     const registry = createProviderRegistry();
     registry.register(nativeProvider);
-    const providerStore = createProviderAwareStore(otStore, { providers: registry });
+    const providerStore = createProviderAwareStore(otStore, { registry });
 
     const flushMgr = createDaemonFlushManager(
       { debounceMs: 50, maxDelayMs: 100 },
@@ -148,9 +150,9 @@ describe('OpenTasks Daemon Integration', { timeout: 30000 }, () => {
     }) as Config;
 
     app = Fastify({ logger: false });
-    app.decorateRequest('agent', null);
+    app.decorateRequest('agent');
     const { setLocalAgent } = await import('../../api/middleware/auth.js');
-    setLocalAgent(testAgent.id);
+    setLocalAgent(testAgentFull);
     await app.register(async (api) => {
       await api.register(resourceContentRoutes, { config });
     }, { prefix: '/api/v1' });
@@ -660,7 +662,7 @@ describe('OpenTasks Daemon Integration', { timeout: 30000 }, () => {
         priority: 1,
       }, opentasksDir);
 
-      const result = await daemonCreateLink(daemonSocketPath, {
+      await daemonCreateLink(daemonSocketPath, {
         fromId: taskA.id,
         toId: taskB.id,
         type: 'blocks',

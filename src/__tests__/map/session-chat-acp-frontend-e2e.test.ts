@@ -25,7 +25,7 @@ import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
 import { setupMapWebSocket, stopMapWebSocket } from '../../map/ws-map.js';
-import { getAllInbound, hasCapability } from '../../map/connection-registry.js';
+import { getAllInbound } from '../../map/connection-registry.js';
 import { SwarmManager } from '../../swarm/manager.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
 import { mapRoutes } from '../../api/routes/map.js';
@@ -614,5 +614,5 @@ describeIf('Live Agent E2E — ACP via SwarmCraft Frontend Path', () => {
 
     ws.close();
     console.log('[acp-fe] ACP stream closed');
-  }, 120_000);
+  });
 });

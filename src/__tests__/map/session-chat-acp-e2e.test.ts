@@ -26,26 +26,28 @@ import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
 import { setupMapWebSocket, stopMapWebSocket } from '../../map/ws-map.js';
-import { getAllInbound, hasCapability } from '../../map/connection-registry.js';
+import { getAllInbound } from '../../map/connection-registry.js';
 import { findSwarmById } from '../../db/dal/map.js';
 import { SwarmManager } from '../../swarm/manager.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
 import { mapRoutes } from '../../api/routes/map.js';
 import { sessionsRoutes } from '../../api/routes/sessions.js';
 import { mailRoutes } from '../../api/routes/mail.js';
-import { initMail, getMailStorage } from '../../mail/index.js';
+import { initMail } from '../../mail/index.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-// MAP SDK for direct ACP streaming
+// MAP SDK for direct ACP streaming — loaded lazily in beforeAll
 let ClientConnection: any;
 let createACPStream: any;
-try {
-  const sdk = await import('@multi-agent-protocol/sdk');
-  ClientConnection = sdk.ClientConnection;
-  createACPStream = sdk.createACPStream;
-} catch {
-  // SDK not available — tests will skip
+async function loadSdk() {
+  try {
+    const sdk = await import('@multi-agent-protocol/sdk');
+    ClientConnection = sdk.ClientConnection;
+    createACPStream = sdk.createACPStream;
+  } catch {
+    // SDK not available — tests will skip
+  }
 }
 
 // ============================================================================
@@ -122,6 +124,7 @@ describeIf('Live Agent E2E — ACP Session Chat', () => {
   const originalHome = process.env.OPENHIVE_HOME;
 
   beforeAll(async () => {
+    await loadSdk();
     cleanTestRoot(TEST_ROOT);
     process.env.OPENHIVE_HOME = TEST_ROOT;
     fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
@@ -373,7 +376,6 @@ describeIf('Live Agent E2E — ACP Session Chat', () => {
 
     // ── Turn 2: Multi-turn conversation (agent remembers context) ──
 
-    const turn2Updates: any[] = [];
     // Replace the sessionUpdate handler for turn 2
     // (can't replace on existing stream, so just track separately)
     const turn1Count = sessionUpdates.length;

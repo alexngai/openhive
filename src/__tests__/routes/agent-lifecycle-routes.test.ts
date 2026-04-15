@@ -522,7 +522,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
         withCoordinator: { hubId: 'hub-ns', peerMapId: 'local-ns' },
       });
 
-      const callExtension = vi.fn(async () => ({ agent: { id: 'should-not-be-called' } }));
+      const callExtension = vi.fn(async (..._args: any[]) => ({ agent: { id: 'should-not-be-called' } }));
       sc.mapClientManager.getClient.mockReturnValue({ callExtension });
 
       const res = await app.inject({
@@ -534,7 +534,7 @@ describe('agent lifecycle + ACP-connect routes', () => {
 
       expect(res.statusCode).toBe(200);
       // The connect path must never call _macro/spawnAgent
-      const spawnCalls = callExtension.mock.calls.filter((c) => c[0] === '_macro/spawnAgent');
+      const spawnCalls = callExtension.mock.calls.filter((c: any[]) => c[0] === '_macro/spawnAgent');
       expect(spawnCalls).toHaveLength(0);
     });
 

@@ -24,14 +24,14 @@ import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { createIngestKey } from '../../db/dal/ingest-keys.js';
 import { setupMapWebSocket, stopMapWebSocket } from '../../map/ws-map.js';
 import { getAllInbound, setDefaultTaskGraph } from '../../map/connection-registry.js';
-import { ConfigSchema, type Config } from '../../config.js';
+import { ConfigSchema } from '../../config.js';
 import { resourceContentRoutes } from '../../api/routes/resource-content.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
 
 import {
   createGraphStore, createIPCServer, createDaemonFlushManager,
   registerToolsMethods, registerGraphMethods, registerLifecycleMethods,
-  createSQLitePersister, createJSONLPersister,
+  createSQLitePersister, createJSONLPersister, createProviderAwareStore,
   type GraphStore, type IPCServer,
 } from 'opentasks';
 
@@ -89,6 +89,7 @@ const sidecarExists = fs.existsSync(SIDECAR_SCRIPT);
 describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks Mutations via MAP', { timeout: 60000 }, () => {
   let app: FastifyInstance;
   let testAgent: { id: string; apiKey: string };
+  let testAgentFull: any;
   let ingestToken: string;
   let sidecar: {
     pid: number; child: ChildProcess; socketPath: string;
@@ -110,6 +111,7 @@ describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks Mutations via MAP', { tim
       description: 'E2E remote mutations',
     });
     testAgent = { id: agent.id, apiKey };
+    testAgentFull = agent;
     const { plaintext_key } = createIngestKey(agent.id, { label: 'remote-mut', agent_id: agent.id });
     ingestToken = plaintext_key;
 
@@ -150,8 +152,9 @@ describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks Mutations via MAP', { tim
     );
     otServer = createIPCServer(daemonSocketPath);
 
+    const providerStore = createProviderAwareStore(otStore);
     const locState = {
-      hash: locationHash, opentasksPath: otDir, store: otStore,
+      hash: locationHash, opentasksPath: otDir, store: otStore, providerStore,
       flushManager: flushMgr, watcher: null as any, primary: true, healthy: true,
     };
     const locResolver = {
@@ -188,8 +191,8 @@ describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks Mutations via MAP', { tim
     app = Fastify({ logger: false });
     await app.register(websocket);
     setupMapWebSocket(app, config);
-    app.decorateRequest('agent', null);
-    setLocalAgent(testAgent.id);
+    app.decorateRequest('agent');
+    setLocalAgent(testAgentFull);
     await app.register(async (api) => {
       await api.register(resourceContentRoutes, { config });
     }, { prefix: '/api/v1' });
@@ -360,5 +363,186 @@ describe.skipIf(!sidecarExists)('E2E: Remote OpenTasks Mutations via MAP', { tim
     expect(seedA).toBeDefined();
     expect(seedA.status).toBe('open');
     expect(seedA.type).toBe('task');
+  });
+
+  it('GET /tasks falls back to remote query', async () => {
+    await ensureSidecarConnected();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks?limit=10`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.daemon_connected).toBe(true);
+    expect(body.source).toBe('remote');
+    expect(body.items.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('GET /status returns remote indicator for connected swarm', async () => {
+    await ensureSidecarConnected();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/status`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.daemon_connected).toBe(true);
+    expect(body.source).toBe('remote');
+    expect(body.swarm_id).toBeDefined();
+  });
+
+  it('POST /tasks creates a task on remote graph', async () => {
+    await ensureSidecarConnected();
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      payload: { title: 'Remote-created task', description: 'via REST', priority: 3 },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.node_id).toBeDefined();
+    expect(body.status).toBe('open');
+
+    // Verify in upstream daemon's store
+    await sleep(200);
+    const created = await otStore.getNode(body.node_id) as any;
+    expect(created).toBeDefined();
+    expect(created.title).toBe('Remote-created task');
+  });
+
+  it('PATCH /tasks/:nodeId updates status via remote task.request', async () => {
+    await ensureSidecarConnected();
+
+    // Create a task to mutate
+    const createRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      payload: { title: 'Status update target' },
+    });
+    const { node_id } = JSON.parse(createRes.body);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${node_id}`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      payload: { status: 'in_progress' },
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    await sleep(200);
+    const node = await otStore.getNode(node_id);
+    expect((node as any)?.status).toBe('in_progress');
+  });
+
+  it('PATCH /tasks/:nodeId updates fields via remote graph.update.request', async () => {
+    await ensureSidecarConnected();
+
+    const createRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      payload: { title: 'Field update target' },
+    });
+    const { node_id } = JSON.parse(createRes.body);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${node_id}`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      payload: { title: 'Renamed title', assignee: 'agent-99', priority: 4 },
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    await sleep(200);
+    const node = await otStore.getNode(node_id) as any;
+    expect(node?.title).toBe('Renamed title');
+    expect(node?.assignee).toBe('agent-99');
+    expect(node?.priority).toBe(4);
+  });
+
+  it('POST /tasks/:nodeId/links creates an edge via remote link.request', async () => {
+    await ensureSidecarConnected();
+
+    const a = await app.inject({
+      method: 'POST',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      payload: { title: 'Link source' },
+    });
+    const b = await app.inject({
+      method: 'POST',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      payload: { title: 'Link target' },
+    });
+    const fromId = JSON.parse(a.body).node_id;
+    const toId = JSON.parse(b.body).node_id;
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${fromId}/links`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      payload: { targetId: toId, type: 'blocks' },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.from_id).toBe(fromId);
+    expect(body.to_id).toBe(toId);
+    expect(body.type).toBe('blocks');
+    expect(body.edge_id).toBeDefined();
+
+    // Now remove the edge
+    const delRes = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${fromId}/links/${toId}?type=blocks`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+    });
+    expect(delRes.statusCode).toBe(200);
+    expect(JSON.parse(delRes.body).removed).toBe(true);
+  });
+
+  it('DELETE /tasks/:nodeId removes a task on remote graph', async () => {
+    await ensureSidecarConnected();
+
+    // Create a task to delete
+    const createRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      payload: { title: 'Delete-target task' },
+    });
+    const { node_id } = JSON.parse(createRes.body);
+    expect(await otStore.getNode(node_id)).toBeDefined();
+
+    // Soft delete via REST → remote
+    const delRes = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/resources/${resourceId}/content/opentasks/tasks/${node_id}`,
+      headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+    });
+    expect(delRes.statusCode).toBe(200);
+    const body = JSON.parse(delRes.body);
+    expect(body.deleted).toBe(true);
+    expect(body.node_id).toBe(node_id);
+
+    // Verify in upstream daemon's store — soft delete archives the node
+    await sleep(200);
+    const after = await otStore.getNode(node_id) as any;
+    if (after !== null) {
+      expect(after.archived).toBe(true);
+    }
   });
 });

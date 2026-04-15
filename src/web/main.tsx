@@ -4,6 +4,10 @@ import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 import './styles/globals.css';
+// Global chat-bubble markdown styling (ships with swarmcraft's embed bundle).
+// Must be imported at app root so it applies on every page that renders chat,
+// not just surfaces that already bring it in via Dashboard.
+import 'swarmcraft/ui/embed.css';
 import { registerServiceWorker } from './utils/serviceWorker';
 
 const queryClient = new QueryClient({
