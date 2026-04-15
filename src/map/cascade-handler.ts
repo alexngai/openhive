@@ -26,6 +26,8 @@ import type {
   StreamMergedParams,
   StreamConflictedParams,
   StreamAbandonedParams,
+  CascadeRebasedParams,
+  CascadeCompletedParams,
   TaskRef,
   EventMetadata,
 } from './cascade-types.js';
@@ -67,6 +69,10 @@ export function handleCascadeRequest(
       return handleStreamConflicted(params as StreamConflictedParams, context);
     case 'stream.abandoned':
       return handleStreamAbandoned(params as StreamAbandonedParams, context);
+    case 'cascade.rebased':
+      return handleCascadeRebased(params as CascadeRebasedParams, context);
+    case 'cascade.completed':
+      return handleCascadeCompleted(params as CascadeCompletedParams, context);
     default:
       throw new CascadeRequestError(-32601, `Unknown cascade method: ${method}`);
   }
@@ -383,6 +389,138 @@ function handleStreamAbandoned(
 }
 
 // ============================================================================
+// cascade.rebased
+// ============================================================================
+//
+// A dependent stream was successfully rebased during cascadeRebase. Each
+// commit in new_commits is persisted via the same DAL path as a regular
+// stream.committed event (idempotent on commit_hash), preserving the Phase 0
+// commit-level projection invariants. A summary hub event + broadcast
+// carries rebase attribution (triggered_by) so consumers can distinguish
+// original commits from rebase-derived ones.
+
+function handleCascadeRebased(
+  params: CascadeRebasedParams,
+  context: CascadeRequestContext
+): CascadeEventAck {
+  if (!params?.stream_id || typeof params.stream_id !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing stream_id');
+  }
+  if (!Array.isArray(params.new_commits)) {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing new_commits');
+  }
+
+  const stream = ensureStreamRow(
+    context.swarmId,
+    params.stream_id,
+    params.agent_id ?? context.agentId ?? 'unknown'
+  );
+  const taskRef = extractTaskRef(params.metadata);
+
+  const recorded: Array<{ commit_hash: string; created: boolean }> = [];
+  for (const c of params.new_commits) {
+    if (!c || typeof c.commit_hash !== 'string') continue;
+    const { change, created } = recordCommit({
+      stream_row_id: stream.id,
+      commit_hash: c.commit_hash,
+      change_id: c.change_id,
+      parent_commit: c.parent_commit,
+      author_agent_id: params.agent_id,
+      message_summary: c.message_summary,
+      files_touched: c.files_touched ?? [],
+      task_resource_id: taskRef?.resource_id,
+      task_node_id: taskRef?.node_id,
+      metadata: {
+        cascade_rebased_from: params.triggered_by_stream_id,
+        cascade_triggered_by_agent: params.triggered_by_agent_id,
+      },
+    });
+    recorded.push({ commit_hash: change.commit_hash, created });
+  }
+
+  emitHubEvent('cascade_stream_rebased', {
+    source_swarm_id: context.swarmId,
+    stream_row_id: stream.id,
+    stream_id: stream.stream_id,
+    triggered_by_stream_id: params.triggered_by_stream_id,
+    triggered_by_agent_id: params.triggered_by_agent_id,
+    new_base_commit: params.new_base_commit,
+    new_head: params.new_head,
+    recorded_count: recorded.filter((r) => r.created).length,
+    total_commits: recorded.length,
+  });
+
+  broadcast(stream, 'cascade:stream_rebased', {
+    stream_row_id: stream.id,
+    stream_id: stream.stream_id,
+    triggered_by_stream_id: params.triggered_by_stream_id,
+    new_head: params.new_head,
+    recorded_count: recorded.filter((r) => r.created).length,
+    total_commits: recorded.length,
+    source_swarm_id: stream.source_swarm_id,
+  });
+
+  return { ok: true, stream_row_id: stream.id, created: false };
+}
+
+// ============================================================================
+// cascade.completed
+// ============================================================================
+//
+// Summary event for a cascadeRebase walk. Not persisted in Phase 1 — the
+// per-stream projections already capture the durable state (updated streams
+// have new commits; failed/conflicted streams have conflict rows). This
+// handler's job is purely observability: notify hub consumers + broadcast
+// to WS subscribers.
+
+function handleCascadeCompleted(
+  params: CascadeCompletedParams,
+  context: CascadeRequestContext
+): CascadeEventAck {
+  if (!params?.root_stream_id || typeof params.root_stream_id !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing root_stream_id');
+  }
+  if (!Array.isArray(params.updated_streams)) {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing updated_streams');
+  }
+
+  // Look up the root stream row if it exists (may not if the hub hasn't
+  // seen stream.opened yet for some reason). Missing root is non-fatal —
+  // we still broadcast the event.
+  const rootStream = getStreamBySwarmAndId(context.swarmId, params.root_stream_id);
+
+  const summary = {
+    source_swarm_id: context.swarmId,
+    root_stream_id: params.root_stream_id,
+    root_stream_row_id: rootStream?.id ?? null,
+    agent_id: params.agent_id,
+    strategy: params.strategy,
+    updated_streams: params.updated_streams,
+    failed_streams: params.failed_streams,
+    skipped_streams: params.skipped_streams,
+    deferred_streams: params.deferred_streams,
+  };
+
+  emitHubEvent('cascade_completed', summary);
+
+  // Broadcast to the root stream's channel (when we know it), the swarm
+  // channel, and global. No task_resource_id binding here since the event
+  // is about a whole cascade walk, not a single task.
+  try {
+    const wsMessage = { type: 'cascade:completed' as const, data: summary };
+    if (rootStream) {
+      broadcastToChannel(`cascade:stream:${rootStream.id}`, wsMessage);
+    }
+    broadcastToChannel(`cascade:swarm:${context.swarmId}`, wsMessage);
+    broadcastToChannel('global', wsMessage);
+  } catch {
+    // Non-critical
+  }
+
+  return { ok: true, stream_row_id: rootStream?.id };
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -415,7 +553,9 @@ type CascadeWSEventType =
   | 'cascade:stream_committed'
   | 'cascade:stream_merged'
   | 'cascade:stream_conflicted'
-  | 'cascade:stream_abandoned';
+  | 'cascade:stream_abandoned'
+  | 'cascade:stream_rebased'
+  | 'cascade:completed';
 
 function broadcast(
   stream: CascadeStream,

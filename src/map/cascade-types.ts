@@ -29,6 +29,9 @@ export {
   type StreamMergedParams,
   type StreamConflictedParams,
   type StreamAbandonedParams,
+  type CascadeRebasedParams,
+  type CascadeRebasedCommit,
+  type CascadeCompletedParams,
   type TaskRef,
   type EventMetadata,
 } from 'git-cascade/events';

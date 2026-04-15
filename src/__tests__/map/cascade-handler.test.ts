@@ -393,6 +393,127 @@ describe('Cascade Handler', () => {
     });
   });
 
+  describe('x-cascade/cascade.rebased', () => {
+    it('records each new commit against the dependent stream', () => {
+      // Seed the dependent stream first.
+      handleCascadeRequest(
+        CASCADE_METHODS.STREAM_OPENED,
+        { stream_id: 'rebased-child', name: 'rc', agent_id: 'b' },
+        { swarmId, agentId }
+      );
+
+      handleCascadeRequest(
+        CASCADE_METHODS.CASCADE_REBASED,
+        {
+          stream_id: 'rebased-child',
+          agent_id: 'a',
+          triggered_by_stream_id: 'root-parent',
+          triggered_by_agent_id: 'a',
+          new_base_commit: 'nb',
+          new_head: 'nh',
+          new_commits: [
+            {
+              commit_hash: 'rc-new-1',
+              change_id: 'chg-reb-1',
+              parent_commit: 'nb',
+              message_summary: 'rebased first',
+              files_touched: ['x.ts'],
+            },
+            {
+              commit_hash: 'rc-new-2',
+              change_id: 'chg-reb-2',
+              parent_commit: 'rc-new-1',
+              message_summary: 'rebased second',
+              files_touched: ['y.ts'],
+            },
+          ],
+        },
+        { swarmId, agentId }
+      );
+
+      const stream = getStreamBySwarmAndId(swarmId, 'rebased-child');
+      const changes = listChangesForStream(stream!.id);
+      expect(changes).toHaveLength(2);
+      expect(changes.map((c) => c.commit_hash)).toEqual(['rc-new-1', 'rc-new-2']);
+      expect(changes[0].change_id).toBe('chg-reb-1');
+      expect(changes[0].metadata).toMatchObject({
+        cascade_rebased_from: 'root-parent',
+        cascade_triggered_by_agent: 'a',
+      });
+    });
+
+    it('is idempotent when the same cascade.rebased event is replayed', () => {
+      handleCascadeRequest(
+        CASCADE_METHODS.STREAM_OPENED,
+        { stream_id: 'rebased-dup', name: 'rd', agent_id: 'b' },
+        { swarmId, agentId }
+      );
+      const payload = {
+        stream_id: 'rebased-dup',
+        agent_id: 'a',
+        triggered_by_stream_id: 'root',
+        new_base_commit: 'nb',
+        new_head: 'nh',
+        new_commits: [
+          {
+            commit_hash: 'rd-c1',
+            change_id: 'chg',
+            parent_commit: 'nb',
+            message_summary: 'once',
+            files_touched: [],
+          },
+        ],
+      };
+      handleCascadeRequest(CASCADE_METHODS.CASCADE_REBASED, payload, {
+        swarmId,
+        agentId,
+      });
+      handleCascadeRequest(CASCADE_METHODS.CASCADE_REBASED, payload, {
+        swarmId,
+        agentId,
+      });
+
+      const stream = getStreamBySwarmAndId(swarmId, 'rebased-dup');
+      expect(listChangesForStream(stream!.id)).toHaveLength(1);
+    });
+  });
+
+  describe('x-cascade/cascade.completed', () => {
+    it('accepts summary payloads and returns ok even when root is unknown to the hub', () => {
+      const result = handleCascadeRequest(
+        CASCADE_METHODS.CASCADE_COMPLETED,
+        {
+          root_stream_id: 'never-seen-root',
+          agent_id: 'a',
+          strategy: 'stop_on_conflict',
+          updated_streams: ['dep-1', 'dep-2'],
+          failed_streams: [],
+          skipped_streams: [],
+        },
+        { swarmId, agentId }
+      );
+      expect(result.ok).toBe(true);
+    });
+
+    it('rejects missing root_stream_id or updated_streams', () => {
+      expect(() =>
+        handleCascadeRequest(
+          CASCADE_METHODS.CASCADE_COMPLETED,
+          { agent_id: 'a', strategy: 'stop_on_conflict', updated_streams: [] },
+          { swarmId, agentId }
+        )
+      ).toThrow(CascadeRequestError);
+
+      expect(() =>
+        handleCascadeRequest(
+          CASCADE_METHODS.CASCADE_COMPLETED,
+          { root_stream_id: 'r', agent_id: 'a', strategy: 'stop_on_conflict' },
+          { swarmId, agentId }
+        )
+      ).toThrow(CascadeRequestError);
+    });
+  });
+
   describe('dispatch errors', () => {
     it('throws CascadeRequestError for unknown cascade methods', () => {
       expect(() =>
