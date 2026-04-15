@@ -17,11 +17,12 @@ vi.mock('../../db/dal/map.js', () => ({
 }));
 
 import { setupSwarmBridge } from '../../swarmcraft/swarm-bridge.js';
-import { agentIdFromNode } from '../../swarmcraft/constants.js';
+import { agentIdFromNode, agentIdFromSwarm } from '../../swarmcraft/constants.js';
 
 const SWARM_ID = 'swarm-abc';
 const RAW_AGENT_ID = 'alice';
 const OH_NODE_ID = agentIdFromNode(SWARM_ID, RAW_AGENT_ID);
+const OH_SWARM_ID = agentIdFromSwarm(SWARM_ID);
 
 // ── Test context factory ─────────────────────────────────────────────
 function createCtx(existingAgent: Record<string, unknown> | null = null) {
@@ -281,6 +282,106 @@ describe('swarm-bridge — ACP stream cleanup (inbound mapHubEvents)', () => {
     ).toBe(true);
 
     warnSpy.mockRestore();
+    handle.teardown();
+  });
+});
+
+describe('swarm-bridge — swarm reactivation (swarm_online)', () => {
+  afterEach(() => {
+    mapHubEvents.removeAllListeners('swarm_online');
+    mapHubEvents.removeAllListeners('swarm_registered');
+    vi.clearAllMocks();
+    findSwarmByIdMock.mockReturnValue(null);
+  });
+
+  it('reactivates stopped oh-swarm-* row to active with broadcast', async () => {
+    findSwarmByIdMock.mockReturnValue({
+      map_endpoint: 'hub-inbound',
+      capabilities: { messaging: true, mail: true },
+    } as any);
+    const { ctx } = createCtx({ state: 'stopped' });
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('swarm_online', {
+      swarm_id: SWARM_ID,
+      name: 'my-swarm',
+    });
+
+    expect(ctx.db.agents.get).toHaveBeenCalledWith(OH_SWARM_ID);
+    expect(ctx.db.agents.update).toHaveBeenCalledWith(
+      OH_SWARM_ID,
+      expect.objectContaining({ name: 'my-swarm', state: 'active', mapServerId: SWARM_ID }),
+    );
+    expect(ctx.wsHub.broadcastAgentStateChanged).toHaveBeenCalledWith(
+      OH_SWARM_ID,
+      'stopped',
+      'active',
+    );
+    expect(ctx.db.agents.create).not.toHaveBeenCalled();
+
+    handle.teardown();
+  });
+
+  it('creates oh-swarm-* row when it does not exist (late-arrival hydration miss)', async () => {
+    findSwarmByIdMock.mockReturnValue({
+      map_endpoint: 'hub-inbound',
+      capabilities: { messaging: true },
+    } as any);
+    const { ctx } = createCtx(null);
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('swarm_online', {
+      swarm_id: SWARM_ID,
+      name: 'late-swarm',
+    });
+
+    expect(ctx.db.agents.create).toHaveBeenCalledTimes(1);
+    const payload = (ctx.db.agents.create as any).mock.calls[0][0];
+    expect(payload.id).toBe(OH_SWARM_ID);
+    expect(payload.type).toBe('swarm');
+    expect(payload.state).toBe('active');
+    expect(payload.capabilities).toEqual(['messaging']);
+    expect(ctx.wsHub.broadcastAgentRegistered).toHaveBeenCalledWith({
+      id: OH_SWARM_ID,
+      name: 'late-swarm',
+      type: 'swarm',
+    });
+
+    handle.teardown();
+  });
+
+  it('is a no-op when swarm is already active (no broadcast, no update)', async () => {
+    findSwarmByIdMock.mockReturnValue({ map_endpoint: 'hub-inbound', capabilities: {} } as any);
+    const { ctx } = createCtx({ state: 'active' });
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('swarm_online', {
+      swarm_id: SWARM_ID,
+      name: 'my-swarm',
+    });
+
+    expect(ctx.db.agents.update).not.toHaveBeenCalled();
+    expect(ctx.db.agents.create).not.toHaveBeenCalled();
+    expect(ctx.wsHub.broadcastAgentStateChanged).not.toHaveBeenCalled();
+    expect(ctx.wsHub.broadcastAgentRegistered).not.toHaveBeenCalled();
+
+    handle.teardown();
+  });
+
+  it('falls back to default capabilities when hub swarm record is missing', async () => {
+    findSwarmByIdMock.mockReturnValue(null);
+    const { ctx } = createCtx(null);
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('swarm_online', {
+      swarm_id: SWARM_ID,
+      name: 'mystery-swarm',
+    });
+
+    const payload = (ctx.db.agents.create as any).mock.calls[0][0];
+    expect(payload.capabilities).toEqual(['observation', 'messaging', 'lifecycle']);
+    expect(payload.stateMetadata.endpoint).toBe('hub-inbound');
+
     handle.teardown();
   });
 });

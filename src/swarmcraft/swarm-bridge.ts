@@ -52,36 +52,56 @@ export async function setupSwarmBridge(
 
   // ── Real-time event listeners ────────────────────────────────────────
 
+  // Idempotent swarm upsert shared by swarm_registered (brand-new swarms)
+  // and swarm_online (reconnect / late-arriving swarms missed by startup
+  // hydration). Reads capabilities from the authoritative hub swarm record.
+  const upsertSwarmProjection = async (
+    swarmId: string,
+    name: string,
+    endpoint: string | undefined,
+  ): Promise<void> => {
+    const agentId = agentIdFromSwarm(swarmId);
+    const swarmRecord = findSwarmById(swarmId);
+    const hubCaps = swarmRecord?.capabilities as Record<string, unknown> | null;
+    const caps = hubCaps
+      ? Object.keys(hubCaps).filter(k => hubCaps[k])
+      : ['observation', 'messaging', 'lifecycle'];
+    const stateMetadata = {
+      source: 'openhive-hub',
+      swarmId,
+      endpoint: endpoint ?? swarmRecord?.map_endpoint ?? 'hub-inbound',
+    };
+
+    const existing = await ctx.db.agents.get(agentId);
+    if (existing) {
+      const previousState = (existing as { state?: string }).state || 'stopped';
+      if (previousState !== 'active') {
+        await ctx.db.agents.update(agentId, {
+          name,
+          state: 'active',
+          mapServerId: swarmId,
+          stateMetadata,
+        });
+        ctx.wsHub.broadcastAgentStateChanged(agentId, previousState, 'active');
+      }
+    } else {
+      await ctx.db.agents.create({
+        id: agentId,
+        name,
+        type: 'swarm',
+        mapServerId: swarmId,
+        state: 'active',
+        capabilities: caps,
+        stateMetadata,
+      });
+      ctx.wsHub.broadcastAgentRegistered({ id: agentId, name, type: 'swarm' });
+    }
+  };
+
   on('swarm_registered', async (e: unknown) => {
     const ev = e as { swarm_id: string; name: string; map_endpoint: string; auth_method?: string };
     try {
-      const agentId = agentIdFromSwarm(ev.swarm_id);
-      // Use the swarm's own ID as mapServerId so SwarmCraft's ACP manager
-      // can find the correct MAP ClientConnection via getClient(serverId)
-      const serverId = ev.swarm_id;
-
-      // Read actual capabilities from the hub's swarm record (set during MAP registration)
-      // instead of hardcoding, so ACP/mail/messaging capabilities are preserved.
-      const swarmRecord = findSwarmById(ev.swarm_id);
-      const hubCaps = swarmRecord?.capabilities as Record<string, unknown> | null;
-      const caps = hubCaps
-        ? Object.keys(hubCaps).filter(k => hubCaps[k])
-        : ['observation', 'messaging', 'lifecycle'];
-
-      await ctx.db.agents.create({
-        id: agentId,
-        name: ev.name,
-        type: 'swarm',
-        mapServerId: serverId,
-        state: 'active',
-        capabilities: caps,
-        stateMetadata: {
-          source: 'openhive-hub',
-          swarmId: ev.swarm_id,
-          endpoint: ev.map_endpoint,
-        },
-      });
-      ctx.wsHub.broadcastAgentRegistered({ id: agentId, name: ev.name, type: 'swarm' });
+      await upsertSwarmProjection(ev.swarm_id, ev.name, ev.map_endpoint);
 
       // Auto-connect MAP client to the swarm's MAP endpoint
       if (mapClientManager) {
@@ -94,6 +114,22 @@ export async function setupSwarmBridge(
       }
     } catch (err) {
       console.warn(`[swarmcraft-bridge] swarm_registered handler failed: ${(err as Error).message}`);
+    }
+  });
+
+  // Fires on every inbound WS handshake (first connect AND reconnect).
+  // Handles two previously-broken cases:
+  //   1. A swarm that bounced offline→online stayed stuck at state='stopped'
+  //      because the bridge only had swarm_offline, no reverse signal.
+  //   2. A swarm that came online after startup hydration ran but before
+  //      its first swarm_registered emission (e.g. DB had a stale record
+  //      marked offline) never got projected at all.
+  on('swarm_online', async (e: unknown) => {
+    const ev = e as { swarm_id: string; name: string };
+    try {
+      await upsertSwarmProjection(ev.swarm_id, ev.name, undefined);
+    } catch (err) {
+      console.warn(`[swarmcraft-bridge] swarm_online handler failed: ${(err as Error).message}`);
     }
   });
 

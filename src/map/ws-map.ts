@@ -522,6 +522,16 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
           });
         } catch { /* non-critical */ }
 
+        // Fires on every handshake (first connect AND reconnect). The
+        // swarm-bridge uses this as an idempotent upsert signal so that
+        // swarms which were previously marked stopped (via swarm_offline)
+        // are reactivated in the SwarmCraft agent graph, and late-arriving
+        // swarms that missed startup hydration get projected.
+        mapHubEvents.emit('swarm_online', {
+          swarm_id: swarmId,
+          name: registeredAgent.name || `${swarmId}-hub`,
+        });
+
         // Set up notification interceptor now that we know the swarmId
         const interceptor = createNotificationInterceptor(ws, swarmId);
 
@@ -569,6 +579,12 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         data: { swarm_id: swarmId, status: 'online' },
       });
     } catch { /* non-critical */ }
+
+    // See verified-mode emission above for rationale.
+    mapHubEvents.emit('swarm_online', {
+      swarm_id: swarmId,
+      name: agent.name || `${swarmId}-hub`,
+    });
 
     // Send hub/welcome (open mode clients expect this)
     sendJsonRpc(ws, 'hub/welcome', {
