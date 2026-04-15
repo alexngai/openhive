@@ -30,7 +30,8 @@ import { mapRoutes } from '../../api/routes/map.js';
 import { ConfigSchema } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-// cc-swarm imports
+// cc-swarm imports — no type declarations shipped, treat as any
+// @ts-expect-error — claude-code-swarm ships no .d.ts
 import { connectToMAP, buildTrajectoryCheckpoint } from 'claude-code-swarm';
 
 // ============================================================================
@@ -489,7 +490,7 @@ describe.skipIf(!sidecarExists)('E2E: cc-swarm Real Sidecar Process', () => {
     sidecar = await spawnSidecar();
 
     // Sidecar should respond to ping
-    const pingResp = await sendCommand(sidecar.socketPath, { action: 'ping' });
+    const pingResp = await sendCommand(sidecar!.socketPath, { action: 'ping' });
     expect((pingResp as any)?.ok).toBe(true);
 
     // Hub should have an inbound connection
@@ -502,7 +503,7 @@ describe.skipIf(!sidecarExists)('E2E: cc-swarm Real Sidecar Process', () => {
     expect(getAllInbound().size).toBeGreaterThanOrEqual(1);
 
     // Sidecar should still be responding
-    const ping2 = await sendCommand(sidecar.socketPath, { action: 'ping' });
+    const ping2 = await sendCommand(sidecar!.socketPath, { action: 'ping' });
     expect((ping2 as any)?.ok).toBe(true);
   }, 30_000);
 
@@ -514,7 +515,7 @@ describe.skipIf(!sidecarExists)('E2E: cc-swarm Real Sidecar Process', () => {
     await waitFor(() => getAllInbound().size > 0);
 
     // Spawn an agent via sidecar socket
-    const spawnResp = await sendCommand(sidecar.socketPath, {
+    const spawnResp = await sendCommand(sidecar!.socketPath, {
       action: 'spawn',
       agent: {
         name: 'test-worker',
@@ -553,7 +554,7 @@ describe.skipIf(!sidecarExists)('E2E: cc-swarm Real Sidecar Process', () => {
     await waitFor(() => getAllInbound().size > 0);
 
     // Send trajectory checkpoint via sidecar socket
-    const cpResp = await sendCommand(sidecar.socketPath, {
+    await sendCommand(sidecar!.socketPath, {
       action: 'trajectory-checkpoint',
       checkpoint: {
         agent: 'Claude Code',
@@ -567,12 +568,12 @@ describe.skipIf(!sidecarExists)('E2E: cc-swarm Real Sidecar Process', () => {
     });
     // Checkpoint delivery is fire-and-forget; response may vary
     // The important thing is the sidecar doesn't crash
-    expect(sidecar.child.killed).toBe(false);
+    expect(sidecar!.child.killed).toBe(false);
 
     await sleep(300);
 
     // Connection should still be alive
-    const ping = await sendCommand(sidecar.socketPath, { action: 'ping' });
+    const ping = await sendCommand(sidecar!.socketPath, { action: 'ping' });
     expect((ping as any)?.ok).toBe(true);
   }, 30_000);
 });

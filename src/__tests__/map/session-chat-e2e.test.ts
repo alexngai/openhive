@@ -590,7 +590,7 @@ describe.skipIf(!sidecarExists)('E2E: Session Chat via Real Sidecar Process', ()
     expect(turns[0].content.text).toBe('Hello from real sidecar e2e test!');
 
     // Sidecar still alive
-    const ping = await sendCommand(sidecar.socketPath, { action: 'ping' });
+    const ping = await sendCommand(sidecar!.socketPath, { action: 'ping' });
     expect((ping as any)?.ok).toBe(true);
   }, 30_000);
 });
@@ -770,7 +770,6 @@ describe('E2E: Bidirectional Session Chat via Mail', () => {
 
     // 4. Agent replies by joining the conversation and sending a turn back
     // First join the conversation as the sidecar agent
-    const agentName = `bidir-full-sidecar`;
     await app.inject({
       method: 'POST',
       url: `/api/v1/mail/conversations/${convId}/join`,
@@ -827,12 +826,11 @@ describe('E2E: Bidirectional Session Chat via Mail', () => {
 
     // Create session and send user message
     const session = createSessionResource('noecho-session', swarmId);
-    const chatRes = await app.inject({
+    await app.inject({
       method: 'POST',
       url: `/api/v1/sessions/${session.id}/chat`,
       payload: { content: 'Hello' },
     });
-    const convId = JSON.parse(chatRes.payload).conversation_id;
 
     // User turn should be forwarded (user is NOT on this swarm)
     await waitFor(() => receivedNotifications.length > 0, 3_000);
@@ -841,7 +839,6 @@ describe('E2E: Bidirectional Session Chat via Mail', () => {
     // Now if the agent sends a reply via the same hub, it should NOT echo back
     // (because the sender is a registered agent on this swarm)
     // We simulate this by noting the notification count before and after
-    const countBefore = receivedNotifications.length;
 
     // Note: The agent reply via REST API uses the auth agent (setLocalAgent),
     // which is NOT registered on the swarm connection, so it will still be

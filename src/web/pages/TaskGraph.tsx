@@ -38,12 +38,11 @@ export function TaskGraph() {
   const [filters, setFilters] = useState<TaskFilters>(DEFAULT_FILTERS);
   const [showGraphPicker, setShowGraphPicker] = useState(false);
 
-  // All available task graphs
+  // All available task graphs (including federated MAP-backed graphs — full CRUD
+  // is wired through to the owning swarm via opentasks/graph.* MAP methods).
   const { data: allGraphsData, isLoading: graphsListLoading } = useResourcesByType('task');
   const allGraphs = useMemo(
-    () => (allGraphsData?.data || []).filter(
-      (r) => !r.git_remote_url.startsWith('remote://') && !r.git_remote_url.startsWith('map://'),
-    ),
+    () => allGraphsData?.data || [],
     [allGraphsData],
   );
 

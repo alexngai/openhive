@@ -240,45 +240,149 @@ export async function remoteGetSummary(
 }
 
 /**
- * Create a task on a remote swarm's graph.
+ * Create a task on a remote swarm's graph via the opentasks/graph.create.request
+ * method (wraps client.createNode on the sidecar).
  */
 export async function remoteCreateTask(
   swarmId: string,
-  params: { title?: string; description?: string; status?: string; priority?: number },
+  params: {
+    title?: string;
+    description?: string;
+    status?: string;
+    priority?: number;
+    assignee?: string;
+    meta?: Record<string, unknown>;
+  },
 ): Promise<Record<string, unknown> | null> {
-  return await sendRequest(swarmId, 'opentasks/task.request', {
-    task: {
-      transition: undefined,
-      ready: undefined,
-      assign: undefined,
-      validActions: undefined,
-    },
-    // Use the query to create — the connector routes to client.task()
-    // But actually, for creation we need graph.create which goes through the connector's query path
-    // Let's use a direct create approach
+  const result = await sendRequest(swarmId, 'opentasks/graph.create.request', {
     create: {
       type: 'task',
       title: params.title || 'Untitled',
       content: params.description,
       status: params.status || 'open',
       priority: params.priority,
+      assignee: params.assignee,
+      metadata: params.meta,
     },
   });
+  if (!result) return null;
+  return (result.node as Record<string, unknown>) ?? null;
 }
 
 /**
- * Update a task's status on a remote swarm's graph.
+ * Update a task's status on a remote swarm's graph via semantic transition.
  */
 export async function remoteUpdateTask(
   swarmId: string,
   taskId: string,
   status: string,
 ): Promise<Record<string, unknown> | null> {
-  return await sendRequest(swarmId, 'opentasks/task.request', {
+  const result = await sendRequest(swarmId, 'opentasks/task.request', {
     task: {
       transition: { id: taskId, action: statusToAction(status) },
     },
   });
+  if (!result) return null;
+  const data = result.data as Record<string, unknown> | undefined;
+  return (data?.node as Record<string, unknown>) ?? null;
+}
+
+/**
+ * Assign a task on a remote swarm's graph via the existing task.assign operation.
+ */
+export async function remoteAssignTask(
+  swarmId: string,
+  taskId: string,
+  assignee: string,
+): Promise<Record<string, unknown> | null> {
+  const result = await sendRequest(swarmId, 'opentasks/task.request', {
+    task: {
+      assign: { id: taskId, assignee },
+    },
+  });
+  if (!result) return null;
+  const data = result.data as Record<string, unknown> | undefined;
+  return (data?.node as Record<string, unknown>) ?? null;
+}
+
+/**
+ * Update non-status fields (title/description/assignee/priority/meta) on a
+ * remote task via opentasks/graph.update.request. Returns the updated node,
+ * or null on timeout/error.
+ */
+export async function remoteUpdateTaskFields(
+  swarmId: string,
+  taskId: string,
+  updates: {
+    title?: string;
+    description?: string;
+    assignee?: string;
+    priority?: number;
+    meta?: Record<string, unknown>;
+  },
+): Promise<Record<string, unknown> | null> {
+  const updatePayload: Record<string, unknown> = { id: taskId };
+  if (updates.title !== undefined) updatePayload.title = updates.title;
+  if (updates.description !== undefined) updatePayload.content = updates.description;
+  if (updates.assignee !== undefined) updatePayload.assignee = updates.assignee;
+  if (updates.priority !== undefined) updatePayload.priority = updates.priority;
+  if (updates.meta !== undefined) updatePayload.metadata = updates.meta;
+
+  const result = await sendRequest(swarmId, 'opentasks/graph.update.request', {
+    update: updatePayload,
+  });
+  if (!result) return null;
+  return (result.node as Record<string, unknown>) ?? null;
+}
+
+/**
+ * Delete a task on a remote swarm's graph via the opentasks/graph.delete.request method.
+ * Requires opentasks >= 0.1.1 on the swarm side.
+ */
+export async function remoteDeleteTask(
+  swarmId: string,
+  taskId: string,
+  options?: { hard?: boolean },
+): Promise<boolean> {
+  const result = await sendRequest(swarmId, 'opentasks/graph.delete.request', {
+    delete: { id: taskId, options },
+  });
+  if (!result) return false;
+  return result.deleted === true;
+}
+
+/**
+ * Create an edge between two nodes on a remote swarm's graph.
+ */
+export async function remoteCreateLink(
+  swarmId: string,
+  fromId: string,
+  toId: string,
+  type: string,
+  metadata?: Record<string, unknown>,
+): Promise<{ edgeId?: string } | null> {
+  const result = await sendRequest(swarmId, 'opentasks/link.request', {
+    link: { fromId, toId, type, metadata },
+  });
+  if (!result) return null;
+  if (result.success === false) return null;
+  return { edgeId: result.edgeId as string | undefined };
+}
+
+/**
+ * Remove an edge between two nodes on a remote swarm's graph.
+ */
+export async function remoteRemoveLink(
+  swarmId: string,
+  fromId: string,
+  toId: string,
+  type: string,
+): Promise<boolean> {
+  const result = await sendRequest(swarmId, 'opentasks/link.request', {
+    link: { fromId, toId, type, remove: true },
+  });
+  if (!result) return false;
+  return result.success !== false;
 }
 
 function statusToAction(status: string): string {

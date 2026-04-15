@@ -66,19 +66,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function waitFor(
-  predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 30000,
-  intervalMs = 500,
-): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (await predicate()) return true;
-    await sleep(intervalMs);
-  }
-  return false;
-}
-
 function collectMessages(ws: WebSocket): Array<Record<string, unknown>> {
   const messages: Array<Record<string, unknown>> = [];
   ws.on('message', (data) => {
@@ -192,6 +179,7 @@ function runClaude(
 describe.skipIf(!LIVE || !CLI_AVAILABLE)('E2E: Live Agent Task Round-Trip', { timeout: 300_000 }, () => {
   let app: FastifyInstance;
   let agent: { id: string; apiKey: string; ingestToken: string };
+  let agentFull: any;
   let otStore: GraphStore;
   let otServer: IPCServer;
   let daemonSocketPath: string;
@@ -209,6 +197,7 @@ describe.skipIf(!LIVE || !CLI_AVAILABLE)('E2E: Live Agent Task Round-Trip', { ti
     const a = await agentsDAL.createAgent({ name: 'live-agent', description: 'Live agent test' });
     const ik = createIngestKey(a.agent.id, { label: 'live', agent_id: a.agent.id });
     agent = { id: a.agent.id, apiKey: a.apiKey, ingestToken: ik.plaintext_key };
+    agentFull = a.agent;
 
     // Start OpenTasks daemon
     opentasksDir = path.join(TEST_ROOT, '.opentasks');
@@ -242,7 +231,7 @@ describe.skipIf(!LIVE || !CLI_AVAILABLE)('E2E: Live Agent Task Round-Trip', { ti
     const nativeProvider = createNativeProvider(otStore);
     const registry = createProviderRegistry();
     registry.register(nativeProvider);
-    const providerStore = createProviderAwareStore(otStore, { providers: registry });
+    const providerStore = createProviderAwareStore(otStore, { registry });
 
     const flushMgr = createDaemonFlushManager(
       { debounceMs: 50, maxDelayMs: 100 },
@@ -285,8 +274,8 @@ describe.skipIf(!LIVE || !CLI_AVAILABLE)('E2E: Live Agent Task Round-Trip', { ti
     await app.register(websocket);
     setupWebSocket(app);
     setupMapWebSocket(app, config);
-    app.decorateRequest('agent', null);
-    setLocalAgent(agent.id);
+    app.decorateRequest('agent');
+    setLocalAgent(agentFull);
     await app.register(async (api) => {
       await api.register(resourceContentRoutes, { config });
     }, { prefix: '/api/v1' });

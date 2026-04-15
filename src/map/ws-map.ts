@@ -321,7 +321,6 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       // Try matching via the event's session metadata or by finding the connection
       // whose router session owns this agent.
       if (resolvedAgentId === mapFrom) {
-        const sessionId = event?.data?.sessionId ?? event?.sessionId;
         for (const [, conn] of getAllInbound()) {
           // Check if any registered agent on this connection matches
           for (const [, regAgent] of conn.registeredAgents) {
