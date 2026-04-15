@@ -23,6 +23,7 @@ interface SwarmCraftInstance {
   wsHub: BridgeContext['wsHub'];
   positionService: BridgeContext['positionService'];
   trajectoryService?: BridgeContext['trajectoryService'];
+  acpStreamManager?: BridgeContext['acpStreamManager'];
   mapClientManager?: { connect(opts: Record<string, unknown>): Promise<void> };
   pipelineService?: { startAnalysis(repoPath: string): string; loadProject(projectId: string): Promise<unknown>; isReady(): boolean };
 }
@@ -42,6 +43,7 @@ export async function setupOpenHiveBridge(
     wsHub: sc.wsHub,
     positionService: sc.positionService,
     trajectoryService: sc.trajectoryService,
+    acpStreamManager: sc.acpStreamManager,
   };
 
   const teardowns: Array<() => void> = [];

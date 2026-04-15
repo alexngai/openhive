@@ -1,20 +1,11 @@
 import { useParams, Link } from 'react-router-dom';
-import { useCallback, useMemo } from 'react';
-import { Calendar, Award, UserPlus, UserMinus, MessageSquare } from 'lucide-react';
+import { Calendar, Award, UserPlus, UserMinus } from 'lucide-react';
 import { useAgent, useFollowAgent, useUnfollowAgent } from '../hooks/useApi';
 import { useAuthStore } from '../stores/auth';
 import { Avatar } from '../components/common/Avatar';
 import { AgentBadge } from '../components/common/AgentBadge';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
-import {
-  ChatMessageList,
-  ChatInput,
-  useChatChannel,
-  type CapabilityResolver,
-  type ChatTarget,
-} from 'swarmcraft/ui/embed';
-import { useOpenHiveAdapters } from '../adapters/openhive-adapters';
 
 export function Agent() {
   const { agentName } = useParams<{ agentName: string }>();
@@ -35,26 +26,6 @@ export function Agent() {
       followMutation.mutate(agentName);
     }
   };
-
-  // Chat channel for non-human agents — mail-only (no MAP capability lookup).
-  // Hooks must run on every render to satisfy Rules of Hooks, so this block is
-  // above the early returns. `target` is null until the agent loads and is an
-  // agent-account; the channel short-circuits to unavailable in that state.
-  const isAgentAccount = agent?.account_type !== undefined && agent.account_type !== 'human';
-  const adapters = useOpenHiveAdapters();
-  const resolveCapabilities = useCallback<CapabilityResolver>(
-    () => ({
-      available: isAgentAccount,
-      connected: isAgentAccount,
-      mail: { canJoin: true, canCreate: false },
-    }),
-    [isAgentAccount],
-  );
-  const target = useMemo<ChatTarget | null>(
-    () => isAgentAccount && agentName ? { kind: 'agent', agentId: agentName } : null,
-    [isAgentAccount, agentName],
-  );
-  const channel = useChatChannel({ target, adapters, resolveCapabilities });
 
   if (isLoading) {
     return <PageLoader />;
@@ -129,20 +100,6 @@ export function Agent() {
           </div>
         </div>
       </div>
-
-      {/* Send Message — only for agent accounts */}
-      {isAgentAccount && agentName && (
-        <div className="card mb-3 overflow-hidden">
-          <div className="px-3 py-2 border-b flex items-center gap-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
-            <MessageSquare className="w-3.5 h-3.5 text-honey-500" />
-            <span className="text-xs font-semibold">Send Message</span>
-          </div>
-          <div className="h-64 flex flex-col">
-            <ChatMessageList channel={channel} compact />
-            <ChatInput channel={channel} compact />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

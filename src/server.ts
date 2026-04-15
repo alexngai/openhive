@@ -308,6 +308,13 @@ export async function createHive(
           pollIntervalMs: 3000,
         },
         // Trajectory auto-enables with memory provider when sessionlog is on
+        // Suppress swarmcraft's built-in MAP agent-lifecycle handlers — the
+        // OpenHive bridge (swarm-bridge.ts) is the sole writer of agent rows
+        // in the SwarmCraft DB (with `oh-node-*` namespaced ids) and owns
+        // ACP stream cleanup on agent termination. Without this flag, the
+        // built-in handlers would also write rows using raw MAP ids and we
+        // would end up with two DB rows per logical agent.
+        skipAgentLifecycle: true,
       });
       console.log(`[openhive] SwarmCraft plugin registered at ${scPrefix}`);
 
@@ -321,6 +328,7 @@ export async function createHive(
         wsHub: sc.wsHub,
         positionService: sc.positionService,
         trajectoryService: sc.trajectoryService,
+        acpStreamManager: sc.acpStreamManager,
         mapClientManager: sc.mapClientManager,
         pipelineService: sc.pipelineService,
       });
