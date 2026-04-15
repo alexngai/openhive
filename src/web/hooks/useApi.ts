@@ -2024,6 +2024,88 @@ export function useConnectAcp() {
   });
 }
 
+// ============================================================================
+// Cascade (git-cascade projections)
+// ============================================================================
+
+/**
+ * Task changelog — commit range + merges + conflicts bound to an
+ * OpenTasks task, plus rendered markdown. The Phase 3 primary artifact.
+ *
+ * Pass `format: 'json'` to skip markdown rendering when the UI renders its
+ * own layout from the structured data.
+ */
+export function useCascadeChangelog(
+  resourceId: string,
+  nodeId: string,
+  options: {
+    title?: string;
+    subtitle?: string;
+    format?: 'json' | 'both';
+    enabled?: boolean;
+  } = {},
+) {
+  const params = new URLSearchParams();
+  params.set('format', options.format ?? 'both');
+  if (options.title) params.set('title', options.title);
+  if (options.subtitle) params.set('subtitle', options.subtitle);
+
+  return useQuery({
+    queryKey: ['cascade-changelog', resourceId, nodeId, options.format, options.title, options.subtitle],
+    queryFn: () =>
+      api.get<import('../lib/api').CascadeChangelogResponse>(
+        `/cascade/tasks/${encodeURIComponent(resourceId)}/${encodeURIComponent(nodeId)}/changelog?${params.toString()}`,
+      ),
+    enabled: (options.enabled ?? true) && !!resourceId && !!nodeId,
+    staleTime: 15_000,
+  });
+}
+
+/**
+ * Raw commit range for a task — lighter than the full changelog when you
+ * only need stream info + commit list.
+ */
+export function useCascadeCommitRange(
+  resourceId: string,
+  nodeId: string,
+  options: { limit?: number; offset?: number; enabled?: boolean } = {},
+) {
+  const params = new URLSearchParams();
+  if (options.limit) params.set('limit', String(options.limit));
+  if (options.offset) params.set('offset', String(options.offset));
+
+  const qs = params.toString();
+  return useQuery({
+    queryKey: ['cascade-commit-range', resourceId, nodeId, options.limit, options.offset],
+    queryFn: () =>
+      api.get<{
+        data: Array<{
+          stream_row_id: string;
+          stream_id: string;
+          source_swarm_id: string;
+          source_agent_id: string;
+          first_commit: string | null;
+          last_commit: string | null;
+          change_ids: string[];
+          commits: Array<{
+            commit_hash: string;
+            change_id: string | null;
+            message_summary: string | null;
+            author_agent_id: string | null;
+            files_touched: string[];
+            synced_at: string;
+          }>;
+          files_union: string[];
+          merge_commit: string | null;
+          merge_target: string | null;
+        }>;
+      }>(
+        `/cascade/tasks/${encodeURIComponent(resourceId)}/${encodeURIComponent(nodeId)}/commits${qs ? `?${qs}` : ''}`,
+      ),
+    enabled: (options.enabled ?? true) && !!resourceId && !!nodeId,
+  });
+}
+
 /**
  * Stop a specific agent on a swarm. Proxies to the macro-agent's
  * `_macro/terminateAgent` extension via SwarmCraft's MAP client.

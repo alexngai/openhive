@@ -279,6 +279,69 @@ describe('Cascade REST Routes', () => {
     });
   });
 
+  describe('GET /cascade/tasks/:resourceId/:nodeId/changelog', () => {
+    it('returns structured + markdown by default', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/cascade/tasks/res-routes/task-routes/changelog',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.data).toBeDefined();
+      expect(body.data.has_work).toBe(true);
+      expect(body.data.totals.commits).toBeGreaterThan(0);
+      expect(body.markdown).toBeDefined();
+      expect(typeof body.markdown).toBe('string');
+      expect(body.markdown).toContain('## Commits');
+    });
+
+    it('returns raw markdown when format=markdown', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/cascade/tasks/res-routes/task-routes/changelog?format=markdown&title=My+Task',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toContain('text/markdown');
+      expect(res.body).toContain('# My Task');
+      expect(res.body).toContain('## Commits');
+    });
+
+    it('returns json-only without markdown when format=json', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/cascade/tasks/res-routes/task-routes/changelog?format=json',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.data).toBeDefined();
+      expect(body.markdown).toBeUndefined();
+    });
+
+    it('returns has_work=false for unknown tasks (not 404)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/cascade/tasks/nope/nope/changelog?format=json',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.data.has_work).toBe(false);
+      expect(body.data.commits).toEqual([]);
+    });
+
+    it('rejects invalid format with 400', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/cascade/tasks/res-routes/task-routes/changelog?format=xml',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
+
   describe('GET /cascade/conflicts', () => {
     it('returns open conflicts (default status=pending)', async () => {
       const res = await app.inject({

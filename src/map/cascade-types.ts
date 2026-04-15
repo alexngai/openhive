@@ -40,7 +40,7 @@ export {
   type QueueRemovedParams,
   type TaskRef,
   type EventMetadata,
-} from 'git-cascade/events';
+} from 'git-cascade';
 
 /** Context passed to cascade request handlers — identifies the source swarm. */
 export interface CascadeRequestContext {

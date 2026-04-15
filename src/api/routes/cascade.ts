@@ -20,6 +20,7 @@ import {
   listQueueEntries,
   getCommitRangeForTask,
 } from '../../db/dal/cascade-streams.js';
+import { generateChangelog, renderMarkdown } from '../../cascade/changelog.js';
 
 type ListStreamsQuery = {
   source_swarm_id?: string;
@@ -125,6 +126,64 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       }
       const conflicts = listConflictsForStream(stream.id);
       return reply.send({ data: conflicts });
+    }
+  );
+
+  // ── Changelog for a task ──────────────────────────────────────────────
+  //
+  //   GET /cascade/tasks/:resourceId/:nodeId/changelog
+  //     ?title=&subtitle=&format=json|markdown|both (default 'both')
+  //     &commitsLimit=&commitsOffset=
+  //
+  //   Phase 3 primary artifact: close a task, get a "what shipped" summary.
+  //   Returns structured cascade data + rendered markdown. Use `format=json`
+  //   when embedding in a UI that renders its own layout; `format=markdown`
+  //   for copy-paste into PR descriptions; `both` (default) for dashboards.
+  fastify.get<{
+    Params: { resourceId: string; nodeId: string };
+    Querystring: {
+      title?: string;
+      subtitle?: string;
+      format?: 'json' | 'markdown' | 'both';
+      commitsLimit?: string;
+      commitsOffset?: string;
+    };
+  }>(
+    '/cascade/tasks/:resourceId/:nodeId/changelog',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const format = request.query.format ?? 'both';
+      if (format !== 'json' && format !== 'markdown' && format !== 'both') {
+        return reply
+          .status(400)
+          .send({ error: 'Bad Request', message: "format must be 'json' | 'markdown' | 'both'" });
+      }
+      const changelog = generateChangelog(
+        request.params.resourceId,
+        request.params.nodeId,
+        {
+          commitsLimit: parseLimit(request.query.commitsLimit, 500, 5000),
+          commitsOffset: parseOffset(request.query.commitsOffset),
+        }
+      );
+
+      // markdown format returns raw text for easy Copy As
+      if (format === 'markdown') {
+        const md = renderMarkdown(changelog, {
+          title: request.query.title,
+          subtitle: request.query.subtitle,
+        });
+        return reply.type('text/markdown').send(md);
+      }
+
+      const body: Record<string, unknown> = { data: changelog };
+      if (format === 'both') {
+        body.markdown = renderMarkdown(changelog, {
+          title: request.query.title,
+          subtitle: request.query.subtitle,
+        });
+      }
+      return reply.send(body);
     }
   );
 
