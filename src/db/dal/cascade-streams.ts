@@ -1,0 +1,829 @@
+/**
+ * DAL for cascade projections.
+ *
+ * Hub-local lightweight projections over events emitted by git-cascade-backed
+ * runtimes via the `x-cascade/*` MAP vendor extension. The hub is NOT the
+ * authority on cascade state — runtimes own their local `.git-cascade/tracker.db`.
+ * These tables are read-only lenses for cross-swarm observability, REST
+ * queries, and cross-reference with OpenTasks task resources.
+ *
+ * Idempotency:
+ *   - streams unique on (source_swarm_id, stream_id)
+ *   - changes unique on (stream_row_id, commit_hash)
+ *   - merges unique on (source_swarm_id, merge_commit)
+ *   - conflicts unique on (stream_row_id, conflict_id)
+ *
+ * All writes use INSERT OR IGNORE so replayed or duplicated events are safe.
+ */
+
+import { nanoid } from 'nanoid';
+import { getDatabase } from '../index.js';
+
+// ============================================================================
+// Row shapes
+// ============================================================================
+
+export interface CascadeStream {
+  id: string;
+  stream_id: string;
+  source_swarm_id: string;
+  source_agent_id: string;
+  parent_stream_id: string | null;
+  name: string;
+  branch_name: string | null;
+  base_commit: string | null;
+  status: string;
+  is_local_mode: boolean;
+  task_resource_id: string | null;
+  task_node_id: string | null;
+  metadata: Record<string, unknown> | null;
+  opened_at: string;
+  last_event_at: string;
+  closed_at: string | null;
+}
+
+export interface CascadeChange {
+  id: string;
+  stream_row_id: string;
+  change_id: string | null;
+  commit_hash: string;
+  parent_commit: string | null;
+  author_agent_id: string | null;
+  message_summary: string | null;
+  files_touched: string[];
+  task_resource_id: string | null;
+  task_node_id: string | null;
+  metadata: Record<string, unknown> | null;
+  synced_at: string;
+}
+
+export interface CascadeMerge {
+  id: string;
+  source_stream_row_id: string | null;
+  target_stream_row_id: string | null;
+  source_swarm_id: string;
+  source_stream_id: string;
+  target_stream_id: string;
+  merge_commit: string;
+  agent_id: string | null;
+  strategy: string | null;
+  source_commit: string | null;
+  metadata: Record<string, unknown> | null;
+  merged_at: string;
+}
+
+export interface CascadeConflict {
+  id: string;
+  stream_row_id: string;
+  conflict_id: string | null;
+  conflicted_files: string[];
+  agent_id: string | null;
+  conflicting_commit: string | null;
+  target_commit: string | null;
+  source: string | null;
+  status: string;
+  metadata: Record<string, unknown> | null;
+  detected_at: string;
+  resolved_at: string | null;
+}
+
+export interface CascadeCommitRange {
+  stream_row_id: string;
+  stream_id: string;
+  source_swarm_id: string;
+  source_agent_id: string;
+  first_commit: string | null;
+  last_commit: string | null;
+  change_ids: string[];
+  commits: Array<{
+    commit_hash: string;
+    change_id: string | null;
+    message_summary: string | null;
+    author_agent_id: string | null;
+    files_touched: string[];
+    synced_at: string;
+  }>;
+  files_union: string[];
+  merge_commit: string | null;
+  merge_target: string | null;
+}
+
+// ============================================================================
+// Upsert inputs
+// ============================================================================
+
+export interface UpsertStreamInput {
+  stream_id: string;
+  source_swarm_id: string;
+  source_agent_id: string;
+  name: string;
+  branch_name?: string;
+  base_commit?: string;
+  parent_stream_id?: string;
+  is_local_mode?: boolean;
+  task_resource_id?: string;
+  task_node_id?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RecordCommitInput {
+  stream_row_id: string;
+  commit_hash: string;
+  change_id?: string;
+  parent_commit?: string;
+  author_agent_id?: string;
+  message_summary?: string;
+  files_touched?: string[];
+  task_resource_id?: string;
+  task_node_id?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RecordMergeInput {
+  source_swarm_id: string;
+  source_stream_id: string;
+  target_stream_id: string;
+  merge_commit: string;
+  source_stream_row_id?: string;
+  target_stream_row_id?: string;
+  agent_id?: string;
+  strategy?: string;
+  source_commit?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RecordConflictInput {
+  stream_row_id: string;
+  conflicted_files: string[];
+  conflict_id?: string;
+  agent_id?: string;
+  conflicting_commit?: string;
+  target_commit?: string;
+  source?: string;
+  metadata?: Record<string, unknown>;
+}
+
+// ============================================================================
+// Row conversion
+// ============================================================================
+
+type Row = Record<string, unknown>;
+
+function parseJsonObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    return JSON.parse(value) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function parseJsonArray(value: unknown): string[] {
+  if (typeof value !== 'string' || !value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function rowToStream(row: Row): CascadeStream {
+  return {
+    id: row.id as string,
+    stream_id: row.stream_id as string,
+    source_swarm_id: row.source_swarm_id as string,
+    source_agent_id: row.source_agent_id as string,
+    parent_stream_id: (row.parent_stream_id as string | null) ?? null,
+    name: row.name as string,
+    branch_name: (row.branch_name as string | null) ?? null,
+    base_commit: (row.base_commit as string | null) ?? null,
+    status: row.status as string,
+    is_local_mode: Boolean(row.is_local_mode),
+    task_resource_id: (row.task_resource_id as string | null) ?? null,
+    task_node_id: (row.task_node_id as string | null) ?? null,
+    metadata: parseJsonObject(row.metadata),
+    opened_at: row.opened_at as string,
+    last_event_at: row.last_event_at as string,
+    closed_at: (row.closed_at as string | null) ?? null,
+  };
+}
+
+function rowToChange(row: Row): CascadeChange {
+  return {
+    id: row.id as string,
+    stream_row_id: row.stream_row_id as string,
+    change_id: (row.change_id as string | null) ?? null,
+    commit_hash: row.commit_hash as string,
+    parent_commit: (row.parent_commit as string | null) ?? null,
+    author_agent_id: (row.author_agent_id as string | null) ?? null,
+    message_summary: (row.message_summary as string | null) ?? null,
+    files_touched: parseJsonArray(row.files_touched),
+    task_resource_id: (row.task_resource_id as string | null) ?? null,
+    task_node_id: (row.task_node_id as string | null) ?? null,
+    metadata: parseJsonObject(row.metadata),
+    synced_at: row.synced_at as string,
+  };
+}
+
+function rowToMerge(row: Row): CascadeMerge {
+  return {
+    id: row.id as string,
+    source_stream_row_id: (row.source_stream_row_id as string | null) ?? null,
+    target_stream_row_id: (row.target_stream_row_id as string | null) ?? null,
+    source_swarm_id: row.source_swarm_id as string,
+    source_stream_id: row.source_stream_id as string,
+    target_stream_id: row.target_stream_id as string,
+    merge_commit: row.merge_commit as string,
+    agent_id: (row.agent_id as string | null) ?? null,
+    strategy: (row.strategy as string | null) ?? null,
+    source_commit: (row.source_commit as string | null) ?? null,
+    metadata: parseJsonObject(row.metadata),
+    merged_at: row.merged_at as string,
+  };
+}
+
+function rowToConflict(row: Row): CascadeConflict {
+  return {
+    id: row.id as string,
+    stream_row_id: row.stream_row_id as string,
+    conflict_id: (row.conflict_id as string | null) ?? null,
+    conflicted_files: parseJsonArray(row.conflicted_files),
+    agent_id: (row.agent_id as string | null) ?? null,
+    conflicting_commit: (row.conflicting_commit as string | null) ?? null,
+    target_commit: (row.target_commit as string | null) ?? null,
+    source: (row.source as string | null) ?? null,
+    status: row.status as string,
+    metadata: parseJsonObject(row.metadata),
+    detected_at: row.detected_at as string,
+    resolved_at: (row.resolved_at as string | null) ?? null,
+  };
+}
+
+// ============================================================================
+// Stream operations
+// ============================================================================
+
+/**
+ * Upsert a cascade stream projection.
+ *
+ * Idempotent on (source_swarm_id, stream_id). If a row already exists,
+ * updates the provided fields (name, branch_name, base_commit, parent_stream_id,
+ * task_ref, metadata, last_event_at) rather than creating a duplicate. This
+ * supports out-of-order events (e.g., stream.committed arriving before
+ * stream.opened) and backfill of task_ref once it becomes known.
+ *
+ * Returns the row (existing or newly created) and whether it was created.
+ */
+export function upsertStream(input: UpsertStreamInput): {
+  stream: CascadeStream;
+  created: boolean;
+} {
+  const db = getDatabase();
+  const existing = db
+    .prepare(
+      `SELECT * FROM cascade_streams WHERE source_swarm_id = ? AND stream_id = ?`
+    )
+    .get(input.source_swarm_id, input.stream_id) as Row | undefined;
+
+  if (existing) {
+    // Update mutable fields; preserve stream id + swarm id.
+    db.prepare(
+      `UPDATE cascade_streams
+       SET name = COALESCE(?, name),
+           branch_name = COALESCE(?, branch_name),
+           base_commit = COALESCE(?, base_commit),
+           parent_stream_id = COALESCE(?, parent_stream_id),
+           is_local_mode = COALESCE(?, is_local_mode),
+           task_resource_id = COALESCE(?, task_resource_id),
+           task_node_id = COALESCE(?, task_node_id),
+           metadata = COALESCE(?, metadata),
+           last_event_at = datetime('now')
+       WHERE id = ?`
+    ).run(
+      input.name,
+      input.branch_name ?? null,
+      input.base_commit ?? null,
+      input.parent_stream_id ?? null,
+      input.is_local_mode === undefined ? null : input.is_local_mode ? 1 : 0,
+      input.task_resource_id ?? null,
+      input.task_node_id ?? null,
+      input.metadata ? JSON.stringify(input.metadata) : null,
+      existing.id
+    );
+    const refreshed = db
+      .prepare(`SELECT * FROM cascade_streams WHERE id = ?`)
+      .get(existing.id) as Row;
+    return { stream: rowToStream(refreshed), created: false };
+  }
+
+  const id = nanoid();
+  db.prepare(
+    `INSERT INTO cascade_streams (
+      id, stream_id, source_swarm_id, source_agent_id, parent_stream_id,
+      name, branch_name, base_commit, status, is_local_mode,
+      task_resource_id, task_node_id, metadata
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+  ).run(
+    id,
+    input.stream_id,
+    input.source_swarm_id,
+    input.source_agent_id,
+    input.parent_stream_id ?? null,
+    input.name,
+    input.branch_name ?? null,
+    input.base_commit ?? null,
+    input.is_local_mode ? 1 : 0,
+    input.task_resource_id ?? null,
+    input.task_node_id ?? null,
+    input.metadata ? JSON.stringify(input.metadata) : null
+  );
+
+  const row = db.prepare(`SELECT * FROM cascade_streams WHERE id = ?`).get(id) as Row;
+  return { stream: rowToStream(row), created: true };
+}
+
+/**
+ * Find an existing stream row by (source_swarm_id, stream_id), or create a
+ * minimal placeholder row if none exists. Used when a commit/merge/conflict
+ * event arrives before the stream.opened event.
+ */
+export function ensureStreamRow(
+  source_swarm_id: string,
+  stream_id: string,
+  source_agent_id: string
+): CascadeStream {
+  const { stream } = upsertStream({
+    stream_id,
+    source_swarm_id,
+    source_agent_id,
+    name: stream_id,
+  });
+  return stream;
+}
+
+/** Mark a stream as closed (merged, abandoned, or conflicted). */
+export function updateStreamStatus(
+  stream_row_id: string,
+  status: string,
+  options?: { closed?: boolean }
+): void {
+  const db = getDatabase();
+  const closedClause = options?.closed ? `, closed_at = datetime('now')` : '';
+  db.prepare(
+    `UPDATE cascade_streams
+     SET status = ?, last_event_at = datetime('now')${closedClause}
+     WHERE id = ?`
+  ).run(status, stream_row_id);
+}
+
+export function getStreamByRowId(stream_row_id: string): CascadeStream | null {
+  const db = getDatabase();
+  const row = db
+    .prepare(`SELECT * FROM cascade_streams WHERE id = ?`)
+    .get(stream_row_id) as Row | undefined;
+  return row ? rowToStream(row) : null;
+}
+
+export function getStreamBySwarmAndId(
+  source_swarm_id: string,
+  stream_id: string
+): CascadeStream | null {
+  const db = getDatabase();
+  const row = db
+    .prepare(
+      `SELECT * FROM cascade_streams WHERE source_swarm_id = ? AND stream_id = ?`
+    )
+    .get(source_swarm_id, stream_id) as Row | undefined;
+  return row ? rowToStream(row) : null;
+}
+
+export interface ListStreamsOptions {
+  source_swarm_id?: string;
+  source_agent_id?: string;
+  status?: string;
+  task_resource_id?: string;
+  task_node_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function listStreams(options: ListStreamsOptions = {}): {
+  streams: CascadeStream[];
+  total: number;
+} {
+  const db = getDatabase();
+  const where: string[] = [];
+  const params: unknown[] = [];
+
+  if (options.source_swarm_id) {
+    where.push('source_swarm_id = ?');
+    params.push(options.source_swarm_id);
+  }
+  if (options.source_agent_id) {
+    where.push('source_agent_id = ?');
+    params.push(options.source_agent_id);
+  }
+  if (options.status) {
+    where.push('status = ?');
+    params.push(options.status);
+  }
+  if (options.task_resource_id) {
+    where.push('task_resource_id = ?');
+    params.push(options.task_resource_id);
+  }
+  if (options.task_node_id) {
+    where.push('task_node_id = ?');
+    params.push(options.task_node_id);
+  }
+
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const totalRow = db
+    .prepare(`SELECT COUNT(*) as c FROM cascade_streams ${whereSql}`)
+    .get(...params) as { c: number };
+
+  const limit = options.limit ?? 50;
+  const offset = options.offset ?? 0;
+
+  const rows = db
+    .prepare(
+      `SELECT * FROM cascade_streams ${whereSql}
+       ORDER BY last_event_at DESC
+       LIMIT ? OFFSET ?`
+    )
+    .all(...params, limit, offset) as Row[];
+
+  return {
+    streams: rows.map(rowToStream),
+    total: totalRow.c,
+  };
+}
+
+// ============================================================================
+// Change operations
+// ============================================================================
+
+/**
+ * Record a commit against a stream. Idempotent on (stream_row_id, commit_hash).
+ * Returns the change row and whether it was newly inserted.
+ */
+export function recordCommit(input: RecordCommitInput): {
+  change: CascadeChange;
+  created: boolean;
+} {
+  const db = getDatabase();
+  const existing = db
+    .prepare(
+      `SELECT * FROM cascade_changes WHERE stream_row_id = ? AND commit_hash = ?`
+    )
+    .get(input.stream_row_id, input.commit_hash) as Row | undefined;
+
+  if (existing) {
+    return { change: rowToChange(existing), created: false };
+  }
+
+  const id = nanoid();
+  db.prepare(
+    `INSERT INTO cascade_changes (
+      id, stream_row_id, change_id, commit_hash, parent_commit,
+      author_agent_id, message_summary, files_touched,
+      task_resource_id, task_node_id, metadata
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    input.stream_row_id,
+    input.change_id ?? null,
+    input.commit_hash,
+    input.parent_commit ?? null,
+    input.author_agent_id ?? null,
+    input.message_summary ?? null,
+    JSON.stringify(input.files_touched ?? []),
+    input.task_resource_id ?? null,
+    input.task_node_id ?? null,
+    input.metadata ? JSON.stringify(input.metadata) : null
+  );
+
+  // Bump the stream's last_event_at so list queries surface active streams.
+  db.prepare(
+    `UPDATE cascade_streams SET last_event_at = datetime('now') WHERE id = ?`
+  ).run(input.stream_row_id);
+
+  const row = db.prepare(`SELECT * FROM cascade_changes WHERE id = ?`).get(id) as Row;
+  return { change: rowToChange(row), created: true };
+}
+
+export function listChangesForStream(
+  stream_row_id: string,
+  options: { limit?: number; offset?: number } = {}
+): CascadeChange[] {
+  const db = getDatabase();
+  const rows = db
+    .prepare(
+      `SELECT * FROM cascade_changes
+       WHERE stream_row_id = ?
+       ORDER BY synced_at ASC
+       LIMIT ? OFFSET ?`
+    )
+    .all(stream_row_id, options.limit ?? 100, options.offset ?? 0) as Row[];
+  return rows.map(rowToChange);
+}
+
+// ============================================================================
+// Merge operations
+// ============================================================================
+
+/**
+ * Record a merge. Idempotent on (source_swarm_id, merge_commit).
+ */
+export function recordMerge(input: RecordMergeInput): {
+  merge: CascadeMerge;
+  created: boolean;
+} {
+  const db = getDatabase();
+  const existing = db
+    .prepare(
+      `SELECT * FROM cascade_merges WHERE source_swarm_id = ? AND merge_commit = ?`
+    )
+    .get(input.source_swarm_id, input.merge_commit) as Row | undefined;
+
+  if (existing) {
+    return { merge: rowToMerge(existing), created: false };
+  }
+
+  const id = nanoid();
+  db.prepare(
+    `INSERT INTO cascade_merges (
+      id, source_stream_row_id, target_stream_row_id, source_swarm_id,
+      source_stream_id, target_stream_id, merge_commit, agent_id,
+      strategy, source_commit, metadata
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    input.source_stream_row_id ?? null,
+    input.target_stream_row_id ?? null,
+    input.source_swarm_id,
+    input.source_stream_id,
+    input.target_stream_id,
+    input.merge_commit,
+    input.agent_id ?? null,
+    input.strategy ?? null,
+    input.source_commit ?? null,
+    input.metadata ? JSON.stringify(input.metadata) : null
+  );
+
+  const row = db.prepare(`SELECT * FROM cascade_merges WHERE id = ?`).get(id) as Row;
+  return { merge: rowToMerge(row), created: true };
+}
+
+// ============================================================================
+// Conflict operations
+// ============================================================================
+
+/**
+ * Record a conflict. When conflict_id is provided, idempotent on
+ * (stream_row_id, conflict_id). When omitted, always inserts a new row
+ * (anonymous conflicts cannot be deduped).
+ */
+export function recordConflict(input: RecordConflictInput): {
+  conflict: CascadeConflict;
+  created: boolean;
+} {
+  const db = getDatabase();
+
+  if (input.conflict_id) {
+    const existing = db
+      .prepare(
+        `SELECT * FROM cascade_conflicts WHERE stream_row_id = ? AND conflict_id = ?`
+      )
+      .get(input.stream_row_id, input.conflict_id) as Row | undefined;
+    if (existing) {
+      return { conflict: rowToConflict(existing), created: false };
+    }
+  }
+
+  const id = nanoid();
+  db.prepare(
+    `INSERT INTO cascade_conflicts (
+      id, stream_row_id, conflict_id, conflicted_files, agent_id,
+      conflicting_commit, target_commit, source, metadata
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    input.stream_row_id,
+    input.conflict_id ?? null,
+    JSON.stringify(input.conflicted_files),
+    input.agent_id ?? null,
+    input.conflicting_commit ?? null,
+    input.target_commit ?? null,
+    input.source ?? null,
+    input.metadata ? JSON.stringify(input.metadata) : null
+  );
+
+  const row = db.prepare(`SELECT * FROM cascade_conflicts WHERE id = ?`).get(id) as Row;
+  return { conflict: rowToConflict(row), created: true };
+}
+
+export function listConflictsForStream(stream_row_id: string): CascadeConflict[] {
+  const db = getDatabase();
+  const rows = db
+    .prepare(
+      `SELECT * FROM cascade_conflicts WHERE stream_row_id = ? ORDER BY detected_at DESC`
+    )
+    .all(stream_row_id) as Row[];
+  return rows.map(rowToConflict);
+}
+
+export function listOpenConflicts(options: {
+  source_swarm_id?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+} = {}): CascadeConflict[] {
+  const db = getDatabase();
+  const where: string[] = ['c.status = ?'];
+  const params: unknown[] = [options.status ?? 'pending'];
+
+  if (options.source_swarm_id) {
+    where.push('s.source_swarm_id = ?');
+    params.push(options.source_swarm_id);
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT c.* FROM cascade_conflicts c
+       JOIN cascade_streams s ON s.id = c.stream_row_id
+       WHERE ${where.join(' AND ')}
+       ORDER BY c.detected_at DESC
+       LIMIT ? OFFSET ?`
+    )
+    .all(...params, options.limit ?? 100, options.offset ?? 0) as Row[];
+  return rows.map(rowToConflict);
+}
+
+// ============================================================================
+// Task ↔ stream join
+// ============================================================================
+
+/**
+ * Return the commit range bound to a task (resource_id + node_id).
+ *
+ * Sums across all streams on all swarms whose changes carry the matching
+ * task_ref. If multiple streams touch the same task, the result reflects the
+ * union. If no stream has the task_ref, returns null.
+ *
+ * This is the primary query for the Phase 3 changelog artifact: close a task,
+ * get a commit range for free.
+ */
+export function getCommitRangeForTask(
+  task_resource_id: string,
+  task_node_id: string
+): CascadeCommitRange[] {
+  const db = getDatabase();
+
+  // Find streams linked to this task. A change carries task_ref; streams may
+  // also have a direct task_ref from stream.opened metadata.
+  const streamRows = db
+    .prepare(
+      `SELECT DISTINCT s.* FROM cascade_streams s
+       WHERE (s.task_resource_id = ? AND s.task_node_id = ?)
+          OR EXISTS (
+            SELECT 1 FROM cascade_changes c
+            WHERE c.stream_row_id = s.id
+              AND c.task_resource_id = ?
+              AND c.task_node_id = ?
+          )
+       ORDER BY s.opened_at ASC`
+    )
+    .all(task_resource_id, task_node_id, task_resource_id, task_node_id) as Row[];
+
+  const results: CascadeCommitRange[] = [];
+
+  for (const streamRow of streamRows) {
+    const stream = rowToStream(streamRow);
+
+    // Only include changes that carry the task_ref (drops stream-scoped
+    // noise when a stream was linked late).
+    const changeRows = db
+      .prepare(
+        `SELECT * FROM cascade_changes
+         WHERE stream_row_id = ?
+           AND task_resource_id = ?
+           AND task_node_id = ?
+         ORDER BY synced_at ASC`
+      )
+      .all(stream.id, task_resource_id, task_node_id) as Row[];
+
+    // Fall back to all commits on the stream if none carry the task_ref but
+    // the stream itself is task-linked.
+    const effectiveChangeRows =
+      changeRows.length > 0
+        ? changeRows
+        : stream.task_resource_id === task_resource_id &&
+          stream.task_node_id === task_node_id
+        ? (db
+            .prepare(
+              `SELECT * FROM cascade_changes
+               WHERE stream_row_id = ?
+               ORDER BY synced_at ASC`
+            )
+            .all(stream.id) as Row[])
+        : [];
+
+    const changes = effectiveChangeRows.map(rowToChange);
+
+    const filesUnion = new Set<string>();
+    for (const ch of changes) {
+      for (const f of ch.files_touched) filesUnion.add(f);
+    }
+
+    const mergeRow = db
+      .prepare(
+        `SELECT * FROM cascade_merges
+         WHERE source_stream_row_id = ?
+         ORDER BY merged_at DESC LIMIT 1`
+      )
+      .get(stream.id) as Row | undefined;
+    const merge = mergeRow ? rowToMerge(mergeRow) : null;
+
+    results.push({
+      stream_row_id: stream.id,
+      stream_id: stream.stream_id,
+      source_swarm_id: stream.source_swarm_id,
+      source_agent_id: stream.source_agent_id,
+      first_commit: changes[0]?.commit_hash ?? null,
+      last_commit: changes[changes.length - 1]?.commit_hash ?? null,
+      change_ids: changes
+        .map((c) => c.change_id)
+        .filter((x): x is string => Boolean(x)),
+      commits: changes.map((c) => ({
+        commit_hash: c.commit_hash,
+        change_id: c.change_id,
+        message_summary: c.message_summary,
+        author_agent_id: c.author_agent_id,
+        files_touched: c.files_touched,
+        synced_at: c.synced_at,
+      })),
+      files_union: Array.from(filesUnion).sort(),
+      merge_commit: merge?.merge_commit ?? null,
+      merge_target: merge?.target_stream_id ?? null,
+    });
+  }
+
+  return results;
+}
+
+// ============================================================================
+// Stats
+// ============================================================================
+
+export interface StreamStats {
+  total_commits: number;
+  total_merges: number;
+  open_conflicts: number;
+  total_files_touched: number;
+  first_commit_at: string | null;
+  last_commit_at: string | null;
+}
+
+export function getStreamStats(stream_row_id: string): StreamStats {
+  const db = getDatabase();
+
+  const commitRow = db
+    .prepare(
+      `SELECT COUNT(*) as c, MIN(synced_at) as first_at, MAX(synced_at) as last_at
+       FROM cascade_changes WHERE stream_row_id = ?`
+    )
+    .get(stream_row_id) as { c: number; first_at: string | null; last_at: string | null };
+
+  const mergeRow = db
+    .prepare(
+      `SELECT COUNT(*) as c FROM cascade_merges
+       WHERE source_stream_row_id = ? OR target_stream_row_id = ?`
+    )
+    .get(stream_row_id, stream_row_id) as { c: number };
+
+  const conflictRow = db
+    .prepare(
+      `SELECT COUNT(*) as c FROM cascade_conflicts
+       WHERE stream_row_id = ? AND status = 'pending'`
+    )
+    .get(stream_row_id) as { c: number };
+
+  // Union of files_touched across all changes on this stream.
+  const filesRows = db
+    .prepare(`SELECT files_touched FROM cascade_changes WHERE stream_row_id = ?`)
+    .all(stream_row_id) as Array<{ files_touched: string }>;
+  const fileSet = new Set<string>();
+  for (const r of filesRows) {
+    for (const f of parseJsonArray(r.files_touched)) fileSet.add(f);
+  }
+
+  return {
+    total_commits: commitRow.c,
+    total_merges: mergeRow.c,
+    open_conflicts: conflictRow.c,
+    total_files_touched: fileSet.size,
+    first_commit_at: commitRow.first_at,
+    last_commit_at: commitRow.last_at,
+  };
+}

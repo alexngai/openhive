@@ -18,6 +18,7 @@ import { mapRoutes } from "./routes/map.js";
 import { swarmHostingRoutes } from "./routes/swarm-hosting.js";
 import { syncRoutes } from "./routes/sync.js";
 import { bridgesRoutes } from "./routes/bridges.js";
+import { cascadeRoutes } from "./routes/cascade.js";
 import { eventsRoutes } from "./routes/events.js";
 import { coordinationRoutes } from "./routes/coordination.js";
 import { mailRoutes } from "./routes/mail.js";
@@ -70,6 +71,7 @@ export async function registerRoutes(
       await api.register(swarmHostingRoutes, { config });
       await api.register(syncRoutes, { config });
       await api.register(bridgesRoutes, { config, bridgeManager });
+      await api.register(cascadeRoutes);
       await api.register(eventsRoutes);
       await api.register(coordinationRoutes, { config });
       await api.register(mailRoutes, { config });

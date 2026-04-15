@@ -11,6 +11,7 @@ import {
   MIGRATION_V28_DROP_COORDINATION_TASKS,
   MIGRATION_V29_MAP_REVOKED_TOKENS,
   MIGRATION_V30_SESSION_RESOURCE_SCOPING,
+  MIGRATION_V31_CASCADE_PROJECTIONS,
 } from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
@@ -231,6 +232,8 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   29: MIGRATION_V29_MAP_REVOKED_TOKENS,
   // Version 30: Relax UNIQUE constraint on syncable_resources for per-swarm session scoping
   30: MIGRATION_V30_SESSION_RESOURCE_SCOPING,
+  // Version 31: Cascade projection tables for x-cascade/* MAP events
+  31: MIGRATION_V31_CASCADE_PROJECTIONS,
 };
 
 /** Get the SQL for a specific migration version.

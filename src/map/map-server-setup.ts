@@ -13,6 +13,8 @@ import { verifyToken } from './token-service.js';
 import { MAP_TASK_METHOD_SET, handleTaskRequest, MAPTaskRequestError, TaskDaemonError } from './task-handler.js';
 import { TRAJECTORY_METHOD_SET } from './trajectory-types.js';
 import { handleTrajectoryRequest, TrajectoryRequestError } from './trajectory-handler.js';
+import { CASCADE_METHOD_SET, CascadeRequestError } from './cascade-types.js';
+import { handleCascadeRequest } from './cascade-handler.js';
 import type { Config } from '../config.js';
 
 let mapServer: any | null = null;
@@ -97,6 +99,24 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
         return handleTrajectoryRequest(method, params, { swarmId, agentId });
       } catch (err) {
         if (err instanceof TrajectoryRequestError) {
+          throw Object.assign(new Error(err.message), { code: err.code });
+        }
+        throw err;
+      }
+    };
+  }
+
+  // ── Cascade Methods (x-cascade/*) ─────────────────────────────────
+  // Emitted by git-cascade-backed runtimes. The hub projects these events
+  // into lightweight read-only indexes for cross-swarm observability.
+  for (const method of CASCADE_METHOD_SET) {
+    handlers[method] = async (params: any, ctx: any) => {
+      const swarmId = ctx.session?.metadata?.swarmId;
+      const agentId = ctx.session?.metadata?.agentId || ctx.session?.metadata?.hubAgentId;
+      try {
+        return handleCascadeRequest(method, params, { swarmId, agentId });
+      } catch (err) {
+        if (err instanceof CascadeRequestError) {
           throw Object.assign(new Error(err.message), { code: err.code });
         }
         throw err;

@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 31;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -503,6 +503,100 @@ CREATE TABLE IF NOT EXISTS ingest_keys (
 
 CREATE INDEX IF NOT EXISTS idx_ingest_keys_hash ON ingest_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_ingest_keys_agent ON ingest_keys(agent_id);
+
+-- ============================================================================
+-- Cascade Projections (stored from x-cascade/* MAP notifications)
+--
+-- Read-only projections over events emitted by git-cascade-backed runtimes.
+-- The hub is NOT the authority on cascade state — the runtime owns
+-- .git-cascade/tracker.db. These tables are lightweight indexes for
+-- cross-swarm observability, REST queries, and cross-reference with
+-- OpenTasks task resources via (task_resource_id, task_node_id).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS cascade_streams (
+  id TEXT PRIMARY KEY,
+  stream_id TEXT NOT NULL,
+  source_swarm_id TEXT NOT NULL,
+  source_agent_id TEXT NOT NULL,
+  parent_stream_id TEXT,
+  name TEXT NOT NULL,
+  branch_name TEXT,
+  base_commit TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  is_local_mode INTEGER DEFAULT 0,
+  task_resource_id TEXT,
+  task_node_id TEXT,
+  metadata TEXT,
+  opened_at TEXT DEFAULT (datetime('now')),
+  last_event_at TEXT DEFAULT (datetime('now')),
+  closed_at TEXT,
+  UNIQUE(source_swarm_id, stream_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_swarm ON cascade_streams(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_agent ON cascade_streams(source_agent_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_task ON cascade_streams(task_resource_id, task_node_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_status ON cascade_streams(status);
+
+CREATE TABLE IF NOT EXISTS cascade_changes (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL REFERENCES cascade_streams(id) ON DELETE CASCADE,
+  change_id TEXT,
+  commit_hash TEXT NOT NULL,
+  parent_commit TEXT,
+  author_agent_id TEXT,
+  message_summary TEXT,
+  files_touched TEXT NOT NULL DEFAULT '[]',
+  task_resource_id TEXT,
+  task_node_id TEXT,
+  metadata TEXT,
+  synced_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(stream_row_id, commit_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_changes_stream ON cascade_changes(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_changes_change_id ON cascade_changes(change_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_changes_task ON cascade_changes(task_resource_id, task_node_id);
+
+CREATE TABLE IF NOT EXISTS cascade_merges (
+  id TEXT PRIMARY KEY,
+  source_stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  target_stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  source_swarm_id TEXT NOT NULL,
+  source_stream_id TEXT NOT NULL,
+  target_stream_id TEXT NOT NULL,
+  merge_commit TEXT NOT NULL,
+  agent_id TEXT,
+  strategy TEXT,
+  source_commit TEXT,
+  metadata TEXT,
+  merged_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(source_swarm_id, merge_commit)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_merges_source_stream ON cascade_merges(source_stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_merges_target_stream ON cascade_merges(target_stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_merges_swarm ON cascade_merges(source_swarm_id);
+
+CREATE TABLE IF NOT EXISTS cascade_conflicts (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL REFERENCES cascade_streams(id) ON DELETE CASCADE,
+  conflict_id TEXT,
+  conflicted_files TEXT NOT NULL DEFAULT '[]',
+  agent_id TEXT,
+  conflicting_commit TEXT,
+  target_commit TEXT,
+  source TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  metadata TEXT,
+  detected_at TEXT DEFAULT (datetime('now')),
+  resolved_at TEXT,
+  UNIQUE(stream_row_id, conflict_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_stream ON cascade_conflicts(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_status ON cascade_conflicts(status);
 `;
 
 export const SEED_DATA = `
@@ -1186,6 +1280,95 @@ CREATE INDEX IF NOT EXISTS idx_syncable_resources_visibility ON syncable_resourc
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_resources(resource_type, visibility);
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
+`;
+
+// Migration V31: Cascade projection tables for x-cascade/* MAP events.
+// Read-only lenses over events emitted by git-cascade-backed runtimes.
+// The hub is not the authority on cascade state — runtimes own their local DB.
+export const MIGRATION_V31_CASCADE_PROJECTIONS = `
+CREATE TABLE IF NOT EXISTS cascade_streams (
+  id TEXT PRIMARY KEY,
+  stream_id TEXT NOT NULL,
+  source_swarm_id TEXT NOT NULL,
+  source_agent_id TEXT NOT NULL,
+  parent_stream_id TEXT,
+  name TEXT NOT NULL,
+  branch_name TEXT,
+  base_commit TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  is_local_mode INTEGER DEFAULT 0,
+  task_resource_id TEXT,
+  task_node_id TEXT,
+  metadata TEXT,
+  opened_at TEXT DEFAULT (datetime('now')),
+  last_event_at TEXT DEFAULT (datetime('now')),
+  closed_at TEXT,
+  UNIQUE(source_swarm_id, stream_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_swarm ON cascade_streams(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_agent ON cascade_streams(source_agent_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_task ON cascade_streams(task_resource_id, task_node_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_status ON cascade_streams(status);
+
+CREATE TABLE IF NOT EXISTS cascade_changes (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL REFERENCES cascade_streams(id) ON DELETE CASCADE,
+  change_id TEXT,
+  commit_hash TEXT NOT NULL,
+  parent_commit TEXT,
+  author_agent_id TEXT,
+  message_summary TEXT,
+  files_touched TEXT NOT NULL DEFAULT '[]',
+  task_resource_id TEXT,
+  task_node_id TEXT,
+  metadata TEXT,
+  synced_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(stream_row_id, commit_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_changes_stream ON cascade_changes(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_changes_change_id ON cascade_changes(change_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_changes_task ON cascade_changes(task_resource_id, task_node_id);
+
+CREATE TABLE IF NOT EXISTS cascade_merges (
+  id TEXT PRIMARY KEY,
+  source_stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  target_stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  source_swarm_id TEXT NOT NULL,
+  source_stream_id TEXT NOT NULL,
+  target_stream_id TEXT NOT NULL,
+  merge_commit TEXT NOT NULL,
+  agent_id TEXT,
+  strategy TEXT,
+  source_commit TEXT,
+  metadata TEXT,
+  merged_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(source_swarm_id, merge_commit)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_merges_source_stream ON cascade_merges(source_stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_merges_target_stream ON cascade_merges(target_stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_merges_swarm ON cascade_merges(source_swarm_id);
+
+CREATE TABLE IF NOT EXISTS cascade_conflicts (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL REFERENCES cascade_streams(id) ON DELETE CASCADE,
+  conflict_id TEXT,
+  conflicted_files TEXT NOT NULL DEFAULT '[]',
+  agent_id TEXT,
+  conflicting_commit TEXT,
+  target_commit TEXT,
+  source TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  metadata TEXT,
+  detected_at TEXT DEFAULT (datetime('now')),
+  resolved_at TEXT,
+  UNIQUE(stream_row_id, conflict_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_stream ON cascade_conflicts(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_status ON cascade_conflicts(status);
 `;
 
 // Populate FTS tables from existing data
