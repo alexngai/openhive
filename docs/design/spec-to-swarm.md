@@ -241,11 +241,12 @@ OpenHive hub
 | Fence tokens, heartbeat, stale-claim detection | swarm-dispatch |
 | Agent roster, dispatch modes, affinity | swarm-dispatch |
 
-### Deprecated in this integration
+### Changed in this integration
 
-- `POST /dispatches/:id/bootstrap` — removed; orchestrator handles spawn
-- `map/dispatches/report` MAP method — removed; orchestrator reports outcomes
-- `useBootstrapDispatch` frontend hook — removed
+- `POST /dispatches/:id/bootstrap` — **removed**; orchestrator handles spawn
+- `map/dispatches/report` MAP method — **retained as secondary reporting path**. The orchestrator is the primary writer of terminal status (via the event bridge in `setup.ts`). `map/dispatches/report` remains as a fallback for agents not managed by the orchestrator or for direct agent-to-hub reporting. Both paths guard against double-writes: the event bridge checks current status before writing; the MAP handler rejects reports on terminal dispatches.
+- `useBootstrapDispatch` frontend hook — **removed**
+- `buildDispatchSeedPrompt` — **retained**. Called at dispatch creation time to store a seed prompt on the row. The orchestrator builds its own turn-aware prompt via `prompt.ts` at execution time. Both coexist: the stored seed prompt serves as a reference/audit artifact; the orchestrator's prompt is what the agent actually receives.
 
 ---
 

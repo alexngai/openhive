@@ -234,6 +234,65 @@ When an ACP agent requests tool approval, SwarmCraft emits `acp.permission.reque
 - `src/map/connection-registry.ts` — Inbound connection tracking, per-agent capability storage, `findAcpAgent()` for ACP target resolution, `getAggregateCapabilities()` for swarm-level capability union.
 - `src/server.ts` — ACP event bridge: intercepts SwarmCraft WS broadcasts, forwards `acp.*` events to OpenHive's global WS channel.
 
+## Dispatch Orchestrator (swarm-dispatch integration)
+
+Specs are dispatched to swarms via a `dispatches` table (hub-native, one row per spec+swarm pair). The [swarm-dispatch](references/swarm-dispatch/) library manages the execution lifecycle: poll → claim → spawn/route → retry → complete/fail.
+
+### Architecture
+
+```
+User dispatches spec (UI or API)
+  → POST /specs/:resourceId/:specId/dispatch
+  → Dispatch row: status=queued
+
+swarm-dispatch orchestrator (in-process, 15s poll)
+  → createOpenHiveDispatchSource polls queued rows
+  → claims with fence token (status → running)
+  → builds prompt (turn-aware via prompt.ts)
+  → prefers routing to running agents (AgentRoster), falls back to ACP spawn
+  → on failure: retry with exponential backoff (3 attempts)
+  → on exhaustion: status → failed with error
+  → event bridge writes terminal status + broadcasts on map:dispatches WS
+```
+
+### Key Files
+
+- `src/dispatch/openhive-source.ts` — `DispatchTaskSource` adapter (dispatches DAL + spec content from opentasks)
+- `src/dispatch/openhive-runtime.ts` — `DispatchAgentRuntime` adapter (ACP stream manager)
+- `src/dispatch/openhive-roster.ts` — `AgentRoster` adapter (MAP connection registry)
+- `src/dispatch/openhive-mail-port.ts` — `MessagePort` adapter (agent-inbox mail transport)
+- `src/dispatch/prompt.ts` — Turn-aware prompt builder (first-run / retry / continuation)
+- `src/dispatch/setup.ts` — Orchestrator wiring + event bridge to WS channel
+- `src/db/dal/dispatches.ts` — Dispatch CRUD + fence-token claim/release/transition/renew helpers
+- `src/api/routes/dispatches.ts` — REST read endpoints + cancel
+- `src/api/routes/specs.ts` — `POST /specs/:id/dispatch` creates queued rows
+- `src/web/components/dispatch/DispatchModal.tsx` — Multi-swarm dispatch UI
+- `src/web/pages/DispatchDetail.tsx` — Dispatch detail with status, outcome, attempt/turn tracking
+
+### Dispatch Lifecycle (D15)
+
+`queued` → `running` (orchestrator claims) → `complete` | `failed` | `cancelled`
+
+- **Hub writes**: `→ queued` (insert), `running → cancelled` (user cancel)
+- **Orchestrator writes**: `queued → running` (claim), `running → complete/failed` (via event bridge)
+- **Agent fallback**: `map/dispatches/report` MAP method retained as secondary reporting path
+
+### Dual Reporting Paths
+
+Both the orchestrator event bridge and `map/dispatches/report` can write terminal status. The event bridge guards against double-writes by checking current status before writing. The MAP handler rejects reports on already-terminal dispatches.
+
+### Adapters use swarm-dispatch/client factories
+
+The adapters compose generic factories from `swarm-dispatch/client` (static ESM imports):
+- `createSqlSource` — fence-token claim semantics, async content enrichment
+- `createStreamRuntime` — stream lifecycle (create → init → session → prompt)
+- `createRegistryRoster` — role/tag/busy filtering with state mapping
+- `createMailPort` — envelope wrapping, incoming classification, dedup
+
+### Kill Switch (D9)
+
+`Settings → Server → Autonomous dispatch` toggles `autonomousDispatchPaused`. When paused, agent-initiated dispatches via `map/specs/dispatch` return -32004; user-initiated REST dispatches still work. State is in-memory; hub restart resets to live.
+
 ## Task Coordination Architecture
 
 OpenHive acts as a **relay hub** for task events between agent swarms. It does NOT own or persist task state — each agent maintains its own task graph via a local OpenTasks daemon.

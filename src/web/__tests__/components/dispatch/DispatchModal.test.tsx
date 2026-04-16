@@ -7,9 +7,7 @@ import type { Spec } from '../../../hooks/useSpecs';
 import type { MapSwarm } from '../../../lib/api';
 
 const mockMutateAsync = vi.fn();
-const mockBootstrapMutateAsync = vi.fn();
 const mockUseCreateDispatch = vi.fn();
-const mockUseBootstrapDispatch = vi.fn();
 const mockUseMapSwarms = vi.fn();
 const mockToastSuccess = vi.fn();
 
@@ -20,12 +18,11 @@ vi.mock('../../../hooks/useDispatches', async () => {
   return {
     ...actual,
     useCreateDispatch: () => mockUseCreateDispatch(),
-    useBootstrapDispatch: () => mockUseBootstrapDispatch(),
   };
 });
 
 vi.mock('../../../hooks/useApi', () => ({
-  useMapSwarms: () => mockUseMapSwarms(),
+  useMapSwarmsForPicker: () => mockUseMapSwarms(),
 }));
 
 vi.mock('../../../stores/toast', () => ({
@@ -98,15 +95,6 @@ describe('<DispatchModal />', () => {
     mockUseCreateDispatch.mockReturnValue({
       mutateAsync: mockMutateAsync,
       isPending: false,
-    });
-    mockUseBootstrapDispatch.mockReturnValue({
-      mutateAsync: mockBootstrapMutateAsync,
-      isPending: false,
-    });
-    // Default: bootstrap succeeds. Individual tests override.
-    mockBootstrapMutateAsync.mockResolvedValue({
-      dispatch: { status: 'running' },
-      bootstrap: { session_resource_id: 'res_s', acp_session_id: 'acp_s', acp_stream_id: 'acp_str' },
     });
   });
 
@@ -207,39 +195,8 @@ describe('<DispatchModal />', () => {
       target_swarms: ['sw_a'],
       prompt: 'extra context',
     });
-    // Bootstrap was attempted for the created dispatch
-    await waitFor(() => expect(mockBootstrapMutateAsync).toHaveBeenCalledWith('disp_x'));
+    // Toast confirms dispatch created (orchestrator handles bootstrap)
     expect(mockToastSuccess).toHaveBeenCalled();
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
-  });
-
-  it('still closes and toasts when bootstrap fails (best effort)', async () => {
-    mockUseMapSwarms.mockReturnValue({
-      data: [makeSwarm({ id: 'sw_a', name: 'a', capabilities: { protocols: ['acp'] } })],
-    });
-    mockMutateAsync.mockResolvedValue({
-      dispatches: [
-        {
-          id: 'disp_x',
-          target_swarm_id: 'sw_a',
-          target_swarm_name: 'a',
-          seed_prompt: '...',
-        },
-      ],
-    });
-    mockBootstrapMutateAsync.mockRejectedValue(new Error('SwarmCraft ACP not available'));
-    const onClose = vi.fn();
-    renderModal({ onClose });
-
-    fireEvent.click(screen.getByText('a').closest('label')!);
-    fireEvent.click(screen.getByRole('button', { name: /^Dispatch$/i }));
-
-    await waitFor(() => expect(mockMutateAsync).toHaveBeenCalled());
-    await waitFor(() => expect(mockBootstrapMutateAsync).toHaveBeenCalled());
-    // Toast still fires; modal still closes — bootstrap failure is non-fatal.
-    expect(mockToastSuccess).toHaveBeenCalled();
-    const detail = mockToastSuccess.mock.calls[0]?.[1] as string;
-    expect(detail).toMatch(/0\/1 sessions bootstrapped/);
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
