@@ -5,8 +5,12 @@ import fastifyStatic from "@fastify/static";
 import multipart from "@fastify/multipart";
 import * as path from "path";
 import * as fs from "fs";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import { Config, loadConfig } from "./config.js";
-import { initDatabase, closeDatabase } from "./db/index.js";
+import { initDatabase, closeDatabase, getDatabase } from "./db/index.js";
 import { registerRoutes } from "./api/index.js";
 import { setupWebSocket, stopHeartbeat, broadcastToChannel } from "./realtime/index.js";
 import { generateSkillMd } from "./skill.js";
@@ -34,7 +38,10 @@ import {
   startLocalResourceWatchers,
   stopLocalResourceWatchers,
 } from "./sync/local-resource-watcher.js";
-import { markStaleSwarms } from "./map/service.js";
+import { markStaleSwarms, getWellKnownMapInfo } from "./map/service.js";
+import { setupOrchestrator } from "./dispatch/setup.js";
+import { fetchSpecForDispatch } from "./api/routes/specs.js";
+import type { Orchestrator } from "swarm-dispatch";
 import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
 import { initMail } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
@@ -403,6 +410,44 @@ export async function createHive(
     }
   }
 
+  // Initialize dispatch orchestrator (swarm-dispatch integration)
+  let dispatchOrchestrator: Orchestrator | null = null;
+  try {
+    dispatchOrchestrator = setupOrchestrator({
+      specFetcher: {
+        async fetch(resourceId: string, specId: string) {
+          const result = await fetchSpecForDispatch(resourceId, specId, 'system');
+          if (!result.ok) return null;
+          const { node, neighbors } = result.data;
+          const tasks = neighbors
+            .filter((n) => {
+              const meta = n.metadata as Record<string, unknown> | undefined;
+              return n.type === 'task' || meta?.kind === 'task';
+            })
+            .map((n) => ({
+              id: String(n.id),
+              title: n.title as string | undefined,
+              status: n.status as string | undefined,
+            }));
+          return {
+            title: (node.title as string) ?? 'Untitled spec',
+            content: (node.content as string) ?? '',
+            tasks,
+          };
+        },
+      },
+      runtimeDeps: {
+        getAcpStreamManager: () => {
+          const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: unknown } }).swarmcraft;
+          return sc?.acpStreamManager as ReturnType<typeof setupOrchestrator> extends never ? never : unknown as any;
+        },
+      },
+    });
+    console.log('[openhive] Dispatch orchestrator initialized');
+  } catch (err) {
+    console.warn(`[openhive] Dispatch orchestrator failed: ${(err as Error).message}`);
+  }
+
   // Serve skill.md
   fastify.get("/skill.md", async (_request, reply) => {
     const skillMd = generateSkillMd(config);
@@ -486,7 +531,7 @@ export async function createHive(
   // Federation discovery (stub)
   fastify.get("/.well-known/openhive.json", async (_request, reply) => {
     // Get stats from database
-    const db = require("./db/index.js").getDatabase();
+    const db = getDatabase();
     const agentCount = db
       .prepare("SELECT COUNT(*) as count FROM agents")
       .get() as { count: number };
@@ -527,7 +572,6 @@ export async function createHive(
     // Add MAP Hub info if enabled
     if (config.mapHub.enabled) {
       try {
-        const { getWellKnownMapInfo } = require("./map/service.js");
         Object.assign(wellKnown, getWellKnownMapInfo());
       } catch {
         // MAP module not available, skip
@@ -747,6 +791,16 @@ export async function createHive(
       // Start auto-pull service for remote task graphs
       startAutoPull(config.autoPull.intervalMinutes * 60 * 1000);
 
+      // Start dispatch orchestrator polling
+      if (dispatchOrchestrator) {
+        try {
+          await dispatchOrchestrator.start();
+          console.log('[openhive] Dispatch orchestrator started');
+        } catch (err) {
+          console.warn(`[openhive] Dispatch orchestrator failed to start: ${(err as Error).message}`);
+        }
+      }
+
       return address;
     },
 
@@ -757,6 +811,9 @@ export async function createHive(
       }
       stopAutoPull();
       stopHeartbeat();
+      if (dispatchOrchestrator?.running) {
+        try { await dispatchOrchestrator.stop(); } catch { /* best effort */ }
+      }
 
       // Synchronous cleanup
       const ptyMgr = (

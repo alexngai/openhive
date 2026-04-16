@@ -12,6 +12,10 @@ import {
   MIGRATION_V29_MAP_REVOKED_TOKENS,
   MIGRATION_V30_SESSION_RESOURCE_SCOPING,
   MIGRATION_V31_FEDERATED_SYNC_STRATEGY,
+  MIGRATION_V32_DISPATCHES,
+  MIGRATION_V33_SWARM_ARCHIVE,
+  MIGRATION_V34_CANONICAL_KEY,
+  MIGRATION_V35_DISPATCH_ORCHESTRATOR,
 } from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
@@ -234,6 +238,14 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   30: MIGRATION_V30_SESSION_RESOURCE_SCOPING,
   // Version 31: Add 'federated' sync_strategy for MAP-owned remote task graphs
   31: MIGRATION_V31_FEDERATED_SYNC_STRATEGY,
+  // Version 32: Dispatches table (Stream 2 — Dispatch primitive)
+  32: MIGRATION_V32_DISPATCHES,
+  // Version 33: Swarm archive column (Phase 2 swarm hygiene)
+  33: MIGRATION_V33_SWARM_ARCHIVE,
+  // Version 34: Stable swarm identity (Phase 3 swarm hygiene)
+  34: MIGRATION_V34_CANONICAL_KEY,
+  // Version 35: Dispatch orchestrator fields (swarm-dispatch integration)
+  35: MIGRATION_V35_DISPATCH_ORCHESTRATOR,
 };
 
 /** Get the SQL for a specific migration version.
@@ -295,6 +307,12 @@ function repairSchema(database: Database.Database): void {
   const repairs = [
     "ALTER TABLE ingest_keys ADD COLUMN key_value TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '[\"map\"]'",
+    "ALTER TABLE map_swarms ADD COLUMN archived INTEGER DEFAULT 0",
+    "ALTER TABLE map_swarms ADD COLUMN canonical_key TEXT",
+    "ALTER TABLE dispatches ADD COLUMN lease_token TEXT",
+    "ALTER TABLE dispatches ADD COLUMN lease_expires_at TEXT",
+    "ALTER TABLE dispatches ADD COLUMN attempt INTEGER DEFAULT 0",
+    "ALTER TABLE dispatches ADD COLUMN turn_count INTEGER DEFAULT 0",
   ];
   for (const sql of repairs) {
     try { database.exec(sql); } catch { /* column already exists */ }

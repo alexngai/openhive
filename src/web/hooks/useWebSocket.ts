@@ -198,8 +198,8 @@ export function useWebSocket() {
 }
 
 export function useSubscribe(channels: string[]) {
-  const { addChannel, removeChannel } = useWSStore();
-  const wsRef = useRef<WebSocket | null>(globalWs);
+  const addChannel = useWSStore((s) => s.addChannel);
+  const removeChannel = useWSStore((s) => s.removeChannel);
 
   useEffect(() => {
     // Add channels to store
@@ -231,11 +231,14 @@ export function useSubscribe(channels: string[]) {
 }
 
 export function useWSEvent<T = unknown>(event: string, callback: (data: T) => void) {
-  const { addListener, removeListener } = useWSStore();
+  const addListener = useWSStore((s) => s.addListener);
+  const removeListener = useWSStore((s) => s.removeListener);
+  const cbRef = useRef(callback);
+  cbRef.current = callback;
 
   useEffect(() => {
-    const handler = (data: unknown) => callback(data as T);
+    const handler = (data: unknown) => cbRef.current(data as T);
     addListener(event, handler);
     return () => removeListener(event, handler);
-  }, [event, callback, addListener, removeListener]);
+  }, [event, addListener, removeListener]);
 }

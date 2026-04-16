@@ -479,6 +479,21 @@ export function useMapSwarms() {
   });
 }
 
+export function useMapSwarmsForPicker(opts?: { status?: string; recency_days?: number }) {
+  const params = new URLSearchParams({ dedupe: '1' });
+  if (opts?.status) params.set('status', opts.status);
+  if (opts?.recency_days) params.set('recency_days', String(opts.recency_days));
+  return useQuery({
+    queryKey: ['map-swarms-picker', opts],
+    queryFn: () =>
+      api.get<{ data: (MapSwarm & { variant_count?: number })[]; total: number }>(
+        `/map/swarms?${params}`,
+      ),
+    select: (data) => data.data,
+    staleTime: 30_000,
+  });
+}
+
 export function useMapSwarm(id: string) {
   return useQuery({
     queryKey: ["map-swarm", id],

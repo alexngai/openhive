@@ -20,6 +20,10 @@ import {
 import { readConfigFile, writeConfigFile, deepMerge } from '../../config-persistence.js';
 import { getLoadedConfigPath, isConfigEditable, setLoadedConfigPath } from '../../config.js';
 import { resolveDataDir, dataDirPaths } from '../../data-dir.js';
+import {
+  isAutonomousDispatchPaused,
+  setAutonomousDispatchPaused,
+} from '../../map/dispatch-policy.js';
 
 export async function adminRoutes(fastify: FastifyInstance, options: { config: Config }): Promise<void> {
   const adminAuth = async (request: Parameters<typeof authMiddleware>[0], reply: Parameters<typeof authMiddleware>[1]) => {
@@ -599,4 +603,34 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
 
     return reply.send({ resources: results });
   });
+
+  /**
+   * Dispatch kill switch (Stream 2 D9 — autonomous-dispatch retrofit path).
+   *
+   * Hub-wide toggle. When `paused` is true, agent-initiated dispatches via
+   * the MAP `map/specs/dispatch` method return -32004; user-initiated REST
+   * dispatches keep working. Restarts default the toggle back to `false`.
+   */
+  fastify.get(
+    '/admin/dispatch-policy',
+    { preHandler: adminAuth },
+    async (_request, reply) => {
+      return reply.send({ autonomous_dispatch_paused: isAutonomousDispatchPaused() });
+    },
+  );
+
+  fastify.post<{ Body: { paused: boolean } }>(
+    '/admin/dispatch-policy',
+    { preHandler: adminAuth },
+    async (request, reply) => {
+      const paused = request.body?.paused;
+      if (typeof paused !== 'boolean') {
+        return reply
+          .status(422)
+          .send({ error: 'VALIDATION_ERROR', message: 'paused must be a boolean' });
+      }
+      setAutonomousDispatchPaused(paused);
+      return reply.send({ autonomous_dispatch_paused: isAutonomousDispatchPaused() });
+    },
+  );
 }

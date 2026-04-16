@@ -2,7 +2,8 @@
   "name": "openhive",
   "version": "0.1.1",
   "description": "Lightweight control plane for agent swarms",
-  "main": "dist/index.js",
+  "type": "module",
+  "main": "dist/index.mjs",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "exports": {
@@ -18,7 +19,7 @@
     }
   },
   "bin": {
-    "openhive": "./bin/openhive.js"
+    "openhive": "./bin/openhive.mjs"
   },
   "files": [
     "dist",
@@ -115,6 +116,7 @@
     "sigma": "^3.0.2",
     "skill-tree": "^0.1.7",
     "skill-tree-indexer": "^0.2.2",
+    "swarm-dispatch": "^0.3.2",
     "swarmcraft": "^0.1.9",
     "swarmkit": "^0.1.0",
     "turndown": "^7.2.4",

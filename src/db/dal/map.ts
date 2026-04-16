@@ -62,6 +62,8 @@ function rowToSwarm(row: Record<string, unknown>): MapSwarm {
     tailscale_ips: parseJsonField(row.tailscale_ips),
     tailscale_dns_name: row.tailscale_dns_name as string | null,
     metadata: parseJsonField(row.metadata),
+    archived: !!(row.archived as number),
+    canonical_key: (row.canonical_key as string) ?? null,
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
   };
@@ -170,8 +172,9 @@ export function deleteSwarm(id: string): boolean {
 
 export function listSwarms(options: {
   hive_id?: string;
-  status?: string;
+  status?: string | string[];
   owner_agent_id?: string;
+  include_archived?: boolean;
   limit?: number;
   offset?: number;
 } = {}): { data: MapSwarm[]; total: number } {
@@ -179,9 +182,13 @@ export function listSwarms(options: {
   const where: string[] = [];
   const params: unknown[] = [];
 
+  if (!options.include_archived) {
+    where.push('s.archived = 0');
+  }
   if (options.status) {
-    where.push('s.status = ?');
-    params.push(options.status);
+    const statuses = Array.isArray(options.status) ? options.status : [options.status];
+    where.push(`s.status IN (${statuses.map(() => '?').join(',')})`);
+    params.push(...statuses);
   }
   if (options.owner_agent_id) {
     where.push('s.owner_agent_id = ?');
@@ -205,6 +212,126 @@ export function listSwarms(options: {
   ).all(...params, limit, offset) as Record<string, unknown>[];
 
   return { data: rows.map(rowToSwarm), total: countRow.count };
+}
+
+export interface SwarmPickerItem extends MapSwarm {
+  variant_count: number;
+}
+
+export function listSwarmsForPicker(options: {
+  recency_days?: number;
+  status?: string[];
+  include_archived?: boolean;
+} = {}): SwarmPickerItem[] {
+  const db = getDatabase();
+  const where: string[] = [];
+  const params: unknown[] = [];
+
+  if (!options.include_archived) {
+    where.push('archived = 0');
+  }
+  if (options.recency_days) {
+    where.push("last_seen_at >= datetime('now', ?)");
+    params.push(`-${options.recency_days} days`);
+  }
+  if (options.status && options.status.length > 0) {
+    where.push(`status IN (${options.status.map(() => '?').join(',')})`);
+    params.push(...options.status);
+  }
+
+  const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+  const rows = db.prepare(`
+    SELECT s.*, cnt.variant_count
+    FROM map_swarms s
+    INNER JOIN (
+      SELECT
+        MAX(last_seen_at) AS max_seen,
+        COALESCE(name, '') AS gn,
+        COALESCE(json_extract(metadata, '$.projectPath'), '') AS gp,
+        COALESCE(json_extract(metadata, '$.branch'), '') AS gb,
+        COUNT(*) AS variant_count
+      FROM map_swarms
+      ${whereClause}
+      GROUP BY gn, gp, gb
+    ) cnt
+      ON s.last_seen_at = cnt.max_seen
+      AND COALESCE(s.name, '') = cnt.gn
+      AND COALESCE(json_extract(s.metadata, '$.projectPath'), '') = cnt.gp
+      AND COALESCE(json_extract(s.metadata, '$.branch'), '') = cnt.gb
+    ${whereClause ? whereClause.replace(/^WHERE/, 'WHERE') : ''}
+    ORDER BY s.last_seen_at DESC
+  `).all(...params, ...params) as Array<Record<string, unknown>>;
+
+  return rows.map((row) => ({
+    ...rowToSwarm(row),
+    variant_count: (row.variant_count as number) || 1,
+  }));
+}
+
+export function findSwarmByCanonicalKey(key: string): MapSwarm | null {
+  const db = getDatabase();
+  const row = db.prepare('SELECT * FROM map_swarms WHERE canonical_key = ?').get(key) as Record<string, unknown> | undefined;
+  return row ? rowToSwarm(row) : null;
+}
+
+export function upsertSwarmByCanonicalKey(
+  canonicalKey: string,
+  ownerAgentId: string,
+  input: RegisterSwarmInput & { id?: string },
+): MapSwarm {
+  const db = getDatabase();
+  const existing = findSwarmByCanonicalKey(canonicalKey);
+
+  if (existing) {
+    db.prepare(`
+      UPDATE map_swarms
+      SET name = ?, map_endpoint = ?, map_transport = ?, status = 'online',
+          last_seen_at = datetime('now'), capabilities = ?, metadata = ?,
+          archived = 0, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      input.name,
+      input.map_endpoint,
+      input.map_transport || 'websocket',
+      input.capabilities ? JSON.stringify(input.capabilities) : existing.capabilities ? JSON.stringify(existing.capabilities) : null,
+      input.metadata ? JSON.stringify(input.metadata) : existing.metadata ? JSON.stringify(existing.metadata) : null,
+      existing.id,
+    );
+    return findSwarmById(existing.id)!;
+  }
+
+  const id = input.id || `swarm_${nanoid()}`;
+  db.prepare(`
+    INSERT INTO map_swarms (id, name, description, map_endpoint, map_transport,
+      owner_agent_id, capabilities, auth_method, auth_token_hash, metadata, canonical_key)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    input.name,
+    input.description || null,
+    input.map_endpoint,
+    input.map_transport || 'websocket',
+    ownerAgentId,
+    input.capabilities ? JSON.stringify(input.capabilities) : null,
+    input.auth_method || 'bearer',
+    input.auth_token ? hashToken(input.auth_token) : null,
+    input.metadata ? JSON.stringify(input.metadata) : null,
+    canonicalKey,
+  );
+  return findSwarmById(id)!;
+}
+
+export function archiveStaleSwarms(archiveDays: number = 30): number {
+  const db = getDatabase();
+  const result = db.prepare(`
+    UPDATE map_swarms
+    SET archived = 1, updated_at = datetime('now')
+    WHERE status = 'offline'
+      AND archived = 0
+      AND last_seen_at < datetime('now', ?)
+  `).run(`-${archiveDays} days`);
+  return result.changes;
 }
 
 /**

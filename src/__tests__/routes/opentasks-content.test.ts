@@ -18,9 +18,9 @@ import * as path from 'path';
 // Routes use dynamic import: await import('../../map/task-daemon-client.js')
 // ---------------------------------------------------------------------------
 
-vi.mock('../../map/task-daemon-client.js', () => {
-  const { existsSync, statSync, readFileSync } = require('fs');
-  const { join } = require('path');
+vi.mock('../../map/task-daemon-client.js', async () => {
+  const { existsSync, statSync, readFileSync } = await import('fs');
+  const { join } = await import('path');
 
   class TaskDaemonError extends Error {
     code: string;

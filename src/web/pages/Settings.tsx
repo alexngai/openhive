@@ -11,6 +11,7 @@ import { LoadingSpinner } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { SwarmKitSettings } from './settings/SwarmKitSettings';
 import { SwarmHubSettings } from './settings/SwarmHubSettings';
+import { DispatchPolicyCard } from '../components/dispatch/DispatchPolicyCard';
 import { Dialog } from '../components/common/Dialog';
 import { useGitLog, useGitForceFetch, useGitPull as useGitPullHook, useGitPush as useGitPushHook, useUpdateResource } from '../hooks/useApi';
 import { ArrowDownToLine, ArrowUpFromLine, RotateCcw, ExternalLink, Unlink } from 'lucide-react';
@@ -192,6 +193,9 @@ function ServerSettings({ isAdmin }: { isAdmin: boolean }) {
           </button>
         </div>
       )}
+
+      {/* Runtime safety: dispatch kill switch (Stream 2 D9). */}
+      <DispatchPolicyCard isAdmin={isAdmin} />
 
       {!isAdmin && (
         <div className="p-2 rounded-md text-2xs" style={{ color: 'var(--color-text-muted)', backgroundColor: 'var(--color-elevated)' }}>

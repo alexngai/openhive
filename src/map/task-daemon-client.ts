@@ -396,9 +396,11 @@ export async function daemonListTasks(
 export async function daemonGetGraph(
   socketPath: string,
   opentasksDir?: string,
+  options?: { includeArchived?: boolean },
 ): Promise<{ nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] }> {
   return withDaemon(socketPath, async (client) => {
-    const nodesResult = await client.query({ nodes: { archived: false }, limit: 5000, verbose: true });
+    const archivedFilter = options?.includeArchived ? undefined : false;
+    const nodesResult = await client.query({ nodes: { archived: archivedFilter }, limit: 5000, verbose: true });
 
     const nodes = (nodesResult.items as unknown as Record<string, unknown>[]).map((n) => ({
       id: n.id,
@@ -504,6 +506,100 @@ export async function daemonQueryNodes(
   return withDaemon(socketPath, async (client) => {
     const result = await client.query({ nodes: filter as any });
     return { items: result.items as NodeSummary[], total: result.total, daemon_connected: true };
+  }, opentasksDir);
+}
+
+/**
+ * Marker on `metadata` that distinguishes user-authored specs from regular
+ * context nodes. Sudocode-sourced specs come through the provider with
+ * `type: 'spec'` and don't need this marker.
+ */
+export const SPEC_METADATA_KIND = 'spec';
+
+/**
+ * Create a spec node directly in opentasks.
+ *
+ * Native opentasks `NodeType` is `'context' | 'task' | 'feedback' | 'external'`
+ * — there is no native `'spec'` type. Per D2 specs are stored as context nodes;
+ * we mark them with `metadata.kind = 'spec'` so the read path can distinguish
+ * them from regular contexts. Sudocode-sourced specs continue to surface via
+ * the provider with `type: 'spec'`.
+ */
+export async function daemonCreateSpec(
+  socketPath: string,
+  params: { title: string; content?: string; priority?: number; metadata?: Record<string, unknown> },
+  opentasksDir?: string,
+): Promise<Record<string, unknown>> {
+  return withDaemon(socketPath, async (client) => {
+    const node = await client.createNode({
+      type: 'context',
+      title: params.title,
+      content: params.content,
+      priority: params.priority,
+      metadata: { ...(params.metadata ?? {}), kind: SPEC_METADATA_KIND },
+    } as never);
+    return node as unknown as Record<string, unknown>;
+  }, opentasksDir);
+}
+
+/**
+ * Update a spec node. Accepts a partial set of fields; opentasks merges
+ * metadata server-side. Pass `archived: true` to archive a spec.
+ */
+export async function daemonUpdateSpec(
+  socketPath: string,
+  specId: string,
+  updates: { title?: string; content?: string; priority?: number; archived?: boolean; status?: string },
+  opentasksDir?: string,
+): Promise<Record<string, unknown>> {
+  return withDaemon(socketPath, async (client) => {
+    const node = await client.updateNode(specId, updates as never);
+    return node as unknown as Record<string, unknown>;
+  }, opentasksDir);
+}
+
+/**
+ * Fetch a single node plus its 1-hop neighbors and connecting edges.
+ * Used for detail views that need a node and its immediate context
+ * (linked tasks/contexts/feedback).
+ */
+export async function daemonGetNodeWithNeighbors(
+  socketPath: string,
+  nodeId: string,
+  opentasksDir?: string,
+): Promise<{
+  node: Record<string, unknown> | null;
+  neighbors: Record<string, unknown>[];
+  edges: Array<{ from_id: string; to_id: string; type: string }>;
+}> {
+  return withDaemon(socketPath, async (client) => {
+    const node = (await client.getNode(nodeId)) as Record<string, unknown> | null;
+    if (!node) return { node: null, neighbors: [], edges: [] };
+
+    const [outgoing, incoming] = await Promise.all([
+      client.query({ edges: { from_id: nodeId, limit: 200 } as Record<string, unknown> as never }),
+      client.query({ edges: { to_id: nodeId, limit: 200 } as Record<string, unknown> as never }),
+    ]);
+
+    const allEdges = [
+      ...((outgoing.items as EdgeSummary[]) ?? []),
+      ...((incoming.items as EdgeSummary[]) ?? []),
+    ];
+    const linkedIds = new Set<string>();
+    for (const e of allEdges) {
+      if (e.fromId !== nodeId) linkedIds.add(e.fromId);
+      if (e.toId !== nodeId) linkedIds.add(e.toId);
+    }
+
+    const neighbors = (await Promise.all(
+      Array.from(linkedIds).map((id) => client.getNode(id).catch(() => null)),
+    )).filter((n): n is Record<string, unknown> => n !== null) as Record<string, unknown>[];
+
+    return {
+      node,
+      neighbors,
+      edges: allEdges.map((e) => ({ from_id: e.fromId, to_id: e.toId, type: e.type })),
+    };
   }, opentasksDir);
 }
 
