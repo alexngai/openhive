@@ -1465,10 +1465,10 @@ CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(sc
 CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
 `;
 
-// Migration V31: Cascade projection tables for x-cascade/* MAP events.
+// Migration V36: Cascade projection tables for x-cascade/* MAP events.
 // Read-only lenses over events emitted by git-cascade-backed runtimes.
 // The hub is not the authority on cascade state — runtimes own their local DB.
-export const MIGRATION_V31_CASCADE_PROJECTIONS = `
+export const MIGRATION_V36_CASCADE_PROJECTIONS = `
 CREATE TABLE IF NOT EXISTS cascade_streams (
   id TEXT PRIMARY KEY,
   stream_id TEXT NOT NULL,
@@ -1577,11 +1577,11 @@ CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_stream ON cascade_conflicts(str
 CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_status ON cascade_conflicts(status);
 `;
 
-// Migration V32: Add 'federated' to sync_strategy CHECK constraint for MAP-owned
+// Migration V31: Add 'federated' to sync_strategy CHECK constraint for MAP-owned
 // remote task graphs. Existing rows tagged 'ls-remote' / 'metadata' that are
 // actually federated continue to work via the URL-scheme fallback in
 // isReadOnlyResource and elsewhere.
-export const MIGRATION_V32_FEDERATED_SYNC_STRATEGY = `
+export const MIGRATION_V31_FEDERATED_SYNC_STRATEGY = `
 CREATE TABLE IF NOT EXISTS syncable_resources_v32 (
   id TEXT PRIMARY KEY,
   resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session')),
@@ -1627,10 +1627,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(ori
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
 `;
 
-// Migration V34: cascade_pushes + cascade_queue_entries projections for
+// Migration V38: cascade_pushes + cascade_queue_entries projections for
 // trunk-style flows (direct-push / optimistic-push) and merge queue
 // observability (queue.added/ready/cancelled/removed).
-export const MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE = `
+export const MIGRATION_V38_CASCADE_PUSHES_AND_QUEUE = `
 CREATE TABLE IF NOT EXISTS cascade_pushes (
   id TEXT PRIMARY KEY,
   source_swarm_id TEXT NOT NULL,
@@ -1670,10 +1670,10 @@ CREATE INDEX IF NOT EXISTS idx_cascade_queue_status ON cascade_queue_entries(sta
 CREATE INDEX IF NOT EXISTS idx_cascade_queue_target ON cascade_queue_entries(target_branch);
 `;
 
-// Migration V33: cascade_operations audit log for cascade.completed events.
+// Migration V37: cascade_operations audit log for cascade.completed events.
 // Stores one row per cascadeRebase walk so operators can answer "did this
 // cascade succeed", "what's the recent cascade activity", etc.
-export const MIGRATION_V33_CASCADE_OPERATIONS = `
+export const MIGRATION_V37_CASCADE_OPERATIONS = `
 CREATE TABLE IF NOT EXISTS cascade_operations (
   id TEXT PRIMARY KEY,
   source_swarm_id TEXT NOT NULL,
@@ -1694,9 +1694,9 @@ CREATE INDEX IF NOT EXISTS idx_cascade_operations_root ON cascade_operations(roo
 CREATE INDEX IF NOT EXISTS idx_cascade_operations_completed_at ON cascade_operations(completed_at DESC);
 `;
 
-// Migration V35: publish_branch on cascade_streams + cascade_pull_requests table
+// Migration V39: publish_branch on cascade_streams + cascade_pull_requests table
 // for hub-side GitHub PR management.
-export const MIGRATION_V35_CASCADE_PR = `
+export const MIGRATION_V39_CASCADE_PR = `
 -- Add publish_branch column for branch aliasing (stream/<id> → human-readable name)
 ALTER TABLE cascade_streams ADD COLUMN publish_branch TEXT;
 
