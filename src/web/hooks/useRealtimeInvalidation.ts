@@ -216,3 +216,73 @@ export function useLearningRealtime() {
   useWSEvent('learning:batch', invalidateAll);
   useWSEvent('learning:maintenance', invalidateAll);
 }
+
+// ── Cascade ──
+
+/**
+ * Invalidates cascade changelog + commit-range queries for a specific
+ * (resource_id, node_id) when cascade events arrive on the task channel.
+ *
+ * The hub broadcasts cascade:* events to `resource:task:{resourceId}` when
+ * the event carries a task_ref, and to `cascade:stream:{streamRowId}` for
+ * stream-scoped events. We subscribe to the task channel since CascadeBlock
+ * is task-scoped (we don't yet know which streams will be bound).
+ *
+ * Also subscribes to `global` as a coarse fallback so events that arrive
+ * before back-fill threads task_ref still trigger invalidation.
+ */
+export function useCascadeRealtime(resourceId: string, nodeId: string) {
+  const queryClient = useQueryClient();
+
+  useSubscribe([`resource:task:${resourceId}`, 'global']);
+
+  const invalidate = useCallback(() => {
+    queryClient.invalidateQueries({
+      queryKey: ['cascade-changelog', resourceId, nodeId],
+    });
+    queryClient.invalidateQueries({
+      queryKey: ['cascade-commit-range', resourceId, nodeId],
+    });
+  }, [queryClient, resourceId, nodeId]);
+
+  // Stream lifecycle events that can change a task's projection state.
+  useWSEvent('cascade:stream_committed', invalidate);
+  useWSEvent('cascade:stream_merged', invalidate);
+  useWSEvent('cascade:stream_conflicted', invalidate);
+  useWSEvent('cascade:stream_conflict_resolved', invalidate);
+  useWSEvent('cascade:stream_rebased', invalidate);
+  useWSEvent('cascade:stream_abandoned', invalidate);
+  // stream_opened included so a freshly-opened stream's task binding shows
+  // up immediately even before any commits land.
+  useWSEvent('cascade:stream_opened', invalidate);
+}
+
+// ── Cascade Streams DAG ──
+
+/**
+ * Invalidates cascade DAG + stream detail/timeline queries when any
+ * stream-level event arrives. Used by the Streams overview page.
+ * Subscribes to `global` since we don't know which streams the user is
+ * viewing at mount time.
+ */
+export function useCascadeStreamsRealtime() {
+  const queryClient = useQueryClient();
+
+  useSubscribe(['global']);
+
+  const invalidate = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['cascade-dag'] });
+    queryClient.invalidateQueries({ queryKey: ['cascade-stream-detail'] });
+    queryClient.invalidateQueries({ queryKey: ['cascade-stream-timeline'] });
+  }, [queryClient]);
+
+  useWSEvent('cascade:stream_opened', invalidate);
+  useWSEvent('cascade:stream_committed', invalidate);
+  useWSEvent('cascade:stream_merged', invalidate);
+  useWSEvent('cascade:stream_conflicted', invalidate);
+  useWSEvent('cascade:stream_conflict_resolved', invalidate);
+  useWSEvent('cascade:stream_abandoned', invalidate);
+  useWSEvent('cascade:stream_paused', invalidate);
+  useWSEvent('cascade:stream_resumed', invalidate);
+  useWSEvent('cascade:stream_rolled_back', invalidate);
+}

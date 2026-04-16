@@ -4,7 +4,8 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { X, CheckCircle2, PlayCircle, AlertTriangle, XCircle, Circle, Trash2, Link2, Plus, ArrowDown } from 'lucide-react';
+import { X, CheckCircle2, PlayCircle, AlertTriangle, XCircle, Circle, Trash2, Link2, Plus, ArrowDown, Maximize2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { TiptapEditor, useEditorViewMode } from '../common/TiptapEditor';
 import { FileText, Eye } from 'lucide-react';
 import clsx from 'clsx';
@@ -205,7 +206,19 @@ export function TaskGraphSidebar({ node, selectedEdge, resourceId, onClose, onSe
           ) : (
             <h3 className="text-base font-semibold leading-tight flex-1">{node.title || node.id}</h3>
           )}
-          <button onClick={onClose} className="btn-ghost p-1 shrink-0">
+          <Link
+            to={`/tasks/${encodeURIComponent(resourceId)}/${encodeURIComponent(node.id)}`}
+            className="btn-ghost p-1 shrink-0"
+            title="Open full task detail"
+            aria-label="Open full task detail"
+          >
+            <Maximize2 className="w-4 h-4" />
+          </Link>
+          <button
+            onClick={onClose}
+            className="btn-ghost p-1 shrink-0"
+            aria-label="Close task detail panel"
+          >
             <X className="w-4 h-4" />
           </button>
         </div>

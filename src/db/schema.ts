@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 35;
+export const SCHEMA_VERSION = 39;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -503,6 +503,191 @@ CREATE TABLE IF NOT EXISTS ingest_keys (
 
 CREATE INDEX IF NOT EXISTS idx_ingest_keys_hash ON ingest_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_ingest_keys_agent ON ingest_keys(agent_id);
+
+-- ============================================================================
+-- Cascade Projections (stored from x-cascade/* MAP notifications)
+--
+-- Read-only projections over events emitted by git-cascade-backed runtimes.
+-- The hub is NOT the authority on cascade state — the runtime owns
+-- .git-cascade/tracker.db. These tables are lightweight indexes for
+-- cross-swarm observability, REST queries, and cross-reference with
+-- OpenTasks task resources via (task_resource_id, task_node_id).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS cascade_streams (
+  id TEXT PRIMARY KEY,
+  stream_id TEXT NOT NULL,
+  source_swarm_id TEXT NOT NULL,
+  source_agent_id TEXT NOT NULL,
+  parent_stream_id TEXT,
+  name TEXT NOT NULL,
+  branch_name TEXT,
+  base_commit TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  is_local_mode INTEGER DEFAULT 0,
+  task_resource_id TEXT,
+  task_node_id TEXT,
+  metadata TEXT,
+  publish_branch TEXT,
+  opened_at TEXT DEFAULT (datetime('now')),
+  last_event_at TEXT DEFAULT (datetime('now')),
+  closed_at TEXT,
+  UNIQUE(source_swarm_id, stream_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_swarm ON cascade_streams(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_agent ON cascade_streams(source_agent_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_task ON cascade_streams(task_resource_id, task_node_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_status ON cascade_streams(status);
+
+CREATE TABLE IF NOT EXISTS cascade_pull_requests (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'github',
+  remote_pr_number INTEGER,
+  remote_pr_url TEXT,
+  state TEXT NOT NULL DEFAULT 'draft',
+  source_branch TEXT NOT NULL,
+  target_branch TEXT NOT NULL DEFAULT 'main',
+  title TEXT,
+  body_hash TEXT,
+  repo_owner TEXT,
+  repo_name TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  synced_at TEXT,
+  FOREIGN KEY (stream_row_id) REFERENCES cascade_streams(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_prs_stream ON cascade_pull_requests(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_prs_state ON cascade_pull_requests(state);
+
+CREATE TABLE IF NOT EXISTS cascade_changes (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL REFERENCES cascade_streams(id) ON DELETE CASCADE,
+  change_id TEXT,
+  commit_hash TEXT NOT NULL,
+  parent_commit TEXT,
+  author_agent_id TEXT,
+  message_summary TEXT,
+  files_touched TEXT NOT NULL DEFAULT '[]',
+  task_resource_id TEXT,
+  task_node_id TEXT,
+  metadata TEXT,
+  synced_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(stream_row_id, commit_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_changes_stream ON cascade_changes(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_changes_change_id ON cascade_changes(change_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_changes_task ON cascade_changes(task_resource_id, task_node_id);
+
+CREATE TABLE IF NOT EXISTS cascade_merges (
+  id TEXT PRIMARY KEY,
+  source_stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  target_stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  source_swarm_id TEXT NOT NULL,
+  source_stream_id TEXT NOT NULL,
+  target_stream_id TEXT NOT NULL,
+  merge_commit TEXT NOT NULL,
+  agent_id TEXT,
+  strategy TEXT,
+  source_commit TEXT,
+  metadata TEXT,
+  merged_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(source_swarm_id, merge_commit)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_merges_source_stream ON cascade_merges(source_stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_merges_target_stream ON cascade_merges(target_stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_merges_swarm ON cascade_merges(source_swarm_id);
+
+CREATE TABLE IF NOT EXISTS cascade_conflicts (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL REFERENCES cascade_streams(id) ON DELETE CASCADE,
+  conflict_id TEXT,
+  conflicted_files TEXT NOT NULL DEFAULT '[]',
+  agent_id TEXT,
+  conflicting_commit TEXT,
+  target_commit TEXT,
+  source TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  metadata TEXT,
+  detected_at TEXT DEFAULT (datetime('now')),
+  resolved_at TEXT,
+  UNIQUE(stream_row_id, conflict_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_stream ON cascade_conflicts(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_status ON cascade_conflicts(status);
+
+-- Cascade rebase walk audit log (one row per cascade.completed event).
+-- Lets operators answer "did this cascade succeed" + "what is recent
+-- cascade activity" without replaying events. Per-stream effects already
+-- live in cascade_changes / cascade_merges; this table is summary-level only.
+CREATE TABLE IF NOT EXISTS cascade_operations (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT NOT NULL,
+  root_stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  root_stream_id TEXT NOT NULL,
+  agent_id TEXT,
+  strategy TEXT NOT NULL,
+  updated_streams TEXT NOT NULL DEFAULT '[]',
+  failed_streams TEXT NOT NULL DEFAULT '[]',
+  skipped_streams TEXT NOT NULL DEFAULT '[]',
+  deferred_streams TEXT,
+  metadata TEXT,
+  completed_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_operations_swarm ON cascade_operations(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_operations_root ON cascade_operations(root_stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_operations_completed_at ON cascade_operations(completed_at DESC);
+
+-- Trunk-style remote pushes (append-only audit). Trunk teams using
+-- direct-push / optimistic-push landing strategies push to a remote ref
+-- rather than merging into another stream. cascade_merges doesn't capture
+-- those events; this table does.
+CREATE TABLE IF NOT EXISTS cascade_pushes (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT NOT NULL,
+  stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  stream_id TEXT NOT NULL,
+  agent_id TEXT,
+  pushed_commit TEXT NOT NULL,
+  remote TEXT NOT NULL,
+  remote_ref TEXT NOT NULL,
+  strategy TEXT,
+  metadata TEXT,
+  pushed_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_pushes_swarm ON cascade_pushes(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_pushes_stream ON cascade_pushes(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_pushes_pushed_at ON cascade_pushes(pushed_at DESC);
+
+-- Merge queue entries (state-tracking projection for queue.* events).
+-- Status reflects latest observed transition: queued → ready → removed.
+-- Cancelled is terminal.
+CREATE TABLE IF NOT EXISTS cascade_queue_entries (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT NOT NULL,
+  entry_id TEXT NOT NULL,
+  stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  stream_id TEXT NOT NULL,
+  target_branch TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  reason TEXT,
+  outcome TEXT,
+  metadata TEXT,
+  added_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(source_swarm_id, entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_queue_swarm ON cascade_queue_entries(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_queue_status ON cascade_queue_entries(status);
+CREATE INDEX IF NOT EXISTS idx_cascade_queue_target ON cascade_queue_entries(target_branch);
 
 -- ============================================================================
 -- Dispatches (Stream 2 — D4)
@@ -1280,12 +1465,124 @@ CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(sc
 CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
 `;
 
-// Migration V31: Add 'federated' to sync_strategy CHECK constraint for MAP-owned
+// Migration V31: Cascade projection tables for x-cascade/* MAP events.
+// Read-only lenses over events emitted by git-cascade-backed runtimes.
+// The hub is not the authority on cascade state — runtimes own their local DB.
+export const MIGRATION_V31_CASCADE_PROJECTIONS = `
+CREATE TABLE IF NOT EXISTS cascade_streams (
+  id TEXT PRIMARY KEY,
+  stream_id TEXT NOT NULL,
+  source_swarm_id TEXT NOT NULL,
+  source_agent_id TEXT NOT NULL,
+  parent_stream_id TEXT,
+  name TEXT NOT NULL,
+  branch_name TEXT,
+  base_commit TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  is_local_mode INTEGER DEFAULT 0,
+  task_resource_id TEXT,
+  task_node_id TEXT,
+  metadata TEXT,
+  publish_branch TEXT,
+  opened_at TEXT DEFAULT (datetime('now')),
+  last_event_at TEXT DEFAULT (datetime('now')),
+  closed_at TEXT,
+  UNIQUE(source_swarm_id, stream_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_swarm ON cascade_streams(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_agent ON cascade_streams(source_agent_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_task ON cascade_streams(task_resource_id, task_node_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_streams_status ON cascade_streams(status);
+
+CREATE TABLE IF NOT EXISTS cascade_pull_requests (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'github',
+  remote_pr_number INTEGER,
+  remote_pr_url TEXT,
+  state TEXT NOT NULL DEFAULT 'draft',
+  source_branch TEXT NOT NULL,
+  target_branch TEXT NOT NULL DEFAULT 'main',
+  title TEXT,
+  body_hash TEXT,
+  repo_owner TEXT,
+  repo_name TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  synced_at TEXT,
+  FOREIGN KEY (stream_row_id) REFERENCES cascade_streams(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_prs_stream ON cascade_pull_requests(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_prs_state ON cascade_pull_requests(state);
+
+CREATE TABLE IF NOT EXISTS cascade_changes (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL REFERENCES cascade_streams(id) ON DELETE CASCADE,
+  change_id TEXT,
+  commit_hash TEXT NOT NULL,
+  parent_commit TEXT,
+  author_agent_id TEXT,
+  message_summary TEXT,
+  files_touched TEXT NOT NULL DEFAULT '[]',
+  task_resource_id TEXT,
+  task_node_id TEXT,
+  metadata TEXT,
+  synced_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(stream_row_id, commit_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_changes_stream ON cascade_changes(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_changes_change_id ON cascade_changes(change_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_changes_task ON cascade_changes(task_resource_id, task_node_id);
+
+CREATE TABLE IF NOT EXISTS cascade_merges (
+  id TEXT PRIMARY KEY,
+  source_stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  target_stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  source_swarm_id TEXT NOT NULL,
+  source_stream_id TEXT NOT NULL,
+  target_stream_id TEXT NOT NULL,
+  merge_commit TEXT NOT NULL,
+  agent_id TEXT,
+  strategy TEXT,
+  source_commit TEXT,
+  metadata TEXT,
+  merged_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(source_swarm_id, merge_commit)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_merges_source_stream ON cascade_merges(source_stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_merges_target_stream ON cascade_merges(target_stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_merges_swarm ON cascade_merges(source_swarm_id);
+
+CREATE TABLE IF NOT EXISTS cascade_conflicts (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL REFERENCES cascade_streams(id) ON DELETE CASCADE,
+  conflict_id TEXT,
+  conflicted_files TEXT NOT NULL DEFAULT '[]',
+  agent_id TEXT,
+  conflicting_commit TEXT,
+  target_commit TEXT,
+  source TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  metadata TEXT,
+  detected_at TEXT DEFAULT (datetime('now')),
+  resolved_at TEXT,
+  UNIQUE(stream_row_id, conflict_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_stream ON cascade_conflicts(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_conflicts_status ON cascade_conflicts(status);
+`;
+
+// Migration V32: Add 'federated' to sync_strategy CHECK constraint for MAP-owned
 // remote task graphs. Existing rows tagged 'ls-remote' / 'metadata' that are
 // actually federated continue to work via the URL-scheme fallback in
 // isReadOnlyResource and elsewhere.
-export const MIGRATION_V31_FEDERATED_SYNC_STRATEGY = `
-CREATE TABLE IF NOT EXISTS syncable_resources_v31 (
+export const MIGRATION_V32_FEDERATED_SYNC_STRATEGY = `
+CREATE TABLE IF NOT EXISTS syncable_resources_v32 (
   id TEXT PRIMARY KEY,
   resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session')),
   name TEXT NOT NULL,
@@ -1311,10 +1608,10 @@ CREATE TABLE IF NOT EXISTS syncable_resources_v31 (
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
-INSERT OR IGNORE INTO syncable_resources_v31 SELECT * FROM syncable_resources;
+INSERT OR IGNORE INTO syncable_resources_v32 SELECT * FROM syncable_resources;
 
 DROP TABLE IF EXISTS syncable_resources;
-ALTER TABLE syncable_resources_v31 RENAME TO syncable_resources;
+ALTER TABLE syncable_resources_v32 RENAME TO syncable_resources;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_syncable_resources_git_url
   ON syncable_resources(owner_agent_id, resource_type, git_remote_url)
@@ -1328,6 +1625,103 @@ CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_re
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
+`;
+
+// Migration V34: cascade_pushes + cascade_queue_entries projections for
+// trunk-style flows (direct-push / optimistic-push) and merge queue
+// observability (queue.added/ready/cancelled/removed).
+export const MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE = `
+CREATE TABLE IF NOT EXISTS cascade_pushes (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT NOT NULL,
+  stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  stream_id TEXT NOT NULL,
+  agent_id TEXT,
+  pushed_commit TEXT NOT NULL,
+  remote TEXT NOT NULL,
+  remote_ref TEXT NOT NULL,
+  strategy TEXT,
+  metadata TEXT,
+  pushed_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_pushes_swarm ON cascade_pushes(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_pushes_stream ON cascade_pushes(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_pushes_pushed_at ON cascade_pushes(pushed_at DESC);
+
+CREATE TABLE IF NOT EXISTS cascade_queue_entries (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT NOT NULL,
+  entry_id TEXT NOT NULL,
+  stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  stream_id TEXT NOT NULL,
+  target_branch TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  reason TEXT,
+  outcome TEXT,
+  metadata TEXT,
+  added_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(source_swarm_id, entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_queue_swarm ON cascade_queue_entries(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_queue_status ON cascade_queue_entries(status);
+CREATE INDEX IF NOT EXISTS idx_cascade_queue_target ON cascade_queue_entries(target_branch);
+`;
+
+// Migration V33: cascade_operations audit log for cascade.completed events.
+// Stores one row per cascadeRebase walk so operators can answer "did this
+// cascade succeed", "what's the recent cascade activity", etc.
+export const MIGRATION_V33_CASCADE_OPERATIONS = `
+CREATE TABLE IF NOT EXISTS cascade_operations (
+  id TEXT PRIMARY KEY,
+  source_swarm_id TEXT NOT NULL,
+  root_stream_row_id TEXT REFERENCES cascade_streams(id) ON DELETE SET NULL,
+  root_stream_id TEXT NOT NULL,
+  agent_id TEXT,
+  strategy TEXT NOT NULL,
+  updated_streams TEXT NOT NULL DEFAULT '[]',
+  failed_streams TEXT NOT NULL DEFAULT '[]',
+  skipped_streams TEXT NOT NULL DEFAULT '[]',
+  deferred_streams TEXT,
+  metadata TEXT,
+  completed_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_operations_swarm ON cascade_operations(source_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_operations_root ON cascade_operations(root_stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_operations_completed_at ON cascade_operations(completed_at DESC);
+`;
+
+// Migration V35: publish_branch on cascade_streams + cascade_pull_requests table
+// for hub-side GitHub PR management.
+export const MIGRATION_V35_CASCADE_PR = `
+-- Add publish_branch column for branch aliasing (stream/<id> → human-readable name)
+ALTER TABLE cascade_streams ADD COLUMN publish_branch TEXT;
+
+-- PR tracking table for hub-side GitHub API integration
+CREATE TABLE IF NOT EXISTS cascade_pull_requests (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'github',
+  remote_pr_number INTEGER,
+  remote_pr_url TEXT,
+  state TEXT NOT NULL DEFAULT 'draft',
+  source_branch TEXT NOT NULL,
+  target_branch TEXT NOT NULL DEFAULT 'main',
+  title TEXT,
+  body_hash TEXT,
+  repo_owner TEXT,
+  repo_name TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  synced_at TEXT,
+  FOREIGN KEY (stream_row_id) REFERENCES cascade_streams(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_prs_stream ON cascade_pull_requests(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_prs_state ON cascade_pull_requests(state);
 `;
 
 // Populate FTS tables from existing data

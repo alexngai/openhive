@@ -216,7 +216,21 @@ export type WSEventType =
   // Learning engine events
   | 'learning:instant'
   | 'learning:batch'
-  | 'learning:maintenance';
+  | 'learning:maintenance'
+  // Cascade projection events (from x-cascade/* MAP notifications)
+  | 'cascade:stream_opened'
+  | 'cascade:stream_committed'
+  | 'cascade:stream_merged'
+  | 'cascade:stream_conflicted'
+  | 'cascade:stream_conflict_resolved'
+  | 'cascade:stream_abandoned'
+  | 'cascade:stream_rebased'
+  | 'cascade:stream_pushed'
+  | 'cascade:completed'
+  | 'cascade:queue_queued'
+  | 'cascade:queue_ready'
+  | 'cascade:queue_cancelled'
+  | 'cascade:queue_removed';
 
 export interface WSEvent {
   type: WSEventType;
