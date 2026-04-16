@@ -92,7 +92,6 @@ export class SwarmManager {
     }
 
     try {
-      // @ts-expect-error import.meta.url used for createRequire in bundled output
       const require_ = createRequire(import.meta.url);
       const pkgPath = require_.resolve('openswarm/package.json');
       const pkgDir = path.dirname(pkgPath);

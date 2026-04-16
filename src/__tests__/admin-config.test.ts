@@ -242,7 +242,7 @@ describe('Admin Config API', () => {
         url: '/api/v1/admin/config',
         headers: { 'x-admin-key': ADMIN_KEY },
         payload: {
-          cors: { enabled: true },
+          instance: { name: 'updated-name' },
         },
       });
 

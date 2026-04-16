@@ -74,7 +74,7 @@ describe('config-meta', () => {
 
     it('should not match unrelated paths', () => {
       expect(matchesPath('instance.name', SECRET_PATHS)).toBe(false);
-      expect(matchesPath('cors.enabled', RESTART_REQUIRED_PATHS)).toBe(false);
+      expect(matchesPath('instance.name', RESTART_REQUIRED_PATHS)).toBe(false);
     });
   });
 

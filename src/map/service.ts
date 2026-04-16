@@ -7,6 +7,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import * as mapDal from '../db/dal/map.js';
 import { findHiveByName } from '../db/dal/hives.js';
 import { getDatabase } from '../db/index.js';
@@ -40,6 +41,31 @@ export function registerSwarm(
   ownerAgentId: string,
   input: RegisterSwarmInput
 ): RegisterSwarmResult {
+  // Phase 3: stable identity — upsert instead of insert when a canonical key is present
+  if (input.stable_identity) {
+    const canonicalKey = createHash('sha256').update(input.stable_identity).digest('hex');
+    const swarm = mapDal.upsertSwarmByCanonicalKey(canonicalKey, ownerAgentId, input);
+
+    let autoJoinedHive: string | null = null;
+    if (input.preauth_key) {
+      const key = mapDal.consumePreauthKey(input.preauth_key);
+      if (key?.hive_id) {
+        autoJoinedHive = key.hive_id;
+        mapDal.joinHive(swarm.id, autoJoinedHive);
+      }
+    }
+
+    broadcastToChannel('map:discovery', {
+      type: 'swarm_registered',
+      data: { swarm_id: swarm.id, name: swarm.name, map_endpoint: swarm.map_endpoint },
+    });
+    mapHubEvents.emit('swarm_registered', {
+      swarm_id: swarm.id, name: swarm.name,
+      map_endpoint: swarm.map_endpoint, auth_method: swarm.auth_method,
+    });
+    return { swarm, auto_joined_hive: autoJoinedHive };
+  }
+
   // Check for duplicate endpoint
   const existing = mapDal.findSwarmByEndpoint(input.map_endpoint);
   if (existing) {
@@ -298,6 +324,12 @@ export function markStaleSwarms(staleThresholdMinutes: number = 5): number {
         data: { swarm_id: row.id, status: 'offline' },
       });
     } catch { /* non-critical */ }
+  }
+
+  // Phase 2: archive swarms offline for > archiveDays
+  const archiveResult = mapDal.archiveStaleSwarms(30);
+  if (archiveResult > 0) {
+    console.log(`[MAP] Archived ${archiveResult} offline swarm(s) older than 30 days`);
   }
 
   return result.changes;

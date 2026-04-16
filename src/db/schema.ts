@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 35;
+export const SCHEMA_VERSION = 39;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -688,6 +688,44 @@ CREATE TABLE IF NOT EXISTS cascade_queue_entries (
 CREATE INDEX IF NOT EXISTS idx_cascade_queue_swarm ON cascade_queue_entries(source_swarm_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_queue_status ON cascade_queue_entries(status);
 CREATE INDEX IF NOT EXISTS idx_cascade_queue_target ON cascade_queue_entries(target_branch);
+
+-- ============================================================================
+-- Dispatches (Stream 2 — D4)
+-- One row per (spec, target_swarm) handoff. No FKs to spec_resource / swarm —
+-- we want the dispatch row to outlive both for historical visibility (D11
+-- workflow with feedback channel; D15 status transitions).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS dispatches (
+  id TEXT PRIMARY KEY,
+  -- spec_ref (D12): { resource_id, spec_id, captured_at }
+  spec_resource_id TEXT NOT NULL,
+  spec_id TEXT NOT NULL,
+  spec_captured_at TEXT,
+  -- target
+  target_swarm_id TEXT NOT NULL,
+  -- lifecycle (D15)
+  status TEXT NOT NULL DEFAULT 'queued'
+    CHECK (status IN ('queued', 'running', 'complete', 'failed', 'cancelled')),
+  -- audit (D9)
+  initiator_type TEXT NOT NULL CHECK (initiator_type IN ('user', 'agent')),
+  initiator_id TEXT NOT NULL,
+  -- bootstrap output
+  session_ids TEXT NOT NULL DEFAULT '[]',
+  -- result
+  outcome TEXT,
+  -- optional caller-supplied prompt addendum
+  prompt_override TEXT,
+  -- timestamps
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_dispatches_spec ON dispatches(spec_resource_id, spec_id);
+CREATE INDEX IF NOT EXISTS idx_dispatches_swarm ON dispatches(target_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
+CREATE INDEX IF NOT EXISTS idx_dispatches_initiator ON dispatches(initiator_id);
+CREATE INDEX IF NOT EXISTS idx_dispatches_created ON dispatches(created_at DESC);
 `;
 
 export const SEED_DATA = `
@@ -821,6 +859,55 @@ ALTER TABLE syncable_resources ADD COLUMN scope TEXT DEFAULT 'manual'
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
 `;
 
+// Migration V32: Dispatches table (Stream 2 — D4 Dispatch primitive)
+export const MIGRATION_V32_DISPATCHES = `
+CREATE TABLE IF NOT EXISTS dispatches (
+  id TEXT PRIMARY KEY,
+  spec_resource_id TEXT NOT NULL,
+  spec_id TEXT NOT NULL,
+  spec_captured_at TEXT,
+  target_swarm_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued'
+    CHECK (status IN ('queued', 'running', 'complete', 'failed', 'cancelled')),
+  initiator_type TEXT NOT NULL CHECK (initiator_type IN ('user', 'agent')),
+  initiator_id TEXT NOT NULL,
+  session_ids TEXT NOT NULL DEFAULT '[]',
+  outcome TEXT,
+  prompt_override TEXT,
+  lease_token TEXT,
+  lease_expires_at TEXT,
+  attempt INTEGER DEFAULT 0,
+  turn_count INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_dispatches_spec ON dispatches(spec_resource_id, spec_id);
+CREATE INDEX IF NOT EXISTS idx_dispatches_swarm ON dispatches(target_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
+CREATE INDEX IF NOT EXISTS idx_dispatches_initiator ON dispatches(initiator_id);
+CREATE INDEX IF NOT EXISTS idx_dispatches_created ON dispatches(created_at DESC);
+`;
+
+// Migration V33: Swarm archive column (Phase 2 swarm hygiene)
+export const MIGRATION_V33_SWARM_ARCHIVE = `
+ALTER TABLE map_swarms ADD COLUMN archived INTEGER DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_map_swarms_archived ON map_swarms(archived);
+`;
+
+// Migration V34: Stable swarm identity (Phase 3 swarm hygiene)
+export const MIGRATION_V34_CANONICAL_KEY = `
+ALTER TABLE map_swarms ADD COLUMN canonical_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_map_swarms_canonical_key ON map_swarms(canonical_key) WHERE canonical_key IS NOT NULL;
+`;
+
+// Migration V35: Dispatch orchestrator fields (swarm-dispatch integration)
+export const MIGRATION_V35_DISPATCH_ORCHESTRATOR = `
+ALTER TABLE dispatches ADD COLUMN lease_token TEXT;
+ALTER TABLE dispatches ADD COLUMN lease_expires_at TEXT;
+ALTER TABLE dispatches ADD COLUMN attempt INTEGER DEFAULT 0;
+ALTER TABLE dispatches ADD COLUMN turn_count INTEGER DEFAULT 0;
+`;
+
 // ============================================================================
 // Subsystem Migration Schemas
 // All migration SQL is consolidated here so the DB layer is self-contained.
@@ -858,6 +945,9 @@ CREATE TABLE IF NOT EXISTS map_swarms (
   tailscale_dns_name TEXT,       -- MagicDNS hostname
   -- Metadata (JSON)
   metadata TEXT,
+  -- Hygiene (Phase 2+3)
+  archived INTEGER DEFAULT 0,
+  canonical_key TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -925,6 +1015,8 @@ CREATE TABLE IF NOT EXISTS map_federation_log (
 -- Indexes for MAP tables
 CREATE INDEX IF NOT EXISTS idx_map_swarms_owner ON map_swarms(owner_agent_id);
 CREATE INDEX IF NOT EXISTS idx_map_swarms_status ON map_swarms(status);
+CREATE INDEX IF NOT EXISTS idx_map_swarms_archived ON map_swarms(archived);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_map_swarms_canonical_key ON map_swarms(canonical_key) WHERE canonical_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_map_nodes_swarm ON map_nodes(swarm_id);
 CREATE INDEX IF NOT EXISTS idx_map_nodes_role ON map_nodes(role);
 CREATE INDEX IF NOT EXISTS idx_map_nodes_state ON map_nodes(state);

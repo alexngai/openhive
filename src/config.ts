@@ -1,6 +1,7 @@
 import { z } from "zod";
 import * as path from "path";
 import * as fs from "fs";
+import { createRequire } from "node:module";
 import { resolveDataDir } from "./data-dir.js";
 import { writeConfigFile } from "./config-persistence.js";
 
@@ -609,8 +610,8 @@ export function loadConfig(configPath?: string): Config {
         if (file.endsWith(".json")) {
           fileConfig = JSON.parse(fs.readFileSync(file, "utf-8"));
         } else if (file.endsWith(".js")) {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const loaded = require(path.resolve(file));
+          const esmRequire = createRequire(import.meta.url);
+          const loaded = esmRequire(path.resolve(file));
           fileConfig = loaded.default || loaded;
         }
         _loadedConfigPath = path.resolve(file);

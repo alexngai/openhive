@@ -48,6 +48,9 @@ export interface MapSwarm {
   tailscale_dns_name: string | null;
   // Metadata
   metadata: Record<string, unknown> | null;
+  // Hygiene
+  archived: boolean;
+  canonical_key: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -161,6 +164,9 @@ export interface RegisterSwarmInput {
   metadata?: Record<string, unknown>;
   // Optional pre-auth key for auto-registration + auto-join
   preauth_key?: string;
+  // Stable identity hint — when provided, the hub upserts by canonical_key
+  // instead of inserting a new row (Phase 3 swarm hygiene)
+  stable_identity?: string;
 }
 
 export interface UpdateSwarmInput {

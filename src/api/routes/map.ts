@@ -80,6 +80,7 @@ const RegisterSwarmSchema = z.object({
   auth_token: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),
   preauth_key: z.string().optional(),
+  stable_identity: z.string().max(500).optional(),
 });
 
 const UpdateSwarmSchema = z.object({
@@ -231,15 +232,57 @@ export async function mapRoutes(
 
   // GET /map/swarms -- List swarms
   fastify.get<{
-    Querystring: { hive_id?: string; status?: string; limit?: string; offset?: string };
+    Querystring: {
+      hive_id?: string;
+      status?: string;
+      limit?: string;
+      offset?: string;
+      dedupe?: string;
+      recency_days?: string;
+      include_archived?: string;
+    };
   }>('/map/swarms', {
     preHandler: [optionalAuthMiddleware],
   }, async (request, reply) => {
-    const { hive_id, status, limit, offset } = request.query;
+    const { hive_id, status, limit, offset, dedupe, recency_days, include_archived } = request.query;
 
+    // Deduped picker mode: returns unique logical swarms with variant_count
+    if (dedupe === '1' || dedupe === 'true') {
+      const statuses = status ? status.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+      const items = mapDal.listSwarmsForPicker({
+        recency_days: recency_days ? parseInt(recency_days, 10) : undefined,
+        status: statuses,
+        include_archived: include_archived === '1' || include_archived === 'true',
+      });
+
+      const enriched = items.map((s) => {
+        const hives = mapDal.getSwarmHiveNames(s.id);
+        const conn = getInbound(s.id);
+        const registered_agents = conn
+          ? Array.from(conn.registeredAgents.values()).map((a) => ({
+              id: a.id, name: a.name, role: a.role, state: a.state,
+              capabilities: a.capabilities, metadata: a.metadata,
+            }))
+          : [];
+        return {
+          id: s.id, name: s.name, description: s.description,
+          map_endpoint: s.map_endpoint, map_transport: s.map_transport,
+          status: s.status, last_seen_at: s.last_seen_at,
+          capabilities: s.capabilities, auth_method: s.auth_method,
+          agent_count: s.agent_count, scope_count: s.scope_count,
+          metadata: s.metadata, hives, registered_agents,
+          created_at: s.created_at,
+          variant_count: s.variant_count,
+        };
+      });
+      return reply.send({ data: enriched, total: enriched.length });
+    }
+
+    const statusArr = status ? status.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
     const result = mapDal.listSwarms({
       hive_id,
-      status,
+      status: statusArr && statusArr.length === 1 ? statusArr[0] : statusArr,
+      include_archived: include_archived === '1' || include_archived === 'true',
       limit: parseIntParam(limit, MAX_PAGE_SIZE),
       offset: parseIntParam(offset),
     });

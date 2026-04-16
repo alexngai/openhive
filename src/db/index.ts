@@ -11,8 +11,12 @@ import {
   MIGRATION_V28_DROP_COORDINATION_TASKS,
   MIGRATION_V29_MAP_REVOKED_TOKENS,
   MIGRATION_V30_SESSION_RESOURCE_SCOPING,
+  MIGRATION_V31_FEDERATED_SYNC_STRATEGY,
+  MIGRATION_V32_DISPATCHES,
+  MIGRATION_V33_SWARM_ARCHIVE,
+  MIGRATION_V34_CANONICAL_KEY,
+  MIGRATION_V35_DISPATCH_ORCHESTRATOR,
   MIGRATION_V31_CASCADE_PROJECTIONS,
-  MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
   MIGRATION_V33_CASCADE_OPERATIONS,
   MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
   MIGRATION_V35_CASCADE_PR,
@@ -236,17 +240,24 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   29: MIGRATION_V29_MAP_REVOKED_TOKENS,
   // Version 30: Relax UNIQUE constraint on syncable_resources for per-swarm session scoping
   30: MIGRATION_V30_SESSION_RESOURCE_SCOPING,
-  // Version 31: Cascade projection tables for x-cascade/* MAP events
-  31: MIGRATION_V31_CASCADE_PROJECTIONS,
-  // Version 32: Add 'federated' sync_strategy for MAP-owned remote task graphs
-  32: MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
-  // Version 33: cascade_operations audit log for cascade.completed events
-  33: MIGRATION_V33_CASCADE_OPERATIONS,
-  // Version 34: cascade_pushes + cascade_queue_entries projections for
-  // trunk pushes (stream.pushed) and merge queue observability (queue.*)
-  34: MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
-  // Version 35: publish_branch alias + cascade_pull_requests for hub-side GitHub PR management
-  35: MIGRATION_V35_CASCADE_PR,
+  // Version 31: Add 'federated' sync_strategy for MAP-owned remote task graphs
+  31: MIGRATION_V31_FEDERATED_SYNC_STRATEGY,
+  // Version 32: Dispatches table (Stream 2 — Dispatch primitive)
+  32: MIGRATION_V32_DISPATCHES,
+  // Version 33: Swarm archive column (Phase 2 swarm hygiene)
+  33: MIGRATION_V33_SWARM_ARCHIVE,
+  // Version 34: Stable swarm identity (Phase 3 swarm hygiene)
+  34: MIGRATION_V34_CANONICAL_KEY,
+  // Version 35: Dispatch orchestrator fields (swarm-dispatch integration)
+  35: MIGRATION_V35_DISPATCH_ORCHESTRATOR,
+  // Version 36: Cascade projection tables for x-cascade/* MAP events
+  36: MIGRATION_V31_CASCADE_PROJECTIONS,
+  // Version 37: cascade_operations audit log for cascade.completed events
+  37: MIGRATION_V33_CASCADE_OPERATIONS,
+  // Version 38: cascade_pushes + cascade_queue_entries projections
+  38: MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
+  // Version 39: publish_branch alias + cascade_pull_requests for hub-side GitHub PR management
+  39: MIGRATION_V35_CASCADE_PR,
 };
 
 /** Get the SQL for a specific migration version.
@@ -308,6 +319,12 @@ function repairSchema(database: Database.Database): void {
   const repairs = [
     "ALTER TABLE ingest_keys ADD COLUMN key_value TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '[\"map\"]'",
+    "ALTER TABLE map_swarms ADD COLUMN archived INTEGER DEFAULT 0",
+    "ALTER TABLE map_swarms ADD COLUMN canonical_key TEXT",
+    "ALTER TABLE dispatches ADD COLUMN lease_token TEXT",
+    "ALTER TABLE dispatches ADD COLUMN lease_expires_at TEXT",
+    "ALTER TABLE dispatches ADD COLUMN attempt INTEGER DEFAULT 0",
+    "ALTER TABLE dispatches ADD COLUMN turn_count INTEGER DEFAULT 0",
   ];
   for (const sql of repairs) {
     try { database.exec(sql); } catch { /* column already exists */ }
