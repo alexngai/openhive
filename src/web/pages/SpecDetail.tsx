@@ -5,7 +5,8 @@ import {
   Archive, ArchiveRestore, Send,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { useSpec, useUpdateSpec } from '../hooks/useSpecs';
+import { useSpec, useUpdateSpec, useLinkSpec, useUnlinkSpec } from '../hooks/useSpecs';
+import type { EdgeType } from '../hooks/useSpecs';
 import { useSpecsRealtime } from '../hooks/useSpecsRealtime';
 import { SpecMarkdown } from '../components/specs/SpecMarkdown';
 import { SpecEditor } from '../components/specs/SpecEditor';
@@ -31,6 +32,8 @@ export function SpecDetail() {
   const navigate = useNavigate();
   const { data, isLoading, error } = useSpec(resourceId, specId);
   const updateSpec = useUpdateSpec(resourceId ?? '', specId ?? '');
+  const linkSpec = useLinkSpec(resourceId ?? '', specId ?? '');
+  const unlinkSpec = useUnlinkSpec(resourceId ?? '', specId ?? '');
   const [editing, setEditing] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [dispatchOpen, setDispatchOpen] = useState(false);
@@ -63,7 +66,15 @@ export function SpecDetail() {
   }
 
   if (!data) return null;
-  const { spec, linked } = data;
+  const { spec, linked, edges } = data;
+
+  const handleLink = async (targetId: string, edgeType: EdgeType, direction: 'inbound' | 'outbound') => {
+    await linkSpec.mutateAsync({ target_id: targetId, type: edgeType, direction });
+  };
+
+  const handleUnlink = async (targetId: string, edgeType: EdgeType) => {
+    await unlinkSpec.mutateAsync({ target_id: targetId, type: edgeType });
+  };
 
   const handleArchiveToggle = async () => {
     try {
@@ -228,6 +239,10 @@ export function SpecDetail() {
             variant="task"
             emptyMessage="No tasks linked"
             onNodeClick={(n) => navigate(`/tasks?node=${encodeURIComponent(n.id)}`)}
+            onLink={handleLink}
+            onUnlink={handleUnlink}
+            edges={edges}
+            specId={spec.id}
           />
           <LinkedNodesPanel
             title="Feedback"
@@ -235,6 +250,10 @@ export function SpecDetail() {
             nodes={linked.feedback}
             variant="feedback"
             emptyMessage="No feedback yet"
+            onLink={handleLink}
+            onUnlink={handleUnlink}
+            edges={edges}
+            specId={spec.id}
           />
           <LinkedNodesPanel
             title="Contexts"
@@ -242,6 +261,10 @@ export function SpecDetail() {
             nodes={linked.contexts}
             variant="context"
             emptyMessage="No contexts linked"
+            onLink={handleLink}
+            onUnlink={handleUnlink}
+            edges={edges}
+            specId={spec.id}
           />
           {linked.specs.length > 0 && (
             <LinkedNodesPanel

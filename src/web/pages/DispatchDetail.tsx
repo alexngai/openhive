@@ -251,6 +251,31 @@ export function DispatchDetail() {
         </div>
       )}
 
+      {/* Attempt / turn tracking */}
+      {((d as Record<string, unknown>).attempt as number > 0 || (d as Record<string, unknown>).turn_count as number > 0) && (
+        <div
+          className="rounded-md border p-4 mb-6"
+          style={{
+            borderColor: 'var(--color-border-subtle)',
+            backgroundColor: 'var(--color-surface)',
+          }}
+        >
+          <div className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+            Orchestrator progress
+          </div>
+          <div className="flex gap-6 text-sm" style={{ color: 'var(--color-text)' }}>
+            <div>
+              <span style={{ color: 'var(--color-text-muted)' }}>Attempts: </span>
+              {(d as Record<string, unknown>).attempt as number}
+            </div>
+            <div>
+              <span style={{ color: 'var(--color-text-muted)' }}>Turns: </span>
+              {(d as Record<string, unknown>).turn_count as number}
+            </div>
+          </div>
+        </div>
+      )}
+
       {d.status === 'running' && d.session_ids.length === 0 && (
         <div
           className="rounded-md border p-3 text-xs flex items-start gap-2"
@@ -261,8 +286,8 @@ export function DispatchDetail() {
         >
           <AlertCircle className="h-4 w-4 mt-0.5" />
           <span>
-            Running but no completion signal yet. Agents report back via the
-            <code className="mx-1 font-mono">map/dispatches/report</code> MAP method.
+            The dispatch orchestrator is managing this work. It will retry on failure
+            and update the status automatically.
           </span>
         </div>
       )}

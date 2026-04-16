@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 34;
+export const SCHEMA_VERSION = 35;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -689,6 +689,10 @@ CREATE TABLE IF NOT EXISTS dispatches (
   session_ids TEXT NOT NULL DEFAULT '[]',
   outcome TEXT,
   prompt_override TEXT,
+  lease_token TEXT,
+  lease_expires_at TEXT,
+  attempt INTEGER DEFAULT 0,
+  turn_count INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -709,6 +713,14 @@ CREATE INDEX IF NOT EXISTS idx_map_swarms_archived ON map_swarms(archived);
 export const MIGRATION_V34_CANONICAL_KEY = `
 ALTER TABLE map_swarms ADD COLUMN canonical_key TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_map_swarms_canonical_key ON map_swarms(canonical_key) WHERE canonical_key IS NOT NULL;
+`;
+
+// Migration V35: Dispatch orchestrator fields (swarm-dispatch integration)
+export const MIGRATION_V35_DISPATCH_ORCHESTRATOR = `
+ALTER TABLE dispatches ADD COLUMN lease_token TEXT;
+ALTER TABLE dispatches ADD COLUMN lease_expires_at TEXT;
+ALTER TABLE dispatches ADD COLUMN attempt INTEGER DEFAULT 0;
+ALTER TABLE dispatches ADD COLUMN turn_count INTEGER DEFAULT 0;
 `;
 
 // ============================================================================

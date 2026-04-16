@@ -15,6 +15,7 @@ import {
   MIGRATION_V32_DISPATCHES,
   MIGRATION_V33_SWARM_ARCHIVE,
   MIGRATION_V34_CANONICAL_KEY,
+  MIGRATION_V35_DISPATCH_ORCHESTRATOR,
 } from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
@@ -243,6 +244,8 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   33: MIGRATION_V33_SWARM_ARCHIVE,
   // Version 34: Stable swarm identity (Phase 3 swarm hygiene)
   34: MIGRATION_V34_CANONICAL_KEY,
+  // Version 35: Dispatch orchestrator fields (swarm-dispatch integration)
+  35: MIGRATION_V35_DISPATCH_ORCHESTRATOR,
 };
 
 /** Get the SQL for a specific migration version.
@@ -306,6 +309,10 @@ function repairSchema(database: Database.Database): void {
     "ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '[\"map\"]'",
     "ALTER TABLE map_swarms ADD COLUMN archived INTEGER DEFAULT 0",
     "ALTER TABLE map_swarms ADD COLUMN canonical_key TEXT",
+    "ALTER TABLE dispatches ADD COLUMN lease_token TEXT",
+    "ALTER TABLE dispatches ADD COLUMN lease_expires_at TEXT",
+    "ALTER TABLE dispatches ADD COLUMN attempt INTEGER DEFAULT 0",
+    "ALTER TABLE dispatches ADD COLUMN turn_count INTEGER DEFAULT 0",
   ];
   for (const sql of repairs) {
     try { database.exec(sql); } catch { /* column already exists */ }

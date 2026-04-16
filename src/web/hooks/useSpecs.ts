@@ -124,3 +124,51 @@ export function useUpdateSpec(resourceId: string, specId: string) {
     },
   });
 }
+
+export const EDGE_TYPES = [
+  'blocks', 'implements', 'references', 'related', 'parent-of',
+  'child-of', 'duplicates', 'supersedes', 'depends-on', 'discovered-from',
+] as const;
+
+export type EdgeType = (typeof EDGE_TYPES)[number];
+
+export interface LinkSpecInput {
+  target_id: string;
+  type: EdgeType;
+  direction?: 'inbound' | 'outbound';
+}
+
+export function useLinkSpec(resourceId: string, specId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: LinkSpecInput) =>
+      api.post<{ edge_id: string; from_id: string; to_id: string; type: string }>(
+        `/specs/${resourceId}/${specId}/links`,
+        input,
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['spec', resourceId, specId] });
+    },
+  });
+}
+
+export function useUnlinkSpec(resourceId: string, specId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { target_id: string; type: EdgeType }) =>
+      fetch(`/api/v1/specs/${resourceId}/${specId}/links`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      }).then(async (r) => {
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({ message: `HTTP ${r.status}` }));
+          throw new Error(err.message || err.error || `HTTP ${r.status}`);
+        }
+        return r.json();
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['spec', resourceId, specId] });
+    },
+  });
+}

@@ -125,32 +125,8 @@ export function useCancelDispatch() {
   });
 }
 
-export interface BootstrapResult {
-  dispatch: Dispatch;
-  bootstrap: {
-    session_resource_id: string;
-    acp_session_id: string;
-    acp_stream_id: string;
-  };
-}
-
-/**
- * Hub-side ACP bootstrap. Best effort — returns 503 cleanly when SwarmCraft
- * isn't loaded or the target swarm has no ACP-capable agent. The dispatch
- * stays at `queued` in those cases; the seed prompt remains accessible for
- * manual handoff.
- */
-export function useBootstrapDispatch() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) =>
-      api.post<BootstrapResult>(`/dispatches/${id}/bootstrap`, undefined),
-    onSuccess: (_data, id) => {
-      qc.invalidateQueries({ queryKey: ['dispatches'] });
-      qc.invalidateQueries({ queryKey: ['dispatch', id] });
-    },
-  });
-}
+// Bootstrap is now handled by the dispatch orchestrator (src/dispatch/setup.ts).
+// The POST /dispatches/:id/bootstrap endpoint has been removed.
 
 // ============================================================================
 // Admin: dispatch policy (kill switch)

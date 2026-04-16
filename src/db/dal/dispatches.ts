@@ -34,6 +34,10 @@ export interface Dispatch {
   session_ids: string[];
   outcome: DispatchOutcome | null;
   prompt_override: string | null;
+  lease_token: string | null;
+  lease_expires_at: string | null;
+  attempt: number;
+  turn_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -50,6 +54,10 @@ interface DispatchRow {
   session_ids: string;
   outcome: string | null;
   prompt_override: string | null;
+  lease_token: string | null;
+  lease_expires_at: string | null;
+  attempt: number | null;
+  turn_count: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -83,6 +91,10 @@ function rowToDispatch(row: DispatchRow): Dispatch {
     session_ids: parsedSessions,
     outcome: parsedOutcome,
     prompt_override: row.prompt_override,
+    lease_token: row.lease_token ?? null,
+    lease_expires_at: row.lease_expires_at ?? null,
+    attempt: row.attempt ?? 0,
+    turn_count: row.turn_count ?? 0,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -254,4 +266,123 @@ export function setDispatchSessionIds(id: string, sessionIds: string[]): Dispatc
 /** Convenience for the cancel endpoint. */
 export function cancelDispatch(id: string): Dispatch | null {
   return updateDispatchStatus(id, 'cancelled');
+}
+
+// ============================================================================
+// Orchestrator helpers (swarm-dispatch integration)
+// ============================================================================
+
+export function claimDispatch(
+  id: string,
+  claimantId: string,
+): { success: boolean; fence?: string; claimedBy?: string } {
+  const db = getDatabase();
+  const fence = `${claimantId}:${Date.now()}`;
+  const leaseExpires = new Date(Date.now() + 60_000).toISOString();
+  const result = db
+    .prepare(
+      `UPDATE dispatches SET status = 'running', lease_token = ?, lease_expires_at = ?,
+       updated_at = datetime('now') WHERE id = ? AND status = 'queued'`,
+    )
+    .run(fence, leaseExpires, id);
+  if (result.changes === 0) {
+    const existing = findDispatchById(id);
+    return { success: false, claimedBy: existing?.initiator_id };
+  }
+  return { success: true, fence };
+}
+
+export function releaseDispatch(id: string, fence?: string): void {
+  const db = getDatabase();
+  if (fence) {
+    db.prepare(
+      `UPDATE dispatches SET status = 'queued', lease_token = NULL, lease_expires_at = NULL,
+       updated_at = datetime('now') WHERE id = ? AND lease_token = ?`,
+    ).run(id, fence);
+  } else {
+    db.prepare(
+      `UPDATE dispatches SET status = 'queued', lease_token = NULL, lease_expires_at = NULL,
+       updated_at = datetime('now') WHERE id = ?`,
+    ).run(id);
+  }
+}
+
+export function transitionDispatch(
+  id: string,
+  action: 'start' | 'complete' | 'fail',
+  fence?: string,
+  outcome?: DispatchOutcome | null,
+): void {
+  const db = getDatabase();
+  const statusMap = { start: 'running', complete: 'complete', fail: 'failed' } as const;
+  const status = statusMap[action];
+  const now = new Date().toISOString();
+
+  if (fence) {
+    if (outcome !== undefined) {
+      db.prepare(
+        `UPDATE dispatches SET status = ?, outcome = ?, updated_at = ?
+         WHERE id = ? AND lease_token = ?`,
+      ).run(status, outcome ? JSON.stringify(outcome) : null, now, id, fence);
+    } else {
+      db.prepare(
+        `UPDATE dispatches SET status = ?, updated_at = ? WHERE id = ? AND lease_token = ?`,
+      ).run(status, now, id, fence);
+    }
+  } else {
+    if (outcome !== undefined) {
+      db.prepare(
+        `UPDATE dispatches SET status = ?, outcome = ?, updated_at = ? WHERE id = ?`,
+      ).run(status, outcome ? JSON.stringify(outcome) : null, now, id);
+    } else {
+      db.prepare(
+        `UPDATE dispatches SET status = ?, updated_at = ? WHERE id = ?`,
+      ).run(status, now, id);
+    }
+  }
+}
+
+export function renewDispatchClaim(
+  id: string,
+  fence: string,
+): { ok: boolean; reason?: string } {
+  const db = getDatabase();
+  const leaseExpires = new Date(Date.now() + 60_000).toISOString();
+  const result = db
+    .prepare(
+      `UPDATE dispatches SET lease_expires_at = ?, updated_at = datetime('now')
+       WHERE id = ? AND lease_token = ?`,
+    )
+    .run(leaseExpires, id, fence);
+  if (result.changes === 0) {
+    return { ok: false, reason: 'claim lost or dispatch not found' };
+  }
+  return { ok: true };
+}
+
+export function updateDispatchAttemptTurn(
+  id: string,
+  attempt: number,
+  turnCount: number,
+): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE dispatches SET attempt = ?, turn_count = ?, updated_at = datetime('now') WHERE id = ?`,
+  ).run(attempt, turnCount, id);
+}
+
+export function listQueuedDispatches(limit: number = 50): Dispatch[] {
+  const db = getDatabase();
+  const rows = db
+    .prepare('SELECT * FROM dispatches WHERE status = ? ORDER BY created_at ASC LIMIT ?')
+    .all('queued', limit) as DispatchRow[];
+  return rows.map(rowToDispatch);
+}
+
+export function listInProgressDispatches(): Dispatch[] {
+  const db = getDatabase();
+  const rows = db
+    .prepare("SELECT * FROM dispatches WHERE status IN ('running') ORDER BY created_at ASC")
+    .all() as DispatchRow[];
+  return rows.map(rowToDispatch);
 }

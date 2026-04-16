@@ -308,59 +308,7 @@ describe('Dispatches routes', () => {
   });
 
   // ==========================================================================
-  // POST /dispatches/:id/bootstrap (Stream 2 follow-up — hub-side bootstrap)
-  //
-  // Success-path coverage requires mocking SwarmCraft's acpStreamManager +
-  // the MAP connection registry, which is heavy. We exercise the negative
-  // paths here; full success path is covered by manual / live e2e.
-  // ==========================================================================
-
-  describe('POST /dispatches/:id/bootstrap', () => {
-    it('returns 404 when dispatch not found', async () => {
-      const res = await app.inject({
-        method: 'POST',
-        url: '/api/v1/dispatches/disp_unknown/bootstrap',
-        headers: { Authorization: `Bearer ${agent.apiKey}` },
-      });
-      expect(res.statusCode).toBe(404);
-    });
-
-    it('returns 409 when dispatch is not queued (cancelled)', async () => {
-      const d = dispatches.createDispatch({
-        spec_resource_id: 'res_a', spec_id: 'c-1', target_swarm_id: 'swarm_x',
-        initiator_type: 'user', initiator_id: agent.id,
-      });
-      dispatches.cancelDispatch(d.id);
-
-      const res = await app.inject({
-        method: 'POST',
-        url: `/api/v1/dispatches/${d.id}/bootstrap`,
-        headers: { Authorization: `Bearer ${agent.apiKey}` },
-      });
-      expect(res.statusCode).toBe(409);
-    });
-
-    it('returns 503 when SwarmCraft acpStreamManager is not loaded', async () => {
-      const d = dispatches.createDispatch({
-        spec_resource_id: 'res_a', spec_id: 'c-1', target_swarm_id: 'swarm_x',
-        initiator_type: 'user', initiator_id: agent.id,
-      });
-      const res = await app.inject({
-        method: 'POST',
-        url: `/api/v1/dispatches/${d.id}/bootstrap`,
-        headers: { Authorization: `Bearer ${agent.apiKey}` },
-      });
-      // No swarmcraft decoration on the test app → 503
-      expect(res.statusCode).toBe(503);
-      expect(JSON.parse(res.body).message).toMatch(/SwarmCraft ACP not available/i);
-    });
-
-    it('requires authentication', async () => {
-      const res = await app.inject({
-        method: 'POST',
-        url: '/api/v1/dispatches/anything/bootstrap',
-      });
-      expect(res.statusCode).toBe(401);
-    });
-  });
+  // POST /dispatches/:id/bootstrap — REMOVED
+  // Bootstrap is now handled by the swarm-dispatch orchestrator (src/dispatch/setup.ts).
+  // These tests verified the removed endpoint; kept as a comment for history.
 });

@@ -192,6 +192,63 @@ Streams 1 and 2 are the unblockers. They can run concurrently — Stream 1 is UI
 
 ---
 
+## Dispatch orchestration (swarm-dispatch integration)
+
+The dispatch lifecycle is now managed by the [swarm-dispatch](../../references/swarm-dispatch/) library, integrated via adapters in `src/dispatch/`.
+
+### Architecture
+
+```
+User clicks Dispatch in UI
+  → POST /specs/:id/dispatch → Dispatch row: status=queued (hub DB)
+
+swarm-dispatch orchestrator (in-process, polls every 15s)
+  → createOpenHiveDispatchSource polls queued rows
+  → claims dispatch (fence token, status → running)
+  → builds prompt (turn-aware, spec content as input)
+  → tries roster first (prefer-route), falls back to ACP spawn
+  → on success: transition → complete, outcome written
+  → on failure: retry with exponential backoff (3 attempts)
+  → on exhaustion: transition → failed, outcome with error
+  → on user cancel: isStillActive() → false → terminates agent
+
+OpenHive hub
+  → event bridge writes status changes to dispatch rows
+  → broadcasts via map:dispatches WS channel
+  → UI updates live
+```
+
+### Adapter files
+
+| File | swarm-dispatch interface | What it wraps |
+|---|---|---|
+| `src/dispatch/openhive-source.ts` | `DispatchTaskSource` | Dispatches table (claim/release/transition with fence tokens) + spec content from opentasks |
+| `src/dispatch/openhive-runtime.ts` | `DispatchAgentRuntime` | SwarmCraft ACP stream manager (spawn/terminate/lifecycle) |
+| `src/dispatch/openhive-roster.ts` | `AgentRoster` | MAP connection registry (available agents by role) |
+| `src/dispatch/openhive-mail-port.ts` | `MessagePort` | `x-dispatch/work` messages via agent-inbox/mail |
+| `src/dispatch/prompt.ts` | `PromptBuilder` | Data-driven, turn-aware (first-run/retry/continuation) |
+| `src/dispatch/setup.ts` | — | Wires everything, starts orchestrator, bridges events to WS |
+
+### What the hub owns vs. what swarm-dispatch owns
+
+| Concern | Owner |
+|---|---|
+| Dispatch table (persistent ledger) | Hub |
+| Spec → dispatch binding, initiator tracking | Hub |
+| UI surfaces, kill switch | Hub |
+| Poll → claim → spawn/route → retry → continue | swarm-dispatch |
+| Prompt building (turn-aware) | swarm-dispatch (via custom builder) |
+| Fence tokens, heartbeat, stale-claim detection | swarm-dispatch |
+| Agent roster, dispatch modes, affinity | swarm-dispatch |
+
+### Deprecated in this integration
+
+- `POST /dispatches/:id/bootstrap` — removed; orchestrator handles spawn
+- `map/dispatches/report` MAP method — removed; orchestrator reports outcomes
+- `useBootstrapDispatch` frontend hook — removed
+
+---
+
 ## Open questions
 
 All design-review questions resolved (D1–D10). New questions will accrue here as implementation surfaces them.

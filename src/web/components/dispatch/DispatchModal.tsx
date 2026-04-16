@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import clsx from 'clsx';
 import { Loader2, Send, X, Zap, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useMapSwarmsForPicker } from '../../hooks/useApi';
-import { useBootstrapDispatch, useCreateDispatch, type CreatedDispatch } from '../../hooks/useDispatches';
+import { useCreateDispatch, type CreatedDispatch } from '../../hooks/useDispatches';
 import { toast } from '../../stores/toast';
 import { Dialog } from '../common/Dialog';
 import { TimeAgo } from '../common/TimeAgo';
@@ -47,7 +47,6 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
 
   const { data: swarms = [] } = useMapSwarmsForPicker();
   const create = useCreateDispatch();
-  const bootstrap = useBootstrapDispatch();
 
   const dispatchable = useMemo(() => swarms.filter(isDispatchable), [swarms]);
   const allListed = showOffline ? swarms : dispatchable;
@@ -85,24 +84,11 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
         prompt: prompt.trim() || undefined,
       });
       const n = result.dispatches.length;
-
-      // Best-effort hub-side bootstrap. Failures (no swarmcraft, no ACP agent,
-      // etc.) are non-fatal — the dispatch row exists at `queued` either way.
-      // We tally how many bootstrapped successfully so the toast is honest.
-      const bootstrapResults = await Promise.allSettled(
-        result.dispatches.map((d) => bootstrap.mutateAsync(d.id)),
-      );
-      const bootstrapped = bootstrapResults.filter((r) => r.status === 'fulfilled').length;
-
       const swarmNames = result.dispatches
         .map((d) => d.target_swarm_name ?? d.target_swarm_id)
         .join(', ');
       const headline = n === 1 ? 'Dispatched' : `Dispatched to ${n} swarms`;
-      const detail =
-        bootstrapped === n
-          ? swarmNames
-          : `${swarmNames} — ${bootstrapped}/${n} sessions bootstrapped`;
-      toast.success(headline, detail);
+      toast.success(headline, `${swarmNames} — orchestrator will pick up and bootstrap`);
 
       onDispatched?.(result.dispatches);
       close();

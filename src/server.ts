@@ -35,6 +35,10 @@ import {
   stopLocalResourceWatchers,
 } from "./sync/local-resource-watcher.js";
 import { markStaleSwarms } from "./map/service.js";
+import { setupOrchestrator } from "./dispatch/setup.js";
+import { fetchSpecForDispatch } from "./api/routes/specs.js";
+import type { Orchestrator } from "swarm-dispatch";
+// Dynamic import of swarm-dispatch is done inside setupOrchestrator (ESM-only package)
 import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
 import { initMail } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
@@ -395,6 +399,44 @@ export async function createHive(
     }
   }
 
+  // Initialize dispatch orchestrator (swarm-dispatch integration)
+  let dispatchOrchestrator: Orchestrator | null = null;
+  try {
+    dispatchOrchestrator = await setupOrchestrator({
+      specFetcher: {
+        async fetch(resourceId: string, specId: string) {
+          const result = await fetchSpecForDispatch(resourceId, specId, 'system');
+          if (!result.ok) return null;
+          const { node, neighbors } = result.data;
+          const tasks = neighbors
+            .filter((n) => {
+              const meta = n.metadata as Record<string, unknown> | undefined;
+              return n.type === 'task' || meta?.kind === 'task';
+            })
+            .map((n) => ({
+              id: String(n.id),
+              title: n.title as string | undefined,
+              status: n.status as string | undefined,
+            }));
+          return {
+            title: (node.title as string) ?? 'Untitled spec',
+            content: (node.content as string) ?? '',
+            tasks,
+          };
+        },
+      },
+      runtimeDeps: {
+        getAcpStreamManager: () => {
+          const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: unknown } }).swarmcraft;
+          return sc?.acpStreamManager as ReturnType<typeof setupOrchestrator> extends never ? never : unknown as any;
+        },
+      },
+    });
+    console.log('[openhive] Dispatch orchestrator initialized');
+  } catch (err) {
+    console.warn(`[openhive] Dispatch orchestrator failed: ${(err as Error).message}`);
+  }
+
   // Serve skill.md
   fastify.get("/skill.md", async (_request, reply) => {
     const skillMd = generateSkillMd(config);
@@ -739,6 +781,16 @@ export async function createHive(
       // Start auto-pull service for remote task graphs
       startAutoPull(config.autoPull.intervalMinutes * 60 * 1000);
 
+      // Start dispatch orchestrator polling
+      if (dispatchOrchestrator) {
+        try {
+          await dispatchOrchestrator.start();
+          console.log('[openhive] Dispatch orchestrator started');
+        } catch (err) {
+          console.warn(`[openhive] Dispatch orchestrator failed to start: ${(err as Error).message}`);
+        }
+      }
+
       return address;
     },
 
@@ -749,6 +801,9 @@ export async function createHive(
       }
       stopAutoPull();
       stopHeartbeat();
+      if (dispatchOrchestrator?.running) {
+        try { await dispatchOrchestrator.stop(); } catch { /* best effort */ }
+      }
 
       // Synchronous cleanup
       const ptyMgr = (

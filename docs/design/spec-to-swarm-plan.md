@@ -271,4 +271,26 @@ Watch signals: runaway dispatch chains, repeated dispatches from one agent in ti
   - New `SpecDispatchesPanel` sidebar component on `SpecDetail` (above the Tasks/Feedback/Contexts panels). Lists dispatches scoped to the (resource_id, spec_id) pair via `useDispatches({ spec_resource_id, spec_id })`. Each row shows id, swarm name, time-ago, status chip; clicking navigates to `/dispatches/:id`. Subscribes to `useDispatchesRealtime` so a dispatch from elsewhere appears here without refresh.
   - 4 component tests, all passing.
 - **Stream 2 totals (post follow-ups)**: 82 net-new backend tests + 35 net-new frontend tests = 117 total. Final suite run: server `2494 passed` (4 pre-existing failures unchanged), web `538 passed`.
-- **Next**: kick off Stream 3 (compose UX), Stream 4 (observability dashboard), Stream 5 (onboarding + topology), or Stream 6 (learning loop) when ready.
+- **2026-04-15 — Interactive e2e validation (Stream 1 + Stream 2)**:
+  - Fixed **critical bug**: `useWSEvent` infinite render loop on `/specs` — callback in effect deps + whole-store Zustand subscription. Fixed with ref-stabilization + selectors in `src/web/hooks/useWebSocket.ts`.
+  - Verified: spec list, compose (localStorage drafts per D10), create → commit, detail, edit-commits-through, LinkedNodesPanel display.
+  - Verified: dispatch creation via API, DispatchModal, DispatchDetail, cancel flow, SpecDispatchesPanel, kill switch in Settings.
+  - **Bug found**: swarm list polluted with 849 duplicate-looking rows → implemented 3-phase swarm hygiene fix (Phase 1: dedup picker 849→18; Phase 2: archived column + sweep; Phase 3: stable identity schema + upsert). See `src/db/dal/map.ts` `listSwarmsForPicker`, `archiveStaleSwarms`, `upsertSwarmByCanonicalKey`.
+- **2026-04-15 — swarm-dispatch integration**:
+  - Added `swarm-dispatch` as local dependency (`file:references/swarm-dispatch`).
+  - New `src/dispatch/` directory: `openhive-source.ts` (DispatchTaskSource), `openhive-runtime.ts` (DispatchAgentRuntime), `openhive-roster.ts` (AgentRoster), `openhive-mail-port.ts` (MessagePort), `prompt.ts` (data-driven PromptBuilder), `setup.ts` (orchestrator wiring + event bridge).
+  - Schema V35: `lease_token`, `lease_expires_at`, `attempt`, `turn_count` on dispatches table.
+  - DAL: `claimDispatch`, `releaseDispatch`, `transitionDispatch`, `renewDispatchClaim`, `updateDispatchAttemptTurn`, `listQueuedDispatches`, `listInProgressDispatches`.
+  - Wired orchestrator in `server.ts` — starts on boot, stops on shutdown, bridges events to `map:dispatches` WS channel.
+  - **Deprecated**: `POST /dispatches/:id/bootstrap` endpoint removed, `useBootstrapDispatch` hook removed, bootstrap call removed from DispatchModal.
+  - **Bugs found and fixed**: (1) dispatch stays `running` after spawn failure — fixed event bridge to handle `dead` → `failed` with real error; (2) premature outcome written during retry — fixed source adapter to only write outcome on terminal transitions.
+  - Verified e2e: orchestrator claims queued dispatches within 15s, retries 3× with exponential backoff, transitions to `failed` with real error and attempt count on exhaustion, cancel still works.
+- **2026-04-15 — Stream 1 link creation**:
+  - New `POST /specs/:resourceId/:specId/links` + `DELETE /specs/:resourceId/:specId/links` endpoints using `daemonCreateLink`/`daemonRemoveLink`.
+  - Frontend: `useLinkSpec`/`useUnlinkSpec` hooks. `LinkedNodesPanel` gains "+" button (inline form: node ID + edge type + direction) and per-node "×" unlink button (hover-reveal).
+  - Wired into SpecDetail for Tasks, Feedback, and Contexts panels.
+- **2026-04-15 — Dead code cleanup + stale copy fix**:
+  - DispatchDetail: replaced stale `map/dispatches/report` copy with orchestrator-managed message.
+  - Added "Orchestrator progress" section showing attempt + turn_count.
+  - Removed `useBootstrapDispatch` hook definition + `notifyAgentStopped` stub.
+- **Next**: Stream 3 (compose UX), Stream 4 (observability), Stream 5 (onboarding), Stream 6 (learning). Sidecar stable_identity adoption for cc-swarm + macro-agent. Test coverage for `src/dispatch/` adapters.

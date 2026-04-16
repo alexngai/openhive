@@ -14,6 +14,8 @@ import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { resolveLocalPath } from './_resource-helpers.js';
 import {
   daemonCreateSpec,
+  daemonCreateLink,
+  daemonRemoveLink,
   daemonGetGraph,
   daemonGetNodeWithNeighbors,
   daemonUpdateSpec,
@@ -57,6 +59,22 @@ const UpdateSpecSchema = z
 const DispatchSpecSchema = z.object({
   target_swarms: z.array(z.string().min(1)).min(1).max(20),
   prompt: z.string().max(5000).optional(),
+});
+
+const VALID_EDGE_TYPES = [
+  'blocks', 'implements', 'references', 'related', 'parent-of',
+  'child-of', 'duplicates', 'supersedes', 'depends-on', 'discovered-from',
+] as const;
+
+const LinkSpecSchema = z.object({
+  target_id: z.string().min(1),
+  type: z.enum(VALID_EDGE_TYPES),
+  direction: z.enum(['inbound', 'outbound']).default('inbound'),
+});
+
+const UnlinkSpecSchema = z.object({
+  target_id: z.string().min(1),
+  type: z.enum(VALID_EDGE_TYPES),
 });
 
 const PER_RESOURCE_LIMIT = 200;
@@ -681,6 +699,118 @@ export async function specsRoutes(
       }
 
       return reply.send({ spec: normalized });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.status(500).send({ error: 'Internal Error', message: msg });
+    }
+  });
+
+  /**
+   * POST /specs/:resourceId/:specId/links
+   *
+   * Creates an edge between this spec and another node in the same graph.
+   * `direction: 'inbound'` = target → spec (e.g., task implements spec).
+   * `direction: 'outbound'` = spec → target (e.g., spec references context).
+   */
+  fastify.post<{
+    Params: { resourceId: string; specId: string };
+  }>('/specs/:resourceId/:specId/links', { preHandler: authMiddleware }, async (request, reply) => {
+    let body: z.infer<typeof LinkSpecSchema>;
+    try {
+      body = LinkSpecSchema.parse(request.body);
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return reply.status(422).send({ error: 'VALIDATION_ERROR', details: err.errors });
+      }
+      throw err;
+    }
+
+    const { resourceId, specId } = request.params;
+    const resource = resourcesDAL.findResourceById(resourceId);
+    if (!resource) return reply.status(404).send({ error: 'Not Found', message: 'Resource not found' });
+    if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'No access to resource' });
+    }
+    if (!isOpenTasksResource(resource)) {
+      return reply.status(400).send({ error: 'Bad Request', message: 'Resource is not an OpenTasks task graph' });
+    }
+
+    const localPath = resolveLocalPath(resource);
+    if (!localPath) {
+      return reply.status(503).send({ error: 'Service Unavailable', message: 'Link creation requires a local opentasks daemon' });
+    }
+
+    const fromId = body.direction === 'outbound' ? specId : body.target_id;
+    const toId = body.direction === 'outbound' ? body.target_id : specId;
+
+    try {
+      const result = await daemonCreateLink(
+        resolveDaemonSocket(localPath),
+        { fromId, toId, type: body.type },
+        localPath,
+      );
+
+      try {
+        broadcastToChannel('map:tasks', {
+          type: 'spec.updated',
+          data: { spec_id: specId, target_id: body.target_id, edge_type: body.type, resource_id: resourceId },
+        });
+      } catch { /* best effort */ }
+
+      return reply.status(201).send({ edge_id: result.edgeId, from_id: fromId, to_id: toId, type: body.type });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.status(500).send({ error: 'Internal Error', message: msg });
+    }
+  });
+
+  /**
+   * DELETE /specs/:resourceId/:specId/links
+   *
+   * Removes an edge between this spec and another node. Tries both directions.
+   */
+  fastify.delete<{
+    Params: { resourceId: string; specId: string };
+  }>('/specs/:resourceId/:specId/links', { preHandler: authMiddleware }, async (request, reply) => {
+    let body: z.infer<typeof UnlinkSpecSchema>;
+    try {
+      body = UnlinkSpecSchema.parse(request.body);
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return reply.status(422).send({ error: 'VALIDATION_ERROR', details: err.errors });
+      }
+      throw err;
+    }
+
+    const { resourceId, specId } = request.params;
+    const resource = resourcesDAL.findResourceById(resourceId);
+    if (!resource) return reply.status(404).send({ error: 'Not Found', message: 'Resource not found' });
+    if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
+      return reply.status(403).send({ error: 'Forbidden', message: 'No access to resource' });
+    }
+    if (!isOpenTasksResource(resource)) {
+      return reply.status(400).send({ error: 'Bad Request', message: 'Resource is not an OpenTasks task graph' });
+    }
+
+    const localPath = resolveLocalPath(resource);
+    if (!localPath) {
+      return reply.status(503).send({ error: 'Service Unavailable', message: 'Unlinking requires a local opentasks daemon' });
+    }
+
+    const socketPath = resolveDaemonSocket(localPath);
+    try {
+      // Try removing in both directions
+      try { await daemonRemoveLink(socketPath, { fromId: body.target_id, toId: specId, type: body.type }, localPath); } catch { /* may not exist in this direction */ }
+      try { await daemonRemoveLink(socketPath, { fromId: specId, toId: body.target_id, type: body.type }, localPath); } catch { /* may not exist in this direction */ }
+
+      try {
+        broadcastToChannel('map:tasks', {
+          type: 'spec.updated',
+          data: { spec_id: specId, target_id: body.target_id, edge_type: body.type, resource_id: resourceId, removed: true },
+        });
+      } catch { /* best effort */ }
+
+      return reply.send({ ok: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return reply.status(500).send({ error: 'Internal Error', message: msg });
