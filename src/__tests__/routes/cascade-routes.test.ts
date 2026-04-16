@@ -342,6 +342,96 @@ describe('Cascade REST Routes', () => {
     });
   });
 
+  describe('GET /cascade/tasks/lookup', () => {
+    let taskResourceId: string;
+    const gitUrl = 'https://github.com/acme/cascade-lookup-repo';
+
+    beforeAll(async () => {
+      const resourcesDAL = await import('../../db/dal/syncable-resources.js');
+      const agents = await import('../../db/dal/agents.js');
+      const { agent } = await agents.createAgent({
+        name: 'lookup-owner',
+        description: 'owner of the lookup fixture',
+      });
+      const r = resourcesDAL.createResource({
+        name: 'cascade-lookup-fixture',
+        resource_type: 'task',
+        git_remote_url: gitUrl,
+        owner_agent_id: agent.id,
+        sync_strategy: 'metadata',
+        metadata: { opentasks: true },
+      });
+      taskResourceId = r.id;
+    });
+
+    it('resolves a task resource_id from git_remote_url', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/cascade/tasks/lookup?git_remote_url=${encodeURIComponent(gitUrl)}`,
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.data.resource_id).toBe(taskResourceId);
+      expect(body.data.resource_name).toBe('cascade-lookup-fixture');
+      expect(body.data.match_count).toBe(1);
+      expect(body.data.node_id).toBeNull();
+    });
+
+    it('echoes node_id back when provided', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/cascade/tasks/lookup?git_remote_url=${encodeURIComponent(gitUrl)}&node_id=task-xyz`,
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.node_id).toBe('task-xyz');
+    });
+
+    it('normalizes URL variants (trailing .git, trailing slash, case)', async () => {
+      for (const variant of [
+        `${gitUrl}.git`,
+        `${gitUrl}/`,
+        gitUrl.toUpperCase(),
+        gitUrl.replace('https://', 'git@').replace('/acme/', ':acme/') + '.git',
+      ]) {
+        const res = await app.inject({
+          method: 'GET',
+          url: `/api/v1/cascade/tasks/lookup?git_remote_url=${encodeURIComponent(variant)}`,
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
+        expect(res.statusCode, `variant: ${variant}`).toBe(200);
+        expect(res.json().data.resource_id).toBe(taskResourceId);
+      }
+    });
+
+    it('returns 404 when no task resource matches', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/cascade/tasks/lookup?git_remote_url=${encodeURIComponent('https://github.com/nonexistent/repo')}`,
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('returns 400 when git_remote_url is missing', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/cascade/tasks/lookup',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('requires auth', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/cascade/tasks/lookup?git_remote_url=${encodeURIComponent(gitUrl)}`,
+      });
+      expect(res.statusCode).toBe(401);
+    });
+  });
+
   describe('GET /cascade/conflicts', () => {
     it('returns open conflicts (default status=pending)', async () => {
       const res = await app.inject({

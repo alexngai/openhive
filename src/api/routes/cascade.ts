@@ -20,6 +20,7 @@ import {
   listQueueEntries,
   getCommitRangeForTask,
 } from '../../db/dal/cascade-streams.js';
+import { findResourcesByRepoUrl } from '../../db/dal/syncable-resources.js';
 import { generateChangelog, renderMarkdown } from '../../cascade/changelog.js';
 
 type ListStreamsQuery = {
@@ -277,6 +278,58 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
         offset: parseOffset(q.offset),
       });
       return reply.send({ data: entries });
+    }
+  );
+
+  // ── Task ↔ resource_id lookup ─────────────────────────────────────────
+  //
+  //   GET /cascade/tasks/lookup?git_remote_url=...&node_id=...
+  //
+  //   Resolves a task-typed syncable_resource by its git_remote_url so
+  //   runtimes that only know their OpenTasks graph's URL + node_id can
+  //   discover the hub's canonical resource_id. Used by macro-agent's
+  //   `cascade.resolveTaskRef` implementations that want to fill
+  //   `task_ref.resource_id` automatically instead of hand-wiring it per
+  //   spawn.
+  //
+  //   Matching uses the same URL normalization as cross-instance resource
+  //   sync (strip protocol, trailing `.git`, trailing slash, case). When
+  //   multiple task resources share a URL (rare but possible — different
+  //   owners), the first row returned is used; clients that need to
+  //   disambiguate should call /resources?type=task directly.
+  //
+  //   Returns 404 if no task resource matches.
+  fastify.get<{
+    Querystring: { git_remote_url?: string; node_id?: string };
+  }>(
+    '/cascade/tasks/lookup',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { git_remote_url, node_id } = request.query;
+      if (!git_remote_url || typeof git_remote_url !== 'string') {
+        return reply.status(400).send({
+          error: 'Validation Error',
+          message: 'git_remote_url is required',
+        });
+      }
+      const matches = findResourcesByRepoUrl(git_remote_url, 'task');
+      if (matches.length === 0) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: `No task resource matches git_remote_url: ${git_remote_url}`,
+        });
+      }
+      const resource = matches[0];
+      return reply.send({
+        data: {
+          resource_id: resource.id,
+          node_id: node_id ?? null,
+          resource_name: resource.name,
+          git_remote_url: resource.git_remote_url,
+          owner_agent_id: resource.owner_agent_id,
+          match_count: matches.length,
+        },
+      });
     }
   );
 

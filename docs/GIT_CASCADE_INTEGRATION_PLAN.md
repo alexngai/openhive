@@ -444,72 +444,54 @@ The remaining backlog below is everything that's *not* shipped or verified yet.
 - **When to revisit**: before v1.0 release. Also good before any change to the MAP authentication/registration flow.
 - **Where it sits**: extend `src/__tests__/map/e2e-cc-swarm.test.ts` pattern. The cc-swarm variant already proves the WS scaffolding; a macro-agent variant would need to wire `MAPSidecar` + a real `GitCascadeAdapter` + assert hub projections via REST.
 
-#### T3. WebSocket round-trip delivery for cascade events (newly identified)
+#### T3. WebSocket round-trip delivery for cascade events — **LANDED**
 
-- **What**: I verified the React Query invalidation chain works (`WSStore.emit → listener → invalidate → refetch`) and that hub `broadcastToChannel` is unit-tested. **The middle layer — actual WS message delivery from server to browser — is unverified for cascade events specifically**.
-- **Why deferred**: requires either a full browser E2E with a real WS handshake (Playwright or extending chrome-devtools-mcp tests) or a node-WS client test. Existing OpenHive tests cover this for trajectory/swarm events; cascade events use the same broadcast machinery but haven't been exercised end-to-end.
-- **When to revisit**: when subtle bugs surface (events arriving but not invalidating, channel mismatch, etc.). High-confidence-in-the-pieces, low-confidence-in-the-glue is the current state.
-- **Where it sits**: hub side at `src/realtime/index.ts` (`broadcastToChannel`); event emission from `src/map/cascade-handler.ts` (broadcast() helper, lines ~440); browser side at `src/web/hooks/useWebSocket.ts` + `useRealtimeInvalidation.ts:useCascadeRealtime`. Suggested test: a node WS client connects to `/ws`, subscribes to `resource:task:<id>`, hub receives a cascade event via `handleCascadeRequest`, client should receive the broadcast within ~500ms.
+- **What shipped**: `src/__tests__/cascade/ws-roundtrip-e2e.test.ts` boots a real Fastify server with the real realtime handler, opens an actual `ws` client, and asserts cascade events delivered via `handleCascadeRequest` reach the subscriber under 500ms. 3 scenarios: stream.committed via `resource:task:*`, stream.merged via `global`, and channel isolation (unsubscribed clients receive nothing).
+- **Additional live-end validation**: `src/__tests__/cascade/fixtures/cascade-smoke.mjs` + `src/__tests__/cascade/fixtures/cascade-smoke-live-commit.mjs` exercise the same chain against a running dev server; the browser UI updates from 3→4 commits without reload in under a second.
 
-#### T2. macro-agent self-driving-yaml.test.ts pre-existing failures
+#### T2. macro-agent self-driving-yaml.test.ts — **LANDED**
 
-- **What**: 5 tests in `references/macro-agent/src/workspace/__tests__/self-driving-yaml.test.ts` fail with "expected null not to be null" — the test fixture YAML at `.multiagent/teams/self-driving/team.yaml` exists but `extractWorkspaceConfig()` returns null on it.
-- **Why deferred**: not introduced by Phase 1; pre-dates cascade work. Verified via `git stash` round-trip during gap closure.
-- **When to revisit**: when macro-agent owners do a YAML schema sweep, or when adding new `macro_agent.workspace` features that need this fixture.
-- **Where it sits**: test file + fixture at the paths above. Likely root cause: schema definition at `src/workspace/yaml-schema.ts` drifted from the fixture format.
+- **What shipped**: the missing `macro_agent.workspace` block was added to `references/macro-agent/.multiagent/teams/self-driving/team.yaml` (planner `attach_to_team_root`, grinder `new_stream` + `fork_from_team_root` + `direct_push`, judge `none`). All 6 tests in `src/workspace/__tests__/self-driving-yaml.test.ts` pass; full macro-agent suite went from 1030→1035 passing, 5→0 failing.
 
 ### Event coverage
 
-#### E1. Pause/resume/review-block/rollback events (G16)
+#### E1. Pause/resume/rollback events — **LANDED**
 
-- **What**: git-cascade has `pauseStream`, `resumeStream`, stacked-review block lifecycle, and `rollbackN` operations. None emit `x-cascade/*` events today.
-- **Why deferred**: no driving use case yet — the v1 changelog story (Phase 3) doesn't need them. Adding 5+ event types speculatively bloats the surface without consumers.
-- **When to revisit**: when an operator dashboard surfaces "paused streams that need attention" or when stacked review becomes a primary workflow on the hub.
-- **Where it sits**: tracker methods at `references/git-cascade/src/tracker.ts` (~lines 461 `pauseStream`, 467 `resumeStream`, 359 `rollbackN`). Pattern to follow: same as `stream.conflict_resolved` (G4) — wrap method, fire `emit()` after DB write.
+- **What shipped**: Three new `x-cascade/*` event types in git-cascade: `stream.paused` (with reason), `stream.resumed`, `stream.rolled_back` (with strategy discriminant + resulting HEAD). `CASCADE_METHOD_SUFFIXES`, `CASCADE_METHODS`, `buildCascadeMethods`, `CascadeSuffixMap`, `CascadeMethodMap` all extended. Tracker methods `pauseStream`, `resumeStream`, `rollbackToOperation`, `rollbackN`, `rollbackToForkPoint` now fire emits after the DB write. Hub-side: three new handler functions in `src/map/cascade-handler.ts` — `handleStreamPaused` (flips status to 'paused'), `handleStreamResumed` (reverts to 'active'), `handleStreamRolledBack` (observability broadcast only, no DB mutation). All three broadcast to stream/swarm/task channels.
+- **Tests**: +4 in git-cascade (events.test.ts — pause, resume, rollbackN, rollbackToOperation), +4 in OpenHive handler (cascade-handler.test.ts — pause updates status, resume reverts, rolled_back ack, rolled_back validation).
+- **Not covered**: stacked-review block lifecycle events (`review.opened`, `review.approved`, etc.) — still deferred; no driving use case beyond this pass.
 
-#### E2. Recovery strategy method tagging — spawn-resolver path
+#### E2. Recovery strategy method tagging — **PARTIALLY LANDED**
 
-- **What**: When `spawn-resolver` recovery strategy resolves a conflict (via spawned resolver agent calling `resolve_conflict` MCP tool), the `method` tag isn't `'spawn-resolver'` — the MCP tool flow doesn't know which strategy spawned it. Hub sees `method: 'agent'`.
-- **Why deferred**: cosmetic — the conflict still moves to resolved correctly. The wrong method tag means slightly less informative dashboards.
-- **When to revisit**: when operators want to filter conflicts by recovery strategy used. Fix: thread strategy name through resolver agent's spawn metadata, pull in `resolve_conflict` tool, pass to `workspaceManager.resolveConflict({ method: 'spawn-resolver' })`.
-- **Where it sits**: `references/macro-agent/src/workspace/recovery/spawn-resolver.ts` line 96–125 (await resolution loop) + the MCP `resolve_conflict` tool in `references/macro-agent/src/mcp/`.
+- **What shipped**: `spawn-resolver.ts` now injects `MACRO_RECOVERY_STRATEGY=spawn-resolver` and `MACRO_CONFLICT_ID=<id>` into the resolver agent's process env via `config.env`. When the `resolve_conflict` MCP tool is implemented, it will read these env vars and pass `{ method: 'spawn-resolver' }` to `workspaceManager.resolveConflict`.
+- **What still needs implementing**: the `resolve_conflict` MCP tool itself. It requires a new `resolve_conflict` control command in the control-client/control-server RPC layer (the MCP subprocess is a separate process; it can't call workspaceManager directly). This is significant infrastructure — a new command in `src/control/types.ts`, handler in `src/control/control-server.ts`, typed method on `src/control/control-client.ts`, and the MCP tool registration in `src/mcp/mcp-server-v2.ts`.
+- **When to revisit**: when a resolver agent run surfaces the method-tag gap in real dashboard output. The env threading is ready; just needs the RPC + MCP wiring.
 
-#### E3. Rate limiting on cascade event ingestion
+#### E3. Rate limiting on cascade event ingestion — **LANDED**
 
-- **What**: A misbehaving runtime could flood `recordCommit`/`recordConflict`/etc. via the MAP handler with no upper bound.
-- **Why deferred**: needs OpenHive's existing rate-limit middleware integration; not blocking Phase 3.
-- **When to revisit**: when cascade traffic volume becomes a concern in a real deployment, or when operators report ingestion-side performance issues.
-- **Where it sits**: OpenHive has rate-limiting infrastructure (`src/api/middleware/rateLimit*` — confirm path). Cascade handlers don't currently apply it. Add per-`source_swarm_id` quotas at the MAP method dispatch site (`src/map/map-server-setup.ts:91-105` cascade block).
+- **What shipped**: per-swarm token bucket in `src/map/cascade-rate-limit.ts` (default capacity 400, refill 200/s). Enforced at the cascade dispatcher site in `src/map/map-server-setup.ts` before the handler touches the DB; exceeded budget throws JSON-RPC `code: -32005` so sidecars can back off. Config mutable at runtime via `setCascadeRateLimitConfig`. Tests: `src/__tests__/map/cascade-rate-limit.test.ts` (6 tests — capacity, per-swarm isolation, refill, cap, unknown-swarm passthrough, reset).
 
 ### Architectural follow-ups
 
-#### A1. Per-merge metadata threading
+#### A1. Per-merge metadata threading — **LANDED**
 
-- **What**: `LandingContext.taskRef` field exists (G2 closure), but threading it into actual `mergeStream({ metadata })` requires extending git-cascade's `MergeStreamOptions` to accept metadata, then having the tracker forward it into the `stream.merged` emit.
-- **Why deferred**: the per-stream `task_ref` binding (already populated via `stream.opened` and back-fill) covers the changelog use case. Per-merge ref would only matter if a single merge spans multiple tasks, which doesn't happen today.
-- **When to revisit**: if a merge needs to bind to a different task than its source/target streams' task_refs — e.g., a release-coordinator agent merging multiple feature streams under a single release task ref.
-- **Where it sits**: git-cascade `src/models/stream.ts:79` `MergeStreamOptions` interface; tracker wrapper at `src/tracker.ts:432`. Add `metadata?: EventMetadata` field, thread through to emit at `src/tracker.ts:265`.
+- **What shipped**: `MergeStreamOptions.metadata?: EventMetadata` added in git-cascade (`src/models/stream.ts`); `tracker.mergeStream` forwards it on both the `stream.merged` emit (success path) and the `stream.conflicted` emit (merge-conflict path). Macro-agent's `WorkspaceManager.mergeStream` + `DefaultWorkspaceManager.mergeStream` signatures gained the same field; `MergeToParentStrategy` threads `ctx.taskRef` through as `{ task_ref }`; `terminateWithChangeConsolidation` accepts an optional `taskRef` arg and `AgentManagerV2.terminate` reads `record.metadata?.task_ref` from the parent agent and passes it through. The hub's DAL + handler already persisted `metadata`, so no hub-side schema change was needed.
+- **Tests**: +2 in git-cascade (`tests/events.test.ts` — metadata on success + conflict emits), +1 in macro-agent strategies (`strategies.test.ts`), +1 in macro-agent consolidation (`cascade-consolidation.test.ts`), +1 in OpenHive live-emission E2E (`live-emission-e2e.test.ts` — full macro-agent → bridge → hub → `cascade_merges.metadata` round trip).
+- **Counts**: git-cascade 715→717, macro-agent 1035→1038, OpenHive live-emission 9→10. All green.
 
-#### A2. V3 dispatcher invocation of LandingStrategy.land()
+#### A2. V3 dispatcher invocation of LandingStrategy.land() — **LANDED**
 
-- **What**: macro-agent's V3 landing strategies (`merge-to-parent`, `queue-to-branch`, `direct-push`, `optimistic-push`) are registered on `WorkspaceManager` via `registerLandingStrategy` but no caller currently invokes `land(ctx)` — verified via grep during G2 work. The dispatcher that resolves YAML config → strategy invocation isn't visibly wired.
-- **Why deferred**: orthogonal to cascade observability. When the dispatcher lands, the cascade-bridge will translate the resulting events automatically.
-- **When to revisit**: when the V3 done() handler dispatcher is built (per `docs/workspace-redesign-plan.md` in macro-agent) — that's when `LandingContext.taskRef` will actually flow through.
-- **Where it sits**: `references/macro-agent/src/workspace/landing/*.ts` (strategies ready); needs a dispatcher in `references/macro-agent/src/lifecycle/handlers-v2.ts` or `src/agent/agent-manager-v2.ts` terminate flow.
+- **What shipped**: `WorkspaceManager.land(ctx)` dispatcher in `references/macro-agent/src/workspace/workspace-manager.ts`; resolves strategy by internal or YAML name (`resolveLandingStrategyName`), fills `ctx.workspaceManager`, short-circuits on `'none'`, throws on unknown names, respects `canLand`. Terminate flow in `src/agent/agent-manager-v2.ts` now calls `workspaceManager.land({ strategyName: roleConfig.landing, ... })` when `TopologyPolicy.getRoleConfig` supplies a landing strategy; legacy `mergeQueue.submit` preserved as fallback for programmatic callers without YAML topology. Tests: `src/workspace/__tests__/land-dispatch.test.ts` (13 tests).
+- **Full coverage** (as of A1 landing): `LandingContext.taskRef` now threads all the way into `stream.merged.metadata`.
 
-#### A3. cleanup.ts `attemptMerge` still uses raw git
+#### A3. cleanup.ts `attemptMerge` routed through tracker — **LANDED**
 
-- **What**: `references/macro-agent/src/lifecycle/cleanup.ts:attemptMerge` (used in cascade-termination consolidation, `src/lifecycle/cascade.ts`) shells to git directly. Doesn't go through the tracker, doesn't fire `stream.merged`.
-- **Why deferred**: the consolidation merge happens between a child agent's worktree and the parent's worktree — both are tracker-managed, but the merge target isn't necessarily a stream (it's the parent's worktree HEAD). Routing through `tracker.mergeStream` would require modeling parent-as-target as a stream id, which is non-trivial.
-- **When to revisit**: if operators report that cascade-terminate consolidation merges are invisible on the hub. Today these are an end-of-lineage cleanup, not a primary observability concern.
-- **Where it sits**: `references/macro-agent/src/lifecycle/cleanup.ts:202` (attemptMerge) + caller at `references/macro-agent/src/lifecycle/cascade.ts:179` (`terminateWithChangeConsolidation`).
+- **What shipped**: `terminateWithChangeConsolidation` in `references/macro-agent/src/lifecycle/cascade.ts` now accepts an optional `workspaceManager` arg and prefers `ws.mergeStream({ sourceStreamId, targetStreamId, ... })` when both child + parent workspaces carry stream ids. Successful consolidation fires `x-cascade/stream.merged` via git-cascade's emit hook → CascadeBridge → hub. Falls back to raw `attemptMerge` when either workspace lacks a stream id, no manager is passed, or the tracker throws. Tests: `src/lifecycle/__tests__/cascade-consolidation.test.ts` (6 tests covering both paths + conflict propagation + legacy-no-provider case).
+- **Full coverage** (as of A1 landing): when the parent agent has `task_ref` in its record metadata, the consolidation merge now emits `stream.merged.metadata.task_ref` — see the A1 entry below for the cross-layer plumbing.
 
-#### A4. `/cascade/tasks/lookup` endpoint for canonical resource_id resolution (G14 follow-up)
+#### A4. `/cascade/tasks/lookup` endpoint — **LANDED**
 
-- **What**: When a runtime knows its OpenTasks `git_remote_url` + `node_id` but not the hub's `resource_id`, it can't bind cascade events. Today operators either hand-wire `cascade.taskResourceId` per swarm, or use `cascade.resolveTaskRef` to compute refs per-spawn. A lookup endpoint would let the resolver auto-discover the canonical `resource_id` from git_remote_url.
-- **Why deferred**: `cascade.resolveTaskRef` covers the multi-graph deployment case today. Auto-discovery is a convenience layer on top.
-- **When to revisit**: when a resolver implementation actually needs to hit the hub mid-spawn to look up resource_ids, and operators want it cached / automatic instead of hand-written.
-- **Where it sits**: would live in `src/api/routes/cascade.ts` as `GET /cascade/tasks/lookup?git_remote_url=...&node_id=...`. Backed by `src/db/dal/syncable-resources.ts` `findResourceByGitUrl` (or similar). Hub-internal mapping logic — no schema change needed since correlation already works via `idx_syncable_resources_git_url`.
+- **What shipped**: `GET /api/v1/cascade/tasks/lookup?git_remote_url=...&node_id=...` in `src/api/routes/cascade.ts`, backed by `findResourcesByRepoUrl(url, 'task')`. Returns `{ resource_id, node_id, resource_name, git_remote_url, owner_agent_id, match_count }` or 404. Normalizes URL variants (trailing `.git`, trailing slash, case, SSH↔HTTPS). Tests: 6 new cases in `src/__tests__/routes/cascade-routes.test.ts` covering the happy path, URL normalization (4 variants), 404, 400, 401.
 
 #### A5. Artifact persistence (changelog archival)
 
@@ -535,19 +517,13 @@ The remaining backlog below is everything that's *not* shipped or verified yet.
 - **When to revisit**: when operators report mobile usability issues or when the UI ships to a touch-first audience.
 - **Where it sits**: `src/web/components/CascadeBlock.tsx` + `src/web/pages/TaskDetail.tsx`. Quick check: add Chrome DevTools device emulation to the existing E2E flow.
 
-#### U2. Light theme rendering
+#### U2. Light theme rendering — **LANDED**
 
-- **What**: CascadeBlock uses CSS custom properties (`var(--color-elevated)`, etc.) that should adapt, but only dark theme was visually verified in the Phase 3 E2E pass.
-- **Why deferred**: same as U1 — desktop-dark is the v1 target.
-- **When to revisit**: when operators flip to light theme and report contrast/legibility issues.
-- **Where it sits**: same files as U1 plus the conflict highlight color (`#dc2626`, `#fca5a5`) which is hard-coded — would need a CSS variable for proper light-theme adaptation.
+- **What shipped**: hardcoded `#dc2626` / `#fca5a5` in `src/web/components/CascadeBlock.tsx` replaced with `var(--color-danger)` / `var(--color-danger-border)`. New tokens defined in both `:root, .dark` (red-400 / red-900 — softer on dark) and `.light` (red-600 / red-300 — stronger on light) in `src/web/styles/globals.css`. A `--color-danger-bg` token is also defined for future status-card backgrounds.
 
-#### U3. Keyboard navigation + accessibility
+#### U3. Keyboard navigation + accessibility — **LANDED**
 
-- **What**: Tab order through TaskDetail + CascadeBlock not verified. Copy markdown button uses `<button>`, expand button uses `<button>` — both should be keyboard-accessible by default but never tested. Focus rings, escape to close, etc.
-- **Why deferred**: not a primary v1 user need.
-- **When to revisit**: a11y audit before public release; operator power-users will appreciate keyboard shortcuts.
-- **Where it sits**: components in `src/web/components/CascadeBlock.tsx` + `src/web/pages/TaskDetail.tsx`. Sidebar Maximize2 button at `src/web/components/task-graph/TaskGraphSidebar.tsx`.
+- **What shipped**: `.btn-ghost` now has `focus-visible:ring-2 focus-visible:ring-honey-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)]` so every ghost button (Copy markdown, sidebar Maximize2, sidebar Close) gets a visible focus ring with contrast-aware offset. The "Show N more" expand button in `CascadeBlock` grew a matching ring + `aria-expanded` + descriptive `aria-label`. Icon-only buttons (Maximize2 link, X close, Copy markdown) gained `aria-label`s so screen readers announce them. Verified via web build passing.
 
 ### Originally-planned items still open
 

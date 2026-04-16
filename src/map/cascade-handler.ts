@@ -27,6 +27,9 @@ import type {
   StreamConflictedParams,
   StreamConflictResolvedParams,
   StreamAbandonedParams,
+  StreamPausedParams,
+  StreamResumedParams,
+  StreamRolledBackParams,
   StreamPushedParams,
   CascadeRebasedParams,
   CascadeCompletedParams,
@@ -84,6 +87,12 @@ export function handleCascadeRequest(
       );
     case 'stream.abandoned':
       return handleStreamAbandoned(params as StreamAbandonedParams, context);
+    case 'stream.paused':
+      return handleStreamPaused(params as StreamPausedParams, context);
+    case 'stream.resumed':
+      return handleStreamResumed(params as StreamResumedParams, context);
+    case 'stream.rolled_back':
+      return handleStreamRolledBack(params as StreamRolledBackParams, context);
     case 'stream.pushed':
       return handleStreamPushed(params as StreamPushedParams, context);
     case 'cascade.rebased':
@@ -635,6 +644,121 @@ function handleCascadeCompleted(
 }
 
 // ============================================================================
+// stream.paused
+// ============================================================================
+
+function handleStreamPaused(
+  params: StreamPausedParams,
+  context: CascadeRequestContext
+): CascadeEventAck {
+  if (!params?.stream_id || typeof params.stream_id !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing stream_id');
+  }
+
+  const stream = ensureStreamRow(
+    context.swarmId,
+    params.stream_id,
+    context.agentId ?? 'unknown'
+  );
+
+  updateStreamStatus(stream.id, 'paused');
+
+  emitHubEvent('cascade_stream_paused', {
+    source_swarm_id: context.swarmId,
+    stream_row_id: stream.id,
+    stream_id: stream.stream_id,
+    reason: params.reason,
+  });
+
+  broadcast(stream, 'cascade:stream_paused', {
+    stream_row_id: stream.id,
+    stream_id: stream.stream_id,
+    reason: params.reason,
+    source_swarm_id: stream.source_swarm_id,
+  });
+
+  return { ok: true, stream_row_id: stream.id };
+}
+
+// ============================================================================
+// stream.resumed
+// ============================================================================
+
+function handleStreamResumed(
+  params: StreamResumedParams,
+  context: CascadeRequestContext
+): CascadeEventAck {
+  if (!params?.stream_id || typeof params.stream_id !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing stream_id');
+  }
+
+  const stream = ensureStreamRow(
+    context.swarmId,
+    params.stream_id,
+    context.agentId ?? 'unknown'
+  );
+
+  updateStreamStatus(stream.id, 'active');
+
+  emitHubEvent('cascade_stream_resumed', {
+    source_swarm_id: context.swarmId,
+    stream_row_id: stream.id,
+    stream_id: stream.stream_id,
+  });
+
+  broadcast(stream, 'cascade:stream_resumed', {
+    stream_row_id: stream.id,
+    stream_id: stream.stream_id,
+    source_swarm_id: stream.source_swarm_id,
+  });
+
+  return { ok: true, stream_row_id: stream.id };
+}
+
+// ============================================================================
+// stream.rolled_back
+// ============================================================================
+//
+// Observability-only: no DB mutation beyond the broadcast. The tracker's
+// operation log is authoritative for rollback state; the hub records the
+// event for dashboards + realtime notification.
+
+function handleStreamRolledBack(
+  params: StreamRolledBackParams,
+  context: CascadeRequestContext
+): CascadeEventAck {
+  if (!params?.stream_id || typeof params.stream_id !== 'string') {
+    throw new CascadeRequestError(-32602, 'Invalid params: missing stream_id');
+  }
+
+  const stream = ensureStreamRow(
+    context.swarmId,
+    params.stream_id,
+    context.agentId ?? 'unknown'
+  );
+
+  emitHubEvent('cascade_stream_rolled_back', {
+    source_swarm_id: context.swarmId,
+    stream_row_id: stream.id,
+    stream_id: stream.stream_id,
+    strategy: params.strategy,
+    target: params.target,
+    new_head: params.new_head,
+  });
+
+  broadcast(stream, 'cascade:stream_rolled_back', {
+    stream_row_id: stream.id,
+    stream_id: stream.stream_id,
+    strategy: params.strategy,
+    target: params.target,
+    new_head: params.new_head,
+    source_swarm_id: stream.source_swarm_id,
+  });
+
+  return { ok: true, stream_row_id: stream.id };
+}
+
+// ============================================================================
 // stream.pushed (trunk-style push to a remote)
 // ============================================================================
 
@@ -801,6 +925,9 @@ type CascadeWSEventType =
   | 'cascade:stream_conflicted'
   | 'cascade:stream_conflict_resolved'
   | 'cascade:stream_abandoned'
+  | 'cascade:stream_paused'
+  | 'cascade:stream_resumed'
+  | 'cascade:stream_rolled_back'
   | 'cascade:stream_rebased'
   | 'cascade:stream_pushed'
   | 'cascade:completed'

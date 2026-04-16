@@ -15,6 +15,7 @@ import { TRAJECTORY_METHOD_SET } from './trajectory-types.js';
 import { handleTrajectoryRequest, TrajectoryRequestError } from './trajectory-handler.js';
 import { CASCADE_METHOD_SET, CascadeRequestError } from './cascade-types.js';
 import { handleCascadeRequest } from './cascade-handler.js';
+import { consumeCascadeToken } from './cascade-rate-limit.js';
 import type { Config } from '../config.js';
 
 let mapServer: any | null = null;
@@ -113,6 +114,15 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
     handlers[method] = async (params: any, ctx: any) => {
       const swarmId = ctx.session?.metadata?.swarmId;
       const agentId = ctx.session?.metadata?.agentId || ctx.session?.metadata?.hubAgentId;
+      // Reject before dispatch if this swarm has exhausted its token bucket.
+      // -32005 is outside MAP's reserved JSON-RPC range, reserved here for
+      // "server throttled — back off and retry".
+      if (!consumeCascadeToken(swarmId ?? '')) {
+        throw Object.assign(
+          new Error(`Cascade rate limit exceeded for swarm ${swarmId}`),
+          { code: -32005 },
+        );
+      }
       try {
         return handleCascadeRequest(method, params, { swarmId, agentId });
       } catch (err) {

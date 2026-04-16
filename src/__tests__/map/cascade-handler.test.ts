@@ -687,6 +687,63 @@ describe('Cascade Handler', () => {
     });
   });
 
+  describe('stream.paused / stream.resumed', () => {
+    it('paused updates stream status to paused + ack', () => {
+      handleCascadeRequest(
+        CASCADE_METHODS.STREAM_OPENED,
+        { stream_id: 'pause-s1', name: 'pause-test', agent_id: 'a' },
+        { swarmId, agentId }
+      );
+      const result = handleCascadeRequest(
+        CASCADE_METHODS.STREAM_PAUSED,
+        { stream_id: 'pause-s1', reason: 'blocked on review' },
+        { swarmId, agentId }
+      );
+      expect(result.ok).toBe(true);
+      const stream = getStreamBySwarmAndId(swarmId, 'pause-s1');
+      expect(stream?.status).toBe('paused');
+    });
+
+    it('resumed reverts status to active + ack', () => {
+      const result = handleCascadeRequest(
+        CASCADE_METHODS.STREAM_RESUMED,
+        { stream_id: 'pause-s1' },
+        { swarmId, agentId }
+      );
+      expect(result.ok).toBe(true);
+      const stream = getStreamBySwarmAndId(swarmId, 'pause-s1');
+      expect(stream?.status).toBe('active');
+    });
+  });
+
+  describe('stream.rolled_back', () => {
+    it('accepts rolled_back event + ack without mutating stream status', () => {
+      handleCascadeRequest(
+        CASCADE_METHODS.STREAM_OPENED,
+        { stream_id: 'rb-s1', name: 'rb-test', agent_id: 'a' },
+        { swarmId, agentId }
+      );
+      const result = handleCascadeRequest(
+        CASCADE_METHODS.STREAM_ROLLED_BACK,
+        { stream_id: 'rb-s1', strategy: 'n_operations', target: 2, new_head: 'abc123' },
+        { swarmId, agentId }
+      );
+      expect(result.ok).toBe(true);
+      const stream = getStreamBySwarmAndId(swarmId, 'rb-s1');
+      expect(stream?.status).toBe('active');
+    });
+
+    it('rejects when stream_id is missing', () => {
+      expect(() =>
+        handleCascadeRequest(
+          CASCADE_METHODS.STREAM_ROLLED_BACK,
+          { strategy: 'n_operations' },
+          { swarmId, agentId }
+        )
+      ).toThrow(/missing stream_id/);
+    });
+  });
+
   describe('dispatch errors', () => {
     it('throws CascadeRequestError for unknown cascade methods', () => {
       expect(() =>

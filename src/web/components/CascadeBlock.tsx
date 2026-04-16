@@ -143,7 +143,7 @@ function CascadeSummary({
           <div
             key={s.label}
             className="flex flex-col"
-            style={s.highlight ? { color: '#dc2626' } : undefined}
+            style={s.highlight ? { color: 'var(--color-danger)' } : undefined}
           >
             <div className="flex items-center gap-1.5 text-2xs uppercase tracking-wider" style={s.highlight ? undefined : { color: 'var(--color-text-muted)' }}>
               {s.icon}
@@ -251,9 +251,9 @@ function CascadeConflicts({
   return (
     <div
       className="card p-4"
-      style={{ borderColor: '#fca5a5' }}
+      style={{ borderColor: 'var(--color-danger-border)' }}
     >
-      <h4 className="text-sm font-semibold mb-2 flex items-center gap-1.5" style={{ color: '#dc2626' }}>
+      <h4 className="text-sm font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--color-danger)' }}>
         <GitPullRequestDraft className="w-4 h-4" />
         Open conflicts ({changelog.totals.open_conflicts})
       </h4>
@@ -321,9 +321,12 @@ function CascadeFiles({
       {rest > 0 && !expanded && (
         <button
           type="button"
-          className="mt-2 text-2xs hover:text-honey-500 transition-colors"
+          className="mt-2 text-2xs hover:text-honey-500 transition-colors rounded px-1 -mx-1
+                     focus:outline-none focus-visible:ring-2 focus-visible:ring-honey-500/60"
           style={{ color: 'var(--color-text-muted)' }}
           onClick={() => setExpanded(true)}
+          aria-expanded={expanded}
+          aria-label={`Show ${rest} more files`}
         >
           Show {rest} more…
         </button>
@@ -349,8 +352,9 @@ function CopyMarkdownButton({ markdown }: { markdown: string }) {
     <button
       type="button"
       onClick={copy}
-      className="btn-ghost text-2xs flex items-center gap-1"
+      className="btn-ghost text-2xs flex items-center gap-1 px-1.5 py-0.5"
       title="Copy markdown changelog to clipboard"
+      aria-label={copied ? 'Markdown copied' : 'Copy markdown changelog to clipboard'}
     >
       {copied ? (
         <>

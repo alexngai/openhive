@@ -201,6 +201,42 @@ describeIfE2E('live emission E2E (macro-agent → bridge → hub handler → DAL
     }
   });
 
+  // A1 — per-merge metadata threading. Verifies that a task_ref passed via
+  // mergeStream({ metadata }) flows all the way through git-cascade's emit →
+  // CascadeBridge → hub's stream.merged handler → cascade_merges.metadata.
+  it('mergeStream with metadata → task_ref persisted on cascade_merges row', async () => {
+    const tgt = adapter.createStream({ name: 'live-target-md', agentId: 'a' });
+    await flush();
+    const src = adapter.forkStream({ parentStreamId: tgt, name: 'live-source-md', agentId: 'b' });
+    await flush();
+    const wt = mkWorktree(repo, 'bmd', `stream/${src}`);
+    fs.writeFileSync(path.join(wt, 'md.txt'), 'work\n');
+    execSync('git add .', { cwd: wt, stdio: 'pipe' });
+    adapter.commitChanges({ streamId: src, agentId: 'b', worktree: wt, message: 'feat: md commit' });
+    await flush();
+
+    const taskRef = { resource_id: 'res-merge-md', node_id: 'task-merge-md' };
+    const merge = adapter.mergeStream({
+      sourceStream: src,
+      targetStream: tgt,
+      agentId: 'b',
+      worktree: wt,
+      metadata: { task_ref: taskRef, release: 'v1.2.3' },
+    });
+    await flush();
+
+    if (merge.success) {
+      const mergedCall = connectionCalls.find(
+        (c) => c.method === CASCADE_METHODS.STREAM_MERGED &&
+          (c.params as { source_stream_id?: string }).source_stream_id === src,
+      );
+      expect(mergedCall).toBeDefined();
+      const params = mergedCall!.params as { metadata?: { task_ref?: unknown; release?: string } };
+      expect(params.metadata?.task_ref).toEqual(taskRef);
+      expect(params.metadata?.release).toBe('v1.2.3');
+    }
+  });
+
   it('abandonStream → stream.abandoned → status flips', async () => {
     const sid = adapter.createStream({ name: 'live-doomed', agentId: 'a' });
     await flush();

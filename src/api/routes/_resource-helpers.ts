@@ -11,7 +11,7 @@ import type { SyncableResource } from '../../types.js';
 // Path Helpers
 // ============================================================================
 
-const REMOTE_URL_PREFIXES = ['http', 'git://', 'ssh://', 'remote://', 'map://'];
+const REMOTE_URL_PREFIXES = ['http', 'git://', 'ssh://', 'remote://', 'map://', 'local://'];
 
 export function resolveLocalPath(resource: SyncableResource): string | null {
   if (resource.local_path) {

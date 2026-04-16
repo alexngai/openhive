@@ -77,7 +77,7 @@ interface TaskGraphTarget {
   location_hash?: string;
 }
 
-const REMOTE_URL_PREFIXES = ['http', 'git://', 'ssh://', 'remote://', 'map://'];
+const REMOTE_URL_PREFIXES = ['http', 'git://', 'ssh://', 'remote://', 'map://', 'local://'];
 
 function canonicalPath(p: string): string {
   const resolved = resolve(normalize(p));
