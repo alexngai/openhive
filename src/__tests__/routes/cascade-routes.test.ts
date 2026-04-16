@@ -342,6 +342,67 @@ describe('Cascade REST Routes', () => {
     });
   });
 
+  describe('GET /cascade/streams/dag', () => {
+    it('returns nodes with commit counts + parent edges', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/cascade/streams/dag?source_swarm_id=${swarmId}`,
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.data.nodes.length).toBeGreaterThanOrEqual(1);
+      const node = body.data.nodes.find((n: any) => n.stream_id === 'route-s1');
+      expect(node).toBeDefined();
+      expect(node.commit_count).toBeGreaterThanOrEqual(2);
+      expect(typeof node.open_conflict_count).toBe('number');
+    });
+
+    it('filters by source_swarm_id', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/cascade/streams/dag?source_swarm_id=nonexistent-swarm`,
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.nodes).toHaveLength(0);
+    });
+  });
+
+  describe('GET /cascade/streams/:id/timeline', () => {
+    it('returns ordered events for a stream', async () => {
+      const listRes = await app.inject({
+        method: 'GET',
+        url: `/api/v1/cascade/streams?source_swarm_id=${swarmId}`,
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      const streamRowId = listRes.json().data[0].id;
+
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/cascade/streams/${streamRowId}/timeline`,
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const events = res.json().data;
+      expect(events.length).toBeGreaterThanOrEqual(2);
+      expect(events.some((e: any) => e.type === 'commit')).toBe(true);
+      // Verify ordering
+      for (let i = 1; i < events.length; i++) {
+        expect(events[i].timestamp >= events[i - 1].timestamp).toBe(true);
+      }
+    });
+
+    it('returns 404 for unknown stream id', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/cascade/streams/nonexistent-id/timeline',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
   describe('GET /cascade/tasks/lookup', () => {
     let taskResourceId: string;
     const gitUrl = 'https://github.com/acme/cascade-lookup-repo';

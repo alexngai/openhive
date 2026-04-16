@@ -32,6 +32,7 @@ const Messages = lazy(() => import('./pages/Messages').then(m => ({ default: m.M
 const Conversation = lazy(() => import('./pages/Conversation').then(m => ({ default: m.Conversation })));
 const Learning = lazy(() => import('./pages/Learning').then(m => ({ default: m.Learning })));
 const LearningPlaybookDetail = lazy(() => import('./pages/LearningPlaybookDetail').then(m => ({ default: m.LearningPlaybookDetail })));
+const Streams = lazy(() => import('./pages/Streams').then(m => ({ default: m.Streams })));
 
 export default function App() {
   // Initialize WebSocket connection
@@ -74,6 +75,7 @@ export default function App() {
               <Route path="skills/:resourceId" element={<SkillDetail />} />
               <Route path="learning" element={<Learning />} />
               <Route path="learning/playbooks/:id" element={<LearningPlaybookDetail />} />
+              <Route path="streams" element={<Streams />} />
               <Route path="tasks" element={<TaskGraph />} />
               <Route path="tasks/list" element={<TasksList />} />
               <Route path="tasks/:resourceId/:nodeId" element={<TaskDetail />} />

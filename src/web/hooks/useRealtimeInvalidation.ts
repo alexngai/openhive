@@ -256,3 +256,33 @@ export function useCascadeRealtime(resourceId: string, nodeId: string) {
   // up immediately even before any commits land.
   useWSEvent('cascade:stream_opened', invalidate);
 }
+
+// ── Cascade Streams DAG ──
+
+/**
+ * Invalidates cascade DAG + stream detail/timeline queries when any
+ * stream-level event arrives. Used by the Streams overview page.
+ * Subscribes to `global` since we don't know which streams the user is
+ * viewing at mount time.
+ */
+export function useCascadeStreamsRealtime() {
+  const queryClient = useQueryClient();
+
+  useSubscribe(['global']);
+
+  const invalidate = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['cascade-dag'] });
+    queryClient.invalidateQueries({ queryKey: ['cascade-stream-detail'] });
+    queryClient.invalidateQueries({ queryKey: ['cascade-stream-timeline'] });
+  }, [queryClient]);
+
+  useWSEvent('cascade:stream_opened', invalidate);
+  useWSEvent('cascade:stream_committed', invalidate);
+  useWSEvent('cascade:stream_merged', invalidate);
+  useWSEvent('cascade:stream_conflicted', invalidate);
+  useWSEvent('cascade:stream_conflict_resolved', invalidate);
+  useWSEvent('cascade:stream_abandoned', invalidate);
+  useWSEvent('cascade:stream_paused', invalidate);
+  useWSEvent('cascade:stream_resumed', invalidate);
+  useWSEvent('cascade:stream_rolled_back', invalidate);
+}

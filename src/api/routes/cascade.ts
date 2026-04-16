@@ -19,6 +19,8 @@ import {
   listPushes,
   listQueueEntries,
   getCommitRangeForTask,
+  getStreamDAG,
+  getStreamTimeline,
 } from '../../db/dal/cascade-streams.js';
 import { findResourcesByRepoUrl } from '../../db/dal/syncable-resources.js';
 import { generateChangelog, renderMarkdown } from '../../cascade/changelog.js';
@@ -127,6 +129,50 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       }
       const conflicts = listConflictsForStream(stream.id);
       return reply.send({ data: conflicts });
+    }
+  );
+
+  // ── Stream DAG ───────────────────────────────────────────────────────
+  //
+  //   GET /cascade/streams/dag?source_swarm_id=&task_resource_id=
+  //
+  //   Returns the full stream parent/child DAG with merge edges for graph
+  //   visualization. Each node carries commit_count + open_conflict_count
+  //   for sizing/coloring. Edges come from parent_stream_id (type=parent)
+  //   and cascade_merges (type=merge).
+  fastify.get<{
+    Querystring: { source_swarm_id?: string; task_resource_id?: string };
+  }>(
+    '/cascade/streams/dag',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const dag = getStreamDAG({
+        source_swarm_id: request.query.source_swarm_id,
+        task_resource_id: request.query.task_resource_id,
+      });
+      return reply.send({ data: dag });
+    }
+  );
+
+  // ── Stream timeline ─────────────────────────────────────────────────
+  //
+  //   GET /cascade/streams/:id/timeline
+  //
+  //   Returns an ordered list of all events on a stream: commits, merges,
+  //   conflicts (detected + resolved), pushes. Used by StreamDetailSidebar
+  //   to render the vertical timeline.
+  fastify.get<{ Params: { id: string } }>(
+    '/cascade/streams/:id/timeline',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const stream = getStreamByRowId(request.params.id);
+      if (!stream) {
+        return reply
+          .status(404)
+          .send({ error: 'Not Found', message: 'Cascade stream not found' });
+      }
+      const timeline = getStreamTimeline(stream.id);
+      return reply.send({ data: timeline });
     }
   );
 

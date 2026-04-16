@@ -1202,6 +1202,235 @@ export interface StreamStats {
   last_commit_at: string | null;
 }
 
+// ============================================================================
+// DAG + Timeline queries (Streams UI)
+// ============================================================================
+
+export interface StreamDAGNode {
+  id: string;
+  stream_id: string;
+  source_swarm_id: string;
+  source_agent_id: string;
+  parent_stream_id: string | null;
+  name: string;
+  status: string;
+  task_resource_id: string | null;
+  task_node_id: string | null;
+  opened_at: string;
+  last_event_at: string;
+  commit_count: number;
+  open_conflict_count: number;
+}
+
+export interface StreamDAGEdge {
+  source: string;
+  target: string;
+  type: 'parent' | 'merge';
+}
+
+export interface StreamDAG {
+  nodes: StreamDAGNode[];
+  edges: StreamDAGEdge[];
+}
+
+export function getStreamDAG(options: {
+  source_swarm_id?: string;
+  task_resource_id?: string;
+} = {}): StreamDAG {
+  const db = getDatabase();
+  const where: string[] = [];
+  const params: unknown[] = [];
+
+  if (options.source_swarm_id) {
+    where.push('s.source_swarm_id = ?');
+    params.push(options.source_swarm_id);
+  }
+  if (options.task_resource_id) {
+    where.push('s.task_resource_id = ?');
+    params.push(options.task_resource_id);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const rows = db.prepare(`
+    SELECT
+      s.id, s.stream_id, s.source_swarm_id, s.source_agent_id,
+      s.parent_stream_id, s.name, s.status,
+      s.task_resource_id, s.task_node_id,
+      s.opened_at, s.last_event_at,
+      (SELECT COUNT(*) FROM cascade_changes c WHERE c.stream_row_id = s.id) as commit_count,
+      (SELECT COUNT(*) FROM cascade_conflicts cf WHERE cf.stream_row_id = s.id AND cf.status = 'pending') as open_conflict_count
+    FROM cascade_streams s
+    ${whereSql}
+    ORDER BY s.opened_at ASC
+  `).all(...params) as Array<Record<string, unknown>>;
+
+  const nodes: StreamDAGNode[] = rows.map((r) => ({
+    id: r.id as string,
+    stream_id: r.stream_id as string,
+    source_swarm_id: r.source_swarm_id as string,
+    source_agent_id: r.source_agent_id as string,
+    parent_stream_id: (r.parent_stream_id as string | null) ?? null,
+    name: r.name as string,
+    status: r.status as string,
+    task_resource_id: (r.task_resource_id as string | null) ?? null,
+    task_node_id: (r.task_node_id as string | null) ?? null,
+    opened_at: r.opened_at as string,
+    last_event_at: r.last_event_at as string,
+    commit_count: r.commit_count as number,
+    open_conflict_count: r.open_conflict_count as number,
+  }));
+
+  // Parent→child edges from parent_stream_id (these reference stream_id, not row id)
+  const edges: StreamDAGEdge[] = [];
+  const rowIdByStreamId = new Map<string, string>();
+  for (const n of nodes) {
+    rowIdByStreamId.set(`${n.source_swarm_id}:${n.stream_id}`, n.id);
+  }
+
+  for (const n of nodes) {
+    if (n.parent_stream_id) {
+      const parentRowId = rowIdByStreamId.get(`${n.source_swarm_id}:${n.parent_stream_id}`);
+      if (parentRowId) {
+        edges.push({ source: parentRowId, target: n.id, type: 'parent' });
+      }
+    }
+  }
+
+  // Merge edges from cascade_merges
+  const mergeSwarmFilter = options.source_swarm_id
+    ? `WHERE source_swarm_id = ?` : '';
+  const mergeParams = options.source_swarm_id ? [options.source_swarm_id] : [];
+  const mergeRows = db.prepare(`
+    SELECT source_stream_row_id, target_stream_row_id
+    FROM cascade_merges
+    ${mergeSwarmFilter}
+  `).all(...mergeParams) as Array<{ source_stream_row_id: string | null; target_stream_row_id: string | null }>;
+
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  for (const m of mergeRows) {
+    if (m.source_stream_row_id && m.target_stream_row_id &&
+        nodeIds.has(m.source_stream_row_id) && nodeIds.has(m.target_stream_row_id)) {
+      edges.push({
+        source: m.source_stream_row_id,
+        target: m.target_stream_row_id,
+        type: 'merge',
+      });
+    }
+  }
+
+  return { nodes, edges };
+}
+
+export type StreamTimelineEventType =
+  | 'commit'
+  | 'merge'
+  | 'conflict_detected'
+  | 'conflict_resolved'
+  | 'status_change'
+  | 'push'
+  | 'rebase';
+
+export interface StreamTimelineEvent {
+  type: StreamTimelineEventType;
+  timestamp: string;
+  data: Record<string, unknown>;
+}
+
+export function getStreamTimeline(stream_row_id: string): StreamTimelineEvent[] {
+  const db = getDatabase();
+  const events: StreamTimelineEvent[] = [];
+
+  // Commits
+  const commits = db.prepare(
+    `SELECT commit_hash, change_id, message_summary, author_agent_id, files_touched, synced_at
+     FROM cascade_changes WHERE stream_row_id = ? ORDER BY synced_at ASC`,
+  ).all(stream_row_id) as Array<Record<string, unknown>>;
+  for (const c of commits) {
+    events.push({
+      type: 'commit',
+      timestamp: c.synced_at as string,
+      data: {
+        commit_hash: c.commit_hash,
+        change_id: c.change_id,
+        message_summary: c.message_summary,
+        author_agent_id: c.author_agent_id,
+        files_touched: parseJsonArray(c.files_touched as string),
+      },
+    });
+  }
+
+  // Merges (as source or target)
+  const merges = db.prepare(
+    `SELECT source_stream_id, target_stream_id, merge_commit, agent_id, strategy, merged_at
+     FROM cascade_merges WHERE source_stream_row_id = ? OR target_stream_row_id = ?`,
+  ).all(stream_row_id, stream_row_id) as Array<Record<string, unknown>>;
+  for (const m of merges) {
+    events.push({
+      type: 'merge',
+      timestamp: m.merged_at as string,
+      data: {
+        source_stream_id: m.source_stream_id,
+        target_stream_id: m.target_stream_id,
+        merge_commit: m.merge_commit,
+        agent_id: m.agent_id,
+        strategy: m.strategy,
+      },
+    });
+  }
+
+  // Conflicts
+  const conflicts = db.prepare(
+    `SELECT conflict_id, conflicted_files, agent_id, source, status, detected_at, resolved_at
+     FROM cascade_conflicts WHERE stream_row_id = ?`,
+  ).all(stream_row_id) as Array<Record<string, unknown>>;
+  for (const cf of conflicts) {
+    events.push({
+      type: 'conflict_detected',
+      timestamp: cf.detected_at as string,
+      data: {
+        conflict_id: cf.conflict_id,
+        conflicted_files: parseJsonArray(cf.conflicted_files as string),
+        agent_id: cf.agent_id,
+        source: cf.source,
+        status: cf.status,
+      },
+    });
+    if (cf.resolved_at) {
+      events.push({
+        type: 'conflict_resolved',
+        timestamp: cf.resolved_at as string,
+        data: {
+          conflict_id: cf.conflict_id,
+          status: cf.status,
+        },
+      });
+    }
+  }
+
+  // Pushes
+  const pushes = db.prepare(
+    `SELECT pushed_commit, remote, remote_ref, strategy, agent_id, pushed_at
+     FROM cascade_pushes WHERE stream_row_id = ?`,
+  ).all(stream_row_id) as Array<Record<string, unknown>>;
+  for (const p of pushes) {
+    events.push({
+      type: 'push',
+      timestamp: p.pushed_at as string,
+      data: {
+        pushed_commit: p.pushed_commit,
+        remote: p.remote,
+        remote_ref: p.remote_ref,
+        strategy: p.strategy,
+        agent_id: p.agent_id,
+      },
+    });
+  }
+
+  // Sort all events by timestamp
+  events.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  return events;
+}
+
 export function getStreamStats(stream_row_id: string): StreamStats {
   const db = getDatabase();
 

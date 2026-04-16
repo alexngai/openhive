@@ -2106,6 +2106,87 @@ export function useCascadeCommitRange(
   });
 }
 
+// ── Stream DAG + detail hooks ───────────────────────────────────────
+
+export interface StreamDAGNode {
+  id: string;
+  stream_id: string;
+  source_swarm_id: string;
+  source_agent_id: string;
+  parent_stream_id: string | null;
+  name: string;
+  status: string;
+  task_resource_id: string | null;
+  task_node_id: string | null;
+  opened_at: string;
+  last_event_at: string;
+  commit_count: number;
+  open_conflict_count: number;
+}
+
+export interface StreamDAGEdge {
+  source: string;
+  target: string;
+  type: 'parent' | 'merge';
+}
+
+export interface StreamDAG {
+  nodes: StreamDAGNode[];
+  edges: StreamDAGEdge[];
+}
+
+export interface StreamTimelineEvent {
+  type: 'commit' | 'merge' | 'conflict_detected' | 'conflict_resolved' | 'status_change' | 'push' | 'rebase';
+  timestamp: string;
+  data: Record<string, unknown>;
+}
+
+export function useCascadeDAG(options: {
+  source_swarm_id?: string;
+  task_resource_id?: string;
+  enabled?: boolean;
+} = {}) {
+  const params = new URLSearchParams();
+  if (options.source_swarm_id) params.set('source_swarm_id', options.source_swarm_id);
+  if (options.task_resource_id) params.set('task_resource_id', options.task_resource_id);
+  const qs = params.toString();
+
+  return useQuery({
+    queryKey: ['cascade-dag', options.source_swarm_id, options.task_resource_id],
+    queryFn: () =>
+      api.get<{ data: StreamDAG }>(`/cascade/streams/dag${qs ? `?${qs}` : ''}`),
+    enabled: options.enabled ?? true,
+    staleTime: 10_000,
+  });
+}
+
+export function useCascadeStreamTimeline(streamRowId: string | null) {
+  return useQuery({
+    queryKey: ['cascade-stream-timeline', streamRowId],
+    queryFn: () =>
+      api.get<{ data: StreamTimelineEvent[] }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId!)}/timeline`,
+      ),
+    enabled: !!streamRowId,
+    staleTime: 10_000,
+  });
+}
+
+export function useCascadeStreamDetail(streamRowId: string | null) {
+  return useQuery({
+    queryKey: ['cascade-stream-detail', streamRowId],
+    queryFn: async () => {
+      const [stream, stats] = await Promise.all([
+        api.get<Record<string, unknown>>(`/cascade/streams/${encodeURIComponent(streamRowId!)}`),
+        api.get<{ data: Record<string, unknown> }>(`/cascade/streams/${encodeURIComponent(streamRowId!)}`),
+      ]);
+      return stream;
+    },
+    enabled: !!streamRowId,
+    staleTime: 10_000,
+  });
+}
+
 /**
  * Stop a specific agent on a swarm. Proxies to the macro-agent's
  * `_macro/terminateAgent` extension via SwarmCraft's MAP client.
