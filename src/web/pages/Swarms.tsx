@@ -18,6 +18,7 @@ import { Dialog } from '../components/common/Dialog';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { HostedStateBadge, MapStatusBadge, SandboxBadge, SectionLabel } from '../components/swarm/StatusBadges';
 import type { HostedSwarm, MapSwarm, MapRegisteredAgent } from '../lib/api';
+import { getPeerMapId } from '../lib/map';
 import clsx from 'clsx';
 
 const PROVIDERS = [
@@ -639,12 +640,8 @@ function InlineAgentRow({
   const supportsAcp = protocols.includes('acp');
 
   // Prefer the peer-side map id (the targetable ID on the swarm's own MAP
-  // server); fall back to the hub-assigned id. cc-swarm publishes this as
-  // `peerMapId`, macro-agent as `localAgentId` — accept either.
-  const targetAgentId =
-    (typeof agent.metadata?.peerMapId === 'string' && (agent.metadata.peerMapId as string)) ||
-    (typeof agent.metadata?.localAgentId === 'string' && (agent.metadata.localAgentId as string)) ||
-    agent.id;
+  // server); fall back to the hub-assigned id.
+  const targetAgentId = getPeerMapId(agent.metadata) ?? agent.id;
 
   const handleChat = async (e: React.MouseEvent) => {
     // Prevent the parent swarm card from navigating to the detail page.

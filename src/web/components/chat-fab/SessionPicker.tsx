@@ -12,6 +12,7 @@ import { useMapSwarmsForPicker, useConnectAcp } from '../../hooks/useApi';
 import { useChatFabStore } from './ChatFabStore';
 import { TimeAgo } from '../common/TimeAgo';
 import type { MapSwarm } from '../../lib/api';
+import { getPeerMapId } from '../../lib/map';
 
 function isOnline(s: MapSwarm): boolean {
   return s.status === 'online';
@@ -65,14 +66,9 @@ export function SessionPicker() {
         return;
       }
 
-      // Peer-side map id may be `peerMapId` (cc-swarm) or `localAgentId`
-      // (macro-agent). Either is the swarm-local ULID we need to target.
-      const peerMapId = (typeof acpAgent.metadata?.peerMapId === 'string' && acpAgent.metadata.peerMapId)
-        ? acpAgent.metadata.peerMapId
-        : (typeof acpAgent.metadata?.localAgentId === 'string' && acpAgent.metadata.localAgentId)
-          ? acpAgent.metadata.localAgentId
-          : undefined;
-      const targetId = peerMapId ?? acpAgent.id;
+      // Prefer the peer-side map id (the swarm-local ULID); fall back to the
+      // hub-assigned id.
+      const targetId = getPeerMapId(acpAgent.metadata) ?? acpAgent.id;
 
       try {
         const result = await connectAcp.mutateAsync({ swarmId: swarm.id, agentId: targetId });

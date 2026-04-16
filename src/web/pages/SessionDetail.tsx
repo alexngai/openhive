@@ -3,7 +3,7 @@ import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
   Activity, AlertTriangle, Brain, ChevronDown, ChevronRight,
   Clock, Cpu, FileText, GitBranch, GitCommit, Hash,
-  MessageSquare, User,
+  Info, MessageSquare, User,
 } from 'lucide-react';
 import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants } from '../hooks/useApi';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
@@ -284,6 +284,30 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
     } catch { /* best-effort URL cleanup */ }
   }, [channel.mode, channel.status, existingAcpStreamId, existingAcpSessionId]);
 
+  // Surface ACP-resume degradation: the URL carried streamId+sessionId
+  // (intent: resume an ACP session), but the channel didn't settle on ACP.
+  // Render a subtle banner so the user understands why the chat mode changed.
+  const acpResumeIntent = !!(existingAcpStreamId && existingAcpSessionId);
+  const channelSettled = channel.status === 'ready' || channel.status === 'streaming' || channel.mode === 'unavailable';
+  const acpDegraded = acpResumeIntent && channelSettled && channel.mode !== 'acp';
+  const degradationBanner = acpDegraded ? (
+    <div
+      className="border-t px-4 py-2 flex items-start gap-2"
+      style={{
+        backgroundColor: 'rgba(245, 158, 11, 0.08)',
+        borderColor: 'var(--color-border-subtle)',
+        color: 'var(--color-text-secondary)',
+      }}
+    >
+      <Info className="w-3.5 h-3.5 mt-0.5 shrink-0 text-honey-500" />
+      <span className="text-2xs">
+        ACP stream unavailable — {channel.mode === 'unavailable'
+          ? 'agent is not currently reachable for chat. Reload the page to retry.'
+          : `falling back to ${channel.mode}. The original ACP session may have closed (e.g. another connect to this swarm).`}
+      </span>
+    </div>
+  ) : null;
+
   const pages = data?.pages ?? [];
   const trajectoryEvents = pages.flatMap((page) => page.events);
   const total = pages[0]?.total ?? 0;
@@ -312,6 +336,7 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
           </p>
           <p className="text-xs">{(error as Error)?.message || 'Unknown error'}</p>
         </div>
+        {degradationBanner}
         <SessionChatInput channel={channel} />
       </>
     );
@@ -333,6 +358,7 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
         emptyIcon={MessageSquare}
       />
       <PermissionDialog channel={channel} />
+      {degradationBanner}
       <SessionChatInput channel={channel} />
     </>
   );

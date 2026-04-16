@@ -2050,14 +2050,17 @@ export function useConnectAcp() {
 }
 
 /**
- * Stop a specific agent on a swarm. Proxies to the macro-agent's
- * `_macro/terminateAgent` extension via SwarmCraft's MAP client.
+ * Stop a specific agent on a swarm. Proxies to the swarm's MAP server. The
+ * server prefers `_macro/terminateAgent` (real process termination on
+ * macro-agent v0.1.10+); on older runtimes it falls back to
+ * `map/agents/unregister` and reports `method` so the UI can warn that the
+ * underlying process may still be running.
  */
 export function useStopAgent() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ swarmId, agentId, reason }: { swarmId: string; agentId: string; reason?: string }) =>
-      api.post<{ success: boolean }>(
+      api.post<{ success: boolean; method?: string }>(
         `/map/swarms/${swarmId}/agents/${agentId}/stop`,
         { ...(reason ? { reason } : {}) },
       ),

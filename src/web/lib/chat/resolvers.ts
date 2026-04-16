@@ -15,6 +15,7 @@ import type {
   SessionTarget,
 } from 'swarmcraft/ui/embed';
 import { useMapSwarm, useMailConversation } from '../../hooks/useApi';
+import { getPeerMapId } from '../map';
 
 // ---------------------------------------------------------------------------
 // Session capability resolver
@@ -34,13 +35,7 @@ function extractAcpTarget(registeredAgents: RegisteredAgent[] | undefined): stri
     return Array.isArray(protos) && (protos as string[]).includes('acp');
   });
   if (!acpAgent) return undefined;
-  // Peer-side map ID may be `peerMapId` (cc-swarm) or `localAgentId` (macro-agent).
-  const md = acpAgent.metadata;
-  const peerMapId = md?.peerMapId;
-  if (typeof peerMapId === 'string' && peerMapId) return peerMapId;
-  const localAgentId = md?.localAgentId;
-  if (typeof localAgentId === 'string' && localAgentId) return localAgentId;
-  return acpAgent.id;
+  return getPeerMapId(acpAgent.metadata) ?? acpAgent.id;
 }
 
 /**

@@ -34,6 +34,7 @@ import {
   type ChatTarget,
 } from 'swarmcraft/ui/embed';
 import { createCoordinationChatAdapter } from '../adapters/coordination-chat-adapter';
+import { getPeerMapId } from '../lib/map';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -567,11 +568,7 @@ function RegisteredAgentCard({
   const canStop = agent.role !== 'sidecar';
 
   // Prefer the peer-side map id (targetable on the swarm's own MAP server).
-  // cc-swarm publishes this as `peerMapId`; macro-agent as `localAgentId`.
-  const targetAgentId =
-    (typeof agent.metadata?.peerMapId === 'string' && (agent.metadata.peerMapId as string)) ||
-    (typeof agent.metadata?.localAgentId === 'string' && (agent.metadata.localAgentId as string)) ||
-    agent.id;
+  const targetAgentId = getPeerMapId(agent.metadata) ?? agent.id;
 
   const handleChat = async () => {
     try {
@@ -592,8 +589,17 @@ function RegisteredAgentCard({
 
   const handleStop = async () => {
     try {
-      await stopAgent.mutateAsync({ swarmId, agentId: agent.id, reason: 'cancelled' });
-      toast.success('Agent stopped', `"${agent.name || agent.id}" was terminated.`);
+      const result = await stopAgent.mutateAsync({ swarmId, agentId: agent.id, reason: 'cancelled' });
+      if (result?.method === 'map/agents/unregister') {
+        // Older runtimes (no _macro/terminateAgent) only unregister from the
+        // MAP registry — the underlying agent process may still be running.
+        toast.success(
+          'Agent unregistered',
+          `"${agent.name || agent.id}" was removed from the registry. The agent process may still be running on the swarm.`,
+        );
+      } else {
+        toast.success('Agent stopped', `"${agent.name || agent.id}" was terminated.`);
+      }
     } catch (err) {
       toast.error('Stop failed', (err as Error).message);
     }

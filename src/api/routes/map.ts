@@ -385,20 +385,21 @@ export async function mapRoutes(
           cwd,
         }) as { agent?: { id?: string; name?: string; localId?: string } };
         // `agent.id` from macro-agent is the swarm-side MAP server ULID
-        // (peerMapId — the ACP target). `agent.localId` is the macro-agent
-        // local agent ID, which is what the lifecycle bridge publishes as
-        // `metadata.localAgentId` on the hub. They are different values.
+        // (peerMapId — the ACP target). `agent.localId` is macro-agent's
+        // internal store id, which the lifecycle bridge publishes as
+        // `metadata.peerAgentId`. They are different values.
         const peerMapId = result?.agent?.id;
-        const localId = result?.agent?.localId ?? peerMapId;
+        const peerAgentId = result?.agent?.localId ?? peerMapId;
         if (!peerMapId) {
           return reply.status(502).send({ error: 'Spawn returned no agent id' });
         }
 
         // Wait briefly for the lifecycle bridge to register the agent on the
         // hub so the returned hub_agent_id is usable immediately by the caller.
-        // Match against either the peerMapId or the localId — registration may
-        // publish either depending on the runtime (cc-swarm uses peerMapId,
-        // macro-agent uses localAgentId == localId).
+        // Match against either peerMapId or peerAgentId: the bridge resolves
+        // peerMapId asynchronously (500ms timeout) and may emit the agent
+        // with peerMapId still undefined, in which case peerAgentId is the
+        // only resolvable link.
         const deadline = Date.now() + 2000;
         let hubAgentId: string | undefined;
         while (Date.now() < deadline) {
@@ -406,7 +407,7 @@ export async function mapRoutes(
           if (conn) {
             for (const [id, entry] of conn.registeredAgents) {
               const peer = getPeerMapId(entry.metadata);
-              if (peer === peerMapId || peer === localId) { hubAgentId = id; break; }
+              if (peer === peerMapId || peer === peerAgentId) { hubAgentId = id; break; }
             }
           }
           if (hubAgentId) break;

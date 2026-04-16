@@ -14,9 +14,28 @@ import {
   mapSwarmStatusToState,
   mapNodeStateToState,
 } from './constants.js';
+import { broadcastToChannel } from '../realtime/index.js';
 import type { BridgeContext } from './types.js';
 import type { MapSwarm } from '../map/types.js';
 import type { EventEmitter } from 'events';
+
+/**
+ * Periodic interval for retrying outbound bridge connections to swarms in
+ * `unreachable` status. Long enough to avoid log spam for genuinely-down
+ * swarms; short enough that recovery feels responsive once the underlying
+ * process comes back.
+ */
+const BRIDGE_RETRY_MS = 30_000;
+
+function markSwarmStatus(swarmId: string, status: 'online' | 'unreachable'): void {
+  try {
+    updateSwarm(swarmId, { status });
+    broadcastToChannel('map:discovery', {
+      type: 'swarm.status_changed',
+      data: { swarm_id: swarmId, status },
+    });
+  } catch { /* non-critical */ }
+}
 
 interface SwarmBridgeHandle {
   teardown(): void;
@@ -118,6 +137,12 @@ export async function setupSwarmBridge(
           source: 'openhive-hub',
           swarmId: ev.swarm_id,
           mapAgentId: ev.map_agent_id,
+          // SwarmCraft's capability resolver reads peerMapId from the nested
+          // `agentMetadata` slot — it uses this to target the agent on the
+          // peer's MAP server for ACP routing.
+          agentMetadata: {
+            peerMapId: ev.map_agent_id,
+          },
         },
       });
       ctx.wsHub.broadcastAgentRegistered({ id: agentId, name, type: ev.role || 'agent' });
@@ -212,8 +237,32 @@ export async function setupSwarmBridge(
     mcmListeners.push({ event: 'agents.synced', fn: onAgentsSynced });
   }
 
+  // Periodic retry sweep: when an outbound bridge connection fails (process
+  // not yet up, transient network), the swarm is marked unreachable. Try to
+  // reconnect every BRIDGE_RETRY_MS so recovery is automatic once the peer
+  // comes back. We only retry swarms with a real ws:// endpoint — hub-inbound
+  // and local-hub markers are not connectable URLs.
+  let retryTimer: ReturnType<typeof setInterval> | undefined;
+  if (mapClientManager) {
+    retryTimer = setInterval(() => {
+      try {
+        const { data: candidates } = listSwarms({ status: 'unreachable', limit: 100 });
+        for (const swarm of candidates) {
+          if (!swarm.map_endpoint) continue;
+          if (!swarm.map_endpoint.startsWith('ws://') && !swarm.map_endpoint.startsWith('wss://')) continue;
+          // Fire-and-forget; connectMapClient updates status itself.
+          connectMapClient(mapClientManager, swarm).catch(() => { /* logged inside */ });
+        }
+      } catch (err) {
+        console.warn(`[swarmcraft-bridge] retry sweep failed: ${(err as Error).message}`);
+      }
+    }, BRIDGE_RETRY_MS);
+    if (typeof retryTimer.unref === 'function') retryTimer.unref();
+  }
+
   return {
     teardown() {
+      if (retryTimer) clearInterval(retryTimer);
       for (const { event, fn } of listeners) {
         mapHubEvents.removeListener(event, fn);
       }
@@ -274,6 +323,10 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
         source: 'openhive-hub',
         swarmId: swarm.id,
         mapAgentId: node.map_agent_id,
+        // SwarmCraft reads peerMapId from `agentMetadata` for ACP routing.
+        agentMetadata: {
+          peerMapId: node.map_agent_id,
+        },
       };
       const existingNode = await ctx.db.agents.get(nodeAgentId);
       if (existingNode) {
@@ -345,11 +398,12 @@ async function connectMapClient(
   // the swarm's own MAP server (port+2) may take a few seconds to start.
   // Without this check, the MAPClientManager connection fails and the
   // swarm gets a new identity on reconnection.
-  const healthUrl = deriveHealthUrl(swarm.map_endpoint);
-  if (healthUrl) {
-    const healthy = await waitForHealth(healthUrl, 15_000);
-    if (!healthy) {
-      console.warn(`[swarmcraft-bridge] MAP server health check failed for ${swarm.name} at ${healthUrl}, skipping connect`);
+  const healthUrls = deriveHealthUrls(swarm.map_endpoint);
+  if (healthUrls.length > 0) {
+    const reached = await waitForAnyHealth(healthUrls, 15_000);
+    if (!reached) {
+      console.warn(`[swarmcraft-bridge] MAP server health check failed for ${swarm.name} (tried ${healthUrls.join(', ')}), marking unreachable`);
+      markSwarmStatus(swarm.id, 'unreachable');
       return;
     }
   }
@@ -369,33 +423,70 @@ async function connectMapClient(
       skipSubscription: true,
     });
     console.log(`[swarmcraft-bridge] MAP client connected to ${swarm.name} at ${mapUrl}`);
+    // Promote unreachable → online once outbound bridge is live. Inbound
+    // sidecars manage their own status via heartbeat; this only matters when
+    // the bridge is the only signal we have (e.g., after a hub restart that
+    // dropped the inbound WS but the swarm's MAP server is up again).
+    const current = findSwarmById(swarm.id);
+    if (current && current.status === 'unreachable') {
+      markSwarmStatus(swarm.id, 'online');
+    }
   } catch (err) {
     console.warn(`[swarmcraft-bridge] MAP client connect to ${swarm.name} failed: ${(err as Error).message}`);
+    markSwarmStatus(swarm.id, 'unreachable');
   }
 }
 
-/** Derive the health check URL from a swarm's MAP endpoint. */
-function deriveHealthUrl(baseEndpoint: string): string | null {
+/**
+ * Candidate health-check URLs derived from a swarm's MAP endpoint.
+ *
+ * openswarm/macro-agent layouts:
+ *   gateway HTTP at base port, management HTTP at base+1, MAP WS at base+2.
+ *   /health is exposed on multiple of these; we probe the most-likely set.
+ *
+ * Hand-registered swarms may register with any of those ports as their
+ * `map_endpoint`, so deriving a single offset breaks. We instead probe a
+ * handful of candidates and accept the first that responds.
+ */
+function deriveHealthUrls(baseEndpoint: string): string[] {
   try {
     const url = new URL(baseEndpoint);
     const basePort = parseInt(url.port, 10);
-    if (!Number.isFinite(basePort)) return null;
-    // MAP server is at port+2, health endpoint is HTTP on the same port
-    return `http://${url.hostname}:${basePort + 2}/health`;
+    if (!Number.isFinite(basePort)) return [];
+    const offsets = [2, 1, 0, -1, -2];
+    const seen = new Set<number>();
+    const urls: string[] = [];
+    for (const off of offsets) {
+      const port = basePort + off;
+      if (port <= 0 || port > 65_535) continue;
+      if (seen.has(port)) continue;
+      seen.add(port);
+      urls.push(`http://${url.hostname}:${port}/health`);
+    }
+    return urls;
   } catch {
-    return null;
+    return [];
   }
 }
 
-/** Poll a health endpoint until it returns 200 or timeout. */
-async function waitForHealth(url: string, timeoutMs: number): Promise<boolean> {
+/**
+ * Poll candidate health URLs until one returns 200 or timeout. Each polling
+ * cycle probes all candidates in parallel; first 200 wins.
+ */
+async function waitForAnyHealth(urls: string[], timeoutMs: number): Promise<string | null> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return true;
-    } catch { /* not ready yet */ }
+    const probes = urls.map(async (u) => {
+      try {
+        const res = await fetch(u);
+        if (res.ok) return u;
+      } catch { /* not ready yet */ }
+      return null;
+    });
+    const results = await Promise.all(probes);
+    const hit = results.find((r) => r !== null);
+    if (hit) return hit;
     await new Promise((r) => setTimeout(r, 500));
   }
-  return false;
+  return null;
 }
