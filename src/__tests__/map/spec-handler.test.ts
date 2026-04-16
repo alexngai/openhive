@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import * as fs from 'fs';
 import * as path from 'path';
 
+// daemon mock (read path) — used by both author + dispatch flows.
 vi.mock('../../map/task-daemon-client.js', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { existsSync, readFileSync, writeFileSync } = require('fs');
@@ -69,10 +70,28 @@ vi.mock('../../map/task-daemon-client.js', () => {
       _writeJsonl(opentasksDir, [...nodes, node], edges);
       return node;
     },
-    // unused by the handler but exported by the real module
+    // Used by dispatch flow — return the seeded spec with a linked task.
+    daemonGetNodeWithNeighbors: async (_socket: string, nodeId: string) => {
+      if (nodeId === 's-target') {
+        return {
+          node: {
+            id: 's-target',
+            type: 'context',
+            title: 'Spec to dispatch',
+            content: 'Make it so',
+            metadata: { kind: 'spec' },
+            updated_at: '2026-04-15T20:00:00Z',
+          },
+          neighbors: [{ id: 't-1', type: 'task', title: 'Linked task', status: 'open' }],
+          edges: [{ from_id: 's-target', to_id: 't-1', type: 'implements' }],
+        };
+      }
+      return { node: null, neighbors: [], edges: [] };
+    },
     daemonQueryNodes: async () => ({ items: [], total: 0, daemon_connected: false }),
-    daemonGetNodeWithNeighbors: async () => ({ node: null, neighbors: [], edges: [] }),
+    daemonGetGraph: async () => ({ nodes: [], edges: [] }),
     daemonUpdateSpec: async () => ({}),
+    SPEC_METADATA_KIND: 'spec',
   };
 });
 
@@ -85,7 +104,10 @@ vi.mock('../../realtime/index.js', () => ({
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
+import * as mapDAL from '../../db/dal/map.js';
+import * as dispatchesDAL from '../../db/dal/dispatches.js';
 import { handleSpecRequest, MAPSpecRequestError, MAP_SPEC_METHODS } from '../../map/spec-handler.js';
+import { resetDispatchPolicy, setAutonomousDispatchPaused } from '../../map/dispatch-policy.js';
 import { testRoot, testDbPath, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
 
 const TEST_ROOT = testRoot('spec-handler');
@@ -136,6 +158,7 @@ describe('MAP spec handler', () => {
 
   beforeEach(() => {
     broadcastSpy.mockClear();
+    resetDispatchPolicy();
   });
 
   it('authors a spec and broadcasts spec.created with initiator', async () => {
@@ -223,5 +246,96 @@ describe('MAP spec handler', () => {
         { swarmId: 's', agentId: agent.id },
       ),
     ).rejects.toThrow(/OpenTasks/);
+  });
+
+  // ==========================================================================
+  // map/specs/dispatch (PR 4 — autonomous dispatch + kill switch)
+  // ==========================================================================
+
+  describe('map/specs/dispatch', () => {
+    let swarm: { id: string };
+
+    beforeAll(() => {
+      const s = mapDAL.createSwarm(agent.id, {
+        name: 'autonomous-target',
+        map_endpoint: 'ws://example.invalid/auto',
+      });
+      swarm = { id: s.id };
+    });
+
+    it('creates dispatches with initiator_type=agent when toggled off', async () => {
+      const result = await handleSpecRequest(
+        MAP_SPEC_METHODS.DISPATCH,
+        {
+          resource_id: opentasksResource.id,
+          spec_id: 's-target',
+          target_swarms: [swarm.id],
+          prompt: 'be careful',
+        },
+        { swarmId: 'sw-caller', agentId: agent.id },
+      );
+
+      const dispatches = (result as { dispatches: Array<{ id: string }> }).dispatches;
+      expect(dispatches).toHaveLength(1);
+      const persisted = dispatchesDAL.findDispatchById(dispatches[0]!.id);
+      expect(persisted?.initiator_type).toBe('agent');
+      expect(persisted?.initiator_id).toBe(agent.id);
+      expect(persisted?.prompt_override).toBe('be careful');
+    });
+
+    it('returns -32004 when the kill switch is engaged', async () => {
+      setAutonomousDispatchPaused(true);
+      await expect(
+        handleSpecRequest(
+          MAP_SPEC_METHODS.DISPATCH,
+          {
+            resource_id: opentasksResource.id,
+            spec_id: 's-target',
+            target_swarms: [swarm.id],
+          },
+          { swarmId: 'sw-caller', agentId: agent.id },
+        ),
+      ).rejects.toMatchObject({ code: -32004 });
+    });
+
+    it('rejects missing resource_id / spec_id / target_swarms', async () => {
+      await expect(
+        handleSpecRequest(
+          MAP_SPEC_METHODS.DISPATCH,
+          { spec_id: 's-target', target_swarms: [swarm.id] },
+          { swarmId: 'sw', agentId: agent.id },
+        ),
+      ).rejects.toThrow(/resource_id/);
+
+      await expect(
+        handleSpecRequest(
+          MAP_SPEC_METHODS.DISPATCH,
+          { resource_id: opentasksResource.id, target_swarms: [swarm.id] },
+          { swarmId: 'sw', agentId: agent.id },
+        ),
+      ).rejects.toThrow(/spec_id/);
+
+      await expect(
+        handleSpecRequest(
+          MAP_SPEC_METHODS.DISPATCH,
+          { resource_id: opentasksResource.id, spec_id: 's-target', target_swarms: [] },
+          { swarmId: 'sw', agentId: agent.id },
+        ),
+      ).rejects.toThrow(/target_swarms/);
+    });
+
+    it('returns -32001 when the spec cannot be found', async () => {
+      await expect(
+        handleSpecRequest(
+          MAP_SPEC_METHODS.DISPATCH,
+          {
+            resource_id: opentasksResource.id,
+            spec_id: 's-does-not-exist',
+            target_swarms: [swarm.id],
+          },
+          { swarmId: 'sw', agentId: agent.id },
+        ),
+      ).rejects.toMatchObject({ code: -32001 });
+    });
   });
 });

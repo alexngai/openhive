@@ -26,6 +26,11 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[?]` blo
 - **D8**: Multi-swarm dispatch is **`independent` only in v1**. No spec-level aggregate status; each dispatch is a sibling record. `all-must-complete` / `first-wins` parked.
 - **D9**: **No per-agent capability gating for spec/dispatch at launch.** Any registered MAP agent can author, edit, and dispatch. `Dispatch.initiator` recorded; global kill switch present. Rate limits / budgets / capability flags are retrofit paths.
 - **D10**: **Drafts are frontend-local (`localStorage`) for new-spec compose.** Edits to existing specs commit through to opentasks. Agent-initiated proposals commit directly with `metadata.review_status: 'pending'`.
+- **D11**: **Dispatch is a workflow with a feedback channel** — `<dispatch id="…">` header in the seed prompt; agent reports back via `map/dispatches/report` MAP notification.
+- **D12**: **`spec_ref = { resource_id, spec_id, captured_at }`** — captures `updated_at` at dispatch time for "spec edited since dispatch" affordances.
+- **D13**: **Seed prompt is plain markdown** — `<dispatch>` header + spec body + `## Tasks` section + optional `## Additional instructions`.
+- **D14**: **Cancel = mark cancelled + close session.** Notify-swarm path layers on later via the D11 contract.
+- **D15**: **Status transitions** — hub writes `→ queued`, `queued → running`, `running → cancelled`; agent writes `running → complete` / `running → failed` via `map/dispatches/report`.
 
 ---
 
@@ -226,4 +231,44 @@ Watch signals: runaway dispatch chains, repeated dispatches from one agent in ti
     - `PATCH` updated title + priority; `PATCH { archived: true }` archived the node.
     - Default list excluded the archived node; `?include_archived=true` included it.
   - **Tests updated**: added `daemonGetGraph` + `SPEC_METADATA_KIND` to the route test mock; added a regression test for the dual-mode read path (provider `type: 'spec'` + native `type: 'context'` with kind marker). 24 specs route + 8 spec-handler tests all pass.
-- **Next**: kick off Stream 2 (Dispatch primitive) when ready.
+- **2026-04-15 — Stream 2 PRs 1a/1b/1c shipped (dispatch primitive, REST + UI)**:
+  - **PR 1a (schema + DAL + read endpoints)**: bumped `SCHEMA_VERSION` to 32, added `dispatches` table with one row per `(spec, swarm)` pair (no FKs to spec/swarm — keep history even when those are deleted). New `src/db/dal/dispatches.ts` with `createDispatch`, `findDispatchById`, `listDispatches` (filters on status/swarm/spec/initiator), `updateDispatchStatus`, `setDispatchSessionIds`, `cancelDispatch`. New `src/api/routes/dispatches.ts` with `GET /dispatches` and `GET /dispatches/:id`. 17 DAL tests + 10 route tests, all passing. Visibility (v1): any authenticated agent can list/inspect any dispatch — per-row ACL is a future layer.
+  - **PR 1b (POST /specs/:rid/:specId/dispatch)**: implements the core dispatch endpoint with the `target_swarms[]` + `prompt?` body. Builds the seed prompt per D13 — hidden `<dispatch id="…" spec="…" captured_at="…">` header, spec body, `## Tasks` section (linked tasks 1-hop from the spec), optional `## Additional instructions`. Captures spec.updated_at as `spec_captured_at` per D12. Dedupes target swarms, validates each exists. Per swarm: insert dispatch row (`status: queued`, `initiator: { type: 'user', id: agent.id }`), broadcast `dispatch.created` on `map:dispatches` channel. Returns `{ dispatches: Array<Dispatch & { seed_prompt, target_swarm_name }> }`. New `WSEventType` entries for `dispatch.created`/`dispatch.status_changed`/`dispatch.completed`/`dispatch.cancelled`. 18 new tests (route + buildDispatchSeedPrompt unit), all passing.
+  - **PR 1c (frontend dispatch modal + hooks)**: new `src/web/hooks/useDispatches.ts` with `useDispatches`/`useDispatch`/`useCreateDispatch`. New `src/web/components/dispatch/DispatchModal.tsx` — multi-select swarm picker (filters to online + ACP/mail-capable; toggle to show offline/incompatible), optional prompt textarea, success toast linking to created dispatches. Wired into `SpecDetail` page via a "Dispatch" button (disabled on archived specs). 14 new tests (7 hook + 7 component), all passing.
+  - **Verified**: `npm run test:web` (517 passed), `npm run test:run` (2458 passed; same 3 pre-existing failures as before, no new regressions). Build clean. End-to-end against a real daemon not yet exercised — that lands after PR 2 (so dispatches actually transition out of queued).
+- **2026-04-15 — Stream 2 PR 2 shipped (agent feedback channel + cancel)**:
+  - **Backend**: new `src/map/dispatch-handler.ts` exporting `MAP_DISPATCH_METHODS = { REPORT }`, registered in `map-server-setup.ts`. `map/dispatches/report` accepts `{ dispatch_id, status: 'running' | 'complete' | 'failed', outcome? }` (D11 / D15 — agent-reportable transitions only; cancelled and queued are hub-side). Rejects reports on cancelled/terminal dispatches. Records reporter id + swarm in the broadcast event so the audit trail shows who reported.
+  - **REST**: `POST /dispatches/:id/cancel` (D14 — mark cancelled + close session in v1; the proactive-notify-the-swarm path layers on once the D11 contract has receivers). Idempotent on already-cancelled, 409 on terminal states.
+  - **WS broadcasts**: `dispatch.status_changed` (running), `dispatch.completed` (complete/failed), `dispatch.cancelled` — all on `map:dispatches`.
+  - **Frontend**: new `useCancelDispatch` hook.
+  - 24 backend tests (9 dispatch-handler + 5 cancel-route + existing 10) and 8 hook tests, all passing.
+- **2026-04-15 — Stream 2 PR 3 shipped (dispatches dashboard + realtime)**:
+  - **Frontend**: new `useDispatchesRealtime` hook subscribing to `map:dispatches` and invalidating list/detail caches. New `Dispatches` page (`/dispatches`) with status-chip filter row, swarm dropdown, dispatch cards (id, spec link, swarm chip, initiator chip, status chip, time-ago). New `DispatchDetail` page (`/dispatches/:id`) with metadata grid (spec/swarm/initiator/captured-at), prompt-override panel, sessions panel, outcome panel (summary/error/artifacts), cancel button (only when queued/running), "no completion signal yet" hint when running with no sessions. New `DispatchStatusChip` component (5 statuses with icons; running animates).
+  - Nav entry added to Sidebar between Specs and Tasks.
+  - 23 frontend tests (3 chip + 5 page + existing dispatch tests), all passing.
+- **2026-04-15 — Stream 2 PR 4 shipped (MAP-initiated dispatch + kill switch)**:
+  - **Backend**: new `src/map/dispatch-policy.ts` with the in-memory `autonomousDispatchPaused` toggle (D9 retrofit path — global kill switch; restarts default to off). Refactored the dispatch-creation logic in `src/api/routes/specs.ts` into an exported helper `dispatchSpecToSwarms({ resourceId, specId, agentId, initiatorType, targetSwarms, prompt })` so REST and MAP entry points share one path. New `MAP_SPEC_METHODS.DISPATCH = 'map/specs/dispatch'` in spec-handler — checks the kill switch (returns -32004 if paused), creates dispatches with `initiator_type='agent'`, broadcasts. Two admin REST endpoints — `GET /admin/dispatch-policy` and `POST /admin/dispatch-policy { paused }` — to toggle the switch.
+  - 9 new tests (4 spec-handler dispatch cases + 5 admin policy route tests), all passing.
+- **Stream 2 totals**: 76 new backend tests + 23 new frontend tests = 99 net-new tests, all passing. Suite verified — `npm run test:run` 2488 passed (4 pre-existing failures unrelated, same ones that fail without my changes); `npm run test:web` 526 passed.
+- **Open follow-ups for Stream 2**: ~~Hub-side bootstrap~~, ~~Settings UI toggle~~, ~~per-spec dispatch list~~, ~~live e2e~~ — all addressed below.
+
+- **2026-04-15 — Stream 2 live e2e** (HTTP-level against a real opentasks daemon + registered swarms):
+  - Built `dist/cli.js`, ran on port 3138 against a fresh `.opentasks/` graph dir with one spec (`c-27j0` context+kind=spec) and one linked task.
+  - Registered two MAP swarms via REST (`e2e-swarm-alpha`, `e2e-swarm-beta`) with ACP capabilities.
+  - Verified: POST /specs/:rid/:specId/dispatch (single + multi-swarm), seed prompt contains all D13 elements (`<dispatch>` header with id/spec/captured_at + `# title` + body + `## Tasks` + `## Additional instructions`), spec_captured_at correctly captured.
+  - Verified: GET /dispatches with all filters (`status`, `spec_id`, combined), GET /dispatches/:id, POST /dispatches/:id/cancel (status flips, idempotent on already-cancelled).
+  - Verified: GET/POST /admin/dispatch-policy toggles the in-memory kill switch; rejects non-boolean payloads with 422.
+  - Verified: validation 422 on empty target_swarms, 404 on unknown swarm/spec.
+  - **No bugs caught.** Local-mode-without-X-Admin-Key returning 200 on admin endpoints is by-design (auto-authed local user is admin).
+- **2026-04-15 — Stream 2 follow-up: hub-side session bootstrap**:
+  - New `POST /dispatches/:id/bootstrap` opens an ACP stream to the target swarm, initializes, creates a session, sends the rebuilt seed prompt as the first user message, creates a session resource (so it appears in `/sessions`), records `session_ids` on the dispatch and flips status to `running`. Best effort — returns 503 cleanly when SwarmCraft's `acpStreamManager` isn't loaded or the target swarm has no ACP-capable agent. Rejects with 409 if dispatch is already past `queued`. `fetchSpecForDispatch` and `buildDispatchSeedPrompt` exported from `specs.ts` for reuse.
+  - Frontend: `useBootstrapDispatch` hook. `DispatchModal` now calls bootstrap for each created dispatch via `Promise.allSettled` after the create returns; toast detail shows `bootstrapped/total` count. Bootstrap failures are non-fatal — the dispatch row still exists at `queued`, modal still closes, user can navigate to detail and retry/cancel.
+  - 4 backend route tests (404, 409, 503-no-swarmcraft, auth) + 1 modal test ("bootstrap fails, modal still closes") + the existing modal test extended to assert bootstrap is called. Mail bootstrap intentionally deferred (no clean "seed-with-prompt" mail entry yet).
+- **2026-04-15 — Stream 2 follow-up: Settings UI toggle for kill switch**:
+  - New `DispatchPolicyCard` component shown at the top of the Server tab in `Settings.tsx`. Reads/writes via new `useDispatchPolicy` and `useUpdateDispatchPolicy` hooks (`/admin/dispatch-policy` GET/POST). Live state shows green shield + "Pause" button; paused state shows red ban icon, red-tinted card, and "Resume" button. Hidden for non-admins. Notes that state is in-memory and resets on hub restart.
+  - 5 component tests + 2 hook tests, all passing.
+- **2026-04-15 — Stream 2 follow-up: per-spec dispatch list on SpecDetail**:
+  - New `SpecDispatchesPanel` sidebar component on `SpecDetail` (above the Tasks/Feedback/Contexts panels). Lists dispatches scoped to the (resource_id, spec_id) pair via `useDispatches({ spec_resource_id, spec_id })`. Each row shows id, swarm name, time-ago, status chip; clicking navigates to `/dispatches/:id`. Subscribes to `useDispatchesRealtime` so a dispatch from elsewhere appears here without refresh.
+  - 4 component tests, all passing.
+- **Stream 2 totals (post follow-ups)**: 82 net-new backend tests + 35 net-new frontend tests = 117 total. Final suite run: server `2494 passed` (4 pre-existing failures unchanged), web `538 passed`.
+- **Next**: kick off Stream 3 (compose UX), Stream 4 (observability dashboard), Stream 5 (onboarding + topology), or Stream 6 (learning loop) when ready.

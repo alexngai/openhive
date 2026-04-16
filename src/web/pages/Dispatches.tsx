@@ -4,7 +4,7 @@ import { Send, Zap, FileText, User, Bot } from 'lucide-react';
 import clsx from 'clsx';
 import { useDispatches, type DispatchStatus } from '../hooks/useDispatches';
 import { useDispatchesRealtime } from '../hooks/useDispatchesRealtime';
-import { useMapSwarms } from '../hooks/useApi';
+import { useMapSwarmsForPicker } from '../hooks/useApi';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
 import { TimeAgo } from '../components/common/TimeAgo';
 
@@ -15,7 +15,7 @@ export function Dispatches() {
   const [swarmFilter, setSwarmFilter] = useState<string>('');
 
   useDispatchesRealtime();
-  const { data: swarms = [] } = useMapSwarms();
+  const { data: swarms = [] } = useMapSwarmsForPicker();
 
   const { data, isLoading, error } = useDispatches({
     status: statusFilter.size > 0 ? Array.from(statusFilter) : undefined,

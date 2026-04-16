@@ -173,6 +173,11 @@ export type WSEventType =
   | 'spec.created'
   | 'spec.updated'
   | 'spec.deleted'
+  // Dispatch broadcast events (see api/routes/specs.ts dispatch endpoint, api/routes/dispatches.ts, map/dispatch-handler.ts)
+  | 'dispatch.created'
+  | 'dispatch.status_changed'
+  | 'dispatch.completed'
+  | 'dispatch.cancelled'
   | 'node_registered'
   | 'node_state_changed'
   | 'swarm_heartbeat'

@@ -10,6 +10,8 @@
 import * as resourcesDAL from '../db/dal/syncable-resources.js';
 import { resolveLocalPath } from '../api/routes/_resource-helpers.js';
 import { daemonCreateSpec, resolveDaemonSocket, TaskDaemonError } from './task-daemon-client.js';
+import { dispatchSpecToSwarms } from '../api/routes/specs.js';
+import { isAutonomousDispatchPaused } from './dispatch-policy.js';
 
 // ============================================================================
 // Method Constants
@@ -17,6 +19,7 @@ import { daemonCreateSpec, resolveDaemonSocket, TaskDaemonError } from './task-d
 
 export const MAP_SPEC_METHODS = {
   AUTHOR: 'map/specs/author',
+  DISPATCH: 'map/specs/dispatch',
 } as const;
 
 export const MAP_SPEC_METHOD_SET = new Set<string>(Object.values(MAP_SPEC_METHODS));
@@ -115,6 +118,62 @@ export async function handleSpecRequest(
       }
 
       return { spec: node };
+    }
+
+    case MAP_SPEC_METHODS.DISPATCH: {
+      // Per D9 we don't gate per-agent capability. The single safety net is
+      // the global kill switch (D9 retrofit path) — when toggled on, agent-
+      // initiated dispatches are refused while user-initiated dispatches via
+      // REST continue. Restarts default the toggle back to "not paused."
+      if (isAutonomousDispatchPaused()) {
+        throw new MAPSpecRequestError(
+          -32004,
+          'Autonomous dispatch is paused by hub admin. User-initiated dispatch via REST is unaffected.',
+        );
+      }
+
+      const resourceId = p.resource_id as string | undefined;
+      const specId = p.spec_id as string | undefined;
+      const targetSwarmsRaw = p.target_swarms;
+      const prompt = typeof p.prompt === 'string' ? (p.prompt as string) : undefined;
+
+      if (!resourceId) {
+        throw new MAPSpecRequestError(-32602, 'Invalid params: missing resource_id');
+      }
+      if (!specId) {
+        throw new MAPSpecRequestError(-32602, 'Invalid params: missing spec_id');
+      }
+      if (!Array.isArray(targetSwarmsRaw) || targetSwarmsRaw.length === 0) {
+        throw new MAPSpecRequestError(
+          -32602,
+          'Invalid params: target_swarms must be a non-empty array',
+        );
+      }
+      const targetSwarms = targetSwarmsRaw.filter((s): s is string => typeof s === 'string');
+      if (targetSwarms.length === 0) {
+        throw new MAPSpecRequestError(
+          -32602,
+          'Invalid params: target_swarms entries must be strings',
+        );
+      }
+
+      const result = await dispatchSpecToSwarms({
+        resourceId,
+        specId,
+        agentId: context.agentId,
+        initiatorType: 'agent',
+        targetSwarms,
+        prompt,
+      });
+
+      if (!result.ok) {
+        // Map fetchSpecForDispatch / swarm-not-found error codes to JSON-RPC.
+        const codeMap: Record<number, number> = { 404: -32001, 403: -32001, 400: -32602 };
+        const rpcCode = codeMap[result.statusCode] ?? -32000;
+        throw new MAPSpecRequestError(rpcCode, result.message);
+      }
+
+      return { dispatches: result.dispatches };
     }
 
     default:

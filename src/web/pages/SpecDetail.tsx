@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, FileText, ListTodo, MessageSquare, Layers, GitBranch, Zap, Pencil,
-  Archive, ArchiveRestore,
+  Archive, ArchiveRestore, Send,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useSpec, useUpdateSpec } from '../hooks/useSpecs';
@@ -10,6 +10,8 @@ import { useSpecsRealtime } from '../hooks/useSpecsRealtime';
 import { SpecMarkdown } from '../components/specs/SpecMarkdown';
 import { SpecEditor } from '../components/specs/SpecEditor';
 import { LinkedNodesPanel } from '../components/specs/LinkedNodesPanel';
+import { DispatchModal } from '../components/dispatch/DispatchModal';
+import { SpecDispatchesPanel } from '../components/dispatch/SpecDispatchesPanel';
 import { PageLoader } from '../components/common/LoadingSpinner';
 
 const PRIORITY_COLORS: Record<number, string> = {
@@ -31,6 +33,7 @@ export function SpecDetail() {
   const updateSpec = useUpdateSpec(resourceId ?? '', specId ?? '');
   const [editing, setEditing] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [dispatchOpen, setDispatchOpen] = useState(false);
   useSpecsRealtime();
 
   if (isLoading) return <PageLoader />;
@@ -144,6 +147,16 @@ export function SpecDetail() {
                   <Pencil className="h-4 w-4" />
                   Edit
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setDispatchOpen(true)}
+                  disabled={spec.archived}
+                  className="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded bg-honey-500 text-black font-medium hover:bg-honey-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={spec.archived ? "Can't dispatch an archived spec" : 'Dispatch to swarms'}
+                >
+                  <Send className="h-4 w-4" />
+                  Dispatch
+                </button>
               </>
             )}
           </div>
@@ -207,6 +220,7 @@ export function SpecDetail() {
 
         {/* Sidebar — linked nodes */}
         <div className="space-y-4">
+          <SpecDispatchesPanel resourceId={spec.resource_id} specId={spec.id} />
           <LinkedNodesPanel
             title="Tasks"
             icon={<ListTodo className="h-4 w-4 text-honey-500" />}
@@ -250,6 +264,12 @@ export function SpecDetail() {
           )}
         </div>
       </div>
+
+      <DispatchModal
+        open={dispatchOpen}
+        onClose={() => setDispatchOpen(false)}
+        spec={spec}
+      />
     </div>
   );
 }

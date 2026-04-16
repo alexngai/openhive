@@ -146,10 +146,12 @@ vi.mock('../../realtime/index.js', () => ({
   broadcast: vi.fn(),
 }));
 
-import { initDatabase, closeDatabase } from '../../db/index.js';
+import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
-import { specsRoutes } from '../../api/routes/specs.js';
+import * as mapDAL from '../../db/dal/map.js';
+import * as dispatchesDAL from '../../db/dal/dispatches.js';
+import { buildDispatchSeedPrompt, specsRoutes } from '../../api/routes/specs.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
 
@@ -647,6 +649,272 @@ describe('Specs routes', () => {
         payload: { title: 'nope' },
       });
       expect(res.statusCode).toBe(403);
+    });
+  });
+
+  // ==========================================================================
+  // POST /specs/:resourceId/:specId/dispatch (Stream 2 PR 1b)
+  // ==========================================================================
+
+  describe('POST /specs/:resourceId/:specId/dispatch', () => {
+    let swarmA: { id: string; name: string };
+    let swarmB: { id: string; name: string };
+
+    beforeAll(async () => {
+      const a = mapDAL.createSwarm(testAgent.id, {
+        name: 'swarm-alpha',
+        map_endpoint: 'ws://example.invalid/swarm-alpha',
+      });
+      const b = mapDAL.createSwarm(testAgent.id, {
+        name: 'swarm-beta',
+        map_endpoint: 'ws://example.invalid/swarm-beta',
+      });
+      swarmA = { id: a.id, name: a.name };
+      swarmB = { id: b.id, name: b.name };
+    });
+
+    beforeEach(() => {
+      // Wipe dispatches so per-test counts are deterministic.
+      getDatabase().prepare('DELETE FROM dispatches').run();
+    });
+
+    it('creates one dispatch per target swarm', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/dispatch`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { target_swarms: [swarmA.id, swarmB.id] },
+      });
+      expect(res.statusCode).toBe(201);
+      const body = JSON.parse(res.body);
+      expect(body.dispatches).toHaveLength(2);
+
+      const swarmIds = body.dispatches.map((d: { target_swarm_id: string }) => d.target_swarm_id);
+      expect(swarmIds.sort()).toEqual([swarmA.id, swarmB.id].sort());
+
+      // Each dispatch row was actually written.
+      const persisted = dispatchesDAL.listDispatches({ spec_id: 's-aaa' });
+      expect(persisted.total).toBe(2);
+      persisted.data.forEach((d) => {
+        expect(d.status).toBe('queued');
+        expect(d.initiator_type).toBe('user');
+        expect(d.initiator_id).toBe(testAgent.id);
+      });
+    });
+
+    it('captures spec.updated_at as captured_at', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/dispatch`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { target_swarms: [swarmA.id] },
+      });
+      const body = JSON.parse(res.body);
+      // Fixture has no updated_at on s-aaa; whatever the daemon mock returned
+      // for that field should round-trip into the dispatch.
+      expect(body.dispatches[0].spec_captured_at !== undefined).toBe(true);
+    });
+
+    it('builds a seed prompt with <dispatch> header, spec body, ## Tasks, and ## Additional instructions', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/dispatch`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: {
+          target_swarms: [swarmA.id],
+          prompt: 'be careful with the migration',
+        },
+      });
+      const body = JSON.parse(res.body);
+      const seed: string = body.dispatches[0].seed_prompt;
+      expect(seed).toMatch(/^<dispatch id="disp_/);
+      expect(seed).toContain(`spec="${resourceA.id}:s-aaa"`);
+      expect(seed).toContain('map/dispatches/report');
+      expect(seed).toContain('# Auth rewrite');
+      expect(seed).toContain('rewrite the auth flow');
+      expect(seed).toContain('## Tasks');
+      // Linked task t-aaa from the fixture
+      expect(seed).toContain('`t-aaa`');
+      expect(seed).toContain('## Additional instructions');
+      expect(seed).toContain('be careful with the migration');
+    });
+
+    it('omits empty optional sections', async () => {
+      // s-bbb (Search redesign) has no linked tasks in the fixture
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-bbb/dispatch`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { target_swarms: [swarmA.id] },
+      });
+      const seed: string = JSON.parse(res.body).dispatches[0].seed_prompt;
+      expect(seed).not.toContain('## Tasks');
+      expect(seed).not.toContain('## Additional instructions');
+    });
+
+    it('includes target_swarm_name in response', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/dispatch`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { target_swarms: [swarmA.id] },
+      });
+      const body = JSON.parse(res.body);
+      expect(body.dispatches[0].target_swarm_name).toBe(swarmA.name);
+    });
+
+    it('broadcasts dispatch.created on map:dispatches per dispatch', async () => {
+      broadcastSpy.mockClear();
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/dispatch`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { target_swarms: [swarmA.id, swarmB.id] },
+      });
+      expect(res.statusCode).toBe(201);
+      const dispatchCalls = broadcastSpy.mock.calls.filter(
+        (c) => c[0] === 'map:dispatches' && (c[1] as { type: string }).type === 'dispatch.created',
+      );
+      expect(dispatchCalls).toHaveLength(2);
+      const payload = dispatchCalls[0]![1] as { data: { initiator: { type: string; id: string } } };
+      expect(payload.data.initiator).toEqual({ type: 'user', id: testAgent.id });
+    });
+
+    it('dedupes target_swarms', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/dispatch`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { target_swarms: [swarmA.id, swarmA.id, swarmA.id] },
+      });
+      expect(JSON.parse(res.body).dispatches).toHaveLength(1);
+    });
+
+    it('rejects empty target_swarms', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/dispatch`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { target_swarms: [] },
+      });
+      expect(res.statusCode).toBe(422);
+    });
+
+    it('returns 404 when target swarm does not exist', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/dispatch`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { target_swarms: ['swarm_nope'] },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('returns 404 for an unknown spec', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-doesnt-exist/dispatch`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { target_swarms: [swarmA.id] },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('returns 403 when caller has no access to the spec', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/dispatch`,
+        headers: { Authorization: `Bearer ${otherAgent.apiKey}` },
+        payload: { target_swarms: [swarmA.id] },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('rejects when the spec resource is not opentasks', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${memoryResource.id}/anything/dispatch`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { target_swarms: [swarmA.id] },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
+
+  // ==========================================================================
+  // buildDispatchSeedPrompt unit tests
+  // ==========================================================================
+
+  describe('buildDispatchSeedPrompt', () => {
+    it('produces a header with dispatch id, spec ref, and captured_at', () => {
+      const out = buildDispatchSeedPrompt({
+        dispatchId: 'disp_xyz',
+        resourceId: 'res_a',
+        specId: 's-1',
+        capturedAt: '2026-04-15T20:00:00Z',
+        title: 'T',
+        content: '',
+        linkedTasks: [],
+      });
+      expect(out).toMatch(
+        /<dispatch id="disp_xyz" spec="res_a:s-1" captured_at="2026-04-15T20:00:00Z">/,
+      );
+      expect(out).toContain('</dispatch>');
+    });
+
+    it('omits captured_at attribute when null', () => {
+      const out = buildDispatchSeedPrompt({
+        dispatchId: 'disp_xyz',
+        resourceId: 'res_a',
+        specId: 's-1',
+        capturedAt: null,
+        title: 'T',
+        content: '',
+        linkedTasks: [],
+      });
+      expect(out).not.toContain('captured_at=');
+    });
+
+    it('falls back to "Untitled spec" when title is empty', () => {
+      const out = buildDispatchSeedPrompt({
+        dispatchId: 'd', resourceId: 'r', specId: 's', capturedAt: null,
+        title: '', content: '', linkedTasks: [],
+      });
+      expect(out).toContain('# Untitled spec');
+    });
+
+    it('renders task entries with status prefix when present', () => {
+      const out = buildDispatchSeedPrompt({
+        dispatchId: 'd', resourceId: 'r', specId: 's', capturedAt: null,
+        title: 'T', content: '',
+        linkedTasks: [
+          { id: 't-1', title: 'first', status: 'open' },
+          { id: 't-2', title: 'second' },
+        ],
+      });
+      expect(out).toContain('- [open] `t-1` — first');
+      expect(out).toContain('- `t-2` — second');
+    });
+
+    it('omits ## Tasks header when no linked tasks', () => {
+      const out = buildDispatchSeedPrompt({
+        dispatchId: 'd', resourceId: 'r', specId: 's', capturedAt: null,
+        title: 'T', content: '', linkedTasks: [],
+      });
+      expect(out).not.toContain('## Tasks');
+    });
+
+    it('omits ## Additional instructions when prompt_override is missing or whitespace', () => {
+      const a = buildDispatchSeedPrompt({
+        dispatchId: 'd', resourceId: 'r', specId: 's', capturedAt: null,
+        title: 'T', content: '', linkedTasks: [],
+      });
+      const b = buildDispatchSeedPrompt({
+        dispatchId: 'd', resourceId: 'r', specId: 's', capturedAt: null,
+        title: 'T', content: '', linkedTasks: [], promptOverride: '   ',
+      });
+      expect(a).not.toContain('## Additional instructions');
+      expect(b).not.toContain('## Additional instructions');
     });
   });
 });

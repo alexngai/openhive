@@ -23,6 +23,9 @@ import {
 } from '../../map/task-daemon-client.js';
 import { findSwarmForResource, remoteGetGraph } from '../../map/opentasks-remote.js';
 import { broadcastToChannel } from '../../realtime/index.js';
+import * as dispatchesDAL from '../../db/dal/dispatches.js';
+import { findSwarmById } from '../../db/dal/map.js';
+import type { Dispatch } from '../../db/dal/dispatches.js';
 import type { SyncableResource } from '../../types.js';
 import type { Config } from '../../config.js';
 
@@ -50,6 +53,11 @@ const UpdateSpecSchema = z
       d.status !== undefined,
     { message: 'At least one field must be provided' },
   );
+
+const DispatchSpecSchema = z.object({
+  target_swarms: z.array(z.string().min(1)).min(1).max(20),
+  prompt: z.string().max(5000).optional(),
+});
 
 const PER_RESOURCE_LIMIT = 200;
 
@@ -168,6 +176,162 @@ function nodeKind(node: Record<string, unknown>): 'task' | 'context' | 'feedback
   const t = node.type as string | undefined;
   if (t === 'task' || t === 'context' || t === 'feedback' || t === 'spec' || t === 'issue') return t;
   return 'other';
+}
+
+export interface SpecForDispatch {
+  resource: SyncableResource;
+  node: Record<string, unknown>;
+  neighbors: Record<string, unknown>[];
+}
+
+/**
+ * Resolve a spec (and its 1-hop neighbors) for the dispatch flow. Mirrors
+ * the GET /specs/:rid/:specId resolution path so prompt construction sees the
+ * same data the user does in the detail view. Returns an error code +
+ * message when the spec can't be served.
+ */
+export async function fetchSpecForDispatch(
+  resourceId: string,
+  specId: string,
+  agentId: string,
+): Promise<
+  | { ok: true; data: SpecForDispatch }
+  | { ok: false; statusCode: number; error: string; message: string }
+> {
+  const resource = resourcesDAL.findResourceById(resourceId);
+  if (!resource) {
+    return { ok: false, statusCode: 404, error: 'Not Found', message: 'Resource not found' };
+  }
+  if (!resourcesDAL.canAccessResource(agentId, resource)) {
+    return { ok: false, statusCode: 403, error: 'Forbidden', message: 'No access to resource' };
+  }
+  if (!isOpenTasksResource(resource)) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: 'Bad Request',
+      message: 'Resource is not an OpenTasks task graph',
+    };
+  }
+
+  const localPath = resolveLocalPath(resource);
+  let node: Record<string, unknown> | null = null;
+  let neighbors: Record<string, unknown>[] = [];
+
+  if (localPath) {
+    try {
+      const socketPath = resolveDaemonSocket(localPath);
+      const result = await daemonGetNodeWithNeighbors(socketPath, specId, localPath);
+      node = result.node;
+      neighbors = result.neighbors;
+    } catch (err) {
+      if (!(err instanceof TaskDaemonError && err.code === 'DAEMON_NOT_RUNNING')) throw err;
+    }
+  }
+
+  if (!node) {
+    const swarmId = findSwarmForResource(resource);
+    if (swarmId) {
+      const graph = await remoteGetGraph(swarmId);
+      if (graph) {
+        const remoteNode = graph.nodes.find((n) => n.id === specId);
+        if (remoteNode) {
+          node = remoteNode;
+          const neighborIds = new Set<string>();
+          for (const e of graph.edges as Array<Record<string, unknown>>) {
+            if (e.from_id === specId || e.to_id === specId) {
+              if (e.from_id !== specId) neighborIds.add(String(e.from_id));
+              if (e.to_id !== specId) neighborIds.add(String(e.to_id));
+            }
+          }
+          neighbors = graph.nodes.filter((n) => neighborIds.has(String(n.id)));
+        }
+      }
+    }
+  }
+
+  if (!node) {
+    return { ok: false, statusCode: 404, error: 'Not Found', message: 'Spec not found' };
+  }
+  if (!isSpecNode(node)) {
+    return {
+      ok: false,
+      statusCode: 404,
+      error: 'Not Found',
+      message: 'Node exists but is not a spec',
+    };
+  }
+  return { ok: true, data: { resource, node, neighbors } };
+}
+
+/**
+ * Build the markdown seed prompt sent to a swarm at dispatch time (D13).
+ * Format:
+ *   <dispatch id="..." spec="..." captured_at="...">
+ *     reporting protocol notes
+ *   </dispatch>
+ *
+ *   # {title}
+ *   {body}
+ *
+ *   ## Tasks            (only if linked tasks exist)
+ *   - [{status}] `{id}` — {title}
+ *
+ *   ## Additional instructions   (only if prompt_override provided)
+ *   {prompt_override}
+ */
+export function buildDispatchSeedPrompt(input: {
+  dispatchId: string;
+  resourceId: string;
+  specId: string;
+  capturedAt: string | null;
+  title: string;
+  content: string;
+  linkedTasks: Array<{ id: string; title?: string; status?: string }>;
+  promptOverride?: string | null;
+}): string {
+  const specRef = `${input.resourceId}:${input.specId}`;
+  const headerAttrs = [
+    `id="${input.dispatchId}"`,
+    `spec="${specRef}"`,
+    input.capturedAt ? `captured_at="${input.capturedAt}"` : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const lines: string[] = [];
+  lines.push(`<dispatch ${headerAttrs}>`);
+  lines.push(
+    'OpenHive dispatch. When you finish or fail, report back via the MAP method',
+  );
+  lines.push(
+    '`map/dispatches/report` with `{ dispatch_id, status: "complete" | "failed", outcome? }`.',
+  );
+  lines.push('</dispatch>');
+  lines.push('');
+  lines.push(`# ${input.title || 'Untitled spec'}`);
+  lines.push('');
+  if (input.content && input.content.trim()) {
+    lines.push(input.content.trim());
+    lines.push('');
+  }
+  if (input.linkedTasks.length > 0) {
+    lines.push('## Tasks');
+    lines.push('');
+    for (const t of input.linkedTasks) {
+      const status = t.status ? `[${t.status}] ` : '';
+      const title = t.title ?? '(untitled)';
+      lines.push(`- ${status}\`${t.id}\` — ${title}`);
+    }
+    lines.push('');
+  }
+  if (input.promptOverride && input.promptOverride.trim()) {
+    lines.push('## Additional instructions');
+    lines.push('');
+    lines.push(input.promptOverride.trim());
+    lines.push('');
+  }
+  return lines.join('\n');
 }
 
 export async function specsRoutes(
@@ -522,4 +686,151 @@ export async function specsRoutes(
       return reply.status(500).send({ error: 'Internal Error', message: msg });
     }
   });
+
+  /**
+   * POST /specs/:resourceId/:specId/dispatch
+   *
+   * Creates one dispatch row per target swarm (D3 multi-swarm first-class)
+   * and returns each with its computed seed prompt (D13). Status starts at
+   * `queued` (D15) — actual session bootstrap is orchestrated by the caller
+   * (frontend in PR 1c, agent in PR 4) and acknowledged via the lifecycle
+   * endpoints landing in PR 2.
+   *
+   * Open to any authenticated agent. Per D9 there is no per-agent capability
+   * gating; the `initiator` field on every dispatch records who triggered it.
+   */
+  fastify.post<{
+    Params: { resourceId: string; specId: string };
+  }>(
+    '/specs/:resourceId/:specId/dispatch',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      let body: z.infer<typeof DispatchSpecSchema>;
+      try {
+        body = DispatchSpecSchema.parse(request.body);
+      } catch (err) {
+        if (err instanceof z.ZodError) {
+          return reply.status(422).send({ error: 'VALIDATION_ERROR', details: err.errors });
+        }
+        throw err;
+      }
+
+      const result = await dispatchSpecToSwarms({
+        resourceId: request.params.resourceId,
+        specId: request.params.specId,
+        agentId: request.agent!.id,
+        initiatorType: 'user',
+        targetSwarms: body.target_swarms,
+        prompt: body.prompt,
+      });
+
+      if (!result.ok) {
+        return reply
+          .status(result.statusCode)
+          .send({ error: result.error, message: result.message });
+      }
+      return reply.status(201).send({ dispatches: result.dispatches });
+    },
+  );
+}
+
+/**
+ * Shared dispatch-creation helper used by both `POST /specs/:rid/:specId/dispatch`
+ * (REST) and `map/specs/dispatch` (MAP-initiated). Per D9 there is no per-agent
+ * capability gating; callers supply the initiator type/id and the helper records
+ * it on every created dispatch row.
+ *
+ * Returns either `{ ok: true, dispatches }` or `{ ok: false, statusCode, error, message }`
+ * so the calling layer can map to its preferred error shape (HTTP status vs. JSON-RPC code).
+ */
+export async function dispatchSpecToSwarms(input: {
+  resourceId: string;
+  specId: string;
+  agentId: string;
+  initiatorType: 'user' | 'agent';
+  targetSwarms: string[];
+  prompt?: string | null;
+}): Promise<
+  | {
+      ok: true;
+      dispatches: Array<Dispatch & { seed_prompt: string; target_swarm_name: string | null }>;
+    }
+  | { ok: false; statusCode: number; error: string; message: string }
+> {
+  const fetched = await fetchSpecForDispatch(input.resourceId, input.specId, input.agentId);
+  if (!fetched.ok) return fetched;
+
+  const { resource, node, neighbors } = fetched.data;
+  const capturedAt = (node.updated_at as string) ?? (node.updatedAt as string) ?? null;
+  const title = (node.title as string) ?? '';
+  const content = (node.content as string) ?? '';
+
+  const linkedTasks = neighbors
+    .filter((n) => n.type === 'task')
+    .map((n) => ({
+      id: String(n.id),
+      title: typeof n.title === 'string' ? (n.title as string) : undefined,
+      status: typeof n.status === 'string' ? (n.status as string) : undefined,
+    }));
+
+  const uniqueSwarms = Array.from(new Set(input.targetSwarms));
+  const swarmInfos: Array<{ id: string; name: string | null }> = [];
+  for (const swarmId of uniqueSwarms) {
+    const swarm = findSwarmById(swarmId);
+    if (!swarm) {
+      return {
+        ok: false,
+        statusCode: 404,
+        error: 'Not Found',
+        message: `Swarm not found: ${swarmId}`,
+      };
+    }
+    swarmInfos.push({ id: swarm.id, name: swarm.name ?? null });
+  }
+
+  const dispatches: Array<Dispatch & { seed_prompt: string; target_swarm_name: string | null }> = [];
+  for (const target of swarmInfos) {
+    const dispatch = dispatchesDAL.createDispatch({
+      spec_resource_id: resource.id,
+      spec_id: input.specId,
+      spec_captured_at: capturedAt,
+      target_swarm_id: target.id,
+      initiator_type: input.initiatorType,
+      initiator_id: input.agentId,
+      prompt_override: input.prompt ?? null,
+    });
+
+    const seedPrompt = buildDispatchSeedPrompt({
+      dispatchId: dispatch.id,
+      resourceId: resource.id,
+      specId: input.specId,
+      capturedAt,
+      title,
+      content,
+      linkedTasks,
+      promptOverride: input.prompt,
+    });
+
+    try {
+      broadcastToChannel('map:dispatches', {
+        type: 'dispatch.created',
+        data: {
+          dispatch: { id: dispatch.id, status: dispatch.status },
+          spec_ref: {
+            resource_id: resource.id,
+            spec_id: input.specId,
+            captured_at: capturedAt,
+          },
+          target_swarm_id: target.id,
+          initiator: { type: input.initiatorType, id: input.agentId },
+        },
+      });
+    } catch {
+      /* best effort */
+    }
+
+    dispatches.push({ ...dispatch, seed_prompt: seedPrompt, target_swarm_name: target.name });
+  }
+
+  return { ok: true, dispatches };
 }

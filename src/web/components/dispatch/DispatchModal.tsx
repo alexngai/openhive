@@ -1,12 +1,15 @@
 import { useMemo, useState } from 'react';
 import clsx from 'clsx';
 import { Loader2, Send, X, Zap, AlertCircle, CheckCircle2 } from 'lucide-react';
-import { useMapSwarms } from '../../hooks/useApi';
+import { useMapSwarmsForPicker } from '../../hooks/useApi';
 import { useBootstrapDispatch, useCreateDispatch, type CreatedDispatch } from '../../hooks/useDispatches';
 import { toast } from '../../stores/toast';
 import { Dialog } from '../common/Dialog';
+import { TimeAgo } from '../common/TimeAgo';
 import type { Spec } from '../../hooks/useSpecs';
 import type { MapSwarm } from '../../lib/api';
+
+type PickerSwarm = MapSwarm & { variant_count?: number };
 
 interface DispatchModalProps {
   open: boolean;
@@ -42,7 +45,7 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
   const [showOffline, setShowOffline] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { data: swarms = [] } = useMapSwarms();
+  const { data: swarms = [] } = useMapSwarmsForPicker();
   const create = useCreateDispatch();
   const bootstrap = useBootstrapDispatch();
 
@@ -168,6 +171,7 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
               style={{ borderColor: 'var(--color-border-subtle)' }}
             >
               {sortedSwarms.map((s) => {
+                const ps = s as PickerSwarm;
                 const eligible = isDispatchable(s);
                 const checked = selected.has(s.id);
                 return (
@@ -190,6 +194,14 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
                     <span className="truncate flex-1" style={{ color: 'var(--color-text)' }}>
                       {s.name}
                     </span>
+                    {s.last_seen_at && (
+                      <TimeAgo date={s.last_seen_at} className="text-2xs shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+                    )}
+                    {(ps.variant_count ?? 0) > 1 && (
+                      <span className="text-2xs shrink-0 px-1 rounded bg-white/5" style={{ color: 'var(--color-text-muted)' }}>
+                        ×{ps.variant_count}
+                      </span>
+                    )}
                     {!eligible && (
                       <span
                         className="text-xs shrink-0"
