@@ -13,7 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 let cachedToken: string | null | undefined;
 
@@ -101,7 +101,7 @@ function readGhCliToken(): string | null {
  */
 function readGhAuthTokenCommand(): string | null {
   try {
-    const result = execSync('gh auth token', {
+    const result = execFileSync('gh', ['auth', 'token'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 3000,

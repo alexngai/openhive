@@ -617,7 +617,7 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       } catch (err) {
         return reply.status(502).send({
           error: 'GitHub API Error',
-          message: err instanceof Error ? err.message : String(err),
+          message: sanitizeGitHubError(err),
         });
       }
     }
@@ -671,7 +671,7 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       } catch (err) {
         return reply.status(502).send({
           error: 'GitHub API Error',
-          message: err instanceof Error ? err.message : String(err),
+          message: sanitizeGitHubError(err),
         });
       }
     }
@@ -698,7 +698,7 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       } catch (err) {
         return reply.status(502).send({
           error: 'GitHub API Error',
-          message: err instanceof Error ? err.message : String(err),
+          message: sanitizeGitHubError(err),
         });
       }
     }
@@ -746,6 +746,22 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.send({ data: status });
     }
   );
+}
+
+/**
+ * Strip potentially sensitive details from GitHub API errors before
+ * returning to the client. Keeps the HTTP status + a short reason
+ * but removes raw response bodies that may contain token scoping info.
+ */
+function sanitizeGitHubError(err: unknown): string {
+  if (!(err instanceof Error)) return 'Unknown GitHub API error';
+  const msg = err.message;
+  // Extract just the status code + endpoint, drop the raw response body
+  const match = msg.match(/GitHub API \w+ (\/[^\s]+) → (\d+)/);
+  if (match) return `GitHub API ${match[1]} returned ${match[2]}`;
+  // Fallback: truncate and strip anything after a colon that might be a body
+  const short = msg.split('\n')[0].slice(0, 120);
+  return short.includes('{') ? short.slice(0, short.indexOf('{')) + '(details omitted)' : short;
 }
 
 function simpleHash(s: string): string {

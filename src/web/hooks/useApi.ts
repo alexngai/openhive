@@ -2176,13 +2176,10 @@ export function useCascadeStreamTimeline(streamRowId: string | null) {
 export function useCascadeStreamDetail(streamRowId: string | null) {
   return useQuery({
     queryKey: ['cascade-stream-detail', streamRowId],
-    queryFn: async () => {
-      const [stream, stats] = await Promise.all([
-        api.get<Record<string, unknown>>(`/cascade/streams/${encodeURIComponent(streamRowId!)}`),
-        api.get<{ data: Record<string, unknown> }>(`/cascade/streams/${encodeURIComponent(streamRowId!)}`),
-      ]);
-      return stream;
-    },
+    queryFn: () =>
+      api.get<{ data: Record<string, unknown> }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId!)}`,
+      ),
     enabled: !!streamRowId,
     staleTime: 10_000,
   });
@@ -2192,7 +2189,7 @@ export function useCascadeStreamDetail(streamRowId: string | null) {
  * Stop a specific agent on a swarm. Proxies to the macro-agent's
  * `_macro/terminateAgent` extension via SwarmCraft's MAP client.
  */
-export type CascadeAction = 'merge' | 'abandon' | 'pause' | 'resume' | 'resolve';
+export type CascadeAction = 'merge' | 'abandon' | 'pause' | 'resume' | 'resolve' | 'push' | 'commit';
 
 export function useCascadeStreamAction() {
   const queryClient = useQueryClient();

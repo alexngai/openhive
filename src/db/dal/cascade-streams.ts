@@ -226,6 +226,17 @@ function parseJsonArray(value: unknown): string[] {
   }
 }
 
+/** Like parseJsonArray but preserves object elements (for failed_streams etc.) */
+function parseJsonArrayRaw(value: unknown): unknown[] {
+  if (typeof value !== 'string' || !value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function rowToStream(row: Row): CascadeStream {
   return {
     id: row.id as string,
@@ -408,12 +419,19 @@ export function updateStreamStatus(
   options?: { closed?: boolean }
 ): void {
   const db = getDatabase();
-  const closedClause = options?.closed ? `, closed_at = datetime('now')` : '';
-  db.prepare(
-    `UPDATE cascade_streams
-     SET status = ?, last_event_at = datetime('now')${closedClause}
-     WHERE id = ?`
-  ).run(status, stream_row_id);
+  if (options?.closed) {
+    db.prepare(
+      `UPDATE cascade_streams
+       SET status = ?, last_event_at = datetime('now'), closed_at = datetime('now')
+       WHERE id = ?`,
+    ).run(status, stream_row_id);
+  } else {
+    db.prepare(
+      `UPDATE cascade_streams
+       SET status = ?, last_event_at = datetime('now')
+       WHERE id = ?`,
+    ).run(status, stream_row_id);
+  }
 }
 
 export function getStreamByRowId(stream_row_id: string): CascadeStream | null {
@@ -671,18 +689,7 @@ function rowToCascadeOperation(row: Row): CascadeOperation {
     agent_id: (row.agent_id as string | null) ?? null,
     strategy: row.strategy as string,
     updated_streams: parseJsonArray(row.updated_streams),
-    failed_streams: (() => {
-      const parsed = parseJsonObject(row.failed_streams as unknown);
-      // failed_streams is stored as a JSON array; parseJsonObject returns
-      // null for arrays (since the helper assumes object). Fall back to a
-      // direct parse with array typing.
-      try {
-        const arr = JSON.parse((row.failed_streams as string) || '[]');
-        return Array.isArray(arr) ? arr : [];
-      } catch {
-        return parsed ? [] : [];
-      }
-    })(),
+    failed_streams: parseJsonArrayRaw(row.failed_streams),
     skipped_streams: parseJsonArray(row.skipped_streams),
     deferred_streams: row.deferred_streams
       ? parseJsonArray(row.deferred_streams)
@@ -1032,13 +1039,19 @@ export function listQueueEntries(options: {
   return rows.map(rowToQueueEntry);
 }
 
-export function listConflictsForStream(stream_row_id: string): CascadeConflict[] {
+export function listConflictsForStream(
+  stream_row_id: string,
+  options?: { limit?: number; offset?: number },
+): CascadeConflict[] {
   const db = getDatabase();
+  const limit = options?.limit ?? 100;
+  const offset = options?.offset ?? 0;
   const rows = db
     .prepare(
-      `SELECT * FROM cascade_conflicts WHERE stream_row_id = ? ORDER BY detected_at DESC`
+      `SELECT * FROM cascade_conflicts WHERE stream_row_id = ?
+       ORDER BY detected_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(stream_row_id) as Row[];
+    .all(stream_row_id, limit, offset) as Row[];
   return rows.map(rowToConflict);
 }
 
