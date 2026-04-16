@@ -24,6 +24,7 @@ import {
 } from '../../db/dal/cascade-streams.js';
 import { findResourcesByRepoUrl } from '../../db/dal/syncable-resources.js';
 import { generateChangelog, renderMarkdown } from '../../cascade/changelog.js';
+import { sendCascadeAction, type CascadeAction } from '../../map/cascade-actions.js';
 
 type ListStreamsQuery = {
   source_swarm_id?: string;
@@ -405,6 +406,76 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
         offset: parseOffset(q.offset),
       });
       return reply.send({ data: ops });
+    }
+  );
+
+  // ── Stream actions (Level 2 — hub→runtime commands) ─────────────────
+  //
+  //   POST /cascade/streams/:id/actions/:action
+  //     body: { target_stream_id?, reason?, conflict_id?, strategy? }
+  //
+  //   Sends an `x-cascade/request.<action>` JSON-RPC notification to the
+  //   connected runtime that owns the stream. Fire-and-forget — the UI
+  //   updates reactively when the runtime's response event arrives via WS.
+  //
+  //   Supported actions: merge, abandon, pause, resume, resolve
+  //
+  //   Returns 200 { sent: true } if the notification was dispatched, or
+  //   422 { sent: false, error } if the swarm is disconnected or action
+  //   is unknown.
+  const VALID_ACTIONS = new Set<CascadeAction>(['merge', 'abandon', 'pause', 'resume', 'resolve']);
+
+  fastify.post<{
+    Params: { id: string; action: string };
+    Body: {
+      target_stream_id?: string;
+      reason?: string;
+      conflict_id?: string;
+      strategy?: string;
+    };
+  }>(
+    '/cascade/streams/:id/actions/:action',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { id, action } = request.params;
+
+      if (!VALID_ACTIONS.has(action as CascadeAction)) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: `Unknown action: ${action}. Valid actions: ${Array.from(VALID_ACTIONS).join(', ')}`,
+        });
+      }
+
+      const stream = getStreamByRowId(id);
+      if (!stream) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Cascade stream not found',
+        });
+      }
+
+      const body = request.body ?? {};
+      const result = sendCascadeAction(
+        stream.source_swarm_id,
+        action as CascadeAction,
+        {
+          stream_id: stream.stream_id,
+          target_stream_id: body.target_stream_id,
+          reason: body.reason,
+          conflict_id: body.conflict_id,
+          strategy: body.strategy,
+        },
+      );
+
+      if (!result.sent) {
+        return reply.status(422).send({
+          error: 'Unprocessable',
+          message: result.error,
+          sent: false,
+        });
+      }
+
+      return reply.send({ sent: true, action, stream_id: stream.stream_id });
     }
   );
 }

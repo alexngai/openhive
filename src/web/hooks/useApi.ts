@@ -2191,6 +2191,39 @@ export function useCascadeStreamDetail(streamRowId: string | null) {
  * Stop a specific agent on a swarm. Proxies to the macro-agent's
  * `_macro/terminateAgent` extension via SwarmCraft's MAP client.
  */
+export type CascadeAction = 'merge' | 'abandon' | 'pause' | 'resume' | 'resolve';
+
+export function useCascadeStreamAction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      streamRowId,
+      action,
+      params,
+    }: {
+      streamRowId: string;
+      action: CascadeAction;
+      params?: {
+        target_stream_id?: string;
+        reason?: string;
+        conflict_id?: string;
+        strategy?: string;
+      };
+    }) => {
+      return api.post<{ sent: boolean; action: string; stream_id: string }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId)}/actions/${action}`,
+        params ?? {},
+      );
+    },
+    onSuccess: () => {
+      // Invalidate DAG + detail so the UI picks up the resulting event
+      queryClient.invalidateQueries({ queryKey: ['cascade-dag'] });
+      queryClient.invalidateQueries({ queryKey: ['cascade-stream-detail'] });
+      queryClient.invalidateQueries({ queryKey: ['cascade-stream-timeline'] });
+    },
+  });
+}
+
 export function useStopAgent() {
   const queryClient = useQueryClient();
   return useMutation({

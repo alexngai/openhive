@@ -26,13 +26,19 @@ import {
   X,
   ChevronDown,
   ChevronRight,
+  Pause,
+  Play,
+  Trash2,
+  Wrench,
 } from 'lucide-react';
 import {
   useCascadeDAG,
   useCascadeStreamTimeline,
+  useCascadeStreamAction,
   type StreamDAGNode,
   type StreamDAGEdge,
   type StreamTimelineEvent,
+  type CascadeAction,
 } from '../hooks/useApi';
 import { useCascadeStreamsRealtime } from '../hooks/useRealtimeInvalidation';
 import { useMapSwarms } from '../hooks/useApi';
@@ -708,6 +714,11 @@ function StreamDetailSidebar({
         </div>
       )}
 
+      {/* Actions */}
+      {node && (
+        <StreamActions streamRowId={streamRowId} node={node} />
+      )}
+
       {/* Timeline */}
       <div className="flex-1 overflow-auto p-3">
         <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
@@ -726,6 +737,113 @@ function StreamDetailSidebar({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Stream Actions ───────────────────────────────────────────────────
+
+function StreamActions({
+  streamRowId,
+  node,
+}: {
+  streamRowId: string;
+  node: StreamDAGNode;
+}) {
+  const action = useCascadeStreamAction();
+  const isPending = action.isPending;
+
+  const fire = useCallback(
+    (act: CascadeAction, params?: Record<string, string>) => {
+      action.mutate({ streamRowId, action: act, params });
+    },
+    [action, streamRowId],
+  );
+
+  // Determine which actions are available based on stream status
+  const isActive = node.status === 'active';
+  const isPaused = node.status === 'paused';
+  const isConflicted = node.status === 'conflicted';
+  const isTerminal = node.status === 'merged' || node.status === 'abandoned';
+
+  if (isTerminal) return null;
+
+  return (
+    <div className="px-3 py-2 border-b flex flex-wrap gap-1.5" style={{ borderColor: 'var(--color-border-subtle)' }}>
+      {/* Merge — available when active and has a parent */}
+      {isActive && node.parent_stream_id && (
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+          onClick={() => fire('merge')}
+          disabled={isPending}
+          title="Request merge into parent stream"
+        >
+          <GitMerge className="w-3 h-3" />
+          Merge
+        </button>
+      )}
+
+      {/* Pause/Resume toggle */}
+      {isActive && (
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+          onClick={() => fire('pause', { reason: 'operator-paused' })}
+          disabled={isPending}
+          title="Pause this stream"
+        >
+          <Pause className="w-3 h-3" />
+          Pause
+        </button>
+      )}
+      {isPaused && (
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+          onClick={() => fire('resume')}
+          disabled={isPending}
+          title="Resume this stream"
+        >
+          <Play className="w-3 h-3" />
+          Resume
+        </button>
+      )}
+
+      {/* Resolve — available when conflicted */}
+      {isConflicted && node.open_conflict_count > 0 && (
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+          style={{ color: 'var(--color-danger)' }}
+          onClick={() => fire('resolve', { strategy: 'ours' })}
+          disabled={isPending}
+          title="Request conflict resolution (strategy: ours)"
+        >
+          <Wrench className="w-3 h-3" />
+          Resolve
+        </button>
+      )}
+
+      {/* Abandon — available when not terminal */}
+      <button
+        type="button"
+        className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+        style={{ color: 'var(--color-text-muted)' }}
+        onClick={() => fire('abandon', { reason: 'operator-abandoned' })}
+        disabled={isPending}
+        title="Abandon this stream"
+      >
+        <Trash2 className="w-3 h-3" />
+        Abandon
+      </button>
+
+      {/* Pending indicator */}
+      {isPending && (
+        <span className="text-2xs animate-pulse" style={{ color: 'var(--color-text-muted)' }}>
+          Sending...
+        </span>
+      )}
     </div>
   );
 }
