@@ -37,6 +37,7 @@ export interface CascadeStream {
   task_resource_id: string | null;
   task_node_id: string | null;
   metadata: Record<string, unknown> | null;
+  publish_branch: string | null;
   opened_at: string;
   last_event_at: string;
   closed_at: string | null;
@@ -240,6 +241,7 @@ function rowToStream(row: Row): CascadeStream {
     task_resource_id: (row.task_resource_id as string | null) ?? null,
     task_node_id: (row.task_node_id as string | null) ?? null,
     metadata: parseJsonObject(row.metadata),
+    publish_branch: (row.publish_branch as string | null) ?? null,
     opened_at: row.opened_at as string,
     last_event_at: row.last_event_at as string,
     closed_at: (row.closed_at as string | null) ?? null,
@@ -1216,6 +1218,7 @@ export interface StreamDAGNode {
   status: string;
   task_resource_id: string | null;
   task_node_id: string | null;
+  publish_branch: string | null;
   opened_at: string;
   last_event_at: string;
   commit_count: number;
@@ -1255,7 +1258,7 @@ export function getStreamDAG(options: {
     SELECT
       s.id, s.stream_id, s.source_swarm_id, s.source_agent_id,
       s.parent_stream_id, s.name, s.status,
-      s.task_resource_id, s.task_node_id,
+      s.task_resource_id, s.task_node_id, s.publish_branch,
       s.opened_at, s.last_event_at,
       (SELECT COUNT(*) FROM cascade_changes c WHERE c.stream_row_id = s.id) as commit_count,
       (SELECT COUNT(*) FROM cascade_conflicts cf WHERE cf.stream_row_id = s.id AND cf.status = 'pending') as open_conflict_count
@@ -1274,6 +1277,7 @@ export function getStreamDAG(options: {
     status: r.status as string,
     task_resource_id: (r.task_resource_id as string | null) ?? null,
     task_node_id: (r.task_node_id as string | null) ?? null,
+    publish_branch: (r.publish_branch as string | null) ?? null,
     opened_at: r.opened_at as string,
     last_event_at: r.last_event_at as string,
     commit_count: r.commit_count as number,
@@ -1471,5 +1475,152 @@ export function getStreamStats(stream_row_id: string): StreamStats {
     total_files_touched: fileSet.size,
     first_commit_at: commitRow.first_at,
     last_commit_at: commitRow.last_at,
+  };
+}
+
+// ============================================================================
+// Branch alias
+// ============================================================================
+
+/**
+ * Update the publish_branch alias for a stream.
+ * Used for mapping stream/<id> → human-readable branch name for push + PR.
+ */
+export function updatePublishBranch(
+  stream_row_id: string,
+  publish_branch: string,
+): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE cascade_streams SET publish_branch = ?, last_event_at = datetime('now')
+     WHERE id = ?`,
+  ).run(publish_branch, stream_row_id);
+}
+
+/**
+ * Auto-generate a publish branch name from the stream name.
+ * Sanitizes to git-safe characters.
+ */
+export function defaultPublishBranch(streamName: string): string {
+  return `cascade/${streamName.replace(/[^a-zA-Z0-9_/-]/g, '-').replace(/--+/g, '-')}`;
+}
+
+// ============================================================================
+// Pull Requests
+// ============================================================================
+
+export interface CascadePullRequest {
+  id: string;
+  stream_row_id: string;
+  provider: string;
+  remote_pr_number: number | null;
+  remote_pr_url: string | null;
+  state: string;
+  source_branch: string;
+  target_branch: string;
+  title: string | null;
+  body_hash: string | null;
+  repo_owner: string | null;
+  repo_name: string | null;
+  created_at: string;
+  updated_at: string;
+  synced_at: string | null;
+}
+
+export function createPR(input: {
+  stream_row_id: string;
+  source_branch: string;
+  target_branch: string;
+  title: string;
+  body_hash?: string;
+  repo_owner: string;
+  repo_name: string;
+  remote_pr_number?: number;
+  remote_pr_url?: string;
+  state?: string;
+}): CascadePullRequest {
+  const db = getDatabase();
+  const id = nanoid();
+  db.prepare(`
+    INSERT INTO cascade_pull_requests
+      (id, stream_row_id, source_branch, target_branch, title, body_hash,
+       repo_owner, repo_name, remote_pr_number, remote_pr_url, state)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    input.stream_row_id,
+    input.source_branch,
+    input.target_branch,
+    input.title,
+    input.body_hash ?? null,
+    input.repo_owner,
+    input.repo_name,
+    input.remote_pr_number ?? null,
+    input.remote_pr_url ?? null,
+    input.state ?? 'draft',
+  );
+  return getPRById(id)!;
+}
+
+export function getPRById(id: string): CascadePullRequest | null {
+  const db = getDatabase();
+  const row = db.prepare('SELECT * FROM cascade_pull_requests WHERE id = ?').get(id) as Row | undefined;
+  return row ? rowToPR(row) : null;
+}
+
+export function getPRForStream(stream_row_id: string): CascadePullRequest | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT * FROM cascade_pull_requests
+     WHERE stream_row_id = ? AND state != 'closed'
+     ORDER BY created_at DESC LIMIT 1`,
+  ).get(stream_row_id) as Row | undefined;
+  return row ? rowToPR(row) : null;
+}
+
+export function updatePR(
+  id: string,
+  updates: Partial<{
+    state: string;
+    remote_pr_number: number;
+    remote_pr_url: string;
+    title: string;
+    body_hash: string;
+    synced_at: string;
+  }>,
+): CascadePullRequest | null {
+  const db = getDatabase();
+  const fields: string[] = ['updated_at = datetime(\'now\')'];
+  const params: unknown[] = [];
+
+  if (updates.state !== undefined) { fields.push('state = ?'); params.push(updates.state); }
+  if (updates.remote_pr_number !== undefined) { fields.push('remote_pr_number = ?'); params.push(updates.remote_pr_number); }
+  if (updates.remote_pr_url !== undefined) { fields.push('remote_pr_url = ?'); params.push(updates.remote_pr_url); }
+  if (updates.title !== undefined) { fields.push('title = ?'); params.push(updates.title); }
+  if (updates.body_hash !== undefined) { fields.push('body_hash = ?'); params.push(updates.body_hash); }
+  if (updates.synced_at !== undefined) { fields.push('synced_at = ?'); params.push(updates.synced_at); }
+
+  params.push(id);
+  db.prepare(`UPDATE cascade_pull_requests SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+  return getPRById(id);
+}
+
+function rowToPR(row: Row): CascadePullRequest {
+  return {
+    id: row.id as string,
+    stream_row_id: row.stream_row_id as string,
+    provider: row.provider as string,
+    remote_pr_number: (row.remote_pr_number as number | null) ?? null,
+    remote_pr_url: (row.remote_pr_url as string | null) ?? null,
+    state: row.state as string,
+    source_branch: row.source_branch as string,
+    target_branch: row.target_branch as string,
+    title: (row.title as string | null) ?? null,
+    body_hash: (row.body_hash as string | null) ?? null,
+    repo_owner: (row.repo_owner as string | null) ?? null,
+    repo_name: (row.repo_name as string | null) ?? null,
+    created_at: row.created_at as string,
+    updated_at: row.updated_at as string,
+    synced_at: (row.synced_at as string | null) ?? null,
   };
 }

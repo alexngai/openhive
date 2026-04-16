@@ -2118,6 +2118,7 @@ export interface StreamDAGNode {
   status: string;
   task_resource_id: string | null;
   task_node_id: string | null;
+  publish_branch: string | null;
   opened_at: string;
   last_event_at: string;
   commit_count: number;
@@ -2221,6 +2222,126 @@ export function useCascadeStreamAction() {
       queryClient.invalidateQueries({ queryKey: ['cascade-stream-detail'] });
       queryClient.invalidateQueries({ queryKey: ['cascade-stream-timeline'] });
     },
+  });
+}
+
+// ── PR + branch management hooks ────────────────────────────────────
+
+export interface CascadePullRequest {
+  id: string;
+  stream_row_id: string;
+  provider: string;
+  remote_pr_number: number | null;
+  remote_pr_url: string | null;
+  state: string;
+  source_branch: string;
+  target_branch: string;
+  title: string | null;
+  repo_owner: string | null;
+  repo_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function useCascadeStreamPR(streamRowId: string | null) {
+  return useQuery({
+    queryKey: ['cascade-stream-pr', streamRowId],
+    queryFn: () =>
+      api.get<{ data: CascadePullRequest | null }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId!)}/pr`,
+      ),
+    enabled: !!streamRowId,
+    staleTime: 10_000,
+  });
+}
+
+export function useCreatePR() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      streamRowId,
+      title,
+      target_branch,
+      draft,
+    }: {
+      streamRowId: string;
+      title?: string;
+      target_branch?: string;
+      draft?: boolean;
+    }) => {
+      return api.post<{ data: CascadePullRequest }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId)}/pr`,
+        { title, target_branch, draft },
+      );
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['cascade-stream-pr', vars.streamRowId] });
+      queryClient.invalidateQueries({ queryKey: ['cascade-dag'] });
+    },
+  });
+}
+
+export function useUpdatePR() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      streamRowId,
+      title,
+      target_branch,
+    }: {
+      streamRowId: string;
+      title?: string;
+      target_branch?: string;
+    }) => {
+      return api.patch<{ data: CascadePullRequest }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId)}/pr`,
+        { title, target_branch },
+      );
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['cascade-stream-pr', vars.streamRowId] });
+    },
+  });
+}
+
+export function useClosePR() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ streamRowId }: { streamRowId: string }) => {
+      return api.delete(`/cascade/streams/${encodeURIComponent(streamRowId)}/pr`);
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['cascade-stream-pr', vars.streamRowId] });
+    },
+  });
+}
+
+export function useUpdatePublishBranch() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      streamRowId,
+      publish_branch,
+    }: {
+      streamRowId: string;
+      publish_branch: string;
+    }) => {
+      return api.patch<{ data: { publish_branch: string } }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId)}/branch`,
+        { publish_branch },
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['cascade-dag'] });
+    },
+  });
+}
+
+export function useGitHubStatus() {
+  return useQuery({
+    queryKey: ['github-status'],
+    queryFn: () => api.get<{ data: { connected: boolean; user?: string; error?: string } }>('/cascade/github/status'),
+    staleTime: 60_000,
   });
 }
 

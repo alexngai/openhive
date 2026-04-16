@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 34;
+export const SCHEMA_VERSION = 35;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -528,6 +528,7 @@ CREATE TABLE IF NOT EXISTS cascade_streams (
   task_resource_id TEXT,
   task_node_id TEXT,
   metadata TEXT,
+  publish_branch TEXT,
   opened_at TEXT DEFAULT (datetime('now')),
   last_event_at TEXT DEFAULT (datetime('now')),
   closed_at TEXT,
@@ -538,6 +539,28 @@ CREATE INDEX IF NOT EXISTS idx_cascade_streams_swarm ON cascade_streams(source_s
 CREATE INDEX IF NOT EXISTS idx_cascade_streams_agent ON cascade_streams(source_agent_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_streams_task ON cascade_streams(task_resource_id, task_node_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_streams_status ON cascade_streams(status);
+
+CREATE TABLE IF NOT EXISTS cascade_pull_requests (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'github',
+  remote_pr_number INTEGER,
+  remote_pr_url TEXT,
+  state TEXT NOT NULL DEFAULT 'draft',
+  source_branch TEXT NOT NULL,
+  target_branch TEXT NOT NULL DEFAULT 'main',
+  title TEXT,
+  body_hash TEXT,
+  repo_owner TEXT,
+  repo_name TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  synced_at TEXT,
+  FOREIGN KEY (stream_row_id) REFERENCES cascade_streams(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_prs_stream ON cascade_pull_requests(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_prs_state ON cascade_pull_requests(state);
 
 CREATE TABLE IF NOT EXISTS cascade_changes (
   id TEXT PRIMARY KEY,
@@ -1368,6 +1391,7 @@ CREATE TABLE IF NOT EXISTS cascade_streams (
   task_resource_id TEXT,
   task_node_id TEXT,
   metadata TEXT,
+  publish_branch TEXT,
   opened_at TEXT DEFAULT (datetime('now')),
   last_event_at TEXT DEFAULT (datetime('now')),
   closed_at TEXT,
@@ -1378,6 +1402,28 @@ CREATE INDEX IF NOT EXISTS idx_cascade_streams_swarm ON cascade_streams(source_s
 CREATE INDEX IF NOT EXISTS idx_cascade_streams_agent ON cascade_streams(source_agent_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_streams_task ON cascade_streams(task_resource_id, task_node_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_streams_status ON cascade_streams(status);
+
+CREATE TABLE IF NOT EXISTS cascade_pull_requests (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'github',
+  remote_pr_number INTEGER,
+  remote_pr_url TEXT,
+  state TEXT NOT NULL DEFAULT 'draft',
+  source_branch TEXT NOT NULL,
+  target_branch TEXT NOT NULL DEFAULT 'main',
+  title TEXT,
+  body_hash TEXT,
+  repo_owner TEXT,
+  repo_name TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  synced_at TEXT,
+  FOREIGN KEY (stream_row_id) REFERENCES cascade_streams(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_prs_stream ON cascade_pull_requests(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_prs_state ON cascade_pull_requests(state);
 
 CREATE TABLE IF NOT EXISTS cascade_changes (
   id TEXT PRIMARY KEY,
@@ -1554,6 +1600,36 @@ CREATE TABLE IF NOT EXISTS cascade_operations (
 CREATE INDEX IF NOT EXISTS idx_cascade_operations_swarm ON cascade_operations(source_swarm_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_operations_root ON cascade_operations(root_stream_row_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_operations_completed_at ON cascade_operations(completed_at DESC);
+`;
+
+// Migration V35: publish_branch on cascade_streams + cascade_pull_requests table
+// for hub-side GitHub PR management.
+export const MIGRATION_V35_CASCADE_PR = `
+-- Add publish_branch column for branch aliasing (stream/<id> → human-readable name)
+ALTER TABLE cascade_streams ADD COLUMN publish_branch TEXT;
+
+-- PR tracking table for hub-side GitHub API integration
+CREATE TABLE IF NOT EXISTS cascade_pull_requests (
+  id TEXT PRIMARY KEY,
+  stream_row_id TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'github',
+  remote_pr_number INTEGER,
+  remote_pr_url TEXT,
+  state TEXT NOT NULL DEFAULT 'draft',
+  source_branch TEXT NOT NULL,
+  target_branch TEXT NOT NULL DEFAULT 'main',
+  title TEXT,
+  body_hash TEXT,
+  repo_owner TEXT,
+  repo_name TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  synced_at TEXT,
+  FOREIGN KEY (stream_row_id) REFERENCES cascade_streams(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cascade_prs_stream ON cascade_pull_requests(stream_row_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_prs_state ON cascade_pull_requests(state);
 `;
 
 // Populate FTS tables from existing data

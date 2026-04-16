@@ -20,7 +20,7 @@
 
 import { getInbound } from './connection-registry.js';
 
-export type CascadeAction = 'merge' | 'abandon' | 'pause' | 'resume' | 'resolve';
+export type CascadeAction = 'merge' | 'abandon' | 'pause' | 'resume' | 'resolve' | 'push' | 'commit';
 
 export interface CascadeActionParams {
   /** The cascade stream_id (not the hub row id) */
@@ -30,6 +30,14 @@ export interface CascadeActionParams {
   reason?: string;
   conflict_id?: string;
   strategy?: string;
+  /** Push: remote name (default: origin) */
+  remote?: string;
+  /** Push: target ref (default: stream/<id>) */
+  target_ref?: string;
+  /** Commit: message */
+  message?: string;
+  /** Commit: metadata */
+  metadata?: Record<string, unknown>;
 }
 
 export interface CascadeActionResult {
@@ -43,6 +51,8 @@ const ACTION_METHODS: Record<CascadeAction, string> = {
   pause: 'x-cascade/request.pause',
   resume: 'x-cascade/request.resume',
   resolve: 'x-cascade/request.resolve',
+  push: 'x-cascade/request.push',
+  commit: 'x-cascade/request.commit',
 };
 
 /**

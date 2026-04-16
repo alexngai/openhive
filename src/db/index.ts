@@ -15,6 +15,7 @@ import {
   MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
   MIGRATION_V33_CASCADE_OPERATIONS,
   MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
+  MIGRATION_V35_CASCADE_PR,
 } from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
@@ -244,6 +245,8 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 34: cascade_pushes + cascade_queue_entries projections for
   // trunk pushes (stream.pushed) and merge queue observability (queue.*)
   34: MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
+  // Version 35: publish_branch alias + cascade_pull_requests for hub-side GitHub PR management
+  35: MIGRATION_V35_CASCADE_PR,
 };
 
 /** Get the SQL for a specific migration version.

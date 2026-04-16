@@ -25,6 +25,21 @@ import {
 import { findResourcesByRepoUrl } from '../../db/dal/syncable-resources.js';
 import { generateChangelog, renderMarkdown } from '../../cascade/changelog.js';
 import { sendCascadeAction, type CascadeAction } from '../../map/cascade-actions.js';
+import {
+  updatePublishBranch,
+  defaultPublishBranch,
+  createPR,
+  getPRForStream,
+  updatePR,
+} from '../../db/dal/cascade-streams.js';
+import {
+  createPullRequest,
+  updatePullRequest,
+  closePullRequest,
+  getPullRequest,
+  checkGitHubConnection,
+  parseGitHubRepo,
+} from '../../integrations/github-api.js';
 
 type ListStreamsQuery = {
   source_swarm_id?: string;
@@ -423,7 +438,7 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
   //   Returns 200 { sent: true } if the notification was dispatched, or
   //   422 { sent: false, error } if the swarm is disconnected or action
   //   is unknown.
-  const VALID_ACTIONS = new Set<CascadeAction>(['merge', 'abandon', 'pause', 'resume', 'resolve']);
+  const VALID_ACTIONS = new Set<CascadeAction>(['merge', 'abandon', 'pause', 'resume', 'resolve', 'push', 'commit']);
 
   fastify.post<{
     Params: { id: string; action: string };
@@ -432,6 +447,10 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       reason?: string;
       conflict_id?: string;
       strategy?: string;
+      remote?: string;
+      target_ref?: string;
+      message?: string;
+      metadata?: Record<string, unknown>;
     };
   }>(
     '/cascade/streams/:id/actions/:action',
@@ -464,6 +483,10 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
           reason: body.reason,
           conflict_id: body.conflict_id,
           strategy: body.strategy,
+          remote: body.remote,
+          target_ref: body.target_ref ?? stream.publish_branch ?? undefined,
+          message: body.message,
+          metadata: body.metadata,
         },
       );
 
@@ -478,4 +501,257 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.send({ sent: true, action, stream_id: stream.stream_id });
     }
   );
+
+  // ── Branch alias management ─────────────────────────────────────────
+  //
+  //   PATCH /cascade/streams/:id/branch
+  //     { publish_branch: "feature/oauth-v2" }
+  //
+  //   Sets the human-readable branch name used for push + PR. Auto-
+  //   generates from stream name if not explicitly set.
+
+  fastify.patch<{
+    Params: { id: string };
+    Body: { publish_branch?: string };
+  }>(
+    '/cascade/streams/:id/branch',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const stream = getStreamByRowId(request.params.id);
+      if (!stream) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Stream not found' });
+      }
+      const branchName = request.body?.publish_branch ?? defaultPublishBranch(stream.name);
+      updatePublishBranch(stream.id, branchName);
+      return reply.send({ data: { stream_id: stream.stream_id, publish_branch: branchName } });
+    }
+  );
+
+  // ── PR management (hub-side GitHub API) ─────────────────────────────
+  //
+  //   POST   /cascade/streams/:id/pr — create PR
+  //   PATCH  /cascade/streams/:id/pr — update PR body/title
+  //   DELETE /cascade/streams/:id/pr — close PR
+  //   GET    /cascade/streams/:id/pr — get current PR state
+
+  fastify.post<{
+    Params: { id: string };
+    Body: { target_branch?: string; title?: string; draft?: boolean };
+  }>(
+    '/cascade/streams/:id/pr',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const stream = getStreamByRowId(request.params.id);
+      if (!stream) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Stream not found' });
+      }
+
+      // Resolve GitHub repo from the resource's git_remote_url
+      const resource = stream.task_resource_id
+        ? (await import('../../db/dal/syncable-resources.js')).findResourceById(stream.task_resource_id)
+        : null;
+      const gitUrl = resource?.git_remote_url ?? '';
+      const repoInfo = parseGitHubRepo(gitUrl);
+      if (!repoInfo) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: `Cannot parse GitHub repo from: ${gitUrl}. PR creation requires a github.com remote.`,
+        });
+      }
+
+      // Ensure publish_branch is set
+      const sourceBranch = stream.publish_branch ?? defaultPublishBranch(stream.name);
+      if (!stream.publish_branch) {
+        updatePublishBranch(stream.id, sourceBranch);
+      }
+
+      // Auto-push first (send request.push to runtime)
+      sendCascadeAction(stream.source_swarm_id, 'push', {
+        stream_id: stream.stream_id,
+        target_ref: sourceBranch,
+      });
+
+      const targetBranch = request.body?.target_branch ?? 'main';
+      const title = request.body?.title ?? stream.name;
+
+      // Generate PR body from changelog
+      let prBody = '';
+      try {
+        const changelog = generateChangelog(
+          stream.task_resource_id ?? stream.stream_id,
+          stream.task_node_id ?? stream.stream_id,
+        );
+        if (changelog.has_work) {
+          prBody = renderMarkdown(changelog);
+        }
+      } catch { /* changelog generation failed — empty body */ }
+
+      prBody = prBody || `Stream \`${stream.stream_id}\` from ${stream.source_agent_id}`;
+      const bodyHash = simpleHash(prBody);
+
+      try {
+        const ghPR = await createPullRequest({
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          title,
+          body: prBody,
+          head: sourceBranch,
+          base: targetBranch,
+          draft: request.body?.draft ?? false,
+        });
+
+        const pr = createPR({
+          stream_row_id: stream.id,
+          source_branch: sourceBranch,
+          target_branch: targetBranch,
+          title,
+          body_hash: bodyHash,
+          repo_owner: repoInfo.owner,
+          repo_name: repoInfo.repo,
+          remote_pr_number: ghPR.number,
+          remote_pr_url: ghPR.html_url,
+          state: ghPR.draft ? 'draft' : 'open',
+        });
+
+        return reply.status(201).send({ data: pr });
+      } catch (err) {
+        return reply.status(502).send({
+          error: 'GitHub API Error',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  );
+
+  fastify.patch<{
+    Params: { id: string };
+    Body: { title?: string; target_branch?: string };
+  }>(
+    '/cascade/streams/:id/pr',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const stream = getStreamByRowId(request.params.id);
+      if (!stream) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Stream not found' });
+      }
+
+      const pr = getPRForStream(stream.id);
+      if (!pr || !pr.remote_pr_number) {
+        return reply.status(404).send({ error: 'Not Found', message: 'No open PR for this stream' });
+      }
+
+      // Re-generate body from latest changelog
+      let prBody = '';
+      try {
+        const changelog = generateChangelog(
+          stream.task_resource_id ?? stream.stream_id,
+          stream.task_node_id ?? stream.stream_id,
+        );
+        if (changelog.has_work) prBody = renderMarkdown(changelog);
+      } catch { /* */ }
+
+      try {
+        const ghPR = await updatePullRequest({
+          owner: pr.repo_owner!,
+          repo: pr.repo_name!,
+          prNumber: pr.remote_pr_number,
+          title: request.body?.title,
+          body: prBody || undefined,
+          base: request.body?.target_branch,
+        });
+
+        const updated = updatePR(pr.id, {
+          title: request.body?.title,
+          body_hash: prBody ? simpleHash(prBody) : undefined,
+          state: ghPR.merged ? 'merged' : ghPR.state,
+          synced_at: new Date().toISOString(),
+        });
+
+        return reply.send({ data: updated });
+      } catch (err) {
+        return reply.status(502).send({
+          error: 'GitHub API Error',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  );
+
+  fastify.delete<{ Params: { id: string } }>(
+    '/cascade/streams/:id/pr',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const stream = getStreamByRowId(request.params.id);
+      if (!stream) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Stream not found' });
+      }
+
+      const pr = getPRForStream(stream.id);
+      if (!pr || !pr.remote_pr_number) {
+        return reply.status(404).send({ error: 'Not Found', message: 'No open PR for this stream' });
+      }
+
+      try {
+        await closePullRequest(pr.repo_owner!, pr.repo_name!, pr.remote_pr_number);
+        updatePR(pr.id, { state: 'closed' });
+        return reply.send({ data: { closed: true } });
+      } catch (err) {
+        return reply.status(502).send({
+          error: 'GitHub API Error',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  );
+
+  fastify.get<{ Params: { id: string } }>(
+    '/cascade/streams/:id/pr',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const stream = getStreamByRowId(request.params.id);
+      if (!stream) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Stream not found' });
+      }
+
+      const pr = getPRForStream(stream.id);
+      if (!pr) {
+        return reply.send({ data: null });
+      }
+
+      // Optionally sync state from GitHub
+      if (pr.remote_pr_number && pr.repo_owner && pr.repo_name) {
+        try {
+          const ghPR = await getPullRequest(pr.repo_owner, pr.repo_name, pr.remote_pr_number);
+          if (ghPR) {
+            const newState = ghPR.merged ? 'merged' : ghPR.state;
+            if (newState !== pr.state) {
+              updatePR(pr.id, { state: newState, synced_at: new Date().toISOString() });
+              pr.state = newState;
+            }
+          }
+        } catch { /* sync failure non-fatal */ }
+      }
+
+      return reply.send({ data: pr });
+    }
+  );
+
+  // ── GitHub connection check ─────────────────────────────────────────
+
+  fastify.get(
+    '/cascade/github/status',
+    { preHandler: authMiddleware },
+    async (_request, reply) => {
+      const status = await checkGitHubConnection();
+      return reply.send({ data: status });
+    }
+  );
+}
+
+function simpleHash(s: string): string {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(16);
 }

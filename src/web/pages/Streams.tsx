@@ -30,15 +30,27 @@ import {
   Play,
   Trash2,
   Wrench,
+  Upload,
+  Save,
+  ExternalLink,
+  Edit3,
+  Github,
 } from 'lucide-react';
 import {
   useCascadeDAG,
   useCascadeStreamTimeline,
   useCascadeStreamAction,
+  useCascadeStreamPR,
+  useCreatePR,
+  useUpdatePR,
+  useClosePR,
+  useUpdatePublishBranch,
+  useGitHubStatus,
   type StreamDAGNode,
   type StreamDAGEdge,
   type StreamTimelineEvent,
   type CascadeAction,
+  type CascadePullRequest,
 } from '../hooks/useApi';
 import { useCascadeStreamsRealtime } from '../hooks/useRealtimeInvalidation';
 import { useMapSwarms } from '../hooks/useApi';
@@ -719,6 +731,15 @@ function StreamDetailSidebar({
         <StreamActions streamRowId={streamRowId} node={node} />
       )}
 
+      {/* Branch + PR + Commit */}
+      {node && node.status !== 'merged' && node.status !== 'abandoned' && (
+        <>
+          <StreamBranchSection streamRowId={streamRowId} node={node} />
+          <StreamPRSection streamRowId={streamRowId} node={node} />
+          <StreamCommitSection streamRowId={streamRowId} node={node} />
+        </>
+      )}
+
       {/* Timeline */}
       <div className="flex-1 overflow-auto p-3">
         <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
@@ -737,6 +758,256 @@ function StreamDetailSidebar({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Branch Management ────────────────────────────────────────────────
+
+function StreamBranchSection({
+  streamRowId,
+  node,
+}: {
+  streamRowId: string;
+  node: StreamDAGNode;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [branchName, setBranchName] = useState(node.publish_branch ?? '');
+  const updateBranch = useUpdatePublishBranch();
+  const pushAction = useCascadeStreamAction();
+
+  const saveBranch = useCallback(() => {
+    if (branchName.trim()) {
+      updateBranch.mutate({ streamRowId, publish_branch: branchName.trim() });
+    }
+    setEditing(false);
+  }, [branchName, streamRowId, updateBranch]);
+
+  const displayBranch = node.publish_branch || `cascade/${node.name.replace(/[^a-zA-Z0-9_/-]/g, '-')}`;
+
+  return (
+    <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-2xs font-semibold flex items-center gap-1" style={{ color: 'var(--color-text-muted)' }}>
+          <GitBranch className="w-3 h-3" />
+          Branch
+        </span>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            className="btn-ghost p-0.5"
+            onClick={() => { setEditing(!editing); setBranchName(node.publish_branch ?? displayBranch); }}
+            title="Edit branch name"
+          >
+            <Edit3 className="w-3 h-3" />
+          </button>
+          <button
+            type="button"
+            className="btn-ghost p-0.5 text-2xs flex items-center gap-1"
+            onClick={() => pushAction.mutate({
+              streamRowId,
+              action: 'push',
+              params: { target_ref: node.publish_branch ?? displayBranch },
+            })}
+            disabled={pushAction.isPending}
+            title="Push to remote"
+          >
+            <Upload className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+      {editing ? (
+        <div className="flex gap-1">
+          <input
+            className="input text-2xs py-0.5 flex-1"
+            value={branchName}
+            onChange={(e) => setBranchName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') saveBranch(); if (e.key === 'Escape') setEditing(false); }}
+            autoFocus
+          />
+          <button type="button" className="btn-ghost text-2xs px-1.5" onClick={saveBranch}>Save</button>
+        </div>
+      ) : (
+        <code className="text-2xs font-mono block truncate" style={{ color: 'var(--color-text-secondary)' }}>
+          {displayBranch}
+        </code>
+      )}
+      {pushAction.isPending && (
+        <span className="text-2xs animate-pulse block mt-1" style={{ color: 'var(--color-text-muted)' }}>Pushing...</span>
+      )}
+    </div>
+  );
+}
+
+// ─── PR Management ────────────────────────────────────────────────────
+
+function StreamPRSection({
+  streamRowId,
+  node,
+}: {
+  streamRowId: string;
+  node: StreamDAGNode;
+}) {
+  const { data: prRaw } = useCascadeStreamPR(streamRowId);
+  const { data: ghRaw } = useGitHubStatus();
+  const createPR = useCreatePR();
+  const updatePRMutation = useUpdatePR();
+  const closePR = useClosePR();
+
+  // api.get returns raw JSON → React Query .data = { data: PR|null }.
+  const pr = ((prRaw as any)?.data ?? null) as CascadePullRequest | null;
+  const isGitHubConnected = ((ghRaw as any)?.data?.connected) ?? false;
+
+  return (
+    <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-2xs font-semibold flex items-center gap-1" style={{ color: 'var(--color-text-muted)' }}>
+          <GitPullRequestDraft className="w-3 h-3" />
+          Pull Request
+        </span>
+        {!isGitHubConnected && (
+          <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+            No GitHub token
+          </span>
+        )}
+      </div>
+
+      {pr ? (
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <span
+              className="text-2xs px-1.5 py-0.5 rounded font-medium"
+              style={{
+                backgroundColor: pr.state === 'open' ? '#22c55e20' : pr.state === 'merged' ? '#8b5cf620' : 'var(--color-elevated)',
+                color: pr.state === 'open' ? '#22c55e' : pr.state === 'merged' ? '#8b5cf6' : 'var(--color-text-muted)',
+              }}
+            >
+              {pr.state === 'merged' ? 'Merged' : pr.state === 'open' ? 'Open' : pr.state === 'draft' ? 'Draft' : 'Closed'}
+            </span>
+            <span className="text-2xs truncate" style={{ color: 'var(--color-text-secondary)' }}>
+              #{pr.remote_pr_number} {pr.title}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {pr.remote_pr_url && (
+              <a
+                href={pr.remote_pr_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-ghost text-2xs flex items-center gap-1 px-1.5 py-0.5"
+              >
+                <ExternalLink className="w-3 h-3" />
+                View
+              </a>
+            )}
+            {(pr.state === 'open' || pr.state === 'draft') && (
+              <>
+                <button
+                  type="button"
+                  className="btn-ghost text-2xs px-1.5 py-0.5"
+                  onClick={() => updatePRMutation.mutate({ streamRowId })}
+                  disabled={updatePRMutation.isPending}
+                >
+                  Update
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost text-2xs px-1.5 py-0.5"
+                  style={{ color: 'var(--color-text-muted)' }}
+                  onClick={() => closePR.mutate({ streamRowId })}
+                  disabled={closePR.isPending}
+                >
+                  Close
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1 px-1.5 py-0.5 w-full justify-center"
+          style={{ color: isGitHubConnected ? undefined : 'var(--color-text-muted)' }}
+          onClick={() => createPR.mutate({ streamRowId, title: node.name })}
+          disabled={createPR.isPending || !isGitHubConnected}
+          title={isGitHubConnected ? 'Create pull request on GitHub' : 'GitHub token not configured'}
+        >
+          <GitPullRequestDraft className="w-3 h-3" />
+          {createPR.isPending ? 'Creating...' : 'Create PR'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ─── Commit Uncommitted Changes ───────────────────────────────────────
+
+function StreamCommitSection({
+  streamRowId,
+  node,
+}: {
+  streamRowId: string;
+  node: StreamDAGNode;
+}) {
+  const [message, setMessage] = useState('');
+  const [showInput, setShowInput] = useState(false);
+  const commitAction = useCascadeStreamAction();
+
+  const doCommit = useCallback(() => {
+    if (!message.trim()) return;
+    commitAction.mutate({
+      streamRowId,
+      action: 'commit',
+      params: { message: message.trim() },
+    });
+    setMessage('');
+    setShowInput(false);
+  }, [message, streamRowId, commitAction]);
+
+  if (node.status !== 'active') return null;
+
+  return (
+    <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
+      {showInput ? (
+        <div className="space-y-1.5">
+          <input
+            className="input text-2xs py-1 w-full"
+            placeholder="Commit message..."
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') doCommit(); if (e.key === 'Escape') setShowInput(false); }}
+            autoFocus
+          />
+          <div className="flex gap-1">
+            <button
+              type="button"
+              className="btn-ghost text-2xs px-2 py-0.5 flex items-center gap-1"
+              onClick={doCommit}
+              disabled={commitAction.isPending || !message.trim()}
+            >
+              <Save className="w-3 h-3" />
+              {commitAction.isPending ? 'Committing...' : 'Commit'}
+            </button>
+            <button
+              type="button"
+              className="btn-ghost text-2xs px-2 py-0.5"
+              style={{ color: 'var(--color-text-muted)' }}
+              onClick={() => setShowInput(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1 px-1.5 py-0.5 w-full justify-center"
+          onClick={() => setShowInput(true)}
+        >
+          <GitCommit className="w-3 h-3" />
+          Commit changes
+        </button>
+      )}
     </div>
   );
 }
