@@ -1,4 +1,5 @@
 import { Pool, PoolClient, QueryResult } from 'pg';
+import { spawnSync } from 'child_process';
 import type { DatabaseAdapter, Statement, RunResult, PostgresConfig } from './types.js';
 
 /**
@@ -126,7 +127,7 @@ export class PostgresAdapter implements DatabaseAdapter {
         const start = Date.now();
         while (!resolved && Date.now() - start < 30000) {
           // Busy wait with small delay via process.nextTick equivalent
-          require('child_process').spawnSync('sleep', ['0.001']);
+          spawnSync('sleep', ['0.001']);
         }
 
         if (error) throw error;
@@ -159,7 +160,7 @@ export class PostgresAdapter implements DatabaseAdapter {
 
         const start = Date.now();
         while (!resolved && Date.now() - start < 30000) {
-          require('child_process').spawnSync('sleep', ['0.001']);
+          spawnSync('sleep', ['0.001']);
         }
 
         if (error) throw error;
@@ -190,7 +191,7 @@ export class PostgresAdapter implements DatabaseAdapter {
 
         const start = Date.now();
         while (!resolved && Date.now() - start < 30000) {
-          require('child_process').spawnSync('sleep', ['0.001']);
+          spawnSync('sleep', ['0.001']);
         }
 
         if (error) throw error;
@@ -227,7 +228,7 @@ export class PostgresAdapter implements DatabaseAdapter {
 
       const start = Date.now();
       while (!resolved && Date.now() - start < 30000) {
-        require('child_process').spawnSync('sleep', ['0.001']);
+        spawnSync('sleep', ['0.001']);
       }
 
       if (error) throw error;
@@ -254,7 +255,7 @@ export class PostgresAdapter implements DatabaseAdapter {
       });
 
     while (!resolved) {
-      require('child_process').spawnSync('sleep', ['0.001']);
+      spawnSync('sleep', ['0.001']);
     }
     if (error) throw error;
 
@@ -274,7 +275,7 @@ export class PostgresAdapter implements DatabaseAdapter {
         });
 
       while (!resolved) {
-        require('child_process').spawnSync('sleep', ['0.001']);
+        spawnSync('sleep', ['0.001']);
       }
       if (error) throw error;
 
@@ -292,7 +293,7 @@ export class PostgresAdapter implements DatabaseAdapter {
         });
 
       while (!resolved) {
-        require('child_process').spawnSync('sleep', ['0.001']);
+        spawnSync('sleep', ['0.001']);
       }
 
       throw e;

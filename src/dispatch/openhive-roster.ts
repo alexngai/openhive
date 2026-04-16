@@ -1,11 +1,12 @@
 /**
  * OpenHive Agent Roster — AgentRoster adapter
  *
- * Queries the MAP connection registry for agents available for routed dispatch.
- * Maps MAP agent states to swarm-dispatch PresenceState.
+ * Composes swarm-dispatch's generic createRegistryRoster with OpenHive's
+ * MAP connection registry for agent discovery.
  */
 
-import type { AgentRoster, AgentRef, PresenceState } from 'swarm-dispatch';
+import { createRegistryRoster } from 'swarm-dispatch/client';
+import type { AgentRoster, PresenceState } from 'swarm-dispatch';
 import { getAllInbound } from '../map/connection-registry.js';
 
 function mapAgentState(state: string): PresenceState {
@@ -24,34 +25,21 @@ function mapAgentState(state: string): PresenceState {
 }
 
 export function createOpenHiveRoster(): AgentRoster {
-  return {
-    async findAvailable(criteria) {
-      const refs: AgentRef[] = [];
-      const connections = getAllInbound();
-
-      for (const [, conn] of connections) {
+  return createRegistryRoster({
+    listAgents: () => {
+      const agents: Array<{ id: string; system: string; role: string; state: string }> = [];
+      for (const [, conn] of getAllInbound()) {
         for (const [agentId, agent] of conn.registeredAgents) {
-          const presence = mapAgentState(agent.state ?? 'registered');
-          if (criteria.notBusy && presence !== 'active') continue;
-
-          const agentRole = agent.role ?? 'worker';
-          if (criteria.role && agentRole !== criteria.role) continue;
-
-          refs.push({
-            agentId,
+          agents.push({
+            id: agentId,
             system: conn.swarmId,
+            role: agent.role ?? 'worker',
+            state: agent.state ?? 'registered',
           });
         }
       }
-
-      return refs;
+      return agents;
     },
-
-    onAgentStateChanged(handler) {
-      // No-op for now — MAP connection registry doesn't emit granular
-      // agent state-change events. The orchestrator falls back to polling.
-      void handler;
-      return () => {};
-    },
-  };
+    stateMapper: mapAgentState,
+  });
 }

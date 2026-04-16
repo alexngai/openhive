@@ -14,6 +14,7 @@
  */
 
 import { spawn, ChildProcess } from 'child_process';
+import { createRequire } from 'node:module';
 import * as fs from 'fs';
 import * as path from 'path';
 import type {
@@ -89,7 +90,8 @@ function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): boolean 
  */
 function checkSandboxAvailability(): { available: boolean; warnings: string[] } {
   try {
-    const { SandboxManager } = require('@anthropic-ai/sandbox-runtime') as typeof import('@anthropic-ai/sandbox-runtime');
+    const esmRequire = createRequire(import.meta.url);
+    const { SandboxManager } = esmRequire('@anthropic-ai/sandbox-runtime') as typeof import('@anthropic-ai/sandbox-runtime');
 
     if (!SandboxManager.isSupportedPlatform()) {
       return {

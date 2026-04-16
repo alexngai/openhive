@@ -16,7 +16,7 @@
 module.exports = {
   apps: [{
     name: 'openhive',
-    script: './dist/cli.js',
+    script: './dist/cli.mjs',
     args: 'serve',
     cwd: __dirname,
 

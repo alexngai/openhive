@@ -1,17 +1,12 @@
 /**
  * OpenHive Agent Runtime — DispatchAgentRuntime adapter
  *
- * Wraps SwarmCraft's ACP stream manager to spawn agents on target swarms.
- * The orchestrator calls spawn() with a prompt; we open an ACP stream,
- * create a session, and send the prompt as the first user message.
+ * Composes swarm-dispatch's generic createStreamRuntime with OpenHive-specific
+ * ACP stream manager and dispatch target resolution.
  */
 
-import type {
-  DispatchAgentRuntime,
-  SpawnedAgent,
-  AgentStopReason,
-  UsageReport,
-} from 'swarm-dispatch';
+import { createStreamRuntime } from 'swarm-dispatch/client';
+import type { DispatchAgentRuntime } from 'swarm-dispatch';
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import { findAcpAgentInfo } from '../map/connection-registry.js';
 
@@ -36,82 +31,57 @@ export interface OpenHiveRuntimeDeps {
 export function createOpenHiveAgentRuntime(
   deps: OpenHiveRuntimeDeps,
 ): DispatchAgentRuntime {
-  const stoppedCallbacks: Array<(agentId: string, reason: AgentStopReason) => void> = [];
-  const usageCallbacks: Array<(agentId: string, usage: UsageReport) => void> = [];
-
-  return {
-    async spawn(opts): Promise<SpawnedAgent> {
+  return createStreamRuntime({
+    async resolveTarget(taskId) {
       const acpStreamManager = deps.getAcpStreamManager();
-      if (!acpStreamManager) {
-        throw new Error('ACP stream manager not available');
-      }
+      if (!acpStreamManager) throw new Error('ACP stream manager not available');
 
-      const dispatchId = opts.taskId;
-      const dispatch = dispatchesDAL.findDispatchById(dispatchId);
-      if (!dispatch) {
-        throw new Error(`Dispatch ${dispatchId} not found`);
-      }
+      const dispatch = dispatchesDAL.findDispatchById(taskId);
+      if (!dispatch) throw new Error(`Dispatch ${taskId} not found`);
 
-      const swarmId = dispatch.target_swarm_id;
-      const agentInfo = findAcpAgentInfo(swarmId);
+      const agentInfo = findAcpAgentInfo(dispatch.target_swarm_id);
       if (!agentInfo) {
-        throw new Error(`No ACP-capable agent on swarm ${swarmId}`);
+        throw new Error(`No ACP-capable agent on swarm ${dispatch.target_swarm_id}`);
       }
 
-      const { streamId } = await acpStreamManager.createStream(
-        swarmId,
-        agentInfo.targetId,
-      );
-
-      await acpStreamManager.initialize(streamId);
-
-      const swarmMeta = {} as Record<string, unknown>;
-      const cwd = (typeof swarmMeta.projectPath === 'string' ? swarmMeta.projectPath : undefined) ?? '.';
-
-      const { sessionId } = await acpStreamManager.newSession(streamId, {
-        cwd,
-        mcpServers: [],
-      });
-
-      await acpStreamManager.prompt(streamId, {
-        sessionId,
-        prompt: [{ type: 'text', text: opts.prompt }],
-      });
-
-      dispatchesDAL.setDispatchSessionIds(dispatchId, [
-        ...dispatch.session_ids,
-        sessionId,
-      ]);
-
-      return { id: streamId };
-    },
-
-    async terminate(agentId: string, _reason: AgentStopReason): Promise<void> {
-      const acpStreamManager = deps.getAcpStreamManager();
-      if (acpStreamManager) {
-        try {
-          await acpStreamManager.closeStream(agentId);
-        } catch {
-          // Stream already closed
-        }
-      }
-    },
-
-    onStopped(callback: (agentId: string, reason: AgentStopReason) => void): () => void {
-      stoppedCallbacks.push(callback);
-      return () => {
-        const idx = stoppedCallbacks.indexOf(callback);
-        if (idx >= 0) stoppedCallbacks.splice(idx, 1);
+      return {
+        serverId: dispatch.target_swarm_id,
+        agentId: agentInfo.targetId,
       };
     },
 
-    onUsage(callback: (agentId: string, usage: UsageReport) => void): () => void {
-      usageCallbacks.push(callback);
-      return () => {
-        const idx = usageCallbacks.indexOf(callback);
-        if (idx >= 0) usageCallbacks.splice(idx, 1);
-      };
+    createStream: (serverId, agentId) => {
+      const mgr = deps.getAcpStreamManager()!;
+      return mgr.createStream(serverId, agentId);
     },
-  };
+
+    initializeStream: async (streamId) => {
+      await deps.getAcpStreamManager()!.initialize(streamId);
+    },
+
+    createSession: async (streamId, cwd) => {
+      return deps.getAcpStreamManager()!.newSession(streamId, { cwd, mcpServers: [] });
+    },
+
+    sendPrompt: async (streamId, sessionId, prompt) => {
+      await deps.getAcpStreamManager()!.prompt(streamId, {
+        sessionId,
+        prompt: [{ type: 'text', text: prompt }],
+      });
+    },
+
+    closeStream: async (streamId) => {
+      await deps.getAcpStreamManager()?.closeStream(streamId);
+    },
+
+    onSessionCreated: (taskId, sessionId) => {
+      const dispatch = dispatchesDAL.findDispatchById(taskId);
+      if (dispatch) {
+        dispatchesDAL.setDispatchSessionIds(taskId, [
+          ...dispatch.session_ids,
+          sessionId,
+        ]);
+      }
+    },
+  });
 }
-

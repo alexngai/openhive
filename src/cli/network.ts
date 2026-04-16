@@ -12,6 +12,7 @@
 import { Command } from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createRequire } from 'node:module';
 import * as readline from 'readline';
 import { createNetworkProvider } from '../network/index.js';
 import type { NetworkConfig } from '../network/factory.js';
@@ -379,7 +380,7 @@ async function runStatus(configPath: string | undefined): Promise<void> {
       try {
         const raw = file.endsWith('.json')
           ? JSON.parse(fs.readFileSync(file, 'utf-8'))
-          : require(path.resolve(file));
+          : createRequire(import.meta.url)(path.resolve(file));
         const config = raw.default || raw;
         if (config.network) {
           networkConfig = config.network;

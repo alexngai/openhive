@@ -1,19 +1,13 @@
 /**
  * OpenHive MessagePort — mail-based dispatch routing
  *
- * Bridges swarm-dispatch's MessagePort to OpenHive's agent-inbox / mail system.
- * Sends x-dispatch/work messages to already-running agents for routed dispatch;
- * receives results via x-dispatch/result messages.
+ * Composes swarm-dispatch's generic createMailPort with OpenHive's
+ * MAP connection registry for reachability checks and agent-inbox
+ * transport for message delivery.
  */
 
-import type {
-  MessagePort,
-  IncomingWork,
-  DeliveryReceipt,
-  CancelAck,
-  ResultEnvelope,
-  AgentRef,
-} from 'swarm-dispatch';
+import { createMailPort } from 'swarm-dispatch/client';
+import type { MessagePort } from 'swarm-dispatch';
 import { getInbound } from '../map/connection-registry.js';
 
 export interface MailTransport {
@@ -28,87 +22,15 @@ export interface MailTransport {
 }
 
 export function createOpenHiveMailPort(transport: MailTransport): MessagePort {
-  const incomingHandlers: Array<(msg: IncomingWork) => void> = [];
+  return createMailPort({
+    send: (system, agentId, envelope) =>
+      transport.sendToAgent(system, agentId, envelope),
 
-  const unsubscribe = transport.onMessage((from, message) => {
-    if (message.type !== 'x-dispatch/work') return;
-    const task = message.task as IncomingWork['task'];
-    if (!task?.id) return;
+    onMessage: (handler) =>
+      transport.onMessage((from, msg) =>
+        handler({ system: from.swarmId, agentId: from.agentId }, msg),
+      ),
 
-    const incoming: IncomingWork = {
-      messageId: (message.messageId as string) ?? `${from.swarmId}:${task.id}:${Date.now()}`,
-      correlationId: (message.correlationId as string) ?? task.id,
-      replyTo: { agentId: from.agentId, system: from.swarmId },
-      task,
-    };
-
-    for (const handler of incomingHandlers) {
-      handler(incoming);
-    }
+    isReachable: (system) => !!getInbound(system),
   });
-
-  return {
-    onIncoming(handler) {
-      incomingHandlers.push(handler);
-      return () => {
-        const idx = incomingHandlers.indexOf(handler);
-        if (idx >= 0) incomingHandlers.splice(idx, 1);
-        if (incomingHandlers.length === 0) unsubscribe();
-      };
-    },
-
-    async deliver(to: AgentRef, payload): Promise<DeliveryReceipt> {
-      const swarmId = to.system;
-      if (!swarmId) {
-        return { delivered: false, reason: 'recipient_unreachable' };
-      }
-
-      const conn = getInbound(swarmId);
-      if (!conn) {
-        return { delivered: false, reason: 'recipient_unreachable' };
-      }
-
-      const result = await transport.sendToAgent(swarmId, to.agentId, {
-        type: 'x-dispatch/work',
-        body: {
-          prompt: payload.prompt,
-          taskId: payload.taskId,
-          role: payload.role,
-        },
-      });
-
-      return {
-        delivered: result.delivered,
-        reason: result.reason,
-      };
-    },
-
-    async cancel(to: AgentRef, correlationId: string, reason: string): Promise<CancelAck> {
-      const swarmId = to.system;
-      if (!swarmId) return { acked: false, reason: 'no system' };
-
-      const result = await transport.sendToAgent(swarmId, to.agentId, {
-        type: 'x-dispatch/cancel',
-        body: { correlationId, reason },
-      });
-
-      return { acked: result.delivered, reason: result.reason };
-    },
-
-    dedupeKey(msg: IncomingWork): string | null {
-      return msg.messageId ?? null;
-    },
-
-    async deliverResult(to: AgentRef, envelope: ResultEnvelope): Promise<DeliveryReceipt> {
-      const swarmId = to.system;
-      if (!swarmId) return { delivered: false, reason: 'no system' };
-
-      const result = await transport.sendToAgent(swarmId, to.agentId, {
-        type: 'x-dispatch/result',
-        body: envelope as unknown as Record<string, unknown>,
-      });
-
-      return { delivered: result.delivered, reason: result.reason };
-    },
-  };
 }

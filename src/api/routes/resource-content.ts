@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify';
+import { createRequire } from 'node:module';
 import { readFileSync, statSync, existsSync } from 'node:fs';
 import { resolve, join, relative, extname } from 'node:path';
 import { z } from 'zod';
@@ -25,8 +26,8 @@ let _MinimemClass: any = null;
 function loadMinimemSync() {
   if (!_MinimemClass) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const mod = require('minimem');
+      const esmRequire = createRequire(import.meta.url);
+      const mod = esmRequire('minimem');
       _MinimemClass = mod.Minimem;
     } catch {
       // minimem not available — endpoints fall back to file-based operations
@@ -966,7 +967,7 @@ export async function resourceContentRoutes(
       }
     }
 
-    return reply.send({ items: [], daemon_connected: false, message: 'No local daemon and no connected swarm available' });
+    return reply.status(503).send({ error: 'Service Unavailable', message: 'No local daemon and no connected swarm available' });
   });
 
   fastify.get<{

@@ -5,8 +5,12 @@ import fastifyStatic from "@fastify/static";
 import multipart from "@fastify/multipart";
 import * as path from "path";
 import * as fs from "fs";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import { Config, loadConfig } from "./config.js";
-import { initDatabase, closeDatabase } from "./db/index.js";
+import { initDatabase, closeDatabase, getDatabase } from "./db/index.js";
 import { registerRoutes } from "./api/index.js";
 import { setupWebSocket, stopHeartbeat, broadcastToChannel } from "./realtime/index.js";
 import { generateSkillMd } from "./skill.js";
@@ -34,11 +38,10 @@ import {
   startLocalResourceWatchers,
   stopLocalResourceWatchers,
 } from "./sync/local-resource-watcher.js";
-import { markStaleSwarms } from "./map/service.js";
+import { markStaleSwarms, getWellKnownMapInfo } from "./map/service.js";
 import { setupOrchestrator } from "./dispatch/setup.js";
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
 import type { Orchestrator } from "swarm-dispatch";
-// Dynamic import of swarm-dispatch is done inside setupOrchestrator (ESM-only package)
 import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
 import { initMail } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
@@ -402,7 +405,7 @@ export async function createHive(
   // Initialize dispatch orchestrator (swarm-dispatch integration)
   let dispatchOrchestrator: Orchestrator | null = null;
   try {
-    dispatchOrchestrator = await setupOrchestrator({
+    dispatchOrchestrator = setupOrchestrator({
       specFetcher: {
         async fetch(resourceId: string, specId: string) {
           const result = await fetchSpecForDispatch(resourceId, specId, 'system');
@@ -520,7 +523,7 @@ export async function createHive(
   // Federation discovery (stub)
   fastify.get("/.well-known/openhive.json", async (_request, reply) => {
     // Get stats from database
-    const db = require("./db/index.js").getDatabase();
+    const db = getDatabase();
     const agentCount = db
       .prepare("SELECT COUNT(*) as count FROM agents")
       .get() as { count: number };
@@ -561,7 +564,6 @@ export async function createHive(
     // Add MAP Hub info if enabled
     if (config.mapHub.enabled) {
       try {
-        const { getWellKnownMapInfo } = require("./map/service.js");
         Object.assign(wellKnown, getWellKnownMapInfo());
       } catch {
         // MAP module not available, skip

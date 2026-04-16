@@ -68,7 +68,7 @@ describe('createOpenHiveDispatchSource', () => {
       const tasks = await source.queryReady();
       expect(tasks).toHaveLength(1);
       expect(tasks[0].id).toBe(d.id);
-      expect(tasks[0].status).toBe('queued');
+      expect(tasks[0].status).toBe('open');
       expect(tasks[0].metadata?.spec_resource_id).toBe('res_test');
     });
 

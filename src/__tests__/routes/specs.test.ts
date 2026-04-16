@@ -17,11 +17,9 @@ import * as path from 'path';
 // '../../map/task-daemon-client.js' so the mock target matches that path.
 // ---------------------------------------------------------------------------
 
-vi.mock('../../map/task-daemon-client.js', () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { existsSync, readFileSync, writeFileSync } = require('fs');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { join } = require('path');
+vi.mock('../../map/task-daemon-client.js', async () => {
+  const { existsSync, readFileSync, writeFileSync } = await import('fs');
+  const { join } = await import('path');
 
   class TaskDaemonError extends Error {
     code: string;

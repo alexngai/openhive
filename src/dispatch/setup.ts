@@ -6,6 +6,7 @@
  */
 
 import { hostname } from 'node:os';
+import { createOrchestrator } from 'swarm-dispatch';
 import type { Orchestrator, DispatchEvent } from 'swarm-dispatch';
 import { createOpenHiveDispatchSource } from './openhive-source.js';
 import type { SpecContentFetcher } from './openhive-source.js';
@@ -23,8 +24,7 @@ export interface SetupOrchestratorOptions {
   globalConcurrency?: number;
 }
 
-export async function setupOrchestrator(opts: SetupOrchestratorOptions): Promise<Orchestrator> {
-  const { createOrchestrator } = await import('swarm-dispatch');
+export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator {
   const claimantId = `openhive:${hostname()}:${process.pid}`;
 
   const source = createOpenHiveDispatchSource(opts.specFetcher, claimantId);
