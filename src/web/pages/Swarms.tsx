@@ -638,10 +638,12 @@ function InlineAgentRow({
     : [];
   const supportsAcp = protocols.includes('acp');
 
-  // Prefer peerMapId (the targetable ID on the swarm's own MAP server); fall
-  // back to the hub-assigned id. Same precedence SwarmDetail uses.
+  // Prefer the peer-side map id (the targetable ID on the swarm's own MAP
+  // server); fall back to the hub-assigned id. cc-swarm publishes this as
+  // `peerMapId`, macro-agent as `localAgentId` — accept either.
   const targetAgentId =
     (typeof agent.metadata?.peerMapId === 'string' && (agent.metadata.peerMapId as string)) ||
+    (typeof agent.metadata?.localAgentId === 'string' && (agent.metadata.localAgentId as string)) ||
     agent.id;
 
   const handleChat = async (e: React.MouseEvent) => {
@@ -780,6 +782,7 @@ function HostedSwarmCard({ swarm, linkedMapSwarm }: { swarm: HostedSwarm; linked
       const result = await connectAcp.mutateAsync({
         swarmId: targetSwarmId,
         agentId: spawned.agent_id,
+        peerMapId: spawned.peer_map_id,
         cwd: projectPath,
       });
       const params = new URLSearchParams({

@@ -45,23 +45,26 @@ None. All design-review questions resolved. New questions will accrue during imp
 Goal: specs are browsable, authorable, linkable from the UI. No new persistence.
 
 ### Backend
-- [ ] Query helper: list opentasks context nodes filtered to `kind=spec` (local + remote via existing opentasks-remote)
-- [ ] REST route: `GET /specs` (list across reachable daemons, paginated)
-- [ ] REST route: `GET /specs/:id` (detail, delegates to opentasks resource-content)
-- [ ] MAP endpoint: `map/specs/author` — agent-authored spec creation (open to any registered agent per D9)
-- [ ] Event emission: `spec.authored`, `spec.updated`, `spec.linked` (derived from opentasks events + kind filter)
-- [ ] Tests: query helper + route integration
+- [x] Query helper: list opentasks context nodes filtered to `kind=spec` (local + remote via existing opentasks-remote)
+- [x] REST route: `GET /specs` (list across reachable daemons, paginated)
+- [x] REST route: `GET /specs/:id` (detail, delegates to opentasks resource-content)
+- [x] REST route: `POST /specs` (create spec context node)
+- [x] REST route: `PATCH /specs/:resourceId/:specId` (update, commit-through per D10)
+- [x] REST route: `POST /specs/:resourceId/:specId/links` + `DELETE` (link/unlink edges)
+- [x] MAP endpoint: `map/specs/author` — agent-authored spec creation (open to any registered agent per D9)
+- [x] Event emission: `spec.created`, `spec.updated`, `spec.linked` (derived from opentasks events + kind filter)
+- [x] Tests: route integration (23 cases) + MAP handler (8 cases)
 
 ### Frontend
-- [ ] `src/web/pages/Specs.tsx` — list view
-- [ ] `src/web/pages/SpecDetail.tsx` — detail + edit (edits commit through to opentasks per D10)
-- [ ] Spec editor component (markdown body + structured fields: goals, acceptance, out-of-scope)
-- [ ] New-spec compose: `localStorage` draft autosave, commit on Save/Dispatch (per D10)
-- [ ] "Pending review" inbox/badge for specs with `metadata.review_status: 'pending'`
-- [ ] Link picker: spec ↔ task, spec ↔ context (opentasks graph edges)
-- [ ] Realtime invalidation on `map:tasks` channel (reuse existing; filter by kind)
-- [ ] React Query hooks in `src/web/hooks/`
-- [ ] Nav entry: "Specs" as first-class
+- [x] `src/web/pages/Specs.tsx` — list view
+- [x] `src/web/pages/SpecDetail.tsx` — detail + edit (edits commit through to opentasks per D10)
+- [x] Spec editor component (markdown body with edit/preview tabs)
+- [x] New-spec compose (`SpecNew.tsx`): `localStorage` draft autosave, commit on Save/Dispatch (per D10)
+- [ ] "Pending review" inbox/badge for specs with `metadata.review_status: 'pending'` — backend supports, no UI yet
+- [x] Link picker: spec ↔ task, spec ↔ context (LinkedNodesPanel with "+" form + "×" unlink)
+- [x] Realtime invalidation via `useSpecsRealtime` on `map:tasks` channel
+- [x] React Query hooks: `useSpecs`, `useSpec`, `useCreateSpec`, `useUpdateSpec`, `useLinkSpec`, `useUnlinkSpec`
+- [x] Nav entry: "Specs" as first-class in Sidebar
 
 ---
 
@@ -70,39 +73,131 @@ Goal: specs are browsable, authorable, linkable from the UI. No new persistence.
 Goal: explicit `(spec, swarm)` dispatch replaces free-text `assignee`. Bootstrap sessions on target swarms. Open to any registered agent; audit + kill switch as safety net (per D9).
 
 ### Backend
-- [ ] Schema migration: `dispatches` table (fields: id, spec_ref, target_swarm_id, status, initiator_type, initiator_id, session_ids, outcome, created_at, updated_at)
-- [ ] `src/db/dal/dispatches.ts` — CRUD, status transitions
-- [ ] `src/api/routes/dispatches.ts` — list, detail, cancel
-- [ ] `POST /specs/:id/dispatch { target_swarms[], prompt? }` — creates N dispatches, bootstraps sessions (per D8, `independent` semantics only)
-- [ ] Session bootstrap helper: seeds ACP / mail session with goal + spec ref + linked task ids (uses existing adapters)
-- [ ] MAP endpoint: `map/specs/dispatch` — agent-initiated dispatch (open to any registered agent per D9)
-- [ ] Event emission: `dispatch.created`, `dispatch.status_changed`, `dispatch.completed`
-- [ ] `map:dispatches` WS channel + broadcast
-- [ ] Audit: `initiator` recorded on every dispatch; status transitions logged
-- [ ] Global kill switch: admin setting `autonomousDispatchPaused: boolean` — when true, agent-initiated dispatches return 503; user-initiated dispatches still work
-- [ ] Tests: dispatch happy path, unreachable swarm, cancel, multi-swarm, kill switch on/off
+- [x] Schema migration V32: `dispatches` table + V35: `lease_token`, `lease_expires_at`, `attempt`, `turn_count`
+- [x] `src/db/dal/dispatches.ts` — CRUD, status transitions, fence-token claim/release/renew
+- [x] `src/api/routes/dispatches.ts` — list, detail, cancel
+- [x] `POST /specs/:id/dispatch { target_swarms[], prompt? }` — creates N dispatches (per D8, `independent` semantics only)
+- [x] swarm-dispatch orchestrator integration (`src/dispatch/`) — replaces manual bootstrap with automatic poll → claim → spawn/route → retry → complete/fail
+- [x] MAP endpoint: `map/specs/dispatch` — agent-initiated dispatch (open to any registered agent per D9)
+- [x] Event emission: `dispatch.created`, `dispatch.status_changed`, `dispatch.completed`, `dispatch.cancelled` + orchestrator events bridged
+- [x] `map:dispatches` WS channel + broadcast
+- [x] Audit: `initiator` recorded on every dispatch; status transitions logged
+- [x] Global kill switch: `dispatch-policy.ts` + admin GET/POST endpoints — when paused, agent-initiated dispatches return -32004; user-initiated still work
+- [x] Tests: DAL (17 cases) + orchestrator helpers (12 cases) + source adapter (15 cases) + routes (10 cases) + dispatch handler (9 cases) + admin policy (5 cases)
 
 ### Frontend
-- [ ] Dispatch modal (`DispatchModal.tsx`): swarm picker, multi-select, confirm
-- [ ] Reusable from Spec detail, Task detail, SwarmDetail, command palette
-- [ ] Ack toast linking to created dispatch(es) + session(s)
-- [ ] Cancel action from dispatch detail
-- [ ] `Initiator` chip visible in every dispatch list item + detail view (user name or agent id)
-- [ ] Admin toggle in Settings for autonomous-dispatch kill switch
+- [x] Dispatch modal (`DispatchModal.tsx`): deduped swarm picker, multi-select, confirm, `last_seen_at` + `×N` variant badges
+- [x] Reusable from Spec detail (wired); Task detail + SwarmDetail + command palette pending Stream 3
+- [x] Ack toast on dispatch creation
+- [x] Cancel action from dispatch detail
+- [x] `Initiator` chip visible in every dispatch list item + detail view (user name or agent id)
+- [x] Admin toggle in Settings → Server → DispatchPolicyCard
+- [x] Orchestrator progress display: attempt + turn_count in DispatchDetail (shown when >0)
+- [x] Dispatches dashboard (`Dispatches.tsx`) with status filter chips + deduped swarm dropdown
+- [x] SpecDispatchesPanel on SpecDetail sidebar
 
 ---
 
 ## Stream 3 — Compose UX
 
-Goal: authoring a spec + dispatching takes seconds. Agents can help.
+Goal: authoring a spec + dispatching takes seconds. Agents can help via a global chat surface.
+
+### Chat FAB Widget (primary deliverable)
+
+A floating chat button available on every page. Expands into a chat panel for collaborating
+with agents — drafting specs, decomposing tasks, discussing dispatches, or any ad-hoc work.
+
+#### Architecture
+
+```
+src/web/components/chat-fab/
+├── ChatFab.tsx              # FAB button + expanded panel container
+├── ChatFabStore.ts          # Zustand store (open/session/swarm/minimized)
+├── ChatFabContext.tsx        # React context for page-level context injection
+├── SessionPicker.tsx         # Agent/session picker (spawn new or resume existing)
+├── ChatPanel.tsx             # Message list + input (wraps useChatChannel)
+├── ContextMenu.tsx           # "Add context" dropdown populated by page
+└── ContextFormatter.tsx      # Formats context items into chat messages
+```
+
+Mounted in `Layout.tsx`, rendered on all protected routes. Uses existing `useChatChannel`
+from swarmcraft + `useOpenHiveAdapters` for ACP/Mail transport.
+
+#### Decisions
+
+- **One active session at a time.** Switch sessions via the picker. No tabs.
+- **Persists across page navigation.** Zustand store at Layout level; navigating doesn't close the chat.
+- **Spawn target**: user picks a swarm from the deduped picker (same as DispatchModal). FAB creates an ACP session on that swarm.
+- **Quick actions** (future): "Create spec from conversation", "Dispatch this spec" as action buttons in the FAB header. Not in v1.
+- **Mobile**: full-screen when expanded, not a side panel.
+
+#### State (ChatFabStore)
+
+```ts
+interface ChatFabState {
+  open: boolean;               // FAB expanded or collapsed
+  sessionId: string | null;    // active session (null = show picker)
+  swarmId: string | null;      // swarm the session is on
+  minimized: boolean;          // expanded but tucked to header bar only
+}
+```
+
+#### Three modes
+
+1. **No session** → session picker (list connected swarms + recent sessions + "Spawn new")
+2. **Active session** → chat messages + input (via useChatChannel)
+3. **Minimized** → header bar only (agent name + unread badge)
+
+#### Context injection
+
+Each page provides available context items via a React context provider:
+
+```tsx
+// SpecDetail registers spec + linked tasks
+<ChatFabContext.Provider value={{
+  items: [
+    { label: 'Current spec', type: 'spec', data: { id, title, content } },
+    { label: 'Linked tasks (N)', type: 'tasks', data: linked.tasks },
+  ]
+}}>
+```
+
+User clicks a context item → formatted message injected into chat:
+
+```
+📎 Shared context — Spec: "Auth Refactor" (c-29m5)
+## Goals
+...
+## Linked Tasks
+- [open] t-693a — Implement spec display
+```
+
+Agent sees the full context as a user message and can act on it.
+
+#### Checklist
+
+- [ ] `ChatFab.tsx` — FAB button (bottom-right), expand/collapse, minimized mode
+- [ ] `ChatFabStore.ts` — Zustand store with open/session/swarm/minimized state
+- [ ] `ChatFabContext.tsx` — React context provider + `useChatFabContext` hook
+- [ ] `SessionPicker.tsx` — swarm picker (deduped, online filter), recent sessions list, "Spawn new" action
+- [ ] `ChatPanel.tsx` — message rendering + input, wrapping `useChatChannel` / `useOpenHiveAdapters`
+- [ ] `ContextMenu.tsx` — "Add context" dropdown reading from ChatFabContext
+- [ ] `ContextFormatter.tsx` — formats spec/task/dispatch context into markdown messages
+- [ ] Mount `ChatFab` in `Layout.tsx` inside ProtectedRoute
+- [ ] Wire `ChatFabContext.Provider` on key pages:
+  - [ ] `SpecDetail.tsx` — current spec + linked tasks/contexts
+  - [ ] `SpecNew.tsx` — draft spec content
+  - [ ] `DispatchDetail.tsx` — dispatch metadata + outcome
+  - [ ] `TaskGraph.tsx` — selected task(s)
+  - [ ] `SwarmDetail.tsx` — swarm info + connected agents
+  - [ ] `SessionDetail.tsx` — session metadata
+- [ ] Mobile: full-screen expanded mode via responsive breakpoint
+
+### Other Stream 3 items (lower priority)
 
 - [ ] Global command palette (⌘K / cmd-K): "New spec", "New task", "Dispatch spec"
 - [ ] Quick-add modal for specs (lightweight; "expand to full editor" option)
-- [ ] Agent-assist panel inside compose — chat channel w/ structured output contract
-  - [ ] Structured output schema (fields: title, description, goals, tasks[])
-  - [ ] Apply-to-form action ("insert agent's draft into the form")
 - [ ] Template gallery: feature / bug / research / triage
-- [ ] `localStorage` draft autosave + reload recovery (per D10)
 
 ---
 
@@ -146,8 +241,13 @@ Goal: dispatched specs benefit from historical outcomes.
 
 - [ ] Telemetry: event taxonomy for specs + dispatches, wired into existing event pipeline
 - [ ] Docs: user-facing getting-started for the spec → dispatch flow
-- [ ] CLAUDE.md section update once Dispatch ships
+- [x] CLAUDE.md section update — "Dispatch Orchestrator" section added with architecture, key files, lifecycle, adapters, kill switch
 - [ ] Migration nudge: existing task `assignee` flows keep working, UI suggests dispatch
+- [x] swarm-dispatch integration — client/server split with `swarm-dispatch/client` factories; adapters compose via static ESM imports
+- [x] ESM migration — `"type": "module"`, `format: ['esm']` + `shims: true` in tsup, `require()` calls replaced, `__dirname` shim in server.ts
+- [x] Swarm hygiene — Phase 1 (dedup picker 849→18), Phase 2 (archived column + sweep), Phase 3 (stable identity schema + upsert)
+- [x] Dual reporting path guard — event bridge checks terminal status before writing; design doc updated to clarify `map/dispatches/report` retained as secondary path
+- [x] useWSEvent render loop fix — ref-stabilized callback + Zustand selectors in useWebSocket.ts
 
 ---
 

@@ -605,30 +605,34 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         try { updateSwarm(swarmId, { agent_count: conn.registeredAgents.size }); } catch { /* non-critical */ }
       }
 
-      // Enrich swarm record with agent metadata (project, branch, template)
+      // Enrich swarm record with agent metadata (project, branch, template).
+      // Only update the swarm's name and metadata when the registering agent
+      // carries workspace-level context (project). Sidecars carry this;
+      // spawned coordinators/workers do not — their per-agent random names and
+      // sparse metadata should NOT overwrite the swarm's identity. Without
+      // this guard, every spawn would rename the swarm and clobber its
+      // workspace metadata.
       if (registeredAgent.metadata) {
         const meta = registeredAgent.metadata as Record<string, unknown>;
         const project = meta.project as string | undefined;
         const branch = meta.branch as string | undefined;
-        const template = meta.template as string | undefined;
-        const agentName = registeredAgent.name as string | undefined;
-
-        // Build a descriptive display name from available metadata
-        let displayName: string | undefined;
-        if (project) {
-          displayName = branch ? `${project} (${branch})` : project;
-        } else if (agentName && agentName !== 'unknown') {
-          displayName = template ? `${agentName} [${template}]` : agentName;
-        }
 
         try {
-          // Persist aggregate capabilities (union across all agents on this connection)
+          // Always refresh aggregate capabilities (union across all agents)
           const aggCaps = getAggregateCapabilities(swarmId);
-          updateSwarm(swarmId, {
-            ...(displayName ? { name: displayName } : {}),
-            capabilities: aggCaps || registeredAgent.capabilities || undefined,
-            metadata: meta,
-          });
+          if (project) {
+            // Workspace-bearing registration (sidecar): set name + metadata
+            updateSwarm(swarmId, {
+              name: branch ? `${project} (${branch})` : project,
+              capabilities: aggCaps || registeredAgent.capabilities || undefined,
+              metadata: meta,
+            });
+          } else {
+            // Per-agent registration (coordinator/worker): only update caps
+            updateSwarm(swarmId, {
+              capabilities: aggCaps || registeredAgent.capabilities || undefined,
+            });
+          }
         } catch { /* non-critical */ }
 
         // Auto-detect default task graph from agent metadata

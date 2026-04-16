@@ -7,6 +7,7 @@
 
 import { createHash } from 'crypto';
 import * as fs from 'fs';
+import * as net from 'net';
 import * as path from 'path';
 import { createRequire } from 'module';
 import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-generator';
@@ -161,8 +162,13 @@ export class SwarmManager {
       throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', `Hosting provider "${providerType}" is not configured`);
     }
 
-    // Allocate a port
-    const port = this.allocatePort();
+    // Generate bootstrap token
+    const adapter = input.adapter ?? 'macro-agent';
+
+    // Allocate port(s) — adapters like macro-agent need several consecutive
+    // ports (see getPortStride). allocatePorts probes the OS to avoid collisions
+    // with stale processes or previously assigned adjacent ports.
+    const port = await this.allocatePorts(adapter);
     if (!port) {
       throw new SwarmHostingError(
         'NO_PORTS_AVAILABLE',
@@ -170,8 +176,6 @@ export class SwarmManager {
       );
     }
 
-    // Generate bootstrap token
-    const adapter = input.adapter ?? 'macro-agent';
     const dataDir = path.join(this.config.data_dir, `swarm-${port}`);
 
     // Create a pre-auth key if a hive is specified
@@ -181,7 +185,7 @@ export class SwarmManager {
         const { findHiveByName } = await import('../db/dal/hives.js');
         const hive = findHiveByName(input.hive);
         if (!hive) {
-          this.releasePort(port);
+          this.releasePorts(port, adapter);
           throw new SwarmHostingError('HIVE_NOT_FOUND', `Hive "${input.hive}" not found`);
         }
         const keyResult = mapDal.createPreauthKey(agentId, {
@@ -191,7 +195,7 @@ export class SwarmManager {
         });
         preauthKeyPlaintext = keyResult.plaintext_key;
       } catch (err) {
-        this.releasePort(port);
+        this.releasePorts(port, adapter);
         if (err instanceof SwarmHostingError) throw err;
         throw new SwarmHostingError('PREAUTH_KEY_FAILED', `Failed to create pre-auth key: ${(err as Error).message}`);
       }
@@ -414,7 +418,7 @@ export class SwarmManager {
       return dal.findHostedSwarmById(hosted.id)!;
     } catch (err) {
       // Clean up on failure
-      this.releasePort(port);
+      this.releasePorts(port, adapter);
 
       dal.updateHostedSwarm(hosted.id, {
         state: 'failed',
@@ -470,7 +474,7 @@ export class SwarmManager {
 
     // Release port
     if (hosted.assigned_port) {
-      this.releasePort(hosted.assigned_port);
+      this.releasePorts(hosted.assigned_port, hosted.config?.adapter);
     }
 
     // Deregister from MAP hub if registered
@@ -609,7 +613,7 @@ export class SwarmManager {
             state: status.state,
             error: status.error ?? null,
           });
-          if (hosted.assigned_port) this.releasePort(hosted.assigned_port);
+          if (hosted.assigned_port) this.releasePorts(hosted.assigned_port, hosted.config?.adapter);
           continue;
         }
 
@@ -737,7 +741,7 @@ export class SwarmManager {
 
     // Release port
     if (hosted.assigned_port) {
-      this.releasePort(hosted.assigned_port);
+      this.releasePorts(hosted.assigned_port, hosted.config?.adapter);
     }
 
     // Broadcast crash/shutdown event to connected clients
@@ -797,8 +801,9 @@ export class SwarmManager {
 
     dal.updateHostedSwarm(hostedId, { state: 'starting', error: null });
 
-    // Re-allocate a port (the old one was released)
-    const port = this.allocatePort();
+    // Re-allocate a port (the old one was released). Probes the OS to avoid
+    // reusing a port that's still held by the dying process or another swarm.
+    const port = await this.allocatePorts(hosted.config.adapter);
     if (!port) {
       throw new Error('No ports available for restart');
     }
@@ -888,19 +893,92 @@ export class SwarmManager {
     };
   }
 
-  private allocatePort(): number | null {
+  /**
+   * How many consecutive ports the adapter process binds, starting at --port.
+   *
+   * macro-agent binds three:
+   *   port     — ACP WebSocket server
+   *   port + 1 — gateway HTTP (health/metrics)
+   *   port + 2 — MAP server
+   *
+   * If we only reserved one, spawning N macro-agent swarms at 9000, 9001, 9002…
+   * would collide: swarm #2's --port 9001 clashes with swarm #1's gateway HTTP.
+   */
+  private getPortStride(adapter: string | undefined): number {
+    return adapter === 'macro-agent' ? 3 : 1;
+  }
+
+  /** Try to bind briefly to (host, port); resolve true if it was free. */
+  private isPortFree(port: number, host: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const server = net.createServer();
+      server.once('error', () => resolve(false));
+      server.once('listening', () => {
+        server.close(() => resolve(true));
+      });
+      server.listen(port, host);
+    });
+  }
+
+  /**
+   * Allocate a base port with `stride` consecutive ports all free at the OS
+   * level and not already reserved in-memory. Reserves all N ports against
+   * concurrent spawns. Returns the base port, or null if none found.
+   */
+  private async allocatePorts(adapter: string | undefined): Promise<number | null> {
+    const stride = this.getPortStride(adapter);
     const [min, max] = this.config.port_range;
-    for (let port = min; port <= max; port++) {
-      if (!this.usedPorts.has(port)) {
-        this.usedPorts.add(port);
-        return port;
+    const host = '127.0.0.1';
+    const maxBase = max - stride + 1;
+    if (maxBase < min) return null;
+
+    for (let base = min; base <= maxBase; base++) {
+      // Skip if any port in [base, base+stride-1] is already reserved by
+      // another swarm (or an in-flight concurrent spawn).
+      let reserved = false;
+      for (let i = 0; i < stride; i++) {
+        if (this.usedPorts.has(base + i)) {
+          reserved = true;
+          break;
+        }
       }
+      if (reserved) continue;
+
+      // OS-level probe: every port must actually be bindable. Re-check
+      // usedPorts on each iteration so that a concurrent allocatePorts call
+      // reserving while we're awaiting isPortFree is still visible.
+      let allFree = true;
+      for (let i = 0; i < stride; i++) {
+        const p = base + i;
+        if (this.usedPorts.has(p) || !(await this.isPortFree(p, host))) {
+          allFree = false;
+          break;
+        }
+      }
+      if (!allFree) continue;
+
+      // Final synchronous recheck before reservation — once we commit to the
+      // Set mutation below, no other async call can slip in until we yield.
+      let stillFree = true;
+      for (let i = 0; i < stride; i++) {
+        if (this.usedPorts.has(base + i)) {
+          stillFree = false;
+          break;
+        }
+      }
+      if (!stillFree) continue;
+
+      for (let i = 0; i < stride; i++) this.usedPorts.add(base + i);
+      return base;
     }
     return null;
   }
 
-  private releasePort(port: number): void {
-    this.usedPorts.delete(port);
+  private releasePorts(basePort: number, adapter: string | undefined): void {
+    const stride = this.getPortStride(adapter);
+    for (let i = 0; i < stride; i++) {
+      this.usedPorts.delete(basePort + i);
+    }
   }
 
   private getInstanceId(hosted: HostedSwarm): string | null {

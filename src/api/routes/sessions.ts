@@ -15,7 +15,7 @@ import { findSwarmById } from '../../db/dal/map.js';
 import { getDatabase } from '../../db/index.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import { fetchTranscriptFromSwarm } from '../../map/trajectory-content.js';
-import { findAcpAgentInfo, getInbound } from '../../map/connection-registry.js';
+import { findAcpAgentInfo, getInbound, getPeerMapId } from '../../map/connection-registry.js';
 import {
   detectFormatExtended,
   getSupportedFormats,
@@ -1391,11 +1391,11 @@ export async function sessionsRoutes(
   //
   // Callers that want a one-click "spawn + connect" flow should chain the
   // two endpoints client-side.
-  fastify.post<{ Body: { swarm_id: string; agent_id: string; cwd?: string } }>(
+  fastify.post<{ Body: { swarm_id: string; agent_id: string; peer_map_id?: string; cwd?: string } }>(
     '/sessions/acp-connect',
     { preHandler: authMiddleware },
     async (request, reply) => {
-      const { swarm_id, agent_id, cwd } = request.body || ({} as any);
+      const { swarm_id, agent_id, peer_map_id, cwd } = request.body || ({} as any);
       if (!swarm_id) {
         return reply.status(400).send({ error: 'swarm_id is required' });
       }
@@ -1425,9 +1425,12 @@ export async function sessionsRoutes(
         ?? '.';
 
       // Resolve the agent on the hub. Accept either the hub-assigned id or
-      // the agent's peerMapId (as published in registered_agents[].metadata).
-      // Normalize to the peerMapId (what the swarm's own MAP server routes on)
-      // before opening the stream.
+      // the agent's peer-side map id (published in registered_agents[].metadata
+      // as `peerMapId` for cc-swarm or `localAgentId` for macro-agent).
+      // The ACP target ID (the ID the swarm's own MAP server routes on) is
+      // not always derivable from the hub registry — macro-agent's spawn
+      // returns a separate `peer_map_id` for this purpose. Callers should
+      // pass it through; otherwise we fall back to deriving from metadata.
       const inboundConn = getInbound(swarm_id);
       let acpAgent: string | undefined;
       let targetAgentEntry: { name?: string; metadata?: Record<string, unknown> } | undefined;
@@ -1435,17 +1438,24 @@ export async function sessionsRoutes(
         const direct = inboundConn.registeredAgents.get(agent_id);
         if (direct) {
           targetAgentEntry = direct;
-          const pm = direct.metadata?.peerMapId;
-          acpAgent = typeof pm === 'string' ? pm : agent_id;
+          acpAgent = peer_map_id ?? getPeerMapId(direct.metadata) ?? agent_id;
         } else {
           for (const entry of inboundConn.registeredAgents.values()) {
-            if (entry.metadata?.peerMapId === agent_id) {
+            const peer = getPeerMapId(entry.metadata);
+            if (peer === agent_id || (peer_map_id && peer === peer_map_id)) {
               targetAgentEntry = entry;
-              acpAgent = agent_id;
+              acpAgent = peer_map_id ?? agent_id;
               break;
             }
           }
         }
+      }
+      // If the caller explicitly supplied a peer_map_id but the registry
+      // hasn't caught up (race between spawn and lifecycle-bridge register),
+      // accept it: the swarm's MAP server is the source of truth for ACP
+      // routing, and the registry entry is just for capability metadata.
+      if (!acpAgent && peer_map_id) {
+        acpAgent = peer_map_id;
       }
       if (!acpAgent) {
         return reply.status(404).send({
@@ -1454,27 +1464,29 @@ export async function sessionsRoutes(
       }
 
       // Guard: agent must declare ACP support. Early 400 is friendlier than
-      // letting the stream handshake fail partway through.
-      const agentCaps = (targetAgentEntry as any)?.capabilities as Record<string, unknown> | undefined;
-      const agentProtocols = Array.isArray(agentCaps?.protocols)
-        ? (agentCaps!.protocols as string[])
-        : [];
-      if (!agentProtocols.includes('acp')) {
-        return reply.status(400).send({
-          error: `Agent ${agent_id} does not advertise ACP support`,
-        });
+      // letting the stream handshake fail partway through. Skip the check if
+      // we fell through with peer_map_id only (registry race) — caller has
+      // explicitly asserted the target supports ACP by passing peer_map_id.
+      if (targetAgentEntry) {
+        const agentCaps = (targetAgentEntry as any)?.capabilities as Record<string, unknown> | undefined;
+        const agentProtocols = Array.isArray(agentCaps?.protocols)
+          ? (agentCaps!.protocols as string[])
+          : [];
+        if (!agentProtocols.includes('acp')) {
+          return reply.status(400).send({
+            error: `Agent ${agent_id} does not advertise ACP support`,
+          });
+        }
       }
 
       try {
-        // 0. Close any existing ACP streams for this server to prevent
-        //    subscription iterator interference on the shared MAP connection.
-        const existing = sc.acpStreamManager.listStreams()
-          .filter((s: any) => s.serverId === swarm_id && !s.isClosed);
-        for (const s of existing) {
-          try { await sc.acpStreamManager.closeStream(s.streamId); } catch { /* best effort */ }
-        }
-
-        // 1. Create ACP stream
+        // 1. Create ACP stream. acp-manager already closes any prior stream
+        //    targeting the same agent on the same server (per-target dedup).
+        //    Do NOT proactively close streams targeting OTHER agents on this
+        //    swarm — that breaks any session the user is actively viewing
+        //    against those agents (clicking Chat on coordinator B would kill
+        //    coordinator A's open session, surfacing as "ACP stream closed"
+        //    when the user revisits A's session URL).
         const stream = await sc.acpStreamManager.createStream(swarm_id, acpAgent);
 
         // 2. Initialize

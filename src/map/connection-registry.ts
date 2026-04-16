@@ -153,6 +153,22 @@ export function getAgentCapabilities(swarmId: string): Array<{ agentId: string; 
 }
 
 /**
+ * Extract the peer-side map ID from an agent's registration metadata.
+ * Accepts either `peerMapId` (cc-swarm convention) or `localAgentId`
+ * (macro-agent convention) — both name the same thing: the agent's ID on
+ * its own swarm's MAP server, which is what the hub must target for ACP /
+ * messaging routing.
+ */
+export function getPeerMapId(metadata: Record<string, unknown> | undefined): string | undefined {
+  if (!metadata) return undefined;
+  const peerMapId = metadata.peerMapId;
+  if (typeof peerMapId === 'string' && peerMapId) return peerMapId;
+  const localAgentId = metadata.localAgentId;
+  if (typeof localAgentId === 'string' && localAgentId) return localAgentId;
+  return undefined;
+}
+
+/**
  * Find the first agent on the connection that supports ACP.
  * Returns the ID to target on the swarm's own MAP server (peerMapId from
  * metadata when available; falls back to the hub-assigned id). ACP streams
@@ -182,8 +198,8 @@ export function findAcpAgentInfo(swarmId: string): {
     if (!caps) continue;
     const protocols = Array.isArray(caps.protocols) ? caps.protocols as string[] : [];
     if (protocols.includes('acp')) {
-      const peerMapId = agent.metadata?.peerMapId;
-      const targetId = (typeof peerMapId === 'string' && peerMapId) ? peerMapId : agent.id;
+      const peerMapId = getPeerMapId(agent.metadata);
+      const targetId = peerMapId ?? agent.id;
       return { targetId, hubAgentId: agent.id, metadata: agent.metadata };
     }
   }

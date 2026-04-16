@@ -1,6 +1,7 @@
 import { Outlet, useLocation } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { ToastContainer } from '../common/Toast';
+import { ChatFab, ChatSidebar } from '../chat-fab/ChatFab';
 
 // Routes that need full-width layout (no max-width constraint)
 const FULL_WIDTH_ROUTES = ['/terminal', '/tasks', '/messages/', '/sessions'];
@@ -25,7 +26,9 @@ export function Layout() {
           </div>
         )}
       </main>
+      <ChatSidebar />
       <ToastContainer />
+      <ChatFab />
     </div>
   );
 }

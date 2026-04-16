@@ -46,7 +46,7 @@ import {
 import { createSwarmToken, delegateToken, revokeToken } from '../../map/token-service.js';
 import type { Config } from '../../config.js';
 import { broadcastToChannel } from '../../realtime/index.js';
-import { getAllConnectionHealth, getConnectionHealth, getInbound } from '../../map/connection-registry.js';
+import { getAllConnectionHealth, getConnectionHealth, getInbound, getPeerMapId } from '../../map/connection-registry.js';
 import { getSyncListenerStatus } from '../../map/sync-listener.js';
 
 // ============================================================================
@@ -384,21 +384,29 @@ export async function mapRoutes(
           task,
           cwd,
         }) as { agent?: { id?: string; name?: string; localId?: string } };
-        const spawnedId = result?.agent?.id;
-        if (!spawnedId) {
+        // `agent.id` from macro-agent is the swarm-side MAP server ULID
+        // (peerMapId — the ACP target). `agent.localId` is the macro-agent
+        // local agent ID, which is what the lifecycle bridge publishes as
+        // `metadata.localAgentId` on the hub. They are different values.
+        const peerMapId = result?.agent?.id;
+        const localId = result?.agent?.localId ?? peerMapId;
+        if (!peerMapId) {
           return reply.status(502).send({ error: 'Spawn returned no agent id' });
         }
 
         // Wait briefly for the lifecycle bridge to register the agent on the
         // hub so the returned hub_agent_id is usable immediately by the caller.
+        // Match against either the peerMapId or the localId — registration may
+        // publish either depending on the runtime (cc-swarm uses peerMapId,
+        // macro-agent uses localAgentId == localId).
         const deadline = Date.now() + 2000;
         let hubAgentId: string | undefined;
         while (Date.now() < deadline) {
           const conn = getInbound(swarmId);
           if (conn) {
             for (const [id, entry] of conn.registeredAgents) {
-              const md = entry.metadata as Record<string, unknown> | undefined;
-              if (md?.peerMapId === spawnedId) { hubAgentId = id; break; }
+              const peer = getPeerMapId(entry.metadata);
+              if (peer === peerMapId || peer === localId) { hubAgentId = id; break; }
             }
           }
           if (hubAgentId) break;
@@ -406,8 +414,8 @@ export async function mapRoutes(
         }
 
         return reply.send({
-          agent_id: hubAgentId ?? spawnedId,
-          peer_map_id: spawnedId,
+          agent_id: hubAgentId ?? peerMapId,
+          peer_map_id: peerMapId,
           name: result?.agent?.name,
           role,
           cwd,
@@ -441,11 +449,21 @@ export async function mapRoutes(
 
       // Resolve the agent's peer MAP id (the ULID on the swarm's own MAP
       // server). Prefer registered_agents metadata (hub's view) which has
-      // peerMapId stored. Fall back to the provided id.
+      // the peer-side ID stored. Fall back to the provided id.
       const conn = getInbound(swarmId);
       const entry = conn?.registeredAgents.get(hubAgentId);
-      const peerMapId = entry?.metadata?.peerMapId;
-      const targetId = (typeof peerMapId === 'string' && peerMapId) ? peerMapId : hubAgentId;
+      const targetId = getPeerMapId(entry?.metadata) ?? hubAgentId;
+
+      // Try macro-agent's `_macro/terminateAgent` first. If the swarm runtime
+      // doesn't expose it (most current macro-agent versions don't — there's
+      // no MAP-exposed termination handler), fall back to `map/agents/unregister`
+      // which at least removes the agent from the peer's MAP registry. The
+      // peer's lifecycle bridge typically observes the unregister and tears
+      // down the local agent.
+      const isMethodNotFound = (err: unknown): boolean => {
+        const msg = (err as Error)?.message ?? '';
+        return /method not found/i.test(msg) || /-32601/.test(msg);
+      };
 
       try {
         const result = await mapClient.callExtension('_macro/terminateAgent', {
@@ -457,7 +475,22 @@ export async function mapRoutes(
         }
         return reply.send({ success: true });
       } catch (err) {
-        return reply.status(500).send({ error: (err as Error).message });
+        if (!isMethodNotFound(err)) {
+          return reply.status(500).send({ error: (err as Error).message });
+        }
+        // Fallback: standard MAP unregister
+        try {
+          await mapClient.callExtension('map/agents/unregister', {
+            agentId: targetId,
+            reason,
+          });
+          return reply.send({ success: true, method: 'map/agents/unregister' });
+        } catch (fallbackErr) {
+          return reply.status(501).send({
+            error: 'Swarm does not support remote agent termination',
+            detail: (fallbackErr as Error).message,
+          });
+        }
       }
     },
   );

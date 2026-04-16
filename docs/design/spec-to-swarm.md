@@ -141,14 +141,18 @@ Goal: explicit dispatch replaces free-text `assignee`. One new entity, clean con
 - Global "pause autonomous dispatch" admin toggle (cheap kill switch).
 - Dispatch modal in UI (swarm picker, multi-select, confirm). Surfaces `initiator` prominently in detail views.
 
-### Stream 3 — Compose UX
+### Stream 3 — Compose UX + Chat FAB
 
-Goal: authoring a spec + dispatching takes seconds, and agents can help.
+Goal: authoring a spec + dispatching takes seconds. Agents are always one click away.
 
-- Global command palette (⌘K): "New spec", "New task", "Dispatch existing spec".
-- Agent-assist panel inside spec compose — chat channel, structured output → fills spec fields.
-- Template gallery (feature, bug, research, triage).
-- Quick-add modals reusable from Dashboard and Swarms pages.
+Primary deliverable: **Chat FAB Widget** — a floating chat button available on every page that expands into a chat panel. Users can spawn a new agent session or resume an existing one, collaborate on specs/tasks/dispatches, and inject page context (current spec, linked tasks, dispatch state) into the conversation.
+
+- Chat FAB mounted at `Layout.tsx` level (persists across navigation).
+- One active session at a time; session picker for spawn/resume.
+- Context injection via React context — each page registers available items (spec, tasks, dispatch, swarm).
+- Reuses `useChatChannel` + `useOpenHiveAdapters` (ACP/Mail).
+- Mobile: full-screen when expanded.
+- Future: command palette (⌘K), quick actions ("Create spec from conversation"), template gallery.
 
 ### Stream 4 — Observability
 

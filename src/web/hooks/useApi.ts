@@ -2020,17 +2020,27 @@ export function useSpawnAgent() {
 
 /**
  * Open an ACP session against an already-registered agent on a swarm.
- * `agentId` is required (pass the hub agent id or the peerMapId). Eagerly
- * creates the OpenHive session resource so the UI can navigate to it.
+ * `agentId` is required (pass the hub agent id or the peerMapId).
+ * `peerMapId`, when provided, is the swarm-side MAP server target id —
+ * required when the registry hasn't published it (e.g., immediately after
+ * spawning a macro-agent coordinator). Eagerly creates the OpenHive
+ * session resource so the UI can navigate to it.
  */
 export function useConnectAcp() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ swarmId, agentId, cwd }: { swarmId: string; agentId: string; cwd?: string }) =>
+    mutationFn: ({ swarmId, agentId, peerMapId, cwd }: {
+      swarmId: string; agentId: string; peerMapId?: string; cwd?: string;
+    }) =>
       api.post<{ session_resource_id: string; acp_session_id: string; acp_stream_id: string; created: boolean }>(
         '/sessions/acp-connect',
-        { swarm_id: swarmId, agent_id: agentId, ...(cwd ? { cwd } : {}) },
+        {
+          swarm_id: swarmId,
+          agent_id: agentId,
+          ...(peerMapId ? { peer_map_id: peerMapId } : {}),
+          ...(cwd ? { cwd } : {}),
+        },
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions-overview'] });

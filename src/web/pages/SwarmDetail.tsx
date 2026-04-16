@@ -301,26 +301,13 @@ function SwarmHeader({
 
 // ─── Capability-Gated Actions ───────────────────────────────────────────────
 
-function SwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
+function useSwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
   const navigate = useNavigate();
   const spawnAgent = useSpawnAgent();
   const connectAcp = useConnectAcp();
 
   const caps = (swarm.capabilities || {}) as Record<string, unknown>;
-  const protocols = Array.isArray(caps.protocols) ? caps.protocols as string[] : [];
-  const supportsAcp = protocols.includes('acp');
-  // Fallback: swarms that can spawn ACP coordinators on demand (e.g., macro-agent)
-  // declare `canHostAcp: true` on a registered agent's metadata (typically the
-  // sidecar). This lets us show the "New Agent Session" button before any
-  // coordinator has been spawned.
-  const registeredAgents = (swarm as any)?.registered_agents as Array<{
-    metadata?: Record<string, unknown>;
-  }> | undefined;
-  const canHostAcp = Array.isArray(registeredAgents)
-    && registeredAgents.some(a => a.metadata?.canHostAcp === true);
   const isOnline = swarm.status === 'online' || swarm.status === 'unreachable';
-
-  if (!isOnline || (!supportsAcp && !canHostAcp)) return null;
 
   const projectPath = (caps as any)?.projectPath as string
     ?? (swarm.metadata as any)?.projectPath as string
@@ -340,6 +327,7 @@ function SwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) 
       const result = await connectAcp.mutateAsync({
         swarmId,
         agentId: spawned.agent_id,
+        peerMapId: spawned.peer_map_id,
         cwd: projectPath,
       });
       const params = new URLSearchParams({
@@ -353,32 +341,41 @@ function SwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) 
   };
 
   const isPending = spawnAgent.isPending || connectAcp.isPending;
+  const isError = spawnAgent.isError || connectAcp.isError;
   const errorMessage =
     (spawnAgent.error as Error | undefined)?.message
     ?? (connectAcp.error as Error | undefined)?.message;
 
-  return (
-    <div className="flex items-center gap-2">
-      <button
-        onClick={handleNewSession}
-        disabled={isPending}
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors"
-        style={{ backgroundColor: 'var(--color-accent)', color: 'black' }}
-      >
-        {isPending ? (
-          <LoadingSpinner size="sm" />
-        ) : (
-          <Zap className="w-3.5 h-3.5" />
-        )}
-        New Agent Session
-      </button>
-      {(spawnAgent.isError || connectAcp.isError) && errorMessage && (
-        <span className="text-2xs text-red-400">
-          {errorMessage || 'Failed to create session'}
-        </span>
+  const button = isOnline ? (
+    <button
+      onClick={handleNewSession}
+      disabled={isPending}
+      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors"
+      style={{ backgroundColor: 'var(--color-accent)', color: 'black' }}
+    >
+      {isPending ? (
+        <LoadingSpinner size="sm" />
+      ) : (
+        <Zap className="w-3.5 h-3.5" />
       )}
+      New Agent Session
+    </button>
+  ) : null;
+
+  const error = isOnline && isError && errorMessage ? (
+    <div
+      className="mb-2 rounded-md border px-3 py-2 text-xs"
+      style={{
+        borderColor: 'var(--color-border-subtle)',
+        backgroundColor: 'rgba(239, 68, 68, 0.08)',
+        color: '#fca5a5',
+      }}
+    >
+      {errorMessage || 'Failed to create session'}
     </div>
-  );
+  ) : null;
+
+  return { button, error };
 }
 
 
@@ -569,10 +566,11 @@ function RegisteredAgentCard({
   // the whole swarm's hub connection. Use Swarms page controls for that.
   const canStop = agent.role !== 'sidecar';
 
-  // Prefer peerMapId as the targetable ID on the swarm's own MAP server; fall
-  // back to the hub-assigned ID.
+  // Prefer the peer-side map id (targetable on the swarm's own MAP server).
+  // cc-swarm publishes this as `peerMapId`; macro-agent as `localAgentId`.
   const targetAgentId =
     (typeof agent.metadata?.peerMapId === 'string' && (agent.metadata.peerMapId as string)) ||
+    (typeof agent.metadata?.localAgentId === 'string' && (agent.metadata.localAgentId as string)) ||
     agent.id;
 
   const handleChat = async () => {
@@ -669,27 +667,18 @@ function RegisteredAgentCard({
 }
 
 function RegisteredAgentsSection({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
-  const agents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined ?? [];
+  const allAgents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined ?? [];
+  const sidecars = allAgents.filter((a) => a.role === 'sidecar');
+  const agents = allAgents.filter((a) => a.role !== 'sidecar');
 
   const projectPath =
     (swarm.capabilities as any)?.projectPath as string | undefined ??
     (swarm.metadata as any)?.projectPath as string | undefined;
 
-  // Mirror SwarmActions' visibility predicate so we know whether to render
-  // the section for swarms with no agents yet (sidecar-only). A macro-agent
-  // swarm that advertises `canHostAcp` on its sidecar can spawn coordinators
-  // on demand — in that case we still show the section so the "New Agent
-  // Session" button is reachable.
-  const caps = (swarm.capabilities || {}) as Record<string, unknown>;
-  const protocols = Array.isArray(caps.protocols) ? (caps.protocols as string[]) : [];
-  const supportsAcp = protocols.includes('acp');
-  const canHostAcp = (agents ?? []).some(
-    (a) => (a.metadata as any)?.canHostAcp === true,
-  );
   const isOnline = swarm.status === 'online' || swarm.status === 'unreachable';
-  const showActions = isOnline && (supportsAcp || canHostAcp);
+  const swarmActions = useSwarmActions({ swarm, swarmId });
 
-  if (agents.length === 0 && !showActions) return null;
+  if (allAgents.length === 0 && !isOnline) return null;
 
   return (
     <div className="mt-4">
@@ -700,9 +689,19 @@ function RegisteredAgentsSection({ swarm, swarmId }: { swarm: MapSwarm; swarmId:
           {agents.length > 0 && (
             <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>{agents.length}</span>
           )}
+          {sidecars.length > 0 && (
+            <span
+              className="text-2xs font-normal px-1.5 py-0.5 rounded"
+              style={{ color: 'var(--color-text-muted)', backgroundColor: 'var(--color-surface)' }}
+              title={`Sidecar: ${sidecars.map((s) => s.id).join(', ')}`}
+            >
+              sidecar connected
+            </span>
+          )}
         </h3>
-        <SwarmActions swarm={swarm} swarmId={swarmId} />
+        {swarmActions.button}
       </div>
+      {swarmActions.error}
       {agents.length > 0 ? (
         <div className="space-y-1">
           {agents.map((agent) => (
