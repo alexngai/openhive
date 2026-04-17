@@ -365,4 +365,184 @@ describe('POST /sessions/:id/resume', () => {
     expect(res.statusCode).toBe(502);
     expect(res.json()).toMatchObject({ error: 'LOAD_FAILED' });
   });
+
+  // ────────────────────────────────────────────────────────────────
+  // GET /map/swarms/:id/resumable-sessions
+  // ────────────────────────────────────────────────────────────────
+
+  describe('GET /map/swarms/:id/resumable-sessions', () => {
+    it('returns only sessions on the requested swarm with a provider_session_id', async () => {
+      // Seed three sessions: one on the target swarm with psid (resumable),
+      // one on the target swarm without psid (NOT resumable — missing the
+      // prereq for durable resume), and one on a different swarm (filtered
+      // out by source_swarm_id).
+      seedResumableSession({ swarmId: 'swarm-target', providerSessionId: 'psid-a' });
+      resourcesDAL.createResource({
+        resource_type: 'session',
+        name: `no-psid-${Date.now()}`,
+        description: '',
+        git_remote_url: `map://session/no-psid-${Date.now()}`,
+        owner_agent_id: ownerAgent.id,
+        scope: 'manual',
+        metadata: { source_swarm_id: 'swarm-target' /* no psid */ },
+      });
+      seedResumableSession({ swarmId: 'swarm-other', providerSessionId: 'psid-elsewhere' });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/map/swarms/swarm-target/resumable-sessions',
+        headers: auth(),
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.swarm_id).toBe('swarm-target');
+      expect(body.total).toBe(1);
+      expect(body.sessions).toHaveLength(1);
+      expect(body.sessions[0].provider_session_id_prefix).toBe('psid-a');
+    });
+
+    it('filters to the caller by default (only their own sessions)', async () => {
+      // Owner has one resumable on swarm-scoped; other agent has one too.
+      seedResumableSession({ swarmId: 'swarm-scoped', providerSessionId: 'psid-mine' });
+      seedResumableSession({ swarmId: 'swarm-scoped', providerSessionId: 'psid-theirs', ownerId: otherAgent.id });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/map/swarms/swarm-scoped/resumable-sessions',
+        headers: auth(),
+      });
+      const body = res.json();
+      expect(body.total).toBe(1);
+      expect(body.sessions[0].provider_session_id_prefix).toBe('psid-mine');
+    });
+
+    it('returns empty list for a swarm with no resumable sessions', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/map/swarms/swarm-empty/resumable-sessions',
+        headers: auth(),
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ swarm_id: 'swarm-empty', total: 0, sessions: [] });
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────
+  // POST /map/swarms/:id/resume-all
+  // ────────────────────────────────────────────────────────────────
+
+  describe('POST /map/swarms/:id/resume-all', () => {
+    it('fans out to each session and aggregates the results', async () => {
+      const r1 = seedResumableSession({ swarmId: 'swarm-batch', providerSessionId: 'psid-1' });
+      const r2 = seedResumableSession({ swarmId: 'swarm-batch', providerSessionId: 'psid-2' });
+      const r3 = seedResumableSession({ swarmId: 'swarm-batch', providerSessionId: 'psid-3' });
+      seedLiveInbound('swarm-batch');
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/map/swarms/swarm-batch/resume-all',
+        headers: auth(),
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.total).toBe(3);
+      expect(body.succeeded).toHaveLength(3);
+      expect(body.failed).toHaveLength(0);
+      const successIds = body.succeeded.map((s: { session_resource_id: string }) => s.session_resource_id).sort();
+      expect(successIds).toEqual([r1.id, r2.id, r3.id].sort());
+
+      // Each session triggers createStream + loadSession — verify fan-out
+      expect(sc.acpStreamManager.createStream).toHaveBeenCalledTimes(3);
+      expect(sc.acpStreamManager.loadSession).toHaveBeenCalledTimes(3);
+    });
+
+    it('returns partial results when some sessions fail', async () => {
+      const r1 = seedResumableSession({ swarmId: 'swarm-partial', providerSessionId: 'psid-ok' });
+      const r2 = seedResumableSession({ swarmId: 'swarm-partial', providerSessionId: 'psid-bad' });
+      seedLiveInbound('swarm-partial');
+
+      // macro-agent returns success for psid-ok, failure for psid-bad.
+      const callExtension = vi.fn(async (_method: string, params: any) => {
+        if (params.providerSessionId === 'psid-bad') {
+          return { success: false, error: 'agent not in store' };
+        }
+        return {
+          success: true,
+          agent: { id: 'peer-ok', localId: 'local-ok' },
+          acpSessionId: 'acp-session-ok',
+          providerSessionId: params.providerSessionId,
+        };
+      });
+      sc = createSwarmCraftStub({ callExtension });
+      await app.close();
+      app = await createTestApp(config, sc);
+      seedLiveInbound('swarm-partial');
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/map/swarms/swarm-partial/resume-all',
+        headers: auth(),
+        payload: {},
+      });
+      const body = res.json();
+      expect(body.total).toBe(2);
+      expect(body.succeeded).toHaveLength(1);
+      expect(body.failed).toHaveLength(1);
+      expect(body.succeeded[0].session_resource_id).toBe(r1.id);
+      expect(body.failed[0]).toMatchObject({
+        session_resource_id: r2.id,
+        error: 'RESUME_FAILED',
+      });
+    });
+
+    it('returns an empty batch when the swarm has no resumable sessions', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/map/swarms/swarm-empty-batch/resume-all',
+        headers: auth(),
+        payload: {},
+      });
+      const body = res.json();
+      expect(body).toMatchObject({ total: 0, succeeded: [], failed: [] });
+    });
+
+    it('respects concurrency bound (no more than N in flight at once)', async () => {
+      // Seed 6 sessions; limit to concurrency=2. Track active callExtension
+      // invocations to verify the cap is honored.
+      for (let i = 0; i < 6; i++) {
+        seedResumableSession({ swarmId: 'swarm-conc', providerSessionId: `psid-c${i}` });
+      }
+      seedLiveInbound('swarm-conc');
+
+      let inFlight = 0;
+      let maxObserved = 0;
+      const slowExtension = vi.fn(async (_method: string, params: any) => {
+        inFlight++;
+        maxObserved = Math.max(maxObserved, inFlight);
+        await new Promise((r) => setTimeout(r, 50));
+        inFlight--;
+        return {
+          success: true,
+          agent: { id: 'p', localId: 'l' },
+          acpSessionId: 'acp-' + params.providerSessionId,
+          providerSessionId: params.providerSessionId,
+        };
+      });
+      sc = createSwarmCraftStub({ callExtension: slowExtension });
+      await app.close();
+      app = await createTestApp(config, sc);
+      seedLiveInbound('swarm-conc');
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/map/swarms/swarm-conc/resume-all',
+        headers: auth(),
+        payload: { concurrency: 2 },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().succeeded).toHaveLength(6);
+      expect(maxObserved).toBeLessThanOrEqual(2);
+    });
+  });
 });

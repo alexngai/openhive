@@ -1,7 +1,7 @@
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
-  ArrowLeft, Activity, Bell, ChevronRight, ChevronDown, ChevronUp, Clock, Cpu, FileText, Globe,
-  Link2, Loader2, MessageSquare, Monitor, Network, Plus, Share2,
+  ArrowLeft, Activity, AlertTriangle, Bell, ChevronRight, ChevronDown, ChevronUp, Clock, Cpu, FileText, Globe,
+  Link2, Loader2, MessageSquare, Monitor, Network, Play, Plus, Share2,
   Square, RotateCw, Terminal, Trash2, User, Wifi, WifiOff,
   CheckCircle2, Zap,
 } from 'lucide-react';
@@ -14,6 +14,10 @@ import {
   useSpawnAgent,
   useConnectAcp,
   useStopAgent,
+  useResumableSessions,
+  useResumeAllSessions,
+  useResumeSession,
+  type ResumableSession,
 } from '../hooks/useApi';
 import { useSwarmRealtime, useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -1044,6 +1048,190 @@ function SessionCard({ session }: { session: SessionListItem }) {
   );
 }
 
+/**
+ * Per-row resume action. Navigates to the session on success with fresh
+ * stream/session query params so the trajectory page hydrates against the
+ * new ACP stream.
+ */
+function ResumableSessionRow({
+  session,
+  onSuccess,
+}: {
+  session: ResumableSession;
+  onSuccess: (data: { acp_session_id: string; acp_stream_id: string }) => void;
+}) {
+  const navigate = useNavigate();
+  const resumeMutation = useResumeSession();
+
+  const handleResume = () => {
+    resumeMutation.mutate(
+      { sessionResourceId: session.session_resource_id },
+      {
+        onSuccess: (data) => {
+          onSuccess(data);
+          toast.success('Session resumed', session.name);
+        },
+        onError: (err) => {
+          toast.error('Resume failed', (err as Error).message);
+        },
+      },
+    );
+  };
+
+  const goToSession = () => {
+    navigate(`/sessions/${session.session_resource_id}`);
+  };
+
+  return (
+    <div
+      className="card px-3 py-2 flex items-center gap-3 hover:ring-1 hover:ring-honey-500/20 transition-shadow cursor-pointer"
+      onClick={goToSession}
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium truncate">{session.name}</span>
+          {session.project && (
+            <span
+              className="text-2xs px-1.5 py-0.5 rounded shrink-0"
+              style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+            >
+              {session.project}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+          <code className="font-mono">{session.provider_session_id_prefix}…</code>
+          <TimeAgo date={session.updated_at} />
+        </div>
+      </div>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          handleResume();
+        }}
+        disabled={resumeMutation.isPending}
+        className="text-2xs px-2 py-1 rounded shrink-0 flex items-center gap-1 cursor-pointer disabled:cursor-wait disabled:opacity-60"
+        style={{ backgroundColor: 'var(--color-honey-500, #f59e0b)', color: 'var(--color-bg)' }}
+        title="Restart the swarm if needed, respawn the agent, and reload the session"
+      >
+        {resumeMutation.isPending ? (
+          <>
+            <Loader2 className="w-3 h-3 animate-spin" />
+            Starting…
+          </>
+        ) : (
+          <>
+            <Play className="w-3 h-3" />
+            Resume
+          </>
+        )}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Swarm-level panel listing resumable sessions + a batch "Resume all" action.
+ * Only rendered when the query returns ≥1 session with a persisted
+ * provider_session_id. Sessions without a psid are surfaced via the regular
+ * Sessions section — resume doesn't apply to them.
+ */
+function ResumableSessionsSection({ swarmId }: { swarmId: string }) {
+  const navigate = useNavigate();
+  const { data, isLoading } = useResumableSessions(swarmId);
+  const resumeAll = useResumeAllSessions();
+
+  const sessions = data?.sessions ?? [];
+  if (isLoading) return null; // avoid flashing an empty panel on initial load
+  if (sessions.length === 0) return null;
+
+  const handleResumeAll = async () => {
+    try {
+      const result = await resumeAll.mutateAsync({ swarmId });
+      const fail = result.failed.length;
+      const win = result.succeeded.length;
+      if (fail === 0) {
+        toast.success('Resumed all sessions', `${win} session${win === 1 ? '' : 's'} resumed.`);
+      } else if (win === 0) {
+        toast.error('Resume failed', `All ${fail} session${fail === 1 ? '' : 's'} failed.`);
+      } else {
+        toast.error(
+          'Partial resume',
+          `${win} resumed, ${fail} failed. Check each session for details.`,
+        );
+      }
+    } catch (err) {
+      toast.error('Resume failed', (err as Error).message);
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <SectionHeading icon={Play} label="Resumable Sessions" count={sessions.length} />
+        {sessions.length > 1 && (
+          <button
+            onClick={handleResumeAll}
+            disabled={resumeAll.isPending}
+            className="text-2xs px-2 py-1 rounded flex items-center gap-1 cursor-pointer disabled:cursor-wait disabled:opacity-60"
+            style={{ backgroundColor: 'var(--color-honey-500, #f59e0b)', color: 'var(--color-bg)' }}
+            title="Restart the swarm (if needed) and resume every session on it"
+          >
+            {resumeAll.isPending ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Resuming {sessions.length}…
+              </>
+            ) : (
+              <>
+                <Play className="w-3 h-3" />
+                Resume all ({sessions.length})
+              </>
+            )}
+          </button>
+        )}
+      </div>
+
+      {resumeAll.data && resumeAll.data.failed.length > 0 && (
+        <div
+          className="mb-2 px-3 py-2 rounded text-2xs flex items-start gap-2"
+          style={{
+            backgroundColor: 'rgba(239, 68, 68, 0.08)',
+            color: 'var(--color-text-secondary)',
+          }}
+        >
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-red-400" />
+          <div className="flex-1">
+            <div className="font-medium mb-0.5">{resumeAll.data.failed.length} session(s) failed to resume</div>
+            {resumeAll.data.failed.slice(0, 3).map((f) => (
+              <div key={f.session_resource_id} className="opacity-80">
+                <code className="font-mono">{f.session_resource_id.slice(-8)}</code>: {f.error} — {f.message}
+              </div>
+            ))}
+            {resumeAll.data.failed.length > 3 && (
+              <div className="opacity-60">+{resumeAll.data.failed.length - 3} more</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-1">
+        {sessions.map((s) => (
+          <ResumableSessionRow
+            key={s.session_resource_id}
+            session={s}
+            onSuccess={(data) =>
+              navigate(
+                `/sessions/${s.session_resource_id}?streamId=${data.acp_stream_id}&sessionId=${data.acp_session_id}`,
+              )
+            }
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SessionsSection({ swarmId }: { swarmId: string }) {
   const { data, isLoading } = useSessionsList({ swarm_id: swarmId });
   useSessionsRealtime();
@@ -1135,6 +1323,8 @@ export function SwarmDetail() {
       <NodesSection swarmId={id!} />
 
       <RegisteredAgentsSection swarm={swarm} swarmId={id!} />
+
+      <ResumableSessionsSection swarmId={id!} />
 
       <SessionsSection swarmId={id!} />
 

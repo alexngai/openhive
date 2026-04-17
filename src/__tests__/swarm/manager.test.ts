@@ -4,6 +4,7 @@ import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import { SwarmManager, SwarmHostingError } from '../../swarm/manager.js';
+import * as swarmDAL from '../../swarm/dal.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
@@ -253,6 +254,37 @@ describe('SwarmManager', () => {
         await manager.shutdown();
       }
     });
+
+    it('cold-starts a stopped swarm by re-provisioning from persisted config', async () => {
+      // This exercises the path where stop() has cleared the in-memory instance
+      // tracking, so provider.restart() is unavailable. restart() must fall
+      // through to provider.provision(hosted.config) using the saved bootstrap
+      // token + port + adapter. Before this fix, restart() errored with
+      // "No tracked instance to restart" — making stop/resume cycles impossible
+      // via the UI and blocking /sessions/:id/resume for stopped swarms.
+      const config = createTestConfig();
+      const manager = new SwarmManager(config, 'http://localhost:3000');
+
+      try {
+        const hosted = await manager.spawn(agentId, { name: 'cold-start-test' });
+        expect(hosted.state).toBe('running');
+        const firstPid = hosted.pid;
+        expect(firstPid).toBeGreaterThan(0);
+
+        await manager.stop(hosted.id, agentId);
+        const afterStop = swarmDAL.findHostedSwarmById(hosted.id);
+        expect(afterStop?.state).toBe('stopped');
+
+        // Restart from cold. The in-memory instance tracking was cleared by
+        // stop(), so this forces the cold-start branch.
+        const revived = await manager.restart(hosted.id, agentId);
+        expect(revived.state).toBe('running');
+        expect(revived.pid).toBeGreaterThan(0);
+        expect(revived.pid).not.toBe(firstPid); // fresh process
+      } finally {
+        await manager.shutdown();
+      }
+    }, 60000);
   });
 
   describe('health monitor', () => {

@@ -477,11 +477,18 @@ export class SwarmManager {
       this.releasePorts(hosted.assigned_port, hosted.config?.adapter);
     }
 
-    // Deregister from MAP hub if registered
+    // Mark the MAP hub swarm as offline (but keep the row).
+    //
+    // We deliberately do NOT delete the map_swarms row here: hosted_swarms.swarm_id
+    // has a `REFERENCES map_swarms(id) ON DELETE SET NULL` FK, so deleting would
+    // null out the hosted swarm's swarm_id — destroying the linkage needed for
+    // restart and durable session resume. Instead, flip status to 'offline' so the
+    // swarm disappears from "online" lists while preserving its identity for
+    // cold-restart via the saved bootstrap_token.
     if (hosted.swarm_id) {
       try {
-        mapDal.deleteSwarm(hosted.swarm_id);
-      } catch { /* swarm may already be deleted */ }
+        mapDal.updateSwarm(hosted.swarm_id, { status: 'offline' });
+      } catch { /* best-effort */ }
     }
 
     dal.updateHostedSwarm(hostedSwarmId, { state: 'stopped', error: null });
@@ -509,41 +516,74 @@ export class SwarmManager {
     }
 
     const provider = this.providers.get(hosted.provider);
-    if (!provider || !provider.restart) {
-      throw new SwarmHostingError('RESTART_NOT_SUPPORTED', `Provider "${hosted.provider}" does not support restart`);
+    if (!provider) {
+      throw new SwarmHostingError('RESTART_NOT_SUPPORTED', `Provider "${hosted.provider}" not available`);
     }
 
     dal.updateHostedSwarm(hostedSwarmId, { state: 'starting', error: null });
 
+    // Two restart modes:
+    //
+    //   HOT (bounce): instance is tracked in memory. Reuse provider.restart() —
+    //     same port, same config, minimal churn.
+    //
+    //   COLD (re-provision): no in-memory instance. Happens after a manual stop
+    //     (which clears hostedToInstanceId) or after a hub restart. Fall through
+    //     to the same cold-start path the crash-recovery auto-restart uses,
+    //     which re-provisions from the persisted hosted.config.
     const instanceId = this.getInstanceId(hosted);
-    if (!instanceId) {
-      throw new SwarmHostingError('RESTART_FAILED', 'No tracked instance to restart');
+
+    if (instanceId && provider.restart) {
+      try {
+        const result = await provider.restart(instanceId);
+
+        dal.updateHostedSwarm(hostedSwarmId, {
+          pid: result.pid ?? null,
+          endpoint: result.endpoint ?? null,
+          state: 'running',
+          error: null,
+        });
+
+        if (hosted.swarm_id) {
+          try {
+            mapDal.heartbeatSwarm(hosted.swarm_id);
+          } catch { /* swarm may not exist */ }
+        }
+
+        return dal.findHostedSwarmById(hostedSwarmId)!;
+      } catch (err) {
+        dal.updateHostedSwarm(hostedSwarmId, {
+          state: 'failed',
+          error: (err as Error).message,
+        });
+        throw new SwarmHostingError('RESTART_FAILED', `Failed to restart: ${(err as Error).message}`);
+      }
+    }
+
+    // Cold-start path — no tracked instance. Requires the persisted config to
+    // re-provision from scratch. The bootstrap token inside `hosted.config`
+    // carries the original swarm_id, so the revived process registers under
+    // the same identity (no re-registration needed on the hub).
+    if (!hosted.config) {
+      dal.updateHostedSwarm(hostedSwarmId, {
+        state: 'failed',
+        error: 'Cannot cold-start: no persisted config',
+      });
+      throw new SwarmHostingError(
+        'RESTART_FAILED',
+        'No tracked instance to restart and no persisted config to re-provision from',
+      );
     }
 
     try {
-      const result = await provider.restart(instanceId);
-
-      dal.updateHostedSwarm(hostedSwarmId, {
-        pid: result.pid ?? null,
-        endpoint: result.endpoint ?? null,
-        state: 'running',
-        error: null,
-      });
-
-      // Send heartbeat if registered in MAP hub
-      if (hosted.swarm_id) {
-        try {
-          mapDal.heartbeatSwarm(hosted.swarm_id);
-        } catch { /* swarm may not exist */ }
-      }
-
+      await this.autoRestart(hostedSwarmId, hosted);
       return dal.findHostedSwarmById(hostedSwarmId)!;
     } catch (err) {
       dal.updateHostedSwarm(hostedSwarmId, {
         state: 'failed',
         error: (err as Error).message,
       });
-      throw new SwarmHostingError('RESTART_FAILED', `Failed to restart: ${(err as Error).message}`);
+      throw new SwarmHostingError('RESTART_FAILED', `Cold-start failed: ${(err as Error).message}`);
     }
   }
 

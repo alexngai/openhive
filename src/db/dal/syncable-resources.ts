@@ -175,6 +175,36 @@ export function findSessionResourceBySwarm(ownerAgentId: string, swarmId: string
   return null;
 }
 
+/**
+ * List session resources tied to a swarm that have a persisted
+ * provider_session_id — the prerequisite for durable resume. Ordered by most
+ * recently updated first. Used by GET /map/swarms/:id/resumable-sessions.
+ *
+ * Owner filter: if passed, restricts to that agent's sessions (matches the
+ * access model in /sessions/:id/resume). When omitted, returns all — callers
+ * that want public-session visibility can filter downstream.
+ */
+export function listResumableSessionsForSwarm(
+  swarmId: string,
+  ownerAgentId?: string,
+): SyncableResource[] {
+  const db = getDatabase();
+  const where: string[] = [
+    "resource_type = 'session'",
+    "json_extract(metadata, '$.source_swarm_id') = ?",
+    "json_extract(metadata, '$.provider_session_id') IS NOT NULL",
+  ];
+  const params: unknown[] = [swarmId];
+  if (ownerAgentId) {
+    where.push('owner_agent_id = ?');
+    params.push(ownerAgentId);
+  }
+  const rows = db.prepare(
+    `SELECT * FROM syncable_resources WHERE ${where.join(' AND ')} ORDER BY updated_at DESC`
+  ).all(...params) as Array<Record<string, unknown>>;
+  return rows.map(rowToResource);
+}
+
 export function findResourceById(id: string): SyncableResource | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM syncable_resources WHERE id = ?').get(id) as Record<string, unknown> | undefined;

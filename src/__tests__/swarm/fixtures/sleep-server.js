@@ -4,7 +4,7 @@
 //
 // Accepts --port <N> and serves /health on port N+1 (matching OpenSwarm gateway behavior).
 
-const http = require('http');
+import http from 'node:http';
 
 const mode = process.argv.find(a => a === '--verbose');
 const portIdx = process.argv.indexOf('--port');

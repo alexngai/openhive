@@ -2050,6 +2050,60 @@ export function useConnectAcp() {
 }
 
 /**
+ * Lightweight listing of sessions on a swarm that have a persisted
+ * provider_session_id — i.e. can be resumed durably. Used by the swarm
+ * detail page to show a "Resumable Sessions" panel.
+ */
+export interface ResumableSession {
+  session_resource_id: string;
+  name: string;
+  description: string | null;
+  project: string | null;
+  project_path: string | null;
+  acp_session_id: string | null;
+  provider_session_id_prefix: string;
+  updated_at: string;
+  owner_agent_id: string;
+}
+
+export function useResumableSessions(swarmId: string | undefined) {
+  return useQuery({
+    queryKey: ['resumable-sessions', swarmId],
+    queryFn: () =>
+      api.get<{ swarm_id: string; total: number; sessions: ResumableSession[] }>(
+        `/map/swarms/${swarmId}/resumable-sessions`,
+      ),
+    enabled: !!swarmId,
+  });
+}
+
+/**
+ * Batch resume all resumable sessions on a swarm. Bounded parallelism server-
+ * side (default 3 concurrent). Partial failures are returned — one bad session
+ * doesn't fail the whole batch.
+ */
+export function useResumeAllSessions() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ swarmId, cwd, concurrency }: { swarmId: string; cwd?: string; concurrency?: number }) =>
+      api.post<{
+        swarm_id: string;
+        total: number;
+        succeeded: Array<{ session_resource_id: string; acp_session_id: string; acp_stream_id: string }>;
+        failed: Array<{ session_resource_id: string; error: string; message: string }>;
+      }>(`/map/swarms/${swarmId}/resume-all`, {
+        ...(cwd ? { cwd } : {}),
+        ...(concurrency ? { concurrency } : {}),
+      }),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['resumable-sessions', vars.swarmId] });
+      queryClient.invalidateQueries({ queryKey: ['sessions-overview'] });
+    },
+  });
+}
+
+/**
  * Resume a session whose source swarm/agent may be stopped or offline. The
  * server restarts the hosted swarm (if needed), waits for macro-agent to
  * reconnect, asks macro-agent to resume the agent by provider_session_id,
