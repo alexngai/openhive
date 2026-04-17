@@ -151,6 +151,27 @@ describe('SwarmManager', () => {
       }
     }, 65000);
 
+    it('derives data_dir from the hosted swarm id, not the port', async () => {
+      // Regression guard: before this change, data_dir was `swarm-${port}`,
+      // which meant two swarms that ran on the same port at different
+      // times shared a directory on disk. Keying on the (stable) hosted
+      // swarm id instead keeps each swarm's on-disk state isolated and
+      // unaffected by port drift across restarts.
+      const config = createTestConfig();
+      const manager = new SwarmManager(config, 'http://localhost:3000');
+
+      try {
+        const hosted = await manager.spawn(agentId, { name: 'data-dir-id-test' });
+        expect(hosted.config?.data_dir).toBe(
+          path.join(TEST_DATA_DIR, `swarm-${hosted.id}`),
+        );
+        // And — paranoia — the directory name must not encode a port.
+        expect(hosted.config?.data_dir).not.toMatch(/swarm-\d+$/);
+      } finally {
+        await manager.shutdown();
+      }
+    }, 35000);
+
     it('should use default adapter when none specified', async () => {
       const config = createTestConfig();
       const manager = new SwarmManager(config, 'http://localhost:3000');
@@ -291,6 +312,28 @@ describe('SwarmManager', () => {
           coordinator: true,
           cwd: '/some/project',
         });
+      } finally {
+        await manager.shutdown();
+      }
+    }, 60000);
+
+    it('reuses the previous port on cold restart when free', async () => {
+      // Restarts should hand the swarm back its original port so
+      // endpoints stay stable for cached clients. Before this fix,
+      // autoRestart called allocatePorts() unconditionally, which scans
+      // from port_range.min — so two stopped swarms could swap ports
+      // on restart purely by allocation order.
+      const config = createTestConfig();
+      const manager = new SwarmManager(config, 'http://localhost:3000');
+
+      try {
+        const hosted = await manager.spawn(agentId, { name: 'port-preserve-test' });
+        const originalPort = hosted.assigned_port;
+        expect(originalPort).toBeGreaterThanOrEqual(19100);
+
+        await manager.stop(hosted.id, agentId);
+        const revived = await manager.restart(hosted.id, agentId);
+        expect(revived.assigned_port).toBe(originalPort);
       } finally {
         await manager.shutdown();
       }

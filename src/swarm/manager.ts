@@ -176,7 +176,14 @@ export class SwarmManager {
       );
     }
 
-    const dataDir = path.join(this.config.data_dir, `swarm-${port}`);
+    // Pre-generate the hosted-swarm id so we can key data_dir on it.
+    // Prior scheme (`swarm-${port}`) drifts the moment a revive picks a
+    // different port, so two distinct swarms could end up competing for
+    // the same on-disk directory after a port swap. Using the id keeps
+    // the data path stable for the lifetime of the row, regardless of
+    // port churn.
+    const hostedSwarmId = dal.generateHostedSwarmId();
+    const dataDir = path.join(this.config.data_dir, `swarm-${hostedSwarmId}`);
 
     // Create a pre-auth key if a hive is specified
     let preauthKeyPlaintext: string | undefined;
@@ -302,8 +309,9 @@ export class SwarmManager {
       bootstrap: input.bootstrap,
     };
 
-    // Create DB record
+    // Create DB record — id is pre-generated so data_dir matches.
     const hosted = dal.createHostedSwarm({
+      id: hostedSwarmId,
       provider: providerType,
       spawned_by: agentId,
       assigned_port: port,
@@ -1032,9 +1040,25 @@ export class SwarmManager {
 
     dal.updateHostedSwarm(hostedId, { state: 'starting', error: null });
 
-    // Re-allocate a port (the old one was released). Probes the OS to avoid
-    // reusing a port that's still held by the dying process or another swarm.
-    const port = await this.allocatePorts(hosted.config.adapter);
+    // Prefer the swarm's previous port so endpoints stay stable across
+    // restarts — any client that cached the old URL reconnects cleanly,
+    // and the UI/debugging stays coherent. Fall back to the general scan
+    // if the old port is held (orphan, another swarm claimed it during
+    // downtime, etc.). Probes the OS so we never hand back a port that
+    // isn't actually bindable.
+    let port: number | null = null;
+    const prev = hosted.assigned_port;
+    if (prev && (await this.tryReserveSpecificPort(prev, hosted.config.adapter))) {
+      port = prev;
+      console.log(`[swarm-manager] Reusing previous port ${prev} for ${hostedId}`);
+    } else {
+      port = await this.allocatePorts(hosted.config.adapter);
+      if (port !== null && prev && port !== prev) {
+        console.log(
+          `[swarm-manager] Previous port ${prev} unavailable for ${hostedId}, allocated ${port}`,
+        );
+      }
+    }
     if (!port) {
       throw new Error('No ports available for restart');
     }
@@ -1205,6 +1229,36 @@ export class SwarmManager {
       return base;
     }
     return null;
+  }
+
+  /**
+   * Try to reserve a specific base port (plus its stride neighbors). Used
+   * by `autoRestart` to give a revived swarm its previous port back when
+   * nothing else has claimed it — keeps endpoints stable across restarts
+   * instead of letting `allocatePorts` wander to whatever's free from
+   * `port_range.min`. Returns true on success (ports are reserved) or
+   * false if any port is already taken; caller falls back to the scan.
+   */
+  private async tryReserveSpecificPort(
+    base: number,
+    adapter: string | undefined,
+  ): Promise<boolean> {
+    const stride = this.getPortStride(adapter);
+    const [min, max] = this.config.port_range;
+    if (base < min || base + stride - 1 > max) return false;
+
+    for (let i = 0; i < stride; i++) {
+      if (this.usedPorts.has(base + i)) return false;
+    }
+    for (let i = 0; i < stride; i++) {
+      if (!(await this.isPortFree(base + i, '127.0.0.1'))) return false;
+    }
+    for (let i = 0; i < stride; i++) {
+      if (this.usedPorts.has(base + i)) return false;
+    }
+
+    for (let i = 0; i < stride; i++) this.usedPorts.add(base + i);
+    return true;
   }
 
   private releasePorts(basePort: number, adapter: string | undefined): void {

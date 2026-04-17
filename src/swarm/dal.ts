@@ -17,7 +17,7 @@ import type {
 // Helpers
 // ============================================================================
 
-function generateId(): string {
+export function generateHostedSwarmId(): string {
   return `hswarm_${nanoid(16)}`;
 }
 
@@ -44,11 +44,17 @@ export interface CreateHostedSwarmInput {
   assigned_port?: number;
   bootstrap_token_hash?: string;
   config?: SwarmProvisionConfig;
+  /**
+   * Pre-generated ID. Callers that need the id before persisting (e.g. to
+   * bake it into the swarm's data_dir path) generate it via
+   * `generateHostedSwarmId()` and pass it in. Omit to let the DAL assign.
+   */
+  id?: string;
 }
 
 export function createHostedSwarm(input: CreateHostedSwarmInput): HostedSwarm {
   const db = getDatabase();
-  const id = generateId();
+  const id = input.id ?? generateHostedSwarmId();
 
   db.prepare(`
     INSERT INTO hosted_swarms (id, provider, state, assigned_port, bootstrap_token_hash, config, spawned_by)
