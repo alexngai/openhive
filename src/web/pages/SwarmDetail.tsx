@@ -1,7 +1,7 @@
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Activity, AlertTriangle, Bell, ChevronRight, ChevronDown, ChevronUp, Clock, Cpu, FileText, Globe,
-  Link2, Loader2, MessageSquare, Monitor, Network, Play, Plus, Share2,
+  Link2, Loader2, MessageSquare, Monitor, Network, Play, Plus, Settings2, Share2,
   Square, RotateCw, Terminal, Trash2, User, Wifi, WifiOff,
   CheckCircle2, Zap,
 } from 'lucide-react';
@@ -38,6 +38,7 @@ import {
   type ChatTarget,
 } from 'swarmcraft/ui/embed';
 import { createCoordinationChatAdapter } from '../adapters/coordination-chat-adapter';
+import { SpawnAgentDialog } from '../components/swarm/SpawnAgentDialog';
 import { getPeerMapId } from '../lib/map';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -306,15 +307,24 @@ function SwarmHeader({
 
 // ─── Capability-Gated Actions ───────────────────────────────────────────────
 
-function useSwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
+function useSwarmActions({
+  swarm,
+  swarmId,
+  defaultCwd,
+}: {
+  swarm: MapSwarm;
+  swarmId: string;
+  /**
+   * Effective swarm cwd. Computed by the caller using the full priority
+   * chain (hosted bootstrap.cwd → swarm metadata.cwd → projectPath).
+   * Used as the spawn cwd for the primary "Spawn Agent" button AND as the
+   * placeholder/hint inside the advanced dialog.
+   */
+  defaultCwd?: string;
+}) {
   const spawnAgent = useSpawnAgent();
-
-  const caps = (swarm.capabilities || {}) as Record<string, unknown>;
   const isOnline = swarm.status === 'online' || swarm.status === 'unreachable';
-
-  const projectPath = (caps as any)?.projectPath as string
-    ?? (swarm.metadata as any)?.projectPath as string
-    ?? undefined;
+  const projectPath = defaultCwd;
 
   // Synchronous click-guard. React Query's `isPending` flag flips after the
   // state commit, leaving a window where a fast double-click can fire two
@@ -322,6 +332,10 @@ function useSwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string 
   // is set in the same event tick as the click, so subsequent clicks bail
   // before any backend work starts.
   const inFlightRef = useRef(false);
+
+  // Whether the advanced spawn dialog is open. Surfaced via the "⚙" icon
+  // next to the primary Spawn Agent button.
+  const [showAdvancedDialog, setShowAdvancedDialog] = useState(false);
 
   // Spawn a fresh coordinator. Stays on the swarm detail page; the new
   // coordinator card appears in the Registered Agents section, and the
@@ -351,18 +365,30 @@ function useSwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string 
   const errorMessage = (spawnAgent.error as Error | undefined)?.message;
 
   const button = isOnline ? (
-    <button
-      onClick={handleNewSession}
-      disabled={isPending}
-      className="btn btn-primary inline-flex items-center gap-1.5 text-xs disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:bg-honey-500"
-    >
-      {isPending ? (
-        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-      ) : (
-        <Zap className="w-3.5 h-3.5" />
-      )}
-      {isPending ? 'Spawning…' : 'Spawn Agent'}
-    </button>
+    <div className="inline-flex items-center gap-1">
+      <button
+        onClick={handleNewSession}
+        disabled={isPending}
+        className="btn btn-primary inline-flex items-center gap-1.5 text-xs disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:bg-honey-500"
+      >
+        {isPending ? (
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        ) : (
+          <Zap className="w-3.5 h-3.5" />
+        )}
+        {isPending ? 'Spawning…' : 'Spawn Agent'}
+      </button>
+      <button
+        type="button"
+        onClick={() => setShowAdvancedDialog(true)}
+        disabled={isPending}
+        className="btn btn-ghost p-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+        title="Spawn with advanced config"
+        aria-label="Spawn with advanced config"
+      >
+        <Settings2 className="w-3.5 h-3.5" />
+      </button>
+    </div>
   ) : null;
 
   const error = isOnline && isError && errorMessage ? (
@@ -378,7 +404,15 @@ function useSwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string 
     </div>
   ) : null;
 
-  return { button, error };
+  const dialog = showAdvancedDialog ? (
+    <SpawnAgentDialog
+      swarmId={swarmId}
+      defaultCwd={projectPath}
+      onClose={() => setShowAdvancedDialog(false)}
+    />
+  ) : null;
+
+  return { button, error, dialog };
 }
 
 
@@ -673,17 +707,24 @@ function RegisteredAgentCard({
   );
 }
 
-function RegisteredAgentsSection({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
+function RegisteredAgentsSection({ swarm, swarmId, hosted }: { swarm: MapSwarm; swarmId: string; hosted?: HostedSwarm }) {
   const allAgents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined ?? [];
   const sidecars = allAgents.filter((a) => a.role === 'sidecar');
   const agents = allAgents.filter((a) => a.role !== 'sidecar');
 
+  // Derive the swarm's effective cwd. Mirror the backend resolution chain in
+  // src/api/routes/map.ts: hosted bootstrap.cwd → swarm metadata.cwd →
+  // metadata.projectPath → capabilities.projectPath. The first hit wins. The
+  // dialog uses this as a placeholder + fallback hint so the user can see
+  // exactly where an empty-cwd spawn will land.
   const projectPath =
-    (swarm.capabilities as any)?.projectPath as string | undefined ??
-    (swarm.metadata as any)?.projectPath as string | undefined;
+    hosted?.bootstrap?.cwd ??
+    (swarm.metadata as any)?.cwd as string | undefined ??
+    (swarm.metadata as any)?.projectPath as string | undefined ??
+    (swarm.capabilities as any)?.projectPath as string | undefined;
 
   const isOnline = swarm.status === 'online' || swarm.status === 'unreachable';
-  const swarmActions = useSwarmActions({ swarm, swarmId });
+  const swarmActions = useSwarmActions({ swarm, swarmId, defaultCwd: projectPath });
 
   if (allAgents.length === 0 && !isOnline) return null;
 
@@ -709,6 +750,7 @@ function RegisteredAgentsSection({ swarm, swarmId }: { swarm: MapSwarm; swarmId:
         {swarmActions.button}
       </div>
       {swarmActions.error}
+      {swarmActions.dialog}
       {agents.length > 0 ? (
         <div className="space-y-1">
           {agents.map((agent) => (
@@ -1322,7 +1364,7 @@ export function SwarmDetail() {
 
       <NodesSection swarmId={id!} />
 
-      <RegisteredAgentsSection swarm={swarm} swarmId={id!} />
+      <RegisteredAgentsSection swarm={swarm} swarmId={id!} hosted={hosted} />
 
       <ResumableSessionsSection swarmId={id!} />
 

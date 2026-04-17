@@ -194,6 +194,11 @@ export interface HostedSwarm {
   spawned_by: string;
   created_at: string;
   updated_at: string;
+  /** Bootstrap config for the swarm runtime (e.g. auto-spawn coordinator at cwd). */
+  bootstrap?: {
+    coordinator?: boolean;
+    cwd?: string;
+  };
 }
 
 export interface MapRegisteredAgent {

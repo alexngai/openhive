@@ -180,7 +180,8 @@ export async function swarmHostingRoutes(
       offset: offset ? parseInt(offset, 10) : undefined,
     });
 
-    // Strip sensitive fields from config
+    // Strip sensitive fields from config; surface bootstrap so the frontend
+    // can show "swarm cwd" hints for spawn dialogs without a second request.
     const data = result.data.map((h) => ({
       id: h.id,
       name: h.config?.name ?? h.id,
@@ -194,6 +195,7 @@ export async function swarmHostingRoutes(
       spawned_by: h.spawned_by,
       created_at: h.created_at,
       updated_at: h.updated_at,
+      bootstrap: h.config?.bootstrap,
     }));
 
     return reply.send({ data, total: result.total });
@@ -222,6 +224,7 @@ export async function swarmHostingRoutes(
       spawned_by: hosted.spawned_by,
       created_at: hosted.created_at,
       updated_at: hosted.updated_at,
+      bootstrap: hosted.config?.bootstrap,
     });
   });
 

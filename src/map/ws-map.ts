@@ -69,6 +69,31 @@ function handleTrajectoryCheckpoint(
   }
 }
 
+// ============================================================================
+// Agent Registration Session Filter
+//
+// The MAPServer's eventBus is a singleton shared by every inbound connection,
+// so a naive `on('agent.registered', ...)` handler fires for every swarm's
+// registration, not just the current one. We filter strictly on session
+// identity — reject unless both sides are known and equal. Missing ids (e.g.
+// router.session throws before processing starts) reject rather than accept.
+//
+// Exported for unit testing only.
+// ============================================================================
+
+export function shouldAcceptAgentRegistration(
+  event: unknown,
+  mySessionId: string | undefined,
+): boolean {
+  if (!mySessionId) return false;
+  if (!event || typeof event !== 'object') return false;
+
+  const e = event as { source?: { sessionId?: string }; data?: { agent?: { sessionId?: string } } };
+  const eventSessionId = e.source?.sessionId ?? e.data?.agent?.sessionId;
+  if (!eventSessionId) return false;
+  return eventSessionId === mySessionId;
+}
+
 let HEARTBEAT_INTERVAL = 30_000;
 const TOKEN_EXPIRY_WARNING_SECONDS = 300;
 let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -446,15 +471,18 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       const onRegistered = (event: any) => {
         // Event data shape: { agent: { id, name, sessionId, ... } }
         const registeredAgent = event.data?.agent ?? event.data;
-        if (!registeredAgent?.sessionId) return;
+        if (!registeredAgent) return;
 
-        // Check if this event is for our session
+        // Filter strictly by session ID. The MAPServer eventBus is shared
+        // across all inbound connections, so without this filter every
+        // swarm's handler would claim every other swarm's registrations.
+        let mySessionId: string | undefined;
         try {
-          const session = router.session;
-          if (!session || session.id !== registeredAgent.sessionId) return;
+          mySessionId = router.session?.id;
         } catch {
-          return;
+          mySessionId = undefined;
         }
+        if (!shouldAcceptAgentRegistration(event, mySessionId)) return;
 
         const swarmId = registeredAgent.id;
         const now = new Date().toISOString();
@@ -567,17 +595,16 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       const registeredAgent = event.data?.agent ?? event.data;
       if (!registeredAgent) return;
 
-      // In open mode, match by session ID if available, otherwise accept any registration
-      // on our router (we know the swarmId is correct because this handler is scoped to it)
+      // The MAPServer eventBus is shared across every inbound connection,
+      // so this handler fires for every swarm's registration. Filter on
+      // router session identity — otherwise agents leak between swarms.
+      let mySessionId: string | undefined;
       try {
-        const session = router.session;
-        if (session?.id && registeredAgent.sessionId && session.id !== registeredAgent.sessionId) {
-          // Different session — not our agent
-          return;
-        }
+        mySessionId = router.session?.id;
       } catch {
-        // router.session may not be available — continue anyway in open mode
+        mySessionId = undefined;
       }
+      if (!shouldAcceptAgentRegistration(event, mySessionId)) return;
 
       console.log(`[ws-map] Agent registered on ${swarmId}: ${registeredAgent.name || registeredAgent.id} (${registeredAgent.role || 'agent'})`);
 

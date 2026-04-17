@@ -1998,6 +1998,36 @@ export function useSendSessionChat() {
   });
 }
 
+export type SpawnAgentPermissionMode = 'auto-approve' | 'auto-deny' | 'callback' | 'interactive';
+
+export interface SpawnAgentConfig {
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  env?: Record<string, string>;
+  mcpServers?: Array<{
+    name: string;
+    command: string;
+    args?: string[];
+    env?: Record<string, string>;
+  }>;
+}
+
+export interface SpawnAgentRequest {
+  swarmId: string;
+  role?: string;
+  cwd?: string;
+  task?: string;
+  // Advanced SpawnAgentOptions — all optional. Backend forwards them to
+  // macro-agent's _macro/spawnAgent handler which applies defaults if unset.
+  permissionMode?: SpawnAgentPermissionMode;
+  agentType?: string;
+  customPrompt?: string;
+  topics?: string[];
+  config?: SpawnAgentConfig;
+  taskRef?: { resource_id: string; node_id: string };
+}
+
 /**
  * Spawn a new agent on a swarm via its sidecar. Pure lifecycle action — no
  * session or ACP stream is created. Chain with `useConnectAcp` if you want
@@ -2007,28 +2037,21 @@ export function useSpawnAgent() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({
-      swarmId,
-      role,
-      cwd,
-      task,
-    }: {
-      swarmId: string;
-      role?: string;
-      cwd?: string;
-      task?: string;
-    }) =>
-      api.post<{
+    mutationFn: (req: SpawnAgentRequest) => {
+      const { swarmId, ...body } = req;
+      // Strip undefined fields so macro-agent defaults apply (vs. receiving
+      // an explicit `undefined` which would override them).
+      const cleanBody = Object.fromEntries(
+        Object.entries(body).filter(([, v]) => v !== undefined),
+      );
+      return api.post<{
         agent_id: string;
         peer_map_id: string;
         name?: string;
         role: string;
         cwd: string;
-      }>(`/map/swarms/${swarmId}/agents`, {
-        ...(role ? { role } : {}),
-        ...(cwd ? { cwd } : {}),
-        ...(task ? { task } : {}),
-      }),
+      }>(`/map/swarms/${swarmId}/agents`, cleanBody);
+    },
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ['map-swarm', vars.swarmId] });
       queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
