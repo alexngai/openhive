@@ -199,6 +199,11 @@ export interface HostedSwarm {
     coordinator?: boolean;
     cwd?: string;
   };
+  /**
+   * Filesystem directory the swarm runtime was launched in. Becomes the
+   * runtime fallback cwd for any spawn call that doesn't specify one.
+   */
+  data_dir?: string;
 }
 
 export interface MapRegisteredAgent {

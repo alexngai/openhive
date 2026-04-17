@@ -237,19 +237,32 @@ export async function setupSwarmBridge(
     mcmListeners.push({ event: 'agents.synced', fn: onAgentsSynced });
   }
 
-  // Periodic retry sweep: when an outbound bridge connection fails (process
-  // not yet up, transient network), the swarm is marked unreachable. Try to
-  // reconnect every BRIDGE_RETRY_MS so recovery is automatic once the peer
-  // comes back. We only retry swarms with a real ws:// endpoint — hub-inbound
-  // and local-hub markers are not connectable URLs.
+  // Periodic retry sweep: connect outbound MAP clients for any ws://-endpoint
+  // swarm that isn't currently wired through `mapClientManager`. Covers two
+  // scenarios:
+  //   1. `unreachable` swarms whose peer came back up (original recovery case).
+  //   2. `online` swarms whose inbound sidecar connected fine but whose first
+  //      outbound health check failed (e.g. the swarm's own MAP server wasn't
+  //      listening yet when the bridge fired on `swarm_registered`). Without
+  //      this path, `getClient(swarmId)` stays null forever and hub spawns
+  //      fail with "MAP client not connected to this swarm".
+  // Hub-inbound markers are filtered out in the loop body.
   let retryTimer: ReturnType<typeof setInterval> | undefined;
   if (mapClientManager) {
+    const getClient = (mapClientManager as unknown as {
+      getClient?: (id: string) => unknown;
+    }).getClient?.bind(mapClientManager);
+
     retryTimer = setInterval(() => {
       try {
-        const { data: candidates } = listSwarms({ status: 'unreachable', limit: 100 });
+        const { data: candidates } = listSwarms({ limit: 200 });
         for (const swarm of candidates) {
           if (!swarm.map_endpoint) continue;
           if (!swarm.map_endpoint.startsWith('ws://') && !swarm.map_endpoint.startsWith('wss://')) continue;
+          // Already wired? Skip.
+          if (getClient && getClient(swarm.id)) continue;
+          // Not worth retrying terminally-offline swarms.
+          if (swarm.status === 'offline') continue;
           // Fire-and-forget; connectMapClient updates status itself.
           connectMapClient(mapClientManager, swarm).catch(() => { /* logged inside */ });
         }

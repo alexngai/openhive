@@ -23,7 +23,7 @@ import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findN
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities } from './connection-registry.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities, getPeerMapId } from './connection-registry.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { handleTrajectoryRequest } from './trajectory-handler.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
@@ -671,6 +671,33 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
             location_hash: taskGraph.location_hash,
           });
         }
+      }
+
+      // Mirror MAP-protocol registrations into the hub's `node_registered`
+      // event stream so SwarmCraft's bridge (and any other consumer) sees
+      // individual coordinators/workers — not just the parent swarm. The
+      // legacy HTTP `/map/nodes` path emits this event natively; without
+      // this mirror, agents spawned inside a hosted macro-agent never land
+      // in SwarmCraft's agents list or its UI.
+      //
+      // Skip the sidecar role: it's the swarm connection itself, not a
+      // separate agent. Emitting for it would duplicate the swarm row.
+      const role = registeredAgent.role || 'agent';
+      if (role !== 'sidecar') {
+        // Prefer the peer-side ULID so repeat registrations across
+        // reconnects hash to the same SwarmCraft agent id. Falls back to
+        // the hub-assigned id when the peer didn't send one.
+        const peerId = getPeerMapId(registeredAgent.metadata) ?? registeredAgent.id;
+        try {
+          mapHubEvents.emit('node_registered', {
+            node_id: registeredAgent.id,
+            swarm_id: swarmId,
+            map_agent_id: peerId,
+            name: registeredAgent.name ?? null,
+            role,
+            state: 'registered',
+          });
+        } catch { /* non-critical */ }
       }
     };
     const unsubRegistered = mapServer.eventBus.on('agent.registered', onAgentRegistered);

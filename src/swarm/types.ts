@@ -274,6 +274,20 @@ export interface SwarmHostingConfig {
   credentials?: SwarmCredentialConfig;
   /** Sandbox configuration for process isolation */
   sandbox?: SwarmSandboxConfig;
+  /** Per-swarm stdout/stderr log persistence */
+  logs?: SwarmLogsConfig;
+}
+
+/** Stdout/stderr persistence for each hosted swarm subprocess. */
+export interface SwarmLogsConfig {
+  /** Write a per-swarm log file. Disable to keep logs in-memory only. */
+  enabled: boolean;
+  /**
+   * Where to place the file. `"tmp"` (default) uses `os.tmpdir()`,
+   * `"data_dir"` co-locates with the swarm's data directory, anything else
+   * is treated as an absolute directory path.
+   */
+  dir: string;
 }
 
 // ============================================================================

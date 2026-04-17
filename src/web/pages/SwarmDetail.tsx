@@ -714,14 +714,18 @@ function RegisteredAgentsSection({ swarm, swarmId, hosted }: { swarm: MapSwarm; 
 
   // Derive the swarm's effective cwd. Mirror the backend resolution chain in
   // src/api/routes/map.ts: hosted bootstrap.cwd → swarm metadata.cwd →
-  // metadata.projectPath → capabilities.projectPath. The first hit wins. The
-  // dialog uses this as a placeholder + fallback hint so the user can see
-  // exactly where an empty-cwd spawn will land.
+  // metadata.projectPath → capabilities.projectPath → hosted data_dir.
+  // The first hit wins. The dialog uses this as a placeholder + fallback
+  // hint so the user can see exactly where an empty-cwd spawn will land.
+  // The hosted data_dir is the terminal fallback because it's where the
+  // runtime process literally launched — `'.'` resolves to it at the
+  // OS level when no other cwd flows through.
   const projectPath =
     hosted?.bootstrap?.cwd ??
     (swarm.metadata as any)?.cwd as string | undefined ??
     (swarm.metadata as any)?.projectPath as string | undefined ??
-    (swarm.capabilities as any)?.projectPath as string | undefined;
+    (swarm.capabilities as any)?.projectPath as string | undefined ??
+    hosted?.data_dir;
 
   const isOnline = swarm.status === 'online' || swarm.status === 'unreachable';
   const swarmActions = useSwarmActions({ swarm, swarmId, defaultCwd: projectPath });

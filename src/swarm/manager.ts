@@ -50,7 +50,7 @@ export class SwarmManager {
 
     // Initialize local provider with exit handler
     const command = this.resolveOpenswarmCommand(config.openswarm_command);
-    const localProvider = new LocalProvider(command);
+    const localProvider = new LocalProvider(command, config.logs);
     localProvider.onProcessExit = (instanceId, code, signal) => {
       this.handleProcessExit(instanceId, code, signal);
     };
@@ -544,6 +544,14 @@ export class SwarmManager {
       try {
         const result = await provider.restart(instanceId);
 
+        // provider.restart spawns a fresh process, so the instance id changes.
+        // Rewrite both sides of the mapping — otherwise getInstanceId keeps
+        // returning the dead one and downstream calls (getLogs, getStatus)
+        // hit the "instance not tracked" fallbacks.
+        this.instanceToHostedId.delete(instanceId);
+        this.instanceToHostedId.set(result.instance_id, hostedSwarmId);
+        this.hostedToInstanceId.set(hostedSwarmId, result.instance_id);
+
         dal.updateHostedSwarm(hostedSwarmId, {
           pid: result.pid ?? null,
           endpoint: result.endpoint ?? null,
@@ -559,6 +567,36 @@ export class SwarmManager {
 
         return dal.findHostedSwarmById(hostedSwarmId)!;
       } catch (err) {
+        // If the original port is still bound (TIME_WAIT, stale child, another
+        // process claimed it), drop the HOT-restart optimization and fall
+        // through to the cold-start path — autoRestart allocates a fresh
+        // port via `allocatePorts`. Without this, the retried process would
+        // bind-fail on boot and crash-loop on the same stuck port.
+        if ((err as { code?: string })?.code === 'PORT_IN_USE' && hosted.config) {
+          console.warn(
+            `[swarm-manager] Port ${hosted.config.assigned_port} stuck on restart of ${hostedSwarmId}; ` +
+              `releasing and re-allocating via autoRestart`,
+          );
+          // Release the stuck port reservation so allocatePorts can reuse it
+          // later once the OS finishes TIME_WAIT.
+          this.releasePorts(hosted.config.assigned_port, hosted.config.adapter);
+          this.hostedToInstanceId.delete(hostedSwarmId);
+          this.instanceToHostedId.delete(instanceId);
+          try {
+            await this.autoRestart(hostedSwarmId, hosted);
+            return dal.findHostedSwarmById(hostedSwarmId)!;
+          } catch (retryErr) {
+            dal.updateHostedSwarm(hostedSwarmId, {
+              state: 'failed',
+              error: (retryErr as Error).message,
+            });
+            throw new SwarmHostingError(
+              'RESTART_FAILED',
+              `Port in use, re-allocation failed: ${(retryErr as Error).message}`,
+            );
+          }
+        }
+
         dal.updateHostedSwarm(hostedSwarmId, {
           state: 'failed',
           error: (err as Error).message,

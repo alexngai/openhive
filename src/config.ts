@@ -249,6 +249,24 @@ export const ConfigSchema = z.object({
       auto_restart: z.boolean().default(true),
       /** Maximum number of restart attempts before giving up (0 = unlimited) */
       max_restart_attempts: z.number().default(3),
+      /**
+       * Where to persist each hosted swarm's stdout/stderr.
+       *
+       * Default is `tmp`, which puts logs under `${os.tmpdir()}/openhive-swarm-logs/`
+       * — ephemeral across reboots but survives restarts within a session, which is
+       * the usual window for debugging crash-recover loops. Set `enabled: false` to
+       * disable disk persistence entirely (in-memory ring buffer still works but
+       * its contents are lost on every subprocess respawn). Use `dir: "data_dir"`
+       * to co-locate logs with the swarm's state (`<data_dir>/openswarm.log`) so
+       * they survive reboots, or give an absolute path for a custom location.
+       */
+      logs: z
+        .object({
+          enabled: z.boolean().default(true),
+          /** `"tmp"` | `"data_dir"` | absolute path. */
+          dir: z.string().default("tmp"),
+        })
+        .default({}),
       /** Credential configuration for swarm processes */
       credentials: z
         .object({

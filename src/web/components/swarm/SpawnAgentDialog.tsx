@@ -214,16 +214,12 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
               placeholder={defaultCwd || 'Leave empty to use the swarm cwd'}
               spellCheck={false}
             />
-            {!cwd && (
+            {!cwd && defaultCwd && (
               <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
                 Empty → falls back to{' '}
-                {defaultCwd ? (
-                  <code className="px-1 rounded" style={{ backgroundColor: 'var(--color-elevated)' }}>
-                    {defaultCwd}
-                  </code>
-                ) : (
-                  <span>the swarm's working directory</span>
-                )}
+                <code className="px-1 rounded" style={{ backgroundColor: 'var(--color-elevated)' }}>
+                  {defaultCwd}
+                </code>
               </p>
             )}
           </div>
