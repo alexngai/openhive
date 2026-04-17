@@ -188,6 +188,12 @@ export class LocalProvider implements HostingProvider {
       if (config.bootstrap.cwd) {
         env.MACRO_BOOTSTRAP_CWD = config.bootstrap.cwd;
       }
+      // Hosted swarms own the full agent tree for their workspace — a
+      // restart should restore every running agent, not just the head
+      // coordinator. Standalone macro-agent boots default to 'coordinators'
+      // to avoid reviving stale workers that belong to a different use
+      // case (ad-hoc CLI runs, test fixtures, etc.).
+      env.MACRO_BOOTSTRAP_REHYDRATE = 'all';
     }
 
     // Strip Claude Code's "I am running inside a Claude Code session" markers

@@ -10,6 +10,20 @@ import { api } from '../../lib/api';
 
 export type ChatFabMode = 'floating' | 'docked';
 
+/**
+ * Resume descriptor for the active ACP session. Stored alongside the
+ * session id so re-mounts of ChatPanel (e.g. when the user toggles
+ * between floating and docked mode) can call `loadSession()` on the
+ * existing stream instead of creating a fresh one. Without this, every
+ * mode switch would tear down the server-side ACP stream and lose the
+ * chat history.
+ */
+export interface ChatFabResume {
+  acpStreamId: string;
+  acpSessionId: string;
+  providerSessionId?: string;
+}
+
 export interface ChatFabState {
   /** FAB expanded or collapsed */
   open: boolean;
@@ -19,6 +33,8 @@ export interface ChatFabState {
   swarmId: string | null;
   /** Display name for the active session/swarm */
   sessionLabel: string | null;
+  /** ACP resume descriptor — set whenever we created/loaded a stream */
+  resume: ChatFabResume | null;
   /** Display mode: floating popup or docked sidebar */
   mode: ChatFabMode;
 
@@ -29,7 +45,12 @@ export interface ChatFabState {
   // Actions
   toggle: () => void;
   collapse: () => void;
-  setSession: (sessionId: string, swarmId: string, label: string) => void;
+  setSession: (
+    sessionId: string,
+    swarmId: string,
+    label: string,
+    resume?: ChatFabResume | null,
+  ) => void;
   clearSession: () => void;
   setMode: (mode: ChatFabMode) => void;
   toggleMode: () => void;
@@ -45,6 +66,7 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
   sessionId: null,
   swarmId: null,
   sessionLabel: null,
+  resume: null,
   mode: 'floating',
   connecting: false,
   connectError: null,
@@ -52,11 +74,23 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
   toggle: () => set((s) => ({ open: !s.open })),
   collapse: () => set({ open: false }),
 
-  setSession: (sessionId, swarmId, label) =>
-    set({ sessionId, swarmId, sessionLabel: label, connectError: null }),
+  setSession: (sessionId, swarmId, label, resume) =>
+    set({
+      sessionId,
+      swarmId,
+      sessionLabel: label,
+      resume: resume ?? null,
+      connectError: null,
+    }),
 
   clearSession: () =>
-    set({ sessionId: null, swarmId: null, sessionLabel: null, connectError: null }),
+    set({
+      sessionId: null,
+      swarmId: null,
+      sessionLabel: null,
+      resume: null,
+      connectError: null,
+    }),
 
   setMode: (mode) => set({ mode }),
   toggleMode: () => set((s) => ({ mode: s.mode === 'floating' ? 'docked' : 'floating' })),
@@ -77,6 +111,10 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
         sessionId: result.session_resource_id,
         swarmId,
         sessionLabel: label ?? swarmId,
+        resume: {
+          acpStreamId: result.acp_stream_id,
+          acpSessionId: result.acp_session_id,
+        },
         connecting: false,
       });
     } catch (err) {

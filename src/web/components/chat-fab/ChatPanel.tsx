@@ -18,14 +18,33 @@ import { useChatFabStore } from './ChatFabStore';
 import { ContextMenu } from './ContextMenu';
 
 export function ChatPanel() {
-  const { sessionId, swarmId } = useChatFabStore();
+  const { sessionId, swarmId, resume } = useChatFabStore();
   const adapters = useOpenHiveAdapters();
   const resolveCapabilities = useSessionCapabilityResolver(swarmId ?? undefined);
   const [pendingContext, setPendingContext] = useState<string | null>(null);
 
+  // Passing `resume` into the target steers the ACP adapter into
+  // `loadSession()` on the existing stream instead of `createStream()` —
+  // critical across ChatPanel re-mounts (FAB ↔ sidebar mode toggle,
+  // route changes) so the server-side stream + chat history are reused.
+  // Deps pick the resume fields individually so a new-but-equal `resume`
+  // object doesn't churn the channel.
   const target = useMemo(
-    () => (sessionId && swarmId ? sessionTarget(sessionId, swarmId) : null),
-    [sessionId, swarmId],
+    () =>
+      sessionId && swarmId
+        ? sessionTarget(
+            sessionId,
+            swarmId,
+            resume?.acpStreamId && resume?.acpSessionId
+              ? {
+                  acpStreamId: resume.acpStreamId,
+                  acpSessionId: resume.acpSessionId,
+                  providerSessionId: resume.providerSessionId,
+                }
+              : undefined,
+          )
+        : null,
+    [sessionId, swarmId, resume?.acpStreamId, resume?.acpSessionId, resume?.providerSessionId],
   );
 
   const channel = useChatChannel({

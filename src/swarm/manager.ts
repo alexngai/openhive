@@ -740,6 +740,112 @@ export class SwarmManager {
   }
 
   // ==========================================================================
+  // Startup revival
+  // ==========================================================================
+
+  /**
+   * Revive hosted swarms that were in active states when openhive last ran.
+   *
+   * On a server restart, openswarm child processes have almost always died
+   * with the parent (detached children get killed by the exit handler;
+   * anything that somehow survives is a detached orphan we can't adopt into
+   * the provider's in-memory instance map anyway). Meanwhile the
+   * `hosted_swarms` rows still say `state = running/starting/unhealthy`.
+   *
+   * Without revival, those rows become zombies: the UI shows them as
+   * online (sidecar status lingers briefly after hub restart too), any
+   * action fails because `hostedToInstanceId` is empty, and the user has
+   * to manually remove + respawn.
+   *
+   * Strategy per row:
+   *   - PID is alive AND we DON'T track it: orphan — mark failed with a
+   *     diagnostic. Killing it blindly is too aggressive (user might want
+   *     to diagnose); leaving it claiming `running` is worse (health
+   *     monitor can't touch it). `failed` flips to the "restart" UI affordance.
+   *   - PID is dead: cold-start via autoRestart (same path crash recovery
+   *     uses). This is the common case.
+   *   - Never call stop() first — the child process is already gone and
+   *     stop tries to gracefully signal it, just wasting time on the
+   *     common path.
+   *
+   * Runs sequentially to cap startup resource churn. If N swarms all
+   * revive at once we spawn N openswarm processes + N Claude Code
+   * subprocesses, which isn't free.
+   */
+  async reviveHostedSwarms(): Promise<{ revived: number; orphaned: number; failed: number }> {
+    // Rows that SHOULD have a live process. Don't touch stopped/failed —
+    // the user deliberately stopped those, or they already failed.
+    const { data: candidates } = dal.listHostedSwarms({ limit: 500 });
+    const active = candidates.filter(
+      (h) => h.state === 'running' || h.state === 'starting' || h.state === 'unhealthy',
+    );
+
+    if (active.length === 0) {
+      return { revived: 0, orphaned: 0, failed: 0 };
+    }
+
+    console.log(`[swarm-manager] Reviving ${active.length} hosted swarm(s) from last run`);
+
+    let revived = 0;
+    let orphaned = 0;
+    let failed = 0;
+
+    for (const hosted of active) {
+      const pid = hosted.pid;
+      const alive = pid ? isPidAlive(pid) : false;
+
+      if (alive) {
+        // Orphan — can't adopt this PID into the provider's instance map
+        // without deeper hooks. Mark as failed so the UI surfaces a
+        // Restart affordance; the user can click Restart to cold-start
+        // a replacement (old orphan will need manual kill).
+        console.warn(
+          `[swarm-manager] Hosted swarm ${hosted.id} has an orphan PID ${pid} — marking failed (user should restart manually)`,
+        );
+        dal.updateHostedSwarm(hosted.id, {
+          state: 'failed',
+          error: `Orphaned PID ${pid} from prior openhive instance — cannot adopt. Use Restart to replace.`,
+        });
+        orphaned++;
+        continue;
+      }
+
+      // Dead PID — cold-start via autoRestart. Handles port re-allocation,
+      // credential re-resolution, swarm_id repair, health wait.
+      if (!hosted.config) {
+        console.warn(
+          `[swarm-manager] Hosted swarm ${hosted.id} has no saved config — marking failed`,
+        );
+        dal.updateHostedSwarm(hosted.id, {
+          state: 'failed',
+          error: 'Cannot revive: no persisted config',
+        });
+        failed++;
+        continue;
+      }
+
+      try {
+        await this.autoRestart(hosted.id, hosted);
+        revived++;
+      } catch (err) {
+        console.error(
+          `[swarm-manager] Failed to revive ${hosted.id}: ${(err as Error).message}`,
+        );
+        dal.updateHostedSwarm(hosted.id, {
+          state: 'failed',
+          error: `Revival failed on startup: ${(err as Error).message}`,
+        });
+        failed++;
+      }
+    }
+
+    console.log(
+      `[swarm-manager] Revival complete — revived: ${revived}, orphaned: ${orphaned}, failed: ${failed}`,
+    );
+    return { revived, orphaned, failed };
+  }
+
+  // ==========================================================================
   // Shutdown
   // ==========================================================================
 
@@ -1143,6 +1249,29 @@ export class SwarmManager {
     } catch {
       return false;
     }
+  }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/**
+ * Check whether a PID is currently running.
+ *
+ * `process.kill(pid, 0)` sends no signal but throws ESRCH if the process
+ * doesn't exist. It can also throw EPERM if the pid belongs to another user —
+ * in that case the process IS alive (we just can't signal it), so we treat
+ * EPERM as "alive too" for the conservative-adoption path.
+ */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EPERM') return true;
+    return false;
   }
 }
 

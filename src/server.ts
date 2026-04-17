@@ -658,6 +658,16 @@ export async function createHive(
       if (swarmManager) {
         swarmManager.startHealthMonitor();
         console.log("[openhive] Swarm hosting health monitor started");
+
+        // Revive hosted swarms that were alive when openhive last ran.
+        // Runs in the background so startup isn't blocked on N Claude Code
+        // subprocesses booting — the health monitor + per-swarm DB state
+        // surface progress to the UI as it happens.
+        swarmManager.reviveHostedSwarms().catch((err) => {
+          console.error(
+            `[openhive] Hosted swarm revival failed: ${(err as Error).message}`,
+          );
+        });
       }
 
       // Create swarm agent delegate for workspace dispatch (used by learning + skill classification)

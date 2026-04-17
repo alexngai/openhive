@@ -218,6 +218,9 @@ export class SandboxedLocalProvider implements HostingProvider {
       if (config.bootstrap.cwd) {
         env.MACRO_BOOTSTRAP_CWD = config.bootstrap.cwd;
       }
+      // See LocalProvider for rationale — hosted swarms revive the full
+      // agent tree on restart, not just head managers.
+      env.MACRO_BOOTSTRAP_REHYDRATE = 'all';
     }
 
     // Strip Claude Code nested-session markers — see LocalProvider.provision

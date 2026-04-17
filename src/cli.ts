@@ -283,7 +283,48 @@ function openInBrowser(url: string): void {
   exec(`${cmd} ${url}`);
 }
 
+/**
+ * Safety net for a known race in `@multi-agent-protocol/sdk`'s ACP stream:
+ * when `close()` is called while an RPC is in-flight, the pending promise
+ * can be orphaned (rejected with "ACP stream closed" but never awaited,
+ * because the same method throws synchronously right after). Under Node's
+ * default `--unhandled-rejections=throw` this crashes the whole hub.
+ *
+ * The SDK itself has been patched (see references/multi-agent-protocol/
+ * ts-sdk/src/acp/stream.ts #sendRequest — the sync throw before
+ * `return await resultPromise` was removed), but `node_modules` may still
+ * carry an unpatched copy until the SDK is republished. This handler
+ * specifically catches that one rejection pattern, logs a warning, and
+ * keeps the process alive. Any other unhandled rejection still crashes —
+ * we want the default behavior to surface genuine bugs.
+ */
+function installAcpRaceSafetyNet(): void {
+  const isAcpCloseRace = (reason: unknown): boolean => {
+    if (!(reason instanceof Error)) return false;
+    if (reason.message !== 'ACP stream closed') return false;
+    // Stack-trace smell test: the rejection must originate inside the
+    // MAP SDK's acp stream module. Anything else with a matching message
+    // is suspicious and should keep crashing.
+    return typeof reason.stack === 'string'
+      && /multi-agent-protocol\/sdk.*acp\/stream|acp\/stream\.ts/.test(reason.stack);
+  };
+
+  process.on('unhandledRejection', (reason) => {
+    if (isAcpCloseRace(reason)) {
+      console.warn(
+        '[acp] suppressed SDK close-race rejection:',
+        (reason as Error).message,
+      );
+      return;
+    }
+    // Preserve Node's default crash behavior for anything else.
+    throw reason;
+  });
+}
+
 async function startServer(opts: StartOptions): Promise<string> {
+  installAcpRaceSafetyNet();
+
   const dataDir = resolveDataDir(opts.dataDir);
   const paths = dataDirPaths(dataDir);
 
