@@ -557,6 +557,7 @@ export function useConnectSwarm() {
     }) => api.post<{ swarm: MapSwarm }>("/map/swarms", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["map-swarms"] });
+      queryClient.invalidateQueries({ queryKey: ["map-swarms-picker"] });
     },
   });
 }
@@ -2055,6 +2056,7 @@ export function useSpawnAgent() {
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ['map-swarm', vars.swarmId] });
       queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
+      queryClient.invalidateQueries({ queryKey: ['map-swarms-picker'] });
     },
   });
 }
@@ -2187,6 +2189,7 @@ export function useStopAgent() {
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ['map-swarm', vars.swarmId] });
       queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
+      queryClient.invalidateQueries({ queryKey: ['map-swarms-picker'] });
     },
   });
 }

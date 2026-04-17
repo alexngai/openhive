@@ -7,18 +7,21 @@
  * landing on "whichever ACP agent the hub found first." Sidecars are
  * filtered out (they're the connection itself, not a participant).
  *
- * Swarms that carry no chat-capable agents (sidecar-only, or purely
- * observational) fall into the "Online (no chat)" section so they're still
- * visible but unclickable.
+ * Each swarm group exposes a "+" button to spawn a new agent on that swarm
+ * — covers the "swarm exists but no chat agent yet" case and the common
+ * "spawn another coordinator here" case. After a successful spawn we
+ * auto-connect via `connectAndOpen` so the user lands directly in chat.
  */
 
 import { useState } from 'react';
 import { Zap, Plus, MessageSquare, Loader2, Radio } from 'lucide-react';
 import clsx from 'clsx';
 import { useMapSwarmsForPicker, useConnectAcp } from '../../hooks/useApi';
+import { useSwarmRealtime } from '../../hooks/useRealtimeInvalidation';
 import { useChatFabStore } from './ChatFabStore';
 import type { MapSwarm } from '../../lib/api';
 import { getPeerMapId } from '../../lib/map';
+import { SpawnAgentDialog } from '../swarm/SpawnAgentDialog';
 
 interface RegisteredAgent {
   id: string;
@@ -33,6 +36,11 @@ interface PickerAgent {
   agent: RegisteredAgent;
   swarm: MapSwarm;
   mode: 'acp' | 'mail';
+}
+
+interface SwarmGroup {
+  swarm: MapSwarm;
+  agents: PickerAgent[];
 }
 
 function isOnline(s: MapSwarm): boolean {
@@ -70,80 +78,123 @@ function getAgentChatMode(agent: RegisteredAgent, swarm: MapSwarm): 'acp' | 'mai
 }
 
 /**
- * Flatten online swarms into per-agent picker rows. Sidecars and agents
- * without chat capability are dropped. Ordering: stable by swarm order,
- * then by agent order inside each swarm (so the UI doesn't reshuffle on
- * every refetch).
- *
- * Exported for unit testing only.
+ * Best-effort default cwd surfaced to the spawn dialog as a placeholder /
+ * fallback hint. Mirrors what `SwarmDetail` does (minus the hosted-swarm
+ * data_dir, which the picker doesn't fetch).
  */
-export function buildPickerAgents(swarms: MapSwarm[]): PickerAgent[] {
-  const out: PickerAgent[] = [];
-  for (const swarm of swarms) {
+function getSwarmDefaultCwd(swarm: MapSwarm): string | undefined {
+  const meta = swarm.metadata as Record<string, unknown> | null | undefined;
+  const caps = swarm.capabilities as Record<string, unknown> | null | undefined;
+  const candidates = [meta?.cwd, meta?.projectPath, caps?.projectPath];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) return c;
+  }
+  return undefined;
+}
+
+/**
+ * Group online swarms with their chat-capable agents. Empty groups (swarms
+ * with no chat-capable agents) are kept so the user can still spawn into
+ * them. Exported for unit testing.
+ */
+export function buildSwarmGroups(swarms: MapSwarm[]): SwarmGroup[] {
+  return swarms.map((swarm) => {
+    const agents: PickerAgent[] = [];
     for (const agent of getRegisteredAgents(swarm)) {
       if (agent.role === 'sidecar') continue;
       const mode = getAgentChatMode(agent, swarm);
       if (!mode) continue;
-      out.push({ agent, swarm, mode });
+      agents.push({ agent, swarm, mode });
     }
-  }
-  return out;
+    return { swarm, agents };
+  });
+}
+
+/**
+ * Flat per-agent view used by the original picker tests. Kept as a thin
+ * derivation over `buildSwarmGroups` so the same filtering rules apply.
+ */
+export function buildPickerAgents(swarms: MapSwarm[]): PickerAgent[] {
+  return buildSwarmGroups(swarms).flatMap((g) => g.agents);
 }
 
 export function SessionPicker() {
+  // Subscribe to swarm lifecycle WS events so the picker auto-refreshes when
+  // a swarm comes online or a coordinator gets spawned inside one.
+  useSwarmRealtime();
   const { data: swarms = [] } = useMapSwarmsForPicker({ status: 'online' });
   const connectAcp = useConnectAcp();
   const setSession = useChatFabStore((s) => s.setSession);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [spawnFor, setSpawnFor] = useState<MapSwarm | null>(null);
 
   const onlineSwarms = swarms.filter(isOnline);
-  const pickerAgents = buildPickerAgents(onlineSwarms);
-
-  // Swarms that surfaced zero chat-capable agents go into the "no chat"
-  // bucket so they're still visible but greyed out.
-  const swarmsWithAgents = new Set(pickerAgents.map((p) => p.swarm.id));
-  const otherSwarms = onlineSwarms.filter((s) => !swarmsWithAgents.has(s.id));
+  const groups = buildSwarmGroups(onlineSwarms);
 
   // Row key must be unique per agent, not per swarm, because a swarm may
   // surface multiple ACP coordinators.
   const rowKey = (p: PickerAgent) => `${p.swarm.id}:${p.agent.id}`;
 
-  const handleConnect = async (picked: PickerAgent) => {
-    const key = rowKey(picked);
-    setConnecting(key);
+  const connectToAgent = async (
+    swarm: MapSwarm,
+    agent: RegisteredAgent,
+    mode: 'acp' | 'mail',
+    keyForLoading: string,
+  ) => {
+    setConnecting(keyForLoading);
     setError(null);
 
-    const { agent, swarm, mode } = picked;
     // Prefer the peer-side MAP id (the swarm-local ULID) so ACP streams
     // route correctly through the peer's MAP server. Falls back to the
     // hub-assigned id for flows that don't use a peer MAP server.
     const targetId = getPeerMapId(agent.metadata) ?? agent.id;
     const displayName = agent.name ?? agent.id;
 
+    // agentRef carries the *hub* agent id (pre-peer-map), which is what
+    // `registered_agents[].id` surfaces on the swarm detail. The header
+    // also falls back to matching `metadata.peerMapId`, so passing
+    // either is fine; we pass agent.id for consistency across ACP and
+    // mail fallbacks.
+    const agentRef = { swarmId: swarm.id, agentId: agent.id };
+
     try {
       if (mode === 'acp') {
         const result = await connectAcp.mutateAsync({ swarmId: swarm.id, agentId: targetId });
-        // Persist the ACP stream/session ids so ChatPanel can `loadSession`
-        // instead of `createStream` on subsequent remounts (e.g. when the
-        // user toggles the FAB between floating and docked). Without this
-        // each remount tears down the server-side stream.
-        setSession(result.session_resource_id, swarm.id, displayName, {
-          acpStreamId: result.acp_stream_id,
-          acpSessionId: result.acp_session_id,
-        });
+        setSession(
+          result.session_resource_id,
+          swarm.id,
+          displayName,
+          {
+            acpStreamId: result.acp_stream_id,
+            acpSessionId: result.acp_session_id,
+          },
+          agentRef,
+        );
       } else {
         // Mail: try ACP-connect first (some backends auto-upgrade when the
         // target declares mail); on failure fall back to a bare mail
         // session resource id so useChatChannel picks mail mode.
         try {
           const result = await connectAcp.mutateAsync({ swarmId: swarm.id, agentId: targetId });
-          setSession(result.session_resource_id, swarm.id, displayName, {
-            acpStreamId: result.acp_stream_id,
-            acpSessionId: result.acp_session_id,
-          });
+          setSession(
+            result.session_resource_id,
+            swarm.id,
+            displayName,
+            {
+              acpStreamId: result.acp_stream_id,
+              acpSessionId: result.acp_session_id,
+            },
+            agentRef,
+          );
         } catch {
-          setSession(`mail:${swarm.id}:${agent.id}`, swarm.id, displayName);
+          setSession(
+            `mail:${swarm.id}:${agent.id}`,
+            swarm.id,
+            displayName,
+            undefined,
+            agentRef,
+          );
         }
       }
     } catch (err) {
@@ -153,6 +204,26 @@ export function SessionPicker() {
     setConnecting(null);
   };
 
+  const handleConnect = async (picked: PickerAgent) => {
+    await connectToAgent(picked.swarm, picked.agent, picked.mode, rowKey(picked));
+  };
+
+  const handleSpawned = async (
+    swarm: MapSwarm,
+    spawned: { agent_id: string; peer_map_id: string; name?: string },
+  ) => {
+    // Synthesize a RegisteredAgent for the freshly spawned agent. We assume
+    // ACP since spawn defaults to a coordinator with ACP capability; if
+    // that's wrong the connect call falls back gracefully.
+    const synthetic: RegisteredAgent = {
+      id: spawned.agent_id,
+      name: spawned.name,
+      metadata: { peerMapId: spawned.peer_map_id },
+      capabilities: { protocols: ['acp'] },
+    };
+    await connectToAgent(swarm, synthetic, 'acp', `spawn:${swarm.id}:${spawned.agent_id}`);
+  };
+
   return (
     <div className="flex flex-col h-full">
       <div className="px-4 py-3 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
@@ -160,7 +231,7 @@ export function SessionPicker() {
           Start a conversation
         </h3>
         <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-          Pick an agent to chat with, or resume a session.
+          Pick an agent to chat with, or spawn a new one.
         </p>
       </div>
 
@@ -173,74 +244,90 @@ export function SessionPicker() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
-        {/* Chat-capable agents */}
-        {pickerAgents.length > 0 && (
-          <>
-            <div className="text-2xs px-1 pt-2 pb-1" style={{ color: 'var(--color-text-muted)' }}>
-              Online agents
-            </div>
-            {pickerAgents.map((picked) => {
-              const key = rowKey(picked);
-              const { agent, swarm, mode } = picked;
-              const name = agent.name ?? agent.id;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => handleConnect(picked)}
-                  disabled={connecting === key}
-                  className={clsx(
-                    'w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors',
-                    'hover:bg-white/5 disabled:opacity-50',
-                  )}
-                  style={{ color: 'var(--color-text)' }}
+      <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
+        {groups.map(({ swarm, agents }) => {
+          const spawnLoadingPrefix = `spawn:${swarm.id}:`;
+          const spawning = connecting?.startsWith(spawnLoadingPrefix);
+          return (
+            <div key={swarm.id} className="space-y-0.5">
+              {/* Swarm header */}
+              <div className="flex items-center gap-2 px-1 pt-1">
+                <Zap className="h-3 w-3 text-honey-500/70 shrink-0" />
+                <span
+                  className="text-2xs font-medium uppercase tracking-wide truncate flex-1 min-w-0"
+                  style={{ color: 'var(--color-text-muted)' }}
                 >
-                  {connecting === key ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-honey-500 shrink-0" />
+                  {swarm.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSpawnFor(swarm)}
+                  disabled={spawning}
+                  className="p-0.5 rounded hover:bg-white/10 transition-colors disabled:opacity-50"
+                  style={{ color: 'var(--color-text-muted)' }}
+                  title="Spawn agent on this swarm"
+                >
+                  {spawning ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
-                    <Zap className="h-4 w-4 text-honey-500 shrink-0" />
+                    <Plus className="h-3 w-3" />
                   )}
-                  <div className="flex-1 min-w-0">
-                    <div className="truncate">{name}</div>
-                    <div
-                      className="text-2xs truncate"
-                      style={{ color: 'var(--color-text-muted)' }}
-                    >
-                      {agent.role ?? 'agent'} · {swarm.name}
-                    </div>
-                  </div>
-                  <span
-                    className="text-2xs shrink-0 px-1.5 py-0.5 rounded"
-                    style={{ color: 'var(--color-text-muted)', backgroundColor: 'var(--color-surface)' }}
-                  >
-                    {mode}
-                  </span>
-                  <Radio className="h-3 w-3 text-emerald-400 shrink-0" />
                 </button>
-              );
-            })}
-          </>
-        )}
-
-        {/* Online swarms with no chat-capable agents yet */}
-        {otherSwarms.length > 0 && (
-          <>
-            <div className="text-2xs px-1 pt-2 pb-1" style={{ color: 'var(--color-text-muted)' }}>
-              Online (no chat agents)
-            </div>
-            {otherSwarms.map((s) => (
-              <div
-                key={s.id}
-                className="flex items-center gap-2 px-3 py-2 rounded-md text-sm opacity-40"
-                style={{ color: 'var(--color-text-muted)' }}
-              >
-                <Zap className="h-4 w-4 shrink-0" />
-                <span className="flex-1 truncate">{s.name}</span>
               </div>
-            ))}
-          </>
-        )}
+
+              {/* Agent rows or empty hint */}
+              {agents.length > 0 ? (
+                agents.map((picked) => {
+                  const key = rowKey(picked);
+                  const { agent, mode } = picked;
+                  const name = agent.name ?? agent.id;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => handleConnect(picked)}
+                      disabled={connecting === key}
+                      className={clsx(
+                        'w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors',
+                        'hover:bg-white/5 disabled:opacity-50',
+                      )}
+                      style={{ color: 'var(--color-text)' }}
+                    >
+                      {connecting === key ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-honey-500 shrink-0" />
+                      ) : (
+                        <Zap className="h-4 w-4 text-honey-500 shrink-0" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="truncate">{name}</div>
+                        <div
+                          className="text-2xs truncate"
+                          style={{ color: 'var(--color-text-muted)' }}
+                        >
+                          {agent.role ?? 'agent'}
+                        </div>
+                      </div>
+                      <span
+                        className="text-2xs shrink-0 px-1.5 py-0.5 rounded"
+                        style={{ color: 'var(--color-text-muted)', backgroundColor: 'var(--color-surface)' }}
+                      >
+                        {mode}
+                      </span>
+                      <Radio className="h-3 w-3 text-emerald-400 shrink-0" />
+                    </button>
+                  );
+                })
+              ) : (
+                <div
+                  className="px-3 py-1.5 text-2xs italic"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
+                  No chat-capable agents — spawn one with +
+                </div>
+              )}
+            </div>
+          );
+        })}
 
         {onlineSwarms.length === 0 && (
           <div
@@ -253,6 +340,19 @@ export function SessionPicker() {
           </div>
         )}
       </div>
+
+      {spawnFor && (
+        <SpawnAgentDialog
+          swarmId={spawnFor.id}
+          defaultCwd={getSwarmDefaultCwd(spawnFor)}
+          onClose={() => setSpawnFor(null)}
+          onSpawned={(result) => {
+            const swarm = spawnFor;
+            setSpawnFor(null);
+            void handleSpawned(swarm, result);
+          }}
+        />
+      )}
     </div>
   );
 }

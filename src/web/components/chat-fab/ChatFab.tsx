@@ -10,12 +10,64 @@
 
 import { Bot, X, PanelRightOpen, PanelRightClose } from 'lucide-react';
 import clsx from 'clsx';
-import { useChatFabStore } from './ChatFabStore';
+import { useChatFabStore, type ChatFabAgentRef } from './ChatFabStore';
 import { SessionPicker } from './SessionPicker';
 import { ChatPanel } from './ChatPanel';
+import { useMapSwarm } from '../../hooks/useApi';
+import { useQueryClient } from '@tanstack/react-query';
+import { useCallback } from 'react';
+import { useSubscribe, useWSEvent } from '../../hooks/useWebSocket';
+
+/**
+ * Keep the single-swarm query fresh while an agent-scoped chat is open.
+ * The ChatFab is mounted at Layout level, so pages that don't otherwise
+ * run `useSwarmRealtime` (Dashboard, Home, settings, etc.) would stall
+ * on the initial `registered_agents` snapshot — missing the agent name
+ * for a freshly-spawned coordinator until the 30s staleTime elapses or
+ * the user navigates to a page that does invalidate. Subscribing here
+ * bridges that gap: map:discovery events nudge `['map-swarm', id]` to
+ * refetch as soon as the hub publishes the registration.
+ */
+function useLiveSwarmRefresh(swarmId: string | null) {
+  const qc = useQueryClient();
+  useSubscribe(swarmId ? ['map:discovery'] : []);
+  const invalidate = useCallback(() => {
+    if (!swarmId) return;
+    qc.invalidateQueries({ queryKey: ['map-swarm', swarmId] });
+  }, [qc, swarmId]);
+  useWSEvent('node_registered', invalidate);
+  useWSEvent('swarm.status_changed', invalidate);
+  useWSEvent('swarm_spawned', invalidate);
+  useWSEvent('swarm_registered', invalidate);
+}
+
+/**
+ * Resolve the agent's current display name from the live MAP registry.
+ * Returns `null` until the lookup succeeds — callers fall back to
+ * `sessionLabel` seeded at connect time. Matches against both the hub
+ * agent id and `metadata.peerMapId` since callers may stash either.
+ */
+function useLiveAgentName(agentRef: ChatFabAgentRef | null): string | null {
+  const { data: swarm } = useMapSwarm(agentRef?.swarmId ?? '');
+  if (!agentRef || !swarm) return null;
+  const agents = (swarm as { registered_agents?: Array<{
+    id: string;
+    name?: string;
+    metadata?: Record<string, unknown> | null;
+  }> }).registered_agents ?? [];
+  const match = agents.find((a) => {
+    if (a.id === agentRef.agentId) return true;
+    const peerId = (a.metadata as { peerMapId?: string } | null | undefined)?.peerMapId;
+    return peerId === agentRef.agentId;
+  });
+  return match?.name ?? null;
+}
 
 function ChatHeader({ isDocked }: { isDocked: boolean }) {
-  const { sessionId, sessionLabel, clearSession, collapse, toggleMode } = useChatFabStore();
+  const { sessionId, sessionLabel, agentRef, clearSession, collapse, toggleMode } = useChatFabStore();
+  useLiveSwarmRefresh(agentRef?.swarmId ?? null);
+  const liveName = useLiveAgentName(agentRef);
+  const headerName = liveName ?? sessionLabel ?? 'Agent';
 
   return (
     <div
@@ -25,7 +77,7 @@ function ChatHeader({ isDocked }: { isDocked: boolean }) {
       <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--color-text)' }}>
         <Bot className="h-4 w-4 text-honey-500" />
         <span className="font-medium truncate">
-          {sessionId ? (sessionLabel ?? 'Agent') : 'Agent Chat'}
+          {sessionId ? headerName : 'Agent Chat'}
         </span>
       </div>
       <div className="flex items-center gap-1">

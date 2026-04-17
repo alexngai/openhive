@@ -56,6 +56,17 @@ export interface ChatFabResume {
   providerSessionId?: string;
 }
 
+/**
+ * A lookup hint for the ChatHeader to live-resolve the agent's current name
+ * from `GET /map/swarms/:swarmId` rather than holding a stale snapshot.
+ * Set at connect time; the header matches against `registered_agents[].id`
+ * (or `metadata.peerMapId`, for peer-namespaced ids).
+ */
+export interface ChatFabAgentRef {
+  swarmId: string;
+  agentId: string;
+}
+
 export interface ChatFabState {
   /** FAB expanded or collapsed */
   open: boolean;
@@ -63,8 +74,19 @@ export interface ChatFabState {
   sessionId: string | null;
   /** Swarm the active session is on */
   swarmId: string | null;
-  /** Display name for the active session/swarm */
+  /**
+   * Seeded display name for the active session/swarm. Used as the fallback
+   * for the ChatHeader — it prefers a live-resolved name from `agentRef`
+   * against the MAP registry so renames / late-arriving registrations
+   * update in place.
+   */
   sessionLabel: string | null;
+  /**
+   * Lookup hint so the ChatHeader can live-resolve the agent's current
+   * name from the MAP registry instead of relying on a snapshot. See
+   * `ChatFabAgentRef`.
+   */
+  agentRef: ChatFabAgentRef | null;
   /** ACP resume descriptor — set whenever we created/loaded a stream */
   resume: ChatFabResume | null;
   /** Display mode: floating popup or docked sidebar */
@@ -82,6 +104,7 @@ export interface ChatFabState {
     swarmId: string,
     label: string,
     resume?: ChatFabResume | null,
+    agentRef?: ChatFabAgentRef | null,
   ) => void;
   clearSession: () => void;
   setMode: (mode: ChatFabMode) => void;
@@ -98,6 +121,7 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
   sessionId: null,
   swarmId: null,
   sessionLabel: null,
+  agentRef: null,
   resume: null,
   mode: loadMode(),
   connecting: false,
@@ -114,11 +138,12 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
     set({ open: false });
   },
 
-  setSession: (sessionId, swarmId, label, resume) =>
+  setSession: (sessionId, swarmId, label, resume, agentRef) =>
     set({
       sessionId,
       swarmId,
       sessionLabel: label,
+      agentRef: agentRef ?? null,
       resume: resume ?? null,
       connectError: null,
     }),
@@ -128,6 +153,7 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
       sessionId: null,
       swarmId: null,
       sessionLabel: null,
+      agentRef: null,
       resume: null,
       connectError: null,
     }),
@@ -156,10 +182,18 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
         swarm_id: swarmId,
         agent_id: agentId,
       });
+
+      // Seed sessionLabel with the best label we have *right now* —
+      // `label` (passed from SessionPicker's spawn response), else 'Agent'
+      // — but also stash `agentRef` so the ChatHeader can live-resolve
+      // the name from the MAP registry as it arrives. This fixes the
+      // race where the agent is spawned and connected to faster than the
+      // hub publishes its registration back through `registered_agents`.
       set({
         sessionId: result.session_resource_id,
         swarmId,
-        sessionLabel: label ?? swarmId,
+        sessionLabel: label ?? 'Agent',
+        agentRef: { swarmId, agentId },
         resume: {
           acpStreamId: result.acp_stream_id,
           acpSessionId: result.acp_session_id,

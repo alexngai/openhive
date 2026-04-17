@@ -239,6 +239,16 @@ function registerGlobalListeners() {
     }
 
     // Assistant streaming text
+    //
+    // Intentionally does NOT set status to 'streaming'. Chunks arrive
+    // both from live streaming and from session/load replay, and there's
+    // no reliable per-chunk marker to distinguish them. Inferring live
+    // activity from chunk arrivals made every resumed session appear as
+    // "Agent is responding..." forever whenever the replayed transcript
+    // didn't end with an end_turn/stopReason event (truncation, crashed
+    // mid-turn, SDK replay window). Instead, status is driven by user
+    // intent: `prompt()` flips to 'streaming', `end_turn`/`stopReason`
+    // flips back to 'ready'.
     if (text && (sessionUpdate === 'agent_message_chunk' || sessionUpdate === 'content_chunk' || !sessionUpdate)) {
       if (!sub.currentAssistantId) {
         sub.currentAssistantId = `acp-a-${Date.now()}-${sub.eventSeq++}`;
@@ -261,11 +271,6 @@ function registerGlobalListeners() {
         }
       }
       notifyMessages(sub);
-      if (sub.handlers) {
-        sub.handlers.onStatus('streaming');
-      } else {
-        sub.pendingStatus = { status: 'streaming' };
-      }
     }
 
     // End of turn
@@ -392,9 +397,37 @@ export function createOpenHiveAcpServiceLike(): AcpServiceLike {
           ...(meta ? { _meta: meta } : {}),
         }),
       });
+      // Baseline reset after load. The RPC returns once the server has
+      // the session loaded; historical `session/update` replays then
+      // arrive asynchronously via WS and rebuild the message list. We
+      // don't let those replays drive status (see chunk handler), so the
+      // default state for a newly-loaded session is 'ready'. Any in-
+      // progress assistant bubble from a previous live turn gets
+      // finalized here so a subsequent live chunk starts a fresh one.
+      const sub = subscriptions.get(streamId);
+      if (sub) {
+        finalizeAssistantBubble(sub);
+        if (sub.handlers) {
+          sub.handlers.onStatus('ready');
+        } else {
+          sub.pendingStatus = { status: 'ready' };
+        }
+      }
     },
 
     prompt: async (streamId, text) => {
+      // Optimistically flip to 'streaming' before the POST so the UI
+      // reflects "agent is responding…" the instant the user sends,
+      // rather than waiting for the first WS chunk. Status transitions
+      // back to 'ready' when `end_turn` or `stopReason` arrives.
+      const sub = subscriptions.get(streamId);
+      if (sub) {
+        if (sub.handlers) {
+          sub.handlers.onStatus('streaming');
+        } else {
+          sub.pendingStatus = { status: 'streaming' };
+        }
+      }
       // SwarmCraft's /prompt endpoint accepts either { message } (simple) or
       // { prompt: [...] } (full ACP). It does NOT accept { text } — that would
       // silently normalize to an empty prompt.
