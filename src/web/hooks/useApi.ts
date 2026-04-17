@@ -2050,6 +2050,31 @@ export function useConnectAcp() {
 }
 
 /**
+ * Resume a session whose source swarm/agent may be stopped or offline. The
+ * server restarts the hosted swarm (if needed), waits for macro-agent to
+ * reconnect, asks macro-agent to resume the agent by provider_session_id,
+ * and opens a fresh ACP stream loading the persisted transcript. Can take
+ * up to ~30s when the swarm is cold.
+ */
+export function useResumeSession() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ sessionResourceId, cwd }: {
+      sessionResourceId: string; cwd?: string;
+    }) =>
+      api.post<{ session_resource_id: string; acp_session_id: string; acp_stream_id: string }>(
+        `/sessions/${sessionResourceId}/resume`,
+        cwd ? { cwd } : {},
+      ),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['resource', vars.sessionResourceId] });
+      queryClient.invalidateQueries({ queryKey: ['sessions-overview'] });
+    },
+  });
+}
+
+/**
  * Stop a specific agent on a swarm. Proxies to the swarm's MAP server. The
  * server prefers `_macro/terminateAgent` (real process termination on
  * macro-agent v0.1.10+); on older runtimes it falls back to

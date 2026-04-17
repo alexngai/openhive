@@ -16,6 +16,8 @@ import { getDatabase } from '../../db/index.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import { fetchTranscriptFromSwarm } from '../../map/trajectory-content.js';
 import { findAcpAgentInfo, getInbound, getPeerMapId } from '../../map/connection-registry.js';
+import { findHostedSwarmBySwarmId } from '../../swarm/dal.js';
+import type { SwarmManager } from '../../swarm/manager.js';
 import {
   detectFormatExtended,
   getSupportedFormats,
@@ -1567,5 +1569,213 @@ export async function sessionsRoutes(
         });
       }
     }
+  );
+
+  // Resume an existing session whose swarm may be stopped or offline.
+  //
+  // Durable resume: reads provider_session_id + source_swarm_id off the
+  // session resource metadata (persisted when the session was first created
+  // via /sessions/acp-connect). Does NOT depend on the live connection
+  // registry carrying the session's agent — macro-agent is the source of
+  // truth for agent identity + provider_session_id and will rebuild its own
+  // routing when asked.
+  //
+  // Steps:
+  //   1. Restart the hosted swarm if it's stopped/failed.
+  //   2. Wait for macro-agent to reconnect to the MAP hub.
+  //   3. Call `_macro/resumeAgent` on macro-agent with the persisted
+  //      provider_session_id. macro-agent resolves the agent, respawns the
+  //      coordinator if dead, and returns `{peerMapId, acpSessionId}`.
+  //   4. Open a fresh ACP stream against the returned peerMapId and call
+  //      session/load with `_meta.provider_session_id` so Claude Code replays
+  //      its on-disk transcript.
+  //   5. Update the session resource metadata with the new streamId.
+  fastify.post<{ Params: { id: string }; Body?: { cwd?: string } }>(
+    '/sessions/:id/resume',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const resource = resourcesDAL.findResourceById(request.params.id);
+      if (!resource || resource.resource_type !== 'session') {
+        return reply.status(404).send({ error: 'Session not found' });
+      }
+      if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
+        return reply.status(403).send({ error: 'Access denied' });
+      }
+
+      const meta = (resource.metadata ?? {}) as Record<string, unknown>;
+      const sourceSwarmId = typeof meta.source_swarm_id === 'string' ? meta.source_swarm_id : undefined;
+      const providerSessionId = typeof meta.provider_session_id === 'string' ? meta.provider_session_id : undefined;
+      const priorAcpSessionId = typeof meta.sessionId === 'string' ? meta.sessionId : undefined;
+      const projectPath = request.body?.cwd
+        ?? (typeof meta.projectPath === 'string' ? meta.projectPath : undefined)
+        ?? '.';
+
+      if (!sourceSwarmId) {
+        return reply.status(400).send({
+          error: 'NOT_RESUMABLE',
+          message: 'Session has no source_swarm_id — cannot be resumed',
+        });
+      }
+      if (!providerSessionId) {
+        return reply.status(400).send({
+          error: 'NOT_RESUMABLE',
+          message: 'Session has no provider_session_id — cannot be resumed durably',
+        });
+      }
+
+      const sc = (fastify as any).swarmcraft;
+      if (!sc?.mapClientManager || !sc?.acpStreamManager) {
+        return reply.status(503).send({ error: 'SwarmCraft not available' });
+      }
+
+      // 1. Restart the hosted swarm if stopped/failed. Only applies when this
+      //    instance owns the hosted process (not remote swarms).
+      const hosted = findHostedSwarmBySwarmId(sourceSwarmId);
+      if (hosted && (hosted.state === 'stopped' || hosted.state === 'failed')) {
+        if (hosted.spawned_by !== request.agent!.id) {
+          return reply.status(403).send({
+            error: 'NOT_OWNER',
+            message: 'Swarm is stopped and you did not spawn it',
+          });
+        }
+        const swarmManager = (fastify as unknown as { swarmManager?: SwarmManager }).swarmManager;
+        if (!swarmManager) {
+          return reply.status(503).send({
+            error: 'SWARM_MANAGER_UNAVAILABLE',
+            message: 'Swarm hosting is not configured',
+          });
+        }
+        try {
+          await swarmManager.restart(hosted.id, request.agent!.id);
+        } catch (err) {
+          return reply.status(502).send({
+            error: 'SWARM_START_FAILED',
+            message: (err as Error).message,
+          });
+        }
+      }
+
+      // 2. Wait for macro-agent to reconnect inbound (and for SwarmCraft's
+      //    MAP client to hold a live connection to the swarm's MAP server).
+      //    The restart path above only handles local hosted swarms; remote
+      //    swarms rely on their own operator to bring them back.
+      const waitDeadline = Date.now() + 30_000;
+      let mapClient: { callExtension: (m: string, p: unknown) => Promise<unknown> } | null = null;
+      while (Date.now() < waitDeadline) {
+        const client = sc.mapClientManager.getClient(sourceSwarmId);
+        if (client?.isConnected) {
+          mapClient = client;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      if (!mapClient) {
+        return reply.status(504).send({
+          error: 'SWARM_NOT_CONNECTED',
+          message: 'Swarm did not reconnect within timeout',
+        });
+      }
+
+      // 3. Ask macro-agent to resume the agent owning this provider_session_id.
+      //    macro-agent is idempotent: if the coordinator is already alive it
+      //    returns the current handle; if dead it respawns.
+      let resumeResult: {
+        success?: boolean;
+        error?: string;
+        agent?: { id: string; localId: string; name?: string; role?: string };
+        acpSessionId?: string;
+        providerSessionId?: string;
+      };
+      try {
+        resumeResult = (await mapClient.callExtension('_macro/resumeAgent', {
+          providerSessionId,
+          cwd: projectPath,
+        })) as typeof resumeResult;
+      } catch (err) {
+        return reply.status(502).send({
+          error: 'RESUME_FAILED',
+          message: (err as Error).message,
+        });
+      }
+      if (!resumeResult?.success || !resumeResult.agent?.id) {
+        return reply.status(502).send({
+          error: 'RESUME_FAILED',
+          message: resumeResult?.error ?? 'macro-agent did not resume the agent',
+        });
+      }
+
+      const peerMapId = resumeResult.agent.id;
+      const peerAgentId = resumeResult.agent.localId;
+
+      // 4. Wait briefly for the lifecycle bridge to re-register the agent on
+      //    the hub. This mirrors /map/swarms/:id/agents — we don't strictly
+      //    need the hub-assigned ID for ACP routing (peerMapId is enough),
+      //    but polling for it confirms the bridge has caught up before we
+      //    try to open a stream.
+      const regDeadline = Date.now() + 2000;
+      while (Date.now() < regDeadline) {
+        const conn = getInbound(sourceSwarmId);
+        if (conn) {
+          let found = false;
+          for (const [, entry] of conn.registeredAgents) {
+            const peer = getPeerMapId(entry.metadata);
+            if (peer === peerMapId || peer === peerAgentId) { found = true; break; }
+          }
+          if (found) break;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+
+      // 5. Open a fresh ACP stream and load the session. Pass
+      //    _meta.provider_session_id so Claude Code replays history from
+      //    its on-disk JSONL even if macro-agent started fresh.
+      try {
+        const stream = await sc.acpStreamManager.createStream(sourceSwarmId, peerMapId);
+        await sc.acpStreamManager.initialize(stream.streamId);
+
+        const targetAcpSessionId = resumeResult.acpSessionId ?? priorAcpSessionId;
+        if (!targetAcpSessionId) {
+          return reply.status(502).send({
+            error: 'NO_SESSION_ID',
+            message: 'Neither macro-agent nor resource metadata provided an ACP session id',
+          });
+        }
+
+        await sc.acpStreamManager.loadSession(stream.streamId, {
+          sessionId: targetAcpSessionId,
+          cwd: projectPath,
+          mcpServers: [],
+          _meta: { provider_session_id: providerSessionId },
+        });
+
+        // 6. Persist the new stream + session ids on the resource so reloads
+        //    reuse them (matches the metadata shape written by /sessions/acp-connect).
+        const updatedMeta = {
+          ...meta,
+          sessionId: targetAcpSessionId,
+          acpStreamId: stream.streamId,
+          source_swarm_id: sourceSwarmId,
+          provider_session_id: providerSessionId,
+          projectPath,
+        };
+        resourcesDAL.updateResource(resource.id, { metadata: updatedMeta });
+
+        broadcastToChannel('global', {
+          type: 'trajectory:sync',
+          data: { session_resource_id: resource.id },
+        });
+
+        return reply.send({
+          session_resource_id: resource.id,
+          acp_session_id: targetAcpSessionId,
+          acp_stream_id: stream.streamId,
+        });
+      } catch (err) {
+        return reply.status(502).send({
+          error: 'LOAD_FAILED',
+          message: (err as Error).message,
+        });
+      }
+    },
   );
 }

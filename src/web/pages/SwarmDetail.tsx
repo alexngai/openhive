@@ -1,7 +1,7 @@
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Activity, Bell, ChevronRight, ChevronDown, ChevronUp, Clock, Cpu, FileText, Globe,
-  Link2, MessageSquare, Monitor, Network, Plus, Share2,
+  Link2, Loader2, MessageSquare, Monitor, Network, Plus, Share2,
   Square, RotateCw, Terminal, Trash2, User, Wifi, WifiOff,
   CheckCircle2, Zap,
 } from 'lucide-react';
@@ -24,7 +24,7 @@ import type {
   MapSwarm, MapNode, HostedSwarm, SessionListItem,
   SwarmMessage, SwarmPeer, EventSubscription, DeliveryLogEntry,
 } from '../lib/api';
-import { useCallback, useState, useMemo } from 'react';
+import { useCallback, useRef, useState, useMemo } from 'react';
 import {
   ChatMessageList,
   ChatInput,
@@ -303,9 +303,7 @@ function SwarmHeader({
 // ─── Capability-Gated Actions ───────────────────────────────────────────────
 
 function useSwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
-  const navigate = useNavigate();
   const spawnAgent = useSpawnAgent();
-  const connectAcp = useConnectAcp();
 
   const caps = (swarm.capabilities || {}) as Record<string, unknown>;
   const isOnline = swarm.status === 'online' || swarm.status === 'unreachable';
@@ -314,10 +312,21 @@ function useSwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string 
     ?? (swarm.metadata as any)?.projectPath as string
     ?? undefined;
 
-  // One-click "spawn + connect": spawns a coordinator, then immediately opens
-  // an ACP session against it. Backend endpoints are independent — see
-  // RegisteredAgentCard for the connect-only path.
+  // Synchronous click-guard. React Query's `isPending` flag flips after the
+  // state commit, leaving a window where a fast double-click can fire two
+  // handlers before the button's `disabled` attribute takes effect. The ref
+  // is set in the same event tick as the click, so subsequent clicks bail
+  // before any backend work starts.
+  const inFlightRef = useRef(false);
+
+  // Spawn a fresh coordinator. Stays on the swarm detail page; the new
+  // coordinator card appears in the Registered Agents section, and the
+  // user clicks Chat on it when they want to open a conversation. We
+  // intentionally do NOT auto-open an ACP session here — that conflates
+  // "spawn a worker" with "start chatting" and forces a navigation.
   const handleNewSession = async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
       const spawned = await spawnAgent.mutateAsync({
         swarmId,
@@ -325,41 +334,30 @@ function useSwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string 
         cwd: projectPath,
         task: 'Head manager',
       });
-      const result = await connectAcp.mutateAsync({
-        swarmId,
-        agentId: spawned.agent_id,
-        peerMapId: spawned.peer_map_id,
-        cwd: projectPath,
-      });
-      const params = new URLSearchParams({
-        streamId: result.acp_stream_id,
-        sessionId: result.acp_session_id,
-      });
-      navigate(`/sessions/${result.session_resource_id}?${params}`);
+      toast.success('Coordinator spawned', `${spawned.name ?? spawned.agent_id} is ready. Click Chat to start a conversation.`);
     } catch {
-      // Error shown via mutation state
+      // Error shown via mutation state (spawnAgent.error rendered below)
+    } finally {
+      inFlightRef.current = false;
     }
   };
 
-  const isPending = spawnAgent.isPending || connectAcp.isPending;
-  const isError = spawnAgent.isError || connectAcp.isError;
-  const errorMessage =
-    (spawnAgent.error as Error | undefined)?.message
-    ?? (connectAcp.error as Error | undefined)?.message;
+  const isPending = spawnAgent.isPending;
+  const isError = spawnAgent.isError;
+  const errorMessage = (spawnAgent.error as Error | undefined)?.message;
 
   const button = isOnline ? (
     <button
       onClick={handleNewSession}
       disabled={isPending}
-      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors"
-      style={{ backgroundColor: 'var(--color-accent)', color: 'black' }}
+      className="btn btn-primary inline-flex items-center gap-1.5 text-xs disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:bg-honey-500"
     >
       {isPending ? (
-        <LoadingSpinner size="sm" />
+        <Loader2 className="w-3.5 h-3.5 animate-spin" />
       ) : (
         <Zap className="w-3.5 h-3.5" />
       )}
-      New Agent Session
+      {isPending ? 'Spawning…' : 'Spawn Agent'}
     </button>
   ) : null;
 
@@ -639,12 +637,11 @@ function RegisteredAgentCard({
             <button
               onClick={handleChat}
               disabled={connectAcp.isPending}
-              className="inline-flex items-center gap-1 px-2 py-1 text-2xs font-medium rounded-md transition-colors"
-              style={{ backgroundColor: 'var(--color-accent)', color: 'black' }}
+              className="btn btn-primary inline-flex items-center gap-1 px-2 py-1 text-2xs disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:bg-honey-500"
               title="Start ACP session with this agent"
             >
               {connectAcp.isPending ? (
-                <LoadingSpinner size="sm" />
+                <Loader2 className="w-3 h-3 animate-spin" />
               ) : (
                 <Zap className="w-3 h-3" />
               )}
@@ -715,7 +712,7 @@ function RegisteredAgentsSection({ swarm, swarmId }: { swarm: MapSwarm; swarmId:
           ))}
         </div>
       ) : (
-        <EmptyState message="No agents yet. Start a new agent session to spawn a coordinator." />
+        <EmptyState message="No agents yet. Click Spawn Agent to create a coordinator." />
       )}
     </div>
   );

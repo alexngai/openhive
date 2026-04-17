@@ -378,6 +378,11 @@ export async function mapRoutes(
         ?? (typeof swarmMeta.projectPath === 'string' ? swarmMeta.projectPath : undefined)
         ?? '.';
 
+      // This route always spawns a fresh agent. To reuse an existing
+      // coordinator, the UI should call /sessions/acp-connect directly
+      // against that coordinator's hub agent id (the per-coordinator
+      // "Chat" button does this). Spawn = "spawn", connect = "reuse".
+
       try {
         const result = await mapClient.callExtension('_macro/spawnAgent', {
           role,

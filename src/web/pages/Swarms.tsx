@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Zap, Square, RotateCw, ChevronDown, ChevronUp, Plus, X, Cpu,
-  Link2, Globe, Wifi, WifiOff, Settings2, Trash2, Shield, GitBranch, Monitor,
+  Link2, Loader2, Globe, Wifi, WifiOff, Settings2, Trash2, Shield, GitBranch, Monitor,
   User, UserRoundPlus,
 } from 'lucide-react';
 import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-generator';
@@ -750,7 +750,7 @@ function HostedSwarmCard({ swarm, linkedMapSwarm }: { swarm: HostedSwarm; linked
   const canRemove = swarm.state === 'stopped' || swarm.state === 'failed';
   const isTransitioning = stopMutation.isPending || restartMutation.isPending || removeMutation.isPending;
 
-  // "New Agent Session" is surfaced on the card when the hosted swarm is
+  // "Spawn Agent" is surfaced on the card when the hosted swarm is
   // running AND the linked MAP swarm advertises ACP OR has a sidecar that
   // declares `canHostAcp` (i.e. macro-agent can spawn a coordinator on
   // demand). Same visibility predicate as SwarmDetail's SwarmActions, just
@@ -767,8 +767,18 @@ function HostedSwarmCard({ swarm, linkedMapSwarm }: { swarm: HostedSwarm; linked
     ((linkedMapSwarm?.metadata as any)?.projectPath as string | undefined) ??
     ((linkedMapSwarm?.metadata as any)?.cwd as string | undefined);
 
+  // Synchronous gate against fast double-clicks. React Query's isPending
+  // flips after the state commit, so a tight click-twice can fire two
+  // requests before the disabled attribute lands.
+  const inFlightRef = useRef(false);
+
+  // Spawn-only — does not auto-open an ACP session or navigate. The new
+  // coordinator card appears on the swarm detail page; user clicks Chat
+  // there to start a conversation.
   const handleNewAgentSession = async () => {
     if (!targetSwarmId) return;
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
       const spawned = await spawnAgent.mutateAsync({
         swarmId: targetSwarmId,
@@ -776,22 +786,14 @@ function HostedSwarmCard({ swarm, linkedMapSwarm }: { swarm: HostedSwarm; linked
         cwd: projectPath,
         task: 'Head manager',
       });
-      const result = await connectAcp.mutateAsync({
-        swarmId: targetSwarmId,
-        agentId: spawned.agent_id,
-        peerMapId: spawned.peer_map_id,
-        cwd: projectPath,
-      });
-      const params = new URLSearchParams({
-        streamId: result.acp_stream_id,
-        sessionId: result.acp_session_id,
-      });
-      navigate(`/sessions/${result.session_resource_id}?${params}`);
+      toast.success('Coordinator spawned', `${spawned.name ?? spawned.agent_id} is ready on ${swarm.name}.`);
     } catch (err) {
-      toast.error('New session failed', (err as Error).message);
+      toast.error('Spawn failed', (err as Error).message);
+    } finally {
+      inFlightRef.current = false;
     }
   };
-  const isStarting = spawnAgent.isPending || connectAcp.isPending;
+  const isStarting = spawnAgent.isPending;
 
   const handleStop = async () => {
     try {
@@ -871,12 +873,12 @@ function HostedSwarmCard({ swarm, linkedMapSwarm }: { swarm: HostedSwarm; linked
             <button
               onClick={handleNewAgentSession}
               disabled={isStarting || isTransitioning}
-              className="btn btn-ghost p-1.5 hover:bg-honey-500/10"
+              className="btn btn-ghost p-1.5 hover:bg-honey-500/10 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
               style={{ color: 'var(--color-accent)' }}
-              title="Spawn a new agent and start a session"
-              aria-label="Spawn a new agent and start a session"
+              title="Spawn a coordinator on this swarm"
+              aria-label="Spawn a coordinator on this swarm"
             >
-              {isStarting ? <LoadingSpinner size="sm" /> : <UserRoundPlus className="w-3 h-3" />}
+              {isStarting ? <Loader2 className="w-3 h-3 animate-spin" /> : <UserRoundPlus className="w-3 h-3" />}
             </button>
           )}
           {canStop && (
