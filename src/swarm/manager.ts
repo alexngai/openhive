@@ -299,6 +299,7 @@ export class SwarmManager {
         inherit_env: inheritEnv,
       },
       workspace: input.workspace,
+      bootstrap: input.bootstrap,
     };
 
     // Create DB record
@@ -507,13 +508,19 @@ export class SwarmManager {
   // ==========================================================================
 
   async restart(hostedSwarmId: string, agentId: string): Promise<HostedSwarm> {
-    const hosted = dal.findHostedSwarmById(hostedSwarmId);
-    if (!hosted) {
+    const hostedInitial = dal.findHostedSwarmById(hostedSwarmId);
+    if (!hostedInitial) {
       throw new SwarmHostingError('NOT_FOUND', 'Hosted swarm not found');
     }
-    if (hosted.spawned_by !== agentId) {
+    if (hostedInitial.spawned_by !== agentId) {
       throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
     }
+
+    // Heal orphaned swarm_id if a prior stop nulled it via the old FK cascade.
+    // Repair is idempotent — if swarm_id is already set, this is a no-op.
+    // Re-read after repair so downstream sees the healed row.
+    this.repairSwarmIdLink(hostedSwarmId, hostedInitial);
+    const hosted = dal.findHostedSwarmById(hostedSwarmId)!;
 
     const provider = this.providers.get(hosted.provider);
     if (!provider) {
@@ -831,6 +838,38 @@ export class SwarmManager {
   }
 
   /**
+   * Repair the hosted → map_swarms linkage by decoding the persisted
+   * bootstrap_token. Earlier versions of stop() deleted the map_swarms row
+   * directly, which (via FK ON DELETE SET NULL) nulled out
+   * hosted_swarms.swarm_id — losing the stable identity needed for restart
+   * and UI navigation.
+   *
+   * The bootstrap_token is base64-encoded JSON that includes the
+   * pre-registered swarm_id; it's saved on hosted.config and never mutated,
+   * so we can always recover the original id.
+   *
+   * Returns the recovered swarm_id, or null if the token is unusable or the
+   * hosted row is missing. Safe to call at any time — the restart path uses
+   * this to heal orphaned rows (and also to re-link after a clean stop +
+   * map_swarms deletion cycle).
+   */
+  private repairSwarmIdLink(hostedId: string, hosted: HostedSwarm): string | null {
+    if (hosted.swarm_id) return hosted.swarm_id;
+    const token = hosted.config?.bootstrap_token;
+    if (!token) return null;
+    try {
+      const payload = JSON.parse(Buffer.from(token, 'base64').toString('utf-8'));
+      const swarmId = typeof payload?.swarm_id === 'string' ? payload.swarm_id : null;
+      if (!swarmId) return null;
+      dal.updateHostedSwarm(hostedId, { swarm_id: swarmId });
+      console.log(`[swarm-manager] Repaired swarm_id linkage for ${hostedId} → ${swarmId}`);
+      return swarmId;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Re-provision a crashed swarm using its saved config.
    */
   private async autoRestart(hostedId: string, hosted: HostedSwarm): Promise<void> {
@@ -838,6 +877,14 @@ export class SwarmManager {
     if (!provider || !hosted.config) {
       throw new Error('Cannot auto-restart: provider or config not available');
     }
+
+    // Heal orphaned swarm_id before provisioning — the revived sidecar will
+    // register under the id encoded in its bootstrap_token, so hosted_swarms
+    // must point at that row for UI navigation + heartbeat to work. The
+    // repair writes to the DB; use the recovered id alongside the existing
+    // hosted handle rather than re-reading (to preserve the non-null
+    // narrowing on hosted.config that the guard above established).
+    const resolvedSwarmId = hosted.swarm_id ?? this.repairSwarmIdLink(hostedId, hosted);
 
     dal.updateHostedSwarm(hostedId, { state: 'starting', error: null });
 
@@ -886,10 +933,12 @@ export class SwarmManager {
     dal.updateHostedSwarm(hostedId, { state: 'running', error: null });
     this.restartCounts.delete(hostedId);
 
-    // Send heartbeat if registered in MAP hub
-    if (hosted.swarm_id) {
+    // Send heartbeat if registered in MAP hub. Use resolvedSwarmId so a
+    // freshly-repaired linkage (from the bootstrap_token) gets used on the
+    // first restart after a stop.
+    if (resolvedSwarmId) {
       try {
-        mapDal.heartbeatSwarm(hosted.swarm_id);
+        mapDal.heartbeatSwarm(resolvedSwarmId);
       } catch { /* swarm may not exist */ }
     }
 

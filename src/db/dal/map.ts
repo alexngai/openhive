@@ -322,6 +322,37 @@ export function upsertSwarmByCanonicalKey(
   return findSwarmById(id)!;
 }
 
+/**
+ * Distinct project paths recorded across all swarms (archived included so a
+ * recent project is still suggested even if the swarm went stale). Sorted by
+ * most-recently-seen first, deduped, and trimmed of empty / placeholder
+ * values like "." or "..". Used by the spawn dialog's project-directory
+ * autocomplete in the openhive UI.
+ */
+export function listKnownProjectPaths(limit: number = 50): string[] {
+  const db = getDatabase();
+  const rows = db.prepare(`
+    SELECT DISTINCT json_extract(metadata, '$.projectPath') AS p,
+           MAX(last_seen_at) AS seen
+    FROM map_swarms
+    WHERE json_extract(metadata, '$.projectPath') IS NOT NULL
+    GROUP BY p
+    ORDER BY seen DESC
+    LIMIT ?
+  `).all(limit) as Array<{ p: string | null }>;
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const row of rows) {
+    const p = (row.p ?? '').trim();
+    if (!p || p === '.' || p === '..') continue;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
 export function archiveStaleSwarms(archiveDays: number = 30): number {
   const db = getDatabase();
   const result = db.prepare(`

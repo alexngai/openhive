@@ -132,6 +132,41 @@ export class LocalProvider implements HostingProvider {
     env.OPENSWARM_BOOTSTRAP_TOKEN = config.bootstrap_token;
     env.OPENSWARM_DATA_DIR = dataDir;
 
+    // Bootstrap-coordinator pass-through. macro-agent's bootV2 reads these
+    // env vars and spawns a default coordinator when set, so the swarm is
+    // chat-ready without an explicit _macro/spawnAgent call. Going through
+    // env (not openswarm CLI args) avoids modifying openswarm's whitelisted
+    // bootConfig pass-through.
+    if (config.bootstrap?.coordinator) {
+      env.MACRO_BOOTSTRAP_COORDINATOR = 'true';
+      if (config.bootstrap.cwd) {
+        env.MACRO_BOOTSTRAP_CWD = config.bootstrap.cwd;
+      }
+    }
+
+    // Strip Claude Code's "I am running inside a Claude Code session" markers
+    // from the inherited env. The hosted swarm will launch Claude Code
+    // subprocesses (via macro-agent / claude-code-acp); the Claude Code SDK
+    // checks these markers and refuses with "Claude Code cannot be launched
+    // inside another Claude Code session" if inherited. Without stripping,
+    // any openhive instance that itself runs inside a Claude Code session
+    // (e.g. during development) cannot spawn hosted macro-agent swarms.
+    //
+    // Safe to strip unconditionally: the spawned openswarm is a new root
+    // process — it's not nested inside our Claude Code session in any
+    // meaningful sense.
+    delete env.CLAUDECODE;
+    delete env.CLAUDE_CODE_ENTRYPOINT;
+    delete env.CLAUDE_CODE_EXECPATH;
+    delete env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+
+    // Note: we intentionally do NOT isolate CLAUDE_CONFIG_DIR. Claude Code's
+    // OAuth keychain service name is derived from CLAUDE_CONFIG_DIR — setting
+    // a non-default value silently switches to a namespaced entry that doesn't
+    // exist, causing "Please run /login" / "Authentication required" even
+    // though the user is authenticated in their primary Claude Code session.
+    // Stripping CLAUDECODE* above is sufficient in practice.
+
     // Spawn as a new process group leader (detached: true) so we can
     // kill the entire tree (openswarm + its subprocesses) via -pid.
     const child = spawn(bin, args, {

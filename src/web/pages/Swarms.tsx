@@ -11,6 +11,7 @@ import {
   useHostedSwarms, useSpawnSwarm, useStopSwarm, useRestartSwarm, useRemoveSwarm,
   useMapSwarms, useConnectSwarm, useHives,
   useSpawnAgent, useConnectAcp,
+  useKnownProjectPaths,
 } from '../hooks/useApi';
 import { useSwarmRealtime } from '../hooks/useRealtimeInvalidation';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
@@ -19,7 +20,6 @@ import { TimeAgo } from '../components/common/TimeAgo';
 import { HostedStateBadge, MapStatusBadge, SandboxBadge, SectionLabel } from '../components/swarm/StatusBadges';
 import type { HostedSwarm, MapSwarm, MapRegisteredAgent } from '../lib/api';
 import { getPeerMapId } from '../lib/map';
-import clsx from 'clsx';
 
 const PROVIDERS = [
   { value: 'local',            label: 'Local',           desc: 'Sidecar process on this machine' },
@@ -106,6 +106,12 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   const [adapterConfigRaw, setAdapterConfigRaw] = useState('');
   const [metadataRaw, setMetadataRaw] = useState('');
   const [workspaceRepos, setWorkspaceRepos] = useState<WorkspaceRepoEntry[]>([]);
+  // Boot-time agent provisioning (opt-in). When `bootstrapCoordinator` is
+  // true, openhive sets MACRO_BOOTSTRAP_COORDINATOR + MACRO_BOOTSTRAP_CWD on
+  // the spawned openswarm process so macro-agent's bootV2 fires a default
+  // coordinator at `projectDirectory` — no separate _macro/spawnAgent call.
+  const [projectDirectory, setProjectDirectory] = useState('');
+  const [bootstrapCoordinator, setBootstrapCoordinator] = useState(false);
 
   const isSandboxed = provider === 'local-sandboxed';
 
@@ -117,8 +123,10 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSandboxed]);
 
+
   const spawnMutation = useSpawnSwarm();
   const { data: hives } = useHives({ sort: 'popular', limit: 50 });
+  const { data: knownProjectPaths } = useKnownProjectPaths();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -159,6 +167,14 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
         return repo;
       });
 
+    const trimmedProjectDir = projectDirectory.trim();
+    const bootstrap = bootstrapCoordinator
+      ? {
+          coordinator: true as const,
+          ...(trimmedProjectDir ? { cwd: trimmedProjectDir } : {}),
+        }
+      : undefined;
+
     try {
       await spawnMutation.mutateAsync({
         name,
@@ -169,6 +185,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
         adapter_config,
         metadata,
         workspace: validRepos.length > 0 ? { repos: validRepos } : undefined,
+        bootstrap,
       });
       toast.success('Swarm spawned', `"${name}" is starting up.`);
       onClose();
@@ -281,6 +298,55 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               ))}
             </select>
           </div>
+        </div>
+
+        {/* Project directory + auto-spawn coordinator */}
+        <div className="space-y-2">
+          <div>
+            <SectionLabel>Project directory</SectionLabel>
+            <input
+              type="text"
+              value={projectDirectory}
+              onChange={(e) => setProjectDirectory(e.target.value)}
+              className="input w-full font-mono text-2xs"
+              placeholder="/path/to/your/project (optional)"
+              list="known-project-paths"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {/* Suggest paths previously used by other swarms / hosted bootstraps. */}
+            {knownProjectPaths && knownProjectPaths.length > 0 && (
+              <datalist id="known-project-paths">
+                {knownProjectPaths.map((p) => (
+                  <option key={p} value={p} />
+                ))}
+              </datalist>
+            )}
+            <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+              Optional. If set, the auto-spawned coordinator runs from this cwd; otherwise it falls back to the swarm's data directory.
+              {knownProjectPaths && knownProjectPaths.length > 0 && (
+                <> {' '}<span style={{ opacity: 0.7 }}>({knownProjectPaths.length} known {knownProjectPaths.length === 1 ? 'path' : 'paths'} — start typing to autocomplete)</span></>
+              )}
+            </p>
+          </div>
+          <label className="flex items-start gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={bootstrapCoordinator}
+              onChange={(e) => setBootstrapCoordinator(e.target.checked)}
+              className="mt-0.5 cursor-pointer"
+            />
+            <div className="text-2xs">
+              <span style={{ color: 'var(--color-text)' }}>Auto-spawn a coordinator on startup</span>
+              <p style={{ color: 'var(--color-text-muted)' }}>
+                Spawns a default head-manager coordinator on boot so the swarm is chat-ready
+                without an explicit Spawn Agent click. Uses the project directory above if set,
+                else the swarm's data directory. Runs with{' '}
+                <code className="px-1 rounded" style={{ backgroundColor: 'var(--color-elevated)' }}>auto-approve</code>{' '}
+                permission mode (tools execute without prompts).
+              </p>
+            </div>
+          </label>
         </div>
 
         {/* Workspace (Git Repos) */}

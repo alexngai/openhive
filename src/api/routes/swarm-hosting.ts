@@ -19,6 +19,7 @@ import { z } from 'zod';
 import { authMiddleware } from '../middleware/auth.js';
 import { SwarmHostingError } from '../../swarm/manager.js';
 import * as dal from '../../swarm/dal.js';
+import * as mapDal from '../../db/dal/map.js';
 import type { SwarmManager } from '../../swarm/manager.js';
 import type { Config } from '../../config.js';
 
@@ -37,6 +38,11 @@ const WorkspaceSchema = z.object({
   repos: z.array(WorkspaceRepoSchema).min(1).max(10),
 });
 
+const BootstrapSchema = z.object({
+  coordinator: z.boolean().optional(),
+  cwd: z.string().max(2000).optional(),
+});
+
 const SpawnSwarmSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
@@ -47,6 +53,7 @@ const SpawnSwarmSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
   credential_overrides: z.record(z.string(), z.string()).optional(),
   workspace: WorkspaceSchema.optional(),
+  bootstrap: BootstrapSchema.optional(),
 });
 
 // ============================================================================
@@ -127,6 +134,30 @@ export async function swarmHostingRoutes(
     }
   });
 
+  // GET /map/known-project-paths — Distinct project paths recorded across
+  // swarms (metadata.projectPath) and hosted-swarm bootstrap configs
+  // (config.bootstrap.cwd). Used by the Spawn Swarm dialog's project
+  // directory autocomplete so users can pick a previously-used path.
+  // Cheap lookup; no auth required beyond the standard middleware.
+  fastify.get('/map/known-project-paths', {
+    preHandler: [authMiddleware],
+  }, async (_request, reply) => {
+    const fromSwarms = mapDal.listKnownProjectPaths(50);
+    const fromHosted = dal.listKnownBootstrapCwds(50);
+    // Dedupe + cap. Hosted bootstrap entries typically reflect more recent
+    // user intent (the user explicitly typed the path), so they win order
+    // ties when iteration order matters for "first match" UX.
+    const seen = new Set<string>();
+    const paths: string[] = [];
+    for (const p of [...fromHosted, ...fromSwarms]) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      paths.push(p);
+      if (paths.length >= 50) break;
+    }
+    return reply.send({ paths });
+  });
+
   // GET /map/hosted — List hosted swarms
   fastify.get<{
     Querystring: {
@@ -202,6 +233,19 @@ export async function swarmHostingRoutes(
       const manager = getManager(request);
       const hosted = await manager.stop(request.params.id, request.agent!.id);
 
+      // SwarmCraft's outbound MAP client to this swarm's MAP server still holds
+      // a now-dead WebSocket (the openswarm process just exited). Without
+      // explicit disconnect, a subsequent spawn against this swarm (after
+      // restart or a fresh spawn reusing the same swarm_id) would try to use
+      // the stale client and fail with "Connection closed". Force disconnect
+      // so the next connect opens a fresh client.
+      if (hosted.swarm_id) {
+        const sc = (fastify as any).swarmcraft;
+        try {
+          await sc?.mapClientManager?.disconnect?.(hosted.swarm_id);
+        } catch { /* best-effort */ }
+      }
+
       return reply.send({
         id: hosted.id,
         state: hosted.state,
@@ -218,7 +262,41 @@ export async function swarmHostingRoutes(
   }, async (request, reply) => {
     try {
       const manager = getManager(request);
+
+      // Drop any stale MAP client BEFORE re-provisioning. restart() may be a
+      // hot bounce (same process) or a cold-start (process recreated); in
+      // either case, the old client's socket may be dead. Disconnect first,
+      // then let swarmcraft's bridge auto-connect on the spawned event.
+      const existing = dal.findHostedSwarmById(request.params.id);
+      if (existing?.swarm_id) {
+        const sc = (fastify as any).swarmcraft;
+        try {
+          await sc?.mapClientManager?.disconnect?.(existing.swarm_id);
+        } catch { /* best-effort */ }
+      }
+
       const hosted = await manager.restart(request.params.id, request.agent!.id);
+
+      // Trigger swarmcraft to reconnect its outbound MAP client. Its bridge
+      // only auto-connects on swarm_registered (first-time registration), not
+      // on restart of an existing swarm — so without this, post-restart spawn
+      // calls would 503 ("MAP client not connected"). Use the same URL shape
+      // the bridge uses (port+2 + /map path).
+      if (hosted.swarm_id && hosted.endpoint) {
+        const sc = (fastify as any).swarmcraft;
+        try {
+          const basePort = parseInt(new URL(hosted.endpoint).port, 10);
+          if (Number.isFinite(basePort) && sc?.mapClientManager?.connect) {
+            await sc.mapClientManager.connect({
+              id: hosted.swarm_id,
+              name: hosted.config?.name ?? hosted.id,
+              url: `ws://127.0.0.1:${basePort + 2}/map`,
+              auth: { method: 'none' },
+              skipSubscription: true,
+            });
+          }
+        } catch { /* best-effort; next action will surface the error */ }
+      }
 
       return reply.send({
         id: hosted.id,

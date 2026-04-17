@@ -255,6 +255,47 @@ describe('SwarmManager', () => {
       }
     });
 
+    it('preserves bootstrap config across cold restart', async () => {
+      // bootstrap.coordinator + bootstrap.cwd live on the persisted hosted
+      // swarm row's `config` JSON. After stop+restart (cold path), the
+      // re-provision must read them back so the env-var bridge fires
+      // again and the auto-coordinator spawns. Without this, an
+      // auto-spawn-on-startup setting would silently de-activate after
+      // the first stop/restart cycle.
+      const config = createTestConfig();
+      const manager = new SwarmManager(config, 'http://localhost:3000');
+
+      try {
+        const hosted = await manager.spawn(agentId, {
+          name: 'bootstrap-restart-test',
+          bootstrap: { coordinator: true, cwd: '/some/project' },
+        });
+        expect(hosted.state).toBe('running');
+
+        // Verify bootstrap was persisted in the DB row.
+        const persisted = swarmDAL.findHostedSwarmById(hosted.id);
+        expect(persisted?.config?.bootstrap).toEqual({
+          coordinator: true,
+          cwd: '/some/project',
+        });
+
+        await manager.stop(hosted.id, agentId);
+
+        const revived = await manager.restart(hosted.id, agentId);
+        expect(revived.state).toBe('running');
+
+        // Bootstrap field survives the round trip — the re-provisioned
+        // openswarm process gets the same env vars exported.
+        const afterRestart = swarmDAL.findHostedSwarmById(hosted.id);
+        expect(afterRestart?.config?.bootstrap).toEqual({
+          coordinator: true,
+          cwd: '/some/project',
+        });
+      } finally {
+        await manager.shutdown();
+      }
+    }, 60000);
+
     it('cold-starts a stopped swarm by re-provisioning from persisted config', async () => {
       // This exercises the path where stop() has cleared the in-memory instance
       // tracking, so provider.restart() is unavailable. restart() must fall

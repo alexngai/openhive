@@ -389,6 +389,20 @@ export function useHostedSwarms(options?: { state?: string; mine?: boolean }) {
   });
 }
 
+/**
+ * Distinct project paths recorded across registered swarms (metadata.projectPath)
+ * and hosted swarm bootstrap configs (config.bootstrap.cwd). Used by the
+ * Spawn Swarm dialog's project-directory autocomplete.
+ */
+export function useKnownProjectPaths() {
+  return useQuery({
+    queryKey: ["known-project-paths"],
+    queryFn: () => api.get<{ paths: string[] }>("/map/known-project-paths"),
+    select: (data) => data.paths,
+    staleTime: 60_000,
+  });
+}
+
 export function useSpawnSwarm() {
   const queryClient = useQueryClient();
 
@@ -408,6 +422,10 @@ export function useSpawnSwarm() {
           path?: string;
           depth?: number;
         }>;
+      };
+      bootstrap?: {
+        coordinator?: boolean;
+        cwd?: string;
       };
     }) => api.post<HostedSwarm>("/map/hosted/spawn", data),
     onSuccess: () => {

@@ -28,8 +28,8 @@ function createTestConfig(): Config {
       default_provider: 'local',
       openswarm_command: `node ${SLEEP_SCRIPT}`,
       data_dir: TEST_DATA_DIR,
-      port_range: [19200, 19210],
-      max_swarms: 5,
+      port_range: [19200, 19230],
+      max_swarms: 15,
       health_check_interval: 100000,
       max_health_failures: 3,
     },
@@ -193,6 +193,102 @@ describe('Swarm Hosting API Routes', () => {
       });
 
       expect(response.statusCode).toBe(422);
+    });
+
+    it('should accept bootstrap.coordinator + bootstrap.cwd', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/map/hosted/spawn',
+        headers: {
+          authorization: `Bearer ${testAgent.apiKey}`,
+          'content-type': 'application/json',
+        },
+        payload: {
+          name: 'bootstrap-spawn',
+          bootstrap: { coordinator: true, cwd: '/some/project/path' },
+        },
+      });
+
+      // 201 means schema validation passed and the manager accepted it.
+      // The hosted swarm row carries the bootstrap config; the env-var
+      // bridge propagation is covered by local-provider.test.ts.
+      expect(response.statusCode).toBe(201);
+    }, 35000);
+
+    it('GET /map/known-project-paths returns aggregated paths', async () => {
+      // Spawn a swarm with bootstrap.cwd to populate the hosted-swarm side
+      // of the aggregation.
+      await app.inject({
+        method: 'POST',
+        url: '/api/v1/map/hosted/spawn',
+        headers: {
+          authorization: `Bearer ${testAgent.apiKey}`,
+          'content-type': 'application/json',
+        },
+        payload: {
+          name: 'known-paths-test',
+          bootstrap: { coordinator: true, cwd: '/users/test/project-foo' },
+        },
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/map/known-project-paths',
+        headers: { authorization: `Bearer ${testAgent.apiKey}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(Array.isArray(body.paths)).toBe(true);
+      expect(body.paths).toContain('/users/test/project-foo');
+    }, 35000);
+
+    it('GET /map/known-project-paths dedupes empty / placeholder values', async () => {
+      // Spawn with cwd "." should NOT show up as a known path — it's a
+      // useless placeholder that breaks autocomplete UX.
+      await app.inject({
+        method: 'POST',
+        url: '/api/v1/map/hosted/spawn',
+        headers: {
+          authorization: `Bearer ${testAgent.apiKey}`,
+          'content-type': 'application/json',
+        },
+        payload: {
+          name: 'placeholder-cwd-test',
+          bootstrap: { coordinator: true, cwd: '.' },
+        },
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/map/known-project-paths',
+        headers: { authorization: `Bearer ${testAgent.apiKey}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.paths).not.toContain('.');
+      expect(body.paths).not.toContain('');
+    }, 35000);
+
+    it('should reject malformed bootstrap field', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/map/hosted/spawn',
+        headers: {
+          authorization: `Bearer ${testAgent.apiKey}`,
+          'content-type': 'application/json',
+        },
+        payload: {
+          name: 'bad-bootstrap',
+          // coordinator must be a boolean, not a string
+          bootstrap: { coordinator: 'yes' },
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      const body = JSON.parse(response.body);
+      expect(body.error).toBe('VALIDATION_ERROR');
     });
   });
 

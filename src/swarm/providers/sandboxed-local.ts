@@ -212,6 +212,28 @@ export class SandboxedLocalProvider implements HostingProvider {
     env.OPENSWARM_BOOTSTRAP_TOKEN = config.bootstrap_token;
     env.OPENSWARM_DATA_DIR = dataDir;
 
+    // Bootstrap-coordinator pass-through (see LocalProvider for rationale)
+    if (config.bootstrap?.coordinator) {
+      env.MACRO_BOOTSTRAP_COORDINATOR = 'true';
+      if (config.bootstrap.cwd) {
+        env.MACRO_BOOTSTRAP_CWD = config.bootstrap.cwd;
+      }
+    }
+
+    // Strip Claude Code nested-session markers — see LocalProvider.provision
+    // for rationale. A hosted swarm spawning Claude Code subprocesses would
+    // otherwise fail with "Claude Code cannot be launched inside another
+    // Claude Code session" when openhive itself runs under a parent Claude
+    // Code session.
+    delete env.CLAUDECODE;
+    delete env.CLAUDE_CODE_ENTRYPOINT;
+    delete env.CLAUDE_CODE_EXECPATH;
+    delete env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+
+    // Do NOT isolate CLAUDE_CONFIG_DIR — see LocalProvider.provision for
+    // the rationale (OAuth keychain service name is namespaced by the path,
+    // breaking auth on isolation).
+
     // Merge sandbox policy: per-spawn overrides > default policy
     const effectivePolicy = sandboxPolicy ?? this.defaultPolicy;
 

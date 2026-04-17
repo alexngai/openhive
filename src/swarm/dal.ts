@@ -201,6 +201,34 @@ export function deleteHostedSwarm(id: string): boolean {
   return result.changes > 0;
 }
 
+/**
+ * Distinct bootstrap.cwd values across all hosted swarms (any state — even
+ * stopped/failed entries are useful for "spawn another swarm with the same
+ * project setup"). Ordered most-recently-created first.
+ */
+export function listKnownBootstrapCwds(limit: number = 50): string[] {
+  const db = getDatabase();
+  const rows = db.prepare(`
+    SELECT json_extract(config, '$.bootstrap.cwd') AS cwd, MAX(created_at) AS created
+    FROM hosted_swarms
+    WHERE json_extract(config, '$.bootstrap.cwd') IS NOT NULL
+    GROUP BY cwd
+    ORDER BY created DESC
+    LIMIT ?
+  `).all(limit) as Array<{ cwd: string | null }>;
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const row of rows) {
+    const c = (row.cwd ?? '').trim();
+    if (!c || c === '.' || c === '..') continue;
+    if (seen.has(c)) continue;
+    seen.add(c);
+    out.push(c);
+  }
+  return out;
+}
+
 /** Get all hosted swarms in active states (for recovery on startup) */
 export function getActiveHostedSwarms(): HostedSwarm[] {
   const db = getDatabase();

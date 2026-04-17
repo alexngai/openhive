@@ -348,7 +348,31 @@ export async function mapRoutes(
   // agent id to start a chat session.
   fastify.post<{
     Params: { id: string };
-    Body?: { role?: string; cwd?: string; task?: string };
+    Body?: {
+      role?: string;
+      cwd?: string;
+      task?: string;
+      // Forwarded to macro-agent's _macro/spawnAgent. No UI binding yet —
+      // accepted on the wire so programmatic callers (CLI, swarm-dispatch,
+      // future per-agent UI) can override the runtime defaults.
+      permissionMode?: 'auto-approve' | 'auto-deny' | 'callback' | 'interactive';
+      agentType?: string;
+      customPrompt?: string;
+      topics?: string[];
+      config?: {
+        model?: string;
+        maxTokens?: number;
+        temperature?: number;
+        env?: Record<string, string>;
+        mcpServers?: Array<{
+          name: string;
+          command: string;
+          args?: string[];
+          env?: Record<string, string>;
+        }>;
+      };
+      taskRef?: { resource_id: string; node_id: string };
+    };
   }>(
     '/map/swarms/:id/agents',
     { preHandler: [authMiddleware] },
@@ -388,6 +412,12 @@ export async function mapRoutes(
           role,
           task,
           cwd,
+          permissionMode: request.body?.permissionMode,
+          agentType: request.body?.agentType,
+          customPrompt: request.body?.customPrompt,
+          topics: request.body?.topics,
+          config: request.body?.config,
+          taskRef: request.body?.taskRef,
         }) as { agent?: { id?: string; name?: string; localId?: string } };
         // `agent.id` from macro-agent is the swarm-side MAP server ULID
         // (peerMapId — the ACP target). `agent.localId` is macro-agent's
