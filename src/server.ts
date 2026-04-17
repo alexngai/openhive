@@ -1260,3 +1260,4 @@ function getInlineAdminHtml(config: Config): string {
 </body>
 </html>`;
 }
+

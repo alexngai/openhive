@@ -10,6 +10,38 @@ import { api } from '../../lib/api';
 
 export type ChatFabMode = 'floating' | 'docked';
 
+const MODE_STORAGE_KEY = 'chat-fab-mode';
+const OPEN_STORAGE_KEY = 'chat-fab-open';
+
+function loadMode(): ChatFabMode {
+  try {
+    const stored = localStorage.getItem(MODE_STORAGE_KEY);
+    return stored === 'docked' || stored === 'floating' ? stored : 'floating';
+  } catch {
+    return 'floating';
+  }
+}
+
+function saveMode(mode: ChatFabMode) {
+  try {
+    localStorage.setItem(MODE_STORAGE_KEY, mode);
+  } catch { /* ignore */ }
+}
+
+function loadOpen(): boolean {
+  try {
+    return localStorage.getItem(OPEN_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function saveOpen(open: boolean) {
+  try {
+    localStorage.setItem(OPEN_STORAGE_KEY, String(open));
+  } catch { /* ignore */ }
+}
+
 /**
  * Resume descriptor for the active ACP session. Stored alongside the
  * session id so re-mounts of ChatPanel (e.g. when the user toggles
@@ -62,17 +94,25 @@ export interface ChatFabState {
 }
 
 export const useChatFabStore = create<ChatFabState>((set) => ({
-  open: false,
+  open: loadOpen(),
   sessionId: null,
   swarmId: null,
   sessionLabel: null,
   resume: null,
-  mode: 'floating',
+  mode: loadMode(),
   connecting: false,
   connectError: null,
 
-  toggle: () => set((s) => ({ open: !s.open })),
-  collapse: () => set({ open: false }),
+  toggle: () =>
+    set((s) => {
+      const next = !s.open;
+      saveOpen(next);
+      return { open: next };
+    }),
+  collapse: () => {
+    saveOpen(false);
+    set({ open: false });
+  },
 
   setSession: (sessionId, swarmId, label, resume) =>
     set({
@@ -92,10 +132,19 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
       connectError: null,
     }),
 
-  setMode: (mode) => set({ mode }),
-  toggleMode: () => set((s) => ({ mode: s.mode === 'floating' ? 'docked' : 'floating' })),
+  setMode: (mode) => {
+    saveMode(mode);
+    set({ mode });
+  },
+  toggleMode: () =>
+    set((s) => {
+      const next: ChatFabMode = s.mode === 'floating' ? 'docked' : 'floating';
+      saveMode(next);
+      return { mode: next };
+    }),
 
   connectAndOpen: async (swarmId, agentId, label) => {
+    saveOpen(true);
     set({ connecting: true, connectError: null, open: true });
     try {
       const result = await api.post<{
