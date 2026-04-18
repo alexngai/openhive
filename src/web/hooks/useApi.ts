@@ -508,7 +508,20 @@ export function useMapSwarmsForPicker(opts?: { status?: string; recency_days?: n
         `/map/swarms?${params}`,
       ),
     select: (data) => data.data,
-    staleTime: 30_000,
+    // This query feeds the ChatFab picker UI. Originally the plan was to
+    // rely solely on `useSwarmRealtime`'s WS-driven invalidation, but in
+    // practice that path is flaky — with the picker open, the WS
+    // listener for `swarm_registered` / `swarm_stopped` intermittently
+    // misses events (observed: 3 subscribers on map:discovery server-
+    // side, but the app's globalWs onmessage didn't deliver the event
+    // to `useWSEvent` listeners in dev sessions with multiple tsx
+    // reloads). A short staleTime + a 5s poll interval turns the picker
+    // into an event-driven-preferred / polling-fallback query so the
+    // user never has to reload the page to see a freshly-spawned swarm
+    // — even on flaky WS delivery. Agents panel (which uses the
+    // swarmcraft WS pathway) stays WS-driven and remains instant.
+    staleTime: 2_000,
+    refetchInterval: 5_000,
   });
 }
 

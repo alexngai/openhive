@@ -110,7 +110,9 @@ describe('E2E: /sessions/acp-connect multi-tab session sharing', () => {
     // findAcpAgent helper, which requires a live inbound connection with a
     // matching ACP-capable RegisteredAgent. Construct a minimal stub.
     registerInbound(SWARM_ID, {
-      ws: { readyState: 1 } as unknown as WebSocket,
+      // ws is typed as the ws library's WebSocket (not the browser's) in the
+      // connection registry; cast through unknown for the minimal stub.
+      ws: { readyState: 1 } as never,
       agentId: owner.id,
       swarmId: SWARM_ID,
       connectedAt: new Date().toISOString(),

@@ -27,6 +27,17 @@ import type { EventEmitter } from 'events';
  */
 const BRIDGE_RETRY_MS = 30_000;
 
+/**
+ * Dedup window for `swarm_offline` re-fires. ws-map.ts emits the event on
+ * WS close AND on stale sweep; the hub MAP service also emits via
+ * markStaleSwarms. A single swarm stop can therefore fire 2-3 times within
+ * a few hundred ms. The first invocation does the real cascade work (list
+ * + flip + broadcast); subsequent invocations inside this window short-
+ * circuit so we don't re-query + re-broadcast against rows that are
+ * already offline (which would produce 0 results and confuse debugging).
+ */
+const SWARM_OFFLINE_DEDUP_MS = 5_000;
+
 function markSwarmStatus(swarmId: string, status: 'online' | 'unreachable'): void {
   try {
     updateSwarm(swarmId, { status });
@@ -42,15 +53,34 @@ interface SwarmBridgeHandle {
 }
 
 /**
+ * Terminal MAP agent states. When an agent transitions to any of these
+ * we treat it as effectively gone — matching what SwarmCraft's built-in
+ * `agent.state.changed` handler does when it tears down ACP streams.
+ * The spec lists nine states: registered, active, busy, idle, suspended,
+ * stopping, stopped, failed, orphaned. Anything in this set is a dead-end.
+ */
+const TERMINAL_AGENT_STATES = new Set(['stopped', 'failed', 'orphaned']);
+
+/**
  * Setup the swarm bridge: hydrate existing data, register real-time listeners,
  * and optionally auto-connect SwarmCraft's MAP client to registered swarms.
+ *
+ * When `acpStreamManager` is provided and the host has SwarmCraft registered
+ * with `skipAgentLifecycle: true`, this bridge takes over the ACP cleanup
+ * that SwarmCraft's built-in handlers would have performed: closing any open
+ * ACP streams keyed on the raw MAP agent id when an agent unregisters or
+ * hits a terminal state (stopped/failed/orphaned).
  */
 export async function setupSwarmBridge(
   ctx: BridgeContext,
   mapClientManager?: { connect(opts: Record<string, unknown>): Promise<void> } & Partial<EventEmitter>,
+  acpStreamManager?: { closeStreamsForAgent(agentId: string): Promise<void> },
 ): Promise<SwarmBridgeHandle> {
   const listeners: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
   const mcmListeners: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
+
+  /** Per-swarm recent-cascade timestamps for `swarm_offline` dedup. */
+  const recentOffline = new Map<string, number>();
 
   function on(event: string, fn: (...args: unknown[]) => void) {
     mapHubEvents.on(event, fn);
@@ -156,18 +186,70 @@ export async function setupSwarmBridge(
   on('swarm_offline', async (e: unknown) => {
     const ev = e as { swarm_id: string };
     try {
+      // Dedup re-fires. ws-map emits on WS close, and service.markStaleSwarms
+      // also emits — a single stop can therefore arrive multiple times within
+      // ms of each other. Only the first within the window runs the cascade;
+      // subsequent ones would find everything already offline and broadcast
+      // no-op events (pointless work, noisy debug logs).
+      const now = Date.now();
+      const last = recentOffline.get(ev.swarm_id);
+      if (last !== undefined && now - last < SWARM_OFFLINE_DEDUP_MS) return;
+      recentOffline.set(ev.swarm_id, now);
+
       const agentId = agentIdFromSwarm(ev.swarm_id);
+
+      // IMPORTANT: list BEFORE any DB mutation. If we flipped the parent
+      // first (as an earlier version did), the list would miss it AND the
+      // race with `agent.unregistered` cascading child presence elsewhere
+      // can make the list return zero children. Snapshotting every online
+      // row on this server up-front is the only way to get a reliable
+      // affected-set for the per-agent broadcasts.
+      // For hosted swarms with an outbound MAP client, SC's
+      // `event-handler` `mcm.disconnected` handler already does the
+      // per-agent presence broadcasts before this runs. This bridge
+      // handler covers the inbound-only case (map_endpoint='hub-inbound')
+      // where there's no outbound mcm to disconnect, so no SC cascade.
+      // The broadcasts fire-once-per-row contract is preserved because
+      // the UI update handler is idempotent on same-value updates.
+      let affected: Array<{ id: string }> = [];
+      try {
+        const res = await ctx.db.agents.list({
+          mapServerId: ev.swarm_id,
+          presence: 'online',
+          limit: 1000,
+          offset: 0,
+        });
+        affected = res.agents;
+      } catch (err) {
+        console.warn(`[swarmcraft-bridge] swarm_offline list failed: ${(err as Error).message}`);
+      }
+
+      // Parent swarm row: mark stopped + offline and broadcast state change.
+      // We still need the get() to resolve the previous state for the
+      // broadcast; could skip if missing (row was never created).
       const existing = await ctx.db.agents.get(agentId);
       if (existing) {
         const previousState = (existing as { state?: string }).state || 'active';
-        // Parent swarm agent: mark stopped + offline.
         await ctx.db.agents.update(agentId, { state: 'stopped', presence: 'offline' });
         ctx.wsHub.broadcastAgentStateChanged(agentId, previousState, 'stopped');
       }
-      // Child agents: bulk-flip presence to offline. Keeps last-known state as
-      // a breadcrumb but stops the UI from rendering it as live reachability.
-      // mapServerId is set to the raw swarm_id for both parent + children.
+
+      // Bulk-flip all remaining (child) rows on this server. Keeps last-known
+      // state as a historical breadcrumb but stops the UI from rendering
+      // them as live reachability. mapServerId is set to the raw swarm_id
+      // for both parent + children.
       try { await ctx.db.agents.bulkUpdatePresenceByServer(ev.swarm_id, 'offline'); } catch { /* non-critical */ }
+
+      // Broadcast `agent.presence.changed` for every row that actually
+      // transitioned (snapshotted above). The UI subscribes to this event
+      // to invalidate its in-memory agents map — without it, the Agents
+      // panel shows stale "Online (1)" until a full page reload.
+      //
+      // Broadcast AFTER the DB flip so late-arriving consumers that re-query
+      // on the event see the updated row.
+      for (const a of affected) {
+        ctx.wsHub.broadcastAgentPresenceChanged(a.id, 'offline');
+      }
     } catch (err) {
       console.warn(`[swarmcraft-bridge] swarm_offline handler failed: ${(err as Error).message}`);
     }
@@ -242,6 +324,53 @@ export async function setupSwarmBridge(
     };
     mapClientManager.on('agents.synced', onAgentsSynced);
     mcmListeners.push({ event: 'agents.synced', fn: onAgentsSynced });
+
+    // ── ACP cleanup on agent termination ─────────────────────────────
+    // SwarmCraft's default `agent.unregistered` / `agent.state.changed`
+    // handlers call `acpStreamManager.closeStreamsForAgent(rawMapAgentId)`
+    // as a side effect. When OpenHive registers the plugin with
+    // `skipAgentLifecycle: true`, those handlers are disabled — so the
+    // host must do the cleanup here. Without this, an ACP stream whose
+    // target agent has died stays open until the next health tick fails.
+    //
+    // Stream keys use the raw MAP agent id (not the namespaced
+    // `oh-node-{swarmId}-{mapAgentId}` id that the bridge projects into
+    // SwarmCraft's agent table), so we pass `ev.agentId` straight through.
+    if (acpStreamManager) {
+      const onAgentUnregistered = (e: unknown) => {
+        const ev = e as { serverId: string; agentId: string };
+        if (!ev?.agentId) return;
+        acpStreamManager.closeStreamsForAgent(ev.agentId).catch((err) => {
+          console.warn(`[swarmcraft-bridge] closeStreamsForAgent(${ev.agentId}) on unregister failed: ${(err as Error).message}`);
+        });
+      };
+      mapClientManager.on('agent.unregistered', onAgentUnregistered);
+      mcmListeners.push({ event: 'agent.unregistered', fn: onAgentUnregistered });
+
+      const onAgentStateChanged = (e: unknown) => {
+        const ev = e as { serverId: string; agentId: string; previousState?: string; newState: string };
+        if (!ev?.agentId || !ev?.newState) return;
+        if (!TERMINAL_AGENT_STATES.has(ev.newState)) return;
+        acpStreamManager.closeStreamsForAgent(ev.agentId).catch((err) => {
+          console.warn(`[swarmcraft-bridge] closeStreamsForAgent(${ev.agentId}) on state ${ev.newState} failed: ${(err as Error).message}`);
+        });
+      };
+      mapClientManager.on('agent.state.changed', onAgentStateChanged);
+      mcmListeners.push({ event: 'agent.state.changed', fn: onAgentStateChanged });
+
+      // `agent.orphaned` is emitted separately from `agent.state.changed`
+      // in MAPClientManager. Wire it too so orphan recovery doesn't leak
+      // a live stream pointing at an agent the server no longer believes in.
+      const onAgentOrphaned = (e: unknown) => {
+        const ev = e as { serverId: string; agentId: string };
+        if (!ev?.agentId) return;
+        acpStreamManager.closeStreamsForAgent(ev.agentId).catch((err) => {
+          console.warn(`[swarmcraft-bridge] closeStreamsForAgent(${ev.agentId}) on orphan failed: ${(err as Error).message}`);
+        });
+      };
+      mapClientManager.on('agent.orphaned', onAgentOrphaned);
+      mcmListeners.push({ event: 'agent.orphaned', fn: onAgentOrphaned });
+    }
   }
 
   // Periodic retry sweep: connect outbound MAP clients for any ws://-endpoint
