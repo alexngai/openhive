@@ -97,6 +97,22 @@ const QuerySessionsSchema = z.object({
 });
 
 // ============================================================================
+// ACP connect race coordination (Option 1B — multi-tab session sharing)
+// ============================================================================
+// Per-(owner, swarm, acpAgent) in-flight Promise cache. Concurrent
+// /sessions/acp-connect calls for the same triplet share the same
+// lookup-then-create promise so two tabs hitting connect simultaneously
+// don't both call createStream and end up with separate sessions.
+// Cleared once the promise settles. Module-level singleton.
+type AcpConnectResult = {
+  session_resource_id: string;
+  acp_session_id: string;
+  acp_stream_id: string;
+  created: boolean;
+};
+const inflightAcpConnects = new Map<string, Promise<AcpConnectResult>>();
+
+// ============================================================================
 // Local Sessionlog Transcript Lookup
 // ============================================================================
 
@@ -1482,86 +1498,120 @@ export async function sessionsRoutes(
       }
 
       try {
-        // 1. Create ACP stream. acp-manager already closes any prior stream
-        //    targeting the same agent on the same server (per-target dedup).
-        //    Do NOT proactively close streams targeting OTHER agents on this
-        //    swarm — that breaks any session the user is actively viewing
-        //    against those agents (clicking Chat on coordinator B would kill
-        //    coordinator A's open session, surfacing as "ACP stream closed"
-        //    when the user revisits A's session URL).
-        const stream = await sc.acpStreamManager.createStream(swarm_id, acpAgent);
+        // ── Multi-tab session sharing (Option 1B) ─────────────────────────
+        // Before doing the (expensive) createStream + newSession dance, see
+        // if this user already has a live ACP session targeting this exact
+        // (swarm, acpAgent) pair. If yes, return the existing IDs so a
+        // second/third tab attaches to the *same* ACP session and sees the
+        // *same* live conversation via the existing WS event fan-out.
+        //
+        // The acpStreamManager keeps streams in-memory only; if the hub
+        // restarted since the resource was persisted, the streamId is gone
+        // and we must fall through to recreate. The `streams.has(...)` check
+        // catches that.
+        //
+        // The per-(owner, swarm, acpAgent) in-flight mutex below makes the
+        // lookup-then-create critical section atomic: if two tabs POST
+        // simultaneously, only the first runs the create; the second
+        // piggybacks on the same promise.
+        const inflightKey = `${request.agent!.id}:${swarm_id}:${acpAgent}`;
+        let inflight = inflightAcpConnects.get(inflightKey);
+        if (!inflight) {
+          inflight = (async () => {
+            const existing = resourcesDAL.findLiveAcpSession({
+              ownerAgentId: request.agent!.id,
+              swarmId: swarm_id,
+              acpTargetAgentId: acpAgent,
+            });
+            const existingStreamId = existing?.metadata?.acpStreamId as string | undefined;
+            const existingSessionId = existing?.metadata?.sessionId as string | undefined;
+            const streamLive = existingStreamId
+              ? sc.acpStreamManager.streams?.has(existingStreamId) ?? false
+              : false;
+            if (existing && existingStreamId && existingSessionId && streamLive) {
+              return {
+                session_resource_id: existing.id,
+                acp_session_id: existingSessionId,
+                acp_stream_id: existingStreamId,
+                created: false,
+              };
+            }
 
-        // 2. Initialize
-        await sc.acpStreamManager.initialize(stream.streamId);
+            // Stream-or-session is dead → create fresh. acp-manager's
+            // per-target dedup still closes orphans of the same target,
+            // which is fine here because there's no live session to share.
+            const stream = await sc.acpStreamManager.createStream(swarm_id, acpAgent);
+            await sc.acpStreamManager.initialize(stream.streamId);
 
-        // 3. Create ACP session (this spawns the agent inside macro-agent
-        //    via getOrCreateHeadManager). Reuse the same cwd as the spawn
-        //    above so getOrCreateHeadManager finds the existing head manager
-        //    and doesn't spawn a second coordinator.
-        const projectPath = targetCwd;
-        const sessionResult = await sc.acpStreamManager.newSession(stream.streamId, {
-          cwd: projectPath,
-          mcpServers: [],
-        });
+            const projectPath = targetCwd;
+            const sessionResult = await sc.acpStreamManager.newSession(stream.streamId, {
+              cwd: projectPath,
+              mcpServers: [],
+            });
+            const acpSessionId = sessionResult.sessionId;
 
-        const acpSessionId = sessionResult.sessionId;
+            // Pull display metadata from the agent entry we already resolved
+            // before the stream handshake. Fall back to the first ACP-capable
+            // agent for provider_session_id if the targeted agent hasn't
+            // published one yet.
+            const coordinatorName = (targetAgentEntry as any)?.name as string | undefined;
+            let providerSessionId: string | undefined;
+            const psidFromTarget = targetAgentEntry?.metadata?.provider_session_id;
+            if (typeof psidFromTarget === 'string') {
+              providerSessionId = psidFromTarget;
+            } else {
+              const fallback = findAcpAgentInfo(swarm_id);
+              const psid = fallback?.metadata?.provider_session_id;
+              if (typeof psid === 'string') providerSessionId = psid;
+            }
 
-        // Pull display metadata from the agent entry we already resolved
-        // before the stream handshake. Fall back to the first ACP-capable
-        // agent for provider_session_id if the targeted agent hasn't
-        // published one yet.
-        const coordinatorName = (targetAgentEntry as any)?.name as string | undefined;
-        let providerSessionId: string | undefined;
-        const psidFromTarget = targetAgentEntry?.metadata?.provider_session_id;
-        if (typeof psidFromTarget === 'string') {
-          providerSessionId = psidFromTarget;
-        } else {
-          const fallback = findAcpAgentInfo(swarm_id);
-          const psid = fallback?.metadata?.provider_session_id;
-          if (typeof psid === 'string') providerSessionId = psid;
+            const remoteUrl = `map://session/${acpSessionId}`;
+            const projectFromPath = projectPath.split('/').filter(Boolean).pop() ?? '';
+            const isBadProject = !projectFromPath || projectFromPath === '.' || projectFromPath === '..';
+            const shortId = acpSessionId.slice(-8);
+            const nameBase = isBadProject ? (coordinatorName ?? 'session') : projectFromPath;
+            const displayName = `${nameBase} [${shortId}]`;
+            const project = isBadProject ? 'session' : projectFromPath;
+
+            const { resource, created } = resourcesDAL.upsertDiscoveredResource({
+              resource_type: 'session',
+              name: displayName,
+              description: `ACP session with ${swarm.name}`,
+              git_remote_url: remoteUrl,
+              owner_agent_id: request.agent!.id,
+              scope: 'manual',
+              metadata: {
+                project,
+                projectPath,
+                sessionId: acpSessionId,
+                source_swarm_id: swarm_id,
+                // acp_target_agent_id is the lookup key for the
+                // findLiveAcpSession helper used above on subsequent connects.
+                acp_target_agent_id: acpAgent,
+                acpStreamId: stream.streamId,
+                ...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
+              },
+            });
+
+            broadcastToChannel('global', {
+              type: 'trajectory:sync',
+              data: { session_resource_id: resource.id },
+            });
+
+            return {
+              session_resource_id: resource.id,
+              acp_session_id: acpSessionId,
+              acp_stream_id: stream.streamId,
+              created,
+            };
+          })();
+          inflightAcpConnects.set(inflightKey, inflight);
+          // Always release the slot regardless of outcome
+          inflight.finally(() => inflightAcpConnects.delete(inflightKey));
         }
 
-        // 4. Eagerly create the session resource. Build a display name that
-        // prefers the coordinator's name when the project name is uninformative
-        // (empty, "." or "/"), so a user with multiple sessions can tell them
-        // apart by which coordinator they're with.
-        const remoteUrl = `map://session/${acpSessionId}`;
-        const projectFromPath = projectPath.split('/').filter(Boolean).pop() ?? '';
-        const isBadProject = !projectFromPath || projectFromPath === '.' || projectFromPath === '..';
-        const shortId = acpSessionId.slice(-8);
-        const nameBase = isBadProject ? (coordinatorName ?? 'session') : projectFromPath;
-        const displayName = `${nameBase} [${shortId}]`;
-        const project = isBadProject ? 'session' : projectFromPath;
-
-        const { resource, created } = resourcesDAL.upsertDiscoveredResource({
-          resource_type: 'session',
-          name: displayName,
-          description: `ACP session with ${swarm.name}`,
-          git_remote_url: remoteUrl,
-          owner_agent_id: request.agent!.id,
-          scope: 'manual',
-          metadata: {
-            project,
-            projectPath,
-            sessionId: acpSessionId,
-            source_swarm_id: swarm_id,
-            acpStreamId: stream.streamId,
-            ...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
-          },
-        });
-
-        // 5. Broadcast so the sessions list updates in real-time
-        broadcastToChannel('global', {
-          type: 'trajectory:sync',
-          data: { session_resource_id: resource.id },
-        });
-
-        return reply.send({
-          session_resource_id: resource.id,
-          acp_session_id: acpSessionId,
-          acp_stream_id: stream.streamId,
-          created,
-        });
+        const result = await inflight;
+        return reply.send(result);
       } catch (err) {
         return reply.status(500).send({
           error: 'Failed to create ACP session',

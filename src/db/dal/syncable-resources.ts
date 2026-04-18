@@ -205,6 +205,40 @@ export function listResumableSessionsForSwarm(
   return rows.map(rowToResource);
 }
 
+/**
+ * Find this owner's most-recently-updated ACP session resource targeting a
+ * specific (swarm, agent) pair. Used by /sessions/acp-connect to enable
+ * multi-tab sharing of the same ACP session — instead of creating a fresh
+ * stream per tab, callers reuse the existing one when the underlying ACP
+ * stream is still live.
+ *
+ * Caller is responsible for verifying that
+ * `metadata.acpStreamId` is still in `acpStreamManager.streams` — the DAL
+ * doesn't see in-memory ACP state, so a returned resource may reference a
+ * stream that died on hub restart. In that case, fall through to create.
+ */
+export function findLiveAcpSession(opts: {
+  ownerAgentId: string;
+  swarmId: string;
+  acpTargetAgentId: string;
+}): SyncableResource | null {
+  const db = getDatabase();
+  // Match via metadata JSON fields. SQLite's json_extract is sufficient and
+  // cheap at our scale (sessions are O(N_users * N_swarms * N_agents)).
+  const row = db.prepare(`
+    SELECT * FROM syncable_resources
+    WHERE resource_type = 'session'
+      AND owner_agent_id = ?
+      AND json_extract(metadata, '$.source_swarm_id') = ?
+      AND json_extract(metadata, '$.acp_target_agent_id') = ?
+      AND json_extract(metadata, '$.acpStreamId') IS NOT NULL
+      AND json_extract(metadata, '$.sessionId') IS NOT NULL
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).get(opts.ownerAgentId, opts.swarmId, opts.acpTargetAgentId) as Record<string, unknown> | undefined;
+  return row ? rowToResource(row) : null;
+}
+
 export function findResourceById(id: string): SyncableResource | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM syncable_resources WHERE id = ?').get(id) as Record<string, unknown> | undefined;

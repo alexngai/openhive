@@ -55,6 +55,35 @@ async function acpFetch<T>(path: string, init?: RequestInit): Promise<T> {
 // Per-stream event subscription bookkeeping
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-stream record of prompts this client just sent. The sender's local
+ * optimistic echo (added by useChatChannel.send) already renders the user
+ * message; the broadcast `acp.prompt.started` arrives ~50-200ms later. On
+ * the sending tab we want to suppress the synthesized message, otherwise
+ * the user sees their text twice. Sibling tabs (which didn't send) won't
+ * have the fingerprint and will render the synthesized message normally.
+ *
+ * Keys are `${streamId}:${fnv1aHash(text)}`; values are timestamps. Entries
+ * older than SELF_SENT_TTL_MS are pruned at lookup time.
+ */
+const recentlySentByUs = new Map<string, number>();
+const SELF_SENT_TTL_MS = 5_000;
+
+function markSelfSent(streamId: string, text: string) {
+  recentlySentByUs.set(`${streamId}:${fnv1aHash(text)}`, Date.now());
+}
+
+function wasSelfSent(streamId: string, text: string): boolean {
+  const key = `${streamId}:${fnv1aHash(text)}`;
+  const ts = recentlySentByUs.get(key);
+  if (ts === undefined) return false;
+  if (Date.now() - ts > SELF_SENT_TTL_MS) {
+    recentlySentByUs.delete(key);
+    return false;
+  }
+  return true;
+}
+
 interface StreamSubscription {
   /** Null between prepareSubscription() and subscribe() — events still
    *  accumulate into messageMap and buffered queues, then flush on subscribe. */
@@ -114,6 +143,20 @@ function emptySubscription(): StreamSubscription {
     pendingStatus: null,
     pendingError: null,
   };
+}
+
+/**
+ * 32-bit FNV-1a — used to fingerprint user-prompt content for dedup of the
+ * same prompt arriving via two paths (local optimistic echo + WS broadcast
+ * from acp.prompt.started). Cheap, deterministic, no crypto needed.
+ */
+function fnv1aHash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
 }
 
 /**
@@ -361,9 +404,81 @@ function registerGlobalListeners() {
     else sub.pendingError = err;
   };
 
+  // Multi-tab clear-on-resolve: when one surface answers a permission /
+  // question, the backend broadcasts `*.resolved` so siblings can drop the
+  // stale dialog. No-op if the channel hasn't wired the optional handler.
+  const onPermissionResolved = (raw: unknown) => {
+    const data = (raw as { data?: { streamId?: string; requestId?: string } }).data ?? raw as Record<string, unknown>;
+    const streamId = (data as { streamId?: string }).streamId;
+    const requestId = (data as { requestId?: string }).requestId;
+    if (!streamId || !requestId) return;
+    const sub = subscriptions.get(streamId);
+    if (!sub) return;
+    // Drop from buffered list (in case it lands before subscribe attaches)
+    sub.pendingPermissions = sub.pendingPermissions.filter((p) => p.id !== requestId);
+    sub.handlers?.onPermissionResolved?.(requestId);
+  };
+
+  const onQuestionResolved = (raw: unknown) => {
+    const data = (raw as { data?: { streamId?: string; requestId?: string } }).data ?? raw as Record<string, unknown>;
+    const streamId = (data as { streamId?: string }).streamId;
+    const requestId = (data as { requestId?: string }).requestId;
+    if (!streamId || !requestId) return;
+    const sub = subscriptions.get(streamId);
+    if (!sub) return;
+    sub.pendingQuestions = sub.pendingQuestions.filter((q) => q.id !== requestId);
+    sub.handlers?.onQuestionResolved?.(requestId);
+  };
+
+  // Multi-tab user-prompt sync: when ANY tab calls prompt(), the backend
+  // emits `acp.prompt.started` with the prompt content. The sending tab
+  // already shows an optimistic local echo, but sibling tabs sharing the
+  // same session need to see the user message too. Synthesize a user
+  // message in the messageMap so it renders alongside the agent reply.
+  // Note: this also fires on the sending tab — the local echo gets
+  // de-duped because it has a different (local-) id; the canonical
+  // message arrives via this path. Acceptable cost for sync.
+  const onPromptStarted = (raw: unknown) => {
+    const data = (raw as { data?: { streamId?: string; sessionId?: string; prompt?: Array<{ type?: string; text?: string }> } }).data
+      ?? raw as Record<string, unknown>;
+    const streamId = (data as { streamId?: string }).streamId;
+    if (!streamId) return;
+    const sub = subscriptions.get(streamId);
+    if (!sub) return;
+    const promptArr = (data as { prompt?: Array<{ type?: string; text?: string }> }).prompt ?? [];
+    const text = promptArr
+      .filter((p) => p.type === 'text' && p.text)
+      .map((p) => p.text)
+      .join('\n');
+    if (!text) return;
+    // Suppress on the sending tab — local echo in useChatChannel already
+    // shows this prompt. Sibling tabs won't have the fingerprint and will
+    // synthesize the message normally.
+    if (wasSelfSent(streamId, text)) return;
+    finalizeAssistantBubble(sub);
+    // Stable id per (streamId, sessionId, content fingerprint) so concurrent
+    // delivery on multiple tabs doesn't duplicate the user bubble.
+    const sessionId = (data as { sessionId?: string }).sessionId ?? '';
+    const id = `acp-user-${streamId}:${sessionId}:${fnv1aHash(text)}`;
+    if (sub.messageMap.has(id)) return;
+    sub.messageMap.set(id, {
+      id,
+      role: 'user',
+      sender: 'user',
+      senderName: 'You',
+      content: text,
+      contentType: 'text',
+      timestamp: Date.now(),
+    });
+    notifyMessages(sub);
+  };
+
   track('acp.session.update', onSessionUpdate);
   track('acp.permission.request', onPermissionRequest);
+  track('acp.permission.resolved', onPermissionResolved);
   track('acp.question.request', onQuestionRequest);
+  track('acp.question.resolved', onQuestionResolved);
+  track('acp.prompt.started', onPromptStarted);
   track('acp.stream.error', onStreamError);
   track('acp.prompt.completed', (raw) => {
     const data = (raw as { data?: { streamId?: string } }).data ?? raw as Record<string, unknown>;
@@ -465,6 +580,10 @@ export function createOpenHiveAcpServiceLike(): AcpServiceLike {
     },
 
     prompt: async (streamId, text) => {
+      // Tag this prompt so the corresponding `acp.prompt.started` broadcast
+      // doesn't synthesize a duplicate user message on this tab — our local
+      // optimistic echo (in useChatChannel) is already rendering it.
+      markSelfSent(streamId, text);
       // Optimistically flip to 'streaming' before the POST so the UI
       // reflects "agent is responding…" the instant the user sends,
       // rather than waiting for the first WS chunk. Status transitions
