@@ -269,9 +269,17 @@ function SwarmCraftView() {
         headerLeftContent={headerLeft}
         headerRightContent={headerRight}
         onStartChat={(agentId, swarmId) => {
-          if (swarmId) {
-            connectAndOpen(swarmId, agentId);
-          }
+          if (!swarmId) return;
+          // SwarmCraft hands us OpenHive's projection id
+          // (`oh-node-{swarmId}-{mapAgentId}`); strip the namespace so we can
+          // pass the raw MAP agent id as `peer_map_id` to /sessions/acp-connect,
+          // which routes ACP through the swarm's own MAP server. Without this,
+          // the hub registry lookup 404s on the projected id.
+          const prefix = `oh-node-${swarmId}-`;
+          const peerMapId = agentId.startsWith(prefix)
+            ? agentId.slice(prefix.length)
+            : undefined;
+          connectAndOpen(swarmId, agentId, undefined, peerMapId);
         }}
       />
       {showStats && <StatsOverlay onClose={() => setShowStats(false)} />}

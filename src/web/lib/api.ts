@@ -243,6 +243,7 @@ export interface MapNode {
   description: string | null;
   role: string | null;
   state: 'registered' | 'active' | 'busy' | 'idle' | 'suspended' | 'stopped' | 'failed';
+  presence: 'online' | 'offline';
   capabilities: Record<string, unknown> | null;
   scopes: string[] | null;
   visibility: 'public' | 'hive-only' | 'swarm-only';

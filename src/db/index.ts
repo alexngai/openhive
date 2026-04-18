@@ -16,6 +16,7 @@ import {
   MIGRATION_V33_SWARM_ARCHIVE,
   MIGRATION_V34_CANONICAL_KEY,
   MIGRATION_V35_DISPATCH_ORCHESTRATOR,
+  MIGRATION_V36_NODE_PRESENCE,
 } from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
@@ -246,6 +247,8 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   34: MIGRATION_V34_CANONICAL_KEY,
   // Version 35: Dispatch orchestrator fields (swarm-dispatch integration)
   35: MIGRATION_V35_DISPATCH_ORCHESTRATOR,
+  // Version 36: Node presence column (reachability separate from last-known state)
+  36: MIGRATION_V36_NODE_PRESENCE,
 };
 
 /** Get the SQL for a specific migration version.
@@ -313,6 +316,8 @@ function repairSchema(database: Database.Database): void {
     "ALTER TABLE dispatches ADD COLUMN lease_expires_at TEXT",
     "ALTER TABLE dispatches ADD COLUMN attempt INTEGER DEFAULT 0",
     "ALTER TABLE dispatches ADD COLUMN turn_count INTEGER DEFAULT 0",
+    "ALTER TABLE map_nodes ADD COLUMN presence TEXT NOT NULL DEFAULT 'offline'",
+    "CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence)",
   ];
   for (const sql of repairs) {
     try { database.exec(sql); } catch { /* column already exists */ }

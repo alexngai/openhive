@@ -316,7 +316,11 @@ export function markStaleSwarms(staleThresholdMinutes: number = 5): number {
 
   // Emit for SwarmCraft bridge and learning engine ingestion
   // + broadcast on map:discovery so WS subscribers (incl. swarmcraft) see the transition.
+  // Also cascade presence=offline onto the swarm's nodes — backstop for
+  // ungraceful disconnects where handleDisconnect never ran (SIGKILL,
+  // network partition). The per-disconnect path already handles clean exits.
   for (const row of staleRows) {
+    try { mapDal.bulkUpdateSwarmNodesPresence(row.id, 'offline'); } catch { /* non-critical */ }
     mapHubEvents.emit('swarm_offline', { swarm_id: row.id });
     try {
       broadcastToChannel('map:discovery', {

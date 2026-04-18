@@ -508,10 +508,15 @@ const NODE_STATE_STYLES: Record<string, { bg: string; text: string }> = {
 };
 
 function NodeCard({ node }: { node: MapNode }) {
-  const style = NODE_STATE_STYLES[node.state] || NODE_STATE_STYLES.registered;
+  const isOffline = node.presence === 'offline';
+  // When offline, don't render the last-known MAP state as if it were live —
+  // show a single 'offline' pill instead. The row is also muted via opacity.
+  const style = isOffline
+    ? { bg: 'bg-gray-500/10', text: 'text-gray-400' }
+    : (NODE_STATE_STYLES[node.state] || NODE_STATE_STYLES.registered);
 
   return (
-    <div className="card px-3 py-2">
+    <div className={`card px-3 py-2 ${isOffline ? 'opacity-60' : ''}`}>
       <div className="flex items-center gap-3">
         <div
           className="w-7 h-7 rounded flex items-center justify-center shrink-0"
@@ -523,7 +528,7 @@ function NodeCard({ node }: { node: MapNode }) {
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium truncate">{node.name || node.map_agent_id}</span>
             <span className={`text-2xs px-1.5 py-0.5 rounded font-medium ${style.bg} ${style.text}`}>
-              {node.state}
+              {isOffline ? 'offline' : node.state}
             </span>
             {node.role && (
               <span className="text-2xs px-1.5 py-0.5 rounded capitalize" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>

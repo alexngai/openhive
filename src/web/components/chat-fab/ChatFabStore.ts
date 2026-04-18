@@ -112,8 +112,14 @@ export interface ChatFabState {
   /**
    * Create an ACP session on a swarm and open the chat.
    * Used by SwarmCraft's onStartChat to bridge agent selection → ChatFab.
+   *
+   * `peerMapId` is the raw MAP agent id as registered on the swarm's own
+   * MAP server (the value stored in `stateMetadata.agentMetadata.peerMapId`
+   * by the swarmcraft bridge). Pass it when `agentId` is OpenHive's
+   * projection id (e.g. `oh-node-{swarmId}-{mapAgentId}`) — the hub's
+   * registry routes ACP by the raw id and 404s on the projection.
    */
-  connectAndOpen: (swarmId: string, agentId: string, label?: string) => Promise<void>;
+  connectAndOpen: (swarmId: string, agentId: string, label?: string, peerMapId?: string) => Promise<void>;
 }
 
 export const useChatFabStore = create<ChatFabState>((set) => ({
@@ -169,7 +175,7 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
       return { mode: next };
     }),
 
-  connectAndOpen: async (swarmId, agentId, label) => {
+  connectAndOpen: async (swarmId, agentId, label, peerMapId) => {
     saveOpen(true);
     set({ connecting: true, connectError: null, open: true });
     try {
@@ -181,6 +187,7 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
       }>('/sessions/acp-connect', {
         swarm_id: swarmId,
         agent_id: agentId,
+        ...(peerMapId ? { peer_map_id: peerMapId } : {}),
       });
 
       // Seed sessionLabel with the best label we have *right now* —

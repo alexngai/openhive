@@ -5,7 +5,7 @@
  * Renders messages via ChatMessageList + ChatInput from swarmcraft/ui/embed.
  */
 
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import {
   useChatChannel,
   ChatMessageList,
@@ -16,12 +16,41 @@ import { useOpenHiveAdapters } from '../../adapters/openhive-adapters';
 import { useSessionCapabilityResolver, sessionTarget } from '../../lib/chat/resolvers';
 import { useChatFabStore } from './ChatFabStore';
 import { ContextMenu } from './ContextMenu';
+import { setAcpStreamAgentName } from '../../adapters/openhive-acp-service';
+import { useMapSwarm } from '../../hooks/useApi';
+
+/**
+ * Backfill the acp-service's agent display name on resumed streams.
+ * `createStream()` captures it on first connect, but a page reload (or
+ * docked-floating toggle) routes through `loadSession()` instead, where
+ * the name isn't available. Look it up from the live MAP registry and
+ * push it into the stream subscription so chat bubbles get the avatar.
+ */
+function useBackfillAcpAgentName() {
+  const { agentRef, sessionLabel, resume } = useChatFabStore();
+  const { data: swarm } = useMapSwarm(agentRef?.swarmId ?? '');
+  useEffect(() => {
+    const streamId = resume?.acpStreamId;
+    if (!streamId || !agentRef) return;
+    const agents = (swarm as { registered_agents?: Array<{
+      id: string; name?: string; metadata?: Record<string, unknown> | null;
+    }> } | undefined)?.registered_agents ?? [];
+    const match = agents.find((a) => {
+      if (a.id === agentRef.agentId) return true;
+      const peerId = (a.metadata as { peerMapId?: string } | null | undefined)?.peerMapId;
+      return peerId === agentRef.agentId;
+    });
+    const name = match?.name ?? sessionLabel ?? null;
+    setAcpStreamAgentName(streamId, name);
+  }, [resume?.acpStreamId, agentRef, swarm, sessionLabel]);
+}
 
 export function ChatPanel() {
   const { sessionId, swarmId, resume } = useChatFabStore();
   const adapters = useOpenHiveAdapters();
   const resolveCapabilities = useSessionCapabilityResolver(swarmId ?? undefined);
   const [pendingContext, setPendingContext] = useState<string | null>(null);
+  useBackfillAcpAgentName();
 
   // Passing `resume` into the target steers the ACP adapter into
   // `loadSession()` on the existing stream instead of `createStream()` —

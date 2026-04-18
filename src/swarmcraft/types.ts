@@ -24,6 +24,7 @@ export interface BridgeContext {
       create(data: Record<string, unknown>): Promise<unknown>;
       update(id: string, data: Record<string, unknown>): Promise<unknown>;
       get(id: string): Promise<Record<string, unknown> | null>;
+      bulkUpdatePresenceByServer(serverId: string, presence: 'online' | 'offline'): Promise<number>;
     };
     tasks: {
       create(data: Record<string, unknown>): Promise<unknown>;

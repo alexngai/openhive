@@ -63,6 +63,10 @@ interface StreamSubscription {
   messageMap: Map<string, ChatMessage>;
   /** Currently-streaming assistant message id (for chunk accumulation) */
   currentAssistantId: string | null;
+  /** Agent display name captured from createStream(). Applied to assistant
+   *  + tool messages on notify so the chat bubbles render the agent's name
+   *  + boring-avatar instead of a generic "agent" label. */
+  agentName: string | null;
   /**
    * Time-windowed fingerprint dedup. MAP SDK can deliver the same update 2×
    * within a few ms; legitimate repeats (agent emitting "." twice in quick
@@ -102,6 +106,7 @@ function emptySubscription(): StreamSubscription {
     handlers: null,
     messageMap: new Map(),
     currentAssistantId: null,
+    agentName: null,
     recentFingerprints: new Map(),
     eventSeq: 0,
     pendingPermissions: [],
@@ -138,8 +143,29 @@ function finalizeAssistantBubble(sub: StreamSubscription): void {
   sub.currentAssistantId = null;
 }
 
+/**
+ * Inject the agent's identity (name + boring-avatar palette) into every
+ * non-user message before notifying the channel. Done at notify-time rather
+ * than message-construction-time so that:
+ *   - all message-creation sites stay clean (no copy-paste of identity wiring)
+ *   - if the agent name resolves later, all historical bubbles re-paint with
+ *     the right avatar on the next notify
+ */
+function decorateWithAgentIdentity(messages: ChatMessage[], agentName: string | null): ChatMessage[] {
+  if (!agentName) return messages;
+  return messages.map((m) => {
+    if (m.role === 'user') return m;
+    if (m.senderName && m.agentIdentity) return m; // already set
+    return {
+      ...m,
+      senderName: m.senderName ?? agentName,
+      agentIdentity: m.agentIdentity ?? { name: agentName },
+    };
+  });
+}
+
 function notifyMessages(sub: StreamSubscription) {
-  sub.handlers?.onMessages(Array.from(sub.messageMap.values()));
+  sub.handlers?.onMessages(decorateWithAgentIdentity(Array.from(sub.messageMap.values()), sub.agentName));
 }
 
 function registerGlobalListeners() {
@@ -366,6 +392,20 @@ export function ensureAcpListenersRegistered() {
   registerGlobalListeners();
 }
 
+/**
+ * Update the agent display name for a stream after the fact. Used by the
+ * chat panel on resumed sessions where `createStream()` wasn't called this
+ * page-load, so the name has to be backfilled from the MAP registry.
+ * No-op when the name hasn't actually changed.
+ */
+export function setAcpStreamAgentName(streamId: string, name: string | null): void {
+  const sub = subscriptions.get(streamId) ?? emptySubscription();
+  if (sub.agentName === name) return;
+  sub.agentName = name;
+  subscriptions.set(streamId, sub);
+  notifyMessages(sub);
+}
+
 export function createOpenHiveAcpServiceLike(): AcpServiceLike {
   return {
     createStream: async (serverId, targetAgent, agentName) => {
@@ -373,6 +413,15 @@ export function createOpenHiveAcpServiceLike(): AcpServiceLike {
         method: 'POST',
         body: JSON.stringify({ serverId, targetAgent, agentName }),
       });
+      // Stash the display name on (or pre-create) the per-stream subscription
+      // so chat bubbles can render the agent's avatar + name. Done unconditionally
+      // — even when the subscription was already created by prepareSubscription.
+      const sub = subscriptions.get(res.streamId) ?? emptySubscription();
+      sub.agentName = agentName ?? targetAgent ?? null;
+      subscriptions.set(res.streamId, sub);
+      // Re-notify so any messages already in the map (e.g. from a prior
+      // session/load replay) re-render with the freshly-set identity.
+      notifyMessages(sub);
       return res.streamId;
     },
 

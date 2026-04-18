@@ -19,7 +19,7 @@ import { websocketStream } from '@multi-agent-protocol/sdk';
 import { findAgentById, findAgentByApiKey, findOrCreateSwarmHubAgent, getOrCreateLocalAgent } from '../db/dal/agents.js';
 import { validateIngestKey } from '../db/dal/ingest-keys.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
-import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findNodeBySwarmAndAgentId, findSwarmById } from '../db/dal/map.js';
+import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findNodeBySwarmAndAgentId, findSwarmById, bulkUpdateSwarmNodesPresence } from '../db/dal/map.js';
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
@@ -403,6 +403,9 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       try {
         if (!hasOutboundConnection(sid)) {
           updateSwarm(sid, { status: 'unreachable' });
+          // Stop advertising this swarm's nodes as reachable. Last-known
+          // state is retained as a breadcrumb; presence is what the UI reads.
+          try { bulkUpdateSwarmNodesPresence(sid, 'offline'); } catch { /* non-critical */ }
           broadcastToChannel('map:discovery', {
             type: 'swarm_offline',
             data: { swarm_id: sid },
@@ -622,6 +625,17 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         };
         conn.registeredAgents.set(agentEntry.id, agentEntry);
 
+        // Reconnect: if a map_nodes row already exists for this agent (e.g.
+        // it was populated earlier via HTTP POST /map/nodes and then flipped
+        // offline on the previous disconnect), flip it back online now rather
+        // than waiting for the first state.changed event.
+        try {
+          const node = findNodeBySwarmAndAgentId(swarmId, agentEntry.id);
+          if (node && node.presence !== 'online') {
+            updateNode(node.id, { presence: 'online' });
+          }
+        } catch { /* non-critical */ }
+
         // Update connection-level capabilities (kept for backward compat;
         // getMergedCapabilities() provides the union across all agents)
         if (registeredAgent.capabilities) {
@@ -723,10 +737,17 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         agentEntry.state = newState;
       }
 
-      // Update the MAP node in the DB if one exists
+      // Update the MAP node in the DB if one exists. A state event means the
+      // agent is alive — stamp presence=online too so reconnect self-heals
+      // even if we missed the swarm's connect-side presence write.
       const node = findNodeBySwarmAndAgentId(swarmId, mapAgentId);
-      if (node && node.state !== newState) {
-        try { updateNode(node.id, { state: newState }); } catch { /* non-critical */ }
+      if (node) {
+        const patch: { state?: string; presence?: 'online' } = {};
+        if (node.state !== newState) patch.state = newState;
+        if (node.presence !== 'online') patch.presence = 'online';
+        if (patch.state || patch.presence) {
+          try { updateNode(node.id, patch as Parameters<typeof updateNode>[1]); } catch { /* non-critical */ }
+        }
       }
 
       // Broadcast to WebSocket for frontend attention detection
@@ -778,6 +799,15 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
       conn.registeredAgents.delete(agentId);
       console.log(`[ws-map] Agent unregistered on ${swarmId}: ${agentId}`);
+
+      // Flip the matching map_nodes row to offline so the UI doesn't keep
+      // showing its last-known MAP state (e.g. 'idle') as if it were live.
+      try {
+        const node = findNodeBySwarmAndAgentId(swarmId, agentId);
+        if (node && node.presence !== 'offline') {
+          updateNode(node.id, { presence: 'offline' });
+        }
+      } catch { /* non-critical */ }
 
       // Keep DB agent_count in sync
       try { updateSwarm(swarmId, { agent_count: conn.registeredAgents.size }); } catch { /* non-critical */ }
@@ -858,6 +888,7 @@ function startMapHeartbeat(): void {
           try {
             if (!hasOutboundConnection(swarmId)) {
               updateSwarm(swarmId, { status: 'unreachable' });
+              try { bulkUpdateSwarmNodesPresence(swarmId, 'offline'); } catch { /* non-critical */ }
               broadcastToChannel('map:discovery', {
                 type: 'swarm_offline',
                 data: { swarm_id: swarmId },

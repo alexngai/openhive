@@ -93,6 +93,7 @@ export async function setupSwarmBridge(
         type: 'swarm',
         mapServerId: serverId,
         state: 'active',
+        presence: 'online',
         capabilities: caps,
         stateMetadata: {
           source: 'openhive-hub',
@@ -133,6 +134,7 @@ export async function setupSwarmBridge(
         mapServerId: serverId,
         parentAgentId,
         state: mapNodeStateToState(ev.state),
+        presence: 'online',
         stateMetadata: {
           source: 'openhive-hub',
           swarmId: ev.swarm_id,
@@ -158,9 +160,14 @@ export async function setupSwarmBridge(
       const existing = await ctx.db.agents.get(agentId);
       if (existing) {
         const previousState = (existing as { state?: string }).state || 'active';
-        await ctx.db.agents.update(agentId, { state: 'stopped' });
+        // Parent swarm agent: mark stopped + offline.
+        await ctx.db.agents.update(agentId, { state: 'stopped', presence: 'offline' });
         ctx.wsHub.broadcastAgentStateChanged(agentId, previousState, 'stopped');
       }
+      // Child agents: bulk-flip presence to offline. Keeps last-known state as
+      // a breadcrumb but stops the UI from rendering it as live reachability.
+      // mapServerId is set to the raw swarm_id for both parent + children.
+      try { await ctx.db.agents.bulkUpdatePresenceByServer(ev.swarm_id, 'offline'); } catch { /* non-critical */ }
     } catch (err) {
       console.warn(`[swarmcraft-bridge] swarm_offline handler failed: ${(err as Error).message}`);
     }
@@ -308,11 +315,13 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
     // can find the correct MAP ClientConnection via getClient(serverId)
     const serverId = swarm.id;
 
+    // Hydration fires for 'online' swarms only (see caller), so parent presence is online.
     const existing = await ctx.db.agents.get(agentId);
     if (existing) {
       await ctx.db.agents.update(agentId, {
         name: swarm.name,
         state: mapSwarmStatusToState(swarm.status),
+        presence: 'online',
         mapServerId: serverId,
         stateMetadata: swarmMeta,
       });
@@ -323,12 +332,15 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
         type: 'swarm',
         mapServerId: serverId,
         state: mapSwarmStatusToState(swarm.status),
+        presence: 'online',
         capabilities: caps,
         stateMetadata: swarmMeta,
       });
     }
 
-    // Hydrate nodes
+    // Hydrate nodes — trust map_nodes.presence (set by ws-map on connect /
+    // bulk-offline on disconnect). A freshly-booted hub reads whatever was
+    // last persisted, so stale rows hydrate as offline until agents reconnect.
     const { data: nodes } = discoverNodes({ swarm_id: swarm.id, limit: 500 });
     for (const node of nodes) {
       const nodeAgentId = agentIdFromNode(swarm.id, node.map_agent_id);
@@ -341,11 +353,13 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
           peerMapId: node.map_agent_id,
         },
       };
+      const nodePresence = node.presence ?? 'offline';
       const existingNode = await ctx.db.agents.get(nodeAgentId);
       if (existingNode) {
         await ctx.db.agents.update(nodeAgentId, {
           name: node.name || node.map_agent_id,
           state: mapNodeStateToState(node.state),
+          presence: nodePresence,
           mapServerId: serverId,
           stateMetadata: nodeMeta,
         });
@@ -358,6 +372,7 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
           mapServerId: serverId,
           parentAgentId: agentId,
           state: mapNodeStateToState(node.state),
+          presence: nodePresence,
           stateMetadata: nodeMeta,
         });
       }
