@@ -46,6 +46,7 @@ import {
 import { createSwarmToken, delegateToken, revokeToken } from '../../map/token-service.js';
 import type { Config } from '../../config.js';
 import { broadcastToChannel } from '../../realtime/index.js';
+import { broadcastSwarmLifecycleEvent } from '../../realtime/swarm-events.js';
 import { getAllConnectionHealth, getConnectionHealth, getInbound, getPeerMapId } from '../../map/connection-registry.js';
 import { getSyncListenerStatus } from '../../map/sync-listener.js';
 
@@ -583,7 +584,7 @@ export async function mapRoutes(
       }
 
       mapDal.heartbeatSwarm(request.params.id);
-      broadcastToChannel('map:discovery', {
+      broadcastSwarmLifecycleEvent(request.params.id, {
         type: 'swarm_heartbeat',
         data: { swarm_id: request.params.id },
       });

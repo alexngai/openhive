@@ -111,7 +111,12 @@ describe('POST /map/swarms/:id/heartbeat', () => {
     expect(new Date(body.timestamp).toISOString()).toBe(body.timestamp);
   });
 
-  it('broadcasts swarm_heartbeat event to map:discovery channel', async () => {
+  it('broadcasts swarm_heartbeat to BOTH map:discovery and map:swarm:${id}', async () => {
+    // Routing contract from realtime/swarm-events.ts: every swarm
+    // lifecycle event fans out to the fleet channel + the per-swarm
+    // channel via `broadcastSwarmLifecycleEvent`. This test pins that
+    // fan-out at the integration level — heartbeat only needs to fire
+    // once at the call site and both subscribers see it.
     (broadcastToChannel as ReturnType<typeof vi.fn>).mockClear();
 
     await app.inject({
@@ -120,10 +125,14 @@ describe('POST /map/swarms/:id/heartbeat', () => {
       headers: { authorization: `Bearer ${ownerAgent.api_key}` },
     });
 
-    expect(broadcastToChannel).toHaveBeenCalledWith('map:discovery', {
+    const expectedEvent = {
       type: 'swarm_heartbeat',
       data: { swarm_id: swarmId },
-    });
+    };
+    expect(broadcastToChannel).toHaveBeenCalledWith('map:discovery', expectedEvent);
+    expect(broadcastToChannel).toHaveBeenCalledWith(`map:swarm:${swarmId}`, expectedEvent);
+    // Exactly two broadcasts — no duplicates from migration leftovers.
+    expect(broadcastToChannel).toHaveBeenCalledTimes(2);
   });
 
   it('returns 403 when called by a non-owner agent', async () => {

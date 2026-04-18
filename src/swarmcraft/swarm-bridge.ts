@@ -14,7 +14,7 @@ import {
   mapSwarmStatusToState,
   mapNodeStateToState,
 } from './constants.js';
-import { broadcastToChannel } from '../realtime/index.js';
+import { broadcastSwarmLifecycleEvent } from '../realtime/swarm-events.js';
 import type { BridgeContext } from './types.js';
 import type { MapSwarm } from '../map/types.js';
 import type { EventEmitter } from 'events';
@@ -41,7 +41,7 @@ const SWARM_OFFLINE_DEDUP_MS = 5_000;
 function markSwarmStatus(swarmId: string, status: 'online' | 'unreachable'): void {
   try {
     updateSwarm(swarmId, { status });
-    broadcastToChannel('map:discovery', {
+    broadcastSwarmLifecycleEvent(swarmId, {
       type: 'swarm.status_changed',
       data: { swarm_id: swarmId, status },
     });

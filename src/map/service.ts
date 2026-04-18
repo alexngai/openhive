@@ -12,6 +12,7 @@ import * as mapDal from '../db/dal/map.js';
 import { findHiveByName } from '../db/dal/hives.js';
 import { getDatabase } from '../db/index.js';
 import { broadcastToChannel } from '../realtime/index.js';
+import { broadcastSwarmLifecycleEvent } from '../realtime/swarm-events.js';
 
 /** Event bus for MAP Hub lifecycle events (used by SwarmCraft bridge) */
 export const mapHubEvents = new EventEmitter();
@@ -55,7 +56,7 @@ export function registerSwarm(
       }
     }
 
-    broadcastToChannel('map:discovery', {
+    broadcastSwarmLifecycleEvent(swarm.id, {
       type: 'swarm_registered',
       data: { swarm_id: swarm.id, name: swarm.name, map_endpoint: swarm.map_endpoint },
     });
@@ -95,7 +96,7 @@ export function registerSwarm(
   }
 
   // Broadcast swarm registration event
-  broadcastToChannel('map:discovery', {
+  broadcastSwarmLifecycleEvent(swarm.id, {
     type: 'swarm_registered',
     data: {
       swarm_id: swarm.id,
@@ -147,8 +148,9 @@ export function registerNode(
     mapDal.updateSwarm(input.swarm_id, { agent_count: total });
   }
 
-  // Broadcast node registration
-  broadcastToChannel(`map:swarm:${input.swarm_id}`, {
+  // Fan out to fleet (`map:discovery`) + per-swarm (`map:swarm:${id}`).
+  // See realtime/swarm-events.ts for the routing contract.
+  broadcastSwarmLifecycleEvent(input.swarm_id, {
     type: 'node_registered',
     data: {
       node_id: node.id,
@@ -323,7 +325,7 @@ export function markStaleSwarms(staleThresholdMinutes: number = 5): number {
     try { mapDal.bulkUpdateSwarmNodesPresence(row.id, 'offline'); } catch { /* non-critical */ }
     mapHubEvents.emit('swarm_offline', { swarm_id: row.id });
     try {
-      broadcastToChannel('map:discovery', {
+      broadcastSwarmLifecycleEvent(row.id, {
         type: 'swarm.status_changed',
         data: { swarm_id: row.id, status: 'offline' },
       });

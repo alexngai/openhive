@@ -31,6 +31,7 @@ import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
 import { broadcastToChannel } from '../realtime/index.js';
+import { broadcastSwarmLifecycleEvent } from '../realtime/swarm-events.js';
 import { mapHubEvents } from './service.js';
 import type { Agent } from '../types.js';
 import type { Config } from '../config.js';
@@ -406,11 +407,11 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
           // Stop advertising this swarm's nodes as reachable. Last-known
           // state is retained as a breadcrumb; presence is what the UI reads.
           try { bulkUpdateSwarmNodesPresence(sid, 'offline'); } catch { /* non-critical */ }
-          broadcastToChannel('map:discovery', {
+          broadcastSwarmLifecycleEvent(sid, {
             type: 'swarm_offline',
             data: { swarm_id: sid },
           });
-          broadcastToChannel('map:discovery', {
+          broadcastSwarmLifecycleEvent(sid, {
             type: 'swarm.status_changed',
             data: { swarm_id: sid, status: 'unreachable' },
           });
@@ -514,7 +515,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         });
         heartbeatSwarm(swarmId);
         try {
-          broadcastToChannel('map:discovery', {
+          broadcastSwarmLifecycleEvent(swarmId, {
             type: 'swarm.status_changed',
             data: { swarm_id: swarmId, status: 'online' },
           });
@@ -562,7 +563,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     });
     heartbeatSwarm(swarmId);
     try {
-      broadcastToChannel('map:discovery', {
+      broadcastSwarmLifecycleEvent(swarmId, {
         type: 'swarm.status_changed',
         data: { swarm_id: swarmId, status: 'online' },
       });
@@ -710,6 +711,24 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
             name: registeredAgent.name ?? null,
             role,
             state: 'registered',
+          });
+        } catch { /* non-critical */ }
+
+        // Fan out to fleet (`map:discovery`) + per-swarm. Without the
+        // fleet broadcast, agents spawned dynamically inside an already-
+        // online hosted macro-agent (e.g. a new coordinator created via
+        // the "+" button or via macro-agent's spawn API) appear in the
+        // hub DB but the picker UI never learns about them until a
+        // reload. See realtime/swarm-events.ts for the routing contract.
+        try {
+          broadcastSwarmLifecycleEvent(swarmId, {
+            type: 'node_registered',
+            data: {
+              node_id: registeredAgent.id,
+              swarm_id: swarmId,
+              map_agent_id: peerId,
+              role,
+            },
           });
         } catch { /* non-critical */ }
       }
@@ -889,11 +908,11 @@ function startMapHeartbeat(): void {
             if (!hasOutboundConnection(swarmId)) {
               updateSwarm(swarmId, { status: 'unreachable' });
               try { bulkUpdateSwarmNodesPresence(swarmId, 'offline'); } catch { /* non-critical */ }
-              broadcastToChannel('map:discovery', {
+              broadcastSwarmLifecycleEvent(swarmId, {
                 type: 'swarm_offline',
                 data: { swarm_id: swarmId },
               });
-              broadcastToChannel('map:discovery', {
+              broadcastSwarmLifecycleEvent(swarmId, {
                 type: 'swarm.status_changed',
                 data: { swarm_id: swarmId, status: 'unreachable' },
               });
@@ -905,7 +924,7 @@ function startMapHeartbeat(): void {
 
         // Not yet at threshold — log warning, broadcast degraded event, continue pinging
         console.log(`[ws-map] Swarm ${swarmId} missed pong (${missed}/${MISSED_PONGS_BEFORE_TERMINATE})`);
-        broadcastToChannel('map:discovery', {
+        broadcastSwarmLifecycleEvent(swarmId, {
           type: 'connection_degraded',
           data: {
             swarm_id: swarmId,
@@ -920,7 +939,7 @@ function startMapHeartbeat(): void {
 
         // Broadcast recovery if connection was previously degraded
         if (previousMissed > 0) {
-          broadcastToChannel('map:discovery', {
+          broadcastSwarmLifecycleEvent(swarmId, {
             type: 'connection_recovered',
             data: {
               swarm_id: swarmId,
