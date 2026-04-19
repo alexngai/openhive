@@ -121,6 +121,7 @@ export async function createHive(
     }
   }
 
+
   // Initialize session storage for trajectory content caching.
   // Configurable via config.sessions.type: 'local' (default), 's3', or 'none'.
   if (!isSessionStorageInitialized() && config.sessions.type !== 'none') {
@@ -147,6 +148,7 @@ export async function createHive(
     }
   }
 
+
   // Create Fastify instance
   const fastify = Fastify({
     logger: {
@@ -170,6 +172,7 @@ export async function createHive(
   if (config.auth.mode === "swarmhub") {
     registerHostnameGuard(fastify, config.instance.url);
   }
+
 
   // Register multipart for file uploads
   await fastify.register(multipart, {
@@ -196,6 +199,7 @@ export async function createHive(
       await initMail();
     }
   }
+
 
   // Register MAP inbound WebSocket (/ws/map) for agents connecting to the hub
   if (config.mapHub.enabled) {
@@ -274,6 +278,7 @@ export async function createHive(
       console.log("[openhive] SwarmHub connector detected");
     }
   }
+
 
   // Register API routes
   await registerRoutes(fastify, config, bridgeManager, swarmhubConnector);
@@ -472,6 +477,7 @@ export async function createHive(
     }
   }
 
+
   // Initialize dispatch orchestrator (swarm-dispatch integration)
   let dispatchOrchestrator: Orchestrator | null = null;
   try {
@@ -642,6 +648,7 @@ export async function createHive(
 
     return reply.send(wellKnown);
   });
+
 
   // Initialize mesh networking provider
   // Supports: tailscale-cloud, headscale-sidecar, headscale-external, none
