@@ -1,29 +1,41 @@
-import Database from 'better-sqlite3';
-import * as path from 'path';
-import * as fs from 'fs';
+import Database from "better-sqlite3";
+import * as path from "path";
+import * as fs from "fs";
 import {
-  CREATE_TABLES, SCHEMA_VERSION, SEED_DATA, FTS_SCHEMA, FTS_POPULATE,
-  MIGRATION_V11_MAP, MIGRATION_V12_SYNC, MIGRATION_V13_SYNC, MIGRATION_V14_SYNC, MIGRATION_V15_SYNC,
-  MIGRATION_V16_HOSTED_SWARMS, MIGRATION_V17_BRIDGE, MIGRATION_V18_RESOURCE_SCOPE,
-  MIGRATION_V19_EVENT_ROUTING, MIGRATION_V21_RESOURCE_ORIGIN,
-  MIGRATION_V22_COORDINATION, MIGRATION_V23_COORDINATION_ORIGIN,
+  CREATE_TABLES,
+  SCHEMA_VERSION,
+  SEED_DATA,
+  FTS_SCHEMA,
+  FTS_POPULATE,
+  MIGRATION_V11_MAP,
+  MIGRATION_V12_SYNC,
+  MIGRATION_V13_SYNC,
+  MIGRATION_V14_SYNC,
+  MIGRATION_V15_SYNC,
+  MIGRATION_V16_HOSTED_SWARMS,
+  MIGRATION_V17_BRIDGE,
+  MIGRATION_V18_RESOURCE_SCOPE,
+  MIGRATION_V19_EVENT_ROUTING,
+  MIGRATION_V21_RESOURCE_ORIGIN,
+  MIGRATION_V22_COORDINATION,
+  MIGRATION_V23_COORDINATION_ORIGIN,
   MIGRATION_V27_SYNC_STRATEGY,
   MIGRATION_V28_DROP_COORDINATION_TASKS,
   MIGRATION_V29_MAP_REVOKED_TOKENS,
   MIGRATION_V30_SESSION_RESOURCE_SCOPING,
-  MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
+  MIGRATION_V31_FEDERATED_SYNC_STRATEGY,
   MIGRATION_V32_DISPATCHES,
   MIGRATION_V33_SWARM_ARCHIVE,
   MIGRATION_V34_CANONICAL_KEY,
   MIGRATION_V35_DISPATCH_ORCHESTRATOR,
-  MIGRATION_V31_CASCADE_PROJECTIONS,
-  MIGRATION_V33_CASCADE_OPERATIONS,
-  MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
-  MIGRATION_V35_CASCADE_PR,
+  MIGRATION_V36_CASCADE_PROJECTIONS,
+  MIGRATION_V37_CASCADE_OPERATIONS,
+  MIGRATION_V38_CASCADE_PUSHES_AND_QUEUE,
+  MIGRATION_V39_CASCADE_PR,
   MIGRATION_V40_NODE_PRESENCE,
-} from './schema.js';
-import type { DatabaseConfig } from './adapters/types.js';
-import { SQLiteAdapter } from './adapters/sqlite.js';
+} from "./schema.js";
+import type { DatabaseConfig } from "./adapters/types.js";
+import { SQLiteAdapter } from "./adapters/sqlite.js";
 
 let db: Database.Database | null = null;
 let adapter: SQLiteAdapter | null = null;
@@ -35,7 +47,7 @@ let dbConfig: DatabaseConfig | null = null;
  */
 export function getDatabase(): Database.Database {
   if (!db) {
-    throw new Error('Database not initialized. Call initDatabase() first.');
+    throw new Error("Database not initialized. Call initDatabase() first.");
   }
   return db;
 }
@@ -46,7 +58,7 @@ export function getDatabase(): Database.Database {
  */
 export function getAdapter(): SQLiteAdapter {
   if (!adapter) {
-    throw new Error('Database not initialized. Call initDatabase() first.');
+    throw new Error("Database not initialized. Call initDatabase() first.");
   }
   return adapter;
 }
@@ -62,18 +74,20 @@ export function getDatabaseConfig(): DatabaseConfig | null {
  * Initialize the database
  * @param config - Either a string path (SQLite) or a DatabaseConfig object
  */
-export function initDatabase(config: string | DatabaseConfig): Database.Database {
+export function initDatabase(
+  config: string | DatabaseConfig,
+): Database.Database {
   // Normalize config
-  if (typeof config === 'string') {
-    dbConfig = { type: 'sqlite', path: config };
+  if (typeof config === "string") {
+    dbConfig = { type: "sqlite", path: config };
   } else {
     dbConfig = config;
   }
 
-  if (dbConfig.type === 'postgres') {
+  if (dbConfig.type === "postgres") {
     throw new Error(
-      'PostgreSQL is not supported via initDatabase(). ' +
-      'Use the async provider system in db/providers/ instead.'
+      "PostgreSQL is not supported via initDatabase(). " +
+        "Use the async provider system in db/providers/ instead.",
     );
   }
 
@@ -91,17 +105,21 @@ export function initDatabase(config: string | DatabaseConfig): Database.Database
   db = adapter.getRawDatabase();
 
   // Enable foreign keys
-  db.pragma('foreign_keys = ON');
+  db.pragma("foreign_keys = ON");
 
   // Run schema creation
   db.exec(CREATE_TABLES);
 
   // Check and update schema version
-  const versionRow = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number } | undefined;
+  const versionRow = db
+    .prepare("SELECT version FROM schema_version LIMIT 1")
+    .get() as { version: number } | undefined;
 
   if (!versionRow) {
     // First time setup
-    db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(SCHEMA_VERSION);
+    db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(
+      SCHEMA_VERSION,
+    );
     // Create FTS tables
     db.exec(FTS_SCHEMA);
     // Create MAP Hub tables
@@ -147,21 +165,24 @@ const MIGRATION_REGISTRY: Record<number, string> = {
   // Version 2: Add full-text search
   2: FTS_SCHEMA,
   // Version 3: Add uploads table (handled in CREATE_TABLES)
-  3: '',
+  3: "",
   // Version 4: Add human account fields (handled in CREATE_TABLES)
   4: `
     -- Add human account columns if they don't exist
     -- SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we use a workaround
   `,
   // Version 5: Already applied
-  5: '',
+  5: "",
   // Version 6: Add password reset fields
   6: `
     ALTER TABLE agents ADD COLUMN password_reset_token TEXT;
     ALTER TABLE agents ADD COLUMN password_reset_expires TEXT;
   `,
   // Versions 7-10: handled in CREATE_TABLES
-  7: '', 8: '', 9: '', 10: '',
+  7: "",
+  8: "",
+  9: "",
+  10: "",
   // Version 11: MAP Hub tables (headscale-style swarm coordination)
   11: MIGRATION_V11_MAP,
   // Version 12: Remote agent cache + origin tracking columns
@@ -242,9 +263,7 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 30: Relax UNIQUE constraint on syncable_resources for per-swarm session scoping
   30: MIGRATION_V30_SESSION_RESOURCE_SCOPING,
   // Version 31: Add 'federated' sync_strategy for MAP-owned remote task graphs
-  // (Constant is named V32 in schema.ts due to a pre-existing naming
-  // mismatch — kept the wrong name to avoid an unrelated cross-file rename.)
-  31: MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
+  31: MIGRATION_V31_FEDERATED_SYNC_STRATEGY,
   // Version 32: Dispatches table (Stream 2 — Dispatch primitive)
   32: MIGRATION_V32_DISPATCHES,
   // Version 33: Swarm archive column (Phase 2 swarm hygiene)
@@ -254,13 +273,13 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 35: Dispatch orchestrator fields (swarm-dispatch integration)
   35: MIGRATION_V35_DISPATCH_ORCHESTRATOR,
   // Version 36: Cascade projection tables for x-cascade/* MAP events
-  36: MIGRATION_V31_CASCADE_PROJECTIONS,
+  36: MIGRATION_V36_CASCADE_PROJECTIONS,
   // Version 37: cascade_operations audit log for cascade.completed events
-  37: MIGRATION_V33_CASCADE_OPERATIONS,
+  37: MIGRATION_V37_CASCADE_OPERATIONS,
   // Version 38: cascade_pushes + cascade_queue_entries projections
-  38: MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
+  38: MIGRATION_V38_CASCADE_PUSHES_AND_QUEUE,
   // Version 39: publish_branch alias + cascade_pull_requests for hub-side GitHub PR management
-  39: MIGRATION_V35_CASCADE_PR,
+  39: MIGRATION_V39_CASCADE_PR,
   // Version 40: Node presence column (reachability separate from last-known state)
   40: MIGRATION_V40_NODE_PRESENCE,
 };
@@ -273,7 +292,10 @@ export function getMigrationSQL(version: number): string | null {
 }
 
 /** Get all migration versions that need to run between two schema versions. */
-export function getMigrationRange(fromVersion: number, toVersion: number): Array<{ version: number; sql: string }> {
+export function getMigrationRange(
+  fromVersion: number,
+  toVersion: number,
+): Array<{ version: number; sql: string }> {
   const result: Array<{ version: number; sql: string }> = [];
   for (let v = fromVersion + 1; v <= toVersion; v++) {
     const sql = MIGRATION_REGISTRY[v];
@@ -285,16 +307,23 @@ export function getMigrationRange(fromVersion: number, toVersion: number): Array
 }
 
 /** The current target schema version — re-exported for providers */
-export { SCHEMA_VERSION } from './schema.js';
+export { SCHEMA_VERSION } from "./schema.js";
 
-function runMigrations(database: Database.Database, fromVersion: number, toVersion: number): void {
+function runMigrations(
+  database: Database.Database,
+  fromVersion: number,
+  toVersion: number,
+): void {
   const migrations = getMigrationRange(fromVersion, toVersion);
 
   for (const { version, sql } of migrations) {
     // Execute each SQL statement independently so one failure doesn't block the rest.
     // This is important for ALTER TABLE migrations where individual columns
     // may already exist but others still need to be added.
-    const statements = sql.split(';').map(s => s.trim()).filter(s => s.length > 0);
+    const statements = sql
+      .split(";")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
     for (const stmt of statements) {
       try {
         database.exec(stmt);
@@ -313,7 +342,7 @@ function runMigrations(database: Database.Database, fromVersion: number, toVersi
     }
   }
 
-  database.prepare('UPDATE schema_version SET version = ?').run(toVersion);
+  database.prepare("UPDATE schema_version SET version = ?").run(toVersion);
 }
 
 /**
@@ -334,7 +363,11 @@ function repairSchema(database: Database.Database): void {
     "CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence)",
   ];
   for (const sql of repairs) {
-    try { database.exec(sql); } catch { /* column already exists */ }
+    try {
+      database.exec(sql);
+    } catch {
+      /* column already exists */
+    }
   }
 }
 
