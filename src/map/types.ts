@@ -85,6 +85,7 @@ export interface CoordinationCapability {
 // ============================================================================
 
 export type MapNodeState = 'registered' | 'active' | 'busy' | 'idle' | 'suspended' | 'stopped' | 'failed';
+export type MapNodePresence = 'online' | 'offline';
 export type MapNodeVisibility = 'public' | 'hive-only' | 'swarm-only';
 
 export interface MapNode {
@@ -95,8 +96,10 @@ export interface MapNode {
   name: string | null;
   description: string | null;
   role: string | null;
-  // State (mirrors MAP agent states)
+  // State (mirrors MAP agent states — last-known MAP agent state)
   state: MapNodeState;
+  // Presence (reachability — flipped to 'offline' on disconnect regardless of state)
+  presence: MapNodePresence;
   // Discovery info
   capabilities: Record<string, unknown> | null;
   scopes: string[] | null;
@@ -193,6 +196,7 @@ export interface RegisterNodeInput {
   description?: string;
   role?: string;
   state?: MapNodeState;
+  presence?: MapNodePresence;
   capabilities?: Record<string, unknown>;
   scopes?: string[];
   visibility?: MapNodeVisibility;
@@ -205,6 +209,7 @@ export interface UpdateNodeInput {
   description?: string;
   role?: string;
   state?: MapNodeState;
+  presence?: MapNodePresence;
   capabilities?: Record<string, unknown>;
   scopes?: string[];
   visibility?: MapNodeVisibility;
@@ -287,6 +292,7 @@ export interface MapNodePublic {
   description: string | null;
   role: string | null;
   state: MapNodeState;
+  presence: MapNodePresence;
   capabilities: Record<string, unknown> | null;
   scopes: string[] | null;
   visibility: MapNodeVisibility;

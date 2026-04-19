@@ -194,6 +194,16 @@ export interface HostedSwarm {
   spawned_by: string;
   created_at: string;
   updated_at: string;
+  /** Bootstrap config for the swarm runtime (e.g. auto-spawn coordinator at cwd). */
+  bootstrap?: {
+    coordinator?: boolean;
+    cwd?: string;
+  };
+  /**
+   * Filesystem directory the swarm runtime was launched in. Becomes the
+   * runtime fallback cwd for any spawn call that doesn't specify one.
+   */
+  data_dir?: string;
 }
 
 export interface MapRegisteredAgent {
@@ -233,6 +243,7 @@ export interface MapNode {
   description: string | null;
   role: string | null;
   state: 'registered' | 'active' | 'busy' | 'idle' | 'suspended' | 'stopped' | 'failed';
+  presence: 'online' | 'offline';
   capabilities: Record<string, unknown> | null;
   scopes: string[] | null;
   visibility: 'public' | 'hive-only' | 'swarm-only';

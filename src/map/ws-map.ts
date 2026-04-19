@@ -19,11 +19,11 @@ import { websocketStream } from '@multi-agent-protocol/sdk';
 import { findAgentById, findAgentByApiKey, findOrCreateSwarmHubAgent, getOrCreateLocalAgent } from '../db/dal/agents.js';
 import { validateIngestKey } from '../db/dal/ingest-keys.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
-import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findNodeBySwarmAndAgentId, findSwarmById } from '../db/dal/map.js';
+import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findNodeBySwarmAndAgentId, findSwarmById, bulkUpdateSwarmNodesPresence } from '../db/dal/map.js';
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities } from './connection-registry.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities, getPeerMapId } from './connection-registry.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { handleTrajectoryRequest } from './trajectory-handler.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
@@ -31,6 +31,7 @@ import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
 import { broadcastToChannel } from '../realtime/index.js';
+import { broadcastSwarmLifecycleEvent } from '../realtime/swarm-events.js';
 import { mapHubEvents } from './service.js';
 import type { Agent } from '../types.js';
 import type { Config } from '../config.js';
@@ -84,6 +85,31 @@ function handleTrajectoryCheckpoint(
       ws.send(JSON.stringify({ jsonrpc: '2.0', id: requestId, error: { code, message } }));
     }
   }
+}
+
+// ============================================================================
+// Agent Registration Session Filter
+//
+// The MAPServer's eventBus is a singleton shared by every inbound connection,
+// so a naive `on('agent.registered', ...)` handler fires for every swarm's
+// registration, not just the current one. We filter strictly on session
+// identity — reject unless both sides are known and equal. Missing ids (e.g.
+// router.session throws before processing starts) reject rather than accept.
+//
+// Exported for unit testing only.
+// ============================================================================
+
+export function shouldAcceptAgentRegistration(
+  event: unknown,
+  mySessionId: string | undefined,
+): boolean {
+  if (!mySessionId) return false;
+  if (!event || typeof event !== 'object') return false;
+
+  const e = event as { source?: { sessionId?: string }; data?: { agent?: { sessionId?: string } } };
+  const eventSessionId = e.source?.sessionId ?? e.data?.agent?.sessionId;
+  if (!eventSessionId) return false;
+  return eventSessionId === mySessionId;
 }
 
 let HEARTBEAT_INTERVAL = 30_000;
@@ -410,11 +436,14 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       try {
         if (!hasOutboundConnection(sid)) {
           updateSwarm(sid, { status: 'unreachable' });
-          broadcastToChannel('map:discovery', {
+          // Stop advertising this swarm's nodes as reachable. Last-known
+          // state is retained as a breadcrumb; presence is what the UI reads.
+          try { bulkUpdateSwarmNodesPresence(sid, 'offline'); } catch { /* non-critical */ }
+          broadcastSwarmLifecycleEvent(sid, {
             type: 'swarm_offline',
             data: { swarm_id: sid },
           });
-          broadcastToChannel('map:discovery', {
+          broadcastSwarmLifecycleEvent(sid, {
             type: 'swarm.status_changed',
             data: { swarm_id: sid, status: 'unreachable' },
           });
@@ -478,15 +507,18 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       const onRegistered = (event: any) => {
         // Event data shape: { agent: { id, name, sessionId, ... } }
         const registeredAgent = event.data?.agent ?? event.data;
-        if (!registeredAgent?.sessionId) return;
+        if (!registeredAgent) return;
 
-        // Check if this event is for our session
+        // Filter strictly by session ID. The MAPServer eventBus is shared
+        // across all inbound connections, so without this filter every
+        // swarm's handler would claim every other swarm's registrations.
+        let mySessionId: string | undefined;
         try {
-          const session = router.session;
-          if (!session || session.id !== registeredAgent.sessionId) return;
+          mySessionId = router.session?.id;
         } catch {
-          return;
+          mySessionId = undefined;
         }
+        if (!shouldAcceptAgentRegistration(event, mySessionId)) return;
 
         const swarmId = registeredAgent.id;
         const now = new Date().toISOString();
@@ -515,7 +547,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         });
         heartbeatSwarm(swarmId);
         try {
-          broadcastToChannel('map:discovery', {
+          broadcastSwarmLifecycleEvent(swarmId, {
             type: 'swarm.status_changed',
             data: { swarm_id: swarmId, status: 'online' },
           });
@@ -573,7 +605,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     });
     heartbeatSwarm(swarmId);
     try {
-      broadcastToChannel('map:discovery', {
+      broadcastSwarmLifecycleEvent(swarmId, {
         type: 'swarm.status_changed',
         data: { swarm_id: swarmId, status: 'online' },
       });
@@ -615,17 +647,16 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       const registeredAgent = event.data?.agent ?? event.data;
       if (!registeredAgent) return;
 
-      // In open mode, match by session ID if available, otherwise accept any registration
-      // on our router (we know the swarmId is correct because this handler is scoped to it)
+      // The MAPServer eventBus is shared across every inbound connection,
+      // so this handler fires for every swarm's registration. Filter on
+      // router session identity — otherwise agents leak between swarms.
+      let mySessionId: string | undefined;
       try {
-        const session = router.session;
-        if (session?.id && registeredAgent.sessionId && session.id !== registeredAgent.sessionId) {
-          // Different session — not our agent
-          return;
-        }
+        mySessionId = router.session?.id;
       } catch {
-        // router.session may not be available — continue anyway in open mode
+        mySessionId = undefined;
       }
+      if (!shouldAcceptAgentRegistration(event, mySessionId)) return;
 
       console.log(`[ws-map] Agent registered on ${swarmId}: ${registeredAgent.name || registeredAgent.id} (${registeredAgent.role || 'agent'})`);
 
@@ -642,6 +673,17 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
           metadata: registeredAgent.metadata || undefined,
         };
         conn.registeredAgents.set(agentEntry.id, agentEntry);
+
+        // Reconnect: if a map_nodes row already exists for this agent (e.g.
+        // it was populated earlier via HTTP POST /map/nodes and then flipped
+        // offline on the previous disconnect), flip it back online now rather
+        // than waiting for the first state.changed event.
+        try {
+          const node = findNodeBySwarmAndAgentId(swarmId, agentEntry.id);
+          if (node && node.presence !== 'online') {
+            updateNode(node.id, { presence: 'online' });
+          }
+        } catch { /* non-critical */ }
 
         // Update connection-level capabilities (kept for backward compat;
         // getMergedCapabilities() provides the union across all agents)
@@ -672,30 +714,34 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         }
       }
 
-      // Enrich swarm record with agent metadata (project, branch, template)
+      // Enrich swarm record with agent metadata (project, branch, template).
+      // Only update the swarm's name and metadata when the registering agent
+      // carries workspace-level context (project). Sidecars carry this;
+      // spawned coordinators/workers do not — their per-agent random names and
+      // sparse metadata should NOT overwrite the swarm's identity. Without
+      // this guard, every spawn would rename the swarm and clobber its
+      // workspace metadata.
       if (registeredAgent.metadata) {
         const meta = registeredAgent.metadata as Record<string, unknown>;
         const project = meta.project as string | undefined;
         const branch = meta.branch as string | undefined;
-        const template = meta.template as string | undefined;
-        const agentName = registeredAgent.name as string | undefined;
-
-        // Build a descriptive display name from available metadata
-        let displayName: string | undefined;
-        if (project) {
-          displayName = branch ? `${project} (${branch})` : project;
-        } else if (agentName && agentName !== 'unknown') {
-          displayName = template ? `${agentName} [${template}]` : agentName;
-        }
 
         try {
-          // Persist aggregate capabilities (union across all agents on this connection)
+          // Always refresh aggregate capabilities (union across all agents)
           const aggCaps = getAggregateCapabilities(swarmId);
-          updateSwarm(swarmId, {
-            ...(displayName ? { name: displayName } : {}),
-            capabilities: aggCaps || registeredAgent.capabilities || undefined,
-            metadata: meta,
-          });
+          if (project) {
+            // Workspace-bearing registration (sidecar): set name + metadata
+            updateSwarm(swarmId, {
+              name: branch ? `${project} (${branch})` : project,
+              capabilities: aggCaps || registeredAgent.capabilities || undefined,
+              metadata: meta,
+            });
+          } else {
+            // Per-agent registration (coordinator/worker): only update caps
+            updateSwarm(swarmId, {
+              capabilities: aggCaps || registeredAgent.capabilities || undefined,
+            });
+          }
         } catch { /* non-critical */ }
 
         // Auto-detect default task graph from agent metadata
@@ -707,6 +753,51 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
             location_hash: taskGraph.location_hash,
           });
         }
+      }
+
+      // Mirror MAP-protocol registrations into the hub's `node_registered`
+      // event stream so SwarmCraft's bridge (and any other consumer) sees
+      // individual coordinators/workers — not just the parent swarm. The
+      // legacy HTTP `/map/nodes` path emits this event natively; without
+      // this mirror, agents spawned inside a hosted macro-agent never land
+      // in SwarmCraft's agents list or its UI.
+      //
+      // Skip the sidecar role: it's the swarm connection itself, not a
+      // separate agent. Emitting for it would duplicate the swarm row.
+      const role = registeredAgent.role || 'agent';
+      if (role !== 'sidecar') {
+        // Prefer the peer-side ULID so repeat registrations across
+        // reconnects hash to the same SwarmCraft agent id. Falls back to
+        // the hub-assigned id when the peer didn't send one.
+        const peerId = getPeerMapId(registeredAgent.metadata) ?? registeredAgent.id;
+        try {
+          mapHubEvents.emit('node_registered', {
+            node_id: registeredAgent.id,
+            swarm_id: swarmId,
+            map_agent_id: peerId,
+            name: registeredAgent.name ?? null,
+            role,
+            state: 'registered',
+          });
+        } catch { /* non-critical */ }
+
+        // Fan out to fleet (`map:discovery`) + per-swarm. Without the
+        // fleet broadcast, agents spawned dynamically inside an already-
+        // online hosted macro-agent (e.g. a new coordinator created via
+        // the "+" button or via macro-agent's spawn API) appear in the
+        // hub DB but the picker UI never learns about them until a
+        // reload. See realtime/swarm-events.ts for the routing contract.
+        try {
+          broadcastSwarmLifecycleEvent(swarmId, {
+            type: 'node_registered',
+            data: {
+              node_id: registeredAgent.id,
+              swarm_id: swarmId,
+              map_agent_id: peerId,
+              role,
+            },
+          });
+        } catch { /* non-critical */ }
       }
     };
     const unsubRegistered = mapServer.eventBus.on('agent.registered', onAgentRegistered);
@@ -732,10 +823,17 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         agentEntry.state = newState;
       }
 
-      // Update the MAP node in the DB if one exists
+      // Update the MAP node in the DB if one exists. A state event means the
+      // agent is alive — stamp presence=online too so reconnect self-heals
+      // even if we missed the swarm's connect-side presence write.
       const node = findNodeBySwarmAndAgentId(swarmId, mapAgentId);
-      if (node && node.state !== newState) {
-        try { updateNode(node.id, { state: newState }); } catch { /* non-critical */ }
+      if (node) {
+        const patch: { state?: string; presence?: 'online' } = {};
+        if (node.state !== newState) patch.state = newState;
+        if (node.presence !== 'online') patch.presence = 'online';
+        if (patch.state || patch.presence) {
+          try { updateNode(node.id, patch as Parameters<typeof updateNode>[1]); } catch { /* non-critical */ }
+        }
       }
 
       // Broadcast to WebSocket for frontend attention detection
@@ -800,6 +898,15 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       const removedEntry = conn.registeredAgents.get(agentId);
       conn.registeredAgents.delete(agentId);
       console.log(`[ws-map] Agent unregistered on ${swarmId}: ${agentId}`);
+
+      // Flip the matching map_nodes row to offline so the UI doesn't keep
+      // showing its last-known MAP state (e.g. 'idle') as if it were live.
+      try {
+        const node = findNodeBySwarmAndAgentId(swarmId, agentId);
+        if (node && node.presence !== 'offline') {
+          updateNode(node.id, { presence: 'offline' });
+        }
+      } catch { /* non-critical */ }
 
       // Keep DB agent_count in sync
       try { updateSwarm(swarmId, { agent_count: conn.registeredAgents.size }); } catch { /* non-critical */ }
@@ -889,11 +996,12 @@ function startMapHeartbeat(): void {
           try {
             if (!hasOutboundConnection(swarmId)) {
               updateSwarm(swarmId, { status: 'unreachable' });
-              broadcastToChannel('map:discovery', {
+              try { bulkUpdateSwarmNodesPresence(swarmId, 'offline'); } catch { /* non-critical */ }
+              broadcastSwarmLifecycleEvent(swarmId, {
                 type: 'swarm_offline',
                 data: { swarm_id: swarmId },
               });
-              broadcastToChannel('map:discovery', {
+              broadcastSwarmLifecycleEvent(swarmId, {
                 type: 'swarm.status_changed',
                 data: { swarm_id: swarmId, status: 'unreachable' },
               });
@@ -905,7 +1013,7 @@ function startMapHeartbeat(): void {
 
         // Not yet at threshold — log warning, broadcast degraded event, continue pinging
         console.log(`[ws-map] Swarm ${swarmId} missed pong (${missed}/${MISSED_PONGS_BEFORE_TERMINATE})`);
-        broadcastToChannel('map:discovery', {
+        broadcastSwarmLifecycleEvent(swarmId, {
           type: 'connection_degraded',
           data: {
             swarm_id: swarmId,
@@ -920,7 +1028,7 @@ function startMapHeartbeat(): void {
 
         // Broadcast recovery if connection was previously degraded
         if (previousMissed > 0) {
-          broadcastToChannel('map:discovery', {
+          broadcastSwarmLifecycleEvent(swarmId, {
             type: 'connection_recovered',
             data: {
               swarm_id: swarmId,

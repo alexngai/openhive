@@ -9,6 +9,7 @@ import { useMapSwarm } from '../hooks/useApi';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
+import { ChatFabContextProvider } from '../components/chat-fab/ChatFabContext';
 
 export function DispatchDetail() {
   const { id } = useParams<{ id: string }>();
@@ -58,7 +59,12 @@ export function DispatchDetail() {
     }
   };
 
+  const chatFabItems = [
+    { label: `Dispatch: ${d.id.slice(0, 15)}…`, type: 'dispatch' as const, data: { id: d.id, spec_id: d.spec_id, status: d.status, target_swarm_id: d.target_swarm_id } },
+  ];
+
   return (
+    <ChatFabContextProvider items={chatFabItems}>
     <div className="p-6 max-w-4xl mx-auto">
       <Link
         to="/dispatches"
@@ -292,5 +298,6 @@ export function DispatchDetail() {
         </div>
       )}
     </div>
+    </ChatFabContextProvider>
   );
 }

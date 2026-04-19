@@ -85,6 +85,26 @@ export interface WorkspaceConfig {
 // Spawn Configuration
 // ============================================================================
 
+/**
+ * Boot-time agent provisioning. Forwarded to the swarm runtime via env
+ * vars so the runtime can spawn a default agent without an explicit
+ * `_macro/spawnAgent` call from a client.
+ */
+export interface SwarmBootstrap {
+  /**
+   * Auto-spawn a coordinator agent on swarm boot. When true, the runtime
+   * spawns a default head-manager coordinator at `cwd` (or its own cwd
+   * if unset) so the swarm is chat-ready without an explicit spawn.
+   */
+  coordinator?: boolean;
+  /**
+   * Project directory for the auto-spawned coordinator. This becomes the
+   * agent's `cwd` — i.e. the directory it operates against. Typically set
+   * to the user's project repo path on the host.
+   */
+  cwd?: string;
+}
+
 /** What the caller provides when requesting a swarm spawn */
 export interface SpawnSwarmInput {
   /** Human-readable name for the swarm (auto-generated if omitted) */
@@ -107,6 +127,8 @@ export interface SpawnSwarmInput {
   workspace?: WorkspaceConfig;
   /** Resource IDs to inject into the swarm's bootstrap config */
   inject_resources?: string[];
+  /** Boot-time agent provisioning (e.g. auto-spawn coordinator) */
+  bootstrap?: SwarmBootstrap;
 }
 
 /** Internal config passed to the hosting provider */
@@ -128,6 +150,8 @@ export interface SwarmProvisionConfig {
   credential_resolution?: CredentialResolutionMeta;
   /** Workspace setup (repos to clone before process starts) */
   workspace?: WorkspaceConfig;
+  /** Boot-time agent provisioning (env-var bridged into the runtime) */
+  bootstrap?: SwarmBootstrap;
 }
 
 // ============================================================================
@@ -250,6 +274,20 @@ export interface SwarmHostingConfig {
   credentials?: SwarmCredentialConfig;
   /** Sandbox configuration for process isolation */
   sandbox?: SwarmSandboxConfig;
+  /** Per-swarm stdout/stderr log persistence */
+  logs?: SwarmLogsConfig;
+}
+
+/** Stdout/stderr persistence for each hosted swarm subprocess. */
+export interface SwarmLogsConfig {
+  /** Write a per-swarm log file. Disable to keep logs in-memory only. */
+  enabled: boolean;
+  /**
+   * Where to place the file. `"tmp"` (default) uses `os.tmpdir()`,
+   * `"data_dir"` co-locates with the swarm's data directory, anything else
+   * is treated as an absolute directory path.
+   */
+  dir: string;
 }
 
 // ============================================================================

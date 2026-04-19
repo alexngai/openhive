@@ -27,6 +27,7 @@ export function useSwarmRealtime() {
   const invalidate = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['hosted-swarms'] });
     queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
+    queryClient.invalidateQueries({ queryKey: ['map-swarms-picker'] });
     queryClient.invalidateQueries({ queryKey: ['map-stats'] });
   }, [queryClient]);
 
@@ -34,6 +35,11 @@ export function useSwarmRealtime() {
   useWSEvent('swarm_offline', invalidate);
   useWSEvent('swarm_spawned', invalidate);
   useWSEvent('swarm_stopped', invalidate);
+  // node_registered / swarm.status_changed cover the case where a coordinator
+  // is spawned inside an already-online swarm — without these, the picker's
+  // agent list goes stale until a heavier swarm-lifecycle event fires.
+  useWSEvent('node_registered', invalidate);
+  useWSEvent('swarm.status_changed', invalidate);
   // Note: swarm_heartbeat intentionally omitted — it fires every ~30s per swarm
   // and causes excessive refetch storms. Swarm status updates from heartbeats
   // are cosmetic; lifecycle events above cover meaningful state changes.

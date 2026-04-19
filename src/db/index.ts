@@ -11,7 +11,7 @@ import {
   MIGRATION_V28_DROP_COORDINATION_TASKS,
   MIGRATION_V29_MAP_REVOKED_TOKENS,
   MIGRATION_V30_SESSION_RESOURCE_SCOPING,
-  MIGRATION_V31_FEDERATED_SYNC_STRATEGY,
+  MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
   MIGRATION_V32_DISPATCHES,
   MIGRATION_V33_SWARM_ARCHIVE,
   MIGRATION_V34_CANONICAL_KEY,
@@ -20,6 +20,7 @@ import {
   MIGRATION_V33_CASCADE_OPERATIONS,
   MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
   MIGRATION_V35_CASCADE_PR,
+  MIGRATION_V40_NODE_PRESENCE,
 } from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
@@ -241,7 +242,9 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 30: Relax UNIQUE constraint on syncable_resources for per-swarm session scoping
   30: MIGRATION_V30_SESSION_RESOURCE_SCOPING,
   // Version 31: Add 'federated' sync_strategy for MAP-owned remote task graphs
-  31: MIGRATION_V31_FEDERATED_SYNC_STRATEGY,
+  // (Constant is named V32 in schema.ts due to a pre-existing naming
+  // mismatch — kept the wrong name to avoid an unrelated cross-file rename.)
+  31: MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
   // Version 32: Dispatches table (Stream 2 — Dispatch primitive)
   32: MIGRATION_V32_DISPATCHES,
   // Version 33: Swarm archive column (Phase 2 swarm hygiene)
@@ -258,6 +261,8 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   38: MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
   // Version 39: publish_branch alias + cascade_pull_requests for hub-side GitHub PR management
   39: MIGRATION_V35_CASCADE_PR,
+  // Version 40: Node presence column (reachability separate from last-known state)
+  40: MIGRATION_V40_NODE_PRESENCE,
 };
 
 /** Get the SQL for a specific migration version.
@@ -325,6 +330,8 @@ function repairSchema(database: Database.Database): void {
     "ALTER TABLE dispatches ADD COLUMN lease_expires_at TEXT",
     "ALTER TABLE dispatches ADD COLUMN attempt INTEGER DEFAULT 0",
     "ALTER TABLE dispatches ADD COLUMN turn_count INTEGER DEFAULT 0",
+    "ALTER TABLE map_nodes ADD COLUMN presence TEXT NOT NULL DEFAULT 'offline'",
+    "CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence)",
   ];
   for (const sql of repairs) {
     try { database.exec(sql); } catch { /* column already exists */ }

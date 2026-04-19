@@ -174,6 +174,18 @@ export const FIELD_META: Record<string, FieldMeta> = {
   'swarmHosting.max_health_failures': { label: 'Max Health Failures' },
   'swarmHosting.auto_restart': { label: 'Auto Restart' },
   'swarmHosting.max_restart_attempts': { label: 'Max Restart Attempts' },
+  'swarmHosting.logs.enabled': {
+    label: 'Persist Logs to Disk',
+    description:
+      'When off, each swarm\'s stdout/stderr stays in an in-memory ring buffer ' +
+      'only and is lost on respawn. Leave on for debugging.',
+  },
+  'swarmHosting.logs.dir': {
+    label: 'Log Directory',
+    description:
+      '"tmp" (ephemeral, $TMPDIR/openhive-swarm-logs/), "data_dir" (persists ' +
+      'with swarm state), or an absolute path.',
+  },
 
   // SwarmCraft
   'swarmcraft.enabled': { label: 'Enabled', restartRequired: true },

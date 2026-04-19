@@ -27,7 +27,6 @@ import {
   createPR,
   getPRForStream,
   updatePR,
-  getStreamDAG,
 } from '../../db/dal/cascade-streams.js';
 import { cascadeRoutes } from '../../api/routes/cascade.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';

@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 39;
+export const SCHEMA_VERSION = 40;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -908,6 +908,13 @@ ALTER TABLE dispatches ADD COLUMN attempt INTEGER DEFAULT 0;
 ALTER TABLE dispatches ADD COLUMN turn_count INTEGER DEFAULT 0;
 `;
 
+// Migration V36: Node presence column — separates reachability from last-known MAP state.
+// Existing rows start offline; ws-map + markStaleSwarms paths flip to online on reconnect.
+export const MIGRATION_V40_NODE_PRESENCE = `
+ALTER TABLE map_nodes ADD COLUMN presence TEXT NOT NULL DEFAULT 'offline';
+CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence);
+`;
+
 // ============================================================================
 // Subsystem Migration Schemas
 // All migration SQL is consolidated here so the DB layer is self-contained.
@@ -961,9 +968,12 @@ CREATE TABLE IF NOT EXISTS map_nodes (
   name TEXT,
   description TEXT,
   role TEXT,
-  -- State (mirrors MAP agent states)
+  -- State (mirrors MAP agent states — last-known MAP agent state)
   state TEXT DEFAULT 'registered'
     CHECK (state IN ('registered', 'active', 'busy', 'idle', 'suspended', 'stopped', 'failed')),
+  -- Presence (reachability — independent of last-known state)
+  presence TEXT NOT NULL DEFAULT 'offline'
+    CHECK (presence IN ('online', 'offline')),
   -- Discovery info (JSON)
   capabilities TEXT,
   scopes TEXT,
@@ -1020,6 +1030,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_map_swarms_canonical_key ON map_swarms(can
 CREATE INDEX IF NOT EXISTS idx_map_nodes_swarm ON map_nodes(swarm_id);
 CREATE INDEX IF NOT EXISTS idx_map_nodes_role ON map_nodes(role);
 CREATE INDEX IF NOT EXISTS idx_map_nodes_state ON map_nodes(state);
+CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence);
 CREATE INDEX IF NOT EXISTS idx_map_nodes_visibility ON map_nodes(visibility);
 CREATE INDEX IF NOT EXISTS idx_map_swarm_hives_swarm ON map_swarm_hives(swarm_id);
 CREATE INDEX IF NOT EXISTS idx_map_swarm_hives_hive ON map_swarm_hives(hive_id);

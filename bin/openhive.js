@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
-// OpenHive CLI entry point
-// This file is the npm bin target that bootstraps the compiled CLI.
-
-require('../dist/cli.js');
+// OpenHive CLI entry point.
+// The package is published as ESM (`"type": "module"`), so this bin shim
+// must use dynamic import rather than `require`. Older versions used
+// `require('../dist/cli.js')` and crashed at startup with
+// "require is not defined in ES module scope".
+import('../dist/cli.js');

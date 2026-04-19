@@ -23,8 +23,16 @@ interface SwarmCraftInstance {
   wsHub: BridgeContext['wsHub'];
   positionService: BridgeContext['positionService'];
   trajectoryService?: BridgeContext['trajectoryService'];
-  acpStreamManager?: BridgeContext['acpStreamManager'];
   mapClientManager?: { connect(opts: Record<string, unknown>): Promise<void> };
+  /**
+   * SwarmCraft ACP stream manager. The bridge calls
+   * `closeStreamsForAgent(rawMapAgentId)` on agent termination because
+   * the built-in MAP agent-lifecycle handlers in swarmcraft are skipped
+   * via `skipAgentLifecycle: true` (the bridge owns agent projection).
+   * Wires listeners on both inbound (mapHubEvents) and outbound
+   * (mapClientManager) lifecycle events.
+   */
+  acpStreamManager?: BridgeContext['acpStreamManager'];
   pipelineService?: { startAnalysis(repoPath: string): string; loadProject(projectId: string): Promise<unknown>; isReady(): boolean };
 }
 

@@ -153,6 +153,36 @@ export function getAgentCapabilities(swarmId: string): Array<{ agentId: string; 
 }
 
 /**
+ * Extract the peer-side addressable ID from an agent's registration metadata.
+ *
+ * Priority order:
+ * 1. `peerMapId` — the agent's ULID on its own MAP server. Preferred; this
+ *    is what the peer's MAP server accepts for ACP/messaging routing.
+ * 2. `peerAgentId` — the macro-agent internal store id. macro-agent's own
+ *    MAP bridge falls back from ULID→store-id, so this also routes. Needed
+ *    for the race window where the lifecycle bridge emits registration
+ *    before `peerMapId` has been resolved.
+ * 3. `localAgentId` — legacy name (pre-migration macro-agent). Same value
+ *    semantics as `peerAgentId`. Kept for backward compatibility with older
+ *    macro-agent versions.
+ *
+ * Both macro-agent and cc-swarm ultimately rely on the hub's fallback chain
+ * here — neither sidecar emits all three, and cc-swarm emits none of them
+ * (it relies on the MAP-SDK-assigned agent.id matching the target MAP
+ * server's own id since cc-swarm doesn't operate a separate peer MAP server).
+ */
+export function getPeerMapId(metadata: Record<string, unknown> | undefined): string | undefined {
+  if (!metadata) return undefined;
+  const peerMapId = metadata.peerMapId;
+  if (typeof peerMapId === 'string' && peerMapId) return peerMapId;
+  const peerAgentId = metadata.peerAgentId;
+  if (typeof peerAgentId === 'string' && peerAgentId) return peerAgentId;
+  const localAgentId = metadata.localAgentId;
+  if (typeof localAgentId === 'string' && localAgentId) return localAgentId;
+  return undefined;
+}
+
+/**
  * Find the first agent on the connection that supports ACP.
  * Returns the ID to target on the swarm's own MAP server (peerMapId from
  * metadata when available; falls back to the hub-assigned id). ACP streams
@@ -182,8 +212,8 @@ export function findAcpAgentInfo(swarmId: string): {
     if (!caps) continue;
     const protocols = Array.isArray(caps.protocols) ? caps.protocols as string[] : [];
     if (protocols.includes('acp')) {
-      const peerMapId = agent.metadata?.peerMapId;
-      const targetId = (typeof peerMapId === 'string' && peerMapId) ? peerMapId : agent.id;
+      const peerMapId = getPeerMapId(agent.metadata);
+      const targetId = peerMapId ?? agent.id;
       return { targetId, hubAgentId: agent.id, metadata: agent.metadata };
     }
   }

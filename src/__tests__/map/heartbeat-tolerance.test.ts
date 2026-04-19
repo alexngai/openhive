@@ -148,21 +148,13 @@ describe('heartbeat tolerance', () => {
   });
 
   describe('connection_degraded broadcast', () => {
-    it('broadcasts connection_degraded when pongs are missed', () => {
-      const missedPongs = 1;
-      const maxMissedPongs = 3;
+    it('fans out connection_degraded to BOTH map:discovery and per-swarm channel', async () => {
+      const { broadcastSwarmLifecycleEvent } = await import('../../realtime/swarm-events.js');
 
-      // Simulate what the heartbeat loop broadcasts
-      broadcastToChannel('map:discovery', {
-        type: 'connection_degraded',
-        data: {
-          swarm_id: swarmId,
-          missed_pongs: missedPongs,
-          max_missed_pongs: maxMissedPongs,
-        },
-      });
-
-      expect(broadcastToChannel).toHaveBeenCalledWith('map:discovery', {
+      // Simulate what the heartbeat loop now does: a single helper call
+      // that fans out to both channels. This guards against a future
+      // refactor that drops one of the broadcasts.
+      broadcastSwarmLifecycleEvent(swarmId, {
         type: 'connection_degraded',
         data: {
           swarm_id: swarmId,
@@ -170,38 +162,42 @@ describe('heartbeat tolerance', () => {
           max_missed_pongs: 3,
         },
       });
+
+      const expected = {
+        type: 'connection_degraded',
+        data: { swarm_id: swarmId, missed_pongs: 1, max_missed_pongs: 3 },
+      };
+      expect(broadcastToChannel).toHaveBeenCalledWith('map:discovery', expected);
+      expect(broadcastToChannel).toHaveBeenCalledWith(`map:swarm:${swarmId}`, expected);
     });
   });
 
   describe('connection_recovered broadcast', () => {
-    it('broadcasts connection_recovered when pongs resume after degradation', () => {
+    it('fans out connection_recovered to BOTH channels when pongs resume', async () => {
+      const { broadcastSwarmLifecycleEvent } = await import('../../realtime/swarm-events.js');
       const previousMissed = 2;
 
-      // Simulate recovery broadcast
       if (previousMissed > 0) {
-        broadcastToChannel('map:discovery', {
+        broadcastSwarmLifecycleEvent(swarmId, {
           type: 'connection_recovered',
-          data: {
-            swarm_id: swarmId,
-            recovered_from_missed: previousMissed,
-          },
+          data: { swarm_id: swarmId, recovered_from_missed: previousMissed },
         });
       }
 
-      expect(broadcastToChannel).toHaveBeenCalledWith('map:discovery', {
+      const expected = {
         type: 'connection_recovered',
-        data: {
-          swarm_id: swarmId,
-          recovered_from_missed: 2,
-        },
-      });
+        data: { swarm_id: swarmId, recovered_from_missed: 2 },
+      };
+      expect(broadcastToChannel).toHaveBeenCalledWith('map:discovery', expected);
+      expect(broadcastToChannel).toHaveBeenCalledWith(`map:swarm:${swarmId}`, expected);
     });
 
-    it('does not broadcast recovery when connection was not degraded', () => {
+    it('does not broadcast recovery when connection was not degraded', async () => {
+      const { broadcastSwarmLifecycleEvent } = await import('../../realtime/swarm-events.js');
       const previousMissed = 0;
 
       if (previousMissed > 0) {
-        broadcastToChannel('map:discovery', {
+        broadcastSwarmLifecycleEvent(swarmId, {
           type: 'connection_recovered',
           data: { swarm_id: swarmId, recovered_from_missed: previousMissed },
         });

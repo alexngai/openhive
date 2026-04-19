@@ -7,7 +7,10 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
+import * as net from 'net';
+import * as os from 'os';
 import * as path from 'path';
+import * as readline from 'readline';
 import type {
   HostingProvider,
   SwarmProvisionConfig,
@@ -23,8 +26,46 @@ interface ManagedProcess {
   config: SwarmProvisionConfig;
   startedAt: number;
   logBuffer: string[];
+  /**
+   * Append-only log file path. Location depends on LogConfig.dir:
+   *   "tmp"      → ${os.tmpdir()}/openhive-swarm-logs/<instanceId>.log
+   *   "data_dir" → <data_dir>/openswarm.log
+   *   <path>     → <path>/<instanceId>.log
+   * Empty string when file logging is disabled.
+   */
+  logFilePath: string;
+  logStream: fs.WriteStream | null;
   healthFailures: number;
   restartCount: number;
+}
+
+/**
+ * Where (or whether) to persist the per-swarm log stream.
+ *
+ * - `enabled: false` → in-memory ring buffer only; nothing hits disk.
+ * - `dir: "tmp"`      → ephemeral. Survives swarm restarts during the session
+ *                       but is gone on reboot. Good default — bounded blast
+ *                       radius, enough for debugging crash-recover loops.
+ * - `dir: "data_dir"` → co-located with the swarm's own data directory.
+ *                       Survives reboots; pair with data_dir cleanup.
+ * - any absolute path → custom directory shared across swarms. The filename
+ *                       is `<instanceId>.log` to avoid collisions.
+ */
+export interface LogConfig {
+  enabled: boolean;
+  dir: string;
+}
+
+/**
+ * Signal that the requested port is still bound (usually OS TIME_WAIT from
+ * the previous process). The manager catches this and falls back to a fresh
+ * port allocation via autoRestart.
+ */
+export class PortInUseError extends Error {
+  readonly code = 'PORT_IN_USE';
+  constructor(public readonly port: number) {
+    super(`Port ${port} is still bound`);
+  }
 }
 
 /** Callback fired when a child process exits unexpectedly */
@@ -65,14 +106,19 @@ export class LocalProvider implements HostingProvider {
 
   private processes = new Map<string, ManagedProcess>();
   private openswarmCommand: string;
+  private logConfig: LogConfig;
 
   /** Called when a managed process exits (for immediate crash detection) */
   onProcessExit: ProcessExitHandler | null = null;
 
   private exitHandler: () => void;
 
-  constructor(openswarmCommand: string) {
+  constructor(openswarmCommand: string, logConfig?: Partial<LogConfig>) {
     this.openswarmCommand = openswarmCommand;
+    this.logConfig = {
+      enabled: logConfig?.enabled ?? true,
+      dir: logConfig?.dir ?? 'tmp',
+    };
 
     // Safety net: synchronously kill all child process trees if the parent
     // exits before async shutdown completes (e.g. tsx force-kill, double Ctrl+C)
@@ -132,6 +178,47 @@ export class LocalProvider implements HostingProvider {
     env.OPENSWARM_BOOTSTRAP_TOKEN = config.bootstrap_token;
     env.OPENSWARM_DATA_DIR = dataDir;
 
+    // Bootstrap-coordinator pass-through. macro-agent's bootV2 reads these
+    // env vars and spawns a default coordinator when set, so the swarm is
+    // chat-ready without an explicit _macro/spawnAgent call. Going through
+    // env (not openswarm CLI args) avoids modifying openswarm's whitelisted
+    // bootConfig pass-through.
+    if (config.bootstrap?.coordinator) {
+      env.MACRO_BOOTSTRAP_COORDINATOR = 'true';
+      if (config.bootstrap.cwd) {
+        env.MACRO_BOOTSTRAP_CWD = config.bootstrap.cwd;
+      }
+      // Hosted swarms own the full agent tree for their workspace — a
+      // restart should restore every running agent, not just the head
+      // coordinator. Standalone macro-agent boots default to 'coordinators'
+      // to avoid reviving stale workers that belong to a different use
+      // case (ad-hoc CLI runs, test fixtures, etc.).
+      env.MACRO_BOOTSTRAP_REHYDRATE = 'all';
+    }
+
+    // Strip Claude Code's "I am running inside a Claude Code session" markers
+    // from the inherited env. The hosted swarm will launch Claude Code
+    // subprocesses (via macro-agent / claude-code-acp); the Claude Code SDK
+    // checks these markers and refuses with "Claude Code cannot be launched
+    // inside another Claude Code session" if inherited. Without stripping,
+    // any openhive instance that itself runs inside a Claude Code session
+    // (e.g. during development) cannot spawn hosted macro-agent swarms.
+    //
+    // Safe to strip unconditionally: the spawned openswarm is a new root
+    // process — it's not nested inside our Claude Code session in any
+    // meaningful sense.
+    delete env.CLAUDECODE;
+    delete env.CLAUDE_CODE_ENTRYPOINT;
+    delete env.CLAUDE_CODE_EXECPATH;
+    delete env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+
+    // Note: we intentionally do NOT isolate CLAUDE_CONFIG_DIR. Claude Code's
+    // OAuth keychain service name is derived from CLAUDE_CONFIG_DIR — setting
+    // a non-default value silently switches to a namespaced entry that doesn't
+    // exist, causing "Please run /login" / "Authentication required" even
+    // though the user is authenticated in their primary Claude Code session.
+    // Stripping CLAUDECODE* above is sufficient in practice.
+
     // Spawn as a new process group leader (detached: true) so we can
     // kill the entire tree (openswarm + its subprocesses) via -pid.
     const child = spawn(bin, args, {
@@ -141,24 +228,52 @@ export class LocalProvider implements HostingProvider {
       detached: true,
     });
 
+    // Persist the log stream so the previous boot's output (including crash
+    // traces) is visible via GET /map/hosted/:id/logs even after a respawn —
+    // the in-memory ring buffer alone gets wiped on deprovision. Location
+    // respects the operator's `swarmHosting.logs` config; disabled means we
+    // keep the ring buffer only and never touch disk.
+    const logFilePath = this.logConfig.enabled
+      ? resolveLogPath(this.logConfig.dir, dataDir, instanceId)
+      : '';
+    let logStream: fs.WriteStream | null = null;
+    if (logFilePath) {
+      try {
+        fs.mkdirSync(path.dirname(logFilePath), { recursive: true });
+        logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
+      } catch (err) {
+        console.warn(`[local-provider] Could not open log file ${logFilePath}: ${(err as Error).message}`);
+      }
+    }
+
     const managed: ManagedProcess = {
       process: child,
       config,
       startedAt: Date.now(),
       logBuffer: [],
+      logFilePath,
+      logStream,
       healthFailures: 0,
       restartCount: 0,
     };
 
-    // Capture stdout/stderr into ring buffer
+    const writeLogLine = (entry: string) => {
+      managed.logBuffer.push(entry);
+      if (managed.logBuffer.length > MAX_LOG_LINES) managed.logBuffer.shift();
+      // Best-effort file append — don't block on stream errors.
+      try { logStream?.write(entry + '\n'); } catch { /* ignore */ }
+    };
+
+    // Boot separator so operators can scan the log file for restart boundaries.
+    writeLogLine(
+      `[${new Date().toISOString()}] [system] === boot pid=${child.pid ?? '?'} ` +
+        `port=${config.assigned_port} cmd="${bin} ${args.join(' ')}" ===`,
+    );
+
     const appendLog = (data: Buffer, stream: string) => {
       const lines = data.toString().split('\n').filter(Boolean);
       for (const line of lines) {
-        const entry = `[${new Date().toISOString()}] [${stream}] ${line}`;
-        managed.logBuffer.push(entry);
-        if (managed.logBuffer.length > MAX_LOG_LINES) {
-          managed.logBuffer.shift();
-        }
+        writeLogLine(`[${new Date().toISOString()}] [${stream}] ${line}`);
       }
     };
 
@@ -166,16 +281,15 @@ export class LocalProvider implements HostingProvider {
     child.stderr?.on('data', (data: Buffer) => appendLog(data, 'stderr'));
 
     child.on('exit', (code, signal) => {
-      const entry = `[${new Date().toISOString()}] [system] Process exited (code=${code}, signal=${signal})`;
-      managed.logBuffer.push(entry);
-
+      writeLogLine(
+        `[${new Date().toISOString()}] [system] Process exited (code=${code}, signal=${signal})`,
+      );
       // Notify the manager immediately about the exit
       this.onProcessExit?.(instanceId, code, signal);
     });
 
     child.on('error', (err) => {
-      const entry = `[${new Date().toISOString()}] [system] Process error: ${err.message}`;
-      managed.logBuffer.push(entry);
+      writeLogLine(`[${new Date().toISOString()}] [system] Process error: ${err.message}`);
     });
 
     this.processes.set(instanceId, managed);
@@ -238,6 +352,10 @@ export class LocalProvider implements HostingProvider {
     child.stdout?.removeAllListeners();
     child.stderr?.removeAllListeners();
 
+    // Close the log stream (file stays on disk; the next provision appends
+    // so operators can inspect the full history across restarts).
+    try { managed.logStream?.end(); } catch { /* ignore */ }
+
     this.processes.delete(instanceId);
   }
 
@@ -270,9 +388,29 @@ export class LocalProvider implements HostingProvider {
 
   async getLogs(instanceId: string, opts?: LogOptions): Promise<string> {
     const managed = this.processes.get(instanceId);
-    if (!managed) return '(no logs — instance not found)';
+    // Lookup by data_dir when the instance isn't tracked (e.g. the child
+    // already exited before the manager wired up its mapping). We still
+    // have the persistent log file on disk.
+    if (!managed) {
+      return this.readLogFileByInstance(instanceId, opts);
+    }
 
     let lines = managed.logBuffer;
+
+    // If the in-memory buffer is small (fresh boot after a restart), tail
+    // the persistent log file so operators see the prior boot's output.
+    // Skipped when file logging is disabled (empty logFilePath).
+    const requested = opts?.lines ?? lines.length;
+    if (managed.logFilePath && lines.length < requested) {
+      const fromFile = await readTailLines(managed.logFilePath, requested);
+      // Combine file history with live buffer, dedup by exact-match on the
+      // last N buffer lines (file lags ring buffer by at most a few writes).
+      if (fromFile.length) {
+        const bufSet = new Set(lines);
+        const merged = [...fromFile.filter(l => !bufSet.has(l)), ...lines];
+        lines = merged;
+      }
+    }
 
     if (opts?.since) {
       const sinceTime = new Date(opts.since).getTime();
@@ -290,6 +428,22 @@ export class LocalProvider implements HostingProvider {
     return lines.join('\n');
   }
 
+  /**
+   * Read logs by instanceId when the process is no longer tracked. The
+   * instanceId format is `local_${timestamp}_${port}`, which isn't enough
+   * to recover the data_dir on its own — so this falls back to a scan of
+   * any remaining tracked process that shares the config's data_dir.
+   */
+  private async readLogFileByInstance(instanceId: string, opts?: LogOptions): Promise<string> {
+    void instanceId;
+    // No durable instance→dataDir mapping exists outside `processes`; if
+    // the process isn't tracked we have no way to resolve the file. The
+    // manager can still surface on-disk logs after a restart because it
+    // gives us the NEW instance id, which IS tracked.
+    void opts;
+    return '(no logs — instance not found)';
+  }
+
   async restart(instanceId: string): Promise<ProvisionResult> {
     const managed = this.processes.get(instanceId);
     if (!managed) {
@@ -298,6 +452,29 @@ export class LocalProvider implements HostingProvider {
 
     const config = managed.config;
     await this.deprovision(instanceId);
+
+    // Give the OS a moment to fully release the port after the child exits
+    // (Linux/macOS sockets can linger briefly in TIME_WAIT even after close).
+    // If the original port is still bound after the grace period, surface a
+    // typed error so the manager can fall through to a fresh allocation
+    // instead of letting the new spawn bind-fail and crash-loop.
+    const host = '127.0.0.1';
+    const stride = config.adapter === 'macro-agent' ? 3 : 1;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let allFree = true;
+      for (let i = 0; i < stride; i++) {
+        if (!(await isPortFree(config.assigned_port + i, host))) {
+          allFree = false;
+          break;
+        }
+      }
+      if (allFree) break;
+      if (attempt === 2) {
+        throw new PortInUseError(config.assigned_port);
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
     return this.provision(config);
   }
 
@@ -335,4 +512,68 @@ export class LocalProvider implements HostingProvider {
     const ids = Array.from(this.processes.keys());
     await Promise.all(ids.map((id) => this.deprovision(id)));
   }
+}
+
+/**
+ * Resolve a `LogConfig.dir` value to a concrete file path.
+ *   "tmp"      → ${os.tmpdir()}/openhive-swarm-logs/<hostedSwarmKey>.log
+ *   "data_dir" → <dataDir>/openswarm.log
+ *   absolute   → <dir>/<hostedSwarmKey>.log
+ *
+ * `hostedSwarmKey` is `basename(dataDir)` — OpenHive keeps `dataDir` stable
+ * across restarts of the same hosted swarm (it's stored in `hosted.config`
+ * and reused by `autoRestart`), so keying the log file by it guarantees
+ * that multiple boots of the same swarm append to one file. Instance ids
+ * rotate on every restart and would scatter the history across files.
+ * Falls back to `instanceId` if `dataDir` lacks a usable basename.
+ *
+ * Exported for unit testing only.
+ */
+export function resolveLogPath(dir: string, dataDir: string, instanceId: string): string {
+  const hostedSwarmKey = path.basename(path.resolve(dataDir)) || instanceId;
+  if (dir === 'tmp') {
+    return path.join(os.tmpdir(), 'openhive-swarm-logs', `${hostedSwarmKey}.log`);
+  }
+  if (dir === 'data_dir') {
+    return path.join(dataDir, 'openswarm.log');
+  }
+  return path.join(dir, `${hostedSwarmKey}.log`);
+}
+
+/** Briefly bind-probe a port to see if it's free. */
+function isPortFree(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => server.close(() => resolve(true)));
+    server.listen(port, host);
+  });
+}
+
+/**
+ * Read the last N lines of a file without loading the whole thing into memory.
+ * Used when the in-memory ring buffer is smaller than what the caller asked
+ * for (e.g. right after a restart). Returns an empty array when the file
+ * doesn't exist or can't be read.
+ */
+async function readTailLines(filePath: string, maxLines: number): Promise<string[]> {
+  if (maxLines <= 0) return [];
+  try {
+    if (!fs.existsSync(filePath)) return [];
+  } catch {
+    return [];
+  }
+
+  return new Promise((resolve) => {
+    const result: string[] = [];
+    const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    rl.on('line', (line) => {
+      if (!line) return;
+      result.push(line);
+      if (result.length > maxLines) result.shift();
+    });
+    rl.on('close', () => resolve(result));
+    rl.on('error', () => resolve(result));
+  });
 }

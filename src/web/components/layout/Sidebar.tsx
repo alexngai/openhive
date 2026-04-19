@@ -1,6 +1,6 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Menu, X, Zap,
+  LayoutDashboard, Menu, X, CirclePile,
   User, Activity, MessageSquare, ChevronLeft, ChevronDown,
   ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings, FileText, Send,
   GitBranch,
@@ -85,7 +85,7 @@ export function Sidebar() {
         { to: '/dispatches', icon: Send, label: 'Dispatches' },
         { to: '/tasks', icon: ListTodo, label: 'Tasks' },
         { to: '/streams', icon: GitBranch, label: 'Streams' },
-        { to: '/swarms', icon: Zap, label: 'Swarms', badge: onlineSwarmCount || undefined },
+        { to: '/swarms', icon: CirclePile, label: 'Swarms', badge: onlineSwarmCount || undefined },
         { to: '/sessions', icon: Activity, label: 'Sessions' },
         { to: '/messages', icon: MessageSquare, label: 'Messages' },
       ],

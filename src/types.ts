@@ -217,13 +217,20 @@ export type WSEventType =
   | 'learning:instant'
   | 'learning:batch'
   | 'learning:maintenance'
-  // Cascade projection events (from x-cascade/* MAP notifications)
+  // Cascade projection events (from x-cascade/* MAP notifications).
+  // Mirrors the CascadeWSEventType union in src/map/cascade-handler.ts —
+  // keep both lists in sync. The paused / resumed / rolled_back entries
+  // correspond to the hub-side extensions in src/map/cascade-types.ts
+  // that aren't yet shipped in the upstream git-cascade package.
   | 'cascade:stream_opened'
   | 'cascade:stream_committed'
   | 'cascade:stream_merged'
   | 'cascade:stream_conflicted'
   | 'cascade:stream_conflict_resolved'
   | 'cascade:stream_abandoned'
+  | 'cascade:stream_paused'
+  | 'cascade:stream_resumed'
+  | 'cascade:stream_rolled_back'
   | 'cascade:stream_rebased'
   | 'cascade:stream_pushed'
   | 'cascade:completed'

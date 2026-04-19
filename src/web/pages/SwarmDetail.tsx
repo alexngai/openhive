@@ -1,7 +1,7 @@
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
-  ArrowLeft, Activity, Bell, ChevronRight, ChevronDown, ChevronUp, Clock, Cpu, FileText, Globe,
-  Link2, MessageSquare, Monitor, Network, Plus, Share2,
+  ArrowLeft, Activity, AlertTriangle, Bell, ChevronRight, ChevronDown, ChevronUp, Clock, Cpu, FileText, Globe,
+  Link2, Loader2, MessageSquare, Monitor, Network, Play, Plus, Settings2, Share2,
   Square, RotateCw, Terminal, Trash2, User, Wifi, WifiOff,
   CheckCircle2, Zap,
 } from 'lucide-react';
@@ -14,6 +14,10 @@ import {
   useSpawnAgent,
   useConnectAcp,
   useStopAgent,
+  useResumableSessions,
+  useResumeAllSessions,
+  useResumeSession,
+  type ResumableSession,
 } from '../hooks/useApi';
 import { useSwarmRealtime, useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -24,7 +28,7 @@ import type {
   MapSwarm, MapNode, HostedSwarm, SessionListItem,
   SwarmMessage, SwarmPeer, EventSubscription, DeliveryLogEntry,
 } from '../lib/api';
-import { useCallback, useState, useMemo } from 'react';
+import { useCallback, useRef, useState, useMemo } from 'react';
 import {
   ChatMessageList,
   ChatInput,
@@ -34,6 +38,8 @@ import {
   type ChatTarget,
 } from 'swarmcraft/ui/embed';
 import { createCoordinationChatAdapter } from '../adapters/coordination-chat-adapter';
+import { SpawnAgentDialog } from '../components/swarm/SpawnAgentDialog';
+import { getPeerMapId } from '../lib/map';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -301,35 +307,44 @@ function SwarmHeader({
 
 // ─── Capability-Gated Actions ───────────────────────────────────────────────
 
-function SwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
-  const navigate = useNavigate();
+function useSwarmActions({
+  swarm,
+  swarmId,
+  defaultCwd,
+}: {
+  swarm: MapSwarm;
+  swarmId: string;
+  /**
+   * Effective swarm cwd. Computed by the caller using the full priority
+   * chain (hosted bootstrap.cwd → swarm metadata.cwd → projectPath).
+   * Used as the spawn cwd for the primary "Spawn Agent" button AND as the
+   * placeholder/hint inside the advanced dialog.
+   */
+  defaultCwd?: string;
+}) {
   const spawnAgent = useSpawnAgent();
-  const connectAcp = useConnectAcp();
-
-  const caps = (swarm.capabilities || {}) as Record<string, unknown>;
-  const protocols = Array.isArray(caps.protocols) ? caps.protocols as string[] : [];
-  const supportsAcp = protocols.includes('acp');
-  // Fallback: swarms that can spawn ACP coordinators on demand (e.g., macro-agent)
-  // declare `canHostAcp: true` on a registered agent's metadata (typically the
-  // sidecar). This lets us show the "New Agent Session" button before any
-  // coordinator has been spawned.
-  const registeredAgents = (swarm as any)?.registered_agents as Array<{
-    metadata?: Record<string, unknown>;
-  }> | undefined;
-  const canHostAcp = Array.isArray(registeredAgents)
-    && registeredAgents.some(a => a.metadata?.canHostAcp === true);
   const isOnline = swarm.status === 'online' || swarm.status === 'unreachable';
+  const projectPath = defaultCwd;
 
-  if (!isOnline || (!supportsAcp && !canHostAcp)) return null;
+  // Synchronous click-guard. React Query's `isPending` flag flips after the
+  // state commit, leaving a window where a fast double-click can fire two
+  // handlers before the button's `disabled` attribute takes effect. The ref
+  // is set in the same event tick as the click, so subsequent clicks bail
+  // before any backend work starts.
+  const inFlightRef = useRef(false);
 
-  const projectPath = (caps as any)?.projectPath as string
-    ?? (swarm.metadata as any)?.projectPath as string
-    ?? undefined;
+  // Whether the advanced spawn dialog is open. Surfaced via the "⚙" icon
+  // next to the primary Spawn Agent button.
+  const [showAdvancedDialog, setShowAdvancedDialog] = useState(false);
 
-  // One-click "spawn + connect": spawns a coordinator, then immediately opens
-  // an ACP session against it. Backend endpoints are independent — see
-  // RegisteredAgentCard for the connect-only path.
+  // Spawn a fresh coordinator. Stays on the swarm detail page; the new
+  // coordinator card appears in the Registered Agents section, and the
+  // user clicks Chat on it when they want to open a conversation. We
+  // intentionally do NOT auto-open an ACP session here — that conflates
+  // "spawn a worker" with "start chatting" and forces a navigation.
   const handleNewSession = async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
       const spawned = await spawnAgent.mutateAsync({
         swarmId,
@@ -337,48 +352,67 @@ function SwarmActions({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) 
         cwd: projectPath,
         task: 'Head manager',
       });
-      const result = await connectAcp.mutateAsync({
-        swarmId,
-        agentId: spawned.agent_id,
-        cwd: projectPath,
-      });
-      const params = new URLSearchParams({
-        streamId: result.acp_stream_id,
-        sessionId: result.acp_session_id,
-      });
-      navigate(`/sessions/${result.session_resource_id}?${params}`);
+      toast.success('Coordinator spawned', `${spawned.name ?? spawned.agent_id} is ready. Click Chat to start a conversation.`);
     } catch {
-      // Error shown via mutation state
+      // Error shown via mutation state (spawnAgent.error rendered below)
+    } finally {
+      inFlightRef.current = false;
     }
   };
 
-  const isPending = spawnAgent.isPending || connectAcp.isPending;
-  const errorMessage =
-    (spawnAgent.error as Error | undefined)?.message
-    ?? (connectAcp.error as Error | undefined)?.message;
+  const isPending = spawnAgent.isPending;
+  const isError = spawnAgent.isError;
+  const errorMessage = (spawnAgent.error as Error | undefined)?.message;
 
-  return (
-    <div className="flex items-center gap-2">
+  const button = isOnline ? (
+    <div className="inline-flex items-center gap-1">
       <button
         onClick={handleNewSession}
         disabled={isPending}
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors"
-        style={{ backgroundColor: 'var(--color-accent)', color: 'black' }}
+        className="btn btn-primary inline-flex items-center gap-1.5 text-xs disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:bg-honey-500"
       >
         {isPending ? (
-          <LoadingSpinner size="sm" />
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
         ) : (
           <Zap className="w-3.5 h-3.5" />
         )}
-        New Agent Session
+        {isPending ? 'Spawning…' : 'Spawn Agent'}
       </button>
-      {(spawnAgent.isError || connectAcp.isError) && errorMessage && (
-        <span className="text-2xs text-red-400">
-          {errorMessage || 'Failed to create session'}
-        </span>
-      )}
+      <button
+        type="button"
+        onClick={() => setShowAdvancedDialog(true)}
+        disabled={isPending}
+        className="btn btn-ghost p-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+        title="Spawn with advanced config"
+        aria-label="Spawn with advanced config"
+      >
+        <Settings2 className="w-3.5 h-3.5" />
+      </button>
     </div>
-  );
+  ) : null;
+
+  const error = isOnline && isError && errorMessage ? (
+    <div
+      className="mb-2 rounded-md border px-3 py-2 text-xs"
+      style={{
+        borderColor: 'var(--color-border-subtle)',
+        backgroundColor: 'rgba(239, 68, 68, 0.08)',
+        color: '#fca5a5',
+      }}
+    >
+      {errorMessage || 'Failed to create session'}
+    </div>
+  ) : null;
+
+  const dialog = showAdvancedDialog ? (
+    <SpawnAgentDialog
+      swarmId={swarmId}
+      defaultCwd={projectPath}
+      onClose={() => setShowAdvancedDialog(false)}
+    />
+  ) : null;
+
+  return { button, error, dialog };
 }
 
 
@@ -474,10 +508,15 @@ const NODE_STATE_STYLES: Record<string, { bg: string; text: string }> = {
 };
 
 function NodeCard({ node }: { node: MapNode }) {
-  const style = NODE_STATE_STYLES[node.state] || NODE_STATE_STYLES.registered;
+  const isOffline = node.presence === 'offline';
+  // When offline, don't render the last-known MAP state as if it were live —
+  // show a single 'offline' pill instead. The row is also muted via opacity.
+  const style = isOffline
+    ? { bg: 'bg-gray-500/10', text: 'text-gray-400' }
+    : (NODE_STATE_STYLES[node.state] || NODE_STATE_STYLES.registered);
 
   return (
-    <div className="card px-3 py-2">
+    <div className={`card px-3 py-2 ${isOffline ? 'opacity-60' : ''}`}>
       <div className="flex items-center gap-3">
         <div
           className="w-7 h-7 rounded flex items-center justify-center shrink-0"
@@ -489,7 +528,7 @@ function NodeCard({ node }: { node: MapNode }) {
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium truncate">{node.name || node.map_agent_id}</span>
             <span className={`text-2xs px-1.5 py-0.5 rounded font-medium ${style.bg} ${style.text}`}>
-              {node.state}
+              {isOffline ? 'offline' : node.state}
             </span>
             {node.role && (
               <span className="text-2xs px-1.5 py-0.5 rounded capitalize" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
@@ -569,11 +608,8 @@ function RegisteredAgentCard({
   // the whole swarm's hub connection. Use Swarms page controls for that.
   const canStop = agent.role !== 'sidecar';
 
-  // Prefer peerMapId as the targetable ID on the swarm's own MAP server; fall
-  // back to the hub-assigned ID.
-  const targetAgentId =
-    (typeof agent.metadata?.peerMapId === 'string' && (agent.metadata.peerMapId as string)) ||
-    agent.id;
+  // Prefer the peer-side map id (targetable on the swarm's own MAP server).
+  const targetAgentId = getPeerMapId(agent.metadata) ?? agent.id;
 
   const handleChat = async () => {
     try {
@@ -594,8 +630,17 @@ function RegisteredAgentCard({
 
   const handleStop = async () => {
     try {
-      await stopAgent.mutateAsync({ swarmId, agentId: agent.id, reason: 'cancelled' });
-      toast.success('Agent stopped', `"${agent.name || agent.id}" was terminated.`);
+      const result = await stopAgent.mutateAsync({ swarmId, agentId: agent.id, reason: 'cancelled' });
+      if (result?.method === 'map/agents/unregister') {
+        // Older runtimes (no _macro/terminateAgent) only unregister from the
+        // MAP registry — the underlying agent process may still be running.
+        toast.success(
+          'Agent unregistered',
+          `"${agent.name || agent.id}" was removed from the registry. The agent process may still be running on the swarm.`,
+        );
+      } else {
+        toast.success('Agent stopped', `"${agent.name || agent.id}" was terminated.`);
+      }
     } catch (err) {
       toast.error('Stop failed', (err as Error).message);
     }
@@ -635,12 +680,11 @@ function RegisteredAgentCard({
             <button
               onClick={handleChat}
               disabled={connectAcp.isPending}
-              className="inline-flex items-center gap-1 px-2 py-1 text-2xs font-medium rounded-md transition-colors"
-              style={{ backgroundColor: 'var(--color-accent)', color: 'black' }}
+              className="btn btn-primary inline-flex items-center gap-1 px-2 py-1 text-2xs disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:bg-honey-500"
               title="Start ACP session with this agent"
             >
               {connectAcp.isPending ? (
-                <LoadingSpinner size="sm" />
+                <Loader2 className="w-3 h-3 animate-spin" />
               ) : (
                 <Zap className="w-3 h-3" />
               )}
@@ -668,28 +712,30 @@ function RegisteredAgentCard({
   );
 }
 
-function RegisteredAgentsSection({ swarm, swarmId }: { swarm: MapSwarm; swarmId: string }) {
-  const agents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined ?? [];
+function RegisteredAgentsSection({ swarm, swarmId, hosted }: { swarm: MapSwarm; swarmId: string; hosted?: HostedSwarm }) {
+  const allAgents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined ?? [];
+  const sidecars = allAgents.filter((a) => a.role === 'sidecar');
+  const agents = allAgents.filter((a) => a.role !== 'sidecar');
 
+  // Derive the swarm's effective cwd. Mirror the backend resolution chain in
+  // src/api/routes/map.ts: hosted bootstrap.cwd → swarm metadata.cwd →
+  // metadata.projectPath → capabilities.projectPath → hosted data_dir.
+  // The first hit wins. The dialog uses this as a placeholder + fallback
+  // hint so the user can see exactly where an empty-cwd spawn will land.
+  // The hosted data_dir is the terminal fallback because it's where the
+  // runtime process literally launched — `'.'` resolves to it at the
+  // OS level when no other cwd flows through.
   const projectPath =
+    hosted?.bootstrap?.cwd ??
+    (swarm.metadata as any)?.cwd as string | undefined ??
+    (swarm.metadata as any)?.projectPath as string | undefined ??
     (swarm.capabilities as any)?.projectPath as string | undefined ??
-    (swarm.metadata as any)?.projectPath as string | undefined;
+    hosted?.data_dir;
 
-  // Mirror SwarmActions' visibility predicate so we know whether to render
-  // the section for swarms with no agents yet (sidecar-only). A macro-agent
-  // swarm that advertises `canHostAcp` on its sidecar can spawn coordinators
-  // on demand — in that case we still show the section so the "New Agent
-  // Session" button is reachable.
-  const caps = (swarm.capabilities || {}) as Record<string, unknown>;
-  const protocols = Array.isArray(caps.protocols) ? (caps.protocols as string[]) : [];
-  const supportsAcp = protocols.includes('acp');
-  const canHostAcp = (agents ?? []).some(
-    (a) => (a.metadata as any)?.canHostAcp === true,
-  );
   const isOnline = swarm.status === 'online' || swarm.status === 'unreachable';
-  const showActions = isOnline && (supportsAcp || canHostAcp);
+  const swarmActions = useSwarmActions({ swarm, swarmId, defaultCwd: projectPath });
 
-  if (agents.length === 0 && !showActions) return null;
+  if (allAgents.length === 0 && !isOnline) return null;
 
   return (
     <div className="mt-4">
@@ -700,9 +746,20 @@ function RegisteredAgentsSection({ swarm, swarmId }: { swarm: MapSwarm; swarmId:
           {agents.length > 0 && (
             <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>{agents.length}</span>
           )}
+          {sidecars.length > 0 && (
+            <span
+              className="text-2xs font-normal px-1.5 py-0.5 rounded"
+              style={{ color: 'var(--color-text-muted)', backgroundColor: 'var(--color-surface)' }}
+              title={`Sidecar: ${sidecars.map((s) => s.id).join(', ')}`}
+            >
+              sidecar connected
+            </span>
+          )}
         </h3>
-        <SwarmActions swarm={swarm} swarmId={swarmId} />
+        {swarmActions.button}
       </div>
+      {swarmActions.error}
+      {swarmActions.dialog}
       {agents.length > 0 ? (
         <div className="space-y-1">
           {agents.map((agent) => (
@@ -710,7 +767,7 @@ function RegisteredAgentsSection({ swarm, swarmId }: { swarm: MapSwarm; swarmId:
           ))}
         </div>
       ) : (
-        <EmptyState message="No agents yet. Start a new agent session to spawn a coordinator." />
+        <EmptyState message="No agents yet. Click Spawn Agent to create a coordinator." />
       )}
     </div>
   );
@@ -1042,6 +1099,190 @@ function SessionCard({ session }: { session: SessionListItem }) {
   );
 }
 
+/**
+ * Per-row resume action. Navigates to the session on success with fresh
+ * stream/session query params so the trajectory page hydrates against the
+ * new ACP stream.
+ */
+function ResumableSessionRow({
+  session,
+  onSuccess,
+}: {
+  session: ResumableSession;
+  onSuccess: (data: { acp_session_id: string; acp_stream_id: string }) => void;
+}) {
+  const navigate = useNavigate();
+  const resumeMutation = useResumeSession();
+
+  const handleResume = () => {
+    resumeMutation.mutate(
+      { sessionResourceId: session.session_resource_id },
+      {
+        onSuccess: (data) => {
+          onSuccess(data);
+          toast.success('Session resumed', session.name);
+        },
+        onError: (err) => {
+          toast.error('Resume failed', (err as Error).message);
+        },
+      },
+    );
+  };
+
+  const goToSession = () => {
+    navigate(`/sessions/${session.session_resource_id}`);
+  };
+
+  return (
+    <div
+      className="card px-3 py-2 flex items-center gap-3 hover:ring-1 hover:ring-honey-500/20 transition-shadow cursor-pointer"
+      onClick={goToSession}
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium truncate">{session.name}</span>
+          {session.project && (
+            <span
+              className="text-2xs px-1.5 py-0.5 rounded shrink-0"
+              style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+            >
+              {session.project}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+          <code className="font-mono">{session.provider_session_id_prefix}…</code>
+          <TimeAgo date={session.updated_at} />
+        </div>
+      </div>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          handleResume();
+        }}
+        disabled={resumeMutation.isPending}
+        className="text-2xs px-2 py-1 rounded shrink-0 flex items-center gap-1 cursor-pointer disabled:cursor-wait disabled:opacity-60"
+        style={{ backgroundColor: 'var(--color-honey-500, #f59e0b)', color: 'var(--color-bg)' }}
+        title="Restart the swarm if needed, respawn the agent, and reload the session"
+      >
+        {resumeMutation.isPending ? (
+          <>
+            <Loader2 className="w-3 h-3 animate-spin" />
+            Starting…
+          </>
+        ) : (
+          <>
+            <Play className="w-3 h-3" />
+            Resume
+          </>
+        )}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Swarm-level panel listing resumable sessions + a batch "Resume all" action.
+ * Only rendered when the query returns ≥1 session with a persisted
+ * provider_session_id. Sessions without a psid are surfaced via the regular
+ * Sessions section — resume doesn't apply to them.
+ */
+function ResumableSessionsSection({ swarmId }: { swarmId: string }) {
+  const navigate = useNavigate();
+  const { data, isLoading } = useResumableSessions(swarmId);
+  const resumeAll = useResumeAllSessions();
+
+  const sessions = data?.sessions ?? [];
+  if (isLoading) return null; // avoid flashing an empty panel on initial load
+  if (sessions.length === 0) return null;
+
+  const handleResumeAll = async () => {
+    try {
+      const result = await resumeAll.mutateAsync({ swarmId });
+      const fail = result.failed.length;
+      const win = result.succeeded.length;
+      if (fail === 0) {
+        toast.success('Resumed all sessions', `${win} session${win === 1 ? '' : 's'} resumed.`);
+      } else if (win === 0) {
+        toast.error('Resume failed', `All ${fail} session${fail === 1 ? '' : 's'} failed.`);
+      } else {
+        toast.error(
+          'Partial resume',
+          `${win} resumed, ${fail} failed. Check each session for details.`,
+        );
+      }
+    } catch (err) {
+      toast.error('Resume failed', (err as Error).message);
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <SectionHeading icon={Play} label="Resumable Sessions" count={sessions.length} />
+        {sessions.length > 1 && (
+          <button
+            onClick={handleResumeAll}
+            disabled={resumeAll.isPending}
+            className="text-2xs px-2 py-1 rounded flex items-center gap-1 cursor-pointer disabled:cursor-wait disabled:opacity-60"
+            style={{ backgroundColor: 'var(--color-honey-500, #f59e0b)', color: 'var(--color-bg)' }}
+            title="Restart the swarm (if needed) and resume every session on it"
+          >
+            {resumeAll.isPending ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Resuming {sessions.length}…
+              </>
+            ) : (
+              <>
+                <Play className="w-3 h-3" />
+                Resume all ({sessions.length})
+              </>
+            )}
+          </button>
+        )}
+      </div>
+
+      {resumeAll.data && resumeAll.data.failed.length > 0 && (
+        <div
+          className="mb-2 px-3 py-2 rounded text-2xs flex items-start gap-2"
+          style={{
+            backgroundColor: 'rgba(239, 68, 68, 0.08)',
+            color: 'var(--color-text-secondary)',
+          }}
+        >
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-red-400" />
+          <div className="flex-1">
+            <div className="font-medium mb-0.5">{resumeAll.data.failed.length} session(s) failed to resume</div>
+            {resumeAll.data.failed.slice(0, 3).map((f) => (
+              <div key={f.session_resource_id} className="opacity-80">
+                <code className="font-mono">{f.session_resource_id.slice(-8)}</code>: {f.error} — {f.message}
+              </div>
+            ))}
+            {resumeAll.data.failed.length > 3 && (
+              <div className="opacity-60">+{resumeAll.data.failed.length - 3} more</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-1">
+        {sessions.map((s) => (
+          <ResumableSessionRow
+            key={s.session_resource_id}
+            session={s}
+            onSuccess={(data) =>
+              navigate(
+                `/sessions/${s.session_resource_id}?streamId=${data.acp_stream_id}&sessionId=${data.acp_session_id}`,
+              )
+            }
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SessionsSection({ swarmId }: { swarmId: string }) {
   const { data, isLoading } = useSessionsList({ swarm_id: swarmId });
   useSessionsRealtime();
@@ -1132,7 +1373,9 @@ export function SwarmDetail() {
 
       <NodesSection swarmId={id!} />
 
-      <RegisteredAgentsSection swarm={swarm} swarmId={id!} />
+      <RegisteredAgentsSection swarm={swarm} swarmId={id!} hosted={hosted} />
+
+      <ResumableSessionsSection swarmId={id!} />
 
       <SessionsSection swarmId={id!} />
 

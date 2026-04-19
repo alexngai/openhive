@@ -14,9 +14,39 @@ import {
   mapSwarmStatusToState,
   mapNodeStateToState,
 } from './constants.js';
+import { broadcastSwarmLifecycleEvent } from '../realtime/swarm-events.js';
 import type { BridgeContext } from './types.js';
 import type { MapSwarm } from '../map/types.js';
 import type { EventEmitter } from 'events';
+
+/**
+ * Periodic interval for retrying outbound bridge connections to swarms in
+ * `unreachable` status. Long enough to avoid log spam for genuinely-down
+ * swarms; short enough that recovery feels responsive once the underlying
+ * process comes back.
+ */
+const BRIDGE_RETRY_MS = 30_000;
+
+/**
+ * Dedup window for `swarm_offline` re-fires. ws-map.ts emits the event on
+ * WS close AND on stale sweep; the hub MAP service also emits via
+ * markStaleSwarms. A single swarm stop can therefore fire 2-3 times within
+ * a few hundred ms. The first invocation does the real cascade work (list
+ * + flip + broadcast); subsequent invocations inside this window short-
+ * circuit so we don't re-query + re-broadcast against rows that are
+ * already offline (which would produce 0 results and confuse debugging).
+ */
+const SWARM_OFFLINE_DEDUP_MS = 5_000;
+
+function markSwarmStatus(swarmId: string, status: 'online' | 'unreachable'): void {
+  try {
+    updateSwarm(swarmId, { status });
+    broadcastSwarmLifecycleEvent(swarmId, {
+      type: 'swarm.status_changed',
+      data: { swarm_id: swarmId, status },
+    });
+  } catch { /* non-critical */ }
+}
 
 interface SwarmBridgeHandle {
   teardown(): void;
@@ -25,6 +55,13 @@ interface SwarmBridgeHandle {
 /**
  * Setup the swarm bridge: hydrate existing data, register real-time listeners,
  * and optionally auto-connect SwarmCraft's MAP client to registered swarms.
+ *
+ * When `ctx.acpStreamManager` is set and the host has SwarmCraft registered
+ * with `skipAgentLifecycle: true`, this bridge takes over the ACP cleanup
+ * that SwarmCraft's built-in handlers would have performed — closing any
+ * open ACP streams keyed on the raw MAP agent id when an agent unregisters
+ * or hits a terminal MAP state (stopped / failed / orphaned). The local
+ * `isTerminalMapState` helper inside the function captures the state-set.
  */
 export async function setupSwarmBridge(
   ctx: BridgeContext,
@@ -32,6 +69,9 @@ export async function setupSwarmBridge(
 ): Promise<SwarmBridgeHandle> {
   const listeners: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
   const mcmListeners: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
+
+  /** Per-swarm recent-cascade timestamps for `swarm_offline` dedup. */
+  const recentOffline = new Map<string, number>();
 
   function on(event: string, fn: (...args: unknown[]) => void) {
     mapHubEvents.on(event, fn);
@@ -75,14 +115,22 @@ export async function setupSwarmBridge(
     const existing = await ctx.db.agents.get(agentId);
     if (existing) {
       const previousState = (existing as { state?: string }).state || 'stopped';
-      if (previousState !== 'active') {
+      const previousPresence = (existing as { presence?: string }).presence;
+      // Always reassert presence='online' on swarm_registered/online — the
+      // existing row may have been previously flipped offline by a stale
+      // sweep or disconnect cascade. State change broadcast still gates on
+      // a real transition so we don't spam clients on every reconnect.
+      if (previousState !== 'active' || previousPresence !== 'online') {
         await ctx.db.agents.update(agentId, {
           name,
           state: 'active',
+          presence: 'online',
           mapServerId: swarmId,
           stateMetadata,
         });
-        ctx.wsHub.broadcastAgentStateChanged(agentId, previousState, 'active');
+        if (previousState !== 'active') {
+          ctx.wsHub.broadcastAgentStateChanged(agentId, previousState, 'active');
+        }
       }
     } else {
       await ctx.db.agents.create({
@@ -91,6 +139,7 @@ export async function setupSwarmBridge(
         type: 'swarm',
         mapServerId: swarmId,
         state: 'active',
+        presence: 'online',
         capabilities: caps,
         stateMetadata,
       });
@@ -163,11 +212,17 @@ export async function setupSwarmBridge(
         mapServerId: serverId,
         parentAgentId,
         state: mapNodeStateToState(ev.state),
+        presence: 'online',
         stateMetadata: {
           source: 'openhive-hub',
           swarmId: ev.swarm_id,
           mapAgentId: ev.map_agent_id,
-          ...(ev.metadata ? { agentMetadata: ev.metadata } : {}),
+          // SwarmCraft's capability resolver reads peerMapId from the nested
+          // `agentMetadata` slot — it uses this to target the agent on the
+          // peer's MAP server for ACP routing. Forward whatever metadata
+          // the registration carried (preserves peerMapId, sessionId, etc.)
+          // and fall back to the raw map_agent_id when emitter omitted it.
+          agentMetadata: ev.metadata ?? { peerMapId: ev.map_agent_id },
         },
       });
       ctx.wsHub.broadcastAgentRegistered({ id: agentId, name, type: ev.role || 'agent' });
@@ -179,12 +234,69 @@ export async function setupSwarmBridge(
   on('swarm_offline', async (e: unknown) => {
     const ev = e as { swarm_id: string };
     try {
+      // Dedup re-fires. ws-map emits on WS close, and service.markStaleSwarms
+      // also emits — a single stop can therefore arrive multiple times within
+      // ms of each other. Only the first within the window runs the cascade;
+      // subsequent ones would find everything already offline and broadcast
+      // no-op events (pointless work, noisy debug logs).
+      const now = Date.now();
+      const last = recentOffline.get(ev.swarm_id);
+      if (last !== undefined && now - last < SWARM_OFFLINE_DEDUP_MS) return;
+      recentOffline.set(ev.swarm_id, now);
+
       const agentId = agentIdFromSwarm(ev.swarm_id);
+
+      // IMPORTANT: list BEFORE any DB mutation. If we flipped the parent
+      // first (as an earlier version did), the list would miss it AND the
+      // race with `agent.unregistered` cascading child presence elsewhere
+      // can make the list return zero children. Snapshotting every online
+      // row on this server up-front is the only way to get a reliable
+      // affected-set for the per-agent broadcasts.
+      // For hosted swarms with an outbound MAP client, SC's
+      // `event-handler` `mcm.disconnected` handler already does the
+      // per-agent presence broadcasts before this runs. This bridge
+      // handler covers the inbound-only case (map_endpoint='hub-inbound')
+      // where there's no outbound mcm to disconnect, so no SC cascade.
+      // The broadcasts fire-once-per-row contract is preserved because
+      // the UI update handler is idempotent on same-value updates.
+      let affected: Array<{ id: string }> = [];
+      try {
+        const res = await ctx.db.agents.list({
+          mapServerId: ev.swarm_id,
+          presence: 'online',
+          limit: 1000,
+          offset: 0,
+        });
+        affected = res.agents;
+      } catch (err) {
+        console.warn(`[swarmcraft-bridge] swarm_offline list failed: ${(err as Error).message}`);
+      }
+
+      // Parent swarm row: mark stopped + offline and broadcast state change.
+      // We still need the get() to resolve the previous state for the
+      // broadcast; could skip if missing (row was never created).
       const existing = await ctx.db.agents.get(agentId);
       if (existing) {
         const previousState = (existing as { state?: string }).state || 'active';
-        await ctx.db.agents.update(agentId, { state: 'stopped' });
+        await ctx.db.agents.update(agentId, { state: 'stopped', presence: 'offline' });
         ctx.wsHub.broadcastAgentStateChanged(agentId, previousState, 'stopped');
+      }
+
+      // Bulk-flip all remaining (child) rows on this server. Keeps last-known
+      // state as a historical breadcrumb but stops the UI from rendering
+      // them as live reachability. mapServerId is set to the raw swarm_id
+      // for both parent + children.
+      try { await ctx.db.agents.bulkUpdatePresenceByServer(ev.swarm_id, 'offline'); } catch { /* non-critical */ }
+
+      // Broadcast `agent.presence.changed` for every row that actually
+      // transitioned (snapshotted above). The UI subscribes to this event
+      // to invalidate its in-memory agents map — without it, the Agents
+      // panel shows stale "Online (1)" until a full page reload.
+      //
+      // Broadcast AFTER the DB flip so late-arriving consumers that re-query
+      // on the event see the updated row.
+      for (const a of affected) {
+        ctx.wsHub.broadcastAgentPresenceChanged(a.id, 'offline');
       }
     } catch (err) {
       console.warn(`[swarmcraft-bridge] swarm_offline handler failed: ${(err as Error).message}`);
@@ -349,10 +461,59 @@ export async function setupSwarmBridge(
     };
     mapClientManager.on('agent.state.changed', onOutboundAgentStateChanged);
     mcmListeners.push({ event: 'agent.state.changed', fn: onOutboundAgentStateChanged });
+
+    // `agent.orphaned` fires separately from `agent.state.changed` in
+    // MAPClientManager (it's a distinct case in client-manager's emit
+    // switch). Without an explicit handler an ACP stream targeting an
+    // orphaned agent leaks until the next health tick fails.
+    const onOutboundAgentOrphaned = (e: unknown) => {
+      const ev = e as { serverId?: string; agentId?: string };
+      if (!ev?.agentId) return;
+      closeAcpStreamsForRawAgent(ev.agentId, 'mcm.orphaned');
+    };
+    mapClientManager.on('agent.orphaned', onOutboundAgentOrphaned);
+    mcmListeners.push({ event: 'agent.orphaned', fn: onOutboundAgentOrphaned });
+  }
+
+  // Periodic retry sweep: connect outbound MAP clients for any ws://-endpoint
+  // swarm that isn't currently wired through `mapClientManager`. Covers two
+  // scenarios:
+  //   1. `unreachable` swarms whose peer came back up (original recovery case).
+  //   2. `online` swarms whose inbound sidecar connected fine but whose first
+  //      outbound health check failed (e.g. the swarm's own MAP server wasn't
+  //      listening yet when the bridge fired on `swarm_registered`). Without
+  //      this path, `getClient(swarmId)` stays null forever and hub spawns
+  //      fail with "MAP client not connected to this swarm".
+  // Hub-inbound markers are filtered out in the loop body.
+  let retryTimer: ReturnType<typeof setInterval> | undefined;
+  if (mapClientManager) {
+    const getClient = (mapClientManager as unknown as {
+      getClient?: (id: string) => unknown;
+    }).getClient?.bind(mapClientManager);
+
+    retryTimer = setInterval(() => {
+      try {
+        const { data: candidates } = listSwarms({ limit: 200 });
+        for (const swarm of candidates) {
+          if (!swarm.map_endpoint) continue;
+          if (!swarm.map_endpoint.startsWith('ws://') && !swarm.map_endpoint.startsWith('wss://')) continue;
+          // Already wired? Skip.
+          if (getClient && getClient(swarm.id)) continue;
+          // Not worth retrying terminally-offline swarms.
+          if (swarm.status === 'offline') continue;
+          // Fire-and-forget; connectMapClient updates status itself.
+          connectMapClient(mapClientManager, swarm).catch(() => { /* logged inside */ });
+        }
+      } catch (err) {
+        console.warn(`[swarmcraft-bridge] retry sweep failed: ${(err as Error).message}`);
+      }
+    }, BRIDGE_RETRY_MS);
+    if (typeof retryTimer.unref === 'function') retryTimer.unref();
   }
 
   return {
     teardown() {
+      if (retryTimer) clearInterval(retryTimer);
       for (const { event, fn } of listeners) {
         mapHubEvents.removeListener(event, fn);
       }
@@ -385,11 +546,13 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
     // can find the correct MAP ClientConnection via getClient(serverId)
     const serverId = swarm.id;
 
+    // Hydration fires for 'online' swarms only (see caller), so parent presence is online.
     const existing = await ctx.db.agents.get(agentId);
     if (existing) {
       await ctx.db.agents.update(agentId, {
         name: swarm.name,
         state: mapSwarmStatusToState(swarm.status),
+        presence: 'online',
         mapServerId: serverId,
         stateMetadata: swarmMeta,
       });
@@ -400,12 +563,15 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
         type: 'swarm',
         mapServerId: serverId,
         state: mapSwarmStatusToState(swarm.status),
+        presence: 'online',
         capabilities: caps,
         stateMetadata: swarmMeta,
       });
     }
 
-    // Hydrate nodes
+    // Hydrate nodes — trust map_nodes.presence (set by ws-map on connect /
+    // bulk-offline on disconnect). A freshly-booted hub reads whatever was
+    // last persisted, so stale rows hydrate as offline until agents reconnect.
     const { data: nodes } = discoverNodes({ swarm_id: swarm.id, limit: 500 });
     for (const node of nodes) {
       const nodeAgentId = agentIdFromNode(swarm.id, node.map_agent_id);
@@ -413,12 +579,18 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
         source: 'openhive-hub',
         swarmId: swarm.id,
         mapAgentId: node.map_agent_id,
+        // SwarmCraft reads peerMapId from `agentMetadata` for ACP routing.
+        agentMetadata: {
+          peerMapId: node.map_agent_id,
+        },
       };
+      const nodePresence = node.presence ?? 'offline';
       const existingNode = await ctx.db.agents.get(nodeAgentId);
       if (existingNode) {
         await ctx.db.agents.update(nodeAgentId, {
           name: node.name || node.map_agent_id,
           state: mapNodeStateToState(node.state),
+          presence: nodePresence,
           mapServerId: serverId,
           stateMetadata: nodeMeta,
         });
@@ -431,6 +603,7 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
           mapServerId: serverId,
           parentAgentId: agentId,
           state: mapNodeStateToState(node.state),
+          presence: nodePresence,
           stateMetadata: nodeMeta,
         });
       }
@@ -484,11 +657,12 @@ async function connectMapClient(
   // the swarm's own MAP server (port+2) may take a few seconds to start.
   // Without this check, the MAPClientManager connection fails and the
   // swarm gets a new identity on reconnection.
-  const healthUrl = deriveHealthUrl(swarm.map_endpoint);
-  if (healthUrl) {
-    const healthy = await waitForHealth(healthUrl, 15_000);
-    if (!healthy) {
-      console.warn(`[swarmcraft-bridge] MAP server health check failed for ${swarm.name} at ${healthUrl}, skipping connect`);
+  const healthUrls = deriveHealthUrls(swarm.map_endpoint);
+  if (healthUrls.length > 0) {
+    const reached = await waitForAnyHealth(healthUrls, 15_000);
+    if (!reached) {
+      console.warn(`[swarmcraft-bridge] MAP server health check failed for ${swarm.name} (tried ${healthUrls.join(', ')}), marking unreachable`);
+      markSwarmStatus(swarm.id, 'unreachable');
       return;
     }
   }
@@ -508,33 +682,70 @@ async function connectMapClient(
       skipSubscription: true,
     });
     console.log(`[swarmcraft-bridge] MAP client connected to ${swarm.name} at ${mapUrl}`);
+    // Promote unreachable → online once outbound bridge is live. Inbound
+    // sidecars manage their own status via heartbeat; this only matters when
+    // the bridge is the only signal we have (e.g., after a hub restart that
+    // dropped the inbound WS but the swarm's MAP server is up again).
+    const current = findSwarmById(swarm.id);
+    if (current && current.status === 'unreachable') {
+      markSwarmStatus(swarm.id, 'online');
+    }
   } catch (err) {
     console.warn(`[swarmcraft-bridge] MAP client connect to ${swarm.name} failed: ${(err as Error).message}`);
+    markSwarmStatus(swarm.id, 'unreachable');
   }
 }
 
-/** Derive the health check URL from a swarm's MAP endpoint. */
-function deriveHealthUrl(baseEndpoint: string): string | null {
+/**
+ * Candidate health-check URLs derived from a swarm's MAP endpoint.
+ *
+ * openswarm/macro-agent layouts:
+ *   gateway HTTP at base port, management HTTP at base+1, MAP WS at base+2.
+ *   /health is exposed on multiple of these; we probe the most-likely set.
+ *
+ * Hand-registered swarms may register with any of those ports as their
+ * `map_endpoint`, so deriving a single offset breaks. We instead probe a
+ * handful of candidates and accept the first that responds.
+ */
+function deriveHealthUrls(baseEndpoint: string): string[] {
   try {
     const url = new URL(baseEndpoint);
     const basePort = parseInt(url.port, 10);
-    if (!Number.isFinite(basePort)) return null;
-    // MAP server is at port+2, health endpoint is HTTP on the same port
-    return `http://${url.hostname}:${basePort + 2}/health`;
+    if (!Number.isFinite(basePort)) return [];
+    const offsets = [2, 1, 0, -1, -2];
+    const seen = new Set<number>();
+    const urls: string[] = [];
+    for (const off of offsets) {
+      const port = basePort + off;
+      if (port <= 0 || port > 65_535) continue;
+      if (seen.has(port)) continue;
+      seen.add(port);
+      urls.push(`http://${url.hostname}:${port}/health`);
+    }
+    return urls;
   } catch {
-    return null;
+    return [];
   }
 }
 
-/** Poll a health endpoint until it returns 200 or timeout. */
-async function waitForHealth(url: string, timeoutMs: number): Promise<boolean> {
+/**
+ * Poll candidate health URLs until one returns 200 or timeout. Each polling
+ * cycle probes all candidates in parallel; first 200 wins.
+ */
+async function waitForAnyHealth(urls: string[], timeoutMs: number): Promise<string | null> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return true;
-    } catch { /* not ready yet */ }
+    const probes = urls.map(async (u) => {
+      try {
+        const res = await fetch(u);
+        if (res.ok) return u;
+      } catch { /* not ready yet */ }
+      return null;
+    });
+    const results = await Promise.all(probes);
+    const hit = results.find((r) => r !== null);
+    if (hit) return hit;
     await new Promise((r) => setTimeout(r, 500));
   }
-  return false;
+  return null;
 }
