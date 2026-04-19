@@ -11,8 +11,10 @@
  * without requiring the real macro-agent or OpenSwarm packages.
  */
 
-const http = require('http');
-const { WebSocketServer, WebSocket } = require('ws');
+// Package.json sets `"type": "module"`, so this fixture must use ESM
+// imports rather than `require()`. Previously: `const http = require('http')`.
+import http from 'http';
+import { WebSocketServer, WebSocket } from 'ws';
 
 const portIdx = process.argv.indexOf('--port');
 const port = portIdx !== -1 ? parseInt(process.argv[portIdx + 1], 10) : 9999;

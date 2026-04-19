@@ -2,8 +2,8 @@
  * Tests for GitHub auth token resolution + repo URL parsing.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { parseGitHubRepo, resetGitHubToken } from '../../integrations/github-auth.js';
+import { describe, it, expect } from 'vitest';
+import { parseGitHubRepo } from '../../integrations/github-auth.js';
 
 describe('parseGitHubRepo', () => {
   it('parses HTTPS URLs', () => {

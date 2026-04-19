@@ -55,6 +55,35 @@ async function acpFetch<T>(path: string, init?: RequestInit): Promise<T> {
 // Per-stream event subscription bookkeeping
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-stream record of prompts this client just sent. The sender's local
+ * optimistic echo (added by useChatChannel.send) already renders the user
+ * message; the broadcast `acp.prompt.started` arrives ~50-200ms later. On
+ * the sending tab we want to suppress the synthesized message, otherwise
+ * the user sees their text twice. Sibling tabs (which didn't send) won't
+ * have the fingerprint and will render the synthesized message normally.
+ *
+ * Keys are `${streamId}:${fnv1aHash(text)}`; values are timestamps. Entries
+ * older than SELF_SENT_TTL_MS are pruned at lookup time.
+ */
+const recentlySentByUs = new Map<string, number>();
+const SELF_SENT_TTL_MS = 5_000;
+
+function markSelfSent(streamId: string, text: string) {
+  recentlySentByUs.set(`${streamId}:${fnv1aHash(text)}`, Date.now());
+}
+
+function wasSelfSent(streamId: string, text: string): boolean {
+  const key = `${streamId}:${fnv1aHash(text)}`;
+  const ts = recentlySentByUs.get(key);
+  if (ts === undefined) return false;
+  if (Date.now() - ts > SELF_SENT_TTL_MS) {
+    recentlySentByUs.delete(key);
+    return false;
+  }
+  return true;
+}
+
 interface StreamSubscription {
   /** Null between prepareSubscription() and subscribe() — events still
    *  accumulate into messageMap and buffered queues, then flush on subscribe. */
@@ -63,6 +92,10 @@ interface StreamSubscription {
   messageMap: Map<string, ChatMessage>;
   /** Currently-streaming assistant message id (for chunk accumulation) */
   currentAssistantId: string | null;
+  /** Agent display name captured from createStream(). Applied to assistant
+   *  + tool messages on notify so the chat bubbles render the agent's name
+   *  + boring-avatar instead of a generic "agent" label. */
+  agentName: string | null;
   /**
    * Time-windowed fingerprint dedup. MAP SDK can deliver the same update 2×
    * within a few ms; legitimate repeats (agent emitting "." twice in quick
@@ -102,6 +135,7 @@ function emptySubscription(): StreamSubscription {
     handlers: null,
     messageMap: new Map(),
     currentAssistantId: null,
+    agentName: null,
     recentFingerprints: new Map(),
     eventSeq: 0,
     pendingPermissions: [],
@@ -109,6 +143,20 @@ function emptySubscription(): StreamSubscription {
     pendingStatus: null,
     pendingError: null,
   };
+}
+
+/**
+ * 32-bit FNV-1a — used to fingerprint user-prompt content for dedup of the
+ * same prompt arriving via two paths (local optimistic echo + WS broadcast
+ * from acp.prompt.started). Cheap, deterministic, no crypto needed.
+ */
+function fnv1aHash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
 }
 
 /**
@@ -138,8 +186,29 @@ function finalizeAssistantBubble(sub: StreamSubscription): void {
   sub.currentAssistantId = null;
 }
 
+/**
+ * Inject the agent's identity (name + boring-avatar palette) into every
+ * non-user message before notifying the channel. Done at notify-time rather
+ * than message-construction-time so that:
+ *   - all message-creation sites stay clean (no copy-paste of identity wiring)
+ *   - if the agent name resolves later, all historical bubbles re-paint with
+ *     the right avatar on the next notify
+ */
+function decorateWithAgentIdentity(messages: ChatMessage[], agentName: string | null): ChatMessage[] {
+  if (!agentName) return messages;
+  return messages.map((m) => {
+    if (m.role === 'user') return m;
+    if (m.senderName && m.agentIdentity) return m; // already set
+    return {
+      ...m,
+      senderName: m.senderName ?? agentName,
+      agentIdentity: m.agentIdentity ?? { name: agentName },
+    };
+  });
+}
+
 function notifyMessages(sub: StreamSubscription) {
-  sub.handlers?.onMessages(Array.from(sub.messageMap.values()));
+  sub.handlers?.onMessages(decorateWithAgentIdentity(Array.from(sub.messageMap.values()), sub.agentName));
 }
 
 function registerGlobalListeners() {
@@ -239,6 +308,16 @@ function registerGlobalListeners() {
     }
 
     // Assistant streaming text
+    //
+    // Intentionally does NOT set status to 'streaming'. Chunks arrive
+    // both from live streaming and from session/load replay, and there's
+    // no reliable per-chunk marker to distinguish them. Inferring live
+    // activity from chunk arrivals made every resumed session appear as
+    // "Agent is responding..." forever whenever the replayed transcript
+    // didn't end with an end_turn/stopReason event (truncation, crashed
+    // mid-turn, SDK replay window). Instead, status is driven by user
+    // intent: `prompt()` flips to 'streaming', `end_turn`/`stopReason`
+    // flips back to 'ready'.
     if (text && (sessionUpdate === 'agent_message_chunk' || sessionUpdate === 'content_chunk' || !sessionUpdate)) {
       if (!sub.currentAssistantId) {
         sub.currentAssistantId = `acp-a-${Date.now()}-${sub.eventSeq++}`;
@@ -261,11 +340,6 @@ function registerGlobalListeners() {
         }
       }
       notifyMessages(sub);
-      if (sub.handlers) {
-        sub.handlers.onStatus('streaming');
-      } else {
-        sub.pendingStatus = { status: 'streaming' };
-      }
     }
 
     // End of turn
@@ -330,9 +404,81 @@ function registerGlobalListeners() {
     else sub.pendingError = err;
   };
 
+  // Multi-tab clear-on-resolve: when one surface answers a permission /
+  // question, the backend broadcasts `*.resolved` so siblings can drop the
+  // stale dialog. No-op if the channel hasn't wired the optional handler.
+  const onPermissionResolved = (raw: unknown) => {
+    const data = (raw as { data?: { streamId?: string; requestId?: string } }).data ?? raw as Record<string, unknown>;
+    const streamId = (data as { streamId?: string }).streamId;
+    const requestId = (data as { requestId?: string }).requestId;
+    if (!streamId || !requestId) return;
+    const sub = subscriptions.get(streamId);
+    if (!sub) return;
+    // Drop from buffered list (in case it lands before subscribe attaches)
+    sub.pendingPermissions = sub.pendingPermissions.filter((p) => p.id !== requestId);
+    sub.handlers?.onPermissionResolved?.(requestId);
+  };
+
+  const onQuestionResolved = (raw: unknown) => {
+    const data = (raw as { data?: { streamId?: string; requestId?: string } }).data ?? raw as Record<string, unknown>;
+    const streamId = (data as { streamId?: string }).streamId;
+    const requestId = (data as { requestId?: string }).requestId;
+    if (!streamId || !requestId) return;
+    const sub = subscriptions.get(streamId);
+    if (!sub) return;
+    sub.pendingQuestions = sub.pendingQuestions.filter((q) => q.id !== requestId);
+    sub.handlers?.onQuestionResolved?.(requestId);
+  };
+
+  // Multi-tab user-prompt sync: when ANY tab calls prompt(), the backend
+  // emits `acp.prompt.started` with the prompt content. The sending tab
+  // already shows an optimistic local echo, but sibling tabs sharing the
+  // same session need to see the user message too. Synthesize a user
+  // message in the messageMap so it renders alongside the agent reply.
+  // Note: this also fires on the sending tab — the local echo gets
+  // de-duped because it has a different (local-) id; the canonical
+  // message arrives via this path. Acceptable cost for sync.
+  const onPromptStarted = (raw: unknown) => {
+    const data = (raw as { data?: { streamId?: string; sessionId?: string; prompt?: Array<{ type?: string; text?: string }> } }).data
+      ?? raw as Record<string, unknown>;
+    const streamId = (data as { streamId?: string }).streamId;
+    if (!streamId) return;
+    const sub = subscriptions.get(streamId);
+    if (!sub) return;
+    const promptArr = (data as { prompt?: Array<{ type?: string; text?: string }> }).prompt ?? [];
+    const text = promptArr
+      .filter((p) => p.type === 'text' && p.text)
+      .map((p) => p.text)
+      .join('\n');
+    if (!text) return;
+    // Suppress on the sending tab — local echo in useChatChannel already
+    // shows this prompt. Sibling tabs won't have the fingerprint and will
+    // synthesize the message normally.
+    if (wasSelfSent(streamId, text)) return;
+    finalizeAssistantBubble(sub);
+    // Stable id per (streamId, sessionId, content fingerprint) so concurrent
+    // delivery on multiple tabs doesn't duplicate the user bubble.
+    const sessionId = (data as { sessionId?: string }).sessionId ?? '';
+    const id = `acp-user-${streamId}:${sessionId}:${fnv1aHash(text)}`;
+    if (sub.messageMap.has(id)) return;
+    sub.messageMap.set(id, {
+      id,
+      role: 'user',
+      sender: 'user',
+      senderName: 'You',
+      content: text,
+      contentType: 'text',
+      timestamp: Date.now(),
+    });
+    notifyMessages(sub);
+  };
+
   track('acp.session.update', onSessionUpdate);
   track('acp.permission.request', onPermissionRequest);
+  track('acp.permission.resolved', onPermissionResolved);
   track('acp.question.request', onQuestionRequest);
+  track('acp.question.resolved', onQuestionResolved);
+  track('acp.prompt.started', onPromptStarted);
   track('acp.stream.error', onStreamError);
   track('acp.prompt.completed', (raw) => {
     const data = (raw as { data?: { streamId?: string } }).data ?? raw as Record<string, unknown>;
@@ -361,6 +507,20 @@ export function ensureAcpListenersRegistered() {
   registerGlobalListeners();
 }
 
+/**
+ * Update the agent display name for a stream after the fact. Used by the
+ * chat panel on resumed sessions where `createStream()` wasn't called this
+ * page-load, so the name has to be backfilled from the MAP registry.
+ * No-op when the name hasn't actually changed.
+ */
+export function setAcpStreamAgentName(streamId: string, name: string | null): void {
+  const sub = subscriptions.get(streamId) ?? emptySubscription();
+  if (sub.agentName === name) return;
+  sub.agentName = name;
+  subscriptions.set(streamId, sub);
+  notifyMessages(sub);
+}
+
 export function createOpenHiveAcpServiceLike(): AcpServiceLike {
   return {
     createStream: async (serverId, targetAgent, agentName) => {
@@ -368,6 +528,15 @@ export function createOpenHiveAcpServiceLike(): AcpServiceLike {
         method: 'POST',
         body: JSON.stringify({ serverId, targetAgent, agentName }),
       });
+      // Stash the display name on (or pre-create) the per-stream subscription
+      // so chat bubbles can render the agent's avatar + name. Done unconditionally
+      // — even when the subscription was already created by prepareSubscription.
+      const sub = subscriptions.get(res.streamId) ?? emptySubscription();
+      sub.agentName = agentName ?? targetAgent ?? null;
+      subscriptions.set(res.streamId, sub);
+      // Re-notify so any messages already in the map (e.g. from a prior
+      // session/load replay) re-render with the freshly-set identity.
+      notifyMessages(sub);
       return res.streamId;
     },
 
@@ -392,9 +561,41 @@ export function createOpenHiveAcpServiceLike(): AcpServiceLike {
           ...(meta ? { _meta: meta } : {}),
         }),
       });
+      // Baseline reset after load. The RPC returns once the server has
+      // the session loaded; historical `session/update` replays then
+      // arrive asynchronously via WS and rebuild the message list. We
+      // don't let those replays drive status (see chunk handler), so the
+      // default state for a newly-loaded session is 'ready'. Any in-
+      // progress assistant bubble from a previous live turn gets
+      // finalized here so a subsequent live chunk starts a fresh one.
+      const sub = subscriptions.get(streamId);
+      if (sub) {
+        finalizeAssistantBubble(sub);
+        if (sub.handlers) {
+          sub.handlers.onStatus('ready');
+        } else {
+          sub.pendingStatus = { status: 'ready' };
+        }
+      }
     },
 
     prompt: async (streamId, text) => {
+      // Tag this prompt so the corresponding `acp.prompt.started` broadcast
+      // doesn't synthesize a duplicate user message on this tab — our local
+      // optimistic echo (in useChatChannel) is already rendering it.
+      markSelfSent(streamId, text);
+      // Optimistically flip to 'streaming' before the POST so the UI
+      // reflects "agent is responding…" the instant the user sends,
+      // rather than waiting for the first WS chunk. Status transitions
+      // back to 'ready' when `end_turn` or `stopReason` arrives.
+      const sub = subscriptions.get(streamId);
+      if (sub) {
+        if (sub.handlers) {
+          sub.handlers.onStatus('streaming');
+        } else {
+          sub.pendingStatus = { status: 'streaming' };
+        }
+      }
       // SwarmCraft's /prompt endpoint accepts either { message } (simple) or
       // { prompt: [...] } (full ACP). It does NOT accept { text } — that would
       // silently normalize to an empty prompt.

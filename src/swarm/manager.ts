@@ -7,6 +7,7 @@
 
 import { createHash } from 'crypto';
 import * as fs from 'fs';
+import * as net from 'net';
 import * as path from 'path';
 import { createRequire } from 'module';
 import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-generator';
@@ -49,7 +50,7 @@ export class SwarmManager {
 
     // Initialize local provider with exit handler
     const command = this.resolveOpenswarmCommand(config.openswarm_command);
-    const localProvider = new LocalProvider(command);
+    const localProvider = new LocalProvider(command, config.logs);
     localProvider.onProcessExit = (instanceId, code, signal) => {
       this.handleProcessExit(instanceId, code, signal);
     };
@@ -161,8 +162,13 @@ export class SwarmManager {
       throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', `Hosting provider "${providerType}" is not configured`);
     }
 
-    // Allocate a port
-    const port = this.allocatePort();
+    // Generate bootstrap token
+    const adapter = input.adapter ?? 'macro-agent';
+
+    // Allocate port(s) — adapters like macro-agent need several consecutive
+    // ports (see getPortStride). allocatePorts probes the OS to avoid collisions
+    // with stale processes or previously assigned adjacent ports.
+    const port = await this.allocatePorts(adapter);
     if (!port) {
       throw new SwarmHostingError(
         'NO_PORTS_AVAILABLE',
@@ -170,9 +176,14 @@ export class SwarmManager {
       );
     }
 
-    // Generate bootstrap token
-    const adapter = input.adapter ?? 'macro-agent';
-    const dataDir = path.join(this.config.data_dir, `swarm-${port}`);
+    // Pre-generate the hosted-swarm id so we can key data_dir on it.
+    // Prior scheme (`swarm-${port}`) drifts the moment a revive picks a
+    // different port, so two distinct swarms could end up competing for
+    // the same on-disk directory after a port swap. Using the id keeps
+    // the data path stable for the lifetime of the row, regardless of
+    // port churn.
+    const hostedSwarmId = dal.generateHostedSwarmId();
+    const dataDir = path.join(this.config.data_dir, `swarm-${hostedSwarmId}`);
 
     // Create a pre-auth key if a hive is specified
     let preauthKeyPlaintext: string | undefined;
@@ -181,7 +192,7 @@ export class SwarmManager {
         const { findHiveByName } = await import('../db/dal/hives.js');
         const hive = findHiveByName(input.hive);
         if (!hive) {
-          this.releasePort(port);
+          this.releasePorts(port, adapter);
           throw new SwarmHostingError('HIVE_NOT_FOUND', `Hive "${input.hive}" not found`);
         }
         const keyResult = mapDal.createPreauthKey(agentId, {
@@ -191,7 +202,7 @@ export class SwarmManager {
         });
         preauthKeyPlaintext = keyResult.plaintext_key;
       } catch (err) {
-        this.releasePort(port);
+        this.releasePorts(port, adapter);
         if (err instanceof SwarmHostingError) throw err;
         throw new SwarmHostingError('PREAUTH_KEY_FAILED', `Failed to create pre-auth key: ${(err as Error).message}`);
       }
@@ -295,10 +306,12 @@ export class SwarmManager {
         inherit_env: inheritEnv,
       },
       workspace: input.workspace,
+      bootstrap: input.bootstrap,
     };
 
-    // Create DB record
+    // Create DB record — id is pre-generated so data_dir matches.
     const hosted = dal.createHostedSwarm({
+      id: hostedSwarmId,
       provider: providerType,
       spawned_by: agentId,
       assigned_port: port,
@@ -414,7 +427,7 @@ export class SwarmManager {
       return dal.findHostedSwarmById(hosted.id)!;
     } catch (err) {
       // Clean up on failure
-      this.releasePort(port);
+      this.releasePorts(port, adapter);
 
       dal.updateHostedSwarm(hosted.id, {
         state: 'failed',
@@ -470,14 +483,21 @@ export class SwarmManager {
 
     // Release port
     if (hosted.assigned_port) {
-      this.releasePort(hosted.assigned_port);
+      this.releasePorts(hosted.assigned_port, hosted.config?.adapter);
     }
 
-    // Deregister from MAP hub if registered
+    // Mark the MAP hub swarm as offline (but keep the row).
+    //
+    // We deliberately do NOT delete the map_swarms row here: hosted_swarms.swarm_id
+    // has a `REFERENCES map_swarms(id) ON DELETE SET NULL` FK, so deleting would
+    // null out the hosted swarm's swarm_id — destroying the linkage needed for
+    // restart and durable session resume. Instead, flip status to 'offline' so the
+    // swarm disappears from "online" lists while preserving its identity for
+    // cold-restart via the saved bootstrap_token.
     if (hosted.swarm_id) {
       try {
-        mapDal.deleteSwarm(hosted.swarm_id);
-      } catch { /* swarm may already be deleted */ }
+        mapDal.updateSwarm(hosted.swarm_id, { status: 'offline' });
+      } catch { /* best-effort */ }
     }
 
     dal.updateHostedSwarm(hostedSwarmId, { state: 'stopped', error: null });
@@ -496,50 +516,127 @@ export class SwarmManager {
   // ==========================================================================
 
   async restart(hostedSwarmId: string, agentId: string): Promise<HostedSwarm> {
-    const hosted = dal.findHostedSwarmById(hostedSwarmId);
-    if (!hosted) {
+    const hostedInitial = dal.findHostedSwarmById(hostedSwarmId);
+    if (!hostedInitial) {
       throw new SwarmHostingError('NOT_FOUND', 'Hosted swarm not found');
     }
-    if (hosted.spawned_by !== agentId) {
+    if (hostedInitial.spawned_by !== agentId) {
       throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
     }
 
+    // Heal orphaned swarm_id if a prior stop nulled it via the old FK cascade.
+    // Repair is idempotent — if swarm_id is already set, this is a no-op.
+    // Re-read after repair so downstream sees the healed row.
+    this.repairSwarmIdLink(hostedSwarmId, hostedInitial);
+    const hosted = dal.findHostedSwarmById(hostedSwarmId)!;
+
     const provider = this.providers.get(hosted.provider);
-    if (!provider || !provider.restart) {
-      throw new SwarmHostingError('RESTART_NOT_SUPPORTED', `Provider "${hosted.provider}" does not support restart`);
+    if (!provider) {
+      throw new SwarmHostingError('RESTART_NOT_SUPPORTED', `Provider "${hosted.provider}" not available`);
     }
 
     dal.updateHostedSwarm(hostedSwarmId, { state: 'starting', error: null });
 
+    // Two restart modes:
+    //
+    //   HOT (bounce): instance is tracked in memory. Reuse provider.restart() —
+    //     same port, same config, minimal churn.
+    //
+    //   COLD (re-provision): no in-memory instance. Happens after a manual stop
+    //     (which clears hostedToInstanceId) or after a hub restart. Fall through
+    //     to the same cold-start path the crash-recovery auto-restart uses,
+    //     which re-provisions from the persisted hosted.config.
     const instanceId = this.getInstanceId(hosted);
-    if (!instanceId) {
-      throw new SwarmHostingError('RESTART_FAILED', 'No tracked instance to restart');
+
+    if (instanceId && provider.restart) {
+      try {
+        const result = await provider.restart(instanceId);
+
+        // provider.restart spawns a fresh process, so the instance id changes.
+        // Rewrite both sides of the mapping — otherwise getInstanceId keeps
+        // returning the dead one and downstream calls (getLogs, getStatus)
+        // hit the "instance not tracked" fallbacks.
+        this.instanceToHostedId.delete(instanceId);
+        this.instanceToHostedId.set(result.instance_id, hostedSwarmId);
+        this.hostedToInstanceId.set(hostedSwarmId, result.instance_id);
+
+        dal.updateHostedSwarm(hostedSwarmId, {
+          pid: result.pid ?? null,
+          endpoint: result.endpoint ?? null,
+          state: 'running',
+          error: null,
+        });
+
+        if (hosted.swarm_id) {
+          try {
+            mapDal.heartbeatSwarm(hosted.swarm_id);
+          } catch { /* swarm may not exist */ }
+        }
+
+        return dal.findHostedSwarmById(hostedSwarmId)!;
+      } catch (err) {
+        // If the original port is still bound (TIME_WAIT, stale child, another
+        // process claimed it), drop the HOT-restart optimization and fall
+        // through to the cold-start path — autoRestart allocates a fresh
+        // port via `allocatePorts`. Without this, the retried process would
+        // bind-fail on boot and crash-loop on the same stuck port.
+        if ((err as { code?: string })?.code === 'PORT_IN_USE' && hosted.config) {
+          console.warn(
+            `[swarm-manager] Port ${hosted.config.assigned_port} stuck on restart of ${hostedSwarmId}; ` +
+              `releasing and re-allocating via autoRestart`,
+          );
+          // Release the stuck port reservation so allocatePorts can reuse it
+          // later once the OS finishes TIME_WAIT.
+          this.releasePorts(hosted.config.assigned_port, hosted.config.adapter);
+          this.hostedToInstanceId.delete(hostedSwarmId);
+          this.instanceToHostedId.delete(instanceId);
+          try {
+            await this.autoRestart(hostedSwarmId, hosted);
+            return dal.findHostedSwarmById(hostedSwarmId)!;
+          } catch (retryErr) {
+            dal.updateHostedSwarm(hostedSwarmId, {
+              state: 'failed',
+              error: (retryErr as Error).message,
+            });
+            throw new SwarmHostingError(
+              'RESTART_FAILED',
+              `Port in use, re-allocation failed: ${(retryErr as Error).message}`,
+            );
+          }
+        }
+
+        dal.updateHostedSwarm(hostedSwarmId, {
+          state: 'failed',
+          error: (err as Error).message,
+        });
+        throw new SwarmHostingError('RESTART_FAILED', `Failed to restart: ${(err as Error).message}`);
+      }
+    }
+
+    // Cold-start path — no tracked instance. Requires the persisted config to
+    // re-provision from scratch. The bootstrap token inside `hosted.config`
+    // carries the original swarm_id, so the revived process registers under
+    // the same identity (no re-registration needed on the hub).
+    if (!hosted.config) {
+      dal.updateHostedSwarm(hostedSwarmId, {
+        state: 'failed',
+        error: 'Cannot cold-start: no persisted config',
+      });
+      throw new SwarmHostingError(
+        'RESTART_FAILED',
+        'No tracked instance to restart and no persisted config to re-provision from',
+      );
     }
 
     try {
-      const result = await provider.restart(instanceId);
-
-      dal.updateHostedSwarm(hostedSwarmId, {
-        pid: result.pid ?? null,
-        endpoint: result.endpoint ?? null,
-        state: 'running',
-        error: null,
-      });
-
-      // Send heartbeat if registered in MAP hub
-      if (hosted.swarm_id) {
-        try {
-          mapDal.heartbeatSwarm(hosted.swarm_id);
-        } catch { /* swarm may not exist */ }
-      }
-
+      await this.autoRestart(hostedSwarmId, hosted);
       return dal.findHostedSwarmById(hostedSwarmId)!;
     } catch (err) {
       dal.updateHostedSwarm(hostedSwarmId, {
         state: 'failed',
         error: (err as Error).message,
       });
-      throw new SwarmHostingError('RESTART_FAILED', `Failed to restart: ${(err as Error).message}`);
+      throw new SwarmHostingError('RESTART_FAILED', `Cold-start failed: ${(err as Error).message}`);
     }
   }
 
@@ -609,7 +706,7 @@ export class SwarmManager {
             state: status.state,
             error: status.error ?? null,
           });
-          if (hosted.assigned_port) this.releasePort(hosted.assigned_port);
+          if (hosted.assigned_port) this.releasePorts(hosted.assigned_port, hosted.config?.adapter);
           continue;
         }
 
@@ -648,6 +745,112 @@ export class SwarmManager {
         console.warn(`[swarm-manager] Health check error for ${hosted.id}: ${(err as Error).message}`);
       }
     }
+  }
+
+  // ==========================================================================
+  // Startup revival
+  // ==========================================================================
+
+  /**
+   * Revive hosted swarms that were in active states when openhive last ran.
+   *
+   * On a server restart, openswarm child processes have almost always died
+   * with the parent (detached children get killed by the exit handler;
+   * anything that somehow survives is a detached orphan we can't adopt into
+   * the provider's in-memory instance map anyway). Meanwhile the
+   * `hosted_swarms` rows still say `state = running/starting/unhealthy`.
+   *
+   * Without revival, those rows become zombies: the UI shows them as
+   * online (sidecar status lingers briefly after hub restart too), any
+   * action fails because `hostedToInstanceId` is empty, and the user has
+   * to manually remove + respawn.
+   *
+   * Strategy per row:
+   *   - PID is alive AND we DON'T track it: orphan — mark failed with a
+   *     diagnostic. Killing it blindly is too aggressive (user might want
+   *     to diagnose); leaving it claiming `running` is worse (health
+   *     monitor can't touch it). `failed` flips to the "restart" UI affordance.
+   *   - PID is dead: cold-start via autoRestart (same path crash recovery
+   *     uses). This is the common case.
+   *   - Never call stop() first — the child process is already gone and
+   *     stop tries to gracefully signal it, just wasting time on the
+   *     common path.
+   *
+   * Runs sequentially to cap startup resource churn. If N swarms all
+   * revive at once we spawn N openswarm processes + N Claude Code
+   * subprocesses, which isn't free.
+   */
+  async reviveHostedSwarms(): Promise<{ revived: number; orphaned: number; failed: number }> {
+    // Rows that SHOULD have a live process. Don't touch stopped/failed —
+    // the user deliberately stopped those, or they already failed.
+    const { data: candidates } = dal.listHostedSwarms({ limit: 500 });
+    const active = candidates.filter(
+      (h) => h.state === 'running' || h.state === 'starting' || h.state === 'unhealthy',
+    );
+
+    if (active.length === 0) {
+      return { revived: 0, orphaned: 0, failed: 0 };
+    }
+
+    console.log(`[swarm-manager] Reviving ${active.length} hosted swarm(s) from last run`);
+
+    let revived = 0;
+    let orphaned = 0;
+    let failed = 0;
+
+    for (const hosted of active) {
+      const pid = hosted.pid;
+      const alive = pid ? isPidAlive(pid) : false;
+
+      if (alive) {
+        // Orphan — can't adopt this PID into the provider's instance map
+        // without deeper hooks. Mark as failed so the UI surfaces a
+        // Restart affordance; the user can click Restart to cold-start
+        // a replacement (old orphan will need manual kill).
+        console.warn(
+          `[swarm-manager] Hosted swarm ${hosted.id} has an orphan PID ${pid} — marking failed (user should restart manually)`,
+        );
+        dal.updateHostedSwarm(hosted.id, {
+          state: 'failed',
+          error: `Orphaned PID ${pid} from prior openhive instance — cannot adopt. Use Restart to replace.`,
+        });
+        orphaned++;
+        continue;
+      }
+
+      // Dead PID — cold-start via autoRestart. Handles port re-allocation,
+      // credential re-resolution, swarm_id repair, health wait.
+      if (!hosted.config) {
+        console.warn(
+          `[swarm-manager] Hosted swarm ${hosted.id} has no saved config — marking failed`,
+        );
+        dal.updateHostedSwarm(hosted.id, {
+          state: 'failed',
+          error: 'Cannot revive: no persisted config',
+        });
+        failed++;
+        continue;
+      }
+
+      try {
+        await this.autoRestart(hosted.id, hosted);
+        revived++;
+      } catch (err) {
+        console.error(
+          `[swarm-manager] Failed to revive ${hosted.id}: ${(err as Error).message}`,
+        );
+        dal.updateHostedSwarm(hosted.id, {
+          state: 'failed',
+          error: `Revival failed on startup: ${(err as Error).message}`,
+        });
+        failed++;
+      }
+    }
+
+    console.log(
+      `[swarm-manager] Revival complete — revived: ${revived}, orphaned: ${orphaned}, failed: ${failed}`,
+    );
+    return { revived, orphaned, failed };
   }
 
   // ==========================================================================
@@ -737,7 +940,7 @@ export class SwarmManager {
 
     // Release port
     if (hosted.assigned_port) {
-      this.releasePort(hosted.assigned_port);
+      this.releasePorts(hosted.assigned_port, hosted.config?.adapter);
     }
 
     // Broadcast crash/shutdown event to connected clients
@@ -787,6 +990,38 @@ export class SwarmManager {
   }
 
   /**
+   * Repair the hosted → map_swarms linkage by decoding the persisted
+   * bootstrap_token. Earlier versions of stop() deleted the map_swarms row
+   * directly, which (via FK ON DELETE SET NULL) nulled out
+   * hosted_swarms.swarm_id — losing the stable identity needed for restart
+   * and UI navigation.
+   *
+   * The bootstrap_token is base64-encoded JSON that includes the
+   * pre-registered swarm_id; it's saved on hosted.config and never mutated,
+   * so we can always recover the original id.
+   *
+   * Returns the recovered swarm_id, or null if the token is unusable or the
+   * hosted row is missing. Safe to call at any time — the restart path uses
+   * this to heal orphaned rows (and also to re-link after a clean stop +
+   * map_swarms deletion cycle).
+   */
+  private repairSwarmIdLink(hostedId: string, hosted: HostedSwarm): string | null {
+    if (hosted.swarm_id) return hosted.swarm_id;
+    const token = hosted.config?.bootstrap_token;
+    if (!token) return null;
+    try {
+      const payload = JSON.parse(Buffer.from(token, 'base64').toString('utf-8'));
+      const swarmId = typeof payload?.swarm_id === 'string' ? payload.swarm_id : null;
+      if (!swarmId) return null;
+      dal.updateHostedSwarm(hostedId, { swarm_id: swarmId });
+      console.log(`[swarm-manager] Repaired swarm_id linkage for ${hostedId} → ${swarmId}`);
+      return swarmId;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Re-provision a crashed swarm using its saved config.
    */
   private async autoRestart(hostedId: string, hosted: HostedSwarm): Promise<void> {
@@ -795,10 +1030,35 @@ export class SwarmManager {
       throw new Error('Cannot auto-restart: provider or config not available');
     }
 
+    // Heal orphaned swarm_id before provisioning — the revived sidecar will
+    // register under the id encoded in its bootstrap_token, so hosted_swarms
+    // must point at that row for UI navigation + heartbeat to work. The
+    // repair writes to the DB; use the recovered id alongside the existing
+    // hosted handle rather than re-reading (to preserve the non-null
+    // narrowing on hosted.config that the guard above established).
+    const resolvedSwarmId = hosted.swarm_id ?? this.repairSwarmIdLink(hostedId, hosted);
+
     dal.updateHostedSwarm(hostedId, { state: 'starting', error: null });
 
-    // Re-allocate a port (the old one was released)
-    const port = this.allocatePort();
+    // Prefer the swarm's previous port so endpoints stay stable across
+    // restarts — any client that cached the old URL reconnects cleanly,
+    // and the UI/debugging stays coherent. Fall back to the general scan
+    // if the old port is held (orphan, another swarm claimed it during
+    // downtime, etc.). Probes the OS so we never hand back a port that
+    // isn't actually bindable.
+    let port: number | null = null;
+    const prev = hosted.assigned_port;
+    if (prev && (await this.tryReserveSpecificPort(prev, hosted.config.adapter))) {
+      port = prev;
+      console.log(`[swarm-manager] Reusing previous port ${prev} for ${hostedId}`);
+    } else {
+      port = await this.allocatePorts(hosted.config.adapter);
+      if (port !== null && prev && port !== prev) {
+        console.log(
+          `[swarm-manager] Previous port ${prev} unavailable for ${hostedId}, allocated ${port}`,
+        );
+      }
+    }
     if (!port) {
       throw new Error('No ports available for restart');
     }
@@ -841,10 +1101,12 @@ export class SwarmManager {
     dal.updateHostedSwarm(hostedId, { state: 'running', error: null });
     this.restartCounts.delete(hostedId);
 
-    // Send heartbeat if registered in MAP hub
-    if (hosted.swarm_id) {
+    // Send heartbeat if registered in MAP hub. Use resolvedSwarmId so a
+    // freshly-repaired linkage (from the bootstrap_token) gets used on the
+    // first restart after a stop.
+    if (resolvedSwarmId) {
       try {
-        mapDal.heartbeatSwarm(hosted.swarm_id);
+        mapDal.heartbeatSwarm(resolvedSwarmId);
       } catch { /* swarm may not exist */ }
     }
 
@@ -888,19 +1150,122 @@ export class SwarmManager {
     };
   }
 
-  private allocatePort(): number | null {
+  /**
+   * How many consecutive ports the adapter process binds, starting at --port.
+   *
+   * macro-agent binds three:
+   *   port     — ACP WebSocket server
+   *   port + 1 — gateway HTTP (health/metrics)
+   *   port + 2 — MAP server
+   *
+   * If we only reserved one, spawning N macro-agent swarms at 9000, 9001, 9002…
+   * would collide: swarm #2's --port 9001 clashes with swarm #1's gateway HTTP.
+   */
+  private getPortStride(adapter: string | undefined): number {
+    return adapter === 'macro-agent' ? 3 : 1;
+  }
+
+  /** Try to bind briefly to (host, port); resolve true if it was free. */
+  private isPortFree(port: number, host: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const server = net.createServer();
+      server.once('error', () => resolve(false));
+      server.once('listening', () => {
+        server.close(() => resolve(true));
+      });
+      server.listen(port, host);
+    });
+  }
+
+  /**
+   * Allocate a base port with `stride` consecutive ports all free at the OS
+   * level and not already reserved in-memory. Reserves all N ports against
+   * concurrent spawns. Returns the base port, or null if none found.
+   */
+  private async allocatePorts(adapter: string | undefined): Promise<number | null> {
+    const stride = this.getPortStride(adapter);
     const [min, max] = this.config.port_range;
-    for (let port = min; port <= max; port++) {
-      if (!this.usedPorts.has(port)) {
-        this.usedPorts.add(port);
-        return port;
+    const host = '127.0.0.1';
+    const maxBase = max - stride + 1;
+    if (maxBase < min) return null;
+
+    for (let base = min; base <= maxBase; base++) {
+      // Skip if any port in [base, base+stride-1] is already reserved by
+      // another swarm (or an in-flight concurrent spawn).
+      let reserved = false;
+      for (let i = 0; i < stride; i++) {
+        if (this.usedPorts.has(base + i)) {
+          reserved = true;
+          break;
+        }
       }
+      if (reserved) continue;
+
+      // OS-level probe: every port must actually be bindable. Re-check
+      // usedPorts on each iteration so that a concurrent allocatePorts call
+      // reserving while we're awaiting isPortFree is still visible.
+      let allFree = true;
+      for (let i = 0; i < stride; i++) {
+        const p = base + i;
+        if (this.usedPorts.has(p) || !(await this.isPortFree(p, host))) {
+          allFree = false;
+          break;
+        }
+      }
+      if (!allFree) continue;
+
+      // Final synchronous recheck before reservation — once we commit to the
+      // Set mutation below, no other async call can slip in until we yield.
+      let stillFree = true;
+      for (let i = 0; i < stride; i++) {
+        if (this.usedPorts.has(base + i)) {
+          stillFree = false;
+          break;
+        }
+      }
+      if (!stillFree) continue;
+
+      for (let i = 0; i < stride; i++) this.usedPorts.add(base + i);
+      return base;
     }
     return null;
   }
 
-  private releasePort(port: number): void {
-    this.usedPorts.delete(port);
+  /**
+   * Try to reserve a specific base port (plus its stride neighbors). Used
+   * by `autoRestart` to give a revived swarm its previous port back when
+   * nothing else has claimed it — keeps endpoints stable across restarts
+   * instead of letting `allocatePorts` wander to whatever's free from
+   * `port_range.min`. Returns true on success (ports are reserved) or
+   * false if any port is already taken; caller falls back to the scan.
+   */
+  private async tryReserveSpecificPort(
+    base: number,
+    adapter: string | undefined,
+  ): Promise<boolean> {
+    const stride = this.getPortStride(adapter);
+    const [min, max] = this.config.port_range;
+    if (base < min || base + stride - 1 > max) return false;
+
+    for (let i = 0; i < stride; i++) {
+      if (this.usedPorts.has(base + i)) return false;
+    }
+    for (let i = 0; i < stride; i++) {
+      if (!(await this.isPortFree(base + i, '127.0.0.1'))) return false;
+    }
+    for (let i = 0; i < stride; i++) {
+      if (this.usedPorts.has(base + i)) return false;
+    }
+
+    for (let i = 0; i < stride; i++) this.usedPorts.add(base + i);
+    return true;
+  }
+
+  private releasePorts(basePort: number, adapter: string | undefined): void {
+    const stride = this.getPortStride(adapter);
+    for (let i = 0; i < stride; i++) {
+      this.usedPorts.delete(basePort + i);
+    }
   }
 
   private getInstanceId(hosted: HostedSwarm): string | null {
@@ -938,6 +1303,29 @@ export class SwarmManager {
     } catch {
       return false;
     }
+  }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/**
+ * Check whether a PID is currently running.
+ *
+ * `process.kill(pid, 0)` sends no signal but throws ESRCH if the process
+ * doesn't exist. It can also throw EPERM if the pid belongs to another user —
+ * in that case the process IS alive (we just can't signal it), so we treat
+ * EPERM as "alive too" for the conservative-adoption path.
+ */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EPERM') return true;
+    return false;
   }
 }
 

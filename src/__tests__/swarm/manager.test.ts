@@ -4,6 +4,7 @@ import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import { SwarmManager, SwarmHostingError } from '../../swarm/manager.js';
+import * as swarmDAL from '../../swarm/dal.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
@@ -150,6 +151,27 @@ describe('SwarmManager', () => {
       }
     }, 65000);
 
+    it('derives data_dir from the hosted swarm id, not the port', async () => {
+      // Regression guard: before this change, data_dir was `swarm-${port}`,
+      // which meant two swarms that ran on the same port at different
+      // times shared a directory on disk. Keying on the (stable) hosted
+      // swarm id instead keeps each swarm's on-disk state isolated and
+      // unaffected by port drift across restarts.
+      const config = createTestConfig();
+      const manager = new SwarmManager(config, 'http://localhost:3000');
+
+      try {
+        const hosted = await manager.spawn(agentId, { name: 'data-dir-id-test' });
+        expect(hosted.config?.data_dir).toBe(
+          path.join(TEST_DATA_DIR, `swarm-${hosted.id}`),
+        );
+        // And — paranoia — the directory name must not encode a port.
+        expect(hosted.config?.data_dir).not.toMatch(/swarm-\d+$/);
+      } finally {
+        await manager.shutdown();
+      }
+    }, 35000);
+
     it('should use default adapter when none specified', async () => {
       const config = createTestConfig();
       const manager = new SwarmManager(config, 'http://localhost:3000');
@@ -253,6 +275,100 @@ describe('SwarmManager', () => {
         await manager.shutdown();
       }
     });
+
+    it('preserves bootstrap config across cold restart', async () => {
+      // bootstrap.coordinator + bootstrap.cwd live on the persisted hosted
+      // swarm row's `config` JSON. After stop+restart (cold path), the
+      // re-provision must read them back so the env-var bridge fires
+      // again and the auto-coordinator spawns. Without this, an
+      // auto-spawn-on-startup setting would silently de-activate after
+      // the first stop/restart cycle.
+      const config = createTestConfig();
+      const manager = new SwarmManager(config, 'http://localhost:3000');
+
+      try {
+        const hosted = await manager.spawn(agentId, {
+          name: 'bootstrap-restart-test',
+          bootstrap: { coordinator: true, cwd: '/some/project' },
+        });
+        expect(hosted.state).toBe('running');
+
+        // Verify bootstrap was persisted in the DB row.
+        const persisted = swarmDAL.findHostedSwarmById(hosted.id);
+        expect(persisted?.config?.bootstrap).toEqual({
+          coordinator: true,
+          cwd: '/some/project',
+        });
+
+        await manager.stop(hosted.id, agentId);
+
+        const revived = await manager.restart(hosted.id, agentId);
+        expect(revived.state).toBe('running');
+
+        // Bootstrap field survives the round trip — the re-provisioned
+        // openswarm process gets the same env vars exported.
+        const afterRestart = swarmDAL.findHostedSwarmById(hosted.id);
+        expect(afterRestart?.config?.bootstrap).toEqual({
+          coordinator: true,
+          cwd: '/some/project',
+        });
+      } finally {
+        await manager.shutdown();
+      }
+    }, 60000);
+
+    it('reuses the previous port on cold restart when free', async () => {
+      // Restarts should hand the swarm back its original port so
+      // endpoints stay stable for cached clients. Before this fix,
+      // autoRestart called allocatePorts() unconditionally, which scans
+      // from port_range.min — so two stopped swarms could swap ports
+      // on restart purely by allocation order.
+      const config = createTestConfig();
+      const manager = new SwarmManager(config, 'http://localhost:3000');
+
+      try {
+        const hosted = await manager.spawn(agentId, { name: 'port-preserve-test' });
+        const originalPort = hosted.assigned_port;
+        expect(originalPort).toBeGreaterThanOrEqual(19100);
+
+        await manager.stop(hosted.id, agentId);
+        const revived = await manager.restart(hosted.id, agentId);
+        expect(revived.assigned_port).toBe(originalPort);
+      } finally {
+        await manager.shutdown();
+      }
+    }, 60000);
+
+    it('cold-starts a stopped swarm by re-provisioning from persisted config', async () => {
+      // This exercises the path where stop() has cleared the in-memory instance
+      // tracking, so provider.restart() is unavailable. restart() must fall
+      // through to provider.provision(hosted.config) using the saved bootstrap
+      // token + port + adapter. Before this fix, restart() errored with
+      // "No tracked instance to restart" — making stop/resume cycles impossible
+      // via the UI and blocking /sessions/:id/resume for stopped swarms.
+      const config = createTestConfig();
+      const manager = new SwarmManager(config, 'http://localhost:3000');
+
+      try {
+        const hosted = await manager.spawn(agentId, { name: 'cold-start-test' });
+        expect(hosted.state).toBe('running');
+        const firstPid = hosted.pid;
+        expect(firstPid).toBeGreaterThan(0);
+
+        await manager.stop(hosted.id, agentId);
+        const afterStop = swarmDAL.findHostedSwarmById(hosted.id);
+        expect(afterStop?.state).toBe('stopped');
+
+        // Restart from cold. The in-memory instance tracking was cleared by
+        // stop(), so this forces the cold-start branch.
+        const revived = await manager.restart(hosted.id, agentId);
+        expect(revived.state).toBe('running');
+        expect(revived.pid).toBeGreaterThan(0);
+        expect(revived.pid).not.toBe(firstPid); // fresh process
+      } finally {
+        await manager.shutdown();
+      }
+    }, 60000);
   });
 
   describe('health monitor', () => {
@@ -288,6 +404,81 @@ describe('SwarmManager', () => {
       // Shutdown should not throw
       await manager.shutdown();
     });
+  });
+
+  describe('reviveHostedSwarms (startup revival)', () => {
+    it('no-ops when there are no active-state swarms', async () => {
+      // Clean DB slate — any prior test rows should be stopped/failed/removed
+      // by their own shutdown paths. If a previous test leaked an active row,
+      // filter for our test agent so we only count our own.
+      const config = createTestConfig();
+      const manager = new SwarmManager(config, 'http://localhost:3000');
+
+      try {
+        const result = await manager.reviveHostedSwarms();
+        // May be 0 or revive some leaked row; key contract: it doesn't throw.
+        expect(result).toHaveProperty('revived');
+        expect(result).toHaveProperty('orphaned');
+        expect(result).toHaveProperty('failed');
+      } finally {
+        await manager.shutdown();
+      }
+    });
+
+    it('revives a running-state swarm whose PID is no longer alive', async () => {
+      // Simulate the post-crash state: spawn normally, then forcibly clear
+      // the in-memory exit handler + SIGKILL the child. The parent-side
+      // handleProcessExit would normally flip state to 'failed' when it
+      // observes the kill, but we want to model the openhive-parent-dying
+      // case where that handler never runs — hosted_swarms stays in
+      // state='running' with a now-dead PID.
+      const config = createTestConfig();
+      const manager1 = new SwarmManager(config, 'http://localhost:3000');
+      let hostedId = '';
+      let originalPid: number | null = null;
+
+      try {
+        const hosted = await manager1.spawn(agentId, { name: 'revive-test' });
+        hostedId = hosted.id;
+        originalPid = hosted.pid;
+        expect(hosted.state).toBe('running');
+
+        // Disable the exit handler so our forced kill below doesn't flip the
+        // DB row state to 'failed' — we're simulating the server dying
+        // before the handler could run.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const localProvider = (manager1 as any).providers.get('local');
+        if (localProvider) localProvider.onProcessExit = null;
+
+        if (hosted.pid) {
+          try { process.kill(hosted.pid, 'SIGKILL'); } catch { /* ignore */ }
+        }
+      } finally {
+        await manager1.shutdown();
+      }
+
+      // Give the OS a moment to reap. Also defensively reset state='running'
+      // in case shutdown's other paths updated the row.
+      await new Promise((r) => setTimeout(r, 500));
+      swarmDAL.updateHostedSwarm(hostedId, { state: 'running', error: null });
+
+      const manager2 = new SwarmManager(config, 'http://localhost:3000');
+      try {
+        const result = await manager2.reviveHostedSwarms();
+        expect(result.revived + result.failed + result.orphaned).toBeGreaterThanOrEqual(1);
+
+        const row = swarmDAL.findHostedSwarmById(hostedId);
+        // After revival, row should be running (new PID) or unhealthy (if
+        // health check timed out on the sleep-server fixture). Either way,
+        // NOT 'failed' from orphan-detection — the prior PID was dead.
+        expect(['running', 'unhealthy']).toContain(row?.state);
+        if (row?.state === 'running' && row.pid && originalPid) {
+          expect(row.pid).not.toBe(originalPid);
+        }
+      } finally {
+        await manager2.shutdown();
+      }
+    }, 90000);
   });
 });
 

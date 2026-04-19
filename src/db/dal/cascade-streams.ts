@@ -689,7 +689,10 @@ function rowToCascadeOperation(row: Row): CascadeOperation {
     agent_id: (row.agent_id as string | null) ?? null,
     strategy: row.strategy as string,
     updated_streams: parseJsonArray(row.updated_streams),
-    failed_streams: parseJsonArrayRaw(row.failed_streams),
+    // parseJsonArrayRaw returns unknown[] (preserves object elements);
+    // the column was JSON-serialized from `Array<{stream_id, reason}>`,
+    // so we narrow back to that shape here.
+    failed_streams: parseJsonArrayRaw(row.failed_streams) as Array<{ stream_id: string; reason: string }>,
     skipped_streams: parseJsonArray(row.skipped_streams),
     deferred_streams: row.deferred_streams
       ? parseJsonArray(row.deferred_streams)

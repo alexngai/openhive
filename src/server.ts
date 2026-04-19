@@ -298,6 +298,46 @@ export async function createHive(
       const scPrefix = config.swarmcraft.prefix || "/api/swarmcraft";
       const scWsPath = config.swarmcraft.wsPath || "/ws/swarmcraft";
 
+      // Instantiate the MAPClientManager OpenHive-side so we own the
+      // outbound MAP client pool. SwarmCraft uses this exact instance for
+      // ACP routing, subprocess wiring, and lifecycle listeners — no
+      // second manager is ever created on the SC side.
+      //
+      // Ownership contract (matches `skipAgentLifecycle: true` below):
+      //   - OpenHive initiates connections (swarm-bridge.connectMapClient).
+      //   - OpenHive tears it down on server close (see the onClose hook).
+      //   - SwarmCraft's destroySwarmCraftContext leaves it alone because
+      //     `ownsMapClientManager` is false when the option is supplied.
+      //
+      // Requires the `swarmcraft/map` export and `mapClientManager` plugin
+      // option, both shipped in the local `references/swarmcraft` checkout
+      // symlinked into node_modules.
+      const { MAPClientManager } = await import("swarmcraft/map");
+      const openhiveMapClientManager = new MAPClientManager({
+        info: (m: string, ...a: unknown[]) => (fastify.log.info as Function)(m, ...a),
+        warn: (m: string, ...a: unknown[]) => (fastify.log.warn as Function)(m, ...a),
+        error: (m: string, ...a: unknown[]) => (fastify.log.error as Function)(m, ...a),
+        debug: (m: string, ...a: unknown[]) => (fastify.log.debug as Function)(m, ...a),
+      });
+
+      // Teardown: register this hook BEFORE `fastify.register(swarmcraftPlugin,
+      // ...)` so that Fastify's LIFO onClose ordering fires SC's internal
+      // teardown first (which calls `acpStreamManager.closeAll()` against
+      // the still-live MAP client connections) and this hook last
+      // (disconnecting the mcm only after no ACP stream holds a reference).
+      // `bridgeHandle` is populated later via closure.
+      let bridgeHandle: { teardown(): void } | undefined;
+      fastify.addHook("onClose", async () => {
+        if (bridgeHandle) bridgeHandle.teardown();
+        try {
+          await openhiveMapClientManager.disconnectAll();
+        } catch (err) {
+          console.warn(
+            `[openhive] MAPClientManager teardown failed: ${(err as Error).message}`,
+          );
+        }
+      });
+
       const { swarmcraftPlugin } = await import("swarmcraft/plugin");
       await fastify.register(swarmcraftPlugin, {
         database: { type: "sqlite", path: dbPath, tablePrefix: "sc_" },
@@ -322,6 +362,10 @@ export async function createHive(
         // built-in handlers would also write rows using raw MAP ids and we
         // would end up with two DB rows per logical agent.
         skipAgentLifecycle: true,
+        // See MAPClientManager instantiation comment above for the
+        // ownership contract this establishes — exactly one outbound MAP
+        // client pool exists, owned by OpenHive.
+        mapClientManager: openhiveMapClientManager,
       });
       console.log(`[openhive] SwarmCraft plugin registered at ${scPrefix}`);
 
@@ -330,13 +374,33 @@ export async function createHive(
       //  bridge that also projects sessions, tasks, and resources)
       const { setupOpenHiveBridge } = await import("./swarmcraft/bridge.js");
       const sc = (fastify as any).swarmcraft;
-      const bridgeHandle = await setupOpenHiveBridge({
+
+      // Safety guard: verify the plugin is actually using our instance. If
+      // someone ever refactors the plugin to ignore the `mapClientManager`
+      // option, `sc.mapClientManager` would silently diverge from
+      // `openhiveMapClientManager` and we'd have two competing managers —
+      // exactly the regression this whole change exists to prevent. Fail
+      // loud at startup rather than let the drift go unnoticed.
+      if (sc.mapClientManager !== openhiveMapClientManager) {
+        throw new Error(
+          "[openhive] SwarmCraft plugin did not adopt the host-provided MAPClientManager " +
+          "(sc.mapClientManager !== openhiveMapClientManager). The ownership contract is broken."
+        );
+      }
+      if (sc.ownsMapClientManager !== false) {
+        throw new Error(
+          "[openhive] SwarmCraft reports ownsMapClientManager=true despite receiving a " +
+          "host-provided manager. Plugin option wiring is broken."
+        );
+      }
+
+      bridgeHandle = await setupOpenHiveBridge({
         db: sc.db,
         wsHub: sc.wsHub,
         positionService: sc.positionService,
         trajectoryService: sc.trajectoryService,
-        acpStreamManager: sc.acpStreamManager,
         mapClientManager: sc.mapClientManager,
+        acpStreamManager: sc.acpStreamManager,
         pipelineService: sc.pipelineService,
       });
 
@@ -361,11 +425,9 @@ export async function createHive(
         }
       };
       console.log('[openhive] ACP event bridge active (SwarmCraft → OpenHive WS)');
-
-      // Teardown bridge on server close
-      fastify.addHook("onClose", () => {
-        bridgeHandle.teardown();
-      });
+      // onClose hook is already registered above (pre-`fastify.register`) so
+      // SC's internal teardown runs first via LIFO ordering. See the comment
+      // block next to `let bridgeHandle` above for why.
     } catch (err) {
       console.warn(
         `[openhive] Failed to register SwarmCraft plugin: ${(err as Error).message}`,
@@ -666,6 +728,16 @@ export async function createHive(
       if (swarmManager) {
         swarmManager.startHealthMonitor();
         console.log("[openhive] Swarm hosting health monitor started");
+
+        // Revive hosted swarms that were alive when openhive last ran.
+        // Runs in the background so startup isn't blocked on N Claude Code
+        // subprocesses booting — the health monitor + per-swarm DB state
+        // surface progress to the UI as it happens.
+        swarmManager.reviveHostedSwarms().catch((err) => {
+          console.error(
+            `[openhive] Hosted swarm revival failed: ${(err as Error).message}`,
+          );
+        });
       }
 
       // Create swarm agent delegate for workspace dispatch (used by learning + skill classification)
@@ -1258,3 +1330,4 @@ function getInlineAdminHtml(config: Config): string {
 </body>
 </html>`;
 }
+

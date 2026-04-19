@@ -26,6 +26,7 @@ import {
   handleSyncMessage,
   sendToSwarm,
 } from '../../map/sync-listener.js';
+import { shouldAcceptAgentRegistration } from '../../map/ws-map.js';
 import { isMapTaskEvent } from '../../coordination/listener.js';
 import { createSyncNotification } from '../../map/types.js';
 import type { MapSyncMessage } from '../../map/types.js';
@@ -372,7 +373,75 @@ describe('MAP Inbound WebSocket', () => {
       expect(inbound).toBeDefined();
       expect(inbound!.map_transport).toBe('websocket');
     });
+  });
 
+  // ═══════════════════════════════════════════════════════════════
+  // Agent registration session filter
+  //
+  // Regression guard: the MAPServer eventBus is shared across every
+  // inbound connection. A permissive filter (earlier implementation)
+  // let one hosted swarm's spawned agents leak into a sibling swarm's
+  // `registeredAgents`. The filter must now reject anything whose
+  // source session is missing or doesn't match the listener's own
+  // session id.
+  // ═══════════════════════════════════════════════════════════════
+
+  describe('shouldAcceptAgentRegistration', () => {
+    const AGENT = { id: 'agent-1', name: 'x', role: 'coordinator' };
+
+    it('accepts events whose source.sessionId matches', () => {
+      const event = { type: 'agent.registered', data: { agent: AGENT }, source: { sessionId: 'S1' } };
+      expect(shouldAcceptAgentRegistration(event, 'S1')).toBe(true);
+    });
+
+    it('falls back to data.agent.sessionId when source is missing', () => {
+      const event = { type: 'agent.registered', data: { agent: { ...AGENT, sessionId: 'S1' } } };
+      expect(shouldAcceptAgentRegistration(event, 'S1')).toBe(true);
+    });
+
+    it('prefers source.sessionId over data.agent.sessionId', () => {
+      // If the two disagreed (shouldn't happen, but guard anyway) source wins.
+      const event = {
+        type: 'agent.registered',
+        data: { agent: { ...AGENT, sessionId: 'S2' } },
+        source: { sessionId: 'S1' },
+      };
+      expect(shouldAcceptAgentRegistration(event, 'S1')).toBe(true);
+      expect(shouldAcceptAgentRegistration(event, 'S2')).toBe(false);
+    });
+
+    it("rejects events whose session id doesn't match ours", () => {
+      const event = { type: 'agent.registered', data: { agent: AGENT }, source: { sessionId: 'S2' } };
+      expect(shouldAcceptAgentRegistration(event, 'S1')).toBe(false);
+    });
+
+    it('rejects when our session id is undefined (router not started)', () => {
+      const event = { type: 'agent.registered', data: { agent: AGENT }, source: { sessionId: 'S1' } };
+      expect(shouldAcceptAgentRegistration(event, undefined)).toBe(false);
+    });
+
+    it('rejects when the event carries no session id', () => {
+      const event = { type: 'agent.registered', data: { agent: AGENT } };
+      expect(shouldAcceptAgentRegistration(event, 'S1')).toBe(false);
+    });
+
+    it('rejects malformed events', () => {
+      expect(shouldAcceptAgentRegistration(null, 'S1')).toBe(false);
+      expect(shouldAcceptAgentRegistration(undefined, 'S1')).toBe(false);
+      expect(shouldAcceptAgentRegistration('not-an-object', 'S1')).toBe(false);
+      expect(shouldAcceptAgentRegistration({}, 'S1')).toBe(false);
+    });
+
+    it('isolates sibling swarms sharing the eventBus (regression)', () => {
+      // Simulate the eventBus dispatching the same event to two listeners
+      // bound to different sessions. Only the owning session accepts.
+      const event = { type: 'agent.registered', data: { agent: AGENT }, source: { sessionId: 'A' } };
+      expect(shouldAcceptAgentRegistration(event, 'A')).toBe(true);
+      expect(shouldAcceptAgentRegistration(event, 'B')).toBe(false);
+    });
+  });
+
+  describe('hub-inbound peer list', () => {
     it('should appear in peer lists with hub-inbound endpoint', () => {
       // Join both swarms to the same hive first
       const hive = createHive({

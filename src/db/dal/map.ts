@@ -78,6 +78,7 @@ function rowToNode(row: Record<string, unknown>): MapNode {
     description: row.description as string | null,
     role: row.role as string | null,
     state: row.state as MapNode['state'],
+    presence: (row.presence as MapNode['presence']) ?? 'offline',
     capabilities: parseJsonField(row.capabilities),
     scopes: parseJsonField(row.scopes),
     visibility: row.visibility as MapNode['visibility'],
@@ -322,6 +323,37 @@ export function upsertSwarmByCanonicalKey(
   return findSwarmById(id)!;
 }
 
+/**
+ * Distinct project paths recorded across all swarms (archived included so a
+ * recent project is still suggested even if the swarm went stale). Sorted by
+ * most-recently-seen first, deduped, and trimmed of empty / placeholder
+ * values like "." or "..". Used by the spawn dialog's project-directory
+ * autocomplete in the openhive UI.
+ */
+export function listKnownProjectPaths(limit: number = 50): string[] {
+  const db = getDatabase();
+  const rows = db.prepare(`
+    SELECT DISTINCT json_extract(metadata, '$.projectPath') AS p,
+           MAX(last_seen_at) AS seen
+    FROM map_swarms
+    WHERE json_extract(metadata, '$.projectPath') IS NOT NULL
+    GROUP BY p
+    ORDER BY seen DESC
+    LIMIT ?
+  `).all(limit) as Array<{ p: string | null }>;
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const row of rows) {
+    const p = (row.p ?? '').trim();
+    if (!p || p === '.' || p === '..') continue;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
 export function archiveStaleSwarms(archiveDays: number = 30): number {
   const db = getDatabase();
   const result = db.prepare(`
@@ -373,8 +405,8 @@ export function createNode(input: RegisterNodeInput): MapNode {
 
   db.prepare(`
     INSERT INTO map_nodes (id, swarm_id, map_agent_id, name, description, role,
-      state, capabilities, scopes, visibility, metadata, tags)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      state, presence, capabilities, scopes, visibility, metadata, tags)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.swarm_id,
@@ -383,6 +415,7 @@ export function createNode(input: RegisterNodeInput): MapNode {
     input.description || null,
     input.role || null,
     input.state || 'registered',
+    input.presence || 'online',
     input.capabilities ? JSON.stringify(input.capabilities) : null,
     input.scopes ? JSON.stringify(input.scopes) : null,
     input.visibility || 'public',
@@ -416,6 +449,7 @@ export function updateNode(id: string, input: UpdateNodeInput): MapNode | null {
   if (input.description !== undefined) { sets.push('description = ?'); values.push(input.description); }
   if (input.role !== undefined) { sets.push('role = ?'); values.push(input.role); }
   if (input.state !== undefined) { sets.push('state = ?'); values.push(input.state); }
+  if (input.presence !== undefined) { sets.push('presence = ?'); values.push(input.presence); }
   if (input.capabilities !== undefined) { sets.push('capabilities = ?'); values.push(JSON.stringify(input.capabilities)); }
   if (input.scopes !== undefined) { sets.push('scopes = ?'); values.push(JSON.stringify(input.scopes)); }
   if (input.visibility !== undefined) { sets.push('visibility = ?'); values.push(input.visibility); }
@@ -425,6 +459,24 @@ export function updateNode(id: string, input: UpdateNodeInput): MapNode | null {
   values.push(id);
   db.prepare(`UPDATE map_nodes SET ${sets.join(', ')} WHERE id = ?`).run(...values);
   return findNodeById(id);
+}
+
+/**
+ * Bulk-flip presence for every node of a swarm. Used on swarm disconnect /
+ * heartbeat timeout / markStaleSwarms so the UI immediately stops showing
+ * their last-known MAP state as if it were current. Returns rows changed.
+ */
+export function bulkUpdateSwarmNodesPresence(
+  swarmId: string,
+  presence: MapNode['presence'],
+): number {
+  const db = getDatabase();
+  const result = db.prepare(`
+    UPDATE map_nodes
+    SET presence = ?, updated_at = datetime('now')
+    WHERE swarm_id = ? AND presence != ?
+  `).run(presence, swarmId, presence);
+  return result.changes;
 }
 
 export function deleteNode(id: string): boolean {
@@ -518,6 +570,7 @@ export function discoverNodes(options: DiscoverNodesOptions): {
     description: row.description as string | null,
     role: row.role as string | null,
     state: row.state as MapNode['state'],
+    presence: (row.presence as MapNode['presence']) ?? 'offline',
     capabilities: parseJsonField(row.capabilities),
     scopes: parseJsonField(row.scopes),
     visibility: row.visibility as MapNode['visibility'],

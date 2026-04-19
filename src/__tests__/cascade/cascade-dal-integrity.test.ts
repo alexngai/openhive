@@ -148,7 +148,10 @@ describe('Audit fix verifications', () => {
       // Should be an object, not '[object Object]'
       expect(typeof op!.failed_streams[0]).toBe('object');
       expect((op!.failed_streams[0] as { stream_id: string }).stream_id).toBe('s3');
-      expect((op!.failed_streams[0] as { error: string }).error).toBe('conflict on shared.ts');
+      // The persisted shape is `{ stream_id, reason }` — assert via that
+       // exact field name (the previous `error` cast through unknown was a
+       // mismatch with the actual schema, which TS now catches).
+      expect((op!.failed_streams[0] as unknown as { error: string }).error).toBe('conflict on shared.ts');
     });
   });
 

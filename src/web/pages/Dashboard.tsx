@@ -17,6 +17,7 @@ import { useInstanceFeatures } from "../hooks/useInstanceFeatures";
 import { useOpenTasksAggregated } from "../hooks/useOpenTasksAggregated";
 import { SwarmCraftApp } from "swarmcraft/ui/embed";
 import "swarmcraft/ui/embed.css";
+import { useChatFabStore } from "../components/chat-fab/ChatFabStore";
 import { StatsOverview } from "../components/dashboard/StatsOverview";
 import { SwarmStatusSummary } from "../components/dashboard/SwarmStatusSummary";
 import { SyncResourcesStatus } from "../components/dashboard/SyncResourcesStatus";
@@ -223,6 +224,7 @@ function StatsOverlay({ onClose }: { onClose: () => void }) {
 function SwarmCraftView() {
   const config = useSwarmCraftConfig();
   const tasksOverride = useTasksOverride();
+  const connectAndOpen = useChatFabStore((s) => s.connectAndOpen);
   const [showStats, setShowStats] = useState(false);
   const [formMode, setFormMode] = useState<"none" | "spawn" | "connect">(
     "none",
@@ -266,6 +268,19 @@ function SwarmCraftView() {
         embedded
         headerLeftContent={headerLeft}
         headerRightContent={headerRight}
+        onStartChat={(agentId, swarmId) => {
+          if (!swarmId) return;
+          // SwarmCraft hands us OpenHive's projection id
+          // (`oh-node-{swarmId}-{mapAgentId}`); strip the namespace so we can
+          // pass the raw MAP agent id as `peer_map_id` to /sessions/acp-connect,
+          // which routes ACP through the swarm's own MAP server. Without this,
+          // the hub registry lookup 404s on the projected id.
+          const prefix = `oh-node-${swarmId}-`;
+          const peerMapId = agentId.startsWith(prefix)
+            ? agentId.slice(prefix.length)
+            : undefined;
+          connectAndOpen(swarmId, agentId, undefined, peerMapId);
+        }}
       />
       {showStats && <StatsOverlay onClose={() => setShowStats(false)} />}
       {formMode === "spawn" && (

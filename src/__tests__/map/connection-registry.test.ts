@@ -12,6 +12,7 @@ import {
   getConnectionHealth,
   getAllConnectionHealth,
   getAllInbound,
+  getPeerMapId,
   type MapInboundConnection,
 } from '../../map/connection-registry.js';
 
@@ -212,6 +213,59 @@ describe('connection-registry health', () => {
       registerInbound('swarm-clear', createConn('swarm-clear'));
       expect(getInbound('swarm-clear')).toBeDefined();
       expect(getInboundIncludingStale('swarm-clear')?.isStale).toBeUndefined();
+    });
+  });
+
+  describe('getPeerMapId fallback chain', () => {
+    it('returns peerMapId when present', () => {
+      expect(getPeerMapId({ peerMapId: 'map-ulid' })).toBe('map-ulid');
+    });
+
+    it('prefers peerMapId over peerAgentId and localAgentId', () => {
+      expect(
+        getPeerMapId({
+          peerMapId: 'map-ulid',
+          peerAgentId: 'internal-id',
+          localAgentId: 'legacy-id',
+        }),
+      ).toBe('map-ulid');
+    });
+
+    it('falls back to peerAgentId when peerMapId is missing', () => {
+      // This is the race-window case: lifecycle-bridge emits registration
+      // before waitForLocalMapId resolves, so peerMapId is undefined but
+      // peerAgentId is always set. macro-agent's own MAP bridge routes via
+      // internal-store-id fallback, so this value is still a valid target.
+      expect(getPeerMapId({ peerAgentId: 'internal-id' })).toBe('internal-id');
+    });
+
+    it('prefers peerAgentId over localAgentId', () => {
+      expect(
+        getPeerMapId({ peerAgentId: 'internal-id', localAgentId: 'legacy-id' }),
+      ).toBe('internal-id');
+    });
+
+    it('falls back to localAgentId for pre-migration macro-agent versions', () => {
+      expect(getPeerMapId({ localAgentId: 'legacy-id' })).toBe('legacy-id');
+    });
+
+    it('returns undefined when no recognized field is present', () => {
+      expect(getPeerMapId({ foo: 'bar', systemId: 'x' })).toBeUndefined();
+    });
+
+    it('returns undefined for empty or missing metadata', () => {
+      expect(getPeerMapId(undefined)).toBeUndefined();
+      expect(getPeerMapId({})).toBeUndefined();
+    });
+
+    it('ignores non-string values and falls through', () => {
+      expect(
+        getPeerMapId({
+          peerMapId: 123 as unknown as string,
+          peerAgentId: 'internal-id',
+        }),
+      ).toBe('internal-id');
+      expect(getPeerMapId({ peerMapId: '' })).toBeUndefined();
     });
   });
 });

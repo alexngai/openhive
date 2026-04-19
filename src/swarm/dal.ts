@@ -17,7 +17,7 @@ import type {
 // Helpers
 // ============================================================================
 
-function generateId(): string {
+export function generateHostedSwarmId(): string {
   return `hswarm_${nanoid(16)}`;
 }
 
@@ -44,11 +44,17 @@ export interface CreateHostedSwarmInput {
   assigned_port?: number;
   bootstrap_token_hash?: string;
   config?: SwarmProvisionConfig;
+  /**
+   * Pre-generated ID. Callers that need the id before persisting (e.g. to
+   * bake it into the swarm's data_dir path) generate it via
+   * `generateHostedSwarmId()` and pass it in. Omit to let the DAL assign.
+   */
+  id?: string;
 }
 
 export function createHostedSwarm(input: CreateHostedSwarmInput): HostedSwarm {
   const db = getDatabase();
-  const id = generateId();
+  const id = input.id ?? generateHostedSwarmId();
 
   db.prepare(`
     INSERT INTO hosted_swarms (id, provider, state, assigned_port, bootstrap_token_hash, config, spawned_by)
@@ -199,6 +205,34 @@ export function deleteHostedSwarm(id: string): boolean {
   const db = getDatabase();
   const result = db.prepare('DELETE FROM hosted_swarms WHERE id = ?').run(id);
   return result.changes > 0;
+}
+
+/**
+ * Distinct bootstrap.cwd values across all hosted swarms (any state — even
+ * stopped/failed entries are useful for "spawn another swarm with the same
+ * project setup"). Ordered most-recently-created first.
+ */
+export function listKnownBootstrapCwds(limit: number = 50): string[] {
+  const db = getDatabase();
+  const rows = db.prepare(`
+    SELECT json_extract(config, '$.bootstrap.cwd') AS cwd, MAX(created_at) AS created
+    FROM hosted_swarms
+    WHERE json_extract(config, '$.bootstrap.cwd') IS NOT NULL
+    GROUP BY cwd
+    ORDER BY created DESC
+    LIMIT ?
+  `).all(limit) as Array<{ cwd: string | null }>;
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const row of rows) {
+    const c = (row.cwd ?? '').trim();
+    if (!c || c === '.' || c === '..') continue;
+    if (seen.has(c)) continue;
+    seen.add(c);
+    out.push(c);
+  }
+  return out;
 }
 
 /** Get all hosted swarms in active states (for recovery on startup) */

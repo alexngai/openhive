@@ -15,6 +15,7 @@ import type {
   SessionTarget,
 } from 'swarmcraft/ui/embed';
 import { useMapSwarm, useMailConversation } from '../../hooks/useApi';
+import { getPeerMapId } from '../map';
 
 // ---------------------------------------------------------------------------
 // Session capability resolver
@@ -34,8 +35,7 @@ function extractAcpTarget(registeredAgents: RegisteredAgent[] | undefined): stri
     return Array.isArray(protos) && (protos as string[]).includes('acp');
   });
   if (!acpAgent) return undefined;
-  const peerMapId = acpAgent.metadata?.peerMapId;
-  return (typeof peerMapId === 'string' && peerMapId) ? peerMapId : acpAgent.id;
+  return getPeerMapId(acpAgent.metadata) ?? acpAgent.id;
 }
 
 /**
@@ -67,17 +67,26 @@ export function useSessionCapabilityResolver(swarmId: string | undefined): Capab
 
       const registeredAgents = (swarm as unknown as { registered_agents?: RegisteredAgent[] })
         .registered_agents;
-      const acpTargetId = extractAcpTarget(registeredAgents);
+      const acpTargetIdFromRegistry = extractAcpTarget(registeredAgents);
+
+      // Resume info carried by the SessionTarget IS proof ACP works for this
+      // session — the stream was just successfully created against the swarm
+      // (e.g. via /sessions/acp-connect). Honor it even when the hub registry
+      // hasn't published per-agent capabilities, which happens when OpenHive
+      // connects outbound to a swarm that has no inbound sidecar.
+      const hasAcpResume = !!(target.resume?.acpStreamId && target.resume?.acpSessionId);
+      const acpTargetId = acpTargetIdFromRegistry ?? (hasAcpResume ? '__resume__' : undefined);
+      const acpAdvertised = protocols.includes('acp') || hasAcpResume;
 
       const projectPath = (caps as { projectPath?: string }).projectPath
         ?? (swarm.metadata as { projectPath?: string } | null | undefined)?.projectPath;
 
       const result: ChatCapabilities = {
-        available: connected && (!!mailCaps || !!canReceive || (protocols.includes('acp') && !!acpTargetId)),
+        available: connected && (!!mailCaps || !!canReceive || (acpAdvertised && !!acpTargetId)),
         connected,
       };
 
-      if (protocols.includes('acp') && acpTargetId) {
+      if (acpAdvertised && acpTargetId) {
         result.acp = { targetAgentId: acpTargetId, cwd: projectPath };
       }
       if (mailCaps) {

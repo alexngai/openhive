@@ -58,13 +58,16 @@ src/
 - **Config loading**: `src/config.ts` validates all config with Zod. Access config via the validated object, not raw env vars.
 - **Event-driven**: State changes emit events through `src/events/dispatch.ts`. WebSocket and sync both consume these events.
 - **Pluggable providers**: Network providers (Tailscale, Headscale) and swarm providers (local, sandboxed) follow a common interface pattern in their respective directories.
-- **Realtime invalidation**: Frontend React Query caches are invalidated via WebSocket events (`src/web/hooks/useRealtimeInvalidation.ts`) rather than polling. Server broadcasts to channels like `map:discovery`, and per-domain hooks (`useSwarmRealtime`, `useResourcesRealtime`, `useSessionsRealtime`) subscribe and invalidate the relevant query keys. Channel subscriptions are ref-counted in `useWSStore` so multiple hooks subscribing to the same channel (e.g., `global`) don't unsubscribe prematurely when one unmounts.
+- **Realtime invalidation**: Frontend React Query caches are invalidated via WebSocket events (`src/web/hooks/useRealtimeInvalidation.ts`) rather than polling. Server broadcasts to channels like `map:discovery`, and per-domain hooks (`useSwarmRealtime`, `useResourcesRealtime`, `useSessionsRealtime`) subscribe and invalidate the relevant query keys. Channel subscriptions are ref-counted in `useWSStore` so multiple hooks subscribing to the same channel (e.g., `global`) don't unsubscribe prematurely when one unmounts. The `useWebSocket` hook in `src/web/hooks/useWebSocket.ts` uses per-field Zustand selectors (not full-store destructure) and reads `emit` via `useWSStore.getState()` inside `ws.onmessage` — both choices defend against a Vite-HMR pathology where the swap leaves a live socket bound to a *dead* module's emit closure, dispatching into an old store instance whose listeners no children re-registered. Module-top `import.meta.hot.dispose` closes the live socket on swap so the fresh module rebinds cleanly.
+- **Swarm lifecycle WS fan-out**: All swarm-lifecycle WS broadcasts go through `broadcastSwarmLifecycleEvent(swarmId, event)` in `src/realtime/swarm-events.ts`. The helper fans out to **both** `map:discovery` (fleet-wide subscribers — chat picker, dashboard, useSwarmRealtime) and `map:swarm:${swarmId}` (per-swarm subscribers — swarm detail page) in a single call. The event-type union is the canonical list of swarm-lifecycle types: `swarm_registered`, `swarm_offline`, `swarm_heartbeat`, `swarm.status_changed`, `node_registered`, `connection_degraded`, `connection_recovered`. Adding a new lifecycle type is a one-line change to the union; every emit site automatically gets correct fan-out. **Do not** call `broadcastToChannel('map:discovery', { type: 'some_swarm_event', ... })` directly for events in the union — the structural-symmetry test in `src/__tests__/realtime/swarm-lifecycle-fanout.test.ts` will fail because the per-swarm sibling broadcast is missing. Events outside the union (per-swarm-only like `node_state_changed`, hosted-swarm `swarm_spawned`/`swarm_stopped` from `swarm/manager.ts` which carry `hosted_swarm_id` not MAP `swarm_id`, and bulk-aggregate stale-sweep notices in `server.ts`) intentionally continue calling `broadcastToChannel` directly.
 - **Swarm lifecycle**: Connected swarms follow the status progression `online` → `unreachable` → `offline`. The server pings WS clients every 30s, refreshing `last_seen_at`. On disconnect, status moves to `unreachable`; a periodic sweep (`markStaleSwarms`) demotes stale swarms to `offline` after `staleThresholdMinutes` (default 5 min).
+- **Agent presence vs state**: `map_nodes.presence` (`'online' | 'offline'`) tracks reachability; `map_nodes.state` retains the last-known MAP agent state (`active`/`busy`/`idle`/etc.) as a historical breadcrumb. Presence flips offline on `agent.unregistered`, swarm WS close, heartbeat timeout, and the `markStaleSwarms` cascade — never overloading `state` with reachability semantics. The UI reads presence first; greys out + relabels offline rows so a swarm that disconnected days ago doesn't masquerade as `idle`. SwarmCraft's `agents` table mirrors the same `presence` column; OpenHive's `swarm-bridge` cascades on `swarm_offline` via `bulkUpdatePresenceByServer`. Migration `V36_NODE_PRESENCE` plus a `repairSchema` entry guarantees the column exists even if the version-tracker advanced past V36 silently. See `src/__tests__/map/e2e-node-presence.test.ts` for the lifecycle.
 - **Session trajectories**: Agent session transcripts are synced via the MAP trajectory protocol. The `trajectory/checkpoint` handler (`src/map/trajectory-handler.ts`) auto-creates session resources and stores checkpoint metadata. Transcript content is served on-demand from connected agents via `trajectory/content.request`/`trajectory/content.response` notifications. Content is cached in session storage for offline access. Five-tier resolution: fresh cache → on-demand from swarm → local sessionlog transcript → stale cache → 503.
 - **Agent capabilities**: Connected agents declare capabilities during MAP registration using the MAP `ParticipantCapabilities` schema. The hub captures these via the `agent.registered` event and stores on the connection + database. Capability checks gate operations (content requests, chat modes). See "Session Chat" section for capability-gated chat.
 - **Unified chat components**: All four chat surfaces (Sessions trajectory, Conversation, Agent profile, SwarmDetail) render via swarmcraft's `ChatMessageList` + `ChatInput` + `PermissionDialog` + `ChatBubble` from `swarmcraft/ui/embed`. The trajectory renderer (formerly a custom `EventStream` family under `src/web/components/events/`) has been retired; OpenHive converts its `SessionEvent[]` into swarmcraft's `ChatMessage[]` via `src/web/lib/chat/session-events.ts` and feeds the unified `ChatMessageList` with `groupConsecutiveTools`, `continuationHeaders`, `initialAutoScroll="instant"`, pagination, and the sticky-external `PermissionDialog` variant. See "Chat (Unified across Sessions, Messages, Agent, SwarmDetail)" section.
 - **SwarmKit config proxy**: `src/swarmkit/` reads and writes SwarmKit package configs (opentasks, minimem, sessionlog, etc.) directly on disk. OpenHive holds no config state of its own — every read hits the file, every write goes back to the file. The admin API under `/admin/swarmkit/*` exposes this to the Settings UI. Packages that declare a `localFile` in `PackageFileSpec` (currently only sessionlog → `settings.local.json`) get a second layer merged on read (local wins) and a split write path (see "SwarmKit Config Management" section).
 - **SwarmCraft agent projection ownership**: When OpenHive embeds the SwarmCraft plugin, it registers it with `skipAgentLifecycle: true` (see `src/server.ts`). This suppresses swarmcraft's built-in MAP `agent.registered` / `agent.unregistered` / `agent.state.changed` / `agents.synced` handlers so that **OpenHive's bridge (`src/swarmcraft/swarm-bridge.ts`) is the sole writer of agent rows in the SwarmCraft DB**, using namespaced ids (`oh-swarm-{swarmId}` for swarms, `oh-node-{swarmId}-{mapAgentId}` for child agents) via `src/swarmcraft/constants.ts`. Without this flag, swarmcraft's built-in handlers would also write rows using the raw MAP agent id, producing duplicate rows for every logical agent visible on both inbound (sidecar→hub) and outbound (swarmcraft→swarm MAP) connections. As part of taking over the lifecycle, the bridge also calls `acpStreamManager.closeStreamsForAgent(rawMapAgentId)` on terminal MAP states (`stopped`, `failed`, `orphaned`) and on agent unregister — both for the inbound path (via `mapHubEvents.node_unregistered` / `node_state_changed`) and the outbound path (via `mapClientManager.on('agent.unregistered' | 'agent.state.changed')`). Streams are keyed by raw MAP id (the `targetAgent` passed at stream creation), never by the projected `oh-node-*` id.
+- **SwarmCraft MAP client ownership**: Beyond projection ownership, OpenHive also instantiates the `MAPClientManager` itself (in `src/server.ts`, imported from `swarmcraft/map`) and passes the instance to the SwarmCraft plugin via the `mapClientManager` option. This means: **exactly one outbound MAP client pool exists**, OpenHive owns it, and SwarmCraft uses it for ACP routing, subprocess wiring, and lifecycle listeners without spinning up a second. Combined with `skipAgentLifecycle: true` above, OpenHive is both the sole writer of `sc_agents` rows AND the sole owner of the outbound connections that feed them — no dual-ownership race on teardown, no competing connects on the same swarm. OpenHive registers an `onClose` hook that calls `disconnectAll()` on the manager; SwarmCraft's `destroySwarmCraftContext` leaves it alone because `ownsMapClientManager` is false. `swarm-bridge.ts` still drives `connect()` / `getClient()` / event listeners exactly as before — the instance is just OpenHive's now, not SC's.
 
 ## Session Trajectory Architecture
 
@@ -234,6 +237,24 @@ Two dedup layers protect against duplicates:
 
 When an ACP agent requests tool approval, SwarmCraft emits `acp.permission.request` via WebSocket. The frontend renders Allow/Deny buttons above the chat input. Replies are sent via `POST /api/swarmcraft/acp/streams/:streamId/permission` with `{ requestId, reply: { outcome: 'approved' | 'denied' } }`. Permissions time out after 5 minutes on the server side.
 
+#### Multi-tab session sharing (Option 1B)
+
+`/sessions/acp-connect` is idempotent per `(owner_agent_id, source_swarm_id, acp_target_agent_id)`. The first connect creates the ACP stream + session and persists `acpStreamId`, `sessionId`, `acp_target_agent_id` on the session resource metadata. Subsequent connects (additional browser tabs, same user, same target) hit `findLiveAcpSession` (`src/db/dal/syncable-resources.ts`), confirm the streamId is still in `acpStreamManager.streams`, and return the cached IDs without touching the manager. A per-key `inflightAcpConnects` Promise cache in `src/api/routes/sessions.ts` makes concurrent POSTs share one create — only the leader runs `createStream`, followers piggyback.
+
+Cross-tab sync is automatic once both tabs subscribe to the same `(streamId, sessionId)`: every `acp.session.update` event fans out from SwarmCraft's `acp` topic → OpenHive's `global` channel via the bridge in `src/server.ts:340-354`. Late-joining tabs replay history through `loadSession`.
+
+Two events were added to plumb this end-to-end:
+- `acp.prompt.started` — emitted by `acp-manager` on every prompt with the prompt content. Sibling tabs synthesize a "user" `ChatMessage` so they see what the other tab typed; the sender suppresses its own broadcast via the per-stream `recentlySentByUs` set in `openhive-acp-service.ts` (TTL 5s) so its local optimistic echo isn't duplicated. Content fingerprinting via FNV-1a (`fnv1aHash`).
+- `acp.permission.resolved` / `acp.question.resolved` — emitted when one tab answers a permission/question request. The `AdapterCallbacks` contract gained optional `onPermissionResolved?(requestId)` / `onQuestionResolved?(requestId)` (in `swarmcraft/ui/types/chat.ts`); `useChatChannel` filters the requestId out of pending lists, auto-dismissing the dialog on the other tab.
+
+E2E tests: `src/__tests__/sessions/acp-connect-multitab.test.ts` covers reuse, race-mutex, cross-owner isolation, hub-restart fallthrough, metadata persistence. `src/__tests__/dal/find-live-acp-session.test.ts` covers the lookup helper. `src/__tests__/map/acp-ws-bridge.test.ts` covers the new event broadcasts (including the `topic === 'acp'` guard against duplicate fan-out).
+
+#### Per-turn agent identity
+
+ChatHeader (`src/web/components/chat-fab/ChatFab.tsx`) renders `AgentAvatar` (boring-avatar from `swarmcraft/ui/embed`'s `generateAgentPalette`) with a state-coloured border + small status dot mirroring `AgentPortrait`. Subtitle reads `Coordinator · {swarm name}`. State dot pulses only when `state ∈ {active, busy}` AND `swarmStatus === 'online'`; if the swarm is unreachable the border + dot collapse to neutral grey regardless of last-known state.
+
+Chat bubbles get the same identity via `decorateWithAgentIdentity` in `openhive-acp-service.ts` — every non-user message gets `senderName: agentName` and `agentIdentity: { name: agentName }` so `ChatBubble` renders the boring-avatar + name. The `agentName` is captured from `createStream(serverId, targetAgent, agentName)` for new sessions, and backfilled on resumed sessions via `setAcpStreamAgentName(streamId, name)` called from `useBackfillAcpAgentName` in `ChatPanel.tsx` (looks up the live name from `useMapSwarm`'s `registered_agents`). Decorate runs in `notifyMessages` at every emit so a late-resolving name re-paints prior bubbles.
+
 #### Key Files
 
 - `src/web/lib/chat/resolvers.ts` — `useSessionCapabilityResolver` (reads swarm + registered_agents for peerMapId), `useConversationCapabilityResolver`, target constructors.
@@ -248,7 +269,74 @@ When an ACP agent requests tool approval, SwarmCraft emits `acp.permission.reque
 - `src/api/routes/session-chat.ts` — Backend endpoint: lazy conversation creation, auto-join, turn delivery via `mail/turn` JSON-RPC.
 - `src/api/routes/sessions.ts` — `POST /sessions/create-acp` resolves ACP target agent via `findAcpAgent()` from per-agent capabilities on the live connection.
 - `src/map/connection-registry.ts` — Inbound connection tracking, per-agent capability storage, `findAcpAgent()` for ACP target resolution, `getAggregateCapabilities()` for swarm-level capability union.
-- `src/server.ts` — ACP event bridge: intercepts SwarmCraft WS broadcasts, forwards `acp.*` events to OpenHive's global WS channel.
+- `src/server.ts` — ACP event bridge: intercepts SwarmCraft WS broadcasts, forwards `acp.*` events from the `acp` topic (only) to OpenHive's `global` WS channel; `events`-topic broadcasts are skipped to avoid duplicate fan-out.
+
+#### ChatFab connect surface
+
+`src/web/components/chat-fab/ChatFabStore.ts` exposes `connectAndOpen(swarmId, agentId, label?, peerMapId?)`. The `peerMapId` is required when the caller has only the SwarmCraft-projected id (`oh-node-{swarmId}-{mapAgentId}`); the hub registry routes ACP by the raw `mapAgentId`. `Dashboard.tsx`'s `onStartChat` strips the projection prefix and passes the result as `peer_map_id` in the POST body — without it `/sessions/acp-connect` 404s on the projected id.
+
+`ChatBody` (`ChatFab.tsx`) reads `connecting` and `connectError` from the store. While connecting + no session: full-panel spinner with `Connecting to {label}...`. On error: red dismissable banner above the picker (`Couldn't open chat — {error}`). The dismiss action calls `clearSession` which also clears the error.
+
+`AgentPortraitGrid` (in swarmcraft/ui) gates the Chat + Terminal action buttons on `selectedAgent.presence === 'online'` so users don't click into an inevitable failure on offline agents.
+
+## Dispatch Orchestrator (swarm-dispatch integration)
+
+Specs are dispatched to swarms via a `dispatches` table (hub-native, one row per spec+swarm pair). The [swarm-dispatch](references/swarm-dispatch/) library manages the execution lifecycle: poll → claim → spawn/route → retry → complete/fail.
+
+### Architecture
+
+```
+User dispatches spec (UI or API)
+  → POST /specs/:resourceId/:specId/dispatch
+  → Dispatch row: status=queued
+
+swarm-dispatch orchestrator (in-process, 15s poll)
+  → createOpenHiveDispatchSource polls queued rows
+  → claims with fence token (status → running)
+  → builds prompt (turn-aware via prompt.ts)
+  → prefers routing to running agents (AgentRoster), falls back to ACP spawn
+  → on failure: retry with exponential backoff (3 attempts)
+  → on exhaustion: status → failed with error
+  → event bridge writes terminal status + broadcasts on map:dispatches WS
+```
+
+### Key Files
+
+- `src/dispatch/openhive-source.ts` — `DispatchTaskSource` adapter (dispatches DAL + spec content from opentasks)
+- `src/dispatch/openhive-runtime.ts` — `DispatchAgentRuntime` adapter (ACP stream manager)
+- `src/dispatch/openhive-roster.ts` — `AgentRoster` adapter (MAP connection registry)
+- `src/dispatch/openhive-mail-port.ts` — `MessagePort` adapter (agent-inbox mail transport)
+- `src/dispatch/prompt.ts` — Turn-aware prompt builder (first-run / retry / continuation)
+- `src/dispatch/setup.ts` — Orchestrator wiring + event bridge to WS channel
+- `src/db/dal/dispatches.ts` — Dispatch CRUD + fence-token claim/release/transition/renew helpers
+- `src/api/routes/dispatches.ts` — REST read endpoints + cancel
+- `src/api/routes/specs.ts` — `POST /specs/:id/dispatch` creates queued rows
+- `src/web/components/dispatch/DispatchModal.tsx` — Multi-swarm dispatch UI
+- `src/web/pages/DispatchDetail.tsx` — Dispatch detail with status, outcome, attempt/turn tracking
+
+### Dispatch Lifecycle (D15)
+
+`queued` → `running` (orchestrator claims) → `complete` | `failed` | `cancelled`
+
+- **Hub writes**: `→ queued` (insert), `running → cancelled` (user cancel)
+- **Orchestrator writes**: `queued → running` (claim), `running → complete/failed` (via event bridge)
+- **Agent fallback**: `map/dispatches/report` MAP method retained as secondary reporting path
+
+### Dual Reporting Paths
+
+Both the orchestrator event bridge and `map/dispatches/report` can write terminal status. The event bridge guards against double-writes by checking current status before writing. The MAP handler rejects reports on already-terminal dispatches.
+
+### Adapters use swarm-dispatch/client factories
+
+The adapters compose generic factories from `swarm-dispatch/client` (static ESM imports):
+- `createSqlSource` — fence-token claim semantics, async content enrichment
+- `createStreamRuntime` — stream lifecycle (create → init → session → prompt)
+- `createRegistryRoster` — role/tag/busy filtering with state mapping
+- `createMailPort` — envelope wrapping, incoming classification, dedup
+
+### Kill Switch (D9)
+
+`Settings → Server → Autonomous dispatch` toggles `autonomousDispatchPaused`. When paused, agent-initiated dispatches via `map/specs/dispatch` return -32004; user-initiated REST dispatches still work. State is in-memory; hub restart resets to live.
 
 ## Task Coordination Architecture
 

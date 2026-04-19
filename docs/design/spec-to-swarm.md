@@ -141,14 +141,18 @@ Goal: explicit dispatch replaces free-text `assignee`. One new entity, clean con
 - Global "pause autonomous dispatch" admin toggle (cheap kill switch).
 - Dispatch modal in UI (swarm picker, multi-select, confirm). Surfaces `initiator` prominently in detail views.
 
-### Stream 3 — Compose UX
+### Stream 3 — Compose UX + Chat FAB
 
-Goal: authoring a spec + dispatching takes seconds, and agents can help.
+Goal: authoring a spec + dispatching takes seconds. Agents are always one click away.
 
-- Global command palette (⌘K): "New spec", "New task", "Dispatch existing spec".
-- Agent-assist panel inside spec compose — chat channel, structured output → fills spec fields.
-- Template gallery (feature, bug, research, triage).
-- Quick-add modals reusable from Dashboard and Swarms pages.
+Primary deliverable: **Chat FAB Widget** — a floating chat button available on every page that expands into a chat panel. Users can spawn a new agent session or resume an existing one, collaborate on specs/tasks/dispatches, and inject page context (current spec, linked tasks, dispatch state) into the conversation.
+
+- Chat FAB mounted at `Layout.tsx` level (persists across navigation).
+- One active session at a time; session picker for spawn/resume.
+- Context injection via React context — each page registers available items (spec, tasks, dispatch, swarm).
+- Reuses `useChatChannel` + `useOpenHiveAdapters` (ACP/Mail).
+- Mobile: full-screen when expanded.
+- Future: command palette (⌘K), quick actions ("Create spec from conversation"), template gallery.
 
 ### Stream 4 — Observability
 
@@ -241,11 +245,12 @@ OpenHive hub
 | Fence tokens, heartbeat, stale-claim detection | swarm-dispatch |
 | Agent roster, dispatch modes, affinity | swarm-dispatch |
 
-### Deprecated in this integration
+### Changed in this integration
 
-- `POST /dispatches/:id/bootstrap` — removed; orchestrator handles spawn
-- `map/dispatches/report` MAP method — removed; orchestrator reports outcomes
-- `useBootstrapDispatch` frontend hook — removed
+- `POST /dispatches/:id/bootstrap` — **removed**; orchestrator handles spawn
+- `map/dispatches/report` MAP method — **retained as secondary reporting path**. The orchestrator is the primary writer of terminal status (via the event bridge in `setup.ts`). `map/dispatches/report` remains as a fallback for agents not managed by the orchestrator or for direct agent-to-hub reporting. Both paths guard against double-writes: the event bridge checks current status before writing; the MAP handler rejects reports on terminal dispatches.
+- `useBootstrapDispatch` frontend hook — **removed**
+- `buildDispatchSeedPrompt` — **retained**. Called at dispatch creation time to store a seed prompt on the row. The orchestrator builds its own turn-aware prompt via `prompt.ts` at execution time. Both coexist: the stored seed prompt serves as a reference/audit artifact; the orchestrator's prompt is what the agent actually receives.
 
 ---
 

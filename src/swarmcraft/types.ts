@@ -24,6 +24,14 @@ export interface BridgeContext {
       create(data: Record<string, unknown>): Promise<unknown>;
       update(id: string, data: Record<string, unknown>): Promise<unknown>;
       get(id: string): Promise<Record<string, unknown> | null>;
+      bulkUpdatePresenceByServer(serverId: string, presence: 'online' | 'offline'): Promise<number>;
+      /**
+       * List agents matching a filter. Used by the swarm_offline cascade to
+       * enumerate affected rows before a bulk flip so we can broadcast a
+       * per-agent `agent.presence.changed` WS event — the UI needs these
+       * signals to invalidate its local agent map without a full reload.
+       */
+      list(filter?: { mapServerId?: string; presence?: 'online' | 'offline'; limit?: number; offset?: number }): Promise<{ agents: Array<{ id: string }>; total: number }>;
     };
     tasks: {
       create(data: Record<string, unknown>): Promise<unknown>;
@@ -39,6 +47,8 @@ export interface BridgeContext {
   wsHub: {
     broadcastAgentRegistered(agent: { id: string; name: string; type: string }): void;
     broadcastAgentStateChanged(agentId: string, previousState: string, newState: string): void;
+    /** Emitted per-agent when reachability flips without a state change. */
+    broadcastAgentPresenceChanged(agentId: string, presence: 'online' | 'offline'): void;
     broadcastTaskAssigned(taskId: string, agentId: string, taskTitle: string): void;
     broadcastTaskStatusChanged(taskId: string, previousStatus: string, newStatus: string): void;
     broadcast(message: { type: string; payload: unknown }, topic?: string): void;

@@ -389,6 +389,20 @@ export function useHostedSwarms(options?: { state?: string; mine?: boolean }) {
   });
 }
 
+/**
+ * Distinct project paths recorded across registered swarms (metadata.projectPath)
+ * and hosted swarm bootstrap configs (config.bootstrap.cwd). Used by the
+ * Spawn Swarm dialog's project-directory autocomplete.
+ */
+export function useKnownProjectPaths() {
+  return useQuery({
+    queryKey: ["known-project-paths"],
+    queryFn: () => api.get<{ paths: string[] }>("/map/known-project-paths"),
+    select: (data) => data.paths,
+    staleTime: 60_000,
+  });
+}
+
 export function useSpawnSwarm() {
   const queryClient = useQueryClient();
 
@@ -408,6 +422,10 @@ export function useSpawnSwarm() {
           path?: string;
           depth?: number;
         }>;
+      };
+      bootstrap?: {
+        coordinator?: boolean;
+        cwd?: string;
       };
     }) => api.post<HostedSwarm>("/map/hosted/spawn", data),
     onSuccess: () => {
@@ -490,6 +508,12 @@ export function useMapSwarmsForPicker(opts?: { status?: string; recency_days?: n
         `/map/swarms?${params}`,
       ),
     select: (data) => data.data,
+    // Pure WS-driven now that the HMR leak + stale-emit-closure in
+    // `useWebSocket` is fixed. `useSwarmRealtime` invalidates
+    // `['map-swarms-picker']` on swarm lifecycle events, which refetches
+    // this query without any polling. The previous polling fallback
+    // (staleTime:2s + refetchInterval:5s) was a workaround for those
+    // bugs — removed once the underlying WS delivery was fixed.
     staleTime: 30_000,
   });
 }
@@ -539,6 +563,7 @@ export function useConnectSwarm() {
     }) => api.post<{ swarm: MapSwarm }>("/map/swarms", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["map-swarms"] });
+      queryClient.invalidateQueries({ queryKey: ["map-swarms-picker"] });
     },
   });
 }
@@ -1980,6 +2005,36 @@ export function useSendSessionChat() {
   });
 }
 
+export type SpawnAgentPermissionMode = 'auto-approve' | 'auto-deny' | 'callback' | 'interactive';
+
+export interface SpawnAgentConfig {
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  env?: Record<string, string>;
+  mcpServers?: Array<{
+    name: string;
+    command: string;
+    args?: string[];
+    env?: Record<string, string>;
+  }>;
+}
+
+export interface SpawnAgentRequest {
+  swarmId: string;
+  role?: string;
+  cwd?: string;
+  task?: string;
+  // Advanced SpawnAgentOptions — all optional. Backend forwards them to
+  // macro-agent's _macro/spawnAgent handler which applies defaults if unset.
+  permissionMode?: SpawnAgentPermissionMode;
+  agentType?: string;
+  customPrompt?: string;
+  topics?: string[];
+  config?: SpawnAgentConfig;
+  taskRef?: { resource_id: string; node_id: string };
+}
+
 /**
  * Spawn a new agent on a swarm via its sidecar. Pure lifecycle action — no
  * session or ACP stream is created. Chain with `useConnectAcp` if you want
@@ -1989,48 +2044,52 @@ export function useSpawnAgent() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({
-      swarmId,
-      role,
-      cwd,
-      task,
-    }: {
-      swarmId: string;
-      role?: string;
-      cwd?: string;
-      task?: string;
-    }) =>
-      api.post<{
+    mutationFn: (req: SpawnAgentRequest) => {
+      const { swarmId, ...body } = req;
+      // Strip undefined fields so macro-agent defaults apply (vs. receiving
+      // an explicit `undefined` which would override them).
+      const cleanBody = Object.fromEntries(
+        Object.entries(body).filter(([, v]) => v !== undefined),
+      );
+      return api.post<{
         agent_id: string;
         peer_map_id: string;
         name?: string;
         role: string;
         cwd: string;
-      }>(`/map/swarms/${swarmId}/agents`, {
-        ...(role ? { role } : {}),
-        ...(cwd ? { cwd } : {}),
-        ...(task ? { task } : {}),
-      }),
+      }>(`/map/swarms/${swarmId}/agents`, cleanBody);
+    },
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ['map-swarm', vars.swarmId] });
       queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
+      queryClient.invalidateQueries({ queryKey: ['map-swarms-picker'] });
     },
   });
 }
 
 /**
  * Open an ACP session against an already-registered agent on a swarm.
- * `agentId` is required (pass the hub agent id or the peerMapId). Eagerly
- * creates the OpenHive session resource so the UI can navigate to it.
+ * `agentId` is required (pass the hub agent id or the peerMapId).
+ * `peerMapId`, when provided, is the swarm-side MAP server target id —
+ * required when the registry hasn't published it (e.g., immediately after
+ * spawning a macro-agent coordinator). Eagerly creates the OpenHive
+ * session resource so the UI can navigate to it.
  */
 export function useConnectAcp() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ swarmId, agentId, cwd }: { swarmId: string; agentId: string; cwd?: string }) =>
+    mutationFn: ({ swarmId, agentId, peerMapId, cwd }: {
+      swarmId: string; agentId: string; peerMapId?: string; cwd?: string;
+    }) =>
       api.post<{ session_resource_id: string; acp_session_id: string; acp_stream_id: string; created: boolean }>(
         '/sessions/acp-connect',
-        { swarm_id: swarmId, agent_id: agentId, ...(cwd ? { cwd } : {}) },
+        {
+          swarm_id: swarmId,
+          agent_id: agentId,
+          ...(peerMapId ? { peer_map_id: peerMapId } : {}),
+          ...(cwd ? { cwd } : {}),
+        },
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions-overview'] });
@@ -2201,8 +2260,90 @@ export function useCascadeStreamDetail(streamRowId: string | null) {
 }
 
 /**
- * Stop a specific agent on a swarm. Proxies to the macro-agent's
- * `_macro/terminateAgent` extension via SwarmCraft's MAP client.
+ * Lightweight listing of sessions on a swarm that have a persisted
+ * provider_session_id — i.e. can be resumed durably. Used by the swarm
+ * detail page to show a "Resumable Sessions" panel.
+ */
+export interface ResumableSession {
+  session_resource_id: string;
+  name: string;
+  description: string | null;
+  project: string | null;
+  project_path: string | null;
+  acp_session_id: string | null;
+  provider_session_id_prefix: string;
+  updated_at: string;
+  owner_agent_id: string;
+}
+
+export function useResumableSessions(swarmId: string | undefined) {
+  return useQuery({
+    queryKey: ['resumable-sessions', swarmId],
+    queryFn: () =>
+      api.get<{ swarm_id: string; total: number; sessions: ResumableSession[] }>(
+        `/map/swarms/${swarmId}/resumable-sessions`,
+      ),
+    enabled: !!swarmId,
+  });
+}
+
+/**
+ * Batch resume all resumable sessions on a swarm. Bounded parallelism server-
+ * side (default 3 concurrent). Partial failures are returned — one bad session
+ * doesn't fail the whole batch.
+ */
+export function useResumeAllSessions() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ swarmId, cwd, concurrency }: { swarmId: string; cwd?: string; concurrency?: number }) =>
+      api.post<{
+        swarm_id: string;
+        total: number;
+        succeeded: Array<{ session_resource_id: string; acp_session_id: string; acp_stream_id: string }>;
+        failed: Array<{ session_resource_id: string; error: string; message: string }>;
+      }>(`/map/swarms/${swarmId}/resume-all`, {
+        ...(cwd ? { cwd } : {}),
+        ...(concurrency ? { concurrency } : {}),
+      }),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['resumable-sessions', vars.swarmId] });
+      queryClient.invalidateQueries({ queryKey: ['sessions-overview'] });
+    },
+  });
+}
+
+/**
+ * Resume a session whose source swarm/agent may be stopped or offline. The
+ * server restarts the hosted swarm (if needed), waits for macro-agent to
+ * reconnect, asks macro-agent to resume the agent by provider_session_id,
+ * and opens a fresh ACP stream loading the persisted transcript. Can take
+ * up to ~30s when the swarm is cold.
+ */
+export function useResumeSession() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ sessionResourceId, cwd }: {
+      sessionResourceId: string; cwd?: string;
+    }) =>
+      api.post<{ session_resource_id: string; acp_session_id: string; acp_stream_id: string }>(
+        `/sessions/${sessionResourceId}/resume`,
+        cwd ? { cwd } : {},
+      ),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['resource', vars.sessionResourceId] });
+      queryClient.invalidateQueries({ queryKey: ['sessions-overview'] });
+    },
+  });
+}
+
+/**
+ * Stop a specific agent on a swarm. Proxies to the swarm's MAP server. The
+ * server prefers `_macro/terminateAgent` (real process termination on
+ * macro-agent v0.1.10+); on older runtimes it falls back to
+ * `map/agents/unregister` and reports `method` so the UI can warn that the
+ * underlying process may still be running.
  */
 export type CascadeAction = 'merge' | 'abandon' | 'pause' | 'resume' | 'resolve' | 'push' | 'commit';
 
@@ -2361,13 +2502,14 @@ export function useStopAgent() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ swarmId, agentId, reason }: { swarmId: string; agentId: string; reason?: string }) =>
-      api.post<{ success: boolean }>(
+      api.post<{ success: boolean; method?: string }>(
         `/map/swarms/${swarmId}/agents/${agentId}/stop`,
         { ...(reason ? { reason } : {}) },
       ),
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ['map-swarm', vars.swarmId] });
       queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
+      queryClient.invalidateQueries({ queryKey: ['map-swarms-picker'] });
     },
   });
 }

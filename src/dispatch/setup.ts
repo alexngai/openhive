@@ -57,33 +57,41 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
     }
 
     // Terminal: agent completed successfully → mark dispatch complete
+    // Guard: skip if already terminal (map/dispatches/report may have written first)
     if (event.type === 'completed') {
-      const record = orchestrator.tracker.getTask(event.taskId);
-      dispatchesDAL.updateDispatchStatus(event.taskId, 'complete', {
-        summary: 'Agent completed successfully',
-      });
-      if (record) {
-        dispatchesDAL.updateDispatchAttemptTurn(
-          event.taskId,
-          record.attempt,
-          record.turnCount,
-        );
+      const current = dispatchesDAL.findDispatchById(event.taskId);
+      if (current && current.status !== 'complete' && current.status !== 'failed' && current.status !== 'cancelled') {
+        dispatchesDAL.updateDispatchStatus(event.taskId, 'complete', {
+          summary: 'Agent completed successfully',
+        });
+        const record = orchestrator.tracker.getTask(event.taskId);
+        if (record) {
+          dispatchesDAL.updateDispatchAttemptTurn(
+            event.taskId,
+            record.attempt,
+            record.turnCount,
+          );
+        }
       }
     }
 
     // Terminal: all retries exhausted → mark dispatch failed with last error
+    // Guard: skip if already terminal
     if (event.type === 'dead') {
-      const lastError = 'lastError' in event ? (event as { lastError?: string }).lastError : undefined;
-      const attempts = 'attempts' in event ? (event as { attempts?: number }).attempts : undefined;
-      dispatchesDAL.updateDispatchStatus(event.taskId, 'failed', {
-        error: lastError ?? 'All retry attempts exhausted',
-        summary: `Failed after ${attempts ?? '?'} attempt(s)`,
-      });
-      dispatchesDAL.updateDispatchAttemptTurn(
-        event.taskId,
-        attempts ?? 0,
-        0,
-      );
+      const current = dispatchesDAL.findDispatchById(event.taskId);
+      if (current && current.status !== 'complete' && current.status !== 'failed' && current.status !== 'cancelled') {
+        const lastError = 'lastError' in event ? (event as { lastError?: string }).lastError : undefined;
+        const attempts = 'attempts' in event ? (event as { attempts?: number }).attempts : undefined;
+        dispatchesDAL.updateDispatchStatus(event.taskId, 'failed', {
+          error: lastError ?? 'All retry attempts exhausted',
+          summary: `Failed after ${attempts ?? '?'} attempt(s)`,
+        });
+        dispatchesDAL.updateDispatchAttemptTurn(
+          event.taskId,
+          attempts ?? 0,
+          0,
+        );
+      }
     }
 
     // Retry scheduled → update attempt count so the UI shows progress

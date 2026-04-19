@@ -7,6 +7,7 @@ import {
 import clsx from 'clsx';
 import { useSpec, useUpdateSpec, useLinkSpec, useUnlinkSpec } from '../hooks/useSpecs';
 import type { EdgeType } from '../hooks/useSpecs';
+import { ChatFabContextProvider, type ChatFabContextItem } from '../components/chat-fab/ChatFabContext';
 import { useSpecsRealtime } from '../hooks/useSpecsRealtime';
 import { SpecMarkdown } from '../components/specs/SpecMarkdown';
 import { SpecEditor } from '../components/specs/SpecEditor';
@@ -76,6 +77,13 @@ export function SpecDetail() {
     await unlinkSpec.mutateAsync({ target_id: targetId, type: edgeType });
   };
 
+  const chatFabItems: ChatFabContextItem[] = [
+    { label: `Spec: ${spec.title}`, type: 'spec', data: { id: spec.id, title: spec.title, content: spec.content, resource_id: spec.resource_id } },
+    ...(linked.tasks.length > 0
+      ? [{ label: `Linked tasks (${linked.tasks.length})`, type: 'tasks' as const, data: { tasks: linked.tasks } }]
+      : []),
+  ];
+
   const handleArchiveToggle = async () => {
     try {
       await updateSpec.mutateAsync({ archived: !spec.archived });
@@ -85,6 +93,7 @@ export function SpecDetail() {
   };
 
   return (
+    <ChatFabContextProvider items={chatFabItems}>
     <div className="p-6 max-w-7xl mx-auto">
       <Link
         to="/specs"
@@ -294,5 +303,6 @@ export function SpecDetail() {
         spec={spec}
       />
     </div>
+    </ChatFabContextProvider>
   );
 }

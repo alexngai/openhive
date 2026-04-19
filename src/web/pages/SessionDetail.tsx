@@ -3,9 +3,9 @@ import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
   Activity, AlertTriangle, Brain, ChevronDown, ChevronRight,
   Clock, Cpu, FileText, GitBranch, GitCommit, Hash,
-  MessageSquare, User,
+  Info, MessageSquare, User,
 } from 'lucide-react';
-import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants } from '../hooks/useApi';
+import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants, useResumeSession } from '../hooks/useApi';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
@@ -223,8 +223,9 @@ function CheckpointsTab({ checkpoints, total, isLoading }: {
 // Trajectory Viewer (thin wrapper around EventStream)
 // ============================================================================
 
-function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceSwarmId, existingAcpStreamId, existingAcpSessionId, providerSessionId }: {
+function TrajectoryTab({ sessionId, resourceId, hasTrajectorySupport, agentIdentity, sourceSwarmId, existingAcpStreamId, existingAcpSessionId, providerSessionId }: {
   sessionId: string;
+  resourceId: string;
   hasTrajectorySupport: boolean;
   agentIdentity?: AgentIdentity;
   sourceSwarmId?: string | null;
@@ -232,6 +233,31 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
   existingAcpSessionId?: string | null;
   providerSessionId?: string | null;
 }) {
+  const [, setSearchParams] = useSearchParams();
+  const resumeMutation = useResumeSession();
+  const canResume = !!providerSessionId && !!sourceSwarmId;
+
+  const handleResume = () => {
+    if (!canResume) return;
+    resumeMutation.mutate(
+      { sessionResourceId: resourceId },
+      {
+        onSuccess: (data) => {
+          // Rewire the URL so the channel re-hydrates against the fresh stream.
+          // SessionDetail reads streamId/sessionId from searchParams first.
+          setSearchParams(
+            (prev) => {
+              const next = new URLSearchParams(prev);
+              next.set('streamId', data.acp_stream_id);
+              next.set('sessionId', data.acp_session_id);
+              return next;
+            },
+            { replace: true },
+          );
+        },
+      },
+    );
+  };
   const {
     data,
     isLoading,
@@ -288,6 +314,47 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
     } catch { /* best-effort URL cleanup */ }
   }, [channel.mode, channel.status, existingAcpStreamId, existingAcpSessionId]);
 
+  // Surface ACP-resume degradation: the URL carried streamId+sessionId
+  // (intent: resume an ACP session), but the channel didn't settle on ACP.
+  // Render a subtle banner so the user understands why the chat mode changed.
+  const acpResumeIntent = !!(existingAcpStreamId && existingAcpSessionId);
+  const channelSettled = channel.status === 'ready' || channel.status === 'streaming' || channel.mode === 'unavailable';
+  const acpDegraded = acpResumeIntent && channelSettled && channel.mode !== 'acp';
+  const resumeError = resumeMutation.error as { message?: string } | null;
+  const degradationBanner = acpDegraded ? (
+    <div
+      className="border-t px-4 py-2 flex items-start gap-2"
+      style={{
+        backgroundColor: 'rgba(245, 158, 11, 0.08)',
+        borderColor: 'var(--color-border-subtle)',
+        color: 'var(--color-text-secondary)',
+      }}
+    >
+      <Info className="w-3.5 h-3.5 mt-0.5 shrink-0 text-honey-500" />
+      <span className="text-2xs flex-1">
+        ACP stream unavailable — {channel.mode === 'unavailable'
+          ? 'agent is not currently reachable for chat.'
+          : `falling back to ${channel.mode}. The original ACP session may have closed (e.g. another connect to this swarm).`}
+        {resumeError?.message && (
+          <span className="block mt-1 text-red-400">Resume failed: {resumeError.message}</span>
+        )}
+      </span>
+      {canResume && (
+        <button
+          onClick={handleResume}
+          disabled={resumeMutation.isPending}
+          className="text-2xs px-2 py-0.5 rounded shrink-0 cursor-pointer disabled:cursor-wait disabled:opacity-60"
+          style={{
+            backgroundColor: 'var(--color-honey-500, #f59e0b)',
+            color: 'var(--color-bg)',
+          }}
+        >
+          {resumeMutation.isPending ? 'Starting…' : 'Resume'}
+        </button>
+      )}
+    </div>
+  ) : null;
+
   const pages = data?.pages ?? [];
   const trajectoryEvents = pages.flatMap((page) => page.events);
   const total = pages[0]?.total ?? 0;
@@ -332,6 +399,7 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
           </p>
           <p className="text-xs">{(error as Error)?.message || 'Unknown error'}</p>
         </div>
+        {degradationBanner}
         <div className="sticky bottom-0 z-10 bg-[var(--color-bg)]">
           <ChatInput channel={channel} showModeBadge />
         </div>
@@ -359,6 +427,7 @@ function TrajectoryTab({ sessionId, hasTrajectorySupport, agentIdentity, sourceS
         }}
         emptyMessage="No events found in this session."
       />
+      {degradationBanner}
       <div className="sticky bottom-0 z-10 bg-[var(--color-bg)]">
         <PermissionDialog
           channel={channel}
@@ -508,7 +577,7 @@ export function SessionDetail() {
           <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
         )}
         {tab === 'trajectory' && (
-          <TrajectoryTab sessionId={id!} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} sourceSwarmId={sourceSwarmId} existingAcpStreamId={existingAcpStreamId} existingAcpSessionId={existingAcpSessionId} providerSessionId={providerSessionId} />
+          <TrajectoryTab sessionId={id!} resourceId={resource.id} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} sourceSwarmId={sourceSwarmId} existingAcpStreamId={existingAcpStreamId} existingAcpSessionId={existingAcpSessionId} providerSessionId={providerSessionId} />
         )}
         {tab === 'learning' && (
           <SessionLearningTab sessionId={id!} />

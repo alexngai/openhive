@@ -88,10 +88,40 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 const RECONNECT_DELAY = 1000;
 
+/**
+ * Vite HMR cleanup. Without this, hot-reloading this module leaves the live
+ * WebSocket alive with its `onmessage` handler bound to the old module's
+ * `emit` closure — but the old module's store instance has no listeners
+ * (children re-register on the NEW module's store). Result: broadcasts
+ * silently vanish into a dead store and the UI stops receiving WS events
+ * until a full page reload. Disposing on module swap forces a clean
+ * reconnect bound to the fresh module's `emit`/store pair.
+ *
+ * Only fires in dev — `import.meta.hot` is stripped from production builds.
+ */
+if (typeof import.meta !== 'undefined' && import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
+      reconnectTimeout = null;
+    }
+    if (globalWs) {
+      try { globalWs.close(); } catch { /* ignore */ }
+      globalWs = null;
+    }
+    reconnectAttempts = 0;
+  });
+}
+
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
-  const { token, isAuthenticated } = useAuthStore();
-  const { setConnected, channels, emit } = useWSStore();
+  const { token } = useAuthStore();
+  // Select `setConnected` directly — selecting the whole store (as this hook
+  // originally did) causes a re-render on EVERY field change (listeners map,
+  // channels set, refcounts) and churned the `connect` useCallback identity,
+  // which in turn re-ran the connect effect and caused a cascade of
+  // duplicate subscribe messages at boot.
+  const setConnected = useWSStore((s) => s.setConnected);
 
   const connect = useCallback(() => {
     if (globalWs?.readyState === WebSocket.OPEN || globalWs?.readyState === WebSocket.CONNECTING) {
@@ -114,7 +144,10 @@ export function useWebSocket() {
         setConnected(true);
         reconnectAttempts = 0;
 
-        // Resubscribe to channels
+        // Resubscribe to channels. Read from live store state rather than
+        // a captured closure — channels may have been added AFTER connect()
+        // was called (children mount + subscribe during boot).
+        const { channels } = useWSStore.getState();
         if (channels.size > 0) {
           ws.send(JSON.stringify({
             type: 'subscribe',
@@ -139,8 +172,14 @@ export function useWebSocket() {
               // Heartbeat response
               break;
             default:
-              // Emit the event to listeners
-              emit(message.type, message);
+              // Emit the event to listeners via a FRESH getState() call.
+              // Previously this closed over a destructured `emit` from the
+              // enclosing hook render, which meant after an HMR swap the
+              // handler still dispatched into the OLD module's store —
+              // and the new module's children had registered their
+              // listeners on a different store instance. All broadcast
+              // events silently dropped until a full page reload.
+              useWSStore.getState().emit(message.type, message);
               break;
           }
         } catch (error) {
@@ -155,8 +194,13 @@ export function useWebSocket() {
       ws.onclose = (event) => {
         console.log('[WS] Disconnected:', event.code, event.reason);
         setConnected(false);
-        globalWs = null;
-        wsRef.current = null;
+        // Only clear globalWs if THIS socket is still the active one. An
+        // HMR dispose may have already replaced it; clobbering the new one
+        // to null would break the fresh connect's bookkeeping.
+        if (globalWs === ws) {
+          globalWs = null;
+          wsRef.current = null;
+        }
 
         // Attempt to reconnect
         if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
@@ -169,7 +213,7 @@ export function useWebSocket() {
     } catch (error) {
       console.error('[WS] Failed to connect:', error);
     }
-  }, [token, channels, setConnected, emit]);
+  }, [token, setConnected]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeout) {

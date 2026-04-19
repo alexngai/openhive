@@ -10,6 +10,39 @@ const TEST_DATA_DIR = path.join(TEST_ROOT, 'data');
 const FIXTURES_DIR = path.resolve(__dirname, 'fixtures');
 const SLEEP_SCRIPT = path.join(FIXTURES_DIR, 'sleep-server.js');
 const FAIL_SCRIPT = path.join(FIXTURES_DIR, 'exit-immediately.js');
+const ENV_DUMP_SCRIPT = path.join(FIXTURES_DIR, 'env-dump.js');
+
+/**
+ * Provision a child via the env-dump fixture and return the env vars it captured.
+ * Used to verify provider env propagation without modifying production code.
+ */
+async function captureProvisionedEnv(
+  provider: LocalProvider | SandboxedLocalProvider,
+  config: Parameters<typeof provider.provision>[0],
+  testCaseDir: string,
+): Promise<Record<string, string | null>> {
+  fs.mkdirSync(testCaseDir, { recursive: true });
+  const dumpPath = path.join(testCaseDir, 'env.json');
+  // Pass the dump path through process.env so the fixture sees it via inheritance.
+  const prevDump = process.env.MACRO_TEST_ENV_DUMP;
+  process.env.MACRO_TEST_ENV_DUMP = dumpPath;
+  try {
+    const result = await provider.provision(config);
+    // Wait for the fixture to write the file.
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (fs.existsSync(dumpPath)) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(fs.existsSync(dumpPath)).toBe(true);
+    const captured = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
+    await provider.deprovision(result.instance_id);
+    return captured;
+  } finally {
+    if (prevDump === undefined) delete process.env.MACRO_TEST_ENV_DUMP;
+    else process.env.MACRO_TEST_ENV_DUMP = prevDump;
+  }
+}
 
 describe('LocalProvider', () => {
   let provider: LocalProvider;
@@ -349,6 +382,82 @@ describe('LocalProvider', () => {
       expect(status.state).toBe('stopped');
     }, 15000);
   });
+
+  describe('bootstrap env vars', () => {
+    it('does not set MACRO_BOOTSTRAP_* when bootstrap is unset', async () => {
+      provider = new LocalProvider(`node ${ENV_DUMP_SCRIPT}`);
+      const env = await captureProvisionedEnv(
+        provider,
+        {
+          name: 'no-bootstrap',
+          adapter: '',
+          bootstrap_token: 'dGVzdA==',
+          assigned_port: 19020,
+          data_dir: path.join(TEST_DATA_DIR, 'no-bootstrap'),
+        },
+        path.join(TEST_DATA_DIR, 'no-bootstrap-capture'),
+      );
+      expect(env.MACRO_BOOTSTRAP_COORDINATOR).toBeNull();
+      expect(env.MACRO_BOOTSTRAP_CWD).toBeNull();
+    }, 10000);
+
+    it('sets MACRO_BOOTSTRAP_COORDINATOR=true when bootstrap.coordinator is true', async () => {
+      provider = new LocalProvider(`node ${ENV_DUMP_SCRIPT}`);
+      const env = await captureProvisionedEnv(
+        provider,
+        {
+          name: 'with-bootstrap',
+          adapter: '',
+          bootstrap_token: 'dGVzdA==',
+          assigned_port: 19021,
+          data_dir: path.join(TEST_DATA_DIR, 'with-bootstrap'),
+          bootstrap: { coordinator: true },
+        },
+        path.join(TEST_DATA_DIR, 'with-bootstrap-capture'),
+      );
+      expect(env.MACRO_BOOTSTRAP_COORDINATOR).toBe('true');
+      expect(env.MACRO_BOOTSTRAP_CWD).toBeNull();
+    }, 10000);
+
+    it('sets MACRO_BOOTSTRAP_CWD when bootstrap.cwd is provided', async () => {
+      provider = new LocalProvider(`node ${ENV_DUMP_SCRIPT}`);
+      const projectPath = '/tmp/some/project/path';
+      const env = await captureProvisionedEnv(
+        provider,
+        {
+          name: 'with-cwd',
+          adapter: '',
+          bootstrap_token: 'dGVzdA==',
+          assigned_port: 19022,
+          data_dir: path.join(TEST_DATA_DIR, 'with-cwd'),
+          bootstrap: { coordinator: true, cwd: projectPath },
+        },
+        path.join(TEST_DATA_DIR, 'with-cwd-capture'),
+      );
+      expect(env.MACRO_BOOTSTRAP_COORDINATOR).toBe('true');
+      expect(env.MACRO_BOOTSTRAP_CWD).toBe(projectPath);
+    }, 10000);
+
+    it('does not set MACRO_BOOTSTRAP_COORDINATOR when coordinator is false', async () => {
+      provider = new LocalProvider(`node ${ENV_DUMP_SCRIPT}`);
+      const env = await captureProvisionedEnv(
+        provider,
+        {
+          name: 'coord-false',
+          adapter: '',
+          bootstrap_token: 'dGVzdA==',
+          assigned_port: 19023,
+          data_dir: path.join(TEST_DATA_DIR, 'coord-false'),
+          bootstrap: { coordinator: false, cwd: '/some/path' },
+        },
+        path.join(TEST_DATA_DIR, 'coord-false-capture'),
+      );
+      // cwd should NOT be exported when coordinator is opt-out — the gate is
+      // the `coordinator` flag, not the cwd field.
+      expect(env.MACRO_BOOTSTRAP_COORDINATOR).toBeNull();
+      expect(env.MACRO_BOOTSTRAP_CWD).toBeNull();
+    }, 10000);
+  });
 });
 
 describe('SandboxedLocalProvider', () => {
@@ -396,5 +505,26 @@ describe('SandboxedLocalProvider', () => {
       const status = await provider.getStatus(result.instance_id);
       expect(status.state).toBe('stopped');
     }, 15000);
+  });
+
+  describe('bootstrap env vars', () => {
+    it('sets MACRO_BOOTSTRAP_COORDINATOR + MACRO_BOOTSTRAP_CWD when configured', async () => {
+      provider = new SandboxedLocalProvider(`node ${ENV_DUMP_SCRIPT}`);
+      const projectPath = '/tmp/sandboxed-project';
+      const env = await captureProvisionedEnv(
+        provider,
+        {
+          name: 'sandbox-bootstrap',
+          adapter: '',
+          bootstrap_token: 'dGVzdA==',
+          assigned_port: 19024,
+          data_dir: path.join(TEST_DATA_DIR, 'sandbox-bootstrap'),
+          bootstrap: { coordinator: true, cwd: projectPath },
+        },
+        path.join(TEST_DATA_DIR, 'sandbox-bootstrap-capture'),
+      );
+      expect(env.MACRO_BOOTSTRAP_COORDINATOR).toBe('true');
+      expect(env.MACRO_BOOTSTRAP_CWD).toBe(projectPath);
+    }, 10000);
   });
 });
