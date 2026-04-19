@@ -792,6 +792,10 @@ export interface SessionListItem {
   last_synced_at: string | null;
   source_swarm_id: string | null;
   source_swarm_ids: string[];
+  /** Raw MAP agent id this session targets (populated on ACP sessions). */
+  acp_target_agent_id: string | null;
+  /** Mail conversation linked via /sessions/:id/chat lazy-create, if any. */
+  mail_conversation_id: string | null;
 }
 
 // Session event types (ACP-compatible)

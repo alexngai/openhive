@@ -78,6 +78,37 @@ export async function agentsRoutes(fastify: FastifyInstance, _options: { config:
     return reply.send(agentsDAL.toPublicAgent(updated!));
   });
 
+  // Bulk-resolve agent public profiles by id. Used by chat-surface
+  // enrichment to look up display name + avatar_url for the senders of
+  // user/supervisor turns in a single round-trip. Returns an object keyed
+  // by id so missing ids are implicit (omitted from the map).
+  //
+  // Must be declared BEFORE `/agents/:name` — Fastify matches literal
+  // segments first, so `/agents/by-ids` wouldn't collide, but keeping the
+  // order explicit avoids future ambiguity if the `:name` route's matcher
+  // ever becomes more permissive.
+  fastify.get<{ Querystring: { ids?: string } }>(
+    '/agents/by-ids',
+    { preHandler: optionalAuthMiddleware },
+    async (request, reply) => {
+      const raw = request.query.ids ?? '';
+      const ids = raw.split(',').map((s) => s.trim()).filter(Boolean);
+      // Cap the batch to keep the SQL IN-list bounded. Chat surfaces
+      // typically resolve 1–10 ids; anything over 100 is almost certainly
+      // a caller bug worth surfacing.
+      if (ids.length > 100) {
+        return reply.status(400).send({
+          error: 'Validation Error',
+          message: 'ids parameter is limited to 100 entries',
+        });
+      }
+      const agents = agentsDAL.findAgentsByIds(ids);
+      const byId: Record<string, ReturnType<typeof agentsDAL.toPublicAgent>> = {};
+      for (const a of agents) byId[a.id] = agentsDAL.toPublicAgent(a);
+      return reply.send({ agents: byId });
+    }
+  );
+
   // Get agent by name
   fastify.get<{ Params: { name: string } }>(
     '/agents/:name',

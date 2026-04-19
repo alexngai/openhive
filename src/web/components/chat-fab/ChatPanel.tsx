@@ -18,6 +18,7 @@ import { useChatFabStore } from './ChatFabStore';
 import { ContextMenu } from './ContextMenu';
 import { setAcpStreamAgentName } from '../../adapters/openhive-acp-service';
 import { useMapSwarm } from '../../hooks/useApi';
+import { useEnrichedUserTurns } from '../../hooks/useEnrichedUserTurns';
 
 /**
  * Backfill the acp-service's agent display name on resumed streams.
@@ -83,6 +84,11 @@ export function ChatPanel() {
     enabled: !!target,
   });
 
+  // Decorate user/supervisor turns with openhive Agent identity (name +
+  // avatar). Shared helper used by MailThreadView, SessionDetail, and the
+  // coordination adapter so the same user shows the same way everywhere.
+  const messages = useEnrichedUserTurns(channel.messages);
+
   const handleContextInject = useCallback((text: string) => {
     if (channel.status === 'ready' || channel.status === 'streaming') {
       channel.send(text).catch(() => {});
@@ -113,7 +119,7 @@ export function ChatPanel() {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto min-h-0">
         <ChatMessageList
-          messages={channel.messages}
+          messages={messages}
           loading={channel.status === 'connecting'}
           compact
         />

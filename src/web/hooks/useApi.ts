@@ -1923,6 +1923,32 @@ export function useMailConversations(options?: { status?: string }) {
   });
 }
 
+/**
+ * Bulk-resolve agent profiles by id. Shared across chat surfaces to
+ * decorate user/supervisor turns with real names + avatars. Returns a Map
+ * keyed by agent id; unknown ids are simply absent from the map so callers
+ * can default to a generic "user" fallback.
+ *
+ * Caching: react-query keys on the sorted id list, so two callers asking
+ * for overlapping sets still share cached entries. staleTime is long (5 min)
+ * since agent profile data rarely changes and chat surfaces re-ask on every
+ * message list refresh.
+ */
+export function useAgentLookup(ids: string[]) {
+  const unique = Array.from(new Set(ids.filter(Boolean))).sort();
+  return useQuery({
+    queryKey: ["agents-by-ids", unique.join(",")],
+    queryFn: async () => {
+      if (unique.length === 0) return {} as Record<string, Agent>;
+      const qs = `?ids=${encodeURIComponent(unique.join(","))}`;
+      const res = await api.get<{ agents: Record<string, Agent> }>(`/agents/by-ids${qs}`);
+      return res.agents ?? {};
+    },
+    staleTime: 5 * 60 * 1000,
+    enabled: unique.length > 0,
+  });
+}
+
 export function useMailConversation(id: string) {
   return useQuery({
     queryKey: ["mail-conversation", id],

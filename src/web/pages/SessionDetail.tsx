@@ -23,6 +23,7 @@ import {
 import { useSessionCapabilityResolver, sessionTarget } from '../lib/chat/resolvers';
 import { useOpenHiveAdapters } from '../adapters/openhive-adapters';
 import { sessionEventsToChatMessages } from '../lib/chat/session-events';
+import { useEnrichedUserTurns } from '../hooks/useEnrichedUserTurns';
 import clsx from 'clsx';
 
 // ============================================================================
@@ -361,7 +362,7 @@ function TrajectoryTab({ sessionId, resourceId, hasTrajectorySupport, agentIdent
 
   // Convert trajectory events (API order: newest-first) into ChatMessage[]
   // in chronological order, then merge live channel messages with dedup.
-  const messages = useMemo(() => {
+  const rawMessages = useMemo(() => {
     const chronological = [...trajectoryEvents].reverse();
     const fromTrajectory = sessionEventsToChatMessages(chronological, {
       assistantIdentity: agentIdentity,
@@ -370,6 +371,12 @@ function TrajectoryTab({ sessionId, resourceId, hasTrajectorySupport, agentIdent
     const uniqueLive = deduplicateChatMessages(live, fromTrajectory);
     return [...fromTrajectory, ...uniqueLive];
   }, [trajectoryEvents, channel.messages, agentIdentity]);
+
+  // Decorate user/supervisor turns with openhive Agent identity (name +
+  // avatar) so the viewer sees the same user the same way everywhere —
+  // trajectory, live ACP echo, and the mail thread this session may link
+  // to. Shared helper with MailThreadView + ChatPanel.
+  const messages = useEnrichedUserTurns(rawMessages);
 
   if (!hasTrajectorySupport) {
     return (
