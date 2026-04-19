@@ -187,6 +187,10 @@
     --color-accent: #f59e0b;
     --color-accent-hover: #fbbf24;
     --color-accent-bg: rgba(245, 158, 11, 0.08);
+    /* Status colors — tuned so text remains legible on dark surfaces. */
+    --color-danger: #f87171;        /* red-400: softer than 500 on dark bg */
+    --color-danger-border: #7f1d1d; /* red-900: subtle accent border */
+    --color-danger-bg: rgba(239, 68, 68, 0.08);
   }
 
   .light {
@@ -203,6 +207,10 @@
     --color-accent: #d97706;
     --color-accent-hover: #b45309;
     --color-accent-bg: rgba(217, 119, 6, 0.06);
+    /* Status colors — stronger on light bg for contrast. */
+    --color-danger: #dc2626;        /* red-600 */
+    --color-danger-border: #fca5a5; /* red-300 */
+    --color-danger-bg: rgba(220, 38, 38, 0.06);
   }
 
   html {
@@ -268,7 +276,8 @@
 
   .btn-ghost {
     color: var(--color-text-secondary);
-    @apply rounded-md;
+    @apply rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-honey-500/60
+           focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)];
   }
 
   .btn-ghost:hover {

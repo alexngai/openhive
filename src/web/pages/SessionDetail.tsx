@@ -10,15 +10,19 @@ import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { AgentAvatar } from '../components/common/AgentAvatar';
-import { formatTokens } from '../components/events/event-utils';
-import { EventStream } from '../components/events/EventStream';
-import { SessionChatInput } from '../components/events/SessionChatInput';
-import { PermissionDialog } from '../components/events/PermissionDialog';
 import type { TrajectoryCheckpoint, AgentIdentity } from '../lib/api';
 import { useSessionAttentionStore } from '../stores/session-attention';
-import { useChatChannel } from 'swarmcraft/ui/embed';
+import {
+  useChatChannel,
+  ChatMessageList,
+  ChatInput,
+  PermissionDialog,
+  deduplicateChatMessages,
+  formatTokens,
+} from 'swarmcraft/ui/embed';
 import { useSessionCapabilityResolver, sessionTarget } from '../lib/chat/resolvers';
 import { useOpenHiveAdapters } from '../adapters/openhive-adapters';
+import { sessionEventsToChatMessages } from '../lib/chat/session-events';
 import clsx from 'clsx';
 
 // ============================================================================
@@ -355,6 +359,18 @@ function TrajectoryTab({ sessionId, resourceId, hasTrajectorySupport, agentIdent
   const trajectoryEvents = pages.flatMap((page) => page.events);
   const total = pages[0]?.total ?? 0;
 
+  // Convert trajectory events (API order: newest-first) into ChatMessage[]
+  // in chronological order, then merge live channel messages with dedup.
+  const messages = useMemo(() => {
+    const chronological = [...trajectoryEvents].reverse();
+    const fromTrajectory = sessionEventsToChatMessages(chronological, {
+      assistantIdentity: agentIdentity,
+    });
+    const live = channel.messages ?? [];
+    const uniqueLive = deduplicateChatMessages(live, fromTrajectory);
+    return [...fromTrajectory, ...uniqueLive];
+  }, [trajectoryEvents, channel.messages, agentIdentity]);
+
   if (!hasTrajectorySupport) {
     return (
       <div className="card px-6 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
@@ -369,6 +385,10 @@ function TrajectoryTab({ sessionId, resourceId, hasTrajectorySupport, agentIdent
     );
   }
 
+  if (isLoading && trajectoryEvents.length === 0) {
+    return <PageLoader />;
+  }
+
   if (isError && trajectoryEvents.length === 0) {
     return (
       <>
@@ -380,29 +400,43 @@ function TrajectoryTab({ sessionId, resourceId, hasTrajectorySupport, agentIdent
           <p className="text-xs">{(error as Error)?.message || 'Unknown error'}</p>
         </div>
         {degradationBanner}
-        <SessionChatInput channel={channel} />
+        <div className="sticky bottom-0 z-10 bg-[var(--color-bg)]">
+          <ChatInput channel={channel} showModeBadge />
+        </div>
       </>
     );
   }
 
   return (
     <>
-      <EventStream
-        events={trajectoryEvents}
+      <ChatMessageList
         channel={channel}
-        agentIdentity={agentIdentity}
-        isLoading={isLoading}
+        messages={messages}
+        status="ready"
+        groupConsecutiveTools
+        continuationHeaders
+        initialAutoScroll="instant"
         hasMore={hasNextPage}
         onLoadMore={() => fetchNextPage()}
         isLoadingMore={isFetchingNextPage}
         total={total}
-        formatId={pages[0]?.format_id}
+        header={{
+          title: 'Agent Trajectory',
+          badge: pages[0]?.format_id,
+          count: total,
+        }}
         emptyMessage="No events found in this session."
-        emptyIcon={MessageSquare}
       />
-      <PermissionDialog channel={channel} />
       {degradationBanner}
-      <SessionChatInput channel={channel} />
+      <div className="sticky bottom-0 z-10 bg-[var(--color-bg)]">
+        <PermissionDialog
+          channel={channel}
+          variant="sticky-external"
+          descriptionAs="code"
+          approveLabel="Allow"
+        />
+        <ChatInput channel={channel} showModeBadge />
+      </div>
     </>
   );
 }
@@ -534,8 +568,11 @@ export function SessionDetail() {
         </div>
       </div>
 
-      {/* Tab content */}
-      <div className="max-w-4xl mx-auto px-4 py-4">
+      {/* Tab content.
+          For trajectory tab: drop the bottom padding so the sticky chat footer
+          aligns with the scrollport's bottom edge at max scroll (otherwise it
+          settles into its natural flow position, 16px above). */}
+      <div className={`max-w-4xl mx-auto px-4 pt-4 ${tab === 'trajectory' ? 'pb-0' : 'pb-4'}`}>
         {tab === 'checkpoints' && (
           <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
         )}

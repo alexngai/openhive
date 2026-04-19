@@ -16,7 +16,11 @@ import {
   MIGRATION_V33_SWARM_ARCHIVE,
   MIGRATION_V34_CANONICAL_KEY,
   MIGRATION_V35_DISPATCH_ORCHESTRATOR,
-  MIGRATION_V36_NODE_PRESENCE,
+  MIGRATION_V31_CASCADE_PROJECTIONS,
+  MIGRATION_V33_CASCADE_OPERATIONS,
+  MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
+  MIGRATION_V35_CASCADE_PR,
+  MIGRATION_V40_NODE_PRESENCE,
 } from './schema.js';
 import type { DatabaseConfig } from './adapters/types.js';
 import { SQLiteAdapter } from './adapters/sqlite.js';
@@ -247,8 +251,16 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   34: MIGRATION_V34_CANONICAL_KEY,
   // Version 35: Dispatch orchestrator fields (swarm-dispatch integration)
   35: MIGRATION_V35_DISPATCH_ORCHESTRATOR,
-  // Version 36: Node presence column (reachability separate from last-known state)
-  36: MIGRATION_V36_NODE_PRESENCE,
+  // Version 36: Cascade projection tables for x-cascade/* MAP events
+  36: MIGRATION_V31_CASCADE_PROJECTIONS,
+  // Version 37: cascade_operations audit log for cascade.completed events
+  37: MIGRATION_V33_CASCADE_OPERATIONS,
+  // Version 38: cascade_pushes + cascade_queue_entries projections
+  38: MIGRATION_V34_CASCADE_PUSHES_AND_QUEUE,
+  // Version 39: publish_branch alias + cascade_pull_requests for hub-side GitHub PR management
+  39: MIGRATION_V35_CASCADE_PR,
+  // Version 40: Node presence column (reachability separate from last-known state)
+  40: MIGRATION_V40_NODE_PRESENCE,
 };
 
 /** Get the SQL for a specific migration version.

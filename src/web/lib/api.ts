@@ -913,3 +913,58 @@ export interface MailThread {
   subject?: string;
   created_at: string;
 }
+
+// ============================================================================
+// Cascade (git-cascade projections)
+// ============================================================================
+
+export interface CascadeCommit {
+  commit_hash: string;
+  change_id: string | null;
+  message_summary: string | null;
+  author_agent_id: string | null;
+  files_touched: string[];
+  synced_at: string;
+  stream_id: string;
+  source_swarm_id: string;
+}
+
+export interface CascadeStreamSummary {
+  stream_row_id: string;
+  stream_id: string;
+  source_swarm_id: string;
+  source_agent_id: string;
+  first_commit: string | null;
+  last_commit: string | null;
+  commit_count: number;
+  change_ids: string[];
+  merge_commit: string | null;
+  merge_target: string | null;
+  open_conflicts: Array<{
+    conflict_id: string | null;
+    conflicted_files: string[];
+    source: string | null;
+    detected_at: string;
+  }>;
+}
+
+export interface CascadeChangelogData {
+  task_ref: { resource_id: string; node_id: string };
+  has_work: boolean;
+  totals: {
+    commits: number;
+    streams: number;
+    merged_streams: number;
+    open_conflicts: number;
+    files_touched: number;
+  };
+  streams: CascadeStreamSummary[];
+  commits: CascadeCommit[];
+  files_union: string[];
+  generated_at: string;
+}
+
+export interface CascadeChangelogResponse {
+  data: CascadeChangelogData;
+  markdown?: string;
+}

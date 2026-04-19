@@ -53,28 +53,19 @@ interface SwarmBridgeHandle {
 }
 
 /**
- * Terminal MAP agent states. When an agent transitions to any of these
- * we treat it as effectively gone — matching what SwarmCraft's built-in
- * `agent.state.changed` handler does when it tears down ACP streams.
- * The spec lists nine states: registered, active, busy, idle, suspended,
- * stopping, stopped, failed, orphaned. Anything in this set is a dead-end.
- */
-const TERMINAL_AGENT_STATES = new Set(['stopped', 'failed', 'orphaned']);
-
-/**
  * Setup the swarm bridge: hydrate existing data, register real-time listeners,
  * and optionally auto-connect SwarmCraft's MAP client to registered swarms.
  *
- * When `acpStreamManager` is provided and the host has SwarmCraft registered
+ * When `ctx.acpStreamManager` is set and the host has SwarmCraft registered
  * with `skipAgentLifecycle: true`, this bridge takes over the ACP cleanup
- * that SwarmCraft's built-in handlers would have performed: closing any open
- * ACP streams keyed on the raw MAP agent id when an agent unregisters or
- * hits a terminal state (stopped/failed/orphaned).
+ * that SwarmCraft's built-in handlers would have performed — closing any
+ * open ACP streams keyed on the raw MAP agent id when an agent unregisters
+ * or hits a terminal MAP state (stopped / failed / orphaned). The local
+ * `isTerminalMapState` helper inside the function captures the state-set.
  */
 export async function setupSwarmBridge(
   ctx: BridgeContext,
   mapClientManager?: { connect(opts: Record<string, unknown>): Promise<void> } & Partial<EventEmitter>,
-  acpStreamManager?: { closeStreamsForAgent(agentId: string): Promise<void> },
 ): Promise<SwarmBridgeHandle> {
   const listeners: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
   const mcmListeners: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
@@ -101,37 +92,65 @@ export async function setupSwarmBridge(
 
   // ── Real-time event listeners ────────────────────────────────────────
 
-  on('swarm_registered', async (e: unknown) => {
-    const ev = e as { swarm_id: string; name: string; map_endpoint: string; auth_method?: string };
-    try {
-      const agentId = agentIdFromSwarm(ev.swarm_id);
-      // Use the swarm's own ID as mapServerId so SwarmCraft's ACP manager
-      // can find the correct MAP ClientConnection via getClient(serverId)
-      const serverId = ev.swarm_id;
+  // Idempotent swarm upsert shared by swarm_registered (brand-new swarms)
+  // and swarm_online (reconnect / late-arriving swarms missed by startup
+  // hydration). Reads capabilities from the authoritative hub swarm record.
+  const upsertSwarmProjection = async (
+    swarmId: string,
+    name: string,
+    endpoint: string | undefined,
+  ): Promise<void> => {
+    const agentId = agentIdFromSwarm(swarmId);
+    const swarmRecord = findSwarmById(swarmId);
+    const hubCaps = swarmRecord?.capabilities as Record<string, unknown> | null;
+    const caps = hubCaps
+      ? Object.keys(hubCaps).filter(k => hubCaps[k])
+      : ['observation', 'messaging', 'lifecycle'];
+    const stateMetadata = {
+      source: 'openhive-hub',
+      swarmId,
+      endpoint: endpoint ?? swarmRecord?.map_endpoint ?? 'hub-inbound',
+    };
 
-      // Read actual capabilities from the hub's swarm record (set during MAP registration)
-      // instead of hardcoding, so ACP/mail/messaging capabilities are preserved.
-      const swarmRecord = findSwarmById(ev.swarm_id);
-      const hubCaps = swarmRecord?.capabilities as Record<string, unknown> | null;
-      const caps = hubCaps
-        ? Object.keys(hubCaps).filter(k => hubCaps[k])
-        : ['observation', 'messaging', 'lifecycle'];
-
+    const existing = await ctx.db.agents.get(agentId);
+    if (existing) {
+      const previousState = (existing as { state?: string }).state || 'stopped';
+      const previousPresence = (existing as { presence?: string }).presence;
+      // Always reassert presence='online' on swarm_registered/online — the
+      // existing row may have been previously flipped offline by a stale
+      // sweep or disconnect cascade. State change broadcast still gates on
+      // a real transition so we don't spam clients on every reconnect.
+      if (previousState !== 'active' || previousPresence !== 'online') {
+        await ctx.db.agents.update(agentId, {
+          name,
+          state: 'active',
+          presence: 'online',
+          mapServerId: swarmId,
+          stateMetadata,
+        });
+        if (previousState !== 'active') {
+          ctx.wsHub.broadcastAgentStateChanged(agentId, previousState, 'active');
+        }
+      }
+    } else {
       await ctx.db.agents.create({
         id: agentId,
-        name: ev.name,
+        name,
         type: 'swarm',
-        mapServerId: serverId,
+        mapServerId: swarmId,
         state: 'active',
         presence: 'online',
         capabilities: caps,
-        stateMetadata: {
-          source: 'openhive-hub',
-          swarmId: ev.swarm_id,
-          endpoint: ev.map_endpoint,
-        },
+        stateMetadata,
       });
-      ctx.wsHub.broadcastAgentRegistered({ id: agentId, name: ev.name, type: 'swarm' });
+      ctx.wsHub.broadcastAgentRegistered({ id: agentId, name, type: 'swarm' });
+    }
+  };
+
+  on('swarm_registered', async (e: unknown) => {
+    const ev = e as { swarm_id: string; name: string; map_endpoint: string; auth_method?: string };
+    try {
+      await upsertSwarmProjection(ev.swarm_id, ev.name, ev.map_endpoint);
 
       // Auto-connect MAP client to the swarm's MAP endpoint
       if (mapClientManager) {
@@ -147,8 +166,33 @@ export async function setupSwarmBridge(
     }
   });
 
+  // Fires on every inbound WS handshake (first connect AND reconnect).
+  // Handles two previously-broken cases:
+  //   1. A swarm that bounced offline→online stayed stuck at state='stopped'
+  //      because the bridge only had swarm_offline, no reverse signal.
+  //   2. A swarm that came online after startup hydration ran but before
+  //      its first swarm_registered emission (e.g. DB had a stale record
+  //      marked offline) never got projected at all.
+  on('swarm_online', async (e: unknown) => {
+    const ev = e as { swarm_id: string; name: string };
+    try {
+      await upsertSwarmProjection(ev.swarm_id, ev.name, undefined);
+    } catch (err) {
+      console.warn(`[swarmcraft-bridge] swarm_online handler failed: ${(err as Error).message}`);
+    }
+  });
+
   on('node_registered', async (e: unknown) => {
-    const ev = e as { node_id: string; swarm_id: string; map_agent_id: string; name: string | null; role: string | null; state: string };
+    const ev = e as {
+      node_id: string;
+      swarm_id: string;
+      map_agent_id: string;
+      name: string | null;
+      role: string | null;
+      state: string;
+      capabilities?: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+    };
     try {
       const agentId = agentIdFromNode(ev.swarm_id, ev.map_agent_id);
       const parentAgentId = agentIdFromSwarm(ev.swarm_id);
@@ -160,7 +204,11 @@ export async function setupSwarmBridge(
         id: agentId,
         name,
         type: ev.role || 'agent',
-        capabilities: [],
+        // Forward the agent's declared MAP ParticipantCapabilities so
+        // SwarmCraft's capability resolver (useAgentCapabilities) can detect
+        // ACP/mail/messaging without re-querying MAP. Falls back to an empty
+        // object when the agent didn't declare any (still a valid shape).
+        capabilities: ev.capabilities ?? {},
         mapServerId: serverId,
         parentAgentId,
         state: mapNodeStateToState(ev.state),
@@ -171,10 +219,10 @@ export async function setupSwarmBridge(
           mapAgentId: ev.map_agent_id,
           // SwarmCraft's capability resolver reads peerMapId from the nested
           // `agentMetadata` slot — it uses this to target the agent on the
-          // peer's MAP server for ACP routing.
-          agentMetadata: {
-            peerMapId: ev.map_agent_id,
-          },
+          // peer's MAP server for ACP routing. Forward whatever metadata
+          // the registration carried (preserves peerMapId, sessionId, etc.)
+          // and fall back to the raw map_agent_id when emitter omitted it.
+          agentMetadata: ev.metadata ?? { peerMapId: ev.map_agent_id },
         },
       });
       ctx.wsHub.broadcastAgentRegistered({ id: agentId, name, type: ev.role || 'agent' });
@@ -255,6 +303,72 @@ export async function setupSwarmBridge(
     }
   });
 
+  // Terminal MAP states for which any open ACP stream targeting the agent
+  // must be torn down. Mirrors swarmcraft's built-in event-handler logic
+  // (which we replace by passing skipAgentLifecycle: true to the plugin).
+  const isTerminalMapState = (state: string) =>
+    state === 'stopped' || state === 'failed' || state === 'orphaned';
+
+  // Close any ACP streams targeting this raw MAP agent id. Streams are keyed
+  // by `targetAgent` which is the raw MAP id (not the bridge-projected
+  // `oh-node-*` id), so we always pass through the raw id.
+  const closeAcpStreamsForRawAgent = (rawMapAgentId: string, reason: string) => {
+    if (!ctx.acpStreamManager) return;
+    ctx.acpStreamManager.closeStreamsForAgent(rawMapAgentId).catch(err => {
+      console.warn(
+        `[swarmcraft-bridge] closeStreamsForAgent(${rawMapAgentId}) failed (${reason}): ${(err as Error).message}`,
+      );
+    });
+  };
+
+  // Child agent state transitions (e.g. active → idle on turn completion).
+  on('node_state_changed', async (e: unknown) => {
+    const ev = e as { swarm_id: string; map_agent_id: string; previous_state?: string; new_state: string };
+    try {
+      const agentId = agentIdFromNode(ev.swarm_id, ev.map_agent_id);
+      const existing = await ctx.db.agents.get(agentId);
+      if (!existing) {
+        // Even with no projected row, terminal states still need ACP cleanup.
+        if (isTerminalMapState(ev.new_state)) {
+          closeAcpStreamsForRawAgent(ev.map_agent_id, `state=${ev.new_state}`);
+        }
+        return;
+      }
+      const previousState = ev.previous_state ?? (existing as { state?: string }).state ?? 'active';
+      const mapped = mapNodeStateToState(ev.new_state);
+      if ((existing as { state?: string }).state !== mapped) {
+        await ctx.db.agents.update(agentId, { state: mapped });
+        ctx.wsHub.broadcastAgentStateChanged(agentId, previousState, mapped);
+      }
+      if (isTerminalMapState(ev.new_state)) {
+        closeAcpStreamsForRawAgent(ev.map_agent_id, `state=${ev.new_state}`);
+      }
+    } catch (err) {
+      console.warn(`[swarmcraft-bridge] node_state_changed handler failed: ${(err as Error).message}`);
+    }
+  });
+
+  // Child agent unregistered (explicit unregister OR swarm disconnect cascade).
+  // We mark the agent stopped rather than deleting it so the graph can show
+  // history; the next registration with the same id will promote it back.
+  on('node_unregistered', async (e: unknown) => {
+    const ev = e as { swarm_id: string; map_agent_id: string };
+    try {
+      const agentId = agentIdFromNode(ev.swarm_id, ev.map_agent_id);
+      const existing = await ctx.db.agents.get(agentId);
+      // Always close ACP streams (even if no projected row exists), since the
+      // remote agent is gone and any open stream is now dead.
+      closeAcpStreamsForRawAgent(ev.map_agent_id, 'unregistered');
+      if (!existing) return;
+      const previousState = (existing as { state?: string }).state || 'active';
+      if (previousState === 'stopped') return;
+      await ctx.db.agents.update(agentId, { state: 'stopped' });
+      ctx.wsHub.broadcastAgentStateChanged(agentId, previousState, 'stopped');
+    } catch (err) {
+      console.warn(`[swarmcraft-bridge] node_unregistered handler failed: ${(err as Error).message}`);
+    }
+  });
+
   // ── Forward remote agent capabilities to hub swarm record ──────────
   // When SwarmCraft's MAPClientManager connects outbound to a swarm's
   // MAP server, it syncs the agent list and receives agent_registered events.
@@ -325,52 +439,40 @@ export async function setupSwarmBridge(
     mapClientManager.on('agents.synced', onAgentsSynced);
     mcmListeners.push({ event: 'agents.synced', fn: onAgentsSynced });
 
-    // ── ACP cleanup on agent termination ─────────────────────────────
-    // SwarmCraft's default `agent.unregistered` / `agent.state.changed`
-    // handlers call `acpStreamManager.closeStreamsForAgent(rawMapAgentId)`
-    // as a side effect. When OpenHive registers the plugin with
-    // `skipAgentLifecycle: true`, those handlers are disabled — so the
-    // host must do the cleanup here. Without this, an ACP stream whose
-    // target agent has died stays open until the next health tick fails.
-    //
-    // Stream keys use the raw MAP agent id (not the namespaced
-    // `oh-node-{swarmId}-{mapAgentId}` id that the bridge projects into
-    // SwarmCraft's agent table), so we pass `ev.agentId` straight through.
-    if (acpStreamManager) {
-      const onAgentUnregistered = (e: unknown) => {
-        const ev = e as { serverId: string; agentId: string };
-        if (!ev?.agentId) return;
-        acpStreamManager.closeStreamsForAgent(ev.agentId).catch((err) => {
-          console.warn(`[swarmcraft-bridge] closeStreamsForAgent(${ev.agentId}) on unregister failed: ${(err as Error).message}`);
-        });
-      };
-      mapClientManager.on('agent.unregistered', onAgentUnregistered);
-      mcmListeners.push({ event: 'agent.unregistered', fn: onAgentUnregistered });
+    // ── ACP stream cleanup on outbound-tracked lifecycle ──────────────
+    // Swarmcraft's plugin is registered with skipAgentLifecycle: true, so the
+    // built-in handlers that used to call closeStreamsForAgent are silenced.
+    // We replicate that cleanup here for outbound-discovered agents (the
+    // inbound path is handled via mapHubEvents above).
+    const onOutboundAgentUnregistered = (e: unknown) => {
+      const ev = e as { serverId?: string; agentId?: string };
+      if (!ev?.agentId) return;
+      closeAcpStreamsForRawAgent(ev.agentId, 'mcm.unregistered');
+    };
+    mapClientManager.on('agent.unregistered', onOutboundAgentUnregistered);
+    mcmListeners.push({ event: 'agent.unregistered', fn: onOutboundAgentUnregistered });
 
-      const onAgentStateChanged = (e: unknown) => {
-        const ev = e as { serverId: string; agentId: string; previousState?: string; newState: string };
-        if (!ev?.agentId || !ev?.newState) return;
-        if (!TERMINAL_AGENT_STATES.has(ev.newState)) return;
-        acpStreamManager.closeStreamsForAgent(ev.agentId).catch((err) => {
-          console.warn(`[swarmcraft-bridge] closeStreamsForAgent(${ev.agentId}) on state ${ev.newState} failed: ${(err as Error).message}`);
-        });
-      };
-      mapClientManager.on('agent.state.changed', onAgentStateChanged);
-      mcmListeners.push({ event: 'agent.state.changed', fn: onAgentStateChanged });
+    const onOutboundAgentStateChanged = (e: unknown) => {
+      const ev = e as { serverId?: string; agentId?: string; newState?: string };
+      if (!ev?.agentId || !ev.newState) return;
+      if (isTerminalMapState(ev.newState)) {
+        closeAcpStreamsForRawAgent(ev.agentId, `mcm.state=${ev.newState}`);
+      }
+    };
+    mapClientManager.on('agent.state.changed', onOutboundAgentStateChanged);
+    mcmListeners.push({ event: 'agent.state.changed', fn: onOutboundAgentStateChanged });
 
-      // `agent.orphaned` is emitted separately from `agent.state.changed`
-      // in MAPClientManager. Wire it too so orphan recovery doesn't leak
-      // a live stream pointing at an agent the server no longer believes in.
-      const onAgentOrphaned = (e: unknown) => {
-        const ev = e as { serverId: string; agentId: string };
-        if (!ev?.agentId) return;
-        acpStreamManager.closeStreamsForAgent(ev.agentId).catch((err) => {
-          console.warn(`[swarmcraft-bridge] closeStreamsForAgent(${ev.agentId}) on orphan failed: ${(err as Error).message}`);
-        });
-      };
-      mapClientManager.on('agent.orphaned', onAgentOrphaned);
-      mcmListeners.push({ event: 'agent.orphaned', fn: onAgentOrphaned });
-    }
+    // `agent.orphaned` fires separately from `agent.state.changed` in
+    // MAPClientManager (it's a distinct case in client-manager's emit
+    // switch). Without an explicit handler an ACP stream targeting an
+    // orphaned agent leaks until the next health tick fails.
+    const onOutboundAgentOrphaned = (e: unknown) => {
+      const ev = e as { serverId?: string; agentId?: string };
+      if (!ev?.agentId) return;
+      closeAcpStreamsForRawAgent(ev.agentId, 'mcm.orphaned');
+    };
+    mapClientManager.on('agent.orphaned', onOutboundAgentOrphaned);
+    mcmListeners.push({ event: 'agent.orphaned', fn: onOutboundAgentOrphaned });
   }
 
   // Periodic retry sweep: connect outbound MAP clients for any ws://-endpoint

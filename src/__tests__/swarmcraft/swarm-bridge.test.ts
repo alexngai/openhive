@@ -1,26 +1,43 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'events';
+
 import { mapHubEvents } from '../../map/service.js';
 
-// Mock DAL before importing the bridge — setupSwarmBridge calls listSwarms()
-// and findSwarmById() during hydration, and discoverNodes during per-swarm hydrate.
+// ── DAL mocks (populated per-test) ───────────────────────────────────
+const listSwarmsMock = vi.fn(() => ({ data: [], total: 0 }));
+const discoverNodesMock = vi.fn(() => ({ data: [], total: 0 }));
+const updateSwarmMock = vi.fn();
+const findSwarmByIdMock = vi.fn(() => null);
+
 vi.mock('../../db/dal/map.js', () => ({
-  listSwarms: vi.fn(() => ({ data: [], total: 0 })),
-  discoverNodes: vi.fn(() => ({ data: [], total: 0 })),
-  updateSwarm: vi.fn(),
-  findSwarmById: vi.fn(() => null),
+  listSwarms: (...args: unknown[]) => listSwarmsMock(...args),
+  discoverNodes: (...args: unknown[]) => discoverNodesMock(...args),
+  updateSwarm: (...args: unknown[]) => updateSwarmMock(...args),
+  findSwarmById: (...args: unknown[]) => findSwarmByIdMock(...args),
 }));
 
 import { setupSwarmBridge } from '../../swarmcraft/swarm-bridge.js';
+import { agentIdFromNode, agentIdFromSwarm } from '../../swarmcraft/constants.js';
 
-function createMockContext() {
-  return {
+const SWARM_ID = 'swarm-abc';
+const RAW_AGENT_ID = 'alice';
+const OH_NODE_ID = agentIdFromNode(SWARM_ID, RAW_AGENT_ID);
+const OH_SWARM_ID = agentIdFromSwarm(SWARM_ID);
+
+// ── Test context factory ─────────────────────────────────────────────
+function createCtx(existingAgent: Record<string, unknown> | null = null) {
+  const close = vi.fn(async () => {});
+  const ctx = {
     db: {
       agents: {
         create: vi.fn(async () => ({})),
         update: vi.fn(async () => ({})),
-        get: vi.fn(async () => null),
-        bulkUpdatePresenceByServer: vi.fn(async () => 0),
+        get: vi.fn(async () => existingAgent),
+        // The swarm_offline cascade snapshots online agents before the bulk
+        // flip and broadcasts presence per-agent. Without these mocks the
+        // cascade handler throws at runtime when called from cascade tests.
         list: vi.fn(async () => ({ agents: [], total: 0 })),
+        bulkUpdatePresenceByServer: vi.fn(async () => 0),
       },
       tasks: { create: vi.fn(), update: vi.fn(), get: vi.fn(), assign: vi.fn() },
       events: { create: vi.fn() },
@@ -28,107 +45,468 @@ function createMockContext() {
     wsHub: {
       broadcastAgentRegistered: vi.fn(),
       broadcastAgentStateChanged: vi.fn(),
+      // Per-agent presence broadcast emitted by the swarm_offline cascade.
       broadcastAgentPresenceChanged: vi.fn(),
       broadcastTaskAssigned: vi.fn(),
       broadcastTaskStatusChanged: vi.fn(),
       broadcast: vi.fn(),
     },
-    positionService: {
-      recordAccess: vi.fn(async () => ({})),
-    },
+    positionService: { recordAccess: vi.fn(async () => ({})) },
+    acpStreamManager: { closeStreamsForAgent: close },
   };
+  return { ctx, closeStreamsForAgent: close };
 }
 
-describe('Swarm Bridge — peerMapId projection', () => {
-  let ctx: ReturnType<typeof createMockContext>;
+function emitAndDrain(event: string, payload: unknown): Promise<void> {
+  mapHubEvents.emit(event, payload);
+  return new Promise(r => setTimeout(r, 10));
+}
 
-  beforeEach(() => {
-    ctx = createMockContext();
+// ── Tests ────────────────────────────────────────────────────────────
+describe('swarm-bridge — agent projection', () => {
+  afterEach(() => {
+    mapHubEvents.removeAllListeners('node_registered');
+    mapHubEvents.removeAllListeners('node_unregistered');
+    mapHubEvents.removeAllListeners('node_state_changed');
+    mapHubEvents.removeAllListeners('swarm_registered');
+    mapHubEvents.removeAllListeners('swarm_offline');
     vi.clearAllMocks();
   });
 
-  afterEach(() => {
-    mapHubEvents.removeAllListeners('node_registered');
-    mapHubEvents.removeAllListeners('swarm_registered');
-    mapHubEvents.removeAllListeners('swarm_offline');
-  });
-
-  it('writes peerMapId into stateMetadata.agentMetadata on node_registered', async () => {
-    // SwarmCraft's useAgentCapabilities.ts reads the peer-side target id from
-    // exactly this nested path. If the bridge writes it flat (as `mapAgentId`
-    // only), ACP routing for hub-projected agents silently falls through to
-    // the hub-assigned id, which the peer's MAP server can't resolve.
+  it('projects node_registered as oh-node-* with capabilities + metadata', async () => {
+    const { ctx } = createCtx();
     const handle = await setupSwarmBridge(ctx as any);
 
-    mapHubEvents.emit('node_registered', {
-      node_id: 'node-1',
-      swarm_id: 'swarm-1',
-      map_agent_id: 'peer-ulid-42',
-      name: 'coordinator',
+    await emitAndDrain('node_registered', {
+      node_id: RAW_AGENT_ID,
+      swarm_id: SWARM_ID,
+      map_agent_id: RAW_AGENT_ID,
+      name: 'Alice',
       role: 'coordinator',
-      state: 'active',
+      state: 'registered',
+      capabilities: { protocols: ['acp'], messaging: { canReceive: true } },
+      metadata: { sessionId: 'sess-1' },
     });
-
-    await new Promise((r) => setTimeout(r, 10));
 
     expect(ctx.db.agents.create).toHaveBeenCalledTimes(1);
-    const call = (ctx.db.agents.create as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0] as {
-      stateMetadata: {
-        mapAgentId?: string;
-        agentMetadata?: { peerMapId?: string };
-      };
-    };
-
-    expect(call.stateMetadata.mapAgentId).toBe('peer-ulid-42');
-    expect(call.stateMetadata.agentMetadata).toEqual({ peerMapId: 'peer-ulid-42' });
-
-    handle.teardown();
-  });
-
-  it('still writes the flat mapAgentId for other consumers', async () => {
-    const handle = await setupSwarmBridge(ctx as any);
-
-    mapHubEvents.emit('node_registered', {
-      node_id: 'node-2',
-      swarm_id: 'swarm-2',
-      map_agent_id: 'peer-ulid-99',
-      name: null,
-      role: null,
-      state: 'idle',
+    const payload = (ctx.db.agents.create as any).mock.calls[0][0];
+    expect(payload.id).toBe(OH_NODE_ID);
+    expect(payload.name).toBe('Alice');
+    expect(payload.type).toBe('coordinator');
+    expect(payload.capabilities).toEqual({
+      protocols: ['acp'],
+      messaging: { canReceive: true },
     });
-
-    await new Promise((r) => setTimeout(r, 10));
-
-    const call = (ctx.db.agents.create as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0] as {
-      stateMetadata: Record<string, unknown>;
-    };
-    // Flat form preserved — nothing else in the codebase should have to be
-    // updated to find the peer id.
-    expect(call.stateMetadata.mapAgentId).toBe('peer-ulid-99');
-    expect(call.stateMetadata.swarmId).toBe('swarm-2');
+    expect(payload.mapServerId).toBe(SWARM_ID);
+    expect(payload.stateMetadata).toMatchObject({
+      source: 'openhive-hub',
+      swarmId: SWARM_ID,
+      mapAgentId: RAW_AGENT_ID,
+      agentMetadata: { sessionId: 'sess-1' },
+    });
+    expect(ctx.wsHub.broadcastAgentRegistered).toHaveBeenCalledWith({
+      id: OH_NODE_ID,
+      name: 'Alice',
+      type: 'coordinator',
+    });
 
     handle.teardown();
   });
 });
 
-describe('Swarm Bridge — swarm_offline presence cascade', () => {
-  let ctx: ReturnType<typeof createMockContext>;
-
-  beforeEach(() => {
-    ctx = createMockContext();
+describe('swarm-bridge — ACP stream cleanup (inbound mapHubEvents)', () => {
+  afterEach(() => {
+    mapHubEvents.removeAllListeners('node_unregistered');
+    mapHubEvents.removeAllListeners('node_state_changed');
     vi.clearAllMocks();
   });
 
+  it('node_unregistered: closes ACP streams using RAW map id and marks oh-node-* stopped', async () => {
+    const { ctx, closeStreamsForAgent } = createCtx({ state: 'active' });
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('node_unregistered', {
+      swarm_id: SWARM_ID,
+      map_agent_id: RAW_AGENT_ID,
+    });
+
+    // Called with raw id, NOT the oh-node-* projection id
+    expect(closeStreamsForAgent).toHaveBeenCalledTimes(1);
+    expect(closeStreamsForAgent).toHaveBeenCalledWith(RAW_AGENT_ID);
+    expect(closeStreamsForAgent).not.toHaveBeenCalledWith(OH_NODE_ID);
+
+    expect(ctx.db.agents.update).toHaveBeenCalledWith(OH_NODE_ID, { state: 'stopped' });
+    expect(ctx.wsHub.broadcastAgentStateChanged).toHaveBeenCalledWith(OH_NODE_ID, 'active', 'stopped');
+
+    handle.teardown();
+  });
+
+  it('node_unregistered: closes ACP streams even when no projected oh-node-* row exists', async () => {
+    const { ctx, closeStreamsForAgent } = createCtx(null);
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('node_unregistered', {
+      swarm_id: SWARM_ID,
+      map_agent_id: RAW_AGENT_ID,
+    });
+
+    expect(closeStreamsForAgent).toHaveBeenCalledWith(RAW_AGENT_ID);
+    expect(ctx.db.agents.update).not.toHaveBeenCalled();
+    expect(ctx.wsHub.broadcastAgentStateChanged).not.toHaveBeenCalled();
+
+    handle.teardown();
+  });
+
+  it('node_unregistered: skips update when agent is already stopped', async () => {
+    const { ctx, closeStreamsForAgent } = createCtx({ state: 'stopped' });
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('node_unregistered', {
+      swarm_id: SWARM_ID,
+      map_agent_id: RAW_AGENT_ID,
+    });
+
+    // Cleanup still fires (idempotent, safe even when already stopped)
+    expect(closeStreamsForAgent).toHaveBeenCalledWith(RAW_AGENT_ID);
+    // But we don't issue a redundant update/broadcast
+    expect(ctx.db.agents.update).not.toHaveBeenCalled();
+    expect(ctx.wsHub.broadcastAgentStateChanged).not.toHaveBeenCalled();
+
+    handle.teardown();
+  });
+
+  it.each(['stopped', 'failed', 'orphaned'])(
+    'node_state_changed → %s closes ACP streams using RAW map id',
+    async (terminalState) => {
+      const { ctx, closeStreamsForAgent } = createCtx({ state: 'active' });
+      const handle = await setupSwarmBridge(ctx as any);
+
+      await emitAndDrain('node_state_changed', {
+        swarm_id: SWARM_ID,
+        map_agent_id: RAW_AGENT_ID,
+        previous_state: 'active',
+        new_state: terminalState,
+      });
+
+      expect(closeStreamsForAgent).toHaveBeenCalledTimes(1);
+      expect(closeStreamsForAgent).toHaveBeenCalledWith(RAW_AGENT_ID);
+
+      handle.teardown();
+    },
+  );
+
+  it.each(['idle', 'busy', 'suspended', 'active'])(
+    'node_state_changed → %s (non-terminal) does NOT close ACP streams',
+    async (nonTerminalState) => {
+      const { ctx, closeStreamsForAgent } = createCtx({ state: 'active' });
+      const handle = await setupSwarmBridge(ctx as any);
+
+      await emitAndDrain('node_state_changed', {
+        swarm_id: SWARM_ID,
+        map_agent_id: RAW_AGENT_ID,
+        previous_state: 'active',
+        new_state: nonTerminalState,
+      });
+
+      expect(closeStreamsForAgent).not.toHaveBeenCalled();
+
+      handle.teardown();
+    },
+  );
+
+  it('node_state_changed → terminal still fires ACP cleanup when no projection row exists', async () => {
+    const { ctx, closeStreamsForAgent } = createCtx(null);
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('node_state_changed', {
+      swarm_id: SWARM_ID,
+      map_agent_id: RAW_AGENT_ID,
+      previous_state: 'active',
+      new_state: 'failed',
+    });
+
+    expect(closeStreamsForAgent).toHaveBeenCalledWith(RAW_AGENT_ID);
+    expect(ctx.db.agents.update).not.toHaveBeenCalled();
+
+    handle.teardown();
+  });
+
+  it('does not crash when acpStreamManager is absent', async () => {
+    const { ctx } = createCtx({ state: 'active' });
+    delete (ctx as any).acpStreamManager;
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await expect(
+      emitAndDrain('node_unregistered', {
+        swarm_id: SWARM_ID,
+        map_agent_id: RAW_AGENT_ID,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(ctx.db.agents.update).toHaveBeenCalledWith(OH_NODE_ID, { state: 'stopped' });
+
+    handle.teardown();
+  });
+
+  it('surfaces closeStreamsForAgent rejection as warning (does not throw)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const close = vi.fn(async () => {
+      throw new Error('stream-close-failed');
+    });
+    const ctx = {
+      db: {
+        agents: {
+          create: vi.fn(async () => ({})),
+          update: vi.fn(async () => ({})),
+          get: vi.fn(async () => ({ state: 'active' })),
+        },
+        tasks: { create: vi.fn(), update: vi.fn(), get: vi.fn(), assign: vi.fn() },
+        events: { create: vi.fn() },
+      },
+      wsHub: {
+        broadcastAgentRegistered: vi.fn(),
+        broadcastAgentStateChanged: vi.fn(),
+        broadcastTaskAssigned: vi.fn(),
+        broadcastTaskStatusChanged: vi.fn(),
+        broadcast: vi.fn(),
+      },
+      positionService: { recordAccess: vi.fn(async () => ({})) },
+      acpStreamManager: { closeStreamsForAgent: close },
+    };
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('node_unregistered', {
+      swarm_id: SWARM_ID,
+      map_agent_id: RAW_AGENT_ID,
+    });
+    // Give the unhandled-rejection handler a tick to run
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(close).toHaveBeenCalledWith(RAW_AGENT_ID);
+    expect(warnSpy).toHaveBeenCalled();
+    expect(
+      warnSpy.mock.calls.some(c => String(c[0]).includes('closeStreamsForAgent')),
+    ).toBe(true);
+
+    warnSpy.mockRestore();
+    handle.teardown();
+  });
+});
+
+describe('swarm-bridge — swarm reactivation (swarm_online)', () => {
   afterEach(() => {
-    mapHubEvents.removeAllListeners('node_registered');
+    mapHubEvents.removeAllListeners('swarm_online');
     mapHubEvents.removeAllListeners('swarm_registered');
+    vi.clearAllMocks();
+    findSwarmByIdMock.mockReturnValue(null);
+  });
+
+  it('reactivates stopped oh-swarm-* row to active with broadcast', async () => {
+    findSwarmByIdMock.mockReturnValue({
+      map_endpoint: 'hub-inbound',
+      capabilities: { messaging: true, mail: true },
+    } as any);
+    const { ctx } = createCtx({ state: 'stopped' });
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('swarm_online', {
+      swarm_id: SWARM_ID,
+      name: 'my-swarm',
+    });
+
+    expect(ctx.db.agents.get).toHaveBeenCalledWith(OH_SWARM_ID);
+    expect(ctx.db.agents.update).toHaveBeenCalledWith(
+      OH_SWARM_ID,
+      expect.objectContaining({ name: 'my-swarm', state: 'active', mapServerId: SWARM_ID }),
+    );
+    expect(ctx.wsHub.broadcastAgentStateChanged).toHaveBeenCalledWith(
+      OH_SWARM_ID,
+      'stopped',
+      'active',
+    );
+    expect(ctx.db.agents.create).not.toHaveBeenCalled();
+
+    handle.teardown();
+  });
+
+  it('creates oh-swarm-* row when it does not exist (late-arrival hydration miss)', async () => {
+    findSwarmByIdMock.mockReturnValue({
+      map_endpoint: 'hub-inbound',
+      capabilities: { messaging: true },
+    } as any);
+    const { ctx } = createCtx(null);
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('swarm_online', {
+      swarm_id: SWARM_ID,
+      name: 'late-swarm',
+    });
+
+    expect(ctx.db.agents.create).toHaveBeenCalledTimes(1);
+    const payload = (ctx.db.agents.create as any).mock.calls[0][0];
+    expect(payload.id).toBe(OH_SWARM_ID);
+    expect(payload.type).toBe('swarm');
+    expect(payload.state).toBe('active');
+    expect(payload.capabilities).toEqual(['messaging']);
+    expect(ctx.wsHub.broadcastAgentRegistered).toHaveBeenCalledWith({
+      id: OH_SWARM_ID,
+      name: 'late-swarm',
+      type: 'swarm',
+    });
+
+    handle.teardown();
+  });
+
+  it('is a no-op when swarm is already active (no broadcast, no update)', async () => {
+    findSwarmByIdMock.mockReturnValue({ map_endpoint: 'hub-inbound', capabilities: {} } as any);
+    const { ctx } = createCtx({ state: 'active' });
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('swarm_online', {
+      swarm_id: SWARM_ID,
+      name: 'my-swarm',
+    });
+
+    expect(ctx.db.agents.update).not.toHaveBeenCalled();
+    expect(ctx.db.agents.create).not.toHaveBeenCalled();
+    expect(ctx.wsHub.broadcastAgentStateChanged).not.toHaveBeenCalled();
+    expect(ctx.wsHub.broadcastAgentRegistered).not.toHaveBeenCalled();
+
+    handle.teardown();
+  });
+
+  it('falls back to default capabilities when hub swarm record is missing', async () => {
+    findSwarmByIdMock.mockReturnValue(null);
+    const { ctx } = createCtx(null);
+    const handle = await setupSwarmBridge(ctx as any);
+
+    await emitAndDrain('swarm_online', {
+      swarm_id: SWARM_ID,
+      name: 'mystery-swarm',
+    });
+
+    const payload = (ctx.db.agents.create as any).mock.calls[0][0];
+    expect(payload.capabilities).toEqual(['observation', 'messaging', 'lifecycle']);
+    expect(payload.stateMetadata.endpoint).toBe('hub-inbound');
+
+    handle.teardown();
+  });
+});
+
+describe('swarm-bridge — ACP stream cleanup (outbound mapClientManager)', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('mapClientManager agent.unregistered closes ACP streams with raw id', async () => {
+    const { ctx, closeStreamsForAgent } = createCtx(null);
+    const mcm = new EventEmitter() as EventEmitter & {
+      connect(opts: Record<string, unknown>): Promise<void>;
+    };
+    (mcm as any).connect = vi.fn(async () => {});
+
+    const handle = await setupSwarmBridge(ctx as any, mcm as any);
+
+    mcm.emit('agent.unregistered', {
+      serverId: SWARM_ID,
+      agentId: RAW_AGENT_ID,
+    });
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(closeStreamsForAgent).toHaveBeenCalledTimes(1);
+    expect(closeStreamsForAgent).toHaveBeenCalledWith(RAW_AGENT_ID);
+
+    handle.teardown();
+  });
+
+  it.each(['stopped', 'failed', 'orphaned'])(
+    'mapClientManager agent.state.changed → %s closes ACP streams with raw id',
+    async (terminalState) => {
+      const { ctx, closeStreamsForAgent } = createCtx(null);
+      const mcm = new EventEmitter() as EventEmitter & {
+        connect(opts: Record<string, unknown>): Promise<void>;
+      };
+      (mcm as any).connect = vi.fn(async () => {});
+
+      const handle = await setupSwarmBridge(ctx as any, mcm as any);
+
+      mcm.emit('agent.state.changed', {
+        serverId: SWARM_ID,
+        agentId: RAW_AGENT_ID,
+        previousState: 'active',
+        newState: terminalState,
+      });
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(closeStreamsForAgent).toHaveBeenCalledWith(RAW_AGENT_ID);
+
+      handle.teardown();
+    },
+  );
+
+  it('mapClientManager agent.state.changed → non-terminal does NOT close ACP streams', async () => {
+    const { ctx, closeStreamsForAgent } = createCtx(null);
+    const mcm = new EventEmitter() as EventEmitter & {
+      connect(opts: Record<string, unknown>): Promise<void>;
+    };
+    (mcm as any).connect = vi.fn(async () => {});
+
+    const handle = await setupSwarmBridge(ctx as any, mcm as any);
+
+    mcm.emit('agent.state.changed', {
+      serverId: SWARM_ID,
+      agentId: RAW_AGENT_ID,
+      previousState: 'active',
+      newState: 'idle',
+    });
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(closeStreamsForAgent).not.toHaveBeenCalled();
+
+    handle.teardown();
+  });
+
+  it('teardown removes outbound listeners', async () => {
+    const { ctx, closeStreamsForAgent } = createCtx(null);
+    const mcm = new EventEmitter() as EventEmitter & {
+      connect(opts: Record<string, unknown>): Promise<void>;
+    };
+    (mcm as any).connect = vi.fn(async () => {});
+
+    const handle = await setupSwarmBridge(ctx as any, mcm as any);
+    handle.teardown();
+
+    mcm.emit('agent.unregistered', {
+      serverId: SWARM_ID,
+      agentId: RAW_AGENT_ID,
+    });
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(closeStreamsForAgent).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// swarm_offline presence cascade
+//
+// The cascade flips every online agent on a disconnected swarm to
+// `presence='offline'` AND broadcasts `agent.presence.changed` per
+// affected row so UI caches invalidate without a full reload. These
+// tests pin the ordering, dedup, and best-effort semantics that
+// otherwise regressed silently when the cascade order or list-then-flip
+// pattern got rearranged.
+// ============================================================================
+
+describe('swarm-bridge — swarm_offline presence cascade', () => {
+  afterEach(() => {
     mapHubEvents.removeAllListeners('swarm_offline');
+    mapHubEvents.removeAllListeners('swarm_registered');
+    mapHubEvents.removeAllListeners('node_registered');
+    vi.clearAllMocks();
   });
 
   it('broadcasts agent.presence.changed for every row listed as online (parent + children) in a single pass', async () => {
-    // Arrange: parent swarm row exists, two child agents on that server
-    // are currently online. The DAL-list mock returns all three (parent
-    // included because it's also presence='online' at snapshot time).
+    const { ctx } = createCtx();
     (ctx.db.agents.get as any).mockImplementation(async (id: string) => {
       if (id === 'oh-swarm-swarm-1') return { state: 'active' };
       return null;
@@ -143,17 +521,11 @@ describe('Swarm Bridge — swarm_offline presence cascade', () => {
     });
 
     const handle = await setupSwarmBridge(ctx as any);
-    mapHubEvents.emit('swarm_offline', { swarm_id: 'swarm-1' });
-    await new Promise((r) => setTimeout(r, 10));
+    await emitAndDrain('swarm_offline', { swarm_id: 'swarm-1' });
 
-    // Parent state transition still reported.
     expect(ctx.wsHub.broadcastAgentStateChanged).toHaveBeenCalledWith(
       'oh-swarm-swarm-1', 'active', 'stopped',
     );
-
-    // One presence broadcast per row that was online at snapshot time.
-    // Parent gets exactly one (we removed the earlier duplicate-broadcast
-    // from before the list + skip-in-loop pair).
     const presenceCalls = (ctx.wsHub.broadcastAgentPresenceChanged as any).mock.calls as Array<[string, string]>;
     const ids = presenceCalls.map(c => c[0]).sort();
     expect(ids).toEqual([
@@ -164,8 +536,6 @@ describe('Swarm Bridge — swarm_offline presence cascade', () => {
     for (const [, presence] of presenceCalls) {
       expect(presence).toBe('offline');
     }
-
-    // Bulk flip still ran.
     expect(ctx.db.agents.bulkUpdatePresenceByServer).toHaveBeenCalledWith('swarm-1', 'offline');
 
     handle.teardown();
@@ -175,8 +545,9 @@ describe('Swarm Bridge — swarm_offline presence cascade', () => {
     // Regression guard: an earlier version flipped the parent first and
     // then listed, which caused the parent row to disappear from the
     // affected set AND in the live case let `agent.unregistered` races
-    // drain the list entirely. The order matters — list must capture
-    // both parent + children while they're all still online.
+    // drain the list entirely. List must capture every online row before
+    // any DB mutation.
+    const { ctx } = createCtx();
     const order: string[] = [];
     (ctx.db.agents.get as any).mockImplementation(async () => {
       order.push('get');
@@ -192,11 +563,8 @@ describe('Swarm Bridge — swarm_offline presence cascade', () => {
     });
 
     const handle = await setupSwarmBridge(ctx as any);
-    mapHubEvents.emit('swarm_offline', { swarm_id: 'swarm-ord' });
-    await new Promise((r) => setTimeout(r, 10));
+    await emitAndDrain('swarm_offline', { swarm_id: 'swarm-ord' });
 
-    // The first DAL op must be `list`. `get` can happen anywhere AFTER list
-    // but `update` must come after list too.
     expect(order[0]).toBe('list');
     expect(order.indexOf('update')).toBeGreaterThan(order.indexOf('list'));
 
@@ -204,12 +572,9 @@ describe('Swarm Bridge — swarm_offline presence cascade', () => {
   });
 
   it('lists filtered to online-only so already-offline agents do not re-broadcast', async () => {
-    // Guard against spamming the WS topic with redundant events on every
-    // swarm disconnect — the list call must pin presence:'online' so only
-    // rows that actually transitioned fire a broadcast.
+    const { ctx } = createCtx();
     const handle = await setupSwarmBridge(ctx as any);
-    mapHubEvents.emit('swarm_offline', { swarm_id: 'swarm-xyz' });
-    await new Promise((r) => setTimeout(r, 10));
+    await emitAndDrain('swarm_offline', { swarm_id: 'swarm-xyz' });
 
     const listCall = (ctx.db.agents.list as any).mock.calls[0]?.[0];
     expect(listCall).toMatchObject({
@@ -221,14 +586,11 @@ describe('Swarm Bridge — swarm_offline presence cascade', () => {
   });
 
   it('bulk flip still runs even when list fails (best-effort cascade)', async () => {
-    // The list is a non-critical enrichment — if it throws we should still
-    // flip presence in the DB so the source of truth is correct, even if
-    // the UI misses the real-time event and has to reload.
+    const { ctx } = createCtx();
     (ctx.db.agents.list as any).mockRejectedValue(new Error('boom'));
 
     const handle = await setupSwarmBridge(ctx as any);
-    mapHubEvents.emit('swarm_offline', { swarm_id: 'swarm-err' });
-    await new Promise((r) => setTimeout(r, 10));
+    await emitAndDrain('swarm_offline', { swarm_id: 'swarm-err' });
 
     expect(ctx.db.agents.bulkUpdatePresenceByServer).toHaveBeenCalledWith('swarm-err', 'offline');
 
@@ -236,10 +598,10 @@ describe('Swarm Bridge — swarm_offline presence cascade', () => {
   });
 
   it('dedupes rapid re-fires of swarm_offline for the same swarm', async () => {
-    // ws-map.ts + service.markStaleSwarms both emit `swarm_offline` for
-    // the same swarm within ms of each other. Only the first invocation
-    // should do real work — the second would find 0 rows online and emit
-    // zero broadcasts anyway, but re-running list + bulkUpdate is wasted.
+    // ws-map + service.markStaleSwarms both emit `swarm_offline` for the
+    // same swarm within ms. Only the first should do real work; subsequent
+    // calls in the dedup window should short-circuit (no extra DAL or WS).
+    const { ctx } = createCtx();
     (ctx.db.agents.get as any).mockResolvedValue({ state: 'active' });
     (ctx.db.agents.list as any).mockResolvedValue({
       agents: [{ id: 'oh-swarm-dupe' }],
@@ -247,32 +609,27 @@ describe('Swarm Bridge — swarm_offline presence cascade', () => {
     });
 
     const handle = await setupSwarmBridge(ctx as any);
-
-    // Emit twice back-to-back within the dedup window.
     mapHubEvents.emit('swarm_offline', { swarm_id: 'swarm-dupe' });
     mapHubEvents.emit('swarm_offline', { swarm_id: 'swarm-dupe' });
-    await new Promise((r) => setTimeout(r, 10));
+    await new Promise(r => setTimeout(r, 10));
 
-    // Only the first invocation should have touched the DAL.
     expect((ctx.db.agents.list as any).mock.calls.length).toBe(1);
     expect((ctx.db.agents.bulkUpdatePresenceByServer as any).mock.calls.length).toBe(1);
-    // And the broadcast set is not duplicated (would be 2 if dedup missed).
     expect((ctx.wsHub.broadcastAgentPresenceChanged as any).mock.calls.length).toBe(1);
 
     handle.teardown();
   });
 
   it('DOES process a different swarm in the same window (dedup is per-swarm-id)', async () => {
+    const { ctx } = createCtx();
     (ctx.db.agents.get as any).mockResolvedValue({ state: 'active' });
     (ctx.db.agents.list as any).mockResolvedValue({ agents: [{ id: 'x' }], total: 1 });
 
     const handle = await setupSwarmBridge(ctx as any);
-
     mapHubEvents.emit('swarm_offline', { swarm_id: 'swarm-A' });
     mapHubEvents.emit('swarm_offline', { swarm_id: 'swarm-B' });
-    await new Promise((r) => setTimeout(r, 10));
+    await new Promise(r => setTimeout(r, 10));
 
-    // Two distinct swarm IDs, both should run.
     expect((ctx.db.agents.list as any).mock.calls.length).toBe(2);
 
     handle.teardown();

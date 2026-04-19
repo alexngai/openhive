@@ -862,7 +862,7 @@ function ComposeMessageSection({ swarmId }: { swarmId: string }) {
       </button>
       {expanded && (
         <div className="card mt-1 overflow-hidden h-52 flex flex-col">
-          <ChatMessageList channel={channel} compact />
+          <ChatMessageList channel={channel} compact continuationHeaders />
           <ChatInput channel={channel} compact />
         </div>
       )}

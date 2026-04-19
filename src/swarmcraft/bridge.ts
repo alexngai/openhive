@@ -25,13 +25,14 @@ interface SwarmCraftInstance {
   trajectoryService?: BridgeContext['trajectoryService'];
   mapClientManager?: { connect(opts: Record<string, unknown>): Promise<void> };
   /**
-   * ACP stream manager from SwarmCraft. When OpenHive runs with
-   * `skipAgentLifecycle: true`, the host is responsible for closing ACP
-   * streams on agent termination (the work that SwarmCraft's built-in
-   * lifecycle handlers would have done). swarm-bridge wires listeners
-   * on mapClientManager events that call closeStreamsForAgent.
+   * SwarmCraft ACP stream manager. The bridge calls
+   * `closeStreamsForAgent(rawMapAgentId)` on agent termination because
+   * the built-in MAP agent-lifecycle handlers in swarmcraft are skipped
+   * via `skipAgentLifecycle: true` (the bridge owns agent projection).
+   * Wires listeners on both inbound (mapHubEvents) and outbound
+   * (mapClientManager) lifecycle events.
    */
-  acpStreamManager?: { closeStreamsForAgent(agentId: string): Promise<void> };
+  acpStreamManager?: BridgeContext['acpStreamManager'];
   pipelineService?: { startAnalysis(repoPath: string): string; loadProject(projectId: string): Promise<unknown>; isReady(): boolean };
 }
 
@@ -50,6 +51,7 @@ export async function setupOpenHiveBridge(
     wsHub: sc.wsHub,
     positionService: sc.positionService,
     trajectoryService: sc.trajectoryService,
+    acpStreamManager: sc.acpStreamManager,
   };
 
   const teardowns: Array<() => void> = [];
@@ -58,7 +60,7 @@ export async function setupOpenHiveBridge(
 
   // Phase 1: Swarm + Node agents (includes MAP client auto-connect)
   if (config?.swarms !== false) {
-    const handle = await setupSwarmBridge(ctx, sc.mapClientManager, sc.acpStreamManager);
+    const handle = await setupSwarmBridge(ctx, sc.mapClientManager);
     teardowns.push(handle.teardown);
     console.log('[swarmcraft-bridge] Swarm bridge ready');
   }

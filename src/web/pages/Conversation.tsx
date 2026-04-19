@@ -6,12 +6,14 @@ import { useSubscribe, useWSEvent } from '../hooks/useWebSocket';
 import { useQueryClient } from '@tanstack/react-query';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
-import { useChatChannel } from 'swarmcraft/ui/embed';
+import {
+  useChatChannel,
+  ChatMessageList,
+  ChatInput,
+  PermissionDialog,
+} from 'swarmcraft/ui/embed';
 import { useConversationCapabilityResolver, conversationTarget } from '../lib/chat/resolvers';
 import { useOpenHiveAdapters } from '../adapters/openhive-adapters';
-import { EventStream } from '../components/events/EventStream';
-import { SessionChatInput } from '../components/events/SessionChatInput';
-import { PermissionDialog } from '../components/events/PermissionDialog';
 
 export function Conversation() {
   const { id } = useParams<{ id: string }>();
@@ -116,17 +118,16 @@ export function Conversation() {
         </div>
       </div>
 
-      {/* Chat — channel-driven: EventStream + PermissionDialog + SessionChatInput */}
-      <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
-        <EventStream
-          events={[]}
+      {/* Chat — channel-driven: ChatMessageList + PermissionDialog + ChatInput */}
+      <div className="flex-1 min-h-0 flex flex-col">
+        <ChatMessageList
           channel={channel}
+          continuationHeaders
           emptyMessage="No messages in this conversation yet."
-          emptyIcon={MessageSquare}
         />
       </div>
-      <PermissionDialog channel={channel} />
-      <SessionChatInput channel={channel} />
+      <PermissionDialog channel={channel} variant="sticky-external" descriptionAs="code" approveLabel="Allow" />
+      <ChatInput channel={channel} showModeBadge />
     </div>
   );
 }

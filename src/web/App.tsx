@@ -23,6 +23,7 @@ const Sessions = lazy(() => import('./pages/Sessions').then(m => ({ default: m.S
 const Events = lazy(() => import('./pages/Events').then(m => ({ default: m.Events })));
 const TasksList = lazy(() => import('./pages/Tasks').then(m => ({ default: m.TaskGraphList })));
 const TaskGraph = lazy(() => import('./pages/TaskGraph').then(m => ({ default: m.TaskGraph })));
+const TaskDetail = lazy(() => import('./pages/TaskDetail').then(m => ({ default: m.TaskDetail })));
 const Specs = lazy(() => import('./pages/Specs').then(m => ({ default: m.Specs })));
 const SpecNew = lazy(() => import('./pages/SpecNew').then(m => ({ default: m.SpecNew })));
 const SpecDetail = lazy(() => import('./pages/SpecDetail').then(m => ({ default: m.SpecDetail })));
@@ -36,6 +37,7 @@ const Messages = lazy(() => import('./pages/Messages').then(m => ({ default: m.M
 const Conversation = lazy(() => import('./pages/Conversation').then(m => ({ default: m.Conversation })));
 const Learning = lazy(() => import('./pages/Learning').then(m => ({ default: m.Learning })));
 const LearningPlaybookDetail = lazy(() => import('./pages/LearningPlaybookDetail').then(m => ({ default: m.LearningPlaybookDetail })));
+const Streams = lazy(() => import('./pages/Streams').then(m => ({ default: m.Streams })));
 
 export default function App() {
   // Initialize WebSocket connection
@@ -78,8 +80,10 @@ export default function App() {
               <Route path="skills/:resourceId" element={<SkillDetail />} />
               <Route path="learning" element={<Learning />} />
               <Route path="learning/playbooks/:id" element={<LearningPlaybookDetail />} />
+              <Route path="streams" element={<Streams />} />
               <Route path="tasks" element={<TaskGraph />} />
               <Route path="tasks/list" element={<TasksList />} />
+              <Route path="tasks/:resourceId/:nodeId" element={<TaskDetail />} />
               <Route path="specs" element={<Specs />} />
               <Route path="specs/new" element={<SpecNew />} />
               <Route path="specs/:resourceId/:specId" element={<SpecDetail />} />

@@ -63,4 +63,13 @@ export interface BridgeContext {
     recordAction(params: { agentId: string; tool: string; filePath?: string; success?: boolean; timestamp?: number }): Promise<unknown>;
     endCurrentTurn(agentId: string): Promise<void>;
   };
+  /**
+   * SwarmCraft ACP stream manager. The bridge calls
+   * `closeStreamsForAgent(rawMapAgentId)` on agent termination because the
+   * built-in MAP agent-lifecycle handlers in swarmcraft are skipped via
+   * `skipAgentLifecycle: true` (the bridge owns agent projection).
+   */
+  acpStreamManager?: {
+    closeStreamsForAgent(rawMapAgentId: string): Promise<void>;
+  };
 }

@@ -15,6 +15,9 @@ import { MAP_SPEC_METHOD_SET, handleSpecRequest, MAPSpecRequestError } from './s
 import { MAP_DISPATCH_METHOD_SET, handleDispatchRequest, MAPDispatchRequestError } from './dispatch-handler.js';
 import { TRAJECTORY_METHOD_SET } from './trajectory-types.js';
 import { handleTrajectoryRequest, TrajectoryRequestError } from './trajectory-handler.js';
+import { CASCADE_METHOD_SET, CascadeRequestError } from './cascade-types.js';
+import { handleCascadeRequest } from './cascade-handler.js';
+import { consumeCascadeToken } from './cascade-rate-limit.js';
 import type { Config } from '../config.js';
 
 let mapServer: any | null = null;
@@ -135,6 +138,33 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
         return handleTrajectoryRequest(method, params, { swarmId, agentId });
       } catch (err) {
         if (err instanceof TrajectoryRequestError) {
+          throw Object.assign(new Error(err.message), { code: err.code });
+        }
+        throw err;
+      }
+    };
+  }
+
+  // ── Cascade Methods (x-cascade/*) ─────────────────────────────────
+  // Emitted by git-cascade-backed runtimes. The hub projects these events
+  // into lightweight read-only indexes for cross-swarm observability.
+  for (const method of CASCADE_METHOD_SET) {
+    handlers[method] = async (params: any, ctx: any) => {
+      const swarmId = ctx.session?.metadata?.swarmId;
+      const agentId = ctx.session?.metadata?.agentId || ctx.session?.metadata?.hubAgentId;
+      // Reject before dispatch if this swarm has exhausted its token bucket.
+      // -32005 is outside MAP's reserved JSON-RPC range, reserved here for
+      // "server throttled — back off and retry".
+      if (!consumeCascadeToken(swarmId ?? '')) {
+        throw Object.assign(
+          new Error(`Cascade rate limit exceeded for swarm ${swarmId}`),
+          { code: -32005 },
+        );
+      }
+      try {
+        return handleCascadeRequest(method, params, { swarmId, agentId });
+      } catch (err) {
+        if (err instanceof CascadeRequestError) {
           throw Object.assign(new Error(err.message), { code: err.code });
         }
         throw err;

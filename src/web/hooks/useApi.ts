@@ -2098,6 +2098,167 @@ export function useConnectAcp() {
   });
 }
 
+// ============================================================================
+// Cascade (git-cascade projections)
+// ============================================================================
+
+/**
+ * Task changelog — commit range + merges + conflicts bound to an
+ * OpenTasks task, plus rendered markdown. The Phase 3 primary artifact.
+ *
+ * Pass `format: 'json'` to skip markdown rendering when the UI renders its
+ * own layout from the structured data.
+ */
+export function useCascadeChangelog(
+  resourceId: string,
+  nodeId: string,
+  options: {
+    title?: string;
+    subtitle?: string;
+    format?: 'json' | 'both';
+    enabled?: boolean;
+  } = {},
+) {
+  const params = new URLSearchParams();
+  params.set('format', options.format ?? 'both');
+  if (options.title) params.set('title', options.title);
+  if (options.subtitle) params.set('subtitle', options.subtitle);
+
+  return useQuery({
+    queryKey: ['cascade-changelog', resourceId, nodeId, options.format, options.title, options.subtitle],
+    queryFn: () =>
+      api.get<import('../lib/api').CascadeChangelogResponse>(
+        `/cascade/tasks/${encodeURIComponent(resourceId)}/${encodeURIComponent(nodeId)}/changelog?${params.toString()}`,
+      ),
+    enabled: (options.enabled ?? true) && !!resourceId && !!nodeId,
+    staleTime: 15_000,
+  });
+}
+
+/**
+ * Raw commit range for a task — lighter than the full changelog when you
+ * only need stream info + commit list.
+ */
+export function useCascadeCommitRange(
+  resourceId: string,
+  nodeId: string,
+  options: { limit?: number; offset?: number; enabled?: boolean } = {},
+) {
+  const params = new URLSearchParams();
+  if (options.limit) params.set('limit', String(options.limit));
+  if (options.offset) params.set('offset', String(options.offset));
+
+  const qs = params.toString();
+  return useQuery({
+    queryKey: ['cascade-commit-range', resourceId, nodeId, options.limit, options.offset],
+    queryFn: () =>
+      api.get<{
+        data: Array<{
+          stream_row_id: string;
+          stream_id: string;
+          source_swarm_id: string;
+          source_agent_id: string;
+          first_commit: string | null;
+          last_commit: string | null;
+          change_ids: string[];
+          commits: Array<{
+            commit_hash: string;
+            change_id: string | null;
+            message_summary: string | null;
+            author_agent_id: string | null;
+            files_touched: string[];
+            synced_at: string;
+          }>;
+          files_union: string[];
+          merge_commit: string | null;
+          merge_target: string | null;
+        }>;
+      }>(
+        `/cascade/tasks/${encodeURIComponent(resourceId)}/${encodeURIComponent(nodeId)}/commits${qs ? `?${qs}` : ''}`,
+      ),
+    enabled: (options.enabled ?? true) && !!resourceId && !!nodeId,
+  });
+}
+
+// ── Stream DAG + detail hooks ───────────────────────────────────────
+
+export interface StreamDAGNode {
+  id: string;
+  stream_id: string;
+  source_swarm_id: string;
+  source_agent_id: string;
+  parent_stream_id: string | null;
+  name: string;
+  status: string;
+  task_resource_id: string | null;
+  task_node_id: string | null;
+  publish_branch: string | null;
+  opened_at: string;
+  last_event_at: string;
+  commit_count: number;
+  open_conflict_count: number;
+}
+
+export interface StreamDAGEdge {
+  source: string;
+  target: string;
+  type: 'parent' | 'merge';
+}
+
+export interface StreamDAG {
+  nodes: StreamDAGNode[];
+  edges: StreamDAGEdge[];
+}
+
+export interface StreamTimelineEvent {
+  type: 'commit' | 'merge' | 'conflict_detected' | 'conflict_resolved' | 'status_change' | 'push' | 'rebase';
+  timestamp: string;
+  data: Record<string, unknown>;
+}
+
+export function useCascadeDAG(options: {
+  source_swarm_id?: string;
+  task_resource_id?: string;
+  enabled?: boolean;
+} = {}) {
+  const params = new URLSearchParams();
+  if (options.source_swarm_id) params.set('source_swarm_id', options.source_swarm_id);
+  if (options.task_resource_id) params.set('task_resource_id', options.task_resource_id);
+  const qs = params.toString();
+
+  return useQuery({
+    queryKey: ['cascade-dag', options.source_swarm_id, options.task_resource_id],
+    queryFn: () =>
+      api.get<{ data: StreamDAG }>(`/cascade/streams/dag${qs ? `?${qs}` : ''}`),
+    enabled: options.enabled ?? true,
+    staleTime: 10_000,
+  });
+}
+
+export function useCascadeStreamTimeline(streamRowId: string | null) {
+  return useQuery({
+    queryKey: ['cascade-stream-timeline', streamRowId],
+    queryFn: () =>
+      api.get<{ data: StreamTimelineEvent[] }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId!)}/timeline`,
+      ),
+    enabled: !!streamRowId,
+    staleTime: 10_000,
+  });
+}
+
+export function useCascadeStreamDetail(streamRowId: string | null) {
+  return useQuery({
+    queryKey: ['cascade-stream-detail', streamRowId],
+    queryFn: () =>
+      api.get<{ data: Record<string, unknown> }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId!)}`,
+      ),
+    enabled: !!streamRowId,
+    staleTime: 10_000,
+  });
+}
+
 /**
  * Lightweight listing of sessions on a swarm that have a persisted
  * provider_session_id — i.e. can be resumed durably. Used by the swarm
@@ -2184,6 +2345,159 @@ export function useResumeSession() {
  * `map/agents/unregister` and reports `method` so the UI can warn that the
  * underlying process may still be running.
  */
+export type CascadeAction = 'merge' | 'abandon' | 'pause' | 'resume' | 'resolve' | 'push' | 'commit';
+
+export function useCascadeStreamAction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      streamRowId,
+      action,
+      params,
+    }: {
+      streamRowId: string;
+      action: CascadeAction;
+      params?: {
+        target_stream_id?: string;
+        reason?: string;
+        conflict_id?: string;
+        strategy?: string;
+      };
+    }) => {
+      return api.post<{ sent: boolean; action: string; stream_id: string }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId)}/actions/${action}`,
+        params ?? {},
+      );
+    },
+    onSuccess: () => {
+      // Invalidate DAG + detail so the UI picks up the resulting event
+      queryClient.invalidateQueries({ queryKey: ['cascade-dag'] });
+      queryClient.invalidateQueries({ queryKey: ['cascade-stream-detail'] });
+      queryClient.invalidateQueries({ queryKey: ['cascade-stream-timeline'] });
+    },
+  });
+}
+
+// ── PR + branch management hooks ────────────────────────────────────
+
+export interface CascadePullRequest {
+  id: string;
+  stream_row_id: string;
+  provider: string;
+  remote_pr_number: number | null;
+  remote_pr_url: string | null;
+  state: string;
+  source_branch: string;
+  target_branch: string;
+  title: string | null;
+  repo_owner: string | null;
+  repo_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function useCascadeStreamPR(streamRowId: string | null) {
+  return useQuery({
+    queryKey: ['cascade-stream-pr', streamRowId],
+    queryFn: () =>
+      api.get<{ data: CascadePullRequest | null }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId!)}/pr`,
+      ),
+    enabled: !!streamRowId,
+    staleTime: 10_000,
+  });
+}
+
+export function useCreatePR() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      streamRowId,
+      title,
+      target_branch,
+      draft,
+    }: {
+      streamRowId: string;
+      title?: string;
+      target_branch?: string;
+      draft?: boolean;
+    }) => {
+      return api.post<{ data: CascadePullRequest }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId)}/pr`,
+        { title, target_branch, draft },
+      );
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['cascade-stream-pr', vars.streamRowId] });
+      queryClient.invalidateQueries({ queryKey: ['cascade-dag'] });
+    },
+  });
+}
+
+export function useUpdatePR() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      streamRowId,
+      title,
+      target_branch,
+    }: {
+      streamRowId: string;
+      title?: string;
+      target_branch?: string;
+    }) => {
+      return api.patch<{ data: CascadePullRequest }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId)}/pr`,
+        { title, target_branch },
+      );
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['cascade-stream-pr', vars.streamRowId] });
+    },
+  });
+}
+
+export function useClosePR() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ streamRowId }: { streamRowId: string }) => {
+      return api.delete(`/cascade/streams/${encodeURIComponent(streamRowId)}/pr`);
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['cascade-stream-pr', vars.streamRowId] });
+    },
+  });
+}
+
+export function useUpdatePublishBranch() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      streamRowId,
+      publish_branch,
+    }: {
+      streamRowId: string;
+      publish_branch: string;
+    }) => {
+      return api.patch<{ data: { publish_branch: string } }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId)}/branch`,
+        { publish_branch },
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['cascade-dag'] });
+    },
+  });
+}
+
+export function useGitHubStatus() {
+  return useQuery({
+    queryKey: ['github-status'],
+    queryFn: () => api.get<{ data: { connected: boolean; user?: string; error?: string } }>('/cascade/github/status'),
+    staleTime: 60_000,
+  });
+}
+
 export function useStopAgent() {
   const queryClient = useQueryClient();
   return useMutation({
