@@ -846,6 +846,17 @@ export async function createHive(
         }
       }
 
+      // Resolve the actual bound port (Fastify assigns one when port=0) and
+      // push it into SwarmManager so bootstrap tokens for hosted swarms
+      // point at a reachable URL. Without this, hosts launched with an
+      // ephemeral port bake `http://host:0` into every spawn token.
+      if (swarmManager) {
+        const boundPort = (fastify.server.address() as { port: number } | null)?.port ?? port;
+        const resolvedHost = config.host === "0.0.0.0" ? "127.0.0.1" : config.host;
+        const resolvedUrl = config.instance.url || `http://${resolvedHost}:${boundPort}`;
+        swarmManager.setInstanceUrl(resolvedUrl);
+      }
+
       // Write port file for dev tools (e.g. Vite proxy)
       const portFile = path.join(__dirname, "..", ".dev-port");
       try {

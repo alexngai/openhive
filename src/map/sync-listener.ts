@@ -222,6 +222,35 @@ function relaySyncMessage(msg: MapSyncMessage, sourceSwarmId: string): void {
 // WebSocket Connection Management
 // ============================================================================
 
+/**
+ * Derive the real MAP server URL from an openswarm base endpoint.
+ *
+ * openswarm exposes three ports per instance:
+ *   base     → gateway (WS, not the MAP server)
+ *   base + 1 → HTTP health check
+ *   base + 2 → actual MAP server at path `/map`
+ *
+ * `swarm.map_endpoint` is stored as the base URL (e.g. `ws://127.0.0.1:9000`).
+ * If it already has a `/map` path or a non-openswarm shape, we leave it alone.
+ * Mirrors the logic in `src/swarmcraft/swarm-bridge.ts#deriveMapServerUrl`.
+ */
+function deriveMapServerUrl(baseEndpoint: string): string {
+  try {
+    const url = new URL(baseEndpoint);
+    if (url.pathname && url.pathname !== '/' && url.pathname.endsWith('/map')) {
+      return baseEndpoint;
+    }
+    const basePort = parseInt(url.port, 10);
+    if (Number.isFinite(basePort)) {
+      url.port = String(basePort + 2);
+    }
+    url.pathname = url.pathname.replace(/\/?$/, '/map');
+    return url.toString();
+  } catch {
+    return baseEndpoint;
+  }
+}
+
 function connectToSwarm(swarmId: string, name: string, endpoint: string, transport: MapTransport): void {
   // Skip hub-inbound swarms — they connect to us, we don't connect out to them
   if (endpoint === 'hub-inbound') {
@@ -240,10 +269,12 @@ function connectToSwarm(swarmId: string, name: string, endpoint: string, transpo
     return;
   }
 
+  const resolvedEndpoint = deriveMapServerUrl(endpoint);
+
   const conn: SwarmConnection = existing || {
     swarmId,
     name,
-    endpoint,
+    endpoint: resolvedEndpoint,
     transport,
     ws: null,
     reconnectTimer: null,
@@ -251,13 +282,13 @@ function connectToSwarm(swarmId: string, name: string, endpoint: string, transpo
   };
 
   // Update endpoint/name in case they changed
-  conn.endpoint = endpoint;
+  conn.endpoint = resolvedEndpoint;
   conn.name = name;
 
   connections.set(swarmId, conn);
 
   try {
-    const ws = new WebSocket(endpoint);
+    const ws = new WebSocket(resolvedEndpoint);
     conn.ws = ws;
 
     ws.on('open', () => {

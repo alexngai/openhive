@@ -76,6 +76,20 @@ export class SwarmManager {
   }
 
   /**
+   * Update the URL baked into newly minted bootstrap tokens. Called by the
+   * server after `fastify.listen()` resolves the actual bound port — the
+   * SwarmManager is constructed before listen runs, so if the hive was
+   * started with `port: 0` (ephemeral) the initial `instanceUrl` is
+   * `http://host:0` and poisons every hosted-swarm bootstrap.
+   *
+   * Safe to call repeatedly; only affects future spawns and revives. Already
+   * running hosted swarms keep whatever URL their token was issued against.
+   */
+  setInstanceUrl(instanceUrl: string): void {
+    this.instanceUrl = instanceUrl;
+  }
+
+  /**
    * Resolve the openswarm command to an executable form.
    *
    * We resolve the openswarm bin entry directly to avoid the npx indirection,

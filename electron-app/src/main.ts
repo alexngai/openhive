@@ -14,9 +14,39 @@ import {
   dialog,
 } from 'electron';
 import { fork, type ChildProcess } from 'node:child_process';
+import * as net from 'node:net';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+
+/**
+ * Preallocate an OS-chosen free port before the hive child boots.
+ * We can't pass `port: 0` because OpenHive's SwarmManager reads
+ * `config.port` at createHive() time — long before fastify.listen() assigns
+ * a real port — and bakes that stale value into every hosted-swarm
+ * bootstrap token as the openhive_url. Any coordinator then tries to call
+ * back to `http://127.0.0.1:0` and fails.
+ *
+ * Small race: between the probe closing its socket and the hive binding,
+ * another process could steal the port. Acceptable for a dev-loop tool.
+ * Proper fix belongs server-side (update instanceUrl after listen() with
+ * the bound port). Track as follow-up.
+ */
+async function pickFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address();
+      if (addr && typeof addr === 'object') {
+        const port = addr.port;
+        srv.close(() => resolve(port));
+      } else {
+        reject(new Error('pickFreePort: address() returned non-object'));
+      }
+    });
+    srv.on('error', reject);
+  });
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -24,6 +54,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // to "Electron" when it can't find name metadata via its usual lookup
 // (happens with `electron <script>` invocations in dev).
 app.setName('OpenHive');
+
+// Dev-only: expose Chromium's remote debugging protocol so tools like
+// chrome://inspect or chrome-devtools-mcp can attach directly to the
+// renderer. Set OPENHIVE_REMOTE_DEBUG=<port> (e.g. 9223) to enable.
+if (process.env.OPENHIVE_REMOTE_DEBUG) {
+  app.commandLine.appendSwitch(
+    'remote-debugging-port',
+    process.env.OPENHIVE_REMOTE_DEBUG,
+  );
+}
 
 interface HiveEntry {
   child: ChildProcess;
@@ -122,6 +162,8 @@ async function spawnHive(
   child.stdout?.on('data', (b) => { writeStream.write(b); process.stderr.write(b); });
   child.stderr?.on('data', (b) => { writeStream.write(b); process.stderr.write(b); });
 
+  const port = await pickFreePort();
+
   const url = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error('hive boot timeout (60s)')),
@@ -142,7 +184,7 @@ async function spawnHive(
     });
     child.send({
       type: 'start',
-      config: { dataDir, host: '127.0.0.1', port: 0, ...overrides },
+      config: { dataDir, host: '127.0.0.1', port, ...overrides },
     });
   });
 
