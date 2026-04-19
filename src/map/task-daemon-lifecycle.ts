@@ -9,6 +9,7 @@
 import * as net from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { join, basename, dirname, resolve, relative } from 'node:path';
 import { mkdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 
@@ -213,13 +214,40 @@ export async function ensureDaemon(opentasksDir: string): Promise<boolean> {
     return false;
   }
 
-  // Start the daemon
+  // Start the daemon.
+  //
+  // Resolve the `opentasks` bin via require.resolve and invoke it through
+  // process.execPath so this works inside Electron (where the package lives
+  // in the asar but isn't on $PATH). In plain Node process.execPath === node,
+  // so behavior is identical to `node <bin>`. Fall back to a $PATH lookup if
+  // the package isn't resolvable (e.g. dev without the dep linked).
+  let daemonBin = 'opentasks';
+  let daemonArgs = ['daemon', 'start'];
+  const daemonEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
+
   try {
-    const child = spawn('opentasks', ['daemon', 'start'], {
+    const require_ = createRequire(import.meta.url);
+    const pkgJsonPath = require_.resolve('opentasks/package.json');
+    const pkgDir = dirname(pkgJsonPath);
+    const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as {
+      bin?: string | Record<string, string>;
+    };
+    const binField = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.opentasks;
+    if (binField) {
+      daemonBin = process.execPath;
+      daemonArgs = [resolve(pkgDir, binField), 'daemon', 'start'];
+      daemonEnv.ELECTRON_RUN_AS_NODE = '1';
+    }
+  } catch {
+    // fall through to $PATH-based lookup
+  }
+
+  try {
+    const child = spawn(daemonBin, daemonArgs, {
       cwd: projectRoot,
       detached: true,
       stdio: ['ignore', 'ignore', 'pipe'],
-      env: { ...process.env },
+      env: daemonEnv,
     });
     child.unref();
 

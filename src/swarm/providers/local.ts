@@ -153,7 +153,7 @@ export class LocalProvider implements HostingProvider {
 
     // Parse the command (could be 'npx openswarm', 'node /path/to/bin', etc.)
     const parts = this.openswarmCommand.split(/\s+/);
-    const bin = parts[0];
+    let bin = parts[0];
     const baseArgs = parts.slice(1);
 
     // Build args for OpenSwarm's hosting server
@@ -218,6 +218,16 @@ export class LocalProvider implements HostingProvider {
     // exist, causing "Please run /login" / "Authentication required" even
     // though the user is authenticated in their primary Claude Code session.
     // Stripping CLAUDECODE* above is sufficient in practice.
+
+    // When the resolved command is `node`, redirect to process.execPath so
+    // this works inside Electron — packaged Electron apps ship no standalone
+    // `node` binary, but process.execPath + ELECTRON_RUN_AS_NODE=1 makes the
+    // Electron binary itself act as Node. In plain Node this is a no-op,
+    // since process.execPath IS the node binary.
+    if (bin === 'node' || bin === 'node.exe') {
+      bin = process.execPath;
+      env.ELECTRON_RUN_AS_NODE = '1';
+    }
 
     // Spawn as a new process group leader (detached: true) so we can
     // kill the entire tree (openswarm + its subprocesses) via -pid.
