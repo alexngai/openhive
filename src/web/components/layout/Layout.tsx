@@ -4,7 +4,7 @@ import { ToastContainer } from '../common/Toast';
 import { ChatFab, ChatSidebar } from '../chat-fab/ChatFab';
 
 // Routes that need full-width layout (no max-width constraint)
-const FULL_WIDTH_ROUTES = ['/terminal', '/tasks', '/messages/', '/sessions'];
+const FULL_WIDTH_ROUTES = ['/terminal', '/tasks', '/threads'];
 const FULL_WIDTH_EXACT = ['/'];
 
 export function Layout() {

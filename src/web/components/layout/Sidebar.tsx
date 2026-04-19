@@ -1,7 +1,7 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Menu, X, CirclePile,
-  User, Activity, MessageSquare, ChevronLeft, ChevronDown,
+  User, MessageSquare, ChevronLeft, ChevronDown,
   ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings, FileText, Send,
   GitBranch,
 } from 'lucide-react';
@@ -86,8 +86,7 @@ export function Sidebar() {
         { to: '/tasks', icon: ListTodo, label: 'Tasks' },
         { to: '/streams', icon: GitBranch, label: 'Streams' },
         { to: '/swarms', icon: CirclePile, label: 'Swarms', badge: onlineSwarmCount || undefined },
-        { to: '/sessions', icon: Activity, label: 'Sessions' },
-        { to: '/messages', icon: MessageSquare, label: 'Messages' },
+        { to: '/threads', icon: MessageSquare, label: 'Threads' },
       ],
     },
     {
@@ -222,22 +221,24 @@ export function Sidebar() {
               );
             })}
 
-            {/* Threads (active mail conversations) */}
+            {/* Active mail conversations — bridge to /messages while the
+                 unified Threads list (7c) lands. Renamed from "Threads" to
+                 avoid collision with the new top-level Threads nav item. */}
             {activeThreads?.conversations && activeThreads.conversations.length > 0 && (
               <>
                 <div className="py-1">
                   <div className="sidebar-section flex items-center gap-1.5">
                     <MessageSquare className="w-3 h-3" />
-                    <span>Threads</span>
+                    <span>Active Mail</span>
                   </div>
                   {activeThreads.conversations.map((conv) => (
                     <Link
                       key={conv.id}
-                      to={`/messages/${conv.id}`}
+                      to={`/threads/mail/${conv.id}`}
                       onClick={() => setMobileOpen(false)}
                       className={clsx(
                         'sidebar-item flex-col items-start gap-0 py-1.5',
-                        location.pathname === `/messages/${conv.id}` && 'active'
+                        location.pathname === `/threads/mail/${conv.id}` && 'active'
                       )}
                     >
                       <span className="text-xs line-clamp-1 w-full">
@@ -249,7 +250,7 @@ export function Sidebar() {
                     </Link>
                   ))}
                   <Link
-                    to="/messages"
+                    to="/threads"
                     onClick={() => setMobileOpen(false)}
                     className="sidebar-item text-xs"
                     style={{ color: 'var(--color-text-muted)' }}

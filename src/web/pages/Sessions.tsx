@@ -1,14 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Activity, ChevronDown, ChevronRight, Clock, Cpu, FileText, Loader2, Search, User } from 'lucide-react';
-import { useSessionsList, useSessionsInfinite, useMapSwarms } from '../hooks/useApi';
+import {
+  Activity, ChevronDown, ChevronRight, Clock, Cpu, FileText, Loader2, Mail,
+  Search, User, Users,
+} from 'lucide-react';
+import { useSessionsList, useSessionsInfinite, useMapSwarms, useMailConversations } from '../hooks/useApi';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
+import { useSubscribe, useWSEvent } from '../hooks/useWebSocket';
+import { useQueryClient } from '@tanstack/react-query';
 import { LoadingSpinner, PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { AgentAvatar } from '../components/common/AgentAvatar';
 import { useSessionAttentionStore } from '../stores/session-attention';
 import { SessionDetail } from './SessionDetail';
-import type { SessionListItem, MapSwarm } from '../lib/api';
+import { MailThreadView } from '../components/sessions/MailThreadView';
+import type { SessionListItem, MapSwarm, MailConversation } from '../lib/api';
 
 // ============================================================================
 // Constants
@@ -18,16 +24,35 @@ import type { SessionListItem, MapSwarm } from '../lib/api';
 const STALE_MARGIN_MS = 10 * 60 * 1000; // 10 minutes
 
 // ============================================================================
-// Status helpers
+// Thread model — unifies sessions + mail conversations
 // ============================================================================
 
-type SessionStatus = 'online' | 'recent' | 'stale';
+type ThreadFlavor = 'session' | 'mail';
+
+type ThreadStatus = 'live' | 'recent' | 'idle' | 'mail-active' | 'mail-completed';
+
+interface Thread {
+  /** Underlying data id (session resource id or mail conversation id) */
+  id: string;
+  flavor: ThreadFlavor;
+  /** Route path — `/threads/<id>` or `/threads/mail/<id>` */
+  to: string;
+  title: string;
+  description?: string | null;
+  status: ThreadStatus;
+  /** Primary sort key */
+  lastActivityAt: string;
+  participantCount: number;
+  /** Session-specific */
+  session?: SessionListItem;
+  /** Mail-specific */
+  conversation?: MailConversation;
+}
 
 function getSessionStatus(
   session: SessionListItem,
   swarmStatusMap: Map<string, MapSwarm['status']>,
-): SessionStatus {
-  // Check all contributing swarms, not just the latest
+): 'online' | 'recent' | 'stale' {
   const swarmIds = session.source_swarm_ids?.length
     ? session.source_swarm_ids
     : session.source_swarm_id ? [session.source_swarm_id] : [];
@@ -40,7 +65,6 @@ function getSessionStatus(
   }
   if (hasUnreachable) return 'recent';
 
-  // Check recency fallback
   if (session.last_synced_at) {
     const age = Date.now() - new Date(session.last_synced_at).getTime();
     if (age < STALE_MARGIN_MS) return 'recent';
@@ -49,40 +73,120 @@ function getSessionStatus(
   return 'stale';
 }
 
-const STATUS_COLORS: Record<SessionStatus, string> = {
-  online: 'bg-emerald-400',
-  recent: 'bg-amber-400',
-  stale: 'bg-gray-500',
-};
+function sessionToThread(
+  session: SessionListItem,
+  swarmStatusMap: Map<string, MapSwarm['status']>,
+): Thread {
+  const raw = getSessionStatus(session, swarmStatusMap);
+  const status: ThreadStatus =
+    raw === 'online' ? 'live' : raw === 'recent' ? 'recent' : 'idle';
+  return {
+    id: session.id,
+    flavor: 'session',
+    to: `/threads/${session.id}`,
+    title: session.name,
+    description: session.description,
+    status,
+    lastActivityAt: session.last_synced_at ?? new Date(0).toISOString(),
+    participantCount: 1,
+    session,
+  };
+}
 
-const STATUS_BORDER_COLORS: Record<SessionStatus, string> = {
-  online: '#34d399',
+function mailToThread(conv: MailConversation): Thread {
+  const status: ThreadStatus = conv.status === 'active' ? 'mail-active' : 'mail-completed';
+  return {
+    id: conv.id,
+    flavor: 'mail',
+    to: `/threads/mail/${conv.id}`,
+    title: conv.subject || 'Untitled conversation',
+    description: conv.participants.map((p) => p.agent_id).join(', ') || null,
+    status,
+    lastActivityAt: conv.updated_at,
+    participantCount: conv.participants.length,
+    conversation: conv,
+  };
+}
+
+const STATUS_BORDER_COLORS: Record<ThreadStatus, string> = {
+  live: '#34d399',
   recent: '#fbbf24',
-  stale: 'transparent',
+  idle: 'transparent',
+  'mail-active': '#34d399',
+  'mail-completed': 'transparent',
+};
+
+const STATUS_CHIP: Record<ThreadStatus, { label: string; cls: string }> = {
+  live:             { label: 'live',     cls: 'bg-emerald-500/10 text-emerald-400' },
+  recent:           { label: 'recent',   cls: 'bg-amber-500/10 text-amber-400' },
+  idle:             { label: 'idle',     cls: 'bg-gray-500/10 text-gray-400' },
+  'mail-active':    { label: 'active',   cls: 'bg-emerald-500/10 text-emerald-400' },
+  'mail-completed': { label: 'closed',   cls: 'bg-gray-500/10 text-gray-400' },
 };
 
 // ============================================================================
-// Sidebar item
+// Filter chips
 // ============================================================================
 
-function SidebarItem({
-  session,
-  status,
+type FilterKey = 'all' | 'live' | 'mail';
+
+const FILTERS: Array<{ key: FilterKey; label: string }> = [
+  { key: 'all',  label: 'All' },
+  { key: 'live', label: 'Live' },
+  { key: 'mail', label: 'Mail' },
+];
+
+function FilterChips({
+  active,
+  onChange,
+}: {
+  active: FilterKey;
+  onChange: (key: FilterKey) => void;
+}) {
+  return (
+    <div className="flex gap-1 px-2 py-2 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
+      {FILTERS.map((f) => (
+        <button
+          key={f.key}
+          onClick={() => onChange(f.key)}
+          className={`text-2xs px-2 py-0.5 rounded-md cursor-pointer transition-colors ${
+            active === f.key ? 'bg-honey-500/15 text-honey-500' : ''
+          }`}
+          style={
+            active === f.key
+              ? undefined
+              : { color: 'var(--color-text-secondary)', backgroundColor: 'var(--color-elevated)' }
+          }
+        >
+          {f.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ============================================================================
+// Thread row (sidebar)
+// ============================================================================
+
+function ThreadRow({
+  thread,
   isSelected,
   onClick,
 }: {
-  session: SessionListItem;
-  status: SessionStatus;
+  thread: Thread;
   isSelected: boolean;
   onClick: () => void;
 }) {
   const { hasAttention, clearAttention } = useSessionAttentionStore();
-  const needsAttention = hasAttention(session.id);
+  const needsAttention = thread.flavor === 'session' && hasAttention(thread.id);
 
   const handleClick = () => {
-    if (needsAttention) clearAttention(session.id);
+    if (needsAttention) clearAttention(thread.id);
     onClick();
   };
+
+  const isGroup = thread.flavor === 'mail' && thread.participantCount > 2;
 
   return (
     <button
@@ -93,24 +197,58 @@ function SidebarItem({
       }}
     >
       <div className="relative shrink-0">
-        <AgentAvatar name={session.name} size={24} borderColor={STATUS_BORDER_COLORS[status]} />
+        {thread.flavor === 'session' ? (
+          <AgentAvatar
+            name={thread.title}
+            size={24}
+            borderColor={STATUS_BORDER_COLORS[thread.status]}
+          />
+        ) : isGroup ? (
+          <div
+            className="w-6 h-6 rounded-full flex items-center justify-center"
+            style={{
+              backgroundColor: 'var(--color-elevated)',
+              border: `1.5px solid ${STATUS_BORDER_COLORS[thread.status]}`,
+            }}
+            title={`Group of ${thread.participantCount}`}
+          >
+            <Users className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+          </div>
+        ) : (
+          <div
+            className="w-6 h-6 rounded-full flex items-center justify-center"
+            style={{
+              backgroundColor: 'var(--color-elevated)',
+              border: `1.5px solid ${STATUS_BORDER_COLORS[thread.status]}`,
+            }}
+            title="Mail thread"
+          >
+            <Mail className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+          </div>
+        )}
         {needsAttention && (
           <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse border border-[var(--color-bg)]" />
         )}
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-xs font-medium truncate" style={{
-          color: isSelected ? 'var(--color-text)' : 'var(--color-text-secondary)',
-        }}>
-          {session.name}
+        <p
+          className="text-xs font-medium truncate"
+          style={{ color: isSelected ? 'var(--color-text)' : 'var(--color-text-secondary)' }}
+        >
+          {thread.title}
         </p>
+        {thread.description && (
+          <p className="text-2xs truncate leading-tight" style={{ color: 'var(--color-text-muted)' }}>
+            {thread.description}
+          </p>
+        )}
       </div>
     </button>
   );
 }
 
 // ============================================================================
-// Empty states
+// Empty / grid placeholders
 // ============================================================================
 
 function formatTokens(n: number): string {
@@ -124,80 +262,111 @@ function EmptyDetail() {
     <div className="flex-1 flex items-center justify-center h-full">
       <div className="text-center" style={{ color: 'var(--color-text-muted)' }}>
         <Activity className="w-10 h-10 mx-auto mb-3 opacity-40" />
-        <p className="text-sm">Select a session from the sidebar</p>
+        <p className="text-sm">Select a thread from the sidebar</p>
       </div>
     </div>
   );
 }
 
-function SessionsGrid({
-  sessions,
+function EmptySidebar() {
+  return (
+    <div className="px-4 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
+      <FileText className="w-8 h-8 mx-auto mb-2 opacity-40" />
+      <p className="text-xs">No threads yet</p>
+      <p className="text-2xs mt-1">Connect a swarm or start a conversation.</p>
+    </div>
+  );
+}
+
+function ThreadsGrid({
+  threads,
   onSelect,
 }: {
-  sessions: SessionListItem[];
-  onSelect: (id: string) => void;
+  threads: Thread[];
+  onSelect: (thread: Thread) => void;
 }) {
   return (
     <div className="max-w-4xl mx-auto px-4 py-6">
       <div className="mb-6">
         <h1 className="text-xl font-bold flex items-center gap-2">
           <Activity className="w-5 h-5 text-honey-500" />
-          Sessions
+          Threads
         </h1>
         <p className="text-sm mt-1" style={{ color: 'var(--color-text-secondary)' }}>
-          {sessions.length} session{sessions.length !== 1 ? 's' : ''} tracked.
+          {threads.length} thread{threads.length !== 1 ? 's' : ''} tracked.
         </p>
       </div>
       <div className="space-y-1.5">
-        {sessions.map((session) => {
-          const totalTokens = session.total_input_tokens + session.total_output_tokens;
+        {threads.map((t) => {
+          const chip = STATUS_CHIP[t.status];
+          const isGroup = t.flavor === 'mail' && t.participantCount > 2;
+          const isMail = t.flavor === 'mail';
+          const tokens = t.session
+            ? t.session.total_input_tokens + t.session.total_output_tokens
+            : 0;
           return (
             <button
-              key={session.id}
-              onClick={() => onSelect(session.id)}
+              key={`${t.flavor}:${t.id}`}
+              onClick={() => onSelect(t)}
               className="card card-hover px-3 py-2.5 flex items-start gap-3 group w-full text-left cursor-pointer"
             >
               <div
                 className="w-8 h-8 rounded-md flex items-center justify-center shrink-0 mt-0.5"
                 style={{ backgroundColor: 'var(--color-elevated)' }}
               >
-                <Activity className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+                {isMail ? (
+                  isGroup ? (
+                    <Users className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+                  ) : (
+                    <Mail className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+                  )
+                ) : (
+                  <Activity className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+                )}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <h3 className="font-medium text-sm truncate group-hover:text-honey-500 transition-colors">
-                    {session.name}
+                    {t.title}
                   </h3>
-                  {session.total_checkpoints > 0 && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                  )}
+                  <span className={`text-2xs px-1.5 py-0.5 rounded shrink-0 ${chip.cls}`}>
+                    {chip.label}
+                  </span>
                 </div>
-                {session.description && (
+                {t.description && (
                   <p className="text-xs line-clamp-1 mt-0.5" style={{ color: 'var(--color-text-secondary)' }}>
-                    {session.description}
+                    {t.description}
                   </p>
                 )}
                 <div className="flex items-center gap-3 mt-1.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-                  {session.latest_agent && (
+                  {t.session?.latest_agent && (
                     <span className="flex items-center gap-1">
                       <User className="w-3 h-3" />
-                      {session.latest_agent}
+                      {t.session.latest_agent}
                     </span>
                   )}
-                  <span className="flex items-center gap-1">
-                    <Activity className="w-3 h-3" />
-                    {session.total_checkpoints}
-                  </span>
-                  {totalTokens > 0 && (
+                  {t.flavor === 'mail' && (
+                    <span className="flex items-center gap-1" title="Participants">
+                      <Users className="w-3 h-3" />
+                      {t.participantCount}
+                    </span>
+                  )}
+                  {t.session && t.session.total_checkpoints > 0 && (
+                    <span className="flex items-center gap-1">
+                      <Activity className="w-3 h-3" />
+                      {t.session.total_checkpoints}
+                    </span>
+                  )}
+                  {tokens > 0 && (
                     <span className="flex items-center gap-1">
                       <Cpu className="w-3 h-3" />
-                      {formatTokens(totalTokens)}
+                      {formatTokens(tokens)}
                     </span>
                   )}
-                  {session.last_synced_at && (
+                  {t.lastActivityAt && (
                     <span className="flex items-center gap-1">
                       <Clock className="w-3 h-3" />
-                      <TimeAgo date={session.last_synced_at} />
+                      <TimeAgo date={t.lastActivityAt} />
                     </span>
                   )}
                 </div>
@@ -210,34 +379,24 @@ function SessionsGrid({
   );
 }
 
-function EmptySidebar() {
-  return (
-    <div className="px-4 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
-      <FileText className="w-8 h-8 mx-auto mb-2 opacity-40" />
-      <p className="text-xs">No active sessions</p>
-      <p className="text-2xs mt-1">Connect a swarm to see sessions here.</p>
-    </div>
-  );
-}
-
 // ============================================================================
-// Inactive sessions section (paginated with search)
+// Inactive / stale sessions (paginated with search, sessions-only)
 // ============================================================================
 
 function InactiveSection({
-  selectedId,
+  selectedKey,
   swarmStatusMap,
   onSelect,
 }: {
-  selectedId?: string;
+  /** `session:<id>` | `mail:<id>` — sidebar highlight key */
+  selectedKey: string | null;
   swarmStatusMap: Map<string, MapSwarm['status']>;
-  onSelect: (id: string) => void;
+  onSelect: (thread: Thread) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
 
-  // Debounce search input
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null);
   const handleSearch = (value: string) => {
     setSearch(value);
@@ -256,22 +415,17 @@ function InactiveSection({
     search: debouncedSearch || undefined,
   });
 
-  // Flatten pages and compute statuses
-  const allSessions = useMemo(() => {
-    if (!data) return [];
+  const allThreads = useMemo(() => {
+    if (!data) return [] as Thread[];
     return data.pages.flatMap((page) =>
-      page.data.map((session) => ({
-        session,
-        status: getSessionStatus(session, swarmStatusMap),
-      }))
+      page.data.map((session) => sessionToThread(session, swarmStatusMap)),
     );
   }, [data, swarmStatusMap]);
 
-  // When searching, show all results; when browsing, only show stale
-  const displaySessions = useMemo(() => {
-    if (debouncedSearch) return allSessions;
-    return allSessions.filter(({ status }) => status === 'stale');
-  }, [allSessions, debouncedSearch]);
+  const displayThreads = useMemo(() => {
+    if (debouncedSearch) return allThreads;
+    return allThreads.filter((t) => t.status === 'idle');
+  }, [allThreads, debouncedSearch]);
 
   const total = data?.pages[0]?.total ?? 0;
 
@@ -282,23 +436,16 @@ function InactiveSection({
         className="w-full flex items-center gap-1.5 px-3 py-2 text-2xs font-medium cursor-pointer"
         style={{ color: 'var(--color-text-muted)' }}
       >
-        {expanded
-          ? <ChevronDown className="w-3 h-3" />
-          : <ChevronRight className="w-3 h-3" />
-        }
-        {debouncedSearch ? `Results (${total})` : `Inactive (${total})`}
+        {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+        {debouncedSearch ? `Results (${total})` : `Inactive sessions (${total})`}
       </button>
 
       {expanded && (
         <div>
-          {/* Search input */}
           <div className="px-2 pb-2">
             <div
               className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs"
-              style={{
-                backgroundColor: 'var(--color-elevated)',
-                color: 'var(--color-text-secondary)',
-              }}
+              style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
             >
               <Search className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
               <input
@@ -312,24 +459,18 @@ function InactiveSection({
             </div>
           </div>
 
-          {/* Session list */}
           {isLoading ? (
-            <div className="py-4 flex justify-center">
-              <LoadingSpinner />
-            </div>
-          ) : displaySessions.length > 0 ? (
+            <div className="py-4 flex justify-center"><LoadingSpinner /></div>
+          ) : displayThreads.length > 0 ? (
             <div className="space-y-0.5 px-1.5">
-              {displaySessions.map(({ session, status }) => (
-                <SidebarItem
-                  key={session.id}
-                  session={session}
-                  status={status}
-                  isSelected={session.id === selectedId}
-                  onClick={() => onSelect(session.id)}
+              {displayThreads.map((t) => (
+                <ThreadRow
+                  key={`${t.flavor}:${t.id}`}
+                  thread={t}
+                  isSelected={`${t.flavor}:${t.id}` === selectedKey}
+                  onClick={() => onSelect(t)}
                 />
               ))}
-
-              {/* Load more */}
               {hasNextPage && (
                 <button
                   onClick={() => fetchNextPage()}
@@ -361,40 +502,76 @@ function InactiveSection({
 // ============================================================================
 
 export function Sessions() {
-  const { id: selectedId } = useParams<{ id: string }>();
+  const params = useParams<{ id?: string; mailId?: string }>();
   const navigate = useNavigate();
   const { data: sessionsData, isLoading: sessionsLoading } = useSessionsList();
+  const { data: mailConvs } = useMailConversations();
   const { data: swarms } = useMapSwarms();
   useSessionsRealtime();
 
-  // Build swarm status lookup
+  // Keep mail list fresh via WebSocket
+  useSubscribe(['mail:conversations']);
+  const queryClient = useQueryClient();
+  const invalidateMail = () => queryClient.invalidateQueries({ queryKey: ['mail-conversations'] });
+  useWSEvent('mail.created', invalidateMail);
+  useWSEvent('mail.turn.added', invalidateMail);
+  useWSEvent('mail.closed', invalidateMail);
+
+  const selectedSessionId = params.id ?? null;
+  const selectedMailId = params.mailId ?? null;
+  const selectedKey = selectedSessionId
+    ? `session:${selectedSessionId}`
+    : selectedMailId
+      ? `mail:${selectedMailId}`
+      : null;
+
+  const [filter, setFilter] = useState<FilterKey>('all');
+
   const swarmStatusMap = useMemo(() => {
     const map = new Map<string, MapSwarm['status']>();
     if (swarms) {
-      for (const s of swarms) {
-        map.set(s.id, s.status);
-      }
+      for (const s of swarms) map.set(s.id, s.status);
     }
     return map;
   }, [swarms]);
 
-  // Filter to active set from the main sessions query
-  const activeSessions = useMemo(() => {
-    const all = sessionsData?.data ?? [];
-    return all
-      .map((session) => ({
-        session,
-        status: getSessionStatus(session, swarmStatusMap),
-      }))
-      .filter(({ status }) => status !== 'stale');
-  }, [sessionsData, swarmStatusMap]);
+  // Build unified active thread list.
+  // "Active" = sessions with a live/recent swarm OR any mail conversation
+  // not yet archived. Stale sessions flow into InactiveSection (sessions-only
+  // paginated browse).
+  const activeThreads = useMemo(() => {
+    const sessionThreads = (sessionsData?.data ?? [])
+      .map((s) => sessionToThread(s, swarmStatusMap))
+      .filter((t) => t.status !== 'idle');
+    const mailThreads = (mailConvs ?? [])
+      .filter((c) => c.status !== 'archived')
+      .map(mailToThread);
+    return [...sessionThreads, ...mailThreads].sort(
+      (a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
+    );
+  }, [sessionsData, mailConvs, swarmStatusMap]);
 
-  // Auto-navigate to first active session when landing on /sessions
-  useEffect(() => {
-    if (!selectedId && activeSessions.length > 0) {
-      navigate(`/sessions/${activeSessions[0].session.id}`, { replace: true });
+  const liveThreads = useMemo(
+    () => activeThreads.filter((t) => t.status === 'live' || t.status === 'mail-active'),
+    [activeThreads],
+  );
+
+  const visibleActive = useMemo(() => {
+    switch (filter) {
+      case 'live': return activeThreads.filter((t) => t.status === 'live' || t.status === 'mail-active');
+      case 'mail': return activeThreads.filter((t) => t.flavor === 'mail');
+      default:     return activeThreads;
     }
-  }, [selectedId, activeSessions, navigate]);
+  }, [activeThreads, filter]);
+
+  // Auto-navigate to first thread when landing on bare /threads
+  useEffect(() => {
+    if (!selectedKey && activeThreads.length > 0) {
+      navigate(activeThreads[0].to, { replace: true });
+    }
+  }, [selectedKey, activeThreads, navigate]);
+
+  const handleSelect = (t: Thread) => navigate(t.to);
 
   if (sessionsLoading) return <PageLoader />;
 
@@ -405,57 +582,114 @@ export function Sessions() {
         className="w-72 shrink-0 border-r flex flex-col"
         style={{ borderColor: 'var(--color-border-subtle)' }}
       >
-        <div className="px-3 py-3 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
-          <h2 className="text-xs font-semibold flex items-center gap-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+        <div
+          className="px-3 py-3 border-b"
+          style={{ borderColor: 'var(--color-border-subtle)' }}
+        >
+          <h2
+            className="text-xs font-semibold flex items-center gap-1.5"
+            style={{ color: 'var(--color-text-secondary)' }}
+          >
             <Activity className="w-3.5 h-3.5 text-honey-500" />
-            Sessions
-            {activeSessions.length > 0 && (
+            Threads
+            {visibleActive.length > 0 && (
               <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>
-                ({activeSessions.length})
+                ({visibleActive.length})
               </span>
             )}
           </h2>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
-          {/* Active sessions */}
-          <div className="p-1.5">
-            {activeSessions.length > 0 ? (
-              <div className="space-y-0.5">
-                {activeSessions.map(({ session, status }) => (
-                  <SidebarItem
-                    key={session.id}
-                    session={session}
-                    status={status}
-                    isSelected={session.id === selectedId}
-                    onClick={() => navigate(`/sessions/${session.id}`)}
-                  />
-                ))}
-              </div>
-            ) : (
-              <EmptySidebar />
-            )}
-          </div>
+        <FilterChips active={filter} onChange={setFilter} />
 
-          {/* Inactive sessions (paginated) */}
+        <div className="flex-1 overflow-y-auto">
+          {visibleActive.length > 0 ? (
+            <div className="p-1.5">
+              {/* Pinned Live (only when filter is 'all' and there are mixed states) */}
+              {filter === 'all' && liveThreads.length > 0 && liveThreads.length < visibleActive.length && (
+                <>
+                  <div
+                    className="px-2 py-1 text-2xs font-medium uppercase tracking-wider flex items-center gap-1.5"
+                    style={{ color: 'var(--color-text-muted)' }}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Live
+                  </div>
+                  <div className="space-y-0.5 mb-2">
+                    {liveThreads.map((t) => (
+                      <ThreadRow
+                        key={`${t.flavor}:${t.id}`}
+                        thread={t}
+                        isSelected={`${t.flavor}:${t.id}` === selectedKey}
+                        onClick={() => handleSelect(t)}
+                      />
+                    ))}
+                  </div>
+                  <div
+                    className="px-2 py-1 text-2xs font-medium uppercase tracking-wider"
+                    style={{ color: 'var(--color-text-muted)' }}
+                  >
+                    Recent
+                  </div>
+                  <div className="space-y-0.5">
+                    {visibleActive
+                      .filter((t) => t.status !== 'live' && t.status !== 'mail-active')
+                      .map((t) => (
+                        <ThreadRow
+                          key={`${t.flavor}:${t.id}`}
+                          thread={t}
+                          isSelected={`${t.flavor}:${t.id}` === selectedKey}
+                          onClick={() => handleSelect(t)}
+                        />
+                      ))}
+                  </div>
+                </>
+              )}
+
+              {/* Single flat list (filter active, or no mixed states) */}
+              {(filter !== 'all' || liveThreads.length === 0 || liveThreads.length === visibleActive.length) && (
+                <div className="space-y-0.5">
+                  {visibleActive.map((t) => (
+                    <ThreadRow
+                      key={`${t.flavor}:${t.id}`}
+                      thread={t}
+                      isSelected={`${t.flavor}:${t.id}` === selectedKey}
+                      onClick={() => handleSelect(t)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <EmptySidebar />
+          )}
+
+          {/* Inactive sessions — stale sessions only; paginated browse */}
           <InactiveSection
-            selectedId={selectedId}
+            selectedKey={selectedKey}
             swarmStatusMap={swarmStatusMap}
-            onSelect={(id) => navigate(`/sessions/${id}`)}
+            onSelect={handleSelect}
           />
         </div>
       </aside>
 
       {/* Detail area */}
       <main className="flex-1 overflow-y-auto min-w-0">
-        {selectedId ? (
+        {selectedMailId ? (
+          <MailThreadView conversationId={selectedMailId} />
+        ) : selectedSessionId ? (
           <SessionDetail />
-        ) : activeSessions.length > 0 ? (
+        ) : activeThreads.length > 0 ? (
           <EmptyDetail />
-        ) : (sessionsData?.data ?? []).length > 0 ? (
-          <SessionsGrid
-            sessions={sessionsData!.data}
-            onSelect={(id) => navigate(`/sessions/${id}`)}
+        ) : (sessionsData?.data ?? []).length > 0 || (mailConvs ?? []).length > 0 ? (
+          <ThreadsGrid
+            threads={[
+              ...(sessionsData?.data ?? []).map((s) => sessionToThread(s, swarmStatusMap)),
+              ...(mailConvs ?? []).map(mailToThread),
+            ].sort((a, b) =>
+              new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
+            )}
+            onSelect={handleSelect}
           />
         ) : (
           <EmptyDetail />
@@ -464,3 +698,4 @@ export function Sessions() {
     </div>
   );
 }
+

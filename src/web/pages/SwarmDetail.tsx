@@ -1,7 +1,7 @@
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Activity, AlertTriangle, Bell, ChevronRight, ChevronDown, ChevronUp, Clock, Cpu, FileText, Globe,
-  Link2, Loader2, MessageSquare, Monitor, Network, Play, Plus, Settings2, Share2,
+  Link2, Loader2, Megaphone, MessageSquare, Monitor, Network, Play, Plus, Settings2, Share2,
   Square, RotateCw, Terminal, Trash2, User, Wifi, WifiOff,
   CheckCircle2, Zap,
 } from 'lucide-react';
@@ -622,7 +622,7 @@ function RegisteredAgentCard({
         streamId: result.acp_stream_id,
         sessionId: result.acp_session_id,
       });
-      navigate(`/sessions/${result.session_resource_id}?${params}`);
+      navigate(`/threads/${result.session_resource_id}?${params}`);
     } catch {
       // Error state is rendered below via the mutation's isError flag
     }
@@ -856,14 +856,30 @@ function ComposeMessageSection({ swarmId }: { swarmId: string }) {
         onClick={() => setExpanded(!expanded)}
         className="flex items-center gap-2 text-xs font-medium px-2 py-1.5 rounded hover:bg-[var(--color-elevated)] transition-colors"
         style={{ color: 'var(--color-text-secondary)' }}
+        title="Swarm-to-swarm coordination. Not the same as chatting with an agent — use the Chat button on an agent for that."
       >
-        <MessageSquare className="w-3.5 h-3.5" />
-        {expanded ? 'Hide' : 'Send'} Coordination Message
+        <Megaphone className="w-3.5 h-3.5" />
+        {expanded ? 'Hide' : 'Open'} Coordination Broadcast
       </button>
       {expanded && (
-        <div className="card mt-1 overflow-hidden h-52 flex flex-col">
-          <ChatMessageList channel={channel} compact continuationHeaders />
-          <ChatInput channel={channel} compact />
+        <div
+          className="card mt-1 overflow-hidden flex flex-col"
+          style={{ borderLeft: '2px solid var(--color-accent)' }}
+        >
+          <div
+            className="px-3 py-1.5 text-2xs border-b"
+            style={{
+              color: 'var(--color-text-muted)',
+              borderColor: 'var(--color-border-subtle)',
+              backgroundColor: 'var(--color-elevated)',
+            }}
+          >
+            Swarm-to-swarm coordination · not agent chat
+          </div>
+          <div className="h-52 flex flex-col">
+            <ChatMessageList channel={channel} compact continuationHeaders />
+            <ChatInput channel={channel} compact />
+          </div>
         </div>
       )}
     </div>
@@ -1038,7 +1054,7 @@ function SessionCard({ session }: { session: SessionListItem }) {
 
   return (
     <Link
-      to={`/sessions/${session.id}`}
+      to={`/threads/${session.id}`}
       className="card card-hover px-3 py-2.5 flex items-start gap-3 group"
     >
       <div
@@ -1130,7 +1146,7 @@ function ResumableSessionRow({
   };
 
   const goToSession = () => {
-    navigate(`/sessions/${session.session_resource_id}`);
+    navigate(`/threads/${session.session_resource_id}`);
   };
 
   return (

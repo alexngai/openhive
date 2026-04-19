@@ -1,11 +1,21 @@
 import { lazy, Suspense, useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { Layout } from './components/layout/Layout';
 import { PageLoader } from './components/common/LoadingSpinner';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { ProtectedRoute } from './components/common/ProtectedRoute';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAuthStore } from './stores/auth';
+
+function SessionIdRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={`/threads/${id ?? ''}`} replace />;
+}
+
+function MailIdRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={`/threads/mail/${id ?? ''}`} replace />;
+}
 
 // Lazy load page components for code splitting
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
@@ -33,8 +43,6 @@ const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memor
 const MemoryDetail = lazy(() => import('./pages/MemoryDetail').then(m => ({ default: m.MemoryDetail })));
 const Skills = lazy(() => import('./pages/Skills').then(m => ({ default: m.Skills })));
 const SkillDetail = lazy(() => import('./pages/SkillDetail').then(m => ({ default: m.SkillDetail })));
-const Messages = lazy(() => import('./pages/Messages').then(m => ({ default: m.Messages })));
-const Conversation = lazy(() => import('./pages/Conversation').then(m => ({ default: m.Conversation })));
 const Learning = lazy(() => import('./pages/Learning').then(m => ({ default: m.Learning })));
 const LearningPlaybookDetail = lazy(() => import('./pages/LearningPlaybookDetail').then(m => ({ default: m.LearningPlaybookDetail })));
 const Streams = lazy(() => import('./pages/Streams').then(m => ({ default: m.Streams })));
@@ -68,12 +76,16 @@ export default function App() {
               <Route path="settings" element={<Settings />} />
               <Route path="swarms" element={<Swarms />} />
               <Route path="swarms/:id" element={<SwarmDetail />} />
-              <Route path="sessions" element={<Sessions />} />
-              <Route path="sessions/:id" element={<Sessions />} />
+              <Route path="threads" element={<Sessions />} />
+              <Route path="threads/:id" element={<Sessions />} />
+              <Route path="threads/mail/:mailId" element={<Sessions />} />
               <Route path="events" element={<Events />} />
               <Route path="terminal/:swarmId" element={<Terminal />} />
-              <Route path="messages" element={<Messages />} />
-              <Route path="messages/:id" element={<Conversation />} />
+              {/* Redirects from legacy routes */}
+              <Route path="sessions" element={<Navigate to="/threads" replace />} />
+              <Route path="sessions/:id" element={<SessionIdRedirect />} />
+              <Route path="messages" element={<Navigate to="/threads" replace />} />
+              <Route path="messages/:id" element={<MailIdRedirect />} />
               <Route path="memory" element={<Memory />} />
               <Route path="memory/:resourceId" element={<MemoryDetail />} />
               <Route path="skills" element={<Skills />} />

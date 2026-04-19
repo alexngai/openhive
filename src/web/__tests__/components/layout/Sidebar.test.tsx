@@ -58,20 +58,12 @@ describe('Sidebar Navigation', () => {
     expect(swarmsLink!.getAttribute('href')).toBe('/swarms');
   });
 
-  it('renders Sessions nav item linking to /sessions', () => {
+  it('renders Threads nav item linking to /threads', () => {
     renderSidebar();
     const links = screen.getAllByRole('link');
-    const link = links.find((l) => l.textContent?.trim() === 'Sessions');
+    const link = links.find((l) => l.textContent?.trim() === 'Threads');
     expect(link).toBeDefined();
-    expect(link!.getAttribute('href')).toBe('/sessions');
-  });
-
-  it('renders Messages nav item linking to /messages', () => {
-    renderSidebar();
-    const links = screen.getAllByRole('link');
-    const link = links.find((l) => l.textContent?.trim() === 'Messages');
-    expect(link).toBeDefined();
-    expect(link!.getAttribute('href')).toBe('/messages');
+    expect(link!.getAttribute('href')).toBe('/threads');
   });
 
   it('renders Memory nav item linking to /memory', () => {

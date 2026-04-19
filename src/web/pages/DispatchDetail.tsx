@@ -243,7 +243,7 @@ export function DispatchDetail() {
             {d.session_ids.map((sid) => (
               <li key={sid}>
                 <Link
-                  to={`/sessions/${sid}`}
+                  to={`/threads/${sid}`}
                   className="text-sm font-mono hover:opacity-80"
                   style={{ color: 'var(--color-text)' }}
                 >
