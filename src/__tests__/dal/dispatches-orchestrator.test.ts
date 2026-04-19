@@ -255,4 +255,79 @@ describe('dispatches DAL — orchestrator helpers', () => {
       expect(d.turn_count).toBe(0);
     });
   });
+
+  // ==========================================================================
+  // upsertDispatchAttempt (V41 attempts_history)
+  // ==========================================================================
+
+  describe('upsertDispatchAttempt', () => {
+    it('appends a new attempt when the attempt number is novel', () => {
+      const d = seedDispatch();
+      dispatches.upsertDispatchAttempt(d.id, {
+        attempt: 1,
+        started_at: '2026-04-18T10:00:00.000Z',
+        status: 'running',
+      });
+
+      const updated = dispatches.findDispatchById(d.id)!;
+      expect(updated.attempts_history).toHaveLength(1);
+      expect(updated.attempts_history[0]).toMatchObject({
+        attempt: 1,
+        status: 'running',
+      });
+    });
+
+    it('merges when upserting an existing attempt', () => {
+      const d = seedDispatch();
+      dispatches.upsertDispatchAttempt(d.id, {
+        attempt: 1,
+        started_at: '2026-04-18T10:00:00.000Z',
+        status: 'running',
+      });
+      dispatches.upsertDispatchAttempt(d.id, {
+        attempt: 1,
+        started_at: '2026-04-18T10:00:00.000Z',
+        ended_at: '2026-04-18T10:01:00.000Z',
+        status: 'retrying',
+        error: 'boom',
+        next_retry_at: '2026-04-18T10:02:00.000Z',
+      });
+
+      const updated = dispatches.findDispatchById(d.id)!;
+      expect(updated.attempts_history).toHaveLength(1);
+      expect(updated.attempts_history[0]).toMatchObject({
+        attempt: 1,
+        status: 'retrying',
+        error: 'boom',
+        next_retry_at: '2026-04-18T10:02:00.000Z',
+      });
+    });
+
+    it('sorts attempts by number when multiple land out of order', () => {
+      const d = seedDispatch();
+      dispatches.upsertDispatchAttempt(d.id, {
+        attempt: 2,
+        started_at: '2026-04-18T10:05:00.000Z',
+        status: 'running',
+      });
+      dispatches.upsertDispatchAttempt(d.id, {
+        attempt: 1,
+        started_at: '2026-04-18T10:00:00.000Z',
+        status: 'failed',
+      });
+
+      const updated = dispatches.findDispatchById(d.id)!;
+      expect(updated.attempts_history.map((a) => a.attempt)).toEqual([1, 2]);
+    });
+
+    it('no-ops for an unknown dispatch id', () => {
+      expect(() =>
+        dispatches.upsertDispatchAttempt('nonexistent', {
+          attempt: 1,
+          started_at: '2026-04-18T10:00:00.000Z',
+          status: 'running',
+        }),
+      ).not.toThrow();
+    });
+  });
 });

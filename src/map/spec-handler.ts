@@ -167,8 +167,14 @@ export async function handleSpecRequest(
       });
 
       if (!result.ok) {
-        // Map fetchSpecForDispatch / swarm-not-found error codes to JSON-RPC.
-        const codeMap: Record<number, number> = { 404: -32001, 403: -32001, 400: -32602 };
+        // Map fetchSpecForDispatch / swarm-not-found / unreachable error codes to JSON-RPC.
+        // 503 (no transport) → -32003 (server error, non-retryable for the caller)
+        const codeMap: Record<number, number> = {
+          404: -32001,
+          403: -32001,
+          400: -32602,
+          503: -32003,
+        };
         const rpcCode = codeMap[result.statusCode] ?? -32000;
         throw new MAPSpecRequestError(rpcCode, result.message);
       }

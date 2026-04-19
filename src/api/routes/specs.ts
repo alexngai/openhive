@@ -27,6 +27,7 @@ import { findSwarmForResource, remoteGetGraph } from '../../map/opentasks-remote
 import { broadcastToChannel } from '../../realtime/index.js';
 import * as dispatchesDAL from '../../db/dal/dispatches.js';
 import { findSwarmById } from '../../db/dal/map.js';
+import { canRouteToSwarm } from '../../dispatch/routing.js';
 import type { Dispatch } from '../../db/dal/dispatches.js';
 import type { SyncableResource } from '../../types.js';
 import type { Config } from '../../config.js';
@@ -905,6 +906,7 @@ export async function dispatchSpecToSwarms(input: {
 
   const uniqueSwarms = Array.from(new Set(input.targetSwarms));
   const swarmInfos: Array<{ id: string; name: string | null }> = [];
+  const unreachable: Array<{ id: string; reason: string }> = [];
   for (const swarmId of uniqueSwarms) {
     const swarm = findSwarmById(swarmId);
     if (!swarm) {
@@ -915,7 +917,23 @@ export async function dispatchSpecToSwarms(input: {
         message: `Swarm not found: ${swarmId}`,
       };
     }
+    const decision = canRouteToSwarm(swarmId);
+    if (decision.route === 'none') {
+      unreachable.push({ id: swarmId, reason: decision.reason ?? 'no_route' });
+      continue;
+    }
     swarmInfos.push({ id: swarm.id, name: swarm.name ?? null });
+  }
+
+  if (unreachable.length > 0) {
+    return {
+      ok: false,
+      statusCode: 503,
+      error: 'Service Unavailable',
+      message: `Cannot dispatch — no transport available for: ${unreachable
+        .map((u) => `${u.id} (${u.reason})`)
+        .join(', ')}`,
+    };
   }
 
   const dispatches: Array<Dispatch & { seed_prompt: string; target_swarm_name: string | null }> = [];

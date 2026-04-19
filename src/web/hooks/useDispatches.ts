@@ -11,6 +11,16 @@ export interface DispatchOutcome {
   [key: string]: unknown;
 }
 
+export interface DispatchAttempt {
+  attempt: number;
+  started_at: string;
+  ended_at?: string;
+  status: 'running' | 'completed' | 'failed' | 'retrying';
+  error?: string;
+  session_id?: string;
+  next_retry_at?: string;
+}
+
 export interface Dispatch {
   id: string;
   spec_resource_id: string;
@@ -23,6 +33,9 @@ export interface Dispatch {
   session_ids: string[];
   outcome: DispatchOutcome | null;
   prompt_override: string | null;
+  attempt?: number;
+  turn_count?: number;
+  attempts_history?: DispatchAttempt[];
   created_at: string;
   updated_at: string;
 }

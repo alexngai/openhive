@@ -10,7 +10,7 @@ import type { DispatchAgentRuntime } from 'swarm-dispatch';
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import { findAcpAgentInfo } from '../map/connection-registry.js';
 
-type AcpStreamManager = {
+export interface AcpStreamManager {
   createStream: (serverId: string, agentId: string) => Promise<{ streamId: string }>;
   closeStream: (id: string) => Promise<void>;
   initialize: (streamId: string) => Promise<unknown>;
@@ -22,7 +22,7 @@ type AcpStreamManager = {
     streamId: string,
     input: { sessionId: string; prompt: Array<{ type: string; text?: string }> },
   ) => Promise<unknown>;
-};
+}
 
 export interface OpenHiveRuntimeDeps {
   getAcpStreamManager: () => AcpStreamManager | undefined;

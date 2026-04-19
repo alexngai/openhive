@@ -572,6 +572,33 @@ export const ConfigSchema = z.object({
         .optional(),
     })
     .default({ provider: "none" }),
+
+  // Dispatch orchestrator (swarm-dispatch integration)
+  dispatch: z
+    .object({
+      /** Max dispatches running concurrently across all swarms. */
+      globalConcurrency: z.number().int().positive().default(5),
+      /** How often the source table is polled for queued rows. */
+      pollIntervalMs: z.number().int().positive().default(15_000),
+      /** How often the reconcile cycle checks for external cancels / stalls. */
+      reconcileIntervalMs: z.number().int().positive().default(5_000),
+      /** Retry policy for failed dispatch attempts. */
+      retry: z
+        .object({
+          maxRetries: z.number().int().min(0).default(3),
+          baseDelayMs: z.number().int().positive().default(10_000),
+          maxDelayMs: z.number().int().positive().default(300_000),
+        })
+        .default({}),
+      /**
+       * Eligibility scorer for ready dispatches.
+       *
+       * - `heuristic` — swarm-dispatch's `heuristicScorer` (role + spec-age weighting).
+       * - `noop` — preserves source input order (previous default).
+       */
+      scorer: z.enum(["heuristic", "noop"]).default("heuristic"),
+    })
+    .default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

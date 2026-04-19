@@ -41,9 +41,14 @@ import {
 import { markStaleSwarms, getWellKnownMapInfo } from "./map/service.js";
 import { setupOrchestrator } from "./dispatch/setup.js";
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
+import { createOpenHiveMailTransport } from "./dispatch/mail-transport.js";
+import { createOpenHiveMailPort } from "./dispatch/openhive-mail-port.js";
+import { setAcpAvailabilityProbe } from "./dispatch/routing.js";
+import type { AcpStreamManager } from "./dispatch/openhive-runtime.js";
+import { sendToSwarm } from "./map/sync-listener.js";
 import type { Orchestrator } from "swarm-dispatch";
 import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
-import { initMail } from "./mail/index.js";
+import { initMail, getMailJsonRpc, getMailStorage, getMailEvents } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
 import { initTokenService, loadRevocations, setPersistence } from "./map/token-service.js";
 import { BridgeManager } from "./bridge/manager.js";
@@ -475,6 +480,14 @@ export async function createHive(
   // Initialize dispatch orchestrator (swarm-dispatch integration)
   let dispatchOrchestrator: Orchestrator | null = null;
   try {
+    const mailTransport = createOpenHiveMailTransport({
+      getMailJsonRpc,
+      getMailStorage,
+      getMailEvents,
+      sendToSwarm,
+    });
+    const messagePort = createOpenHiveMailPort(mailTransport);
+
     dispatchOrchestrator = setupOrchestrator({
       specFetcher: {
         async fetch(resourceId: string, specId: string) {
@@ -500,10 +513,26 @@ export async function createHive(
       },
       runtimeDeps: {
         getAcpStreamManager: () => {
-          const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: unknown } }).swarmcraft;
-          return sc?.acpStreamManager as ReturnType<typeof setupOrchestrator> extends never ? never : unknown as any;
+          const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: AcpStreamManager } }).swarmcraft;
+          return sc?.acpStreamManager;
         },
       },
+      messagePort,
+      dispatchConfig: config.dispatch,
+    });
+    setAcpAvailabilityProbe(() => {
+      const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: AcpStreamManager } }).swarmcraft;
+      return !!sc?.acpStreamManager;
+    });
+    // Tear down the mail transport on server close so we don't leak the
+    // mail.turn.added listener + ingress subscription across reloads (tests,
+    // hot-reload dev loops). `destroy` is a no-op on already-destroyed ports.
+    fastify.addHook('onClose', async () => {
+      try {
+        mailTransport.destroy?.();
+      } catch {
+        /* best effort */
+      }
     });
     console.log('[openhive] Dispatch orchestrator initialized');
   } catch (err) {

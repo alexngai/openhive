@@ -221,6 +221,27 @@ export function findAcpAgentInfo(swarmId: string): {
 }
 
 /**
+ * Look up a specific registered agent on a swarm. Returns undefined if the
+ * connection is stale or the agent isn't registered.
+ */
+export function getAgentOnSwarm(swarmId: string, agentId: string): RegisteredAgent | undefined {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn || conn.isStale) return undefined;
+  return conn.registeredAgents.get(agentId);
+}
+
+/**
+ * Check whether a specific agent on a swarm declares a capability. Unlike
+ * `hasCapability` (any-agent-has semantics), this targets one agent — the
+ * dispatch mail port needs per-agent routing decisions.
+ */
+export function hasAgentCapability(swarmId: string, agentId: string, path: string): boolean {
+  const agent = getAgentOnSwarm(swarmId, agentId);
+  if (!agent?.capabilities) return false;
+  return checkPath(agent.capabilities, path.split('.'));
+}
+
+/**
  * Check if ANY agent on the connection declares a specific capability.
  * Useful for gating operations that can be handled by any agent on the swarm.
  *
