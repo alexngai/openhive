@@ -1,9 +1,30 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
+import { timingSafeEqual } from 'node:crypto';
 import { findAgentById, findAgentByApiKey, updateAgentLastSeen } from '../../db/dal/agents.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../../auth/jwks.js';
 import { findOrCreateSwarmHubAgent } from '../../db/dal/agents.js';
 import { validateIngestKey } from '../../db/dal/ingest-keys.js';
 import type { Agent, IngestKeyScope } from '../../types.js';
+
+/**
+ * Constant-time compare for the admin-key header.
+ *
+ * Headers arrive as `string | string[] | undefined` off Fastify — normalize
+ * to a single string before comparing, reject arrays (suspicious), and
+ * short-circuit on length mismatch so `timingSafeEqual` doesn't throw.
+ */
+function adminKeyMatches(
+  header: string | string[] | undefined,
+  configured: string | undefined,
+): boolean {
+  if (!configured) return false;
+  if (typeof header !== 'string') return false;
+  if (header.length !== configured.length) return false;
+  const a = Buffer.from(header);
+  const b = Buffer.from(configured);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 // Extend FastifyRequest to include agent
 declare module 'fastify' {
@@ -224,4 +245,99 @@ export function requireAdmin(
       message: 'Admin access required',
     });
   }
+}
+
+/**
+ * Config surface `createAdminAuth` reads. Keeping the shape explicit (instead
+ * of accepting `Config` wholesale) documents exactly what the middleware cares
+ * about.
+ */
+interface AdminAuthConfig {
+  admin: { key?: string; trustLocalMode?: boolean };
+  auth: { mode: string };
+}
+
+/**
+ * Create an auth preHandler that accepts either:
+ *   1. An `X-Admin-Key` header matching `config.admin.key` (constant-time), OR
+ *   2. An explicit Bearer token from an admin agent.
+ *
+ * IMPORTANT: unlike `authMiddleware`, this does NOT fall through to the
+ * local-auth auto-agent when no credentials are present. Admin routes
+ * must always require an explicit credential, even in `auth: 'local'`
+ * mode — otherwise a headless hub exposed on any network is effectively
+ * open to admin operations.
+ *
+ * **Escape hatch**: setting `config.admin.trustLocalMode = true` reverts
+ * this to the pre-hardening behavior IN LOCAL AUTH MODE ONLY — the
+ * auto-authenticated admin local agent is treated as a valid credential.
+ * Intended for localhost-bound single-operator hubs where typing the admin
+ * key on every CLI call is friction. Loud warning logged at boot.
+ *
+ * Use in place of `[authMiddleware, requireAdmin]` on routes that should
+ * be reachable from headless operator CLIs.
+ */
+export function createAdminAuth(config: AdminAuthConfig) {
+  // Flag is gated on `auth: 'local'`. In token/swarmhub mode there's no
+  // auto-auth agent to trust, so the flag becomes a no-op — evaluated once
+  // at factory time to avoid re-checking per request.
+  const trustLocal = !!config.admin.trustLocalMode && config.auth.mode === 'local';
+
+  return async function adminAuth(
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<void> {
+    if (adminKeyMatches(request.headers['x-admin-key'], config.admin.key)) {
+      return;
+    }
+
+    // Trusted-local-mode bypass: when enabled, allow no-credential requests
+    // through the standard `authMiddleware` path so the local admin agent
+    // satisfies `requireAdmin`. The gate is still `requireAdmin`, so a
+    // non-admin local agent wouldn't pass — but in practice the init
+    // wizard stamps the local agent as admin.
+    if (trustLocal) {
+      await authMiddleware(request, reply);
+      if (reply.sent) return;
+      requireAdmin(request, reply);
+      return;
+    }
+
+    // Require an explicit Bearer token. Don't let local-mode auto-auth
+    // silently upgrade an unauthenticated request to admin.
+    if (!request.headers.authorization) {
+      return reply.status(401).send({
+        error: 'Unauthorized',
+        message: 'Admin key or Bearer token required',
+      });
+    }
+
+    await authMiddleware(request, reply);
+    if (reply.sent) return;
+    requireAdmin(request, reply);
+  };
+}
+
+/**
+ * Like `authMiddleware` but additionally accepts a valid `X-Admin-Key` as a
+ * skip-auth escape hatch for headless operator tooling. When the admin key
+ * matches, the handler runs without `request.agent` being populated —
+ * callers that rely on `request.agent` for anything other than admin-gating
+ * should use `createAdminAuth` instead.
+ *
+ * Unlike `createAdminAuth`, this DOES fall through to local-auth auto-agent
+ * when no credentials are provided, preserving the "any authenticated agent
+ * can read" semantics of routes like `GET /sync/peers` and `GET /dispatches`.
+ */
+export function createAuthOrAdminKey(config: { admin: { key?: string } }) {
+  return async function authOrAdminKey(
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<void> {
+    if (adminKeyMatches(request.headers['x-admin-key'], config.admin.key)) {
+      return;
+    }
+    await authMiddleware(request, reply);
+    if (reply.sent) return;
+  };
 }

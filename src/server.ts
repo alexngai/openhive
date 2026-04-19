@@ -90,6 +90,17 @@ export async function createHive(
     console.log(
       '[openhive] Local auth mode — all requests auto-authenticated as "local"',
     );
+    if (config.admin.trustLocalMode) {
+      console.warn(
+        '[openhive] ⚠  admin.trustLocalMode=true — admin routes accept NO credentials',
+      );
+      console.warn(
+        '[openhive]    Any client that can reach this port can run admin commands.',
+      );
+      console.warn(
+        '[openhive]    Only safe on localhost-bound or otherwise-trusted networks.',
+      );
+    }
   } else if (config.auth.mode === "swarmhub") {
     const swarmhubApiUrl =
       config.swarmhub.apiUrl || process.env.SWARMHUB_API_URL;
@@ -539,11 +550,31 @@ export async function createHive(
     console.warn(`[openhive] Dispatch orchestrator failed: ${(err as Error).message}`);
   }
 
-  // Serve skill.md
+  // Serve skill.md. In server mode, strip the social-layer sections since
+  // nobody is there to post or browse — agents see only protocol + coordination docs.
   fastify.get("/skill.md", async (_request, reply) => {
+    if (config.mode === "server") {
+      const { renderDocument } = await import("./api/skill-fragments/index.js");
+      const skillMd = renderDocument(config, { audiences: ["shared", "agent"] });
+      return reply.type("text/markdown").send(skillMd);
+    }
     const skillMd = generateSkillMd(config);
     return reply.type("text/markdown").send(skillMd);
   });
+
+  // Per-fragment skill docs for agents that want only a slice.
+  // Returns the rendered fragment markdown or 404 for unknown IDs.
+  fastify.get<{ Params: { section: string } }>(
+    "/skill/:section.md",
+    async (request, reply) => {
+      const { renderFragment } = await import("./api/skill-fragments/index.js");
+      const content = renderFragment(request.params.section, config);
+      if (content === null) {
+        return reply.status(404).type("text/plain").send(`Unknown fragment: ${request.params.section}`);
+      }
+      return reply.type("text/markdown").send(content + "\n");
+    },
+  );
 
   // Serve sitemap.xml for SEO
   fastify.get("/sitemap.xml", async (_request, reply) => {
@@ -585,7 +616,38 @@ export async function createHive(
     staticRegistered = true;
   }
 
-  if (actualWebPath) {
+  if (config.mode === "server") {
+    // Headless mode: skip SPA + admin UI entirely. GET / returns a small
+    // JSON pointer so agents / operators hitting the root get something
+    // useful rather than a stack of HTML. /admin returns a friendly
+    // "use the CLI" message.
+    fastify.get("/", async (_request, reply) => {
+      return reply.send({
+        name: config.instance.name,
+        version: "0.1.0",
+        mode: "server",
+        endpoints: {
+          api: "/api/v1",
+          websocket: "/ws",
+          skill: "/skill.md",
+          wellKnown: "/.well-known/openhive.json",
+        },
+      });
+    });
+    fastify.get("/admin", async (_request, reply) => {
+      return reply
+        .type("text/html")
+        .send(
+          `<!doctype html><meta charset="utf-8"><title>OpenHive — server mode</title>` +
+          `<body style="font-family:system-ui;max-width:40em;margin:4em auto;padding:0 1em">` +
+          `<h1>OpenHive · server mode</h1>` +
+          `<p>This hub is running headless. There is no web admin UI.</p>` +
+          `<p>Manage it via the CLI: <code>openhive admin --help</code></p>` +
+          `<p>API docs: <a href="/skill.md">/skill.md</a></p>` +
+          `</body>`,
+        );
+    });
+  } else if (actualWebPath) {
     await fastify.register(fastifyStatic, {
       root: actualWebPath,
       prefix: "/",
@@ -639,6 +701,7 @@ export async function createHive(
       name: config.instance.name,
       description: config.instance.description,
       url: config.instance.url,
+      mode: config.mode,
       federation: {
         enabled: config.federation.enabled,
         protocol_version: "1.0",
@@ -653,10 +716,42 @@ export async function createHive(
         swarmcraft: config.swarmcraft.enabled,
         swarmhub: swarmhubConnector?.isConnected || false,
       },
+      // Capabilities reflect the live runtime, not just the config — agents
+      // probing this endpoint need to know what actually works right now
+      // (e.g. whether the dispatch orchestrator came up successfully).
+      capabilities: {
+        map_hub: {
+          enabled: config.mapHub.enabled,
+          trust_model: config.mapHub.trustModel ?? "open",
+        },
+        dispatch: {
+          enabled: true, // route surface is always mounted
+          orchestrator: dispatchOrchestrator?.running ?? false,
+        },
+        sync: {
+          enabled: config.federation.enabled,
+        },
+        sessions: {
+          // Trajectory checkpoints land in session storage; if caching is
+          // disabled, the on-demand-from-agent path still works but older
+          // checkpoints aren't retrievable after the agent disconnects.
+          trajectories: config.sessions.type !== "none",
+          storage_backend: config.sessions.type,
+          chat_transports: ["acp", "mail"],
+        },
+        tasks: {
+          enabled: true,
+          map_methods: true,
+        },
+        cascade: {
+          enabled: true,
+        },
+      },
       endpoints: {
         api: "/api/v1",
         websocket: "/ws",
         skill: "/skill.md",
+        skill_fragments: "/skill/{section}.md",
       },
     };
 

@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { authMiddleware, requireAdmin } from '../middleware/auth.js';
+import { authMiddleware, createAdminAuth, createAuthOrAdminKey } from '../middleware/auth.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import * as postsDAL from '../../db/dal/posts.js';
@@ -26,18 +26,7 @@ import {
 } from '../../map/dispatch-policy.js';
 
 export async function adminRoutes(fastify: FastifyInstance, options: { config: Config }): Promise<void> {
-  const adminAuth = async (request: Parameters<typeof authMiddleware>[0], reply: Parameters<typeof authMiddleware>[1]) => {
-    // Check for admin key in header first
-    const adminKey = request.headers['x-admin-key'];
-    if (adminKey && options.config.admin.key && adminKey === options.config.admin.key) {
-      return; // Admin key auth successful
-    }
-
-    // Fall back to agent auth
-    await authMiddleware(request, reply);
-    if (reply.sent) return;
-    requireAdmin(request, reply);
-  };
+  const adminAuth = createAdminAuth(options.config);
 
   // Get instance info
   fastify.get('/admin/instance', async (_request, reply) => {
@@ -467,7 +456,9 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
   }
 
   // GET /admin/config — any authenticated user can read (secrets redacted, PATCH is admin-only)
-  fastify.get('/admin/config', { preHandler: authMiddleware }, async (_request, reply) => {
+  const authOrAdminKey = createAuthOrAdminKey(options.config);
+
+  fastify.get('/admin/config', { preHandler: authOrAdminKey }, async (_request, reply) => {
     return reply.send(buildConfigResponse());
   });
 

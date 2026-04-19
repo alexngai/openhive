@@ -13,6 +13,7 @@ import { createInviteCode } from './db/dal/invites.js';
 import { createAgent } from './db/dal/agents.js';
 import { nanoid } from 'nanoid';
 import { registerNetworkCommands } from './cli/network.js';
+import { registerAdminHttpCommands } from './cli/admin/index.js';
 import {
   resolveDataDir,
   ensureDataDir,
@@ -345,12 +346,20 @@ async function startServer(opts: StartOptions): Promise<string> {
     const server = await createHive(configPath);
     const address = await server.start();
 
+    const mode = server.config.mode;
     console.log(`  Data directory: ${dataDir}`);
     console.log(`  Database:       ${paths.database}`);
+    if (mode === 'server') {
+      console.log(`  Mode:           server (headless — no web UI)`);
+    }
     console.log('');
     console.log(`  Server:    ${address}`);
     console.log(`  API docs:  ${address}/skill.md`);
-    console.log(`  Admin:     ${address}/admin`);
+    if (mode === 'server') {
+      console.log(`  Admin:     openhive admin --help`);
+    } else {
+      console.log(`  Admin:     ${address}/admin`);
+    }
     console.log(`  WebSocket: ws://${address.replace('http://', '')}/ws`);
     console.log(`\n  Press Ctrl+C to stop\n`);
 
@@ -582,6 +591,11 @@ admin
 
     closeDatabase();
   });
+
+// HTTP-backed admin subcommands (preauth, agent, invite, swarms, ...)
+// These talk to a running hub via the admin API. DB-direct commands above
+// (create-key, create-invite, create-agent) remain for bootstrap / offline use.
+registerAdminHttpCommands(admin, program);
 
 // Database commands
 const dbCmd = program.command('db').description('Database utilities');

@@ -689,7 +689,7 @@ export function getPeerList(swarmId: string): SwarmPeer[] {
 // ============================================================================
 
 export function createPreauthKey(
-  createdBy: string,
+  createdBy: string | null,
   input: CreatePreauthKeyInput
 ): { key: MapPreauthKey; plaintext_key: string } {
   const db = getDatabase();

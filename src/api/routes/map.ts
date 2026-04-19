@@ -33,7 +33,7 @@
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
+import { authMiddleware, optionalAuthMiddleware, createAdminAuth } from '../middleware/auth.js';
 import * as mapDal from '../../db/dal/map.js';
 import {
   registerSwarm,
@@ -193,14 +193,7 @@ export async function mapRoutes(
   fastify: FastifyInstance,
   opts: { config: Config }
 ): Promise<void> {
-  const requireAdmin = (request: FastifyRequest, reply: FastifyReply, done: () => void) => {
-    const adminKey = request.headers['x-admin-key'];
-    if (!opts.config.admin.key || adminKey !== opts.config.admin.key) {
-      reply.status(403).send({ error: 'Forbidden', message: 'Admin key required' });
-      return;
-    }
-    done();
-  };
+  const adminAuth = createAdminAuth(opts.config);
 
   // ==========================================================================
   // Swarm Routes
@@ -845,11 +838,15 @@ export async function mapRoutes(
 
   // POST /map/preauth-keys -- Create pre-auth key
   fastify.post('/map/preauth-keys', {
-    preHandler: [authMiddleware, requireAdmin],
+    preHandler: adminAuth,
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const body = CreatePreauthKeySchema.parse(request.body);
-      const result = mapDal.createPreauthKey(request.agent!.id, body);
+      // When called via X-Admin-Key there is no authenticated agent.
+      // `created_by` is a nullable FK — pass null rather than inventing a
+      // sentinel id the agents table doesn't contain.
+      const createdBy = request.agent?.id ?? null;
+      const result = mapDal.createPreauthKey(createdBy, body);
 
       return reply.status(201).send({
         id: result.key.id,
@@ -868,7 +865,7 @@ export async function mapRoutes(
   fastify.get<{
     Querystring: { hive_id?: string; limit?: string; offset?: string };
   }>('/map/preauth-keys', {
-    preHandler: [authMiddleware, requireAdmin],
+    preHandler: adminAuth,
   }, async (request, reply) => {
     const { hive_id, limit, offset } = request.query;
 
@@ -894,7 +891,7 @@ export async function mapRoutes(
 
   // DELETE /map/preauth-keys/:id -- Revoke pre-auth key
   fastify.delete<{ Params: { id: string } }>('/map/preauth-keys/:id', {
-    preHandler: [authMiddleware, requireAdmin],
+    preHandler: adminAuth,
   }, async (request, reply) => {
     try {
       const deleted = mapDal.deletePreauthKey(request.params.id);
