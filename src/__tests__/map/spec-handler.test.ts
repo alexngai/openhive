@@ -106,6 +106,8 @@ import * as mapDAL from '../../db/dal/map.js';
 import * as dispatchesDAL from '../../db/dal/dispatches.js';
 import { handleSpecRequest, MAPSpecRequestError, MAP_SPEC_METHODS } from '../../map/spec-handler.js';
 import { resetDispatchPolicy, setAutonomousDispatchPaused } from '../../map/dispatch-policy.js';
+import { registerInbound, unregisterInbound } from '../../map/connection-registry.js';
+import { setAcpAvailabilityProbe, _resetDispatchRouting } from '../../dispatch/routing.js';
 import { testRoot, testDbPath, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
 
 const TEST_ROOT = testRoot('spec-handler');
@@ -259,6 +261,37 @@ describe('MAP spec handler', () => {
         map_endpoint: 'ws://example.invalid/auto',
       });
       swarm = { id: s.id };
+
+      // Register target swarm with mail capability so the dispatch pre-flight
+      // route check passes. Uses a fake WS — the mail-port path never sends
+      // through it in these tests (orchestration is mocked away).
+      const fakeWs = { readyState: 1, send() {}, close() {} } as unknown as import('ws').WebSocket;
+      registerInbound(swarm.id, {
+        ws: fakeWs,
+        agentId: 'target-agent',
+        swarmId: swarm.id,
+        connectedAt: new Date().toISOString(),
+        lastMessageAt: new Date().toISOString(),
+        registeredAgents: new Map([
+          [
+            'target-agent',
+            {
+              id: 'target-agent',
+              name: 'target-agent',
+              role: 'worker',
+              state: 'active',
+              scopes: [],
+              capabilities: { mail: { canJoin: true } },
+            },
+          ],
+        ]),
+      });
+      setAcpAvailabilityProbe(() => true);
+    });
+
+    afterAll(() => {
+      unregisterInbound(swarm.id);
+      _resetDispatchRouting();
     });
 
     it('creates dispatches with initiator_type=agent when toggled off', async () => {

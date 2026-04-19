@@ -152,6 +152,8 @@ import * as dispatchesDAL from '../../db/dal/dispatches.js';
 import { buildDispatchSeedPrompt, specsRoutes } from '../../api/routes/specs.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
+import { registerInbound, unregisterInbound } from '../../map/connection-registry.js';
+import { setAcpAvailabilityProbe, _resetDispatchRouting } from '../../dispatch/routing.js';
 
 interface GraphNode {
   id: string;
@@ -669,6 +671,40 @@ describe('Specs routes', () => {
       });
       swarmA = { id: a.id, name: a.name };
       swarmB = { id: b.id, name: b.name };
+
+      // Register both swarms as mail-capable so the dispatch pre-flight gate
+      // allows queueing. Tests here don't exercise the orchestrator — rows
+      // are inspected directly via the DAL.
+      const fakeWs = () => ({ readyState: 1, send() {}, close() {} } as unknown as import('ws').WebSocket);
+      for (const s of [swarmA, swarmB]) {
+        registerInbound(s.id, {
+          ws: fakeWs(),
+          agentId: 'mailagent',
+          swarmId: s.id,
+          connectedAt: new Date().toISOString(),
+          lastMessageAt: new Date().toISOString(),
+          registeredAgents: new Map([
+            [
+              'mailagent',
+              {
+                id: 'mailagent',
+                name: 'mailagent',
+                role: 'worker',
+                state: 'active',
+                scopes: [],
+                capabilities: { mail: { canJoin: true } },
+              },
+            ],
+          ]),
+        });
+      }
+      setAcpAvailabilityProbe(() => true);
+    });
+
+    afterAll(() => {
+      unregisterInbound(swarmA.id);
+      unregisterInbound(swarmB.id);
+      _resetDispatchRouting();
     });
 
     beforeEach(() => {
@@ -806,6 +842,28 @@ describe('Specs routes', () => {
         payload: { target_swarms: ['swarm_nope'] },
       });
       expect(res.statusCode).toBe(404);
+    });
+
+    it('returns 503 when target swarm has no viable dispatch transport', async () => {
+      // A swarm that exists but has no registered agents / no capabilities.
+      const unreachable = mapDAL.createSwarm(testAgent.id, {
+        name: 'swarm-unreachable',
+        map_endpoint: 'ws://example.invalid/unreachable',
+      });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/dispatch`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        payload: { target_swarms: [unreachable.id] },
+      });
+
+      expect(res.statusCode).toBe(503);
+      const body = JSON.parse(res.body);
+      expect(body.message).toMatch(/no transport available/);
+
+      // No rows should have been queued.
+      expect(dispatchesDAL.listDispatches({ target_swarm_id: unreachable.id }).total).toBe(0);
     });
 
     it('returns 404 for an unknown spec', async () => {

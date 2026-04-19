@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 40;
+export const SCHEMA_VERSION = 41;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -913,6 +913,14 @@ ALTER TABLE dispatches ADD COLUMN turn_count INTEGER DEFAULT 0;
 export const MIGRATION_V40_NODE_PRESENCE = `
 ALTER TABLE map_nodes ADD COLUMN presence TEXT NOT NULL DEFAULT 'offline';
 CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence);
+`;
+
+// Migration V41: Per-attempt history on dispatches.
+// JSON array of {attempt, started_at, ended_at?, status, error?, session_id?, next_retry_at?}
+// The orchestrator event bridge appends/updates entries so the UI can render
+// a retry timeline without reconstructing state from the WS log.
+export const MIGRATION_V41_DISPATCH_ATTEMPTS_HISTORY = `
+ALTER TABLE dispatches ADD COLUMN attempts_history TEXT NOT NULL DEFAULT '[]';
 `;
 
 // ============================================================================

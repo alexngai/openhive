@@ -23,12 +23,13 @@ import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findN
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities, getPeerMapId } from './connection-registry.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities, getPeerMapId, getAgentOnSwarm } from './connection-registry.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { handleTrajectoryRequest } from './trajectory-handler.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
 import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
 import { getMailJsonRpc } from '../mail/index.js';
+import { pushDispatchMapReply } from '../dispatch/mail-ingress.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import { broadcastSwarmLifecycleEvent } from '../realtime/swarm-events.js';
@@ -297,6 +298,18 @@ function createNotificationInterceptor(
       } else if (typeof msg.method === 'string' && msg.method.startsWith('mail/')) {
         // Mail notifications — fire and forget
         try { getMailJsonRpc().handleRequest(msg as any); } catch { /* ignore */ }
+      } else if (msg.method === 'map/dispatch/reply') {
+        // Dispatch reply from agent — fan out to the mail-transport listeners.
+        // Verify from_agent_id is actually registered on the inbound swarm so a
+        // compromised sidecar can't spoof replies on behalf of another agent.
+        // Cross-swarm spoofing is already blocked — swarmId comes from the
+        // authenticated connection, not the payload.
+        const params = (msg.params ?? {}) as Record<string, unknown>;
+        const fromAgentId = typeof params.from_agent_id === 'string' ? params.from_agent_id : '';
+        const envelope = (params.envelope ?? params.message) as Record<string, unknown> | undefined;
+        if (fromAgentId && envelope && typeof envelope === 'object' && getAgentOnSwarm(swarmId, fromAgentId)) {
+          pushDispatchMapReply({ swarmId, fromAgentId, message: envelope });
+        }
       }
       // Other notifications pass through to MAPServer (it will ignore unknown ones)
 

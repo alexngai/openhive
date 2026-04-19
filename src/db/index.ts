@@ -33,6 +33,7 @@ import {
   MIGRATION_V38_CASCADE_PUSHES_AND_QUEUE,
   MIGRATION_V39_CASCADE_PR,
   MIGRATION_V40_NODE_PRESENCE,
+  MIGRATION_V41_DISPATCH_ATTEMPTS_HISTORY,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -282,6 +283,8 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   39: MIGRATION_V39_CASCADE_PR,
   // Version 40: Node presence column (reachability separate from last-known state)
   40: MIGRATION_V40_NODE_PRESENCE,
+  // Version 41: Per-attempt dispatch history JSON column
+  41: MIGRATION_V41_DISPATCH_ATTEMPTS_HISTORY,
 };
 
 /** Get the SQL for a specific migration version.
@@ -359,6 +362,7 @@ function repairSchema(database: Database.Database): void {
     "ALTER TABLE dispatches ADD COLUMN lease_expires_at TEXT",
     "ALTER TABLE dispatches ADD COLUMN attempt INTEGER DEFAULT 0",
     "ALTER TABLE dispatches ADD COLUMN turn_count INTEGER DEFAULT 0",
+    "ALTER TABLE dispatches ADD COLUMN attempts_history TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE map_nodes ADD COLUMN presence TEXT NOT NULL DEFAULT 'offline'",
     "CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence)",
   ];

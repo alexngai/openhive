@@ -93,6 +93,18 @@ export function getMailStorage(): Storage {
 }
 
 /**
+ * Get the mail event emitter (fires `mail.created`, `mail.turn.added`,
+ * `mail.participant.joined`, `mail.closed`). Used by dispatch mail-transport
+ * to demux replies.
+ */
+export function getMailEvents(): EventEmitter {
+  if (!mailEvents) {
+    throw new Error('Mail module not initialized. Call initMail() first.');
+  }
+  return mailEvents;
+}
+
+/**
  * Forward agent-inbox events to OpenHive's WebSocket broadcast system.
  */
 function setupEventForwarding(events: EventEmitter): void {

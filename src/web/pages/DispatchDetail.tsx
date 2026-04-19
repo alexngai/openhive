@@ -4,9 +4,10 @@ import {
   ArrowLeft, Send, Zap, FileText, User, Bot, Ban, AlertCircle,
 } from 'lucide-react';
 import { useDispatch, useCancelDispatch } from '../hooks/useDispatches';
-import { useDispatchesRealtime } from '../hooks/useDispatchesRealtime';
+import { useDispatchesRealtime, useCancelAckWarnings } from '../hooks/useDispatchesRealtime';
 import { useMapSwarm } from '../hooks/useApi';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
+import { AttemptsTimeline } from '../components/dispatch/AttemptsTimeline';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { ChatFabContextProvider } from '../components/chat-fab/ChatFabContext';
@@ -18,6 +19,7 @@ export function DispatchDetail() {
   const cancel = useCancelDispatch();
   const [cancelError, setCancelError] = useState<string | null>(null);
   useDispatchesRealtime();
+  const { warned: cancelNotAcked, dismiss: dismissCancelWarning } = useCancelAckWarnings(id);
 
   if (isLoading) return <PageLoader />;
 
@@ -111,6 +113,35 @@ export function DispatchDetail() {
           >
             <AlertCircle className="h-4 w-4 mt-0.5 text-red-400" />
             <div>{cancelError}</div>
+          </div>
+        )}
+
+        {cancelNotAcked && (
+          <div
+            className="mt-2 rounded-md border p-2 text-sm flex items-start gap-2"
+            style={{
+              borderColor: 'rgba(245, 158, 11, 0.4)',
+              backgroundColor: 'rgba(245, 158, 11, 0.05)',
+              color: 'var(--color-text)',
+            }}
+          >
+            <AlertCircle className="h-4 w-4 mt-0.5 text-amber-400" />
+            <div className="flex-1">
+              <div className="font-medium">Agent did not acknowledge cancel</div>
+              <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                The target swarm was unreachable or dropped the cancel signal. The hub
+                still marked this dispatch as cancelled; the agent may have continued
+                working until its stream closed.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={dismissCancelWarning}
+              className="text-xs opacity-70 hover:opacity-100"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              dismiss
+            </button>
           </div>
         )}
       </div>
@@ -257,29 +288,9 @@ export function DispatchDetail() {
         </div>
       )}
 
-      {/* Attempt / turn tracking */}
-      {((d as Record<string, unknown>).attempt as number > 0 || (d as Record<string, unknown>).turn_count as number > 0) && (
-        <div
-          className="rounded-md border p-4 mb-6"
-          style={{
-            borderColor: 'var(--color-border-subtle)',
-            backgroundColor: 'var(--color-surface)',
-          }}
-        >
-          <div className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
-            Orchestrator progress
-          </div>
-          <div className="flex gap-6 text-sm" style={{ color: 'var(--color-text)' }}>
-            <div>
-              <span style={{ color: 'var(--color-text-muted)' }}>Attempts: </span>
-              {(d as Record<string, unknown>).attempt as number}
-            </div>
-            <div>
-              <span style={{ color: 'var(--color-text-muted)' }}>Turns: </span>
-              {(d as Record<string, unknown>).turn_count as number}
-            </div>
-          </div>
-        </div>
+      {/* Attempt timeline — populated by the orchestrator event bridge. */}
+      {d.attempts_history && d.attempts_history.length > 0 && (
+        <AttemptsTimeline attempts={d.attempts_history} turnCount={d.turn_count} />
       )}
 
       {d.status === 'running' && d.session_ids.length === 0 && (
