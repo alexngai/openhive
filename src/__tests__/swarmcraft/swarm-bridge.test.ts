@@ -1,19 +1,22 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 
 import { mapHubEvents } from '../../map/service.js';
 
 // ── DAL mocks (populated per-test) ───────────────────────────────────
+// Mocks are forwarded via untyped wrappers because the DAL exports use
+// strict typed signatures and we don't want to recreate those here just
+// to satisfy the spread-arg type-checker.
 const listSwarmsMock = vi.fn(() => ({ data: [], total: 0 }));
 const discoverNodesMock = vi.fn(() => ({ data: [], total: 0 }));
 const updateSwarmMock = vi.fn();
 const findSwarmByIdMock = vi.fn(() => null);
 
 vi.mock('../../db/dal/map.js', () => ({
-  listSwarms: (...args: unknown[]) => listSwarmsMock(...args),
-  discoverNodes: (...args: unknown[]) => discoverNodesMock(...args),
-  updateSwarm: (...args: unknown[]) => updateSwarmMock(...args),
-  findSwarmById: (...args: unknown[]) => findSwarmByIdMock(...args),
+  listSwarms: ((...args: unknown[]) => (listSwarmsMock as (...a: unknown[]) => unknown)(...args)) as never,
+  discoverNodes: ((...args: unknown[]) => (discoverNodesMock as (...a: unknown[]) => unknown)(...args)) as never,
+  updateSwarm: ((...args: unknown[]) => (updateSwarmMock as (...a: unknown[]) => unknown)(...args)) as never,
+  findSwarmById: ((...args: unknown[]) => (findSwarmByIdMock as (...a: unknown[]) => unknown)(...args)) as never,
 }));
 
 import { setupSwarmBridge } from '../../swarmcraft/swarm-bridge.js';
@@ -357,9 +360,13 @@ describe('swarm-bridge — swarm reactivation (swarm_online)', () => {
     handle.teardown();
   });
 
-  it('is a no-op when swarm is already active (no broadcast, no update)', async () => {
+  it('is a no-op when swarm is already active AND online (no broadcast, no update)', async () => {
+    // Existing row must carry both `state: 'active'` and `presence: 'online'`
+    // for upsertSwarmProjection to short-circuit. The presence check was
+    // added so a previously-flipped-offline row gets reasserted on the
+    // next swarm_online event even when state already matches.
     findSwarmByIdMock.mockReturnValue({ map_endpoint: 'hub-inbound', capabilities: {} } as any);
-    const { ctx } = createCtx({ state: 'active' });
+    const { ctx } = createCtx({ state: 'active', presence: 'online' });
     const handle = await setupSwarmBridge(ctx as any);
 
     await emitAndDrain('swarm_online', {

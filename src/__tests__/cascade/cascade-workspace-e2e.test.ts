@@ -26,10 +26,10 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
-import Fastify, { FastifyInstance } from 'fastify';
+import Fastify from 'fastify';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
-import { createResource, findResourcesByRepoUrl } from '../../db/dal/syncable-resources.js';
+import { createResource } from '../../db/dal/syncable-resources.js';
 import {
   handleCascadeRequest,
   CASCADE_METHODS,

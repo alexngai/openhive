@@ -2,8 +2,13 @@
 // Google Cloud Storage Session Storage Adapter
 // ============================================================================
 
-// @ts-expect-error optional dependency
-import { Storage, Bucket } from '@google-cloud/storage';
+// Type-only imports — `import type` is erased at compile time so this file's
+// transpiled output (and the bundler's static-import scan) doesn't depend on
+// the `@google-cloud/storage` package being installed. The actual SDK is
+// loaded via dynamic `await import(...)` in the static `create` factory
+// below, so absence of the optional dependency only fails at create-time
+// (with a clear error) rather than at module-load time.
+import type { Storage as GCSStorage, Bucket } from '@google-cloud/storage';
 import type {
   SessionStorageAdapter,
   SessionStorageOptions,
@@ -19,31 +24,61 @@ const DEFAULT_MAX_SIZE = 500 * 1024 * 1024; // 500MB for cloud storage
 
 export class GCSSessionStorageAdapter implements SessionStorageAdapter {
   readonly type = 'gcs' as const;
-  private storage: Storage;
   private bucket: Bucket;
   private bucketName: string;
   private pathPrefix: string;
   private maxSizeBytes: number;
 
-  constructor(config: GCSStorageConfig) {
+  /**
+   * Private constructor — callers MUST go through the async `create()`
+   * factory so the `@google-cloud/storage` SDK can be dynamically loaded
+   * before the instance is constructed. Using `new GCSSessionStorageAdapter()`
+   * directly would bypass the lazy-load and either need a pre-loaded
+   * Storage class (which the original sync constructor enforced via a
+   * top-level static import that defeated lazy-loading entirely).
+   */
+  private constructor(
+    config: GCSStorageConfig,
+    bucket: Bucket,
+  ) {
     this.bucketName = config.bucket;
     this.pathPrefix = config.pathPrefix?.replace(/\/$/, '') || 'sessions';
     this.maxSizeBytes = config.maxSizeBytes || DEFAULT_MAX_SIZE;
+    this.bucket = bucket;
+  }
 
-    // Initialize GCS client
-    const storageOptions: ConstructorParameters<typeof Storage>[0] = {
+  /**
+   * Lazy-load the GCS SDK and construct the adapter. Throws a clear
+   * actionable error when `@google-cloud/storage` is not installed —
+   * the package is declared as `optionalDependencies` so it's not
+   * shipped by default.
+   */
+  static async create(config: GCSStorageConfig): Promise<GCSSessionStorageAdapter> {
+    let mod: typeof import('@google-cloud/storage');
+    try {
+      mod = await import('@google-cloud/storage');
+    } catch (err) {
+      throw new Error(
+        'GCS session storage requires the optional `@google-cloud/storage` ' +
+        'dependency. Install it with `npm install @google-cloud/storage` ' +
+        `and restart. Underlying error: ${(err as Error).message}`,
+      );
+    }
+    const { Storage } = mod;
+
+    const storageOptions: ConstructorParameters<typeof GCSStorage>[0] = {
       projectId: config.projectId,
     };
-
     if (config.keyFilePath) {
       storageOptions.keyFilename = config.keyFilePath;
     } else if (config.credentials) {
       storageOptions.credentials = config.credentials;
     }
-    // If neither is provided, uses Application Default Credentials
+    // If neither is provided, uses Application Default Credentials.
 
-    this.storage = new Storage(storageOptions);
-    this.bucket = this.storage.bucket(config.bucket);
+    const storage = new Storage(storageOptions);
+    const bucket = storage.bucket(config.bucket);
+    return new GCSSessionStorageAdapter(config, bucket);
   }
 
   private getSessionPrefix(options: SessionStorageOptions): string {
@@ -183,10 +218,13 @@ export class GCSSessionStorageAdapter implements SessionStorageAdapter {
       etag: file.metadata.etag as string,
     }));
 
+    // The GCS SDK types the third tuple element loosely; cast to access
+    // the documented `nextPageToken` field.
+    const apiResp = (apiResponse ?? {}) as { nextPageToken?: string };
     return {
       files: fileInfos,
-      isTruncated: !!apiResponse?.nextPageToken,
-      continuationToken: apiResponse?.nextPageToken,
+      isTruncated: !!apiResp.nextPageToken,
+      continuationToken: apiResp.nextPageToken,
     };
   }
 

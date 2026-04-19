@@ -7,10 +7,12 @@
  * JSON output to the workspace output/ directory and sends the result back.
  */
 
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-const { WebSocketServer, WebSocket } = require('ws');
+// Package.json sets `"type": "module"`, so this fixture must use ESM
+// imports rather than `require()`.
+import http from 'http';
+import fs from 'fs';
+import path from 'path';
+import { WebSocketServer, WebSocket } from 'ws';
 
 const portIdx = process.argv.indexOf('--port');
 const port = portIdx !== -1 ? parseInt(process.argv[portIdx + 1], 10) : 9999;

@@ -44,8 +44,12 @@ export async function createSessionStorage(
       return new S3SessionStorageAdapter(config as S3StorageConfig);
     }
     case 'gcs': {
+      // The GCS adapter exposes an async `create()` factory because the
+      // `@google-cloud/storage` SDK is loaded dynamically inside it (it's
+      // an `optionalDependencies` to keep the default install lean).
+      // Direct `new GCSSessionStorageAdapter(...)` is not supported.
       const { GCSSessionStorageAdapter } = await loadGCSAdapter();
-      return new GCSSessionStorageAdapter(config as GCSStorageConfig);
+      return GCSSessionStorageAdapter.create(config as GCSStorageConfig);
     }
     default:
       throw new Error(`Unknown storage type: ${(config as SessionStorageConfig).type}`);

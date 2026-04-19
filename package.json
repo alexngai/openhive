@@ -128,6 +128,7 @@
     "zustand": "^4.5.7"
   },
   "optionalDependencies": {
+    "@google-cloud/storage": "^7.19.0",
     "@slack/socket-mode": "^2.0.5",
     "@slack/web-api": "^7.14.1"
   },

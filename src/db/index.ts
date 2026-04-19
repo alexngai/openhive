@@ -11,7 +11,7 @@ import {
   MIGRATION_V28_DROP_COORDINATION_TASKS,
   MIGRATION_V29_MAP_REVOKED_TOKENS,
   MIGRATION_V30_SESSION_RESOURCE_SCOPING,
-  MIGRATION_V31_FEDERATED_SYNC_STRATEGY,
+  MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
   MIGRATION_V32_DISPATCHES,
   MIGRATION_V33_SWARM_ARCHIVE,
   MIGRATION_V34_CANONICAL_KEY,
@@ -242,7 +242,9 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 30: Relax UNIQUE constraint on syncable_resources for per-swarm session scoping
   30: MIGRATION_V30_SESSION_RESOURCE_SCOPING,
   // Version 31: Add 'federated' sync_strategy for MAP-owned remote task graphs
-  31: MIGRATION_V31_FEDERATED_SYNC_STRATEGY,
+  // (Constant is named V32 in schema.ts due to a pre-existing naming
+  // mismatch — kept the wrong name to avoid an unrelated cross-file rename.)
+  31: MIGRATION_V32_FEDERATED_SYNC_STRATEGY,
   // Version 32: Dispatches table (Stream 2 — Dispatch primitive)
   32: MIGRATION_V32_DISPATCHES,
   // Version 33: Swarm archive column (Phase 2 swarm hygiene)
