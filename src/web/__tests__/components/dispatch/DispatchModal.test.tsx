@@ -10,6 +10,12 @@ const mockMutateAsync = vi.fn();
 const mockUseCreateDispatch = vi.fn();
 const mockUseMapSwarms = vi.fn();
 const mockToastSuccess = vi.fn();
+const mockNavigate = vi.fn();
+
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  return { ...actual, useNavigate: () => mockNavigate };
+});
 
 vi.mock('../../../hooks/useDispatches', async () => {
   const actual = await vi.importActual<typeof import('../../../hooks/useDispatches')>(
@@ -165,7 +171,7 @@ describe('<DispatchModal />', () => {
     expect((dispatchBtn as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('calls useCreateDispatch with selection + prompt and closes via toast on success', async () => {
+  it('calls useCreateDispatch and auto-navigates to the detail page on single-swarm dispatch', async () => {
     mockUseMapSwarms.mockReturnValue({
       data: [makeSwarm({ id: 'sw_a', name: 'a', capabilities: { protocols: ['acp'] } })],
     });
@@ -195,7 +201,37 @@ describe('<DispatchModal />', () => {
       target_swarms: ['sw_a'],
       prompt: 'extra context',
     });
-    // Toast confirms dispatch created (orchestrator handles bootstrap)
+    // Single-swarm → navigate to the detail page, suppress toast (the
+    // detail page carries its own confirmation via status chip).
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/dispatches/disp_x'));
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('shows a summary toast and does NOT navigate for multi-swarm dispatch', async () => {
+    mockUseMapSwarms.mockReturnValue({
+      data: [
+        makeSwarm({ id: 'sw_a', name: 'a', capabilities: { protocols: ['acp'] } }),
+        makeSwarm({ id: 'sw_b', name: 'b', capabilities: { protocols: ['acp'] } }),
+      ],
+    });
+    mockMutateAsync.mockResolvedValue({
+      dispatches: [
+        { id: 'disp_a', target_swarm_id: 'sw_a', target_swarm_name: 'a', seed_prompt: '' },
+        { id: 'disp_b', target_swarm_id: 'sw_b', target_swarm_name: 'b', seed_prompt: '' },
+      ],
+    });
+    const onClose = vi.fn();
+    renderModal({ onClose });
+
+    fireEvent.click(screen.getByText('a').closest('label')!);
+    fireEvent.click(screen.getByText('b').closest('label')!);
+    fireEvent.click(screen.getByRole('button', { name: /^Dispatch$/i }));
+
+    await waitFor(() => expect(mockMutateAsync).toHaveBeenCalled());
+    // Multi-swarm → no single detail to land on, so we surface a toast
+    // instead. User drills in from the Dispatches list.
+    expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockToastSuccess).toHaveBeenCalled();
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });

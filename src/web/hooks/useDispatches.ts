@@ -105,6 +105,18 @@ export function useDispatch(id: string | undefined) {
     queryFn: () => api.get<{ dispatch: Dispatch }>(`/dispatches/${id}`),
     enabled: !!id,
     staleTime: 15_000,
+    // Polling fallback for the running window: the primary source of
+    // truth is the `map:dispatches` WS channel (see useDispatchesRealtime),
+    // but if the socket drops or the server doesn't emit for any reason,
+    // a 5s tick keeps the detail view honest. Stops automatically once
+    // the dispatch settles — compare status against the known terminal
+    // set so new statuses auto-poll until proven terminal.
+    refetchInterval: (query) => {
+      const status = query.state.data?.dispatch.status;
+      const terminal: ReadonlyArray<string> = ['complete', 'failed', 'cancelled'];
+      if (!status || terminal.includes(status)) return false;
+      return 5_000;
+    },
   });
 }
 

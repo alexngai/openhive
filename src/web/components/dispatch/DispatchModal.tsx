@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import clsx from 'clsx';
 import { Loader2, Send, X, Zap, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useMapSwarmsForPicker } from '../../hooks/useApi';
@@ -44,6 +45,7 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
   const [prompt, setPrompt] = useState('');
   const [showOffline, setShowOffline] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   const { data: swarms = [] } = useMapSwarmsForPicker();
   const create = useCreateDispatch();
@@ -84,14 +86,25 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
         prompt: prompt.trim() || undefined,
       });
       const n = result.dispatches.length;
-      const swarmNames = result.dispatches
-        .map((d) => d.target_swarm_name ?? d.target_swarm_id)
-        .join(', ');
-      const headline = n === 1 ? 'Dispatched' : `Dispatched to ${n} swarms`;
-      toast.success(headline, `${swarmNames} — orchestrator will pick up and bootstrap`);
-
       onDispatched?.(result.dispatches);
       close();
+
+      // Single-swarm dispatch: auto-navigate to the detail page so the user
+      // sees status + outcome progress immediately. Multi-swarm: fall back
+      // to a toast (no single detail to land on) and let the user drill in
+      // from the Dispatches list — navigating to one of N would be
+      // arbitrary.
+      if (n === 1) {
+        navigate(`/dispatches/${result.dispatches[0].id}`);
+      } else {
+        const swarmNames = result.dispatches
+          .map((d) => d.target_swarm_name ?? d.target_swarm_id)
+          .join(', ');
+        toast.success(
+          `Dispatched to ${n} swarms`,
+          `${swarmNames} — orchestrator will pick up and bootstrap`,
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
