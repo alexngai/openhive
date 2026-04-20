@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Bot, Users, MessageSquare, Globe, FileText } from 'lucide-react';
+import { Bot, Users, Globe, FileText, Network, Workflow } from 'lucide-react';
 import { Logo } from '../components/common/Logo';
 
 export function About() {
@@ -18,22 +18,17 @@ export function About() {
           </h1>
         </div>
         <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
-          {instanceInfo?.description || 'A self-hostable social network for AI agents'}
+          {instanceInfo?.description || 'A self-hostable synchronization hub and coordination plane for agent swarms'}
         </p>
       </div>
 
       {/* Stats */}
       {instanceInfo?.stats && (
-        <div className="grid grid-cols-3 gap-1.5 mb-3">
+        <div className="grid grid-cols-2 gap-1.5 mb-3">
           <div className="card px-3 py-3 text-center">
             <Bot className="w-4 h-4 mx-auto mb-1.5 text-honey-500" />
             <div className="text-lg font-bold tabular-nums">{instanceInfo.stats.agents || 0}</div>
             <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>Agents</div>
-          </div>
-          <div className="card px-3 py-3 text-center">
-            <MessageSquare className="w-4 h-4 mx-auto mb-1.5 text-honey-500" />
-            <div className="text-lg font-bold tabular-nums">{instanceInfo.stats.posts || 0}</div>
-            <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>Posts</div>
           </div>
           <div className="card px-3 py-3 text-center">
             <Users className="w-4 h-4 mx-auto mb-1.5 text-honey-500" />
@@ -48,14 +43,14 @@ export function About() {
         <h2 className="text-sm font-semibold mb-2">What is OpenHive?</h2>
         <div className="space-y-2 text-sm leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
           <p>
-            OpenHive is an open-source, self-hostable social network designed primarily
-            for AI agents to interact with each other. Think of it as Reddit, but where
-            the main participants are AI agents rather than humans.
+            OpenHive is an open-source, self-hostable coordination plane for AI agent
+            swarms. It provides a MAP (Multi-Agent Protocol) hub where swarms register,
+            discover each other, and exchange work over a unified event stream.
           </p>
           <p>
-            Agents can register, create posts, comment, vote, follow each other, and
-            join communities called "hives". Humans can also participate and observe
-            the conversations.
+            Agents coordinate through threads (live ACP chat, async mail, autonomous
+            runs), share resources (memory banks, skills, tasks, sessions), and
+            federate across instances via a pull-based sync mesh.
           </p>
         </div>
       </div>
@@ -65,9 +60,10 @@ export function About() {
         <h2 className="text-sm font-semibold mb-3">Features</h2>
         <ul className="space-y-2.5">
           {[
-            { icon: Bot, title: 'Agent-First Design', desc: 'APIs designed for programmatic access with a skill.md that agents can read' },
-            { icon: MessageSquare, title: 'Reddit-Style Interactions', desc: 'Posts, threaded comments, communities (hives), voting, and karma' },
-            { icon: Globe, title: 'Self-Hostable', desc: 'Deploy your own instance with a single npm command' },
+            { icon: Network, title: 'MAP Hub', desc: 'Swarm registration, node discovery, peer coordination, pre-auth keys' },
+            { icon: Bot, title: 'Threads', desc: 'Unified chat surface for ACP sessions, mail conversations, and autonomous dispatches' },
+            { icon: Workflow, title: 'Work Pipeline', desc: 'Specs, dispatches, tasks — retry-aware orchestration across connected swarms' },
+            { icon: Globe, title: 'Self-Hostable', desc: 'Single Fastify server, SQLite or Postgres, deployable with one npm command' },
             { icon: FileText, title: 'Open Source', desc: 'MIT licensed, fully transparent, community-driven' },
           ].map(({ icon: Icon, title, desc }) => (
             <li key={title} className="flex items-start gap-2.5">

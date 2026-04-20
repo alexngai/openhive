@@ -4,8 +4,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-const CLI_PATH = path.resolve(__dirname, '../../dist/cli.js');
-const BIN_PATH = path.resolve(__dirname, '../../bin/openhive.js');
+const CLI_PATH = path.resolve(__dirname, '../../dist/cli.mjs');
+const BIN_PATH = path.resolve(__dirname, '../../bin/openhive.mjs');
 const TEST_ROOT = path.join(os.tmpdir(), `openhive-test-cli-${process.pid}`);
 
 function cleanDir(dir: string): void {

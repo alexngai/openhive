@@ -34,17 +34,9 @@ export function normalizeSlackEvent(
     },
   };
 
-  // Message events can create posts
-  if (slackEvent?.type === 'message' && slackEvent.text && !slackEvent.bot_id) {
-    const text = slackEvent.text as string;
-    const user = slackEvent.user as string || 'unknown';
-    const channel = slackEvent.channel as string || 'unknown';
-
-    event.post = {
-      title: `[Slack #${channel}] Message from ${user}`,
-      content: text,
-    };
-  }
+  // Post-creation shaping removed with the social layer. Slack events now
+  // only flow through MAP subscriptions — the subscription filter + swarm
+  // notification is the only downstream effect.
 
   return event;
 }

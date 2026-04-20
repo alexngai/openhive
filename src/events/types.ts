@@ -17,12 +17,6 @@ export interface NormalizedEvent {
   action?: string;              // GitHub action (opened, closed, etc.)
   delivery_id: string;
   timestamp: string;
-  /** Set by normalizer — if present, the post pipeline can create a post */
-  post?: {
-    title: string;
-    content: string;
-    url?: string;
-  };
   raw_payload: Record<string, unknown>;
   metadata: EventMetadata;
 }
@@ -35,27 +29,6 @@ export interface EventMetadata {
   sender?: string;
   [key: string]: unknown;
 }
-
-// ============================================================================
-// Post Rules (which events become posts)
-// ============================================================================
-
-export interface PostRule {
-  id: string;
-  hive_id: string;
-  source: string;               // 'github' | 'slack' | '*'
-  event_types: string[];        // parsed from JSON text column
-  filters: EventFilters | null; // parsed from JSON text column
-  normalizer: string;           // 'default' or custom normalizer name
-  thread_mode: PostRuleThreadMode;
-  priority: number;
-  enabled: boolean;
-  created_by: string | null;    // 'swarmhub' | 'api' | agent_id
-  created_at: string;
-  updated_at: string;
-}
-
-export type PostRuleThreadMode = 'post_per_event' | 'single_thread' | 'skip';
 
 // ============================================================================
 // Event Subscriptions (which swarms receive which events via MAP)
@@ -106,7 +79,6 @@ export interface EventDeliveryLog {
 // ============================================================================
 
 export interface RouteResult {
-  posts_created: number;
   swarms_notified: number;
   deliveries: EventDeliveryLog[];
 }

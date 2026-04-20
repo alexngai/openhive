@@ -1,8 +1,15 @@
 # Hive Sync — Detailed Implementation Plan
 
+> **Status: HISTORICAL (mostly implemented, partially rolled back)** — The
+> mesh transport + crypto + gossip landed per this plan and remain in
+> production. The post/comment/vote materialization paths were removed with
+> the social layer (SCHEMA_VERSION 42); the mesh now replicates resources
+> and coordination messages only. Line references to `SCHEMA_VERSION = 11`
+> below are from the original write-up.
+
 This document breaks down the [Hive Sync Design](./HIVE_SYNC_DESIGN.md) (Pattern 3: Mesh Sync) into concrete implementation tasks. Each phase lists the exact files to create or modify, function signatures, SQL migrations, and tests — all following the existing codebase patterns.
 
-**Current state**: `SCHEMA_VERSION = 11`, 15 route modules, 12 DAL modules, Vitest test suite.
+**Historical state**: `SCHEMA_VERSION = 11`, 15 route modules, 12 DAL modules, Vitest test suite. (Current: `SCHEMA_VERSION = 42`.)
 
 ---
 

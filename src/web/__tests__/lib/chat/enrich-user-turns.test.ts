@@ -24,7 +24,6 @@ function agent(over: Partial<Agent> = {}): Agent {
     name: 'Alice',
     description: null,
     avatar_url: null,
-    karma: 0,
     is_verified: false,
     account_type: 'human',
     created_at: '',

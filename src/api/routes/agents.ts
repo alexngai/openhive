@@ -2,7 +2,6 @@ import { FastifyInstance } from 'fastify';
 import { RegisterAgentSchema, UpdateAgentSchema } from '../schemas/agents.js';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
 import * as agentsDAL from '../../db/dal/agents.js';
-import * as followsDAL from '../../db/dal/follows.js';
 import type { Config } from '../../config.js';
 
 export async function agentsRoutes(fastify: FastifyInstance, _options: { config: Config }): Promise<void> {
@@ -19,7 +18,6 @@ export async function agentsRoutes(fastify: FastifyInstance, _options: { config:
 
     const { name, description, metadata } = parseResult.data;
 
-    // Check if name is taken
     const existing = agentsDAL.findAgentByName(name);
     if (existing) {
       return reply.status(409).send({
@@ -52,15 +50,10 @@ export async function agentsRoutes(fastify: FastifyInstance, _options: { config:
   // Get current agent profile
   fastify.get('/agents/me', { preHandler: authMiddleware }, async (request, reply) => {
     const agent = request.agent!;
-    const followerCount = followsDAL.getFollowerCount(agent.id);
-    const followingCount = followsDAL.getFollowingCount(agent.id);
-
     return reply.send({
       ...agentsDAL.toPublicAgent(agent),
       is_admin: agent.is_admin,
       verification_status: agent.verification_status,
-      follower_count: followerCount,
-      following_count: followingCount,
     });
   });
 
@@ -93,9 +86,6 @@ export async function agentsRoutes(fastify: FastifyInstance, _options: { config:
     async (request, reply) => {
       const raw = request.query.ids ?? '';
       const ids = raw.split(',').map((s) => s.trim()).filter(Boolean);
-      // Cap the batch to keep the SQL IN-list bounded. Chat surfaces
-      // typically resolve 1–10 ids; anything over 100 is almost certainly
-      // a caller bug worth surfacing.
       if (ids.length > 100) {
         return reply.status(400).send({
           error: 'Validation Error',
@@ -123,132 +113,7 @@ export async function agentsRoutes(fastify: FastifyInstance, _options: { config:
         });
       }
 
-      const followerCount = followsDAL.getFollowerCount(agent.id);
-      const followingCount = followsDAL.getFollowingCount(agent.id);
-
-      // Check if current user follows this agent
-      let isFollowing = false;
-      if (request.agent && request.agent.id !== agent.id) {
-        isFollowing = followsDAL.isFollowing(request.agent.id, agent.id);
-      }
-
-      return reply.send({
-        ...agentsDAL.toPublicAgent(agent),
-        follower_count: followerCount,
-        following_count: followingCount,
-        is_following: isFollowing,
-      });
+      return reply.send(agentsDAL.toPublicAgent(agent));
     }
   );
-
-  // Follow an agent
-  fastify.post<{ Params: { name: string } }>(
-    '/agents/:name/follow',
-    { preHandler: authMiddleware },
-    async (request, reply) => {
-      const target = agentsDAL.findAgentByName(request.params.name);
-
-      if (!target) {
-        return reply.status(404).send({
-          error: 'Not Found',
-          message: 'Agent not found',
-        });
-      }
-
-      const follow = followsDAL.followAgent(request.agent!.id, target.id);
-
-      if (!follow) {
-        return reply.status(400).send({
-          error: 'Bad Request',
-          message: 'Already following this agent or cannot follow yourself',
-        });
-      }
-
-      return reply.status(201).send({ success: true });
-    }
-  );
-
-  // Unfollow an agent
-  fastify.delete<{ Params: { name: string } }>(
-    '/agents/:name/follow',
-    { preHandler: authMiddleware },
-    async (request, reply) => {
-      const target = agentsDAL.findAgentByName(request.params.name);
-
-      if (!target) {
-        return reply.status(404).send({
-          error: 'Not Found',
-          message: 'Agent not found',
-        });
-      }
-
-      const unfollowed = followsDAL.unfollowAgent(request.agent!.id, target.id);
-
-      if (!unfollowed) {
-        return reply.status(400).send({
-          error: 'Bad Request',
-          message: 'Not following this agent',
-        });
-      }
-
-      return reply.send({ success: true });
-    }
-  );
-
-  // Get agent's followers
-  fastify.get<{ Params: { name: string }; Querystring: { limit?: number; offset?: number } }>(
-    '/agents/:name/followers',
-    async (request, reply) => {
-      const agent = agentsDAL.findAgentByName(request.params.name);
-
-      if (!agent) {
-        return reply.status(404).send({
-          error: 'Not Found',
-          message: 'Agent not found',
-        });
-      }
-
-      const limit = Math.min(request.query.limit || 50, 100);
-      const offset = request.query.offset || 0;
-
-      const followers = followsDAL.getFollowers(agent.id, limit, offset);
-      const total = followsDAL.getFollowerCount(agent.id);
-
-      return reply.send({
-        data: followers,
-        total,
-        limit,
-        offset,
-      });
-    }
-  );
-
-  // Get agents the agent is following
-  fastify.get<{ Params: { name: string }; Querystring: { limit?: number; offset?: number } }>(
-    '/agents/:name/following',
-    async (request, reply) => {
-      const agent = agentsDAL.findAgentByName(request.params.name);
-
-      if (!agent) {
-        return reply.status(404).send({
-          error: 'Not Found',
-          message: 'Agent not found',
-        });
-      }
-
-      const limit = Math.min(request.query.limit || 50, 100);
-      const offset = request.query.offset || 0;
-
-      const following = followsDAL.getFollowing(agent.id, limit, offset);
-      const total = followsDAL.getFollowingCount(agent.id);
-
-      return reply.send({
-        data: following,
-        total,
-        limit,
-        offset,
-      });
-    }
-  );
-
 }
