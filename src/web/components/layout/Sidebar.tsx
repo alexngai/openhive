@@ -6,9 +6,6 @@ import {
   GitBranch, Bell,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '../../lib/api';
-import type { MailConversation } from '../../lib/api';
 import { useMapSwarms } from '../../hooks/useApi';
 import { useInstanceFeatures } from '../../hooks/useInstanceFeatures';
 import { useAuthStore } from '../../stores/auth';
@@ -63,13 +60,6 @@ export function Sidebar() {
       return next;
     });
   }, []);
-
-  const { data: activeThreads } = useQuery<{ conversations: MailConversation[] }>({
-    queryKey: ['mail-conversations-sidebar'],
-    queryFn: () => api.get('/mail/conversations?status=active'),
-    select: (data) => ({ conversations: (data.conversations ?? []).slice(0, 5) }),
-    staleTime: 15_000,
-  });
 
   const { features } = useInstanceFeatures();
   const { data: mapSwarms } = useMapSwarms();
@@ -227,48 +217,6 @@ export function Sidebar() {
                 </div>
               );
             })}
-
-            {/* Active mail conversations — bridge to /messages while the
-                 unified Threads list (7c) lands. Renamed from "Threads" to
-                 avoid collision with the new top-level Threads nav item. */}
-            {activeThreads?.conversations && activeThreads.conversations.length > 0 && (
-              <>
-                <div className="py-1">
-                  <div className="sidebar-section flex items-center gap-1.5">
-                    <MessageSquare className="w-3 h-3" />
-                    <span>Active Mail</span>
-                  </div>
-                  {activeThreads.conversations.map((conv) => (
-                    <Link
-                      key={conv.id}
-                      to={`/threads/mail/${conv.id}`}
-                      onClick={() => setMobileOpen(false)}
-                      className={clsx(
-                        'sidebar-item flex-col items-start gap-0 py-1.5',
-                        location.pathname === `/threads/mail/${conv.id}` && 'active'
-                      )}
-                    >
-                      <span className="text-xs line-clamp-1 w-full">
-                        {conv.subject || conv.participants.map((p) => p.agent_id).join(', ') || 'Untitled'}
-                      </span>
-                      <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-                        {conv.participants.length} participant{conv.participants.length !== 1 ? 's' : ''}
-                      </span>
-                    </Link>
-                  ))}
-                  <Link
-                    to="/threads"
-                    onClick={() => setMobileOpen(false)}
-                    className="sidebar-item text-xs"
-                    style={{ color: 'var(--color-text-muted)' }}
-                  >
-                    View all
-                  </Link>
-                </div>
-
-                <div className="divider mx-1" />
-              </>
-            )}
 
           </div>
         )}
