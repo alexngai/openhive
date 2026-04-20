@@ -50,6 +50,16 @@ async function pickFreePort(): Promise<number> {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Swallow EPIPE on stderr/stdout — when the app is launched from Finder
+// or the Dock (packaged) macOS wires process.stderr to a dead pipe, and
+// any plain console.log / .error would otherwise throw an uncaught EPIPE
+// that crashes the supervisor before the window opens.
+for (const s of [process.stderr, process.stdout]) {
+  s.on('error', (err) => {
+    if ((err as NodeJS.ErrnoException).code !== 'EPIPE') throw err;
+  });
+}
+
 // Force app name/userData path before any app API use. Electron falls back
 // to "Electron" when it can't find name metadata via its usual lookup
 // (happens with `electron <script>` invocations in dev).
@@ -174,10 +184,19 @@ async function spawnHive(
 
   // Pipe child stdio into the per-hive log file. Also echo to the
   // supervisor's stderr during dev (invisible in packaged builds, but
-  // useful from a terminal launch).
+  // useful from a terminal launch). Writes are wrapped: packaged Electron
+  // apps launched from Finder/Dock inherit a closed/unavailable stderr
+  // pipe, and the raw `process.stderr.write` throws EPIPE, which as an
+  // uncaught exception takes down the supervisor before the BrowserWindow
+  // opens.
   const writeStream = fs.createWriteStream(logPath, { flags: 'a' });
-  child.stdout?.on('data', (b) => { writeStream.write(b); process.stderr.write(b); });
-  child.stderr?.on('data', (b) => { writeStream.write(b); process.stderr.write(b); });
+  writeStream.on('error', () => { /* disk full / rotation — keep running */ });
+  const teeWrite = (buf: Buffer) => {
+    try { writeStream.write(buf); } catch { /* ignore */ }
+    try { process.stderr.write(buf); } catch { /* EPIPE etc — ignore */ }
+  };
+  child.stdout?.on('data', teeWrite);
+  child.stderr?.on('data', teeWrite);
 
   const port = await pickFreePort();
 
