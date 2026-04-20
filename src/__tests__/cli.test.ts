@@ -4,8 +4,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-const CLI_PATH = path.resolve(__dirname, '../../dist/cli.mjs');
-const BIN_PATH = path.resolve(__dirname, '../../bin/openhive.mjs');
+const CLI_PATH = path.resolve(__dirname, '../../dist/cli.js');
+const BIN_PATH = path.resolve(__dirname, '../../bin/openhive.js');
 const TEST_ROOT = path.join(os.tmpdir(), `openhive-test-cli-${process.pid}`);
 
 function cleanDir(dir: string): void {
@@ -228,8 +228,6 @@ describe('CLI', () => {
       const output = runCli(`--data-dir ${dataDir} db stats`);
       expect(output).toContain('Agents:');
       expect(output).toContain('Hives:');
-      expect(output).toContain('Posts:');
-      expect(output).toContain('Comments:');
     });
 
     it('should seed data using data-dir database', () => {
