@@ -137,6 +137,7 @@ export async function createHive(
     }
   }
 
+
   // Initialize session storage for trajectory content caching.
   // Configurable via config.sessions.type: 'local' (default), 's3', or 'none'.
   if (!isSessionStorageInitialized() && config.sessions.type !== 'none') {
@@ -163,6 +164,7 @@ export async function createHive(
     }
   }
 
+
   // Create Fastify instance
   const fastify = Fastify({
     logger: {
@@ -186,6 +188,7 @@ export async function createHive(
   if (config.auth.mode === "swarmhub") {
     registerHostnameGuard(fastify, config.instance.url);
   }
+
 
   // Register multipart for file uploads
   await fastify.register(multipart, {
@@ -212,6 +215,7 @@ export async function createHive(
       await initMail();
     }
   }
+
 
   // Register MAP inbound WebSocket (/ws/map) for agents connecting to the hub
   if (config.mapHub.enabled) {
@@ -305,6 +309,7 @@ export async function createHive(
       console.log("[openhive] SwarmHub connector detected");
     }
   }
+
 
   // Register API routes
   await registerRoutes(fastify, config, bridgeManager, swarmhubConnector);
@@ -502,6 +507,7 @@ export async function createHive(
       atlasService = null;
     }
   }
+
 
   // Initialize dispatch orchestrator (swarm-dispatch integration)
   let dispatchOrchestrator: Orchestrator | null = null;
@@ -777,6 +783,7 @@ export async function createHive(
     return reply.send(wellKnown);
   });
 
+
   // Initialize mesh networking provider
   // Supports: tailscale-cloud, headscale-sidecar, headscale-external, none
   let networkProvider: NetworkProvider;
@@ -971,6 +978,17 @@ export async function createHive(
           }
           throw err;
         }
+      }
+
+      // Resolve the actual bound port (Fastify assigns one when port=0) and
+      // push it into SwarmManager so bootstrap tokens for hosted swarms
+      // point at a reachable URL. Without this, hosts launched with an
+      // ephemeral port bake `http://host:0` into every spawn token.
+      if (swarmManager) {
+        const boundPort = (fastify.server.address() as { port: number } | null)?.port ?? port;
+        const resolvedHost = config.host === "0.0.0.0" ? "127.0.0.1" : config.host;
+        const resolvedUrl = config.instance.url || `http://${resolvedHost}:${boundPort}`;
+        swarmManager.setInstanceUrl(resolvedUrl);
       }
 
       // Write port file for dev tools (e.g. Vite proxy)

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS entitlements for the Hardened Runtime.
+
+  These are the minimum entitlements an Electron app needs to function
+  under the Hardened Runtime (required for notarization):
+
+  - allow-jit / allow-unsigned-executable-memory: Chromium's V8 JIT.
+  - allow-dyld-environment-variables: we set ELECTRON_RUN_AS_NODE=1 on
+    forked children (see electron-app/src/main.ts) to spawn openhive's
+    hive-child via the Electron binary in Node mode. Hardened runtime
+    otherwise strips DYLD_* / dynamic-loader-sensitive env vars.
+  - disable-library-validation: letter of last resort for native modules
+    (better-sqlite3, bcrypt, sharp, node-pty) that aren't codesigned with
+    our Developer ID. Without this the Hardened Runtime refuses to dlopen
+    unsigned .node files.
+
+  Narrow these down once we understand which native modules we actually
+  ship; for now a working signed+notarized build is more important.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

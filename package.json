@@ -23,6 +23,9 @@
     "dist",
     "bin"
   ],
+  "workspaces": [
+    "electron-app"
+  ],
   "scripts": {
     "build": "npm run build:server && npm run build:web",
     "build:server": "tsup",
@@ -82,7 +85,7 @@
     "better-sqlite3": "^12.8.0",
     "boring-avatars": "^2.0.4",
     "clsx": "^2.1.1",
-    "cognitive-core": "^0.2.3",
+    "cognitive-core": "^0.2.4",
     "commander": "^14.0.2",
     "date-fns": "^4.1.0",
     "fastify": "^5.0.0",
@@ -117,7 +120,7 @@
     "skill-tree": "^0.1.7",
     "skill-tree-indexer": "^0.2.2",
     "swarm-dispatch": "^0.3.2",
-    "swarmcraft": "^0.1.10",
+    "swarmcraft": "^0.1.11",
     "swarmkit": "^0.1.0",
     "turndown": "^7.2.4",
     "unique-names-generator": "^4.7.1",

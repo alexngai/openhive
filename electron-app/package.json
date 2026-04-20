@@ -1,0 +1,64 @@
+{
+  "name": "openhive-electron",
+  "version": "0.1.0",
+  "description": "Electron desktop shell for OpenHive",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "electron dist/main.js",
+    "dev": "npm --prefix .. run build && npm run build && npm run start",
+    "dist": "npm --prefix .. run build && npm run build && electron-builder",
+    "postinstall": "node scripts/fix-better-sqlite3.mjs"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "openhive": "file:.."
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.14",
+    "electron": "^37.10.3",
+    "electron-builder": "^26.8.1",
+    "typescript": "^5.7.3"
+  },
+  "build": {
+    "appId": "com.openhive.desktop",
+    "productName": "OpenHive",
+    "directories": {
+      "output": "../release"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "alexngai",
+        "repo": "openhive"
+      }
+    ],
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**",
+      "node_modules/bcrypt/**",
+      "node_modules/sharp/**",
+      "node_modules/@lydell/node-pty/**"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": "dmg",
+      "identity": "Developer ID Application: Alexander Ngai (TKJJVX3QDY)",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development"
+    }
+  }
+}
