@@ -12,6 +12,10 @@ import {
   BrowserWindow,
   Menu,
   dialog,
+  nativeTheme,
+  screen,
+  shell,
+  type WebContents,
 } from 'electron';
 import { fork, type ChildProcess } from 'node:child_process';
 import * as net from 'node:net';
@@ -65,6 +69,22 @@ for (const s of [process.stderr, process.stdout]) {
 // (happens with `electron <script>` invocations in dev).
 app.setName('OpenHive');
 
+// Lock the chromium-side colour scheme to dark. The SPA is dark-only and
+// already sets `documentElement.className = 'dark'` early in index.html;
+// this covers what the SPA can't reach — native scrollbars, file dialogs,
+// devtools, the brief pre-paint flash on window create.
+nativeTheme.themeSource = 'dark';
+
+// macOS About panel + Linux `app.showAboutPanel()` content. Without this,
+// "About OpenHive" shows an empty Electron-default sheet.
+app.setAboutPanelOptions({
+  applicationName: 'OpenHive',
+  applicationVersion: app.getVersion(),
+  version: app.getVersion(),
+  copyright: `© ${new Date().getFullYear()} Alex Ngai`,
+  website: 'https://github.com/alexngai/openhive',
+});
+
 // Dev-mode dock icon. Packaged builds get the icon from electron-builder's
 // `build.mac.icon` (baked into the .app's Resources); dev launches via
 // `electron dist/main.js` would otherwise show Electron's default.
@@ -91,6 +111,124 @@ interface HiveEntry {
   dataDir: string;
   url: string;
   overrides: Record<string, unknown>;
+}
+
+interface WindowState {
+  x?: number;
+  y?: number;
+  width: number;
+  height: number;
+  maximized?: boolean;
+  fullscreen?: boolean;
+}
+
+const DEFAULT_WINDOW_STATE: Readonly<WindowState> = { width: 1280, height: 800 };
+
+function windowStatePath(dataDir: string): string {
+  return path.join(dataDir, 'window-state.json');
+}
+
+/**
+ * Load saved window bounds for this hive, falling back to defaults if the
+ * file is missing/corrupt or the saved rectangle no longer overlaps any
+ * connected display (e.g. user disconnected the external monitor it was on).
+ */
+function loadWindowState(dataDir: string): WindowState {
+  let parsed: Partial<WindowState> | undefined;
+  try {
+    parsed = JSON.parse(
+      fs.readFileSync(windowStatePath(dataDir), 'utf-8'),
+    ) as Partial<WindowState>;
+  } catch {
+    return { ...DEFAULT_WINDOW_STATE };
+  }
+
+  const state: WindowState = {
+    width: typeof parsed.width === 'number' ? parsed.width : DEFAULT_WINDOW_STATE.width,
+    height: typeof parsed.height === 'number' ? parsed.height : DEFAULT_WINDOW_STATE.height,
+    x: typeof parsed.x === 'number' ? parsed.x : undefined,
+    y: typeof parsed.y === 'number' ? parsed.y : undefined,
+    maximized: parsed.maximized === true,
+    fullscreen: parsed.fullscreen === true,
+  };
+
+  if (state.x !== undefined && state.y !== undefined) {
+    const onScreen = screen.getAllDisplays().some((d) => {
+      const a = d.workArea;
+      return (
+        state.x! < a.x + a.width &&
+        state.x! + state.width > a.x &&
+        state.y! < a.y + a.height &&
+        state.y! + state.height > a.y
+      );
+    });
+    if (!onScreen) {
+      state.x = undefined;
+      state.y = undefined;
+    }
+  }
+  return state;
+}
+
+function saveWindowState(dataDir: string, window: BrowserWindow): void {
+  if (window.isDestroyed()) return;
+  // getNormalBounds() returns the un-maximized / un-fullscreen rect, so a
+  // user who quits while maximized still gets a sensible restored size next
+  // launch even if they un-maximize it.
+  const bounds = window.getNormalBounds();
+  const state: WindowState = {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    maximized: window.isMaximized(),
+    fullscreen: window.isFullScreen(),
+  };
+  try {
+    fs.writeFileSync(
+      windowStatePath(dataDir),
+      JSON.stringify(state, null, 2),
+      'utf-8',
+    );
+  } catch {
+    /* disk full / readonly fs — non-fatal */
+  }
+}
+
+/**
+ * Lock the renderer to the hive's loopback origin. Anything that would
+ * navigate the main frame elsewhere (target=_blank, window.open, in-page
+ * link to an external site) is intercepted and handed to the OS browser.
+ *
+ * Two layers:
+ *   - setWindowOpenHandler: blocks `window.open` / `target="_blank"` from
+ *     spawning a chrome-less Electron window with full nodeIntegration off
+ *     but still our process. Always defer to the user's browser instead.
+ *   - will-navigate: blocks main-frame navigations to off-origin URLs,
+ *     opening them externally instead. Same-origin navigations (the SPA's
+ *     own router transitions) pass through untouched.
+ */
+function hardenWebContents(contents: WebContents, hiveOrigin: string): void {
+  contents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) {
+      void shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+  contents.on('will-navigate', (event, url) => {
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      event.preventDefault();
+      return;
+    }
+    if (target.origin === hiveOrigin) return;
+    event.preventDefault();
+    if (target.protocol === 'http:' || target.protocol === 'https:') {
+      void shell.openExternal(url);
+    }
+  });
 }
 
 type ChildMessage =
@@ -234,19 +372,37 @@ async function spawnHive(
     });
   });
 
+  const state = loadWindowState(dataDir);
   const window = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    x: state.x,
+    y: state.y,
+    width: state.width,
+    height: state.height,
+    show: false,
+    backgroundColor: '#0b0a0c',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
-  await window.loadURL(url);
+  if (state.maximized) window.maximize();
+  if (state.fullscreen) window.setFullScreen(true);
+  hardenWebContents(window.webContents, new URL(url).origin);
+  window.once('ready-to-show', () => window.show());
+  try {
+    await window.loadURL(url);
+  } catch (err) {
+    if (!window.isDestroyed()) window.destroy();
+    throw err;
+  }
 
   const entry: HiveEntry = { child, window, dataDir, url, overrides };
   hives.set(dataDir, entry);
+
+  // 'close' fires before 'closed' — bounds are still readable here.
+  // Saving on 'closed' would be too late: the BrowserWindow is destroyed.
+  window.on('close', () => saveWindowState(dataDir, window));
 
   window.on('closed', () => {
     const existing = hives.get(dataDir);
