@@ -35,6 +35,37 @@ export interface MapInboundConnection {
   tokenExpiresAt?: string;
   /** Whether an auth.expiring notification has already been sent for this session. */
   expiryNotified?: boolean;
+  /**
+   * Whether the agent-iam token presented at connect time may itself be
+   * used to delegate further child agents. `false` for delegated children
+   * — they can call other MAP methods within their scopes but cannot
+   * mint grandchildren via `map/agents/spawn`. `undefined` for API-key
+   * / ingest-key connections (no token, `map/agents/spawn` gated only
+   * by the DB capability).
+   */
+  tokenDelegatable?: boolean;
+  /**
+   * Serialized agent-iam token presented at connect time. Retained so
+   * `handleSpawnRequest` can pass it to `TokenService.delegate`, which
+   * stamps a parent chain onto the child token and makes revocation
+   * cascade natively. `undefined` for non-token connections.
+   */
+  tokenSerialized?: string;
+  /**
+   * Effective scopes for this session, resolved at `map/connect` time.
+   * Populated by `resolveSessionScopes` in `session-scopes.ts`. Read by
+   * `requireCapability` at MAP method dispatch.
+   *
+   * Optional on the type because some test fixtures and legacy callers
+   * construct connections without scope resolution — those connections
+   * hold no capabilities (empty-set semantics). Production code paths
+   * (both `map/connect` branches in `ws-map.ts`) always populate this.
+   *
+   * In verified trust mode: scopes from the agent-iam token.
+   * In open trust mode: scopes from the DB `capabilities` column plus
+   * `map:*` for admins. See docs/RFC_AGENT_CAPABILITIES.md v4.
+   */
+  sessionScopes?: string[];
   /** Agents registered on this connection (keyed by agent ID). */
   registeredAgents: Map<string, RegisteredAgent>;
   /** Legacy: capabilities from the last agent to register. Prefer per-agent capabilities. */
@@ -218,6 +249,27 @@ export function findAcpAgentInfo(swarmId: string): {
     }
   }
   return undefined;
+}
+
+/**
+ * Look up a specific registered agent on a swarm. Returns undefined if the
+ * connection is stale or the agent isn't registered.
+ */
+export function getAgentOnSwarm(swarmId: string, agentId: string): RegisteredAgent | undefined {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn || conn.isStale) return undefined;
+  return conn.registeredAgents.get(agentId);
+}
+
+/**
+ * Check whether a specific agent on a swarm declares a capability. Unlike
+ * `hasCapability` (any-agent-has semantics), this targets one agent — the
+ * dispatch mail port needs per-agent routing decisions.
+ */
+export function hasAgentCapability(swarmId: string, agentId: string, path: string): boolean {
+  const agent = getAgentOnSwarm(swarmId, agentId);
+  if (!agent?.capabilities) return false;
+  return checkPath(agent.capabilities, path.split('.'));
 }
 
 /**

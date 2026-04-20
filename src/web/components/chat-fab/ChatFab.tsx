@@ -10,6 +10,7 @@
 
 import { Bot, X, PanelRightOpen, PanelRightClose, Loader2, AlertCircle } from 'lucide-react';
 import clsx from 'clsx';
+import { useLocation } from 'react-router-dom';
 import { useChatFabStore, type ChatFabAgentRef } from './ChatFabStore';
 import { SessionPicker } from './SessionPicker';
 import { ChatPanel } from './ChatPanel';
@@ -18,6 +19,20 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
 import { useSubscribe, useWSEvent } from '../../hooks/useWebSocket';
 import { AgentAvatar } from '../common/AgentAvatar';
+
+/**
+ * Suppress the FAB whenever the user is on a Threads page — Threads *is*
+ * the chat surface, so the FAB would duplicate it. Matches any path under
+ * `/threads` (list, session detail, mail detail) and the legacy `/sessions`
+ * that redirects there.
+ */
+function useFabSuppressedOnMatchingRoute(): boolean {
+  const { pathname } = useLocation();
+  return pathname === '/threads'
+    || pathname.startsWith('/threads/')
+    || pathname === '/sessions'
+    || pathname.startsWith('/sessions/');
+}
 
 /**
  * Keep the single-swarm query fresh while an agent-scoped chat is open.
@@ -255,7 +270,8 @@ function ChatBody() {
  */
 export function ChatSidebar() {
   const { open, mode } = useChatFabStore();
-  if (!open || mode !== 'docked') return null;
+  const suppressed = useFabSuppressedOnMatchingRoute();
+  if (!open || mode !== 'docked' || suppressed) return null;
 
   return (
     <aside
@@ -277,6 +293,11 @@ export function ChatSidebar() {
  */
 export function ChatFab() {
   const { open, mode, toggle } = useChatFabStore();
+  const suppressed = useFabSuppressedOnMatchingRoute();
+
+  // Suppress entirely on the Threads surface — that page is the canonical
+  // chat view, so a FAB would duplicate it. Re-appears on navigation away.
+  if (suppressed) return null;
 
   // Collapsed — show FAB button
   if (!open) {

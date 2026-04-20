@@ -1,12 +1,15 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
-  ArrowLeft, Send, Zap, FileText, User, Bot, Ban, AlertCircle,
+  ArrowLeft, Send, Zap, FileText, User, Bot, Ban, AlertCircle, GitBranch, GitCommit,
 } from 'lucide-react';
-import { useDispatch, useCancelDispatch } from '../hooks/useDispatches';
-import { useDispatchesRealtime } from '../hooks/useDispatchesRealtime';
-import { useMapSwarm } from '../hooks/useApi';
+import { useDispatch, useCancelDispatch } from '../hooks/useDispatch';
+import { useDispatchRealtime, useCancelAckWarnings } from '../hooks/useDispatchRealtime';
+import { useMapSwarm, useSessionsList, useCascadeDAG } from '../hooks/useApi';
+import { useSpec } from '../hooks/useSpecs';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
+import { AttemptsTimeline } from '../components/dispatch/AttemptsTimeline';
+import { StreamStatusDot } from '../components/streams/shared';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { ChatFabContextProvider } from '../components/chat-fab/ChatFabContext';
@@ -15,9 +18,36 @@ export function DispatchDetail() {
   const { id } = useParams<{ id: string }>();
   const { data, isLoading, error } = useDispatch(id);
   const { data: swarm } = useMapSwarm(data?.dispatch.target_swarm_id ?? '');
+  const { data: specResp } = useSpec(data?.dispatch.spec_resource_id, data?.dispatch.spec_id);
   const cancel = useCancelDispatch();
   const [cancelError, setCancelError] = useState<string | null>(null);
-  useDispatchesRealtime();
+  useDispatchRealtime();
+  const { warned: cancelNotAcked, dismiss: dismissCancelWarning } = useCancelAckWarnings(id);
+
+  // Sessions + cascade streams on this swarm — used to compute which changes
+  // (if any) were opened by agents that ran this dispatch. Heuristic match:
+  // session.acp_target_agent_id (set when the dispatch spawned an ACP stream)
+  // ∩ cascade.source_agent_id for streams on the same swarm.
+  const { data: sessionsResp } = useSessionsList({
+    swarm_id: data?.dispatch.target_swarm_id,
+    limit: 100,
+  });
+  const { data: cascadeResp } = useCascadeDAG({
+    source_swarm_id: data?.dispatch.target_swarm_id,
+  });
+
+  const relatedChanges = useMemo(() => {
+    if (!data || !sessionsResp || !cascadeResp?.data) return [];
+    const sessionIds = new Set(data.dispatch.session_ids);
+    const agentIds = new Set<string>();
+    for (const s of sessionsResp.data) {
+      if (sessionIds.has(s.id) && s.acp_target_agent_id) {
+        agentIds.add(s.acp_target_agent_id);
+      }
+    }
+    if (agentIds.size === 0) return [];
+    return cascadeResp.data.nodes.filter((n) => agentIds.has(n.source_agent_id));
+  }, [data, sessionsResp, cascadeResp]);
 
   if (isLoading) return <PageLoader />;
 
@@ -25,12 +55,12 @@ export function DispatchDetail() {
     return (
       <div className="p-6 max-w-4xl mx-auto">
         <Link
-          to="/dispatches"
+          to="/dispatch"
           className="inline-flex items-center gap-1 text-sm mb-4"
           style={{ color: 'var(--color-text-muted)' }}
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to dispatches
+          Back to Dispatch
         </Link>
         <div
           className="rounded-md border p-4 text-sm"
@@ -67,12 +97,12 @@ export function DispatchDetail() {
     <ChatFabContextProvider items={chatFabItems}>
     <div className="p-6 max-w-4xl mx-auto">
       <Link
-        to="/dispatches"
+        to="/dispatch"
         className="inline-flex items-center gap-1 text-sm mb-4 hover:opacity-80"
         style={{ color: 'var(--color-text-muted)' }}
       >
         <ArrowLeft className="h-4 w-4" />
-        Back to dispatches
+        Back to Dispatch
       </Link>
 
       {/* Header */}
@@ -113,6 +143,35 @@ export function DispatchDetail() {
             <div>{cancelError}</div>
           </div>
         )}
+
+        {cancelNotAcked && (
+          <div
+            className="mt-2 rounded-md border p-2 text-sm flex items-start gap-2"
+            style={{
+              borderColor: 'rgba(245, 158, 11, 0.4)',
+              backgroundColor: 'rgba(245, 158, 11, 0.05)',
+              color: 'var(--color-text)',
+            }}
+          >
+            <AlertCircle className="h-4 w-4 mt-0.5 text-amber-400" />
+            <div className="flex-1">
+              <div className="font-medium">Agent did not acknowledge cancel</div>
+              <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                The target swarm was unreachable or dropped the cancel signal. The hub
+                still marked this dispatch as cancelled; the agent may have continued
+                working until its stream closed.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={dismissCancelWarning}
+              className="text-xs opacity-70 hover:opacity-100"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              dismiss
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Metadata grid */}
@@ -129,11 +188,13 @@ export function DispatchDetail() {
           </div>
           <Link
             to={`/specs/${d.spec_resource_id}/${d.spec_id}`}
-            className="inline-flex items-center gap-1 hover:opacity-80"
+            className="inline-flex items-center gap-1 hover:opacity-80 min-w-0"
             style={{ color: 'var(--color-text)' }}
           >
-            <FileText className="h-4 w-4 text-honey-500" />
-            <span className="font-mono text-sm">{d.spec_id}</span>
+            <FileText className="h-4 w-4 text-honey-500 shrink-0" />
+            <span className="text-sm truncate">
+              {specResp?.spec.title ?? d.spec_id}
+            </span>
           </Link>
         </div>
 
@@ -212,11 +273,63 @@ export function DispatchDetail() {
             {d.session_ids.map((sid) => (
               <li key={sid}>
                 <Link
-                  to={`/sessions/${sid}`}
+                  to={`/threads/${sid}`}
                   className="text-sm font-mono hover:opacity-80"
                   style={{ color: 'var(--color-text)' }}
                 >
                   {sid}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Changes opened during this dispatch — heuristic match on agent id. */}
+      {relatedChanges.length > 0 && (
+        <div
+          className="rounded-md border p-4 mb-6"
+          style={{
+            borderColor: 'var(--color-border-subtle)',
+            backgroundColor: 'var(--color-surface)',
+          }}
+        >
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
+              <GitBranch className="h-3.5 w-3.5 text-honey-500" />
+              Changes opened
+            </div>
+            <Link
+              to="/changes"
+              className="text-2xs hover:opacity-80"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              View all →
+            </Link>
+          </div>
+          <ul className="space-y-1.5">
+            {relatedChanges.map((n) => (
+              <li key={n.id}>
+                <Link
+                  to="/changes"
+                  className="flex items-center gap-2 text-sm hover:opacity-80"
+                  style={{ color: 'var(--color-text)' }}
+                >
+                  <StreamStatusDot status={n.status} />
+                  <span className="truncate">{n.name || n.stream_id}</span>
+                  <code
+                    className="text-2xs font-mono px-1 py-0.5 rounded shrink-0"
+                    style={{ backgroundColor: 'var(--color-elevated)' }}
+                  >
+                    {n.stream_id.slice(0, 8)}
+                  </code>
+                  <span
+                    className="text-2xs flex items-center gap-1 shrink-0"
+                    style={{ color: 'var(--color-text-muted)' }}
+                  >
+                    <GitCommit className="h-3 w-3" />
+                    {n.commit_count}
+                  </span>
                 </Link>
               </li>
             ))}
@@ -257,29 +370,9 @@ export function DispatchDetail() {
         </div>
       )}
 
-      {/* Attempt / turn tracking */}
-      {((d as Record<string, unknown>).attempt as number > 0 || (d as Record<string, unknown>).turn_count as number > 0) && (
-        <div
-          className="rounded-md border p-4 mb-6"
-          style={{
-            borderColor: 'var(--color-border-subtle)',
-            backgroundColor: 'var(--color-surface)',
-          }}
-        >
-          <div className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
-            Orchestrator progress
-          </div>
-          <div className="flex gap-6 text-sm" style={{ color: 'var(--color-text)' }}>
-            <div>
-              <span style={{ color: 'var(--color-text-muted)' }}>Attempts: </span>
-              {(d as Record<string, unknown>).attempt as number}
-            </div>
-            <div>
-              <span style={{ color: 'var(--color-text-muted)' }}>Turns: </span>
-              {(d as Record<string, unknown>).turn_count as number}
-            </div>
-          </div>
-        </div>
+      {/* Attempt timeline — populated by the orchestrator event bridge. */}
+      {d.attempts_history && d.attempts_history.length > 0 && (
+        <AttemptsTimeline attempts={d.attempts_history} turnCount={d.turn_count} />
       )}
 
       {d.status === 'running' && d.session_ids.length === 0 && (

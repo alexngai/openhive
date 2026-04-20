@@ -47,15 +47,6 @@ export function registerSwarm(
     const canonicalKey = createHash('sha256').update(input.stable_identity).digest('hex');
     const swarm = mapDal.upsertSwarmByCanonicalKey(canonicalKey, ownerAgentId, input);
 
-    let autoJoinedHive: string | null = null;
-    if (input.preauth_key) {
-      const key = mapDal.consumePreauthKey(input.preauth_key);
-      if (key?.hive_id) {
-        autoJoinedHive = key.hive_id;
-        mapDal.joinHive(swarm.id, autoJoinedHive);
-      }
-    }
-
     broadcastSwarmLifecycleEvent(swarm.id, {
       type: 'swarm_registered',
       data: { swarm_id: swarm.id, name: swarm.name, map_endpoint: swarm.map_endpoint },
@@ -64,7 +55,7 @@ export function registerSwarm(
       swarm_id: swarm.id, name: swarm.name,
       map_endpoint: swarm.map_endpoint, auth_method: swarm.auth_method,
     });
-    return { swarm, auto_joined_hive: autoJoinedHive };
+    return { swarm, auto_joined_hive: null };
   }
 
   // Check for duplicate endpoint
@@ -73,27 +64,8 @@ export function registerSwarm(
     throw new MapHubError('DUPLICATE_ENDPOINT', `A swarm is already registered at ${input.map_endpoint}`);
   }
 
-  let autoJoinedHive: string | null = null;
-
-  // If pre-auth key is provided, validate and consume it
-  if (input.preauth_key) {
-    const key = mapDal.consumePreauthKey(input.preauth_key);
-    if (!key) {
-      throw new MapHubError('INVALID_PREAUTH_KEY', 'Pre-auth key is invalid, expired, or exhausted');
-    }
-    // Remember the hive to auto-join after swarm creation
-    if (key.hive_id) {
-      autoJoinedHive = key.hive_id;
-    }
-  }
-
   // Create the swarm
   const swarm = mapDal.createSwarm(ownerAgentId, input);
-
-  // Auto-join hive if pre-auth key specified one
-  if (autoJoinedHive) {
-    mapDal.joinHive(swarm.id, autoJoinedHive);
-  }
 
   // Broadcast swarm registration event
   broadcastSwarmLifecycleEvent(swarm.id, {
@@ -113,7 +85,7 @@ export function registerSwarm(
     auth_method: swarm.auth_method,
   });
 
-  return { swarm, auto_joined_hive: autoJoinedHive };
+  return { swarm, auto_joined_hive: null };
 }
 
 // ============================================================================

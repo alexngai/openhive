@@ -242,7 +242,7 @@ function connectToHub(token) {
   try {
     const decoded = JSON.parse(Buffer.from(token, 'base64').toString());
     const hubUrl = decoded.openhive_url;
-    const preauthKey = decoded.preauth_key;
+    const onboardToken = decoded.onboard_token;
     const swarmName = decoded.swarm_name || 'classifier-mock';
 
     if (!hubUrl) {
@@ -250,7 +250,7 @@ function connectToHub(token) {
       return;
     }
 
-    const wsUrl = `${hubUrl.replace('http', 'ws')}/ws/map?token=${preauthKey}&swarm_id=${swarmName}`;
+    const wsUrl = `${hubUrl.replace('http', 'ws')}/ws/map?token=${onboardToken}&swarm_id=${swarmName}`;
     process.stderr.write(`[classifier-swarm] Connecting to hub: ${wsUrl}\n`);
 
     hubWs = new WebSocket(wsUrl);

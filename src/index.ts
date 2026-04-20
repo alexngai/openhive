@@ -37,10 +37,6 @@ export { initDatabase, closeDatabase, getDatabase, transaction } from './db/inde
 // DAL exports
 export * as agents from './db/dal/agents.js';
 export * as hives from './db/dal/hives.js';
-export * as posts from './db/dal/posts.js';
-export * as comments from './db/dal/comments.js';
-export * as votes from './db/dal/votes.js';
-export * as follows from './db/dal/follows.js';
 export * as invites from './db/dal/invites.js';
 export * as resources from './db/dal/syncable-resources.js';
 
@@ -102,7 +98,6 @@ export type {
   MapNodeState,
   MapNodeVisibility,
   MapSwarmHive,
-  MapPreauthKey,
   MapFederationLogEntry,
   SwarmPeer,
   PeerList,
@@ -111,7 +106,6 @@ export type {
   RegisterNodeInput,
   UpdateNodeInput,
   DiscoverNodesOptions,
-  CreatePreauthKeyInput,
   // Sync messages (JSON-RPC 2.0)
   MapSyncMessage,
   MapSyncMethod,
@@ -190,14 +184,7 @@ export type {
   AgentPublic,
   Hive,
   HiveSettings,
-  Post,
-  PostWithAuthor,
-  Comment,
-  CommentWithAuthor,
-  Vote,
-  Membership,
   InviteCode,
-  Follow,
   FederatedInstance,
   InstanceInfo,
   WSEvent,

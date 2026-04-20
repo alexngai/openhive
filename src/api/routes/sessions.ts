@@ -112,6 +112,57 @@ type AcpConnectResult = {
 };
 const inflightAcpConnects = new Map<string, Promise<AcpConnectResult>>();
 
+/**
+ * Can this `streamId` be handed back to a tab as a live ACP session, or is
+ * it cached-but-dead (stream closed mid-flight, MAP client disconnected,
+ * hub restart dropped the stream)?
+ *
+ * Three layers of check, cheapest first:
+ *   1. Stream still in the manager's Map (covers hub restart).
+ *   2. Stream not marked closed AND initialized completed (covers mid-flight
+ *      close before the listener fires + unfinished handshake).
+ *   3. Underlying MAP client still connected to `serverId` (covers outbound
+ *      socket drop — stream wouldn't know for a few seconds).
+ *
+ * Without layer 2+3, a second tab could re-attach to a corpse and silently
+ * send messages that never arrive. Callers that see `false` should fall
+ * through to the create path (DB row gets overwritten by upsert anyway).
+ *
+ * The helper tolerates partial manager shapes so existing tests that only
+ * mock `streams: Map` keep working — `getStreamInfo` and
+ * `mapClientManager.isConnected` are each probed independently.
+ */
+interface LivenessManagers {
+  acpStreamManager?: {
+    streams?: Map<string, unknown>;
+    getStreamInfo?: (id: string) => { isClosed?: boolean; initialized?: boolean } | null;
+  };
+  mapClientManager?: { isConnected?: (serverId: string) => boolean };
+}
+function isAcpStreamLive(
+  sc: LivenessManagers | null | undefined,
+  streamId: string,
+  serverId: string,
+): boolean {
+  const mgr = sc?.acpStreamManager;
+  if (!mgr) return false;
+
+  const info = mgr.getStreamInfo?.(streamId);
+  if (info) {
+    if (info.isClosed === true) return false;
+    if (info.initialized === false) return false;
+  } else {
+    if (!mgr.streams?.has(streamId)) return false;
+  }
+
+  const isConnected = sc?.mapClientManager?.isConnected;
+  if (typeof isConnected === 'function' && !isConnected(serverId)) {
+    return false;
+  }
+
+  return true;
+}
+
 // ============================================================================
 // Local Sessionlog Transcript Lookup
 // ============================================================================
@@ -1526,7 +1577,7 @@ export async function sessionsRoutes(
             const existingStreamId = existing?.metadata?.acpStreamId as string | undefined;
             const existingSessionId = existing?.metadata?.sessionId as string | undefined;
             const streamLive = existingStreamId
-              ? sc.acpStreamManager.streams?.has(existingStreamId) ?? false
+              ? isAcpStreamLive(sc, existingStreamId, swarm_id)
               : false;
             if (existing && existingStreamId && existingSessionId && streamLive) {
               return {
@@ -1535,6 +1586,19 @@ export async function sessionsRoutes(
                 acp_stream_id: existingStreamId,
                 created: false,
               };
+            }
+
+            // Cached stream exists but is dead (closed / disconnected / hub
+            // restart). The `upsertDiscoveredResource` call below overwrites
+            // the stale `acpStreamId` + `sessionId` metadata when it
+            // matches an existing row by scope+name, so no explicit cleanup
+            // of the DB row is needed. We just fall through to the create
+            // path and let the fresh IDs replace the stale ones.
+            if (existing && existingStreamId && !streamLive) {
+              fastify.log.info(
+                { existingStreamId, swarm_id, acpAgent },
+                '[acp-connect] cached stream failed liveness check — recreating',
+              );
             }
 
             // Stream-or-session is dead → create fresh. acp-manager's

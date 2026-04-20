@@ -3,6 +3,7 @@ import * as path from 'path';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
+import { initTokenService, _resetTokenService } from '../../map/token-service.js';
 import { SwarmManager, SwarmHostingError } from '../../swarm/manager.js';
 import * as swarmDAL from '../../swarm/dal.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
@@ -36,6 +37,7 @@ describe('SwarmManager', () => {
 
   beforeAll(async () => {
     initDatabase(TEST_DB_PATH);
+    initTokenService(undefined, TEST_ROOT);
 
     const agentResult = await agentsDAL.createAgent({
       name: 'manager-test-agent',
@@ -59,6 +61,7 @@ describe('SwarmManager', () => {
   });
 
   afterAll(() => {
+    _resetTokenService();
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
   });

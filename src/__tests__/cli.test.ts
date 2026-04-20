@@ -228,8 +228,6 @@ describe('CLI', () => {
       const output = runCli(`--data-dir ${dataDir} db stats`);
       expect(output).toContain('Agents:');
       expect(output).toContain('Hives:');
-      expect(output).toContain('Posts:');
-      expect(output).toContain('Comments:');
     });
 
     it('should seed data using data-dir database', () => {

@@ -13,6 +13,7 @@ import { createRequire } from 'module';
 import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-generator';
 import { broadcastToChannel } from '../realtime/index.js';
 import { registerSwarm } from '../map/service.js';
+import { delegateForSpawn } from '../map/delegate-for-spawn.js';
 import * as mapDal from '../db/dal/map.js';
 import * as dal from './dal.js';
 import { LocalProvider } from './providers/local.js';
@@ -199,26 +200,14 @@ export class SwarmManager {
     const hostedSwarmId = dal.generateHostedSwarmId();
     const dataDir = path.join(this.config.data_dir, `swarm-${hostedSwarmId}`);
 
-    // Create a pre-auth key if a hive is specified
-    let preauthKeyPlaintext: string | undefined;
+    // Validate the hive exists (used by MAP hive-membership plumbing but
+    // no longer associated with a preauth key under v4).
     if (input.hive) {
-      try {
-        const { findHiveByName } = await import('../db/dal/hives.js');
-        const hive = findHiveByName(input.hive);
-        if (!hive) {
-          this.releasePorts(port, adapter);
-          throw new SwarmHostingError('HIVE_NOT_FOUND', `Hive "${input.hive}" not found`);
-        }
-        const keyResult = mapDal.createPreauthKey(agentId, {
-          hive_id: hive.id,
-          uses: 1,
-          expires_in_hours: 1, // Short TTL — just for bootstrap
-        });
-        preauthKeyPlaintext = keyResult.plaintext_key;
-      } catch (err) {
+      const { findHiveByName } = await import('../db/dal/hives.js');
+      const hive = findHiveByName(input.hive);
+      if (!hive) {
         this.releasePorts(port, adapter);
-        if (err instanceof SwarmHostingError) throw err;
-        throw new SwarmHostingError('PREAUTH_KEY_FAILED', `Failed to create pre-auth key: ${(err as Error).message}`);
+        throw new SwarmHostingError('HIVE_NOT_FOUND', `Hive "${input.hive}" not found`);
       }
     }
 
@@ -271,7 +260,6 @@ export class SwarmManager {
           hosted: true,
           provider: providerType,
         },
-        preauth_key: preauthKeyPlaintext,
       });
       preRegisteredSwarmId = mapResult.swarm.id;
       console.log(`[swarm-manager] Pre-registered swarm with stable ID: ${preRegisteredSwarmId}`);
@@ -280,10 +268,37 @@ export class SwarmManager {
       console.warn(`[swarm-manager] Pre-registration failed (sidecar will auto-register): ${(err as Error).message}`);
     }
 
+    // Mint a delegated agent-iam token for the spawned swarm subprocess.
+    // Replaces the retired preauth-key bootstrap (see RFC v4). The token
+    // is the subprocess's Bearer credential for all hub communication.
+    let onboardToken: string;
+    try {
+      const delegated = delegateForSpawn({
+        parentAgentId: agentId,
+        parentScopes: ['map:*'], // hub-spawned swarms get full scope for now
+        childAgentId: preRegisteredSwarmId ?? hostedSwarmId,
+        requestedScopes: ['map:*'],
+        // Max delegated TTL (24h). Hosted swarms are typically long-
+        // lived and have no token-refresh path today (see RFC v4
+        // §"Limitations"); shorter TTLs break them within the
+        // session. Operators wanting stricter lifetimes should mint
+        // via `admin onboard-token --ttl-hours=<n>` out of band.
+        ttlMinutes: 24 * 60,
+        childDelegatable: true,
+      });
+      onboardToken = delegated.credentials.token;
+    } catch (err) {
+      this.releasePorts(port, adapter);
+      throw new SwarmHostingError(
+        'ONBOARD_TOKEN_FAILED',
+        `Failed to mint onboard token: ${(err as Error).message}`,
+      );
+    }
+
     const bootstrapToken: BootstrapToken = {
       version: 1,
       openhive_url: this.instanceUrl,
-      preauth_key: preauthKeyPlaintext ?? '',
+      onboard_token: onboardToken,
       swarm_name: name,
       swarm_id: preRegisteredSwarmId,
       adapter,
@@ -406,7 +421,6 @@ export class SwarmManager {
               hosted_swarm_id: hosted.id,
               provider: providerType,
             },
-            preauth_key: preauthKeyPlaintext,
           });
           preRegisteredSwarmId = mapResult.swarm.id;
         }
@@ -1352,7 +1366,7 @@ export type SwarmHostingErrorCode =
   | 'PROVIDER_NOT_AVAILABLE'
   | 'NO_PORTS_AVAILABLE'
   | 'HIVE_NOT_FOUND'
-  | 'PREAUTH_KEY_FAILED'
+  | 'ONBOARD_TOKEN_FAILED'
   | 'WORKSPACE_SETUP_FAILED'
   | 'SPAWN_FAILED'
   | 'NOT_FOUND'

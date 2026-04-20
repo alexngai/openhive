@@ -14,6 +14,7 @@ vi.mock('react-router-dom', async () => {
 const mockUseSessionsList = vi.fn();
 const mockUseSessionsInfinite = vi.fn();
 const mockUseMapSwarms = vi.fn();
+const mockUseMailConversations = vi.fn();
 const mockUseResource = vi.fn();
 const mockUseSessionCheckpoints = vi.fn();
 const mockUseSessionStats = vi.fn();
@@ -24,6 +25,7 @@ vi.mock('../../hooks/useApi', () => ({
   useSessionsList: (...args: unknown[]) => mockUseSessionsList(...args),
   useSessionsInfinite: (...args: unknown[]) => mockUseSessionsInfinite(...args),
   useMapSwarms: () => mockUseMapSwarms(),
+  useMailConversations: (...args: unknown[]) => mockUseMailConversations(...args),
   useResource: (...args: unknown[]) => mockUseResource(...args),
   useSessionCheckpoints: (...args: unknown[]) => mockUseSessionCheckpoints(...args),
   useSessionStats: (...args: unknown[]) => mockUseSessionStats(...args),
@@ -33,6 +35,15 @@ vi.mock('../../hooks/useApi', () => ({
 
 vi.mock('../../hooks/useRealtimeInvalidation', () => ({
   useSessionsRealtime: vi.fn(),
+}));
+
+vi.mock('../../hooks/useWebSocket', () => ({
+  useSubscribe: vi.fn(),
+  useWSEvent: vi.fn(),
+}));
+
+vi.mock('../../components/sessions/MailThreadView', () => ({
+  MailThreadView: () => <div data-testid="mail-thread-view" />,
 }));
 
 vi.mock('../../components/common/TimeAgo', () => ({
@@ -65,7 +76,7 @@ import { Sessions } from '../../pages/Sessions';
 
 // ── Helpers ──
 
-function renderSessions(route = '/sessions') {
+function renderSessions(route = '/threads') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -73,8 +84,8 @@ function renderSessions(route = '/sessions') {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[route]}>
         <Routes>
-          <Route path="/sessions" element={<Sessions />} />
-          <Route path="/sessions/:id" element={<Sessions />} />
+          <Route path="/threads" element={<Sessions />} />
+          <Route path="/threads/:id" element={<Sessions />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -121,6 +132,7 @@ beforeEach(() => {
     isLoading: false,
   });
   mockUseMapSwarms.mockReturnValue({ data: [] });
+  mockUseMailConversations.mockReturnValue({ data: [], isLoading: false });
 
   // SessionDetail mocks (not exercised in most tests but needed to avoid errors)
   mockUseResource.mockReturnValue({ data: null, isLoading: false });
@@ -140,9 +152,9 @@ describe('Sessions page', () => {
   });
 
   describe('sidebar', () => {
-    it('renders sidebar with Sessions heading', () => {
+    it('renders sidebar with Threads heading', () => {
       renderSessions();
-      expect(screen.getByText('Sessions')).toBeDefined();
+      expect(screen.getByText('Threads')).toBeDefined();
     });
 
     it('shows active sessions in sidebar', () => {
@@ -173,7 +185,7 @@ describe('Sessions page', () => {
 
     it('shows empty sidebar message when no active sessions', () => {
       renderSessions();
-      expect(screen.getByText('No active sessions')).toBeDefined();
+      expect(screen.getByText('No threads yet')).toBeDefined();
     });
 
     it('shows inactive section toggle', () => {
@@ -192,7 +204,7 @@ describe('Sessions page', () => {
       });
 
       renderSessions();
-      expect(screen.getByText('Inactive (1)')).toBeDefined();
+      expect(screen.getByText('Inactive sessions (1)')).toBeDefined();
     });
 
     it('expands inactive section on click', () => {
@@ -211,7 +223,7 @@ describe('Sessions page', () => {
       });
 
       renderSessions();
-      fireEvent.click(screen.getByText('Inactive (1)'));
+      fireEvent.click(screen.getByText('Inactive sessions (1)'));
       expect(screen.getByText('old-project')).toBeDefined();
       expect(screen.getByPlaceholderText('Search sessions...')).toBeDefined();
     });
@@ -227,7 +239,7 @@ describe('Sessions page', () => {
       mockUseMapSwarms.mockReturnValue({ data: [onlineSwarm] });
       renderSessions();
 
-      expect(mockNavigate).toHaveBeenCalledWith('/sessions/session-1', { replace: true });
+      expect(mockNavigate).toHaveBeenCalledWith('/threads/session-1', { replace: true });
     });
 
     it('does not auto-navigate when a session is already selected', () => {
@@ -237,7 +249,7 @@ describe('Sessions page', () => {
         isLoading: false,
       });
       mockUseMapSwarms.mockReturnValue({ data: [onlineSwarm] });
-      renderSessions('/sessions/session-1');
+      renderSessions('/threads/session-1');
 
       expect(mockNavigate).not.toHaveBeenCalled();
     });
@@ -260,16 +272,16 @@ describe('Sessions page', () => {
       });
       renderSessions();
 
-      // The grid shows the session heading and count
-      const headings = screen.getAllByText('Sessions');
+      // The grid shows the thread heading and count
+      const headings = screen.getAllByText('Threads');
       // Sidebar heading + grid heading
       expect(headings.length).toBeGreaterThanOrEqual(2);
-      expect(screen.getByText('1 session tracked.')).toBeDefined();
+      expect(screen.getByText('1 thread tracked.')).toBeDefined();
     });
 
     it('shows empty state when no sessions at all', () => {
       renderSessions();
-      expect(screen.getByText('Select a session from the sidebar')).toBeDefined();
+      expect(screen.getByText('Select a thread from the sidebar')).toBeDefined();
     });
 
     it('shows select prompt when active sessions exist but none selected', () => {
@@ -285,7 +297,7 @@ describe('Sessions page', () => {
       // Since navigate is mocked and doesn't actually change route,
       // we still render at /sessions with activeSessions > 0 => EmptyDetail
       renderSessions();
-      expect(screen.getByText('Select a session from the sidebar')).toBeDefined();
+      expect(screen.getByText('Select a thread from the sidebar')).toBeDefined();
     });
   });
 
@@ -345,9 +357,9 @@ describe('Sessions page', () => {
       renderSessions();
 
       // Should not be in active section
-      expect(screen.getByText('No active sessions')).toBeDefined();
+      expect(screen.getByText('No threads yet')).toBeDefined();
       // Should appear in inactive section
-      expect(screen.getByText('Inactive (1)')).toBeDefined();
+      expect(screen.getByText('Inactive sessions (1)')).toBeDefined();
     });
   });
 
@@ -362,7 +374,7 @@ describe('Sessions page', () => {
       renderSessions();
 
       fireEvent.click(screen.getByText('my-project (main)'));
-      expect(mockNavigate).toHaveBeenCalledWith('/sessions/session-1');
+      expect(mockNavigate).toHaveBeenCalledWith('/threads/session-1');
     });
   });
 
@@ -385,7 +397,7 @@ describe('Sessions page', () => {
       });
 
       renderSessions();
-      fireEvent.click(screen.getByText('Inactive (5)'));
+      fireEvent.click(screen.getByText('Inactive sessions (5)'));
       const loadMoreBtn = screen.getByText('Load more');
       expect(loadMoreBtn).toBeDefined();
 

@@ -23,6 +23,7 @@ import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import { createIngestKey } from '../../db/dal/ingest-keys.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
+import { initTokenService, _resetTokenService } from '../../map/token-service.js';
 import { setupMapWebSocket, stopMapWebSocket, setHeartbeatInterval } from '../../map/ws-map.js';
 import { getAllInbound } from '../../map/connection-registry.js';
 import { findSwarmById } from '../../db/dal/map.js';
@@ -372,10 +373,14 @@ describe.skipIf(!sidecarExists)('E2E: cc-swarm Real Sidecar Process', () => {
     // Use a separate DB to avoid conflicts with Part 1
     const sidecarDb = testDbPath(TEST_ROOT, 'e2e-cc-swarm-sidecar.db');
     initDatabase(sidecarDb);
+    initTokenService(undefined, TEST_ROOT);
 
     const { agent } = await agentsDAL.createAgent({
       name: 'cc-sidecar-e2e-agent',
     });
+    // Sidecars need `map:agents:spawn` to register child agents in v4
+    // (capability enforcement at the spawn handler, not the ingest layer).
+    agentsDAL.grantAgentCapability(agent.id, 'map:agents:spawn');
 
     const { plaintext_key } = createIngestKey(agent.id, {
       label: 'cc-sidecar-e2e',
@@ -420,6 +425,7 @@ describe.skipIf(!sidecarExists)('E2E: cc-swarm Real Sidecar Process', () => {
     stopMapWebSocket();
     await app?.close();
     await sleep(200);
+    _resetTokenService();
     closeDatabase();
     setHeartbeatInterval(30_000);
   });

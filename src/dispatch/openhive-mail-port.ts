@@ -19,6 +19,8 @@ export interface MailTransport {
   onMessage(
     handler: (from: { swarmId: string; agentId: string }, message: Record<string, unknown>) => void,
   ): () => void;
+  /** Optional: tear down listeners owned by the transport. */
+  destroy?(): void;
 }
 
 export function createOpenHiveMailPort(transport: MailTransport): MessagePort {
@@ -31,6 +33,12 @@ export function createOpenHiveMailPort(transport: MailTransport): MessagePort {
         handler({ system: from.swarmId, agentId: from.agentId }, msg),
       ),
 
-    isReachable: (system) => !!getInbound(system),
+    isReachable: (system, agentId) => {
+      if (!getInbound(system)) return false;
+      // The cascade transport probes per-agent caps at send time; here we
+      // only need the connection to be alive so swarm-dispatch doesn't
+      // short-circuit before the per-agent check runs.
+      return !!agentId;
+    },
   });
 }

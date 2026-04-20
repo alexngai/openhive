@@ -377,25 +377,11 @@ export class SwarmHubConnector extends EventEmitter {
     try {
       const config = await this.client.getEventConfig();
 
-      let rulesCreated = 0;
       let subsCreated = 0;
 
-      if (config.post_rules) {
-        for (const rule of config.post_rules) {
-          eventsDAL.createPostRule({
-            hive_id: rule.hive_id,
-            source: rule.source,
-            event_types: rule.event_types,
-            filters: rule.filters as any,
-            normalizer: rule.normalizer,
-            thread_mode: rule.thread_mode as any,
-            priority: rule.priority,
-            created_by: 'swarmhub',
-          });
-          rulesCreated++;
-        }
-      }
-
+      // Post rules (hive-post pipeline) were dropped with the social layer.
+      // SwarmHub may still include `config.post_rules` for backward-compat
+      // with older hubs; we just ignore it.
       if (config.subscriptions) {
         for (const sub of config.subscriptions) {
           eventsDAL.createSubscription({
@@ -411,8 +397,8 @@ export class SwarmHubConnector extends EventEmitter {
         }
       }
 
-      if (rulesCreated > 0 || subsCreated > 0) {
-        console.log(`[swarmhub] Pulled event config: ${rulesCreated} rule(s), ${subsCreated} subscription(s)`);
+      if (subsCreated > 0) {
+        console.log(`[swarmhub] Pulled event config: ${subsCreated} subscription(s)`);
       }
     } catch (err) {
       // Non-fatal — the endpoint may not exist on older SwarmHub versions

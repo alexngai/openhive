@@ -22,6 +22,23 @@ export interface DispatchOutcome {
   [key: string]: unknown;
 }
 
+/**
+ * One entry per orchestrator attempt. Written by the event bridge in
+ * src/dispatch/setup.ts so the UI can render a retry timeline without
+ * reconstructing state from the WS event stream.
+ */
+export interface DispatchAttempt {
+  /** 1-indexed attempt number (matches orchestrator `attempt` field). */
+  attempt: number;
+  started_at: string;
+  ended_at?: string;
+  status: 'running' | 'completed' | 'failed' | 'retrying';
+  error?: string;
+  session_id?: string;
+  /** ISO timestamp of the next retry (set when status === 'retrying'). */
+  next_retry_at?: string;
+}
+
 export interface Dispatch {
   id: string;
   spec_resource_id: string;
@@ -38,6 +55,7 @@ export interface Dispatch {
   lease_expires_at: string | null;
   attempt: number;
   turn_count: number;
+  attempts_history: DispatchAttempt[];
   created_at: string;
   updated_at: string;
 }
@@ -58,6 +76,7 @@ interface DispatchRow {
   lease_expires_at: string | null;
   attempt: number | null;
   turn_count: number | null;
+  attempts_history: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -79,6 +98,16 @@ function rowToDispatch(row: DispatchRow): Dispatch {
     }
   }
 
+  let parsedAttempts: DispatchAttempt[] = [];
+  if (row.attempts_history) {
+    try {
+      const raw = JSON.parse(row.attempts_history);
+      if (Array.isArray(raw)) parsedAttempts = raw as DispatchAttempt[];
+    } catch {
+      /* keep default empty */
+    }
+  }
+
   return {
     id: row.id,
     spec_resource_id: row.spec_resource_id,
@@ -95,6 +124,7 @@ function rowToDispatch(row: DispatchRow): Dispatch {
     lease_expires_at: row.lease_expires_at ?? null,
     attempt: row.attempt ?? 0,
     turn_count: row.turn_count ?? 0,
+    attempts_history: parsedAttempts,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -369,6 +399,45 @@ export function updateDispatchAttemptTurn(
   db.prepare(
     `UPDATE dispatches SET attempt = ?, turn_count = ?, updated_at = datetime('now') WHERE id = ?`,
   ).run(attempt, turnCount, id);
+}
+
+/**
+ * Append or update the most recent entry in `attempts_history`. The upsert
+ * key is `attempt` (number): if an entry with the same attempt exists, it's
+ * merged in place (so `dispatched` → `retrying`/`completed` lands on one
+ * record instead of growing duplicates). Otherwise a new record is pushed.
+ *
+ * Designed to be idempotent — event bridges may fire similar events twice
+ * during retries, and we want stable history.
+ */
+export function upsertDispatchAttempt(id: string, entry: DispatchAttempt): void {
+  const db = getDatabase();
+  const row = db
+    .prepare('SELECT attempts_history FROM dispatches WHERE id = ?')
+    .get(id) as { attempts_history: string | null } | undefined;
+  if (!row) return;
+
+  let history: DispatchAttempt[] = [];
+  if (row.attempts_history) {
+    try {
+      const parsed = JSON.parse(row.attempts_history);
+      if (Array.isArray(parsed)) history = parsed as DispatchAttempt[];
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const idx = history.findIndex((a) => a.attempt === entry.attempt);
+  if (idx >= 0) {
+    history[idx] = { ...history[idx], ...entry };
+  } else {
+    history.push(entry);
+  }
+  history.sort((a, b) => a.attempt - b.attempt);
+
+  db.prepare(
+    `UPDATE dispatches SET attempts_history = ?, updated_at = datetime('now') WHERE id = ?`,
+  ).run(JSON.stringify(history), id);
 }
 
 export function listQueuedDispatches(limit: number = 50): Dispatch[] {

@@ -41,11 +41,16 @@ import {
 import { markStaleSwarms, getWellKnownMapInfo } from "./map/service.js";
 import { setupOrchestrator } from "./dispatch/setup.js";
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
+import { createOpenHiveMailTransport } from "./dispatch/mail-transport.js";
+import { createOpenHiveMailPort } from "./dispatch/openhive-mail-port.js";
+import { setAcpAvailabilityProbe } from "./dispatch/routing.js";
+import type { AcpStreamManager } from "./dispatch/openhive-runtime.js";
+import { sendToSwarm } from "./map/sync-listener.js";
 import type { Orchestrator } from "swarm-dispatch";
 import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
-import { initMail } from "./mail/index.js";
-import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
-import { initTokenService, loadRevocations, setPersistence } from "./map/token-service.js";
+import { initMail, getMailJsonRpc, getMailStorage, getMailEvents } from "./mail/index.js";
+import { setupMapWebSocket, stopMapWebSocket, disconnectSessionsForAgent } from "./map/ws-map.js";
+import { initTokenService, loadRevocations, setPersistence, setSessionCleanupHook } from "./map/token-service.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { SwarmHubConnector } from "./swarmhub/connector.js";
 import { normalize, routeEvent } from "./events/index.js";
@@ -85,6 +90,17 @@ export async function createHive(
     console.log(
       '[openhive] Local auth mode — all requests auto-authenticated as "local"',
     );
+    if (config.admin.trustLocalMode) {
+      console.warn(
+        '[openhive] ⚠  admin.trustLocalMode=true — admin routes accept NO credentials',
+      );
+      console.warn(
+        '[openhive]    Any client that can reach this port can run admin commands.',
+      );
+      console.warn(
+        '[openhive]    Only safe on localhost-bound or otherwise-trusted networks.',
+      );
+    }
   } else if (config.auth.mode === "swarmhub") {
     const swarmhubApiUrl =
       config.swarmhub.apiUrl || process.env.SWARMHUB_API_URL;
@@ -203,30 +219,45 @@ export async function createHive(
 
   // Register MAP inbound WebSocket (/ws/map) for agents connecting to the hub
   if (config.mapHub.enabled) {
-    // Initialize agent-iam TokenService for verified mode
-    if (config.mapHub.trustModel === 'verified') {
-      const { getDatabaseConfig } = await import("./db/index.js");
-      const dbConf = getDatabaseConfig();
-      const dataDir = dbConf?.type === 'sqlite' && dbConf.path
-        ? path.dirname(path.dirname(dbConf.path)) // <dataDir>/data/openhive.db → <dataDir>
-        : undefined;
-      initTokenService(config.mapHub.iamSecret, dataDir);
+    // Initialize agent-iam TokenService UNIVERSALLY (all trust modes).
+    //
+    // Historically this was gated on `trustModel === 'verified'`, but with
+    // agent-iam scopes replacing the DB-backed capability system (see
+    // docs/RFC_AGENT_CAPABILITIES.md), the token service needs to be
+    // available in `open` trust too so agents can exchange their API key
+    // for a scoped token and use it on REST routes. Cost is negligible
+    // — an HMAC secret and an in-memory revocation set.
+    const { getDatabaseConfig } = await import("./db/index.js");
+    const dbConf = getDatabaseConfig();
+    const dataDir = dbConf?.type === 'sqlite' && dbConf.path
+      ? path.dirname(path.dirname(dbConf.path)) // <dataDir>/data/openhive.db → <dataDir>
+      : undefined;
+    initTokenService(config.mapHub.iamSecret, dataDir);
 
-      // Wire up DB persistence for token revocation
-      try {
-        const { addRevokedToken, removeRevokedToken, listRevokedTokens } = await import("./db/dal/map.js");
-        setPersistence({ revoke: addRevokedToken, unrevoke: removeRevokedToken });
+    // Note: agent-iam tokens for regular agents are now minted only via
+    // `map/agents/spawn` (by parent agents) or `admin onboard-token`
+    // (by operators). Session scopes are resolved at map/connect time
+    // from DB capabilities, so grant changes take effect on next
+    // reconnect. See docs/RFC_AGENT_CAPABILITIES.md v4.
 
-        // Load persisted revocations from the database
-        const revoked = listRevokedTokens();
-        if (revoked.length > 0) {
-          loadRevocations(revoked);
-          console.log(`[openhive] Loaded ${revoked.length} persisted token revocation(s)`);
-        }
-      } catch {
-        // Table may not exist yet on first run before migration
+    // Wire up DB persistence for token revocation
+    try {
+      const { addRevokedToken, removeRevokedToken, listRevokedTokens } = await import("./db/dal/map.js");
+      setPersistence({ revoke: addRevokedToken, unrevoke: removeRevokedToken });
+
+      // Load persisted revocations from the database
+      const revoked = listRevokedTokens();
+      if (revoked.length > 0) {
+        loadRevocations(revoked);
+        console.log(`[openhive] Loaded ${revoked.length} persisted token revocation(s)`);
       }
+    } catch {
+      // Table may not exist yet on first run before migration
     }
+    // Close in-flight WS sessions when their token is revoked so the
+    // scope cache doesn't outlive the revocation. See RFC v4 §"Session
+    // scope resolution" and H2 in the review addendum.
+    setSessionCleanupHook(disconnectSessionsForAgent);
     setupMapWebSocket(fastify, config);
   }
 
@@ -481,6 +512,14 @@ export async function createHive(
   // Initialize dispatch orchestrator (swarm-dispatch integration)
   let dispatchOrchestrator: Orchestrator | null = null;
   try {
+    const mailTransport = createOpenHiveMailTransport({
+      getMailJsonRpc,
+      getMailStorage,
+      getMailEvents,
+      sendToSwarm,
+    });
+    const messagePort = createOpenHiveMailPort(mailTransport);
+
     dispatchOrchestrator = setupOrchestrator({
       specFetcher: {
         async fetch(resourceId: string, specId: string) {
@@ -506,21 +545,57 @@ export async function createHive(
       },
       runtimeDeps: {
         getAcpStreamManager: () => {
-          const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: unknown } }).swarmcraft;
-          return sc?.acpStreamManager as ReturnType<typeof setupOrchestrator> extends never ? never : unknown as any;
+          const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: AcpStreamManager } }).swarmcraft;
+          return sc?.acpStreamManager;
         },
       },
+      messagePort,
+      dispatchConfig: config.dispatch,
+    });
+    setAcpAvailabilityProbe(() => {
+      const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: AcpStreamManager } }).swarmcraft;
+      return !!sc?.acpStreamManager;
+    });
+    // Tear down the mail transport on server close so we don't leak the
+    // mail.turn.added listener + ingress subscription across reloads (tests,
+    // hot-reload dev loops). `destroy` is a no-op on already-destroyed ports.
+    fastify.addHook('onClose', async () => {
+      try {
+        mailTransport.destroy?.();
+      } catch {
+        /* best effort */
+      }
     });
     console.log('[openhive] Dispatch orchestrator initialized');
   } catch (err) {
     console.warn(`[openhive] Dispatch orchestrator failed: ${(err as Error).message}`);
   }
 
-  // Serve skill.md
+  // Serve skill.md. In server mode, strip the social-layer sections since
+  // nobody is there to post or browse — agents see only protocol + coordination docs.
   fastify.get("/skill.md", async (_request, reply) => {
+    if (config.mode === "server") {
+      const { renderDocument } = await import("./api/skill-fragments/index.js");
+      const skillMd = renderDocument(config, { audiences: ["shared", "agent"] });
+      return reply.type("text/markdown").send(skillMd);
+    }
     const skillMd = generateSkillMd(config);
     return reply.type("text/markdown").send(skillMd);
   });
+
+  // Per-fragment skill docs for agents that want only a slice.
+  // Returns the rendered fragment markdown or 404 for unknown IDs.
+  fastify.get<{ Params: { section: string } }>(
+    "/skill/:section.md",
+    async (request, reply) => {
+      const { renderFragment } = await import("./api/skill-fragments/index.js");
+      const content = renderFragment(request.params.section, config);
+      if (content === null) {
+        return reply.status(404).type("text/plain").send(`Unknown fragment: ${request.params.section}`);
+      }
+      return reply.type("text/markdown").send(content + "\n");
+    },
+  );
 
   // Serve sitemap.xml for SEO
   fastify.get("/sitemap.xml", async (_request, reply) => {
@@ -562,7 +637,38 @@ export async function createHive(
     staticRegistered = true;
   }
 
-  if (actualWebPath) {
+  if (config.mode === "server") {
+    // Headless mode: skip SPA + admin UI entirely. GET / returns a small
+    // JSON pointer so agents / operators hitting the root get something
+    // useful rather than a stack of HTML. /admin returns a friendly
+    // "use the CLI" message.
+    fastify.get("/", async (_request, reply) => {
+      return reply.send({
+        name: config.instance.name,
+        version: "0.1.0",
+        mode: "server",
+        endpoints: {
+          api: "/api/v1",
+          websocket: "/ws",
+          skill: "/skill.md",
+          wellKnown: "/.well-known/openhive.json",
+        },
+      });
+    });
+    fastify.get("/admin", async (_request, reply) => {
+      return reply
+        .type("text/html")
+        .send(
+          `<!doctype html><meta charset="utf-8"><title>OpenHive — server mode</title>` +
+          `<body style="font-family:system-ui;max-width:40em;margin:4em auto;padding:0 1em">` +
+          `<h1>OpenHive · server mode</h1>` +
+          `<p>This hub is running headless. There is no web admin UI.</p>` +
+          `<p>Manage it via the CLI: <code>openhive admin --help</code></p>` +
+          `<p>API docs: <a href="/skill.md">/skill.md</a></p>` +
+          `</body>`,
+        );
+    });
+  } else if (actualWebPath) {
     await fastify.register(fastifyStatic, {
       root: actualWebPath,
       prefix: "/",
@@ -603,26 +709,22 @@ export async function createHive(
     const agentCount = db
       .prepare("SELECT COUNT(*) as count FROM agents")
       .get() as { count: number };
-    const postCount = db
-      .prepare("SELECT COUNT(*) as count FROM posts")
-      .get() as { count: number };
     const hiveCount = db
       .prepare("SELECT COUNT(*) as count FROM hives")
       .get() as { count: number };
 
-    // Build response
     const wellKnown: Record<string, unknown> = {
       version: "0.2.0",
       name: config.instance.name,
       description: config.instance.description,
       url: config.instance.url,
+      mode: config.mode,
       federation: {
         enabled: config.federation.enabled,
         protocol_version: "1.0",
       },
       stats: {
         agents: agentCount.count,
-        posts: postCount.count,
         hives: hiveCount.count,
       },
       features: {
@@ -630,10 +732,42 @@ export async function createHive(
         swarmcraft: config.swarmcraft.enabled,
         swarmhub: swarmhubConnector?.isConnected || false,
       },
+      // Capabilities reflect the live runtime, not just the config — agents
+      // probing this endpoint need to know what actually works right now
+      // (e.g. whether the dispatch orchestrator came up successfully).
+      capabilities: {
+        map_hub: {
+          enabled: config.mapHub.enabled,
+          trust_model: config.mapHub.trustModel ?? "open",
+        },
+        dispatch: {
+          enabled: true, // route surface is always mounted
+          orchestrator: dispatchOrchestrator?.running ?? false,
+        },
+        sync: {
+          enabled: config.federation.enabled,
+        },
+        sessions: {
+          // Trajectory checkpoints land in session storage; if caching is
+          // disabled, the on-demand-from-agent path still works but older
+          // checkpoints aren't retrievable after the agent disconnects.
+          trajectories: config.sessions.type !== "none",
+          storage_backend: config.sessions.type,
+          chat_transports: ["acp", "mail"],
+        },
+        tasks: {
+          enabled: true,
+          map_methods: true,
+        },
+        cascade: {
+          enabled: true,
+        },
+      },
       endpoints: {
         api: "/api/v1",
         websocket: "/ws",
         skill: "/skill.md",
+        skill_fragments: "/skill/{section}.md",
       },
     };
 
@@ -1192,13 +1326,6 @@ function getInlineAdminHtml(config: Config): string {
                     </div>
                     <div className="text-4xl font-extrabold text-emerald-400 tracking-tight">{stats.hives?.total || 0}</div>
                   </div>
-                  <div className="stat-card bg-[#111114] border border-[#1f1f27] p-6 rounded-2xl">
-                    <div className="flex items-center justify-between mb-4">
-                      <span className="text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Posts</span>
-                      <span className="text-2xl">💬</span>
-                    </div>
-                    <div className="text-4xl font-extrabold text-sky-400 tracking-tight">{stats.posts?.total || 0}</div>
-                  </div>
                 </div>
 
                 {/* Quick info */}
@@ -1232,7 +1359,6 @@ function getInlineAdminHtml(config: Config): string {
                         <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Name</th>
                         <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Type</th>
                         <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Status</th>
-                        <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Karma</th>
                         <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Actions</th>
                       </tr>
                     </thead>
@@ -1260,9 +1386,6 @@ function getInlineAdminHtml(config: Config): string {
                             }\`}>
                               {agent.verification_status}
                             </span>
-                          </td>
-                          <td className="px-5 py-4">
-                            <span className="font-medium tabular-nums">{agent.karma}</span>
                           </td>
                           <td className="px-5 py-4">
                             <div className="flex gap-2">

@@ -2,6 +2,7 @@ import { nanoid } from 'nanoid';
 import bcrypt from 'bcrypt';
 import { getDatabase } from '../index.js';
 import type { Agent, AgentPublic } from '../../types.js';
+import { parseCapabilities, serializeCapabilities } from '../../api/middleware/capabilities.js';
 
 const SALT_ROUNDS = 10;
 
@@ -108,6 +109,24 @@ export function findAgentByName(name: string): Agent | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM agents WHERE name = ?').get(name) as Record<string, unknown> | undefined;
   return row ? rowToAgent(row) : null;
+}
+
+/**
+ * Bulk-resolve a list of agent ids to their public profiles in a single
+ * query. Missing ids are simply omitted from the result — callers should
+ * treat any id not in the returned map as an unknown/external participant.
+ *
+ * Used by the chat enrichment layer to decorate user/supervisor messages
+ * with the sender's display name + avatar. Keeps the turn payload free of
+ * identity metadata (the server stamps only `participant_id`).
+ */
+export function findAgentsByIds(ids: string[]): Agent[] {
+  if (ids.length === 0) return [];
+  const db = getDatabase();
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT * FROM agents WHERE id IN (${placeholders})`)
+    .all(...ids) as Array<Record<string, unknown>>;
+  return rows.map(rowToAgent);
 }
 
 export async function findAgentByApiKey(apiKey: string): Promise<Agent | null> {
@@ -428,4 +447,84 @@ export function findAgentBySwarmHubUserId(swarmhubUserId: string): Agent | null 
     .prepare('SELECT * FROM agents WHERE swarmhub_user_id = ?')
     .get(swarmhubUserId) as Record<string, unknown> | undefined;
   return row ? rowToAgent(row) : null;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Capability grants (V42)
+// See docs/RFC_AGENT_CAPABILITIES.md.
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * Return the raw `capabilities` JSON blob for an agent (or `null` if the
+ * agent doesn't exist / has no grants). Callers that need a parsed object
+ * should use `getAgentCapabilities` instead.
+ */
+export function getAgentCapabilitiesRaw(agentId: string): string | null {
+  const db = getDatabase();
+  const row = db
+    .prepare('SELECT capabilities FROM agents WHERE id = ?')
+    .get(agentId) as { capabilities?: string | null } | undefined;
+  return row?.capabilities ?? null;
+}
+
+/** Parsed grants for an agent. Default-deny on parse errors. */
+export function getAgentCapabilities(agentId: string): Record<string, boolean> {
+  return parseCapabilities(getAgentCapabilitiesRaw(agentId));
+}
+
+/** Whether an agent has a specific grant. Convenience wrapper. */
+export function agentHasCapability(agentId: string, capability: string): boolean {
+  return getAgentCapabilities(agentId)[capability] === true;
+}
+
+/**
+ * Grant a capability to an agent. Returns the new full grant map.
+ *
+ * The caller is responsible for validating `capability` against
+ * `KNOWN_CAPABILITIES` before invoking — the DAL stores whatever it's
+ * told to store.
+ *
+ * Invalidation of existing MAP sessions on grant change was handled in
+ * Phase 2/3 via a `grant_version` counter; under v4 session scopes are
+ * resolved at `map/connect` time, so grant changes take effect when the
+ * agent next connects. No version bump needed here.
+ */
+export function grantAgentCapability(
+  agentId: string,
+  capability: string,
+): Record<string, boolean> {
+  const current = getAgentCapabilities(agentId);
+  if (current[capability] === true) return current;
+  current[capability] = true;
+
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE agents
+        SET capabilities = ?,
+            updated_at = datetime('now')
+      WHERE id = ?`,
+  ).run(serializeCapabilities(current), agentId);
+  return current;
+}
+
+/**
+ * Revoke a capability. No-op if the grant wasn't present. Returns the
+ * new full grant map.
+ */
+export function revokeAgentCapability(
+  agentId: string,
+  capability: string,
+): Record<string, boolean> {
+  const current = getAgentCapabilities(agentId);
+  if (!(capability in current)) return current;
+  delete current[capability];
+
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE agents
+        SET capabilities = ?,
+            updated_at = datetime('now')
+      WHERE id = ?`,
+  ).run(serializeCapabilities(current), agentId);
+  return current;
 }

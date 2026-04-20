@@ -126,17 +126,6 @@ export interface MapSwarmHive {
 // Pre-auth Keys (analogous to headscale pre-auth keys)
 // ============================================================================
 
-export interface MapPreauthKey {
-  id: string;
-  key_hash: string;
-  hive_id: string | null;
-  uses_left: number;
-  expires_at: string | null;
-  created_by: string | null;
-  created_at: string;
-  last_used_at: string | null;
-}
-
 // ============================================================================
 // Federation Log
 // ============================================================================
@@ -165,8 +154,6 @@ export interface RegisterSwarmInput {
   auth_method?: MapAuthMethod;
   auth_token?: string; // Will be hashed before storage
   metadata?: Record<string, unknown>;
-  // Optional pre-auth key for auto-registration + auto-join
-  preauth_key?: string;
   // Stable identity hint — when provided, the hub upserts by canonical_key
   // instead of inserting a new row (Phase 3 swarm hygiene)
   stable_identity?: string;
@@ -228,11 +215,6 @@ export interface DiscoverNodesOptions {
   offset?: number;
 }
 
-export interface CreatePreauthKeyInput {
-  hive_id?: string;
-  uses?: number;
-  expires_in_hours?: number;
-}
 
 // ============================================================================
 // Peer List (headscale-style DERP map equivalent)

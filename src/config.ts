@@ -75,6 +75,20 @@ const DatabaseSchema = z
 export const ConfigSchema = z.object({
   port: z.number().default(3000),
   host: z.string().default("0.0.0.0"),
+
+  /**
+   * Deployment mode.
+   *
+   * - `'full'` (default) — serves the React SPA + admin UI alongside the API.
+   *   The traditional deployment shape.
+   * - `'server'` — headless hub. Skips the SPA; GET `/` returns a JSON pointer
+   *   to the API + skill docs. skill.md omits human-facing (social) sections.
+   *   Well-known and startup banner advertise the mode so agents can detect it.
+   *
+   * `mode: 'server'` composes fine with any auth mode, including `local`.
+   */
+  mode: z.enum(["server", "full"]).default("full"),
+
   database: DatabaseSchema,
 
   instance: z
@@ -90,6 +104,21 @@ export const ConfigSchema = z.object({
     .object({
       key: z.string().optional(),
       createOnStartup: z.boolean().default(true),
+      /**
+       * Trust the auto-authenticated local agent for admin-gated operations.
+       *
+       * When true AND `auth.mode === 'local'` AND the local agent is admin,
+       * `createAdminAuth` accepts requests with NO credentials by treating
+       * the local auto-auth agent as admin. This reverts to the pre-hardening
+       * behavior where a single-operator hub on localhost could be managed
+       * without ever typing the admin key.
+       *
+       * SECURITY: only enable on hubs that are bound to localhost or an
+       * otherwise-trusted network. Any client that can reach the port
+       * becomes effectively admin. Ignored in `token` / `swarmhub` auth
+       * modes (those never auto-auth).
+       */
+      trustLocalMode: z.boolean().default(false),
     })
     .default({}),
 
@@ -572,6 +601,33 @@ export const ConfigSchema = z.object({
         .optional(),
     })
     .default({ provider: "none" }),
+
+  // Dispatch orchestrator (swarm-dispatch integration)
+  dispatch: z
+    .object({
+      /** Max dispatches running concurrently across all swarms. */
+      globalConcurrency: z.number().int().positive().default(5),
+      /** How often the source table is polled for queued rows. */
+      pollIntervalMs: z.number().int().positive().default(15_000),
+      /** How often the reconcile cycle checks for external cancels / stalls. */
+      reconcileIntervalMs: z.number().int().positive().default(5_000),
+      /** Retry policy for failed dispatch attempts. */
+      retry: z
+        .object({
+          maxRetries: z.number().int().min(0).default(3),
+          baseDelayMs: z.number().int().positive().default(10_000),
+          maxDelayMs: z.number().int().positive().default(300_000),
+        })
+        .default({}),
+      /**
+       * Eligibility scorer for ready dispatches.
+       *
+       * - `heuristic` — swarm-dispatch's `heuristicScorer` (role + spec-age weighting).
+       * - `noop` — preserves source input order (previous default).
+       */
+      scorer: z.enum(["heuristic", "noop"]).default("heuristic"),
+    })
+    .default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -664,6 +720,9 @@ export function loadConfig(configPath?: string): Config {
   if (process.env.OPENHIVE_HOST) {
     rawConfig.host = process.env.OPENHIVE_HOST;
   }
+  if (process.env.OPENHIVE_MODE) {
+    rawConfig.mode = process.env.OPENHIVE_MODE;
+  }
   if (process.env.OPENHIVE_DATABASE) {
     rawConfig.database = process.env.OPENHIVE_DATABASE;
   }
@@ -671,6 +730,14 @@ export function loadConfig(configPath?: string): Config {
     rawConfig.admin = {
       ...rawConfig.admin,
       key: process.env.OPENHIVE_ADMIN_KEY,
+    };
+  }
+  if (process.env.OPENHIVE_ADMIN_TRUST_LOCAL_MODE !== undefined) {
+    // Accept '1', 'true', 'yes' (case-insensitive). Anything else disables.
+    const raw = process.env.OPENHIVE_ADMIN_TRUST_LOCAL_MODE.toLowerCase();
+    rawConfig.admin = {
+      ...rawConfig.admin,
+      trustLocalMode: raw === '1' || raw === 'true' || raw === 'yes',
     };
   }
   if (process.env.OPENHIVE_INSTANCE_NAME) {

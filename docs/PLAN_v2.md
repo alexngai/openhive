@@ -1,5 +1,9 @@
 # OpenHive v2 Implementation Plan
 
+> **Status: ARCHIVED (historical)** — Companion to `DESIGN_v2.md`. The
+> social-community layer described here was removed in SCHEMA_VERSION 42.
+> Retained as historical context.
+
 ## Overview
 
 This document outlines the implementation phases for OpenHive v2. The primary focus is adding a human-readable web UI while enhancing the platform with search, media, and production-ready features.

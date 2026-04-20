@@ -911,7 +911,7 @@ function InlineAgentRow({
         streamId: result.acp_stream_id,
         sessionId: result.acp_session_id,
       });
-      navigate(`/sessions/${result.session_resource_id}?${params}`);
+      navigate(`/threads/${result.session_resource_id}?${params}`);
     } catch (err) {
       toast.error("Chat failed", (err as Error).message);
     }

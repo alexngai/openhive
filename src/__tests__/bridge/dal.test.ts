@@ -197,48 +197,8 @@ describe('Bridge DAL', () => {
 
   // ── Message Mappings ──
 
-  describe('Message Mappings', () => {
-    it('records a message mapping for a post', () => {
-      const bridge = bridgeDAL.getBridgeByName('team-slack')!;
-
-      // Create a test post (use the default seeded hive ID)
-      const hive = db.prepare("SELECT id FROM hives WHERE name = 'general'").get() as { id: string };
-      db.prepare(`
-        INSERT INTO posts (id, hive_id, author_id, title) VALUES ('post_test1', ?, ?, 'Test')
-      `).run(hive.id, testAgentId);
-
-      const mapping = bridgeDAL.recordMessageMapping({
-        bridge_id: bridge.id,
-        platform_message_id: '1708444800.001200',
-        platform_channel_id: 'C0ABC123',
-        post_id: 'post_test1',
-      });
-
-      expect(mapping.id).toMatch(/^bmm_/);
-      expect(mapping.post_id).toBe('post_test1');
-      expect(mapping.comment_id).toBeNull();
-    });
-
-    it('looks up message mapping by platform message ID', () => {
-      const bridge = bridgeDAL.getBridgeByName('team-slack')!;
-      const mapping = bridgeDAL.getMessageMapping(bridge.id, '1708444800.001200');
-      expect(mapping).not.toBeNull();
-      expect(mapping!.post_id).toBe('post_test1');
-    });
-
-    it('looks up message mapping by post ID', () => {
-      const bridge = bridgeDAL.getBridgeByName('team-slack')!;
-      const mapping = bridgeDAL.getMessageMappingByPost(bridge.id, 'post_test1');
-      expect(mapping).not.toBeNull();
-      expect(mapping!.platform_message_id).toBe('1708444800.001200');
-    });
-
-    it('returns null for unknown platform message', () => {
-      const bridge = bridgeDAL.getBridgeByName('team-slack')!;
-      const mapping = bridgeDAL.getMessageMapping(bridge.id, 'nonexistent');
-      expect(mapping).toBeNull();
-    });
-  });
+  // Message Mappings block removed — exercised the post↔platform mapping
+  // which depended on the now-deleted posts/comments tables.
 
   // ── Cascade Deletes ──
 

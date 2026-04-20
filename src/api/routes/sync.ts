@@ -1,6 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { authMiddleware } from '../middleware/auth.js';
-import { requireAdmin } from '../middleware/auth.js';
+import { authMiddleware, createAdminAuth, createAuthOrAdminKey } from '../middleware/auth.js';
 import { CreateSyncGroupSchema, CreatePeerConfigSchema, UpdatePeerConfigSchema } from '../schemas/sync.js';
 import * as syncGroupsDAL from '../../db/dal/sync-groups.js';
 import * as syncEventsDAL from '../../db/dal/sync-events.js';
@@ -10,7 +9,9 @@ import * as hivesDAL from '../../db/dal/hives.js';
 import { getSyncService } from '../../sync/service.js';
 import type { Config } from '../../config.js';
 
-export async function syncRoutes(fastify: FastifyInstance, _opts: { config: Config }): Promise<void> {
+export async function syncRoutes(fastify: FastifyInstance, opts: { config: Config }): Promise<void> {
+  const adminAuth = createAdminAuth(opts.config);
+  const authOrAdminKey = createAuthOrAdminKey(opts.config);
   // ── Sync Group Management ─────────────────────────────────────
 
   // Create sync group for a hive
@@ -148,7 +149,7 @@ export async function syncRoutes(fastify: FastifyInstance, _opts: { config: Conf
   // ── Peer Management ───────────────────────────────────────────
 
   // List configured peers
-  fastify.get('/sync/peers', { preHandler: authMiddleware }, async (request, reply) => {
+  fastify.get('/sync/peers', { preHandler: authOrAdminKey }, async (request, reply) => {
     const query = request.query as { source?: string; status?: string };
     const peers = syncPeerConfigsDAL.listPeerConfigs({
       source: query.source as 'manual' | 'hub' | 'gossip' | undefined,
@@ -159,7 +160,7 @@ export async function syncRoutes(fastify: FastifyInstance, _opts: { config: Conf
   });
 
   // Add a peer manually (admin only)
-  fastify.post('/sync/peers', { preHandler: [authMiddleware, requireAdmin] }, async (request, reply) => {
+  fastify.post('/sync/peers', { preHandler: adminAuth }, async (request, reply) => {
     const parseResult = CreatePeerConfigSchema.safeParse(request.body);
     if (!parseResult.success) {
       return reply.status(400).send({ error: 'Validation Error', details: parseResult.error.issues });
@@ -175,7 +176,7 @@ export async function syncRoutes(fastify: FastifyInstance, _opts: { config: Conf
   });
 
   // Update peer config (admin only)
-  fastify.patch<{ Params: { id: string } }>('/sync/peers/:id', { preHandler: [authMiddleware, requireAdmin] }, async (request, reply) => {
+  fastify.patch<{ Params: { id: string } }>('/sync/peers/:id', { preHandler: adminAuth }, async (request, reply) => {
     const existing = syncPeerConfigsDAL.findPeerConfigById(request.params.id);
     if (!existing) {
       return reply.status(404).send({ error: 'Not Found', message: 'Peer not found' });
@@ -191,7 +192,7 @@ export async function syncRoutes(fastify: FastifyInstance, _opts: { config: Conf
   });
 
   // Delete a peer (admin only)
-  fastify.delete<{ Params: { id: string } }>('/sync/peers/:id', { preHandler: [authMiddleware, requireAdmin] }, async (request, reply) => {
+  fastify.delete<{ Params: { id: string } }>('/sync/peers/:id', { preHandler: adminAuth }, async (request, reply) => {
     const existing = syncPeerConfigsDAL.findPeerConfigById(request.params.id);
     if (!existing) {
       return reply.status(404).send({ error: 'Not Found', message: 'Peer not found' });
@@ -204,7 +205,7 @@ export async function syncRoutes(fastify: FastifyInstance, _opts: { config: Conf
   // ── Advanced Operations ──────────────────────────────────────
 
   // Force resync from peers for a sync group (admin only)
-  fastify.post<{ Params: { id: string } }>('/sync/groups/:id/resync', { preHandler: [authMiddleware, requireAdmin] }, async (request, reply) => {
+  fastify.post<{ Params: { id: string } }>('/sync/groups/:id/resync', { preHandler: adminAuth }, async (request, reply) => {
     const syncService = getSyncService();
     if (!syncService) {
       return reply.status(503).send({ error: 'Service Unavailable', message: 'Sync service is not enabled' });
@@ -231,7 +232,7 @@ export async function syncRoutes(fastify: FastifyInstance, _opts: { config: Conf
   });
 
   // Test connectivity to a peer (admin only)
-  fastify.post<{ Params: { id: string } }>('/sync/peers/:id/test', { preHandler: [authMiddleware, requireAdmin] }, async (request, reply) => {
+  fastify.post<{ Params: { id: string } }>('/sync/peers/:id/test', { preHandler: adminAuth }, async (request, reply) => {
     const peerConfig = syncPeerConfigsDAL.findPeerConfigById(request.params.id);
     if (!peerConfig) {
       return reply.status(404).send({ error: 'Not Found', message: 'Peer not found' });

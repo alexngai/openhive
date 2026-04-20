@@ -67,7 +67,7 @@ function handleSwarmError(error: unknown, reply: FastifyReply): FastifyReply {
       PROVIDER_NOT_AVAILABLE: 400,
       NO_PORTS_AVAILABLE: 503,
       HIVE_NOT_FOUND: 404,
-      PREAUTH_KEY_FAILED: 500,
+      ONBOARD_TOKEN_FAILED: 500,
       WORKSPACE_SETUP_FAILED: 500,
       SPAWN_FAILED: 500,
       NOT_FOUND: 404,

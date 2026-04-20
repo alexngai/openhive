@@ -3,9 +3,11 @@ import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
   Activity, AlertTriangle, Brain, ChevronDown, ChevronRight,
   Clock, Cpu, FileText, GitBranch, GitCommit, Hash,
-  Info, MessageSquare, User,
+  Info, MessageSquare, Send, User,
 } from 'lucide-react';
 import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants, useResumeSession } from '../hooks/useApi';
+import { useDispatchList } from '../hooks/useDispatch';
+import { useSpec } from '../hooks/useSpecs';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
@@ -23,6 +25,7 @@ import {
 import { useSessionCapabilityResolver, sessionTarget } from '../lib/chat/resolvers';
 import { useOpenHiveAdapters } from '../adapters/openhive-adapters';
 import { sessionEventsToChatMessages } from '../lib/chat/session-events';
+import { useEnrichedUserTurns } from '../hooks/useEnrichedUserTurns';
 import clsx from 'clsx';
 
 // ============================================================================
@@ -361,7 +364,7 @@ function TrajectoryTab({ sessionId, resourceId, hasTrajectorySupport, agentIdent
 
   // Convert trajectory events (API order: newest-first) into ChatMessage[]
   // in chronological order, then merge live channel messages with dedup.
-  const messages = useMemo(() => {
+  const rawMessages = useMemo(() => {
     const chronological = [...trajectoryEvents].reverse();
     const fromTrajectory = sessionEventsToChatMessages(chronological, {
       assistantIdentity: agentIdentity,
@@ -370,6 +373,12 @@ function TrajectoryTab({ sessionId, resourceId, hasTrajectorySupport, agentIdent
     const uniqueLive = deduplicateChatMessages(live, fromTrajectory);
     return [...fromTrajectory, ...uniqueLive];
   }, [trajectoryEvents, channel.messages, agentIdentity]);
+
+  // Decorate user/supervisor turns with openhive Agent identity (name +
+  // avatar) so the viewer sees the same user the same way everywhere —
+  // trajectory, live ACP echo, and the mail thread this session may link
+  // to. Shared helper with MailThreadView + ChatPanel.
+  const messages = useEnrichedUserTurns(rawMessages);
 
   if (!hasTrajectorySupport) {
     return (
@@ -500,6 +509,22 @@ export function SessionDetail() {
   // Enable trajectory/chat for sessions with checkpoints OR eagerly-created ACP sessions
   const hasTrajectorySupport = total > 0 || !!sourceSwarmId;
 
+  // Upstream lineage heuristic: if this session was spawned by a dispatch,
+  // the dispatch on the same swarm will list this session's id. Small query
+  // (scoped to the source swarm) that cheaply reveals the spec/dispatch this
+  // work came from.
+  const { data: dispatchResp } = useDispatchList(
+    sourceSwarmId ? { target_swarm_id: sourceSwarmId, limit: 100 } : {},
+  );
+  const sourceDispatch = useMemo(() => {
+    if (!id || !dispatchResp?.data) return undefined;
+    return dispatchResp.data.find((d) => d.session_ids.includes(id));
+  }, [dispatchResp, id]);
+  const { data: sourceSpecResp } = useSpec(
+    sourceDispatch?.spec_resource_id,
+    sourceDispatch?.spec_id,
+  );
+
   return (
     <>
       {/* Full-width sticky header */}
@@ -533,6 +558,29 @@ export function SessionDetail() {
                   <FileText className="w-3 h-3" />
                   {stats.total_files_touched}
                 </span>
+              </div>
+            )}
+            {sourceDispatch && (
+              <div className="flex items-center gap-2 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+                <span className="uppercase tracking-wider" style={{ fontSize: '0.6rem' }}>from</span>
+                <Link
+                  to={`/dispatch/${sourceDispatch.id}`}
+                  className="inline-flex items-center gap-0.5 hover:opacity-80"
+                  title={`Dispatch ${sourceDispatch.id}`}
+                >
+                  <Send className="w-3 h-3 text-honey-500" />
+                  <span className="font-mono">{sourceDispatch.id.slice(0, 12)}</span>
+                </Link>
+                <span>·</span>
+                <Link
+                  to={`/specs/${sourceDispatch.spec_resource_id}/${sourceDispatch.spec_id}`}
+                  className="inline-flex items-center gap-0.5 hover:opacity-80 min-w-0"
+                >
+                  <FileText className="w-3 h-3 text-honey-500 shrink-0" />
+                  <span className="truncate max-w-[240px]">
+                    {sourceSpecResp?.spec.title ?? sourceDispatch.spec_id}
+                  </span>
+                </Link>
               </div>
             )}
           </div>

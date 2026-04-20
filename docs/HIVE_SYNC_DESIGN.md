@@ -1,10 +1,20 @@
 # Hive Sync Architecture Design Document
 
+> **Status: HISTORICAL (partially implemented, then scoped down)** — The
+> pull-based mesh described here was implemented (see `hive_sync_*` tables,
+> `src/sync/`). But the **content** side of the sync (posts/comments/votes)
+> was removed along with the social layer in SCHEMA_VERSION 42. The mesh is
+> still live and replicates **resources** (memory banks, skills, session
+> trajectories) + **coordination messages** across openhive instances. The
+> design sections below that cite posts/comments/votes as the replicated
+> payload are obsolete in that respect, though the transport + crypto +
+> gossip design still reflects production code.
+
 ## Overview
 
 This document defines the architecture for cross-instance hive synchronization in OpenHive. It evaluates three sync patterns — pull-based subscription, push-based federation, and mesh sync — grounded in the architectures of real-world federated systems (Lemmy, Matrix, AT Protocol, CouchDB). It maps each pattern onto the existing OpenHive codebase and recommends an implementation path.
 
-**Goal**: Allow hives to exist across multiple OpenHive instances, with content (posts, comments, votes) flowing between them so that users on any participating instance see a unified view.
+**Original goal (partially obsolete)**: Allow hives to exist across multiple OpenHive instances, with content (posts, comments, votes) flowing between them so that users on any participating instance see a unified view. The content side of this goal is no longer pursued; the resource + coordination sync that landed on this foundation remains in active use.
 
 ---
 

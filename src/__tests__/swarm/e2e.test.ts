@@ -18,6 +18,7 @@ import websocket from '@fastify/websocket';
 import { WebSocket } from 'ws';
 import * as path from 'path';
 import { initDatabase, closeDatabase } from '../../db/index.js';
+import { initTokenService, _resetTokenService } from '../../map/token-service.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import { swarmHostingRoutes } from '../../api/routes/swarm-hosting.js';
@@ -125,6 +126,7 @@ describe('E2E: Swarm Hosting + Terminal WebSocket', () => {
   beforeAll(async () => {
     cleanTestRoot(TEST_ROOT);
     initDatabase(TEST_DB_PATH);
+    initTokenService(undefined, TEST_ROOT);
     config = createTestConfig();
 
     // Create test agents
@@ -201,6 +203,7 @@ describe('E2E: Swarm Hosting + Terminal WebSocket', () => {
     ptyManager.destroyAll();
     await swarmManager.shutdown();
     await app.close();
+    _resetTokenService();
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
   });

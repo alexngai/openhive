@@ -23,12 +23,15 @@ import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findN
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities, getPeerMapId } from './connection-registry.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities, getPeerMapId, getAgentOnSwarm } from './connection-registry.js';
+import { resolveSessionScopes } from './session-scopes.js';
+import { verifyToken, isTokenServiceInitialized } from './token-service.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { handleTrajectoryRequest } from './trajectory-handler.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
 import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
 import { getMailJsonRpc } from '../mail/index.js';
+import { pushDispatchMapReply } from '../dispatch/mail-ingress.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import { broadcastSwarmLifecycleEvent } from '../realtime/swarm-events.js';
@@ -162,25 +165,66 @@ function clearHeartbeatDebounce(swarmId: string): void {
 // Auth (hub access — validates API key before MAPServer sees the connection)
 // ============================================================================
 
-async function authenticateToken(token: string): Promise<Agent | null> {
+/**
+ * Result of the outer WS-access auth gate.
+ *
+ * The MAP `?token=` may be an agent-iam delegated token — either minted
+ * by the operator via `admin onboard-token` or by a parent swarm via
+ * `map/agents/spawn`. When it is, we return the parsed claims so the
+ * connect handler can use them as session scopes and track expiry
+ * without re-verifying.
+ */
+interface AuthResult {
+  agent: Agent;
+  tokenScopes?: string[];
+  /** ISO 8601 string per agent-iam's `AgentToken.expiresAt`. */
+  tokenExpiresAt?: string;
+  tokenDelegatable?: boolean;
+  tokenSerialized?: string;
+}
+
+async function authenticateToken(token: string): Promise<AuthResult | null> {
   if (token.startsWith('ohk_')) {
     const ingestKey = validateIngestKey(token);
-    if (ingestKey) return findAgentById(ingestKey.agent_id) ?? null;
+    if (ingestKey) {
+      const agent = findAgentById(ingestKey.agent_id);
+      return agent ? { agent } : null;
+    }
     return null;
   }
 
-  const agent = await findAgentByApiKey(token);
-  if (agent) return agent;
+  const apiKeyAgent = await findAgentByApiKey(token);
+  if (apiKeyAgent) return { agent: apiKeyAgent };
+
+  // Agent-iam delegated tokens — minted by `admin onboard-token` or
+  // `map/agents/spawn`. The REST middleware already honors these; the
+  // WS gate was missing the same check before v4 delegation landed.
+  if (isTokenServiceInitialized()) {
+    const verified = verifyToken(token);
+    if (verified.valid && verified.token) {
+      const agent = findAgentById(verified.token.agentId);
+      if (agent) {
+        return {
+          agent,
+          tokenScopes: verified.token.scopes,
+          tokenExpiresAt: verified.token.expiresAt,
+          tokenDelegatable: verified.token.delegatable,
+          tokenSerialized: token,
+        };
+      }
+    }
+  }
 
   if (isJwksInitialized()) {
     const payload = await validateSwarmHubToken(token);
     if (payload?.sub) {
-      return findOrCreateSwarmHubAgent({
+      const agent = await findOrCreateSwarmHubAgent({
         swarmhubUserId: payload.sub,
         name: payload.name,
         email: payload.email,
         avatarUrl: payload.avatar_url,
       });
+      return agent ? { agent } : null;
     }
   }
 
@@ -297,6 +341,18 @@ function createNotificationInterceptor(
       } else if (typeof msg.method === 'string' && msg.method.startsWith('mail/')) {
         // Mail notifications — fire and forget
         try { getMailJsonRpc().handleRequest(msg as any); } catch { /* ignore */ }
+      } else if (msg.method === 'map/dispatch/reply') {
+        // Dispatch reply from agent — fan out to the mail-transport listeners.
+        // Verify from_agent_id is actually registered on the inbound swarm so a
+        // compromised sidecar can't spoof replies on behalf of another agent.
+        // Cross-swarm spoofing is already blocked — swarmId comes from the
+        // authenticated connection, not the payload.
+        const params = (msg.params ?? {}) as Record<string, unknown>;
+        const fromAgentId = typeof params.from_agent_id === 'string' ? params.from_agent_id : '';
+        const envelope = (params.envelope ?? params.message) as Record<string, unknown> | undefined;
+        if (fromAgentId && envelope && typeof envelope === 'object' && getAgentOnSwarm(swarmId, fromAgentId)) {
+          pushDispatchMapReply({ swarmId, fromAgentId, message: envelope });
+        }
       }
       // Other notifications pass through to MAPServer (it will ignore unknown ones)
 
@@ -461,23 +517,25 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     const bufferHandler = (data: Buffer) => { bufferedMessages.push(data); };
     ws.on('message', bufferHandler);
 
-    let agent: Agent | null = null;
+    let authResult: AuthResult | null = null;
     if (query.token) {
-      agent = await authenticateToken(query.token);
+      authResult = await authenticateToken(query.token);
     }
 
     // Local mode fallback: no token → use the local agent (same as HTTP auth middleware)
-    if (!agent && config.auth.mode === 'local') {
-      agent = await getOrCreateLocalAgent();
+    if (!authResult && config.auth.mode === 'local') {
+      const local = await getOrCreateLocalAgent();
+      if (local) authResult = { agent: local };
     }
 
     ws.removeListener('message', bufferHandler);
 
-    if (!agent) {
+    if (!authResult) {
       sendJsonRpcError(ws, -32000, 'Missing or invalid authentication token');
       ws.close(4001, 'Unauthorized');
       return;
     }
+    const agent = authResult.agent;
 
     if (trustModel === 'verified') {
       // ── Verified mode ────────────────────────────────────────────────
@@ -537,12 +595,27 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         }
 
         connectedSwarmId = swarmId;
+        // Scope resolution, in priority order:
+        //   1. Token presented at the WS `?token=` gate (authResult)
+        //   2. MAPServer's own map/authenticate flow (router.session.principal)
+        //   3. DB fallback (agent.is_admin / capabilities column)
+        // The two token paths converge on agent-iam; priority 1 covers
+        // spawned swarms that present a delegated token directly, priority
+        // 2 covers full MAP handshake clients.
+        const principalClaims = (router.session?.principal?.claims ?? {}) as Record<string, unknown>;
+        const tokenScopes = authResult.tokenScopes
+          ?? (Array.isArray(principalClaims.scopes) ? (principalClaims.scopes as string[]) : undefined);
+        const tokenExpiresAt = authResult.tokenExpiresAt
+          ?? (router.session?.principal?.expiresAt
+            ? new Date(router.session.principal.expiresAt).toISOString()
+            : undefined);
         registerInbound(swarmId, {
           ws, agentId: agent.id, swarmId,
           connectedAt: now, lastMessageAt: now,
-          tokenExpiresAt: router.session?.principal?.expiresAt
-            ? new Date(router.session.principal.expiresAt).toISOString()
-            : undefined,
+          tokenExpiresAt,
+          tokenDelegatable: authResult.tokenDelegatable,
+          tokenSerialized: authResult.tokenSerialized,
+          sessionScopes: resolveSessionScopes({ agent, tokenScopes }),
           registeredAgents: new Map(),
         });
         heartbeatSwarm(swarmId);
@@ -598,9 +671,17 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
     connectedSwarmId = swarmId;
     const now = new Date().toISOString();
+    // Open mode: session scopes come from the presented agent-iam token if
+    // one was accepted at the outer gate, else fall back to DB capabilities
+    // + is_admin. Delegated swarms spawned via map/agents/spawn always
+    // arrive with a token; vanilla API-key connections use the DB path.
     registerInbound(swarmId, {
       ws, agentId: agent.id, swarmId,
       connectedAt: now, lastMessageAt: now,
+      tokenExpiresAt: authResult.tokenExpiresAt,
+      tokenDelegatable: authResult.tokenDelegatable,
+      tokenSerialized: authResult.tokenSerialized,
+      sessionScopes: resolveSessionScopes({ agent, tokenScopes: authResult.tokenScopes }),
       registeredAgents: new Map(),
     });
     heartbeatSwarm(swarmId);
@@ -1054,10 +1135,23 @@ function startMapHeartbeat(): void {
       sendJsonRpc(conn.ws, 'ping', {});
 
       // Token expiry check
-      if (conn.tokenExpiresAt && !conn.expiryNotified) {
+      if (conn.tokenExpiresAt) {
         const expiresAt = new Date(conn.tokenExpiresAt).getTime();
         const secondsLeft = Math.floor((expiresAt - now) / 1000);
-        if (secondsLeft <= TOKEN_EXPIRY_WARNING_SECONDS) {
+        // Past expiry → force the WS closed. Method dispatch would
+        // start failing (agent-iam verify rejects expired tokens) but
+        // `sessionScopes` was cached at connect time, so without this
+        // close a stale session could keep calling MAP methods
+        // indefinitely. Closing here matches the RFC §"Session scope
+        // resolution" expiry contract.
+        if (secondsLeft <= 0) {
+          try {
+            sendJsonRpc(conn.ws, 'map/auth.expired', { reason: 'token_expired' });
+            conn.ws.close(4003, 'Token expired');
+          } catch { /* ignore */ }
+          continue;
+        }
+        if (!conn.expiryNotified && secondsLeft <= TOKEN_EXPIRY_WARNING_SECONDS) {
           sendJsonRpc(conn.ws, 'map/auth.expiring', {
             expiresIn: Math.max(0, secondsLeft),
             reason: 'token_expiring',
@@ -1067,6 +1161,34 @@ function startMapHeartbeat(): void {
       }
     }
   }, HEARTBEAT_INTERVAL);
+}
+
+/**
+ * Force-disconnect any open WS sessions whose authenticating token
+ * chain intersects `agentId`. Called from `token-service.revokeToken`
+ * so operator-initiated revocation kicks active sessions off before
+ * the heartbeat catches expiry.
+ *
+ * Matches either:
+ *  - `conn.agentId === agentId` (direct revocation of the session's
+ *    hub agent), or
+ *  - any ancestor in the parent-chain registry for the session's token
+ *    subject — handled inside `verifyToken`, which `tokenHasScope` and
+ *    future revalidation sweeps will consult.
+ *
+ * For v4 the simple case is sufficient: most sessions are one delegation
+ * deep (coordinator → child), and revoking the coordinator disconnects
+ * the session whose conn.agentId == coordinator.id.
+ */
+export function disconnectSessionsForAgent(agentId: string): void {
+  for (const [swarmId, conn] of getAllInbound()) {
+    if (conn.agentId !== agentId) continue;
+    try {
+      sendJsonRpc(conn.ws, 'map/auth.revoked', { reason: 'token_revoked' });
+      conn.ws.close(4003, 'Token revoked');
+    } catch { /* ignore */ }
+    unregisterInbound(swarmId);
+  }
 }
 
 // ============================================================================

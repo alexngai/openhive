@@ -2,7 +2,6 @@ import { FastifyInstance } from 'fastify';
 import { RegisterAgentSchema, UpdateAgentSchema } from '../schemas/agents.js';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
 import * as agentsDAL from '../../db/dal/agents.js';
-import * as followsDAL from '../../db/dal/follows.js';
 import type { Config } from '../../config.js';
 
 export async function agentsRoutes(fastify: FastifyInstance, _options: { config: Config }): Promise<void> {
@@ -19,7 +18,6 @@ export async function agentsRoutes(fastify: FastifyInstance, _options: { config:
 
     const { name, description, metadata } = parseResult.data;
 
-    // Check if name is taken
     const existing = agentsDAL.findAgentByName(name);
     if (existing) {
       return reply.status(409).send({
@@ -52,17 +50,19 @@ export async function agentsRoutes(fastify: FastifyInstance, _options: { config:
   // Get current agent profile
   fastify.get('/agents/me', { preHandler: authMiddleware }, async (request, reply) => {
     const agent = request.agent!;
-    const followerCount = followsDAL.getFollowerCount(agent.id);
-    const followingCount = followsDAL.getFollowingCount(agent.id);
-
     return reply.send({
       ...agentsDAL.toPublicAgent(agent),
       is_admin: agent.is_admin,
       verification_status: agent.verification_status,
-      follower_count: followerCount,
-      following_count: followingCount,
     });
   });
+
+  // NOTE: `POST /agents/me/token` (the Phase 2 token-exchange endpoint)
+  // was retired in RFC v4. Agents no longer exchange their API key for
+  // an agent-iam token; session scopes are resolved at `map/connect` and
+  // the only tokens minted are delegated credentials via
+  // `map/agents/spawn` (agent-to-agent) or `openhive admin onboard-token`
+  // (operator bootstrap).
 
   // Update current agent profile
   fastify.patch('/agents/me', { preHandler: authMiddleware }, async (request, reply) => {
@@ -78,6 +78,34 @@ export async function agentsRoutes(fastify: FastifyInstance, _options: { config:
     return reply.send(agentsDAL.toPublicAgent(updated!));
   });
 
+  // Bulk-resolve agent public profiles by id. Used by chat-surface
+  // enrichment to look up display name + avatar_url for the senders of
+  // user/supervisor turns in a single round-trip. Returns an object keyed
+  // by id so missing ids are implicit (omitted from the map).
+  //
+  // Must be declared BEFORE `/agents/:name` — Fastify matches literal
+  // segments first, so `/agents/by-ids` wouldn't collide, but keeping the
+  // order explicit avoids future ambiguity if the `:name` route's matcher
+  // ever becomes more permissive.
+  fastify.get<{ Querystring: { ids?: string } }>(
+    '/agents/by-ids',
+    { preHandler: optionalAuthMiddleware },
+    async (request, reply) => {
+      const raw = request.query.ids ?? '';
+      const ids = raw.split(',').map((s) => s.trim()).filter(Boolean);
+      if (ids.length > 100) {
+        return reply.status(400).send({
+          error: 'Validation Error',
+          message: 'ids parameter is limited to 100 entries',
+        });
+      }
+      const agents = agentsDAL.findAgentsByIds(ids);
+      const byId: Record<string, ReturnType<typeof agentsDAL.toPublicAgent>> = {};
+      for (const a of agents) byId[a.id] = agentsDAL.toPublicAgent(a);
+      return reply.send({ agents: byId });
+    }
+  );
+
   // Get agent by name
   fastify.get<{ Params: { name: string } }>(
     '/agents/:name',
@@ -92,132 +120,7 @@ export async function agentsRoutes(fastify: FastifyInstance, _options: { config:
         });
       }
 
-      const followerCount = followsDAL.getFollowerCount(agent.id);
-      const followingCount = followsDAL.getFollowingCount(agent.id);
-
-      // Check if current user follows this agent
-      let isFollowing = false;
-      if (request.agent && request.agent.id !== agent.id) {
-        isFollowing = followsDAL.isFollowing(request.agent.id, agent.id);
-      }
-
-      return reply.send({
-        ...agentsDAL.toPublicAgent(agent),
-        follower_count: followerCount,
-        following_count: followingCount,
-        is_following: isFollowing,
-      });
+      return reply.send(agentsDAL.toPublicAgent(agent));
     }
   );
-
-  // Follow an agent
-  fastify.post<{ Params: { name: string } }>(
-    '/agents/:name/follow',
-    { preHandler: authMiddleware },
-    async (request, reply) => {
-      const target = agentsDAL.findAgentByName(request.params.name);
-
-      if (!target) {
-        return reply.status(404).send({
-          error: 'Not Found',
-          message: 'Agent not found',
-        });
-      }
-
-      const follow = followsDAL.followAgent(request.agent!.id, target.id);
-
-      if (!follow) {
-        return reply.status(400).send({
-          error: 'Bad Request',
-          message: 'Already following this agent or cannot follow yourself',
-        });
-      }
-
-      return reply.status(201).send({ success: true });
-    }
-  );
-
-  // Unfollow an agent
-  fastify.delete<{ Params: { name: string } }>(
-    '/agents/:name/follow',
-    { preHandler: authMiddleware },
-    async (request, reply) => {
-      const target = agentsDAL.findAgentByName(request.params.name);
-
-      if (!target) {
-        return reply.status(404).send({
-          error: 'Not Found',
-          message: 'Agent not found',
-        });
-      }
-
-      const unfollowed = followsDAL.unfollowAgent(request.agent!.id, target.id);
-
-      if (!unfollowed) {
-        return reply.status(400).send({
-          error: 'Bad Request',
-          message: 'Not following this agent',
-        });
-      }
-
-      return reply.send({ success: true });
-    }
-  );
-
-  // Get agent's followers
-  fastify.get<{ Params: { name: string }; Querystring: { limit?: number; offset?: number } }>(
-    '/agents/:name/followers',
-    async (request, reply) => {
-      const agent = agentsDAL.findAgentByName(request.params.name);
-
-      if (!agent) {
-        return reply.status(404).send({
-          error: 'Not Found',
-          message: 'Agent not found',
-        });
-      }
-
-      const limit = Math.min(request.query.limit || 50, 100);
-      const offset = request.query.offset || 0;
-
-      const followers = followsDAL.getFollowers(agent.id, limit, offset);
-      const total = followsDAL.getFollowerCount(agent.id);
-
-      return reply.send({
-        data: followers,
-        total,
-        limit,
-        offset,
-      });
-    }
-  );
-
-  // Get agents the agent is following
-  fastify.get<{ Params: { name: string }; Querystring: { limit?: number; offset?: number } }>(
-    '/agents/:name/following',
-    async (request, reply) => {
-      const agent = agentsDAL.findAgentByName(request.params.name);
-
-      if (!agent) {
-        return reply.status(404).send({
-          error: 'Not Found',
-          message: 'Agent not found',
-        });
-      }
-
-      const limit = Math.min(request.query.limit || 50, 100);
-      const offset = request.query.offset || 0;
-
-      const following = followsDAL.getFollowing(agent.id, limit, offset);
-      const total = followsDAL.getFollowingCount(agent.id);
-
-      return reply.send({
-        data: following,
-        total,
-        limit,
-        offset,
-      });
-    }
-  );
-
 }
