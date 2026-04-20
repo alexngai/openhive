@@ -42,6 +42,12 @@ function subscribeString(channel: string, listener: StringListener): Dispose {
 contextBridge.exposeInMainWorld('openhive', {
   platform: process.platform,
 
+  /** Called by useElectronDeepLinks once it's subscribed. Tells main it's
+   *  safe to flush any pending cold-start deep link to this window. */
+  ready(): void {
+    ipcRenderer.send('openhive:renderer-ready');
+  },
+
   notify(payload: NotifyPayload): void {
     if (!payload || typeof payload.title !== 'string' || typeof payload.body !== 'string') return;
     ipcRenderer.send('openhive:notify', payload);

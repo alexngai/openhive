@@ -29,6 +29,11 @@ type OutMessage =
   | { type: 'ready'; url: string }
   | { type: 'error'; message: string; fatal: boolean };
 
+// Override Activity Monitor / `ps` label so child processes are
+// distinguishable from the supervisor + Chromium helpers (which all show
+// up as "OpenHive Helper" otherwise).
+try { process.title = 'OpenHive Hive'; } catch { /* not writable on every platform */ }
+
 let hive: HiveServer | null = null;
 let stopping = false;
 

@@ -327,18 +327,37 @@ function saveRecentHives(): void {
   }
 }
 
-/** Bump dataDir to the front of the MRU list, dedup, persist, refresh menu. */
+/** Canonicalize a dataDir path so `/foo/Hive` and `/foo/Hive/` coalesce.
+ *  Falls back to path.resolve when the dir doesn't exist yet (e.g. just-
+ *  picked-from-dialog folder that openHive will create). */
+function canonicalize(dataDir: string): string {
+  try { return fs.realpathSync(dataDir); }
+  catch { return path.resolve(dataDir); }
+}
+
+/** Bump dataDir to the front of the MRU list, dedup, persist, refresh menus. */
 function recordRecentHive(dataDir: string): void {
-  const filtered = recentHives.filter((p) => p !== dataDir);
-  recentHives = [dataDir, ...filtered].slice(0, RECENT_HIVES_MAX);
+  const canonical = canonicalize(dataDir);
+  const filtered = recentHives.filter((p) => canonicalize(p) !== canonical);
+  recentHives = [canonical, ...filtered].slice(0, RECENT_HIVES_MAX);
   saveRecentHives();
-  if (app.isReady()) Menu.setApplicationMenu(buildMenu());
+  refreshMenus();
 }
 
 function clearRecentHives(): void {
   recentHives = [];
   saveRecentHives();
+  refreshMenus();
+}
+
+/** Rebuild + reattach both the application menu and the macOS dock menu.
+ *  Safe to call before app-ready (no-op until then). */
+function refreshMenus(): void {
+  if (!app.isReady()) return;
   Menu.setApplicationMenu(buildMenu());
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.setMenu(buildDockMenu());
+  }
 }
 
 /**
@@ -384,10 +403,16 @@ function focusFirstHive(): BrowserWindow | null {
   return window;
 }
 
-// Resolved when the first hive's renderer has finished loading — i.e. when
-// the React app has mounted and the deep-link IPC listener is wired. Cold-
-// start deep links (clicked while the app was closed) wait on this so the
-// IPC doesn't fire into a renderer that hasn't subscribed yet.
+// Resolved when the first hive's renderer has signalled readiness via the
+// `openhive:renderer-ready` IPC — i.e. the React app has mounted *and* the
+// deep-link hook has subscribed. Cold-start deep links (clicked while the
+// app was closed) wait on this so the IPC doesn't fire into a renderer
+// that hasn't subscribed yet.
+//
+// Why a ping instead of `did-finish-load`: did-finish-load fires after the
+// HTML is parsed, but React's useEffect (where the deep-link hook attaches)
+// runs after the commit phase — usually within microtasks but not
+// guaranteed, and Suspense boundaries can defer it further.
 let firstHiveReady: Promise<BrowserWindow> | null = null;
 let firstHiveReadyResolve: ((w: BrowserWindow) => void) | null = null;
 function ensureFirstHivePromise(): Promise<BrowserWindow> {
@@ -487,6 +512,14 @@ ipcMain.on('openhive:notify', (event, payload: unknown) => {
   n.show();
 });
 
+ipcMain.on('openhive:renderer-ready', (event) => {
+  const sender = BrowserWindow.fromWebContents(event.sender);
+  if (sender && firstHiveReadyResolve) {
+    firstHiveReadyResolve(sender);
+    firstHiveReadyResolve = null;
+  }
+});
+
 ipcMain.on('openhive:set-badge', (_event, raw: unknown) => {
   const count = typeof raw === 'number' && Number.isFinite(raw)
     ? Math.max(0, Math.floor(raw))
@@ -516,35 +549,99 @@ function setupTray(): void {
 
   tray = new Tray(image);
   tray.setToolTip('OpenHive');
-
-  const rebuild = (): void => {
-    if (!tray) return;
-    const menu = Menu.buildFromTemplate([
-      {
-        label: 'Show OpenHive',
-        click: () => { focusFirstHive(); },
-      },
-      {
-        label: 'New Hive…',
-        click: async () => {
-          const r = await dialog.showOpenDialog({
-            properties: ['openDirectory', 'createDirectory'],
-            title: 'Choose a folder for the new hive',
-          });
-          if (r.canceled || !r.filePaths[0]) return;
-          await openHive(r.filePaths[0]);
-        },
-      },
-      { type: 'separator' },
-      { label: 'Quit', click: () => app.quit() },
-    ]);
-    tray.setContextMenu(menu);
-  };
-  rebuild();
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Show OpenHive', click: () => { focusFirstHive(); } },
+    { label: 'New Hive…', click: () => { void promptOpenHive(); } },
+    { type: 'separator' },
+    { label: 'Quit', click: () => app.quit() },
+  ]));
 
   // Left-click (macOS) / single-click (Linux) focuses the window without
   // needing the context menu.
   tray.on('click', () => { focusFirstHive(); });
+}
+
+/** "Choose folder" dialog → openHive. Shared by the menu + tray.
+ *  Parents the dialog to the focused or first hive window so macOS attaches
+ *  it as a sheet instead of floating it free. */
+async function promptOpenHive(): Promise<void> {
+  const parent = BrowserWindow.getFocusedWindow()
+    ?? hives.values().next().value?.window
+    ?? undefined;
+  const r = parent
+    ? await dialog.showOpenDialog(parent, {
+        properties: ['openDirectory', 'createDirectory'],
+        title: 'Choose a folder for the new hive',
+      })
+    : await dialog.showOpenDialog({
+        properties: ['openDirectory', 'createDirectory'],
+        title: 'Choose a folder for the new hive',
+      });
+  if (r.canceled || !r.filePaths[0]) return;
+  await openHive(r.filePaths[0]);
+}
+
+// ── Splash window ─────────────────────────────────────────────────────
+//
+// Cold start spawns a hive-child + waits for Fastify to bind, which can
+// take 2-5 seconds. Without a splash the user clicks the icon, the dock
+// bounces, then nothing visible happens. The splash fills that gap with
+// the brand mark + "Starting…" so users know the app is alive.
+//
+// Lifecycle:
+//   - showSplash() called from whenReady BEFORE spawnHive (synchronous)
+//   - dismissSplash() called from the first hive window's ready-to-show
+//   - also dismissed on hive boot failure so the error dialog isn't behind it
+
+let splash: BrowserWindow | null = null;
+
+function showSplash(): void {
+  // Skip in dev — the dev `electron .` launch is fast enough that the
+  // splash flickers in/out and feels worse than no splash. Packaged builds
+  // have the slower hive-boot from the cold disk read of node_modules.
+  if (!app.isPackaged) return;
+
+  const iconPath = path.join(__dirname, '..', 'build', 'icon.png');
+  let iconData = '';
+  try { iconData = fs.readFileSync(iconPath).toString('base64'); }
+  catch { /* missing — splash still works, just without the logo */ }
+
+  splash = new BrowserWindow({
+    width: 460,
+    height: 300,
+    frame: false,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: '#0b0a0c',
+    webPreferences: { sandbox: true, contextIsolation: true },
+  });
+  // Inline HTML keeps the splash self-contained — no extra file to ship.
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    html,body{margin:0;height:100%;background:#0b0a0c;color:#fef3c7;
+      font:500 14px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      -webkit-user-select:none;cursor:default}
+    body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px}
+    img{width:120px;height:120px;animation:p 1.6s ease-in-out infinite}
+    .t{font-size:18px;letter-spacing:.02em}
+    .s{font-size:12px;color:#7a7b7e}
+    @keyframes p{0%,100%{opacity:.95}50%{opacity:.55}}
+  </style></head><body>
+    ${iconData ? `<img src="data:image/png;base64,${iconData}" alt="">` : ''}
+    <div class="t">OpenHive</div>
+    <div class="s">Starting…</div>
+  </body></html>`;
+  splash.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  splash.once('ready-to-show', () => splash?.show());
+}
+
+function dismissSplash(): void {
+  if (splash && !splash.isDestroyed()) splash.destroy();
+  splash = null;
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────
@@ -567,11 +664,13 @@ app.whenReady().then(async () => {
     return allowed.has(permission);
   });
 
+  showSplash();
   const defaultHive = app.getPath('userData');
   try {
     await spawnHive(defaultHive);
     recordRecentHive(defaultHive);
   } catch (err) {
+    dismissSplash();
     dialog.showErrorBox(
       'OpenHive failed to start',
       (err as Error).message,
@@ -579,7 +678,7 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
-  Menu.setApplicationMenu(buildMenu());
+  refreshMenus();
   setupTray();
 
   // Auto-update: only in packaged builds. Skipped on `electron .` dev
@@ -613,6 +712,11 @@ app.on('window-all-closed', () => {
 app.on('before-quit', async (e) => {
   if (hives.size === 0) return;
   e.preventDefault();
+  // Snapshot bounds before app.exit() — that path bypasses window 'close'
+  // events, so the per-hive close-handler never gets to persist them.
+  for (const { window, dataDir } of hives.values()) {
+    saveWindowState(dataDir, window);
+  }
   await Promise.allSettled(
     [...hives.values()].map(({ child }) =>
       new Promise<void>((resolve) => {
@@ -706,14 +810,20 @@ async function spawnHive(
   if (state.maximized) window.maximize();
   if (state.fullscreen) window.setFullScreen(true);
   hardenWebContents(window.webContents, new URL(url).origin);
-  window.once('ready-to-show', () => window.show());
-  // First hive ready → resolve the deep-link wait. Subsequent hives don't
-  // re-resolve. Listener attached before loadURL so we can't miss the event.
-  window.webContents.once('did-finish-load', () => {
-    if (firstHiveReadyResolve) {
-      firstHiveReadyResolve(window);
-      firstHiveReadyResolve = null;
-    }
+  window.once('ready-to-show', () => {
+    window.show();
+    dismissSplash();
+  });
+  // Recover from renderer crashes by reloading the same hive URL. The
+  // hive-child Fastify server is a separate process and is unaffected, so
+  // the page reload is enough — no need to respawn anything. We don't
+  // reload on 'clean-exit' (not really a crash) or 'killed' (the user did
+  // it deliberately, e.g. from Activity Monitor).
+  window.webContents.on('render-process-gone', (_e, details) => {
+    if (window.isDestroyed()) return;
+    if (details.reason === 'clean-exit' || details.reason === 'killed') return;
+    console.warn(`[supervisor] renderer gone (${details.reason}) — reloading`);
+    window.reload();
   });
   try {
     await window.loadURL(url);
@@ -845,6 +955,23 @@ function buildOpenRecentSubmenu(): MenuItemConstructorOptions[] {
   return items;
 }
 
+/**
+ * Right-click-the-dock-icon menu (macOS only). Mirrors the Hive menu's
+ * actionable bits — New Hive… and recents — so users don't have to bring
+ * a window forward just to switch hives. macOS adds Quit/Hide itself, so
+ * we deliberately omit those.
+ */
+function buildDockMenu(): Menu {
+  const items: MenuItemConstructorOptions[] = [
+    { label: 'New Hive…', click: () => { void promptOpenHive(); } },
+  ];
+  if (recentHives.length > 0) {
+    items.push({ type: 'separator' });
+    items.push({ label: 'Open Recent', submenu: buildOpenRecentSubmenu() });
+  }
+  return Menu.buildFromTemplate(items);
+}
+
 function buildMenu(): Menu {
   return Menu.buildFromTemplate([
     {
@@ -873,14 +1000,7 @@ function buildMenu(): Menu {
         {
           label: 'New Hive…',
           accelerator: 'CmdOrCtrl+Shift+N',
-          click: async () => {
-            const r = await dialog.showOpenDialog({
-              properties: ['openDirectory', 'createDirectory'],
-              title: 'Choose a folder for the new hive',
-            });
-            if (r.canceled || !r.filePaths[0]) return;
-            await openHive(r.filePaths[0]);
-          },
+          click: () => { void promptOpenHive(); },
         },
         { type: 'separator' },
         { label: 'Open Recent', submenu: buildOpenRecentSubmenu() },

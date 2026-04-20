@@ -27,6 +27,9 @@ export function useElectronDeepLinks(): void {
 
     const disposeDeep = bridge.onDeepLink(handle);
     const disposeFocus = bridge.onFocusRoute(handle);
+    // Tell main we're listening — flushes any cold-start deep link that's
+    // been waiting since before the React app mounted.
+    bridge.ready();
     return () => {
       disposeDeep();
       disposeFocus();
