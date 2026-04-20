@@ -7,7 +7,7 @@
  */
 
 import { FastifyInstance } from 'fastify';
-import { authMiddleware } from '../middleware/auth.js';
+import { createAuthOrAdminKey } from '../middleware/auth.js';
 import * as dispatchesDAL from '../../db/dal/dispatches.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import type {
@@ -31,8 +31,9 @@ function parseStatusParam(raw: string | undefined): DispatchStatus[] | undefined
 
 export async function dispatchesRoutes(
   fastify: FastifyInstance,
-  _options: { config: Config },
+  options: { config: Config },
 ): Promise<void> {
+  const authOrAdminKey = createAuthOrAdminKey(options.config);
   /**
    * GET /dispatches
    *
@@ -49,7 +50,7 @@ export async function dispatchesRoutes(
       limit?: number;
       offset?: number;
     };
-  }>('/dispatches', { preHandler: authMiddleware }, async (request, reply) => {
+  }>('/dispatches', { preHandler: authOrAdminKey }, async (request, reply) => {
     const limit = Math.min(Math.max(Number(request.query.limit) || 50, 1), 200);
     const offset = Math.max(Number(request.query.offset) || 0, 0);
 
@@ -77,7 +78,7 @@ export async function dispatchesRoutes(
    */
   fastify.get<{
     Params: { id: string };
-  }>('/dispatches/:id', { preHandler: authMiddleware }, async (request, reply) => {
+  }>('/dispatches/:id', { preHandler: authOrAdminKey }, async (request, reply) => {
     const dispatch = dispatchesDAL.findDispatchById(request.params.id);
     if (!dispatch) {
       return reply.status(404).send({ error: 'Not Found', message: 'Dispatch not found' });
@@ -99,7 +100,7 @@ export async function dispatchesRoutes(
    */
   fastify.post<{
     Params: { id: string };
-  }>('/dispatches/:id/cancel', { preHandler: authMiddleware }, async (request, reply) => {
+  }>('/dispatches/:id/cancel', { preHandler: authOrAdminKey }, async (request, reply) => {
     const existing = dispatchesDAL.findDispatchById(request.params.id);
     if (!existing) {
       return reply.status(404).send({ error: 'Not Found', message: 'Dispatch not found' });
@@ -131,7 +132,9 @@ export async function dispatchesRoutes(
           },
           target_swarm_id: cancelled.target_swarm_id,
           initiator: { type: cancelled.initiator_type, id: cancelled.initiator_id },
-          cancelled_by: { type: 'user', id: request.agent!.id },
+          cancelled_by: request.agent
+            ? { type: 'user', id: request.agent.id }
+            : { type: 'operator', id: 'admin-key' },
         },
       });
     } catch {

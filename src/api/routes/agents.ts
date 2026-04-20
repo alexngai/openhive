@@ -57,6 +57,13 @@ export async function agentsRoutes(fastify: FastifyInstance, _options: { config:
     });
   });
 
+  // NOTE: `POST /agents/me/token` (the Phase 2 token-exchange endpoint)
+  // was retired in RFC v4. Agents no longer exchange their API key for
+  // an agent-iam token; session scopes are resolved at `map/connect` and
+  // the only tokens minted are delegated credentials via
+  // `map/agents/spawn` (agent-to-agent) or `openhive admin onboard-token`
+  // (operator bootstrap).
+
   // Update current agent profile
   fastify.patch('/agents/me', { preHandler: authMiddleware }, async (request, reply) => {
     const parseResult = UpdateAgentSchema.safeParse(request.body);

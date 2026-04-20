@@ -35,6 +35,8 @@ import {
   MIGRATION_V40_NODE_PRESENCE,
   MIGRATION_V41_DISPATCH_ATTEMPTS_HISTORY,
   MIGRATION_V42_DROP_SOCIAL_TABLES,
+  MIGRATION_V43_AGENT_CAPABILITIES,
+  MIGRATION_V44_GRANT_VERSION,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -290,6 +292,12 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // memberships, follows, event_post_rules) + their FTS + triggers.
   // `hives` table stays — it's a namespace/tenancy tag for MAP swarms.
   42: MIGRATION_V42_DROP_SOCIAL_TABLES,
+  // Version 43: agents.capabilities JSON column for narrow grant gates
+  43: MIGRATION_V43_AGENT_CAPABILITIES,
+  // Version 44: agents.grant_version counter — retained post-v4 as a
+  // non-destructive column so existing installs don't need to drop it.
+  // See docs/RFC_AGENT_CAPABILITIES.md §"v3→v4 migration".
+  44: MIGRATION_V44_GRANT_VERSION,
 };
 
 /** Get the SQL for a specific migration version.
@@ -370,6 +378,8 @@ function repairSchema(database: Database.Database): void {
     "ALTER TABLE dispatches ADD COLUMN attempts_history TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE map_nodes ADD COLUMN presence TEXT NOT NULL DEFAULT 'offline'",
     "CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence)",
+    "ALTER TABLE agents ADD COLUMN capabilities TEXT",
+    "ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0",
   ];
   for (const sql of repairs) {
     try {

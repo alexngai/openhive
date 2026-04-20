@@ -8,17 +8,77 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { TokenService, generateSecret } from 'agent-iam';
+import { TokenService, generateSecret, scopeMatches } from 'agent-iam';
 import type { AgentToken, VerificationResult } from 'agent-iam';
 
 /** Optional DB persistence callbacks. Set via setPersistence(). */
 let persistRevoke: ((agentId: string, reason?: string) => void) | null = null;
 let persistUnrevoke: ((agentId: string) => void) | null = null;
 
+/**
+ * Optional hook fired after `revokeToken` to force-disconnect any
+ * in-flight MAP WS sessions authenticated by the revoked token. Wired
+ * to `ws-map.disconnectSessionsForAgent` during server startup. Kept
+ * behind a setter to avoid a `token-service ↔ ws-map` import cycle.
+ */
+let onRevokeSessionCleanup: ((agentId: string) => void) | null = null;
+
+export function setSessionCleanupHook(
+  hook: ((agentId: string) => void) | null,
+): void {
+  onRevokeSessionCleanup = hook;
+}
+
 let tokenService: TokenService | null = null;
 
 /** In-memory set of revoked token IDs (agentId). */
 const revokedTokens: Set<string> = new Set();
+
+/**
+ * child agentId → immediate parent agentId. Populated by
+ * `delegate-for-spawn.ts` on every successful delegation so
+ * `verifyToken` can walk ancestors and enforce cascade revocation.
+ *
+ * Lost on process restart — persistent cascade lookups would require
+ * a DB edge table. For v4 (short-lived delegated tokens, revocation
+ * is a recovery action) the in-memory registry is sufficient: any
+ * ancestors revoked before restart are in the persisted `revokedTokens`
+ * set, and children minted pre-restart will expire within their TTL.
+ */
+const parentChain: Map<string, string> = new Map();
+
+/**
+ * Record a child→parent edge for cascade revocation. Called from
+ * `delegate-for-spawn.ts` after a successful `ts.delegate` (or after
+ * the operator-bootstrap `createRootToken` when a logical parent agent
+ * exists). Cycles are guarded at read time in `isAncestorRevoked`.
+ */
+export function recordParent(childAgentId: string, parentAgentId: string): void {
+  if (childAgentId === parentAgentId) return; // defensive: no self-parent
+  parentChain.set(childAgentId, parentAgentId);
+}
+
+/** @internal For tests only. */
+export function _resetParentChain(): void {
+  parentChain.clear();
+}
+
+/**
+ * Walk up the parent chain from `agentId` and return true if any
+ * ancestor is revoked. Stops at the first unknown parent (root) or
+ * when a cycle is detected.
+ */
+function isAncestorRevoked(agentId: string): boolean {
+  let current = parentChain.get(agentId);
+  const seen = new Set<string>([agentId]);
+  while (current) {
+    if (seen.has(current)) return false; // cycle guard
+    seen.add(current);
+    if (revokedTokens.has(current)) return true;
+    current = parentChain.get(current);
+  }
+  return false;
+}
 
 /**
  * Load persisted revocations from the database into the in-memory set.
@@ -75,8 +135,10 @@ export function initTokenService(secret?: string, dataDir?: string): TokenServic
 export function _resetTokenService(): void {
   tokenService = null;
   revokedTokens.clear();
+  parentChain.clear();
   persistRevoke = null;
   persistUnrevoke = null;
+  onRevokeSessionCleanup = null;
 }
 
 /**
@@ -122,8 +184,11 @@ export function verifyToken(serialized: string): {
     if (!result.valid) {
       return { valid: false, error: result.error ?? 'Token verification failed' };
     }
-    // Check revocation
-    if (revokedTokens.has(token.agentId)) {
+    // Check direct revocation + cascade via parent chain. Revoking an
+    // ancestor's agentId (via admin delete-agent, for example)
+    // invalidates every token delegated through it — the RFC §"Parent
+    // revocation cascade" contract.
+    if (revokedTokens.has(token.agentId) || isAncestorRevoked(token.agentId)) {
       return { valid: false, error: 'Token has been revoked' };
     }
     return { valid: true, token };
@@ -140,6 +205,12 @@ export function revokeToken(agentId: string, reason?: string): void {
   revokedTokens.add(agentId);
   if (persistRevoke) {
     try { persistRevoke(agentId, reason); } catch { /* DB may be unavailable */ }
+  }
+  // Kick any live MAP WS sessions authenticated by this token. Without
+  // this, `sessionScopes` cached at connect time lets a revoked session
+  // keep dispatching MAP methods until its natural expiry.
+  if (onRevokeSessionCleanup) {
+    try { onRevokeSessionCleanup(agentId); } catch { /* best-effort */ }
   }
 }
 
@@ -189,4 +260,45 @@ export function delegateToken(parentSerialized: string, request: {
     ttlMinutes: request.ttlMinutes ?? 60,
   });
   return { token: childToken, serialized: ts.serialize(childToken) };
+}
+
+/**
+ * Verify a serialized token AND check it carries a given scope.
+ *
+ * Returns `{ ok: true, token }` when the token is valid (signature, expiry,
+ * not revoked) AND at least one of its scopes matches `requiredScope` via
+ * agent-iam's `scopeMatches` (supports wildcards like `map:*`). Otherwise
+ * returns `{ ok: false, error }`.
+ *
+ * Under v4 (see docs/RFC_AGENT_CAPABILITIES.md), this is the only token
+ * verification primitive — the grant_version embedded-scope mechanism and
+ * `createAgentToken` exchange endpoint were retired in favor of session
+ * scopes resolved at `map/connect` time.
+ */
+export function tokenHasScope(
+  serialized: string,
+  requiredScope: string,
+): { ok: true; token: AgentToken } | { ok: false; error: string } {
+  const result = verifyToken(serialized);
+  if (!result.valid || !result.token) {
+    return { ok: false, error: result.error ?? 'Token verification failed' };
+  }
+
+  const scopeOk = result.token.scopes.some((tokenScope) =>
+    scopeMatches(tokenScope, requiredScope),
+  );
+  if (!scopeOk) {
+    return { ok: false, error: `Token does not grant scope ${requiredScope}` };
+  }
+
+  return { ok: true, token: result.token };
+}
+
+/**
+ * True if the token service has been initialized. Call sites that want to
+ * support pre-init paths (tests, early server lifecycle) should branch on
+ * this instead of try/catching `getTokenService`.
+ */
+export function isTokenServiceInitialized(): boolean {
+  return tokenService !== null;
 }

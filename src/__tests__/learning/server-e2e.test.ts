@@ -20,6 +20,7 @@ import Fastify, { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 import { initDatabase, closeDatabase } from '../../db/index.js';
+import { initTokenService, _resetTokenService } from '../../map/token-service.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
 import { SwarmManager } from '../../swarm/manager.js';
@@ -98,6 +99,7 @@ describe('Full Server E2E: Learning + Swarm Hosting', () => {
     cleanTestRoot(TEST_ROOT);
     process.env.OPENHIVE_HOME = TEST_ROOT;
     initDatabase(TEST_DB_PATH);
+    initTokenService(undefined, TEST_ROOT);
     config = createTestConfig();
 
     // Create test agent
@@ -176,6 +178,7 @@ describe('Full Server E2E: Learning + Swarm Hosting', () => {
       await app.close();
     }
     setLocalAgent(null);
+    _resetTokenService();
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
     if (originalHome) process.env.OPENHIVE_HOME = originalHome;

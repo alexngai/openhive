@@ -1,8 +1,8 @@
 /**
  * MAP Hub Data Access Layer
  *
- * CRUD operations for MAP swarms, agent nodes, pre-auth keys,
- * swarm-hive memberships, and federation connection logging.
+ * CRUD operations for MAP swarms, agent nodes, swarm-hive memberships,
+ * and federation connection logging. Preauth keys retired in RFC v4.
  */
 
 import { nanoid } from 'nanoid';
@@ -12,14 +12,12 @@ import type {
   MapSwarm,
   MapNode,
   MapSwarmHive,
-  MapPreauthKey,
   MapFederationLogEntry,
   RegisterSwarmInput,
   UpdateSwarmInput,
   RegisterNodeInput,
   UpdateNodeInput,
   DiscoverNodesOptions,
-  CreatePreauthKeyInput,
   SwarmPeer,
   MapSwarmPublic,
   MapNodePublic,
@@ -685,135 +683,6 @@ export function getPeerList(swarmId: string): SwarmPeer[] {
 }
 
 // ============================================================================
-// Pre-auth Keys
-// ============================================================================
-
-export function createPreauthKey(
-  createdBy: string,
-  input: CreatePreauthKeyInput
-): { key: MapPreauthKey; plaintext_key: string } {
-  const db = getDatabase();
-  const id = `pak_${nanoid()}`;
-  const plaintextKey = `ohpak_${nanoid(32)}`;
-  const keyHash = hashToken(plaintextKey);
-
-  let expiresAt: string | null = null;
-  if (input.expires_in_hours) {
-    const date = new Date();
-    date.setHours(date.getHours() + input.expires_in_hours);
-    expiresAt = date.toISOString();
-  }
-
-  db.prepare(`
-    INSERT INTO map_preauth_keys (id, key_hash, hive_id, uses_left, expires_at, created_by)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(id, keyHash, input.hive_id || null, input.uses ?? 1, expiresAt, createdBy);
-
-  const key = findPreauthKeyById(id)!;
-  return { key, plaintext_key: plaintextKey };
-}
-
-export function findPreauthKeyById(id: string): MapPreauthKey | null {
-  const db = getDatabase();
-  const row = db.prepare('SELECT * FROM map_preauth_keys WHERE id = ?').get(id) as Record<string, unknown> | undefined;
-  if (!row) return null;
-
-  return {
-    id: row.id as string,
-    key_hash: row.key_hash as string,
-    hive_id: row.hive_id as string | null,
-    uses_left: row.uses_left as number,
-    expires_at: row.expires_at as string | null,
-    created_by: row.created_by as string | null,
-    created_at: row.created_at as string,
-    last_used_at: row.last_used_at as string | null,
-  };
-}
-
-/**
- * Validate and consume a pre-auth key. Returns the key if valid, null otherwise.
- */
-export function consumePreauthKey(plaintextKey: string): MapPreauthKey | null {
-  const db = getDatabase();
-  const keyHash = hashToken(plaintextKey);
-
-  const row = db.prepare(
-    'SELECT * FROM map_preauth_keys WHERE key_hash = ?'
-  ).get(keyHash) as Record<string, unknown> | undefined;
-
-  if (!row) return null;
-
-  // Check expiry
-  if (row.expires_at && new Date(row.expires_at as string) < new Date()) {
-    return null;
-  }
-
-  // Check uses
-  if ((row.uses_left as number) <= 0) {
-    return null;
-  }
-
-  // Consume one use
-  db.prepare(`
-    UPDATE map_preauth_keys
-    SET uses_left = uses_left - 1, last_used_at = datetime('now')
-    WHERE id = ?
-  `).run(row.id);
-
-  return {
-    id: row.id as string,
-    key_hash: row.key_hash as string,
-    hive_id: row.hive_id as string | null,
-    uses_left: (row.uses_left as number) - 1,
-    expires_at: row.expires_at as string | null,
-    created_by: row.created_by as string | null,
-    created_at: row.created_at as string,
-    last_used_at: new Date().toISOString(),
-  };
-}
-
-export function listPreauthKeys(options: {
-  hive_id?: string;
-  limit?: number;
-  offset?: number;
-} = {}): MapPreauthKey[] {
-  const db = getDatabase();
-  const where: string[] = [];
-  const params: unknown[] = [];
-
-  if (options.hive_id) {
-    where.push('hive_id = ?');
-    params.push(options.hive_id);
-  }
-
-  const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-  const limit = options.limit || 50;
-  const offset = options.offset || 0;
-
-  const rows = db.prepare(`
-    SELECT * FROM map_preauth_keys ${whereClause}
-    ORDER BY created_at DESC LIMIT ? OFFSET ?
-  `).all(...params, limit, offset) as Record<string, unknown>[];
-
-  return rows.map((row) => ({
-    id: row.id as string,
-    key_hash: row.key_hash as string,
-    hive_id: row.hive_id as string | null,
-    uses_left: row.uses_left as number,
-    expires_at: row.expires_at as string | null,
-    created_by: row.created_by as string | null,
-    created_at: row.created_at as string,
-    last_used_at: row.last_used_at as string | null,
-  }));
-}
-
-export function deletePreauthKey(id: string): boolean {
-  const db = getDatabase();
-  const result = db.prepare('DELETE FROM map_preauth_keys WHERE id = ?').run(id);
-  return result.changes > 0;
-}
-
-// ============================================================================
 // Federation Log
 // ============================================================================
 
@@ -880,7 +749,6 @@ export function getMapStats(): {
   swarms: { total: number; online: number; offline: number };
   nodes: { total: number; active: number };
   hive_memberships: number;
-  preauth_keys: { total: number; active: number };
 } {
   const db = getDatabase();
 
@@ -893,14 +761,10 @@ export function getMapStats(): {
 
   const hiveMemberships = (db.prepare('SELECT COUNT(*) as count FROM map_swarm_hives').get() as { count: number }).count;
 
-  const keysTotal = (db.prepare('SELECT COUNT(*) as count FROM map_preauth_keys').get() as { count: number }).count;
-  const keysActive = (db.prepare("SELECT COUNT(*) as count FROM map_preauth_keys WHERE uses_left > 0 AND (expires_at IS NULL OR expires_at > datetime('now'))").get() as { count: number }).count;
-
   return {
     swarms: { total: swarmsTotal, online: swarmsOnline, offline: swarmsOffline },
     nodes: { total: nodesTotal, active: nodesActive },
     hive_memberships: hiveMemberships,
-    preauth_keys: { total: keysTotal, active: keysActive },
   };
 }
 

@@ -24,6 +24,7 @@ import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import { createIngestKey } from '../../db/dal/ingest-keys.js';
 import { setupMapWebSocket, stopMapWebSocket, setHeartbeatInterval } from '../../map/ws-map.js';
+import { initTokenService, _resetTokenService } from '../../map/token-service.js';
 import { getAllInbound } from '../../map/connection-registry.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
@@ -170,11 +171,15 @@ describe.skipIf(!sidecarExists)('E2E: OpenHive Hub + Sidecar Heartbeat', () => {
   beforeAll(async () => {
     cleanTestRoot(TEST_ROOT);
     initDatabase(TEST_DB_PATH);
+    initTokenService(undefined, TEST_ROOT);
 
     const { agent } = await agentsDAL.createAgent({
       name: 'sidecar-heartbeat-agent',
       description: 'Agent for sidecar heartbeat e2e tests',
     });
+    // Sidecar uses map/agents/spawn to register workers — v4 gates this
+    // on the `map:agents:spawn` capability.
+    agentsDAL.grantAgentCapability(agent.id, 'map:agents:spawn');
 
     const { plaintext_key } = createIngestKey(agent.id, {
       label: 'sidecar-e2e',
@@ -208,6 +213,7 @@ describe.skipIf(!sidecarExists)('E2E: OpenHive Hub + Sidecar Heartbeat', () => {
     stopMapWebSocket();
     await app?.close();
     await sleep(200);
+    _resetTokenService();
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
     setHeartbeatInterval(30_000);

@@ -3,20 +3,12 @@ import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StatsOverview } from '../../../components/dashboard/StatsOverview';
 
-const mockMapStats = {
-  swarms: { total: 12, online: 8, offline: 4 },
-  nodes: { total: 34, active: 28 },
-  hive_memberships: 5,
-  preauth_keys: { total: 3, active: 2 },
-};
-
 vi.mock('../../../hooks/useApi', () => ({
   useMapStats: vi.fn().mockReturnValue({
     data: {
       swarms: { total: 12, online: 8, offline: 4 },
       nodes: { total: 34, active: 28 },
       hive_memberships: 5,
-      preauth_keys: { total: 3, active: 2 },
     },
     isLoading: false,
   }),

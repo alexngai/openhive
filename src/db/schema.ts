@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 42;
+export const SCHEMA_VERSION = 44;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -28,7 +28,16 @@ CREATE TABLE IF NOT EXISTS agents (
   password_reset_token TEXT,
   password_reset_expires TEXT,
   -- SwarmHub OAuth fields
-  swarmhub_user_id TEXT UNIQUE
+  swarmhub_user_id TEXT UNIQUE,
+  -- Capability grants (V43) — JSON object keyed by canonical capability
+  -- string, values true when granted. See docs/RFC_AGENT_CAPABILITIES.md.
+  capabilities TEXT,
+  -- grant_version (V44) is kept for backwards compatibility with installs
+  -- that already applied the migration. v4 (see RFC) retired the
+  -- mechanism — session scopes resolve at map/connect time instead. The
+  -- column is unused by current code; leaving it in place avoids a
+  -- destructive migration.
+  grant_version INTEGER DEFAULT 0
 );
 
 -- Hives (communities) table
@@ -831,6 +840,24 @@ DROP TABLE IF EXISTS follows;
 DROP TABLE IF EXISTS memberships;
 DROP TABLE IF EXISTS comments;
 DROP TABLE IF EXISTS posts;
+`;
+
+// Migration V43: agents.capabilities — JSON object of grant flags.
+// Enables operator-gated capabilities (e.g. `map:agents:spawn`) that
+// grant narrower-than-admin access to specific MAP methods. See
+// docs/RFC_AGENT_CAPABILITIES.md for the full design.
+export const MIGRATION_V43_AGENT_CAPABILITIES = `
+ALTER TABLE agents ADD COLUMN capabilities TEXT;
+`;
+
+// Migration V44: agents.grant_version — historical counter from v3 of the
+// capability RFC (revoke-on-grant-change). Retained as a non-destructive
+// column so existing installs don't need to drop it; v4 session-scope
+// resolution at map/connect makes it no-op. Removing would require a
+// destructive ALTER on SQLite. See docs/RFC_AGENT_CAPABILITIES.md §"v3→v4
+// migration".
+export const MIGRATION_V44_GRANT_VERSION = `
+ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0;
 `;
 
 // ============================================================================

@@ -1,5 +1,9 @@
 import { FastifyInstance } from 'fastify';
-import { authMiddleware, requireAdmin } from '../middleware/auth.js';
+import { authMiddleware, createAdminAuth, createAuthOrAdminKey } from '../middleware/auth.js';
+import { KNOWN_CAPABILITIES, isKnownCapability } from '../middleware/capabilities.js';
+import { revokeToken, isTokenServiceInitialized } from '../../map/token-service.js';
+import { delegateForSpawn, ScopeNotGrantedError } from '../../map/delegate-for-spawn.js';
+import { z } from 'zod';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
 import * as invitesDAL from '../../db/dal/invites.js';
@@ -25,18 +29,7 @@ import {
 } from '../../map/dispatch-policy.js';
 
 export async function adminRoutes(fastify: FastifyInstance, options: { config: Config }): Promise<void> {
-  const adminAuth = async (request: Parameters<typeof authMiddleware>[0], reply: Parameters<typeof authMiddleware>[1]) => {
-    // Check for admin key in header first
-    const adminKey = request.headers['x-admin-key'];
-    if (adminKey && options.config.admin.key && adminKey === options.config.admin.key) {
-      return; // Admin key auth successful
-    }
-
-    // Fall back to agent auth
-    await authMiddleware(request, reply);
-    if (reply.sent) return;
-    requireAdmin(request, reply);
-  };
+  const adminAuth = createAdminAuth(options.config);
 
   // Get instance info
   fastify.get('/admin/instance', async (_request, reply) => {
@@ -150,6 +143,13 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
       const { is_admin } = request.body as { is_admin: boolean };
       agentsDAL.updateAgent(agent.id, { is_admin });
 
+      // Note: v4 resolves session scopes at map/connect time. A demoted
+      // admin's MAP session retains the scopes it was issued with until
+      // the agent reconnects. If immediate invalidation matters for a
+      // specific deployment, the operator can call revokeToken on the
+      // agent's id to force disconnect — or wait for natural reconnect
+      // (MAP SDK reconnects with exponential backoff on WS close).
+
       return reply.send({ success: true });
     }
   );
@@ -168,8 +168,79 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
         });
       }
 
+      // Invalidate any live agent-iam tokens the agent held. Tokens are
+      // self-contained (signature + expiry survive the DB row's deletion)
+      // so without this revocation, a deleted-but-compromised agent could
+      // keep acting until the token expires.
+      if (isTokenServiceInitialized()) {
+        revokeToken(request.params.id, 'agent-deleted');
+      }
+
       return reply.status(204).send();
     }
+  );
+
+  // ═══════════════════════════════════════════════════════════════
+  // Agent Capabilities (V42 — operator-gated narrow grants)
+  // See docs/RFC_AGENT_CAPABILITIES.md.
+  // ═══════════════════════════════════════════════════════════════
+
+  // List an agent's current grants
+  fastify.get<{ Params: { id: string } }>(
+    '/admin/agents/:id/capabilities',
+    { preHandler: adminAuth },
+    async (request, reply) => {
+      const agent = agentsDAL.findAgentById(request.params.id);
+      if (!agent) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Agent not found' });
+      }
+      return reply.send({
+        agent_id: agent.id,
+        capabilities: agentsDAL.getAgentCapabilities(agent.id),
+        known_capabilities: Array.from(KNOWN_CAPABILITIES),
+      });
+    },
+  );
+
+  // Grant a capability
+  fastify.post<{ Params: { id: string }; Body: { capability?: string } }>(
+    '/admin/agents/:id/capabilities',
+    { preHandler: adminAuth },
+    async (request, reply) => {
+      const agent = agentsDAL.findAgentById(request.params.id);
+      if (!agent) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Agent not found' });
+      }
+      const capability = request.body?.capability;
+      if (!capability) {
+        return reply.status(400).send({
+          error: 'Validation Error',
+          message: '`capability` is required',
+        });
+      }
+      if (!isKnownCapability(capability)) {
+        return reply.status(400).send({
+          error: 'Unknown Capability',
+          message: `Unknown capability: ${capability}. Supported: ${Array.from(KNOWN_CAPABILITIES).join(', ')}`,
+        });
+      }
+      const capabilities = agentsDAL.grantAgentCapability(agent.id, capability);
+      return reply.send({ agent_id: agent.id, capabilities });
+    },
+  );
+
+  // Revoke a capability
+  fastify.delete<{ Params: { id: string; capability: string } }>(
+    '/admin/agents/:id/capabilities/:capability',
+    { preHandler: adminAuth },
+    async (request, reply) => {
+      const agent = agentsDAL.findAgentById(request.params.id);
+      if (!agent) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Agent not found' });
+      }
+      const capabilities = agentsDAL.revokeAgentCapability(agent.id, request.params.capability);
+      return reply.send({ agent_id: agent.id, capabilities });
+    },
   );
 
   // Create invite code (admin)
@@ -227,6 +298,105 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
       return reply.status(204).send();
     }
   );
+
+  // ═══════════════════════════════════════════════════════════════
+  // Onboarding tokens — operator bootstrap path
+  // ═══════════════════════════════════════════════════════════════
+  // Operators mint agent-iam tokens directly (without a live MAP session)
+  // for bootstrap scripts: `openhive admin onboard-token create`. Admin
+  // auth is the "parent authority" — the resulting token can carry any
+  // scope the operator chooses, bounded only by reasonable TTL limits.
+  //
+  // Agent-to-agent onboarding uses `map/agents/spawn` over MAP WS
+  // instead; this endpoint is only for the no-coordinator-in-the-loop
+  // case. See docs/RFC_AGENT_CAPABILITIES.md v4 §"Onboarding flow
+  // (operator-bootstrap)".
+
+  const OnboardTokenSchema = z.object({
+    // Default to the narrow `map:agents:spawn` — the common case is a
+    // coordinator that itself mints children. Operators wanting broader
+    // authority (e.g. full admin for a trusted swarm) pass `['map:*']`
+    // explicitly. Per M3 of the v4 review, never default to wildcards.
+    scopes: z.array(z.string()).min(1).default(['map:agents:spawn']),
+    ttl_hours: z.number().int().min(1).max(24 * 30).default(24),
+    agent_name: z.string().min(1).max(200).optional(),
+    agent_id: z.string().min(1).optional(),
+  });
+
+  fastify.post('/admin/onboard-token', { preHandler: adminAuth }, async (request, reply) => {
+    if (!isTokenServiceInitialized()) {
+      return reply.status(503).send({
+        error: 'Service Unavailable',
+        message: 'Token service is not initialized',
+      });
+    }
+
+    const parseResult = OnboardTokenSchema.safeParse(request.body ?? {});
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        error: 'Validation Error',
+        details: parseResult.error.errors,
+      });
+    }
+    const { scopes, ttl_hours, agent_name, agent_id } = parseResult.data;
+
+    // Resolve the child agent — either create a new one or reuse an
+    // existing id if the caller wants to re-issue for an existing agent.
+    let childAgentId: string;
+    if (agent_id) {
+      const existing = agentsDAL.findAgentById(agent_id);
+      if (!existing) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: `Agent ${agent_id} does not exist`,
+        });
+      }
+      childAgentId = existing.id;
+    } else {
+      const name = agent_name ?? `onboarded-${Date.now()}`;
+      const { agent } = await agentsDAL.createAgent({
+        name,
+        description: 'Onboarded via admin onboard-token',
+        metadata: { onboarded_via: 'admin-token', onboarded_at: new Date().toISOString() },
+      });
+      childAgentId = agent.id;
+    }
+
+    // Admin is the "parent" with implicit map:* scope. Delegation still
+    // runs scope-subset check (requestedScopes ⊆ ['map:*']) so typos in
+    // the scope list surface as 403. No parent token is supplied — the
+    // `delegateForSpawn` root-token path applies, capped at 30 days.
+    try {
+      const credentials = delegateForSpawn({
+        parentAgentId: 'admin-key',
+        parentScopes: ['map:*'],
+        childAgentId,
+        requestedScopes: scopes,
+        ttlMinutes: ttl_hours * 60,
+        childDelegatable: true,
+      });
+
+      // Report the *effective* TTL so operators can see when clamping
+      // occurred (e.g. if they asked for 8760h=1yr, we return 720h).
+      return reply.send({
+        agent_id: childAgentId,
+        token: credentials.credentials.token,
+        method: credentials.method,
+        env: credentials.env,
+        scopes,
+        ttl_hours: credentials.ttlMinutes / 60,
+        expires_at: credentials.expiresAt,
+      });
+    } catch (err) {
+      if (err instanceof ScopeNotGrantedError) {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          message: err.message,
+        });
+      }
+      throw err;
+    }
+  });
 
   // Get stats
   fastify.get('/admin/stats', { preHandler: adminAuth }, async (_request, reply) => {
@@ -462,7 +632,9 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
   }
 
   // GET /admin/config — any authenticated user can read (secrets redacted, PATCH is admin-only)
-  fastify.get('/admin/config', { preHandler: authMiddleware }, async (_request, reply) => {
+  const authOrAdminKey = createAuthOrAdminKey(options.config);
+
+  fastify.get('/admin/config', { preHandler: authOrAdminKey }, async (_request, reply) => {
     return reply.send(buildConfigResponse());
   });
 
