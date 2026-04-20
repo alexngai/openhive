@@ -65,6 +65,16 @@ for (const s of [process.stderr, process.stdout]) {
 // (happens with `electron <script>` invocations in dev).
 app.setName('OpenHive');
 
+// Dev-mode dock icon. Packaged builds get the icon from electron-builder's
+// `build.mac.icon` (baked into the .app's Resources); dev launches via
+// `electron dist/main.js` would otherwise show Electron's default.
+if (process.platform === 'darwin' && !app.isPackaged && app.dock) {
+  const devIcon = path.join(__dirname, '..', 'build', 'icon.png');
+  if (fs.existsSync(devIcon)) {
+    try { app.dock.setIcon(devIcon); } catch { /* non-fatal */ }
+  }
+}
+
 // Dev-only: expose Chromium's remote debugging protocol so tools like
 // chrome://inspect or chrome-devtools-mcp can attach directly to the
 // renderer. Set OPENHIVE_REMOTE_DEBUG=<port> (e.g. 9223) to enable.

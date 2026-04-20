@@ -2,15 +2,20 @@
   "name": "openhive-electron",
   "version": "0.1.0",
   "description": "Electron desktop shell for OpenHive",
-  "author": "Alex Ngai",
+  "homepage": "https://github.com/alexngai/openhive",
+  "author": {
+    "name": "Alex Ngai",
+    "email": "alexander.s.ngai@gmail.com"
+  },
   "private": true,
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p .",
+    "build:icons": "node scripts/build-icons.mjs",
     "start": "electron dist/main.js",
     "dev": "npm --prefix .. run build && npm run build && npm run start",
-    "dist": "npm --prefix .. run build && npm run build && node scripts/stage-openhive.mjs && electron-builder",
+    "dist": "npm --prefix .. run build && npm run build && npm run build:icons && node scripts/stage-openhive.mjs && electron-builder",
     "postinstall": "node scripts/fix-better-sqlite3.mjs"
   },
   "dependencies": {
@@ -90,6 +95,7 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": "dmg",
+      "icon": "build/icon.icns",
       "identity": "Alexander Ngai (TKJJVX3QDY)",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -99,7 +105,9 @@
     },
     "linux": {
       "target": ["AppImage", "deb"],
-      "category": "Development"
+      "category": "Development",
+      "icon": "build/icon.png",
+      "maintainer": "Alex Ngai <alexander.s.ngai@gmail.com>"
     }
   }
 }

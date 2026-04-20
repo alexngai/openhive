@@ -19,6 +19,14 @@ on:
     tags: ['v*']
   workflow_dispatch:
     inputs:
+      build_macos:
+        description: 'Build macOS (arm64 .dmg)'
+        type: boolean
+        default: true
+      build_linux:
+        description: 'Build Linux (x64 AppImage + deb)'
+        type: boolean
+        default: true
       publish:
         description: 'Publish artifacts to GitHub Releases'
         type: choice
@@ -39,8 +47,18 @@ jobs:
         include:
           - os: macos-14
             label: macos-arm64
+            platform: macos
           - os: ubuntu-latest
             label: linux-x64
+            platform: linux
+
+    # Tag pushes build both platforms; workflow_dispatch honors the
+    # checkboxes. `inputs.build_macos` is null for non-dispatch events,
+    # hence the `!= 'false'` pattern (null defaults to truthy).
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      (matrix.platform == 'macos' && inputs.build_macos) ||
+      (matrix.platform == 'linux' && inputs.build_linux)
 
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
@@ -56,20 +74,21 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      - name: Install deps
-        # Use `npm install` rather than `npm ci`: the lockfile is generated on
-        # macOS and omits platform-specific optional dependencies for other
-        # runners (notably @rollup/rollup-linux-x64-gnu), which breaks the
-        # Linux build with "Cannot find module …" at tsup/rollup load time.
-        # See https://github.com/npm/cli/issues/4828.
-        run: npm install --no-audit --no-fund
-
-      # Work around https://github.com/npm/cli/issues/4828 — even with
-      # `npm install`, npm honors the darwin-generated lockfile's optional-dep
-      # entries and skips the Linux rollup binary. Install it explicitly.
-      - name: Install linux rollup binary
+      # npm bug #4828: the committed package-lock.json is generated on macOS
+      # and pins optional-dep entries (like @rollup/rollup-linux-x64-gnu and
+      # lightningcss-linux-x64-gnu) to zero copies. `npm install` under the
+      # lockfile then skips the Linux binaries, breaking vite/rollup + tailwind
+      # /lightningcss at build time on ubuntu-latest. The package author's
+      # own recommended workaround (see the "Cannot find native binding"
+      # error message from lightningcss) is to delete the lockfile on the
+      # other platform and let npm resolve fresh. macOS keeps the lockfile
+      # intact because its own deps ARE correct there.
+      - name: Remove lockfile on Linux (npm bug #4828)
         if: runner.os == 'Linux'
-        run: npm install --no-save --no-audit --no-fund @rollup/rollup-linux-x64-gnu
+        run: rm -f package-lock.json
+
+      - name: Install deps
+        run: npm install --no-audit --no-fund
 
       - name: Build openhive (server + web)
         run: npm run build
