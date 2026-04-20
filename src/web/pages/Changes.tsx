@@ -36,7 +36,11 @@ import {
   Edit3,
   Search,
   Inbox,
+  Send,
+  FileText,
+  Zap,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import {
   useCascadeDAG,
   useCascadeStreamTimeline,
@@ -47,11 +51,15 @@ import {
   useClosePR,
   useUpdatePublishBranch,
   useGitHubStatus,
+  useMapSwarm,
+  useSessionsList,
   type StreamDAGNode,
   type StreamDAGEdge,
   type CascadeAction,
   type CascadePullRequest,
 } from '../hooks/useApi';
+import { useDispatchList } from '../hooks/useDispatch';
+import { useSpec } from '../hooks/useSpecs';
 import { useCascadeStreamsRealtime } from '../hooks/useRealtimeInvalidation';
 import { useMapSwarms } from '../hooks/useApi';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -778,6 +786,9 @@ function StreamDetailSidebar({
         </button>
       </div>
 
+      {/* Lineage — heuristic "where did this change come from?" */}
+      {node && <ChangeLineagePanel node={node} />}
+
       {/* Meta */}
       {node && (
         <div className="px-3 py-2 text-2xs space-y-1 border-b" style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text-muted)' }}>
@@ -1234,3 +1245,95 @@ function StreamActions({
 }
 
 // TimelineEntry and StreamStatusDot imported from ../components/streams/shared
+
+// ─── Lineage Panel ────────────────────────────────────────────────────
+//
+// Heuristic chain: stream.source_swarm_id + source_agent_id →
+//   sessions on that swarm with matching acp_target_agent_id →
+//   dispatches on that swarm whose session_ids include the session →
+//   spec (resource + id on the dispatch).
+//
+// Each hop is client-side. Renders compact rows only for hops that
+// resolve — if no matching session/dispatch exists (agent opened the
+// stream outside any dispatch, or data hasn't synced yet), the panel
+// falls back to just the swarm + agent chips.
+
+function ChangeLineagePanel({ node }: { node: StreamDAGNode }) {
+  const { data: swarm } = useMapSwarm(node.source_swarm_id);
+  const { data: sessionsResp } = useSessionsList({ swarm_id: node.source_swarm_id, limit: 100 });
+  const { data: dispatchResp } = useDispatchList({ target_swarm_id: node.source_swarm_id, limit: 100 });
+
+  const matchedSession = useMemo(() => {
+    if (!sessionsResp?.data) return undefined;
+    return sessionsResp.data.find(
+      (s) => s.acp_target_agent_id === node.source_agent_id,
+    );
+  }, [sessionsResp, node.source_agent_id]);
+
+  const matchedDispatch = useMemo(() => {
+    if (!dispatchResp?.data || !matchedSession) return undefined;
+    return dispatchResp.data.find((d) => d.session_ids.includes(matchedSession.id));
+  }, [dispatchResp, matchedSession]);
+
+  const { data: specResp } = useSpec(
+    matchedDispatch?.spec_resource_id,
+    matchedDispatch?.spec_id,
+  );
+
+  return (
+    <div
+      className="px-3 py-2 text-2xs space-y-1 border-b"
+      style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text-muted)' }}
+    >
+      <div className="uppercase tracking-wider text-2xs font-semibold mb-1" style={{ fontSize: '0.6rem' }}>
+        From
+      </div>
+      <div className="flex items-center gap-1.5">
+        <Zap className="w-3 h-3 text-honey-500 shrink-0" />
+        <Link
+          to={`/swarms/${node.source_swarm_id}`}
+          className="hover:opacity-80 truncate"
+          style={{ color: 'var(--color-text)' }}
+        >
+          {swarm?.name ?? node.source_swarm_id}
+        </Link>
+      </div>
+      {matchedSession && (
+        <div className="flex items-center gap-1.5">
+          <Clock className="w-3 h-3 text-honey-500 shrink-0" />
+          <Link
+            to={`/threads/${matchedSession.id}`}
+            className="hover:opacity-80 truncate"
+            style={{ color: 'var(--color-text)' }}
+          >
+            {matchedSession.latest_agent ?? matchedSession.name ?? 'session'}
+          </Link>
+        </div>
+      )}
+      {matchedDispatch && (
+        <div className="flex items-center gap-1.5">
+          <Send className="w-3 h-3 text-honey-500 shrink-0" />
+          <Link
+            to={`/dispatch/${matchedDispatch.id}`}
+            className="hover:opacity-80 truncate font-mono"
+            style={{ color: 'var(--color-text)' }}
+          >
+            {matchedDispatch.id}
+          </Link>
+        </div>
+      )}
+      {matchedDispatch && (
+        <div className="flex items-center gap-1.5">
+          <FileText className="w-3 h-3 text-honey-500 shrink-0" />
+          <Link
+            to={`/specs/${matchedDispatch.spec_resource_id}/${matchedDispatch.spec_id}`}
+            className="hover:opacity-80 truncate"
+            style={{ color: 'var(--color-text)' }}
+          >
+            {specResp?.spec.title ?? matchedDispatch.spec_id}
+          </Link>
+        </div>
+      )}
+    </div>
+  );
+}

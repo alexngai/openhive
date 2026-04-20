@@ -1,8 +1,9 @@
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Zap } from 'lucide-react';
+import { GitBranch, Zap } from 'lucide-react';
 import { useDispatchList } from '../../hooks/useDispatch';
 import { useDispatchRealtime } from '../../hooks/useDispatchRealtime';
-import { useMapSwarms } from '../../hooks/useApi';
+import { useMapSwarms, useCascadeDAG, useSessionsList } from '../../hooks/useApi';
 import { DispatchStatusChip } from './DispatchStatusChip';
 import { TimeAgo } from '../common/TimeAgo';
 
@@ -37,6 +38,32 @@ export function SpecRecentDispatchStrip({ resourceId, specId }: Props) {
   const swarmsById = new Map(swarms.map((s) => [s.id, s.name]));
 
   const dispatches = data?.data ?? [];
+
+  // "Changes opened" heuristic — scoped to the most-recent dispatch's target
+  // swarm to keep this a single extra cascade/sessions query pair. Multi-swarm
+  // specs under-count; the /changes page is always one click away for the
+  // full picture.
+  const primarySwarmId = dispatches[0]?.target_swarm_id;
+  const { data: cascadeResp } = useCascadeDAG({ source_swarm_id: primarySwarmId });
+  const { data: sessionsResp } = useSessionsList({ swarm_id: primarySwarmId, limit: 100 });
+
+  const relatedChangesCount = useMemo(() => {
+    if (!primarySwarmId || dispatches.length === 0) return 0;
+    const sessionIds = new Set<string>();
+    for (const d of dispatches) {
+      if (d.target_swarm_id !== primarySwarmId) continue;
+      for (const sid of d.session_ids) sessionIds.add(sid);
+    }
+    const agentIds = new Set<string>();
+    for (const s of sessionsResp?.data ?? []) {
+      if (sessionIds.has(s.id) && s.acp_target_agent_id) {
+        agentIds.add(s.acp_target_agent_id);
+      }
+    }
+    if (agentIds.size === 0) return 0;
+    return (cascadeResp?.data?.nodes ?? []).filter((n) => agentIds.has(n.source_agent_id)).length;
+  }, [primarySwarmId, dispatches, sessionsResp, cascadeResp]);
+
   if (dispatches.length === 0) return null;
 
   const total = data?.total ?? dispatches.length;
@@ -81,6 +108,20 @@ export function SpecRecentDispatchStrip({ resourceId, specId }: Props) {
         >
           +{total - dispatches.length} more
         </span>
+      )}
+      {relatedChangesCount > 0 && (
+        <Link
+          to="/changes"
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded-md transition-colors hover:bg-white/5 shrink-0"
+          style={{
+            border: '1px solid var(--color-border-subtle)',
+            color: 'var(--color-text-secondary)',
+          }}
+          title="Cascade streams opened by agents that ran these dispatches"
+        >
+          <GitBranch className="h-3 w-3 text-honey-500" />
+          {relatedChangesCount} change{relatedChangesCount === 1 ? '' : 's'} opened
+        </Link>
       )}
     </div>
   );
