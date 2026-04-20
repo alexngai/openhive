@@ -1,8 +1,0 @@
-paths:
-  .github/workflows/release.yml:
-    ignore:
-      # actionlint follows the documented context-availability table, which
-      # omits `matrix` for `jobs.<id>.if`. In practice GitHub expands the
-      # matrix before evaluating the per-expansion job `if:`, so the context
-      # is bound. Stale docs, not a latent bug.
-      - 'context "matrix" is not allowed here'
