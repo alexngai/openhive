@@ -64,11 +64,27 @@ jobs:
         # See https://github.com/npm/cli/issues/4828.
         run: npm install --no-audit --no-fund
 
+      # Work around https://github.com/npm/cli/issues/4828 — even with
+      # `npm install`, npm honors the darwin-generated lockfile's optional-dep
+      # entries and skips the Linux rollup binary. Install it explicitly.
+      - name: Install linux rollup binary
+        if: runner.os == 'Linux'
+        run: npm install --no-save --no-audit --no-fund @rollup/rollup-linux-x64-gnu
+
       - name: Build openhive (server + web)
         run: npm run build
 
       - name: Build electron-app TypeScript
         run: npm -w openhive-electron run build
+
+      # Replace the workspace symlink at node_modules/openhive with a pruned
+      # copy (dist/, bin/, package.json). Without this, electron-builder
+      # follows the symlink to the repo root and bundles references/, .git/,
+      # data/, prior release/ builds, etc. — ballooning the .dmg by several
+      # GB. See electron-app/scripts/stage-openhive.mjs.
+      - name: Stage openhive package
+        working-directory: electron-app
+        run: node scripts/stage-openhive.mjs
 
       - name: Package and publish
         working-directory: electron-app

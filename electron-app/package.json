@@ -10,7 +10,7 @@
     "build": "tsc -p .",
     "start": "electron dist/main.js",
     "dev": "npm --prefix .. run build && npm run build && npm run start",
-    "dist": "npm --prefix .. run build && npm run build && electron-builder",
+    "dist": "npm --prefix .. run build && npm run build && node scripts/stage-openhive.mjs && electron-builder",
     "postinstall": "node scripts/fix-better-sqlite3.mjs"
   },
   "dependencies": {
@@ -40,7 +40,46 @@
     "files": [
       "dist/**/*",
       "package.json",
-      "node_modules/**/*"
+      "node_modules/**/*",
+      {
+        "from": "../node_modules",
+        "to": "node_modules",
+        "filter": [
+          "**/*",
+
+          "!electron/**", "!electron-builder*/**", "!electron-winstaller/**",
+          "!@electron/**", "!app-builder-bin/**", "!app-builder-lib/**",
+          "!dmg-builder/**", "!dmg-license/**", "!builder-util*/**",
+
+          "!typescript/**", "!tsup/**", "!tsx/**",
+          "!vite/**", "!@vitejs/**", "!vitest/**", "!@vitest/**",
+          "!jsdom/**", "!@testing-library/**",
+          "!tailwindcss/**", "!@tailwindcss/**",
+          "!claude-code-swarm/**", "!sessionlog/**",
+          "!esbuild/**", "!rollup/**", "!@rollup/**",
+          "!@swc/**", "!@types/**",
+
+          "!react/**", "!react-dom/**", "!react-router-dom/**",
+          "!@tiptap/**", "!lowlight/**", "!highlight.js/**",
+          "!@tanstack/react-query/**",
+          "!react-markdown/**", "!rehype-highlight/**", "!remark-gfm/**",
+          "!lucide-react/**", "!react18-json-view/**", "!boring-avatars/**",
+          "!@dnd-kit/**", "!zustand/**", "!clsx/**",
+          "!graphology*/**", "!sigma/**", "!dagre*/**",
+          "!date-fns/**", "!mermaid/**", "!three/**", "!node-llama-cpp/**",
+          "!@opentelemetry/**",
+
+          "!**/*.md", "!**/*.markdown",
+          "!**/{test,tests,__tests__,__mocks__,powered-test}/**",
+          "!**/{example,examples,demo,demos,sample,samples,doc,docs}/**",
+          "!**/*.map", "!**/*.d.ts", "!**/*.d.ts.map",
+          "!**/.github/**", "!**/.husky/**", "!**/.nyc_output/**",
+          "!**/CHANGELOG*", "!**/HISTORY*", "!**/MIGRATION*",
+          "!**/tsconfig*.json", "!**/tsconfig.tsbuildinfo",
+          "!**/.eslintrc*", "!**/.prettierrc*",
+          "!**/*.test.js", "!**/*.spec.js"
+        ]
+      }
     ],
     "asarUnpack": [
       "node_modules/better-sqlite3/**",
