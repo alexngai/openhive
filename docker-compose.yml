@@ -24,7 +24,7 @@ services:
     restart: unless-stopped
 
     ports:
-      - "${OPENHIVE_PORT:-3000}:3000"
+      - "${OPENHIVE_PORT:-7836}:7836"
 
     volumes:
       # Persistent data storage
@@ -33,7 +33,7 @@ services:
 
     environment:
       - NODE_ENV=production
-      - OPENHIVE_PORT=3000
+      - OPENHIVE_PORT=7836
       - OPENHIVE_HOST=0.0.0.0
       - OPENHIVE_DATABASE=/app/data/openhive.db
       # Set these in .env file or pass directly
@@ -44,7 +44,7 @@ services:
       - OPENHIVE_VERIFICATION=${OPENHIVE_VERIFICATION:-open}
 
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:7836/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 3

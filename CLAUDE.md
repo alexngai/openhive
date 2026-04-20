@@ -426,8 +426,8 @@ OpenHive's SwarmKit UI supports this split without any routing metadata. The flo
 ## Development
 
 ```bash
-npm run dev          # API server in watch mode (port 3000)
-npm run dev:web      # Vite dev server (port 5173, proxies to :3000)
+npm run dev          # API server in watch mode (port 7836)
+npm run dev:web      # Vite dev server (port 5173, proxies to :7836)
 npm run test:run     # All server tests
 npm run test:web:watch  # React tests in watch mode
 npm run build        # Full build (server + web)

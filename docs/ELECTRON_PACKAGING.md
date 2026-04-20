@@ -62,7 +62,7 @@ One **supervisor process** (Electron main) plus **one Node utility process per h
 **Key shape decisions:**
 
 - **Supervisor owns no hive state.** Main is a pure window + child manager. All Fastify/DB/sync state lives in utility processes.
-- **Bind loopback-only** (`127.0.0.1`) with an **ephemeral port** (`port: 0`) inside each hive child, so we don't clash with a user's `openhive serve` on `:3000` and don't expose the API to the LAN.
+- **Bind loopback-only** (`127.0.0.1`) with an **ephemeral port** (`port: 0`) inside each hive child, so we don't clash with a user's `openhive serve` on `:7836` and don't expose the API to the LAN.
 - **Every hive runs in a utilityProcess, including the default one.** Consistent mental model costs ~100MB of extra memory over the single-process design and buys cleaner code + crash isolation.
 - **Single-instance Electron app.** `app.requestSingleInstanceLock()` focuses the existing window on second launch. Multi-hive is a menu click, not a second app instance.
 - **No separate Vite dev server in production.** The hive child's Fastify serves the built SPA. Dev mode can still use `vite` externally — see Dev Mode below.
