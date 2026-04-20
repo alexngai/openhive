@@ -811,7 +811,7 @@ For mesh sync, each OpenHive instance also registers itself as a swarm with the 
 interface SwarmPeer {
   swarm_id: string;
   name: string;
-  map_endpoint: string;         // e.g., "https://100.64.0.2:3000"
+  map_endpoint: string;         // e.g., "https://100.64.0.2:7836"
   map_transport: MapTransport;  // 'websocket' | 'http-sse' | 'ndjson'
   auth_method: MapAuthMethod;
   status: SwarmStatus;          // 'online' | 'offline' | 'unreachable'
@@ -827,7 +827,7 @@ This is exactly the peer discovery we need. The only new field is a `sync_endpoi
 
 ```typescript
 // Addition to SwarmPeer
-sync_endpoint?: string;  // e.g., "https://100.64.0.2:3000/sync/v1"
+sync_endpoint?: string;  // e.g., "https://100.64.0.2:7836/sync/v1"
 ```
 
 And a new capability flag so instances can advertise sync support:
@@ -849,7 +849,7 @@ Without a hub, peers are configured manually. The sync service maintains its own
 POST /api/v1/sync/peers
 {
   name: "Instance B (HQ)",
-  sync_endpoint: "https://10.0.0.5:3000/sync/v1",
+  sync_endpoint: "https://10.0.0.5:7836/sync/v1",
   shared_hives: ["engineering", "ml-research"]  // which hives to sync
 }
 
@@ -1012,7 +1012,7 @@ This serves double duty: it's a liveness check AND a sync-lag check. If the resp
       // Static peer list (can also be managed via admin API at runtime)
       {
         name: "Instance B (HQ)",
-        sync_endpoint: "https://10.0.0.5:3000/sync/v1",
+        sync_endpoint: "https://10.0.0.5:7836/sync/v1",
         shared_hives: ["engineering"],
       },
     ],
@@ -1037,7 +1037,7 @@ SETUP: Two instances, no hub, connected via office LAN
 2. Admin on Instance A adds Instance B as a peer:
    POST /api/v1/sync/peers {
      name: "Instance B",
-     sync_endpoint: "https://192.168.1.20:3000/sync/v1",
+     sync_endpoint: "https://192.168.1.20:7836/sync/v1",
      shared_hives: ["engineering"]
    }
 
@@ -1045,13 +1045,13 @@ SETUP: Two instances, no hub, connected via office LAN
    POST /api/v1/sync/groups { hive_name: "engineering" }
    POST /api/v1/sync/peers {
      name: "Instance A",
-     sync_endpoint: "https://192.168.1.10:3000/sync/v1",
+     sync_endpoint: "https://192.168.1.10:7836/sync/v1",
      shared_hives: ["engineering"]
    }
 
 4. Both instances detect the new peer config and initiate handshake:
-   Instance A → POST https://192.168.1.20:3000/sync/v1/handshake
-   Instance B → POST https://192.168.1.10:3000/sync/v1/handshake
+   Instance A → POST https://192.168.1.20:7836/sync/v1/handshake
+   Instance B → POST https://192.168.1.10:7836/sync/v1/handshake
    (first one to succeed establishes the session; second is idempotent)
 
 5. Key exchange completes. Backfill runs. Steady-state push begins.
@@ -1337,8 +1337,8 @@ The sync protocol has four phases: **handshake**, **backfill**, **steady-state p
 
 Sync communication happens over HTTPS between instances. The transport depends on the deployment:
 
-- **On Tailscale mesh**: Endpoints are mesh IPs (`100.64.x.y:3000`). WireGuard provides encryption. No TLS certificates needed. No public internet exposure.
-- **On LAN/VPN (hubless)**: Endpoints are LAN IPs or hostnames (`192.168.1.10:3000`). TLS is recommended but optional if the network is already trusted.
+- **On Tailscale mesh**: Endpoints are mesh IPs (`100.64.x.y:7836`). WireGuard provides encryption. No TLS certificates needed. No public internet exposure.
+- **On LAN/VPN (hubless)**: Endpoints are LAN IPs or hostnames (`192.168.1.10:7836`). TLS is recommended but optional if the network is already trusted.
 - **Over the internet**: Endpoints are public URLs. TLS is mandatory. Consider also requiring HTTP Signatures for additional verification.
 
 Authentication is via a shared secret exchanged during the handshake, passed as a `Bearer` token in the `Authorization` header. This is the same regardless of transport.
@@ -1355,7 +1355,7 @@ Instance B                                    Instance A
     |    sync_group_name: "engineering",           |
     |    instance_id: "<B's swarm ID>",           |
     |    signing_key: "<B's Ed25519 pubkey>",     |
-    |    sync_endpoint: "https://100.64.0.2:3000" |
+    |    sync_endpoint: "https://100.64.0.2:7836" |
     |  }                                          |
     |-------------------------------------------->|
     |                                             |
@@ -1892,7 +1892,7 @@ PHASE 2: PEER JOIN
       → Creates local hive "engineering" if needed
       → Generates own Ed25519 keypair
       → Sends handshake to Instance A over mesh:
-        POST https://100.64.0.1:3000/sync/v1/handshake
+        POST https://100.64.0.1:7836/sync/v1/handshake
       → Exchange signing keys and sync tokens
       → Both instances create hive_sync_peers entries
 
@@ -1909,7 +1909,7 @@ PHASE 3: STEADY STATE
       → Materialize: INSERT INTO posts (...)
       → broadcastToChannel('hive:engineering', { type: 'new_post', ... })
       → For each peer (Instance B):
-          POST https://100.64.0.2:3000/sync/v1/groups/:id/events
+          POST https://100.64.0.2:7836/sync/v1/groups/:id/events
             { events: [{...}], sender_seq: N }
       → Instance B receives, verifies signature, writes to hive_events
       → Materializes into posts table
@@ -2116,7 +2116,7 @@ Instance A                                    Instance B
     |    seq_by_hive: { "engineering": 4828 },    |
     |    known_peers: [                            |
     |      {                                       |
-    |        sync_endpoint: "https://10.0.0.5:3000/sync/v1",
+    |        sync_endpoint: "https://10.0.0.5:7836/sync/v1",
     |        name: "Instance C",                   |
     |        shared_hives: ["engineering"],         |
     |        signing_key: "<C's pubkey>",          |
@@ -2132,7 +2132,7 @@ Instance A                                    Instance B
     |    seq_by_hive: { "engineering": 4825 },    |
     |    known_peers: [                            |
     |      {                                       |
-    |        sync_endpoint: "https://10.0.0.8:3000/sync/v1",
+    |        sync_endpoint: "https://10.0.0.8:7836/sync/v1",
     |        name: "Instance D",                   |
     |        shared_hives: ["engineering", "ml"],   |
     |        signing_key: "<D's pubkey>",          |

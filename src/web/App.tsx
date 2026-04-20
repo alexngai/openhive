@@ -5,6 +5,7 @@ import { PageLoader } from './components/common/LoadingSpinner';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { ProtectedRoute } from './components/common/ProtectedRoute';
 import { useWebSocket } from './hooks/useWebSocket';
+import { useElectronDeepLinks } from './hooks/useElectronDeepLinks';
 import { useAuthStore } from './stores/auth';
 
 function SessionIdRedirect() {
@@ -52,6 +53,9 @@ const Changes = lazy(() => import('./pages/Changes').then(m => ({ default: m.Cha
 export default function App() {
   // Initialize WebSocket connection
   useWebSocket();
+
+  // Electron deep links (`openhive://…`) → react-router. No-op in browsers.
+  useElectronDeepLinks();
 
   // Check auth mode on startup (local mode auto-authenticates)
   const checkAuthMode = useAuthStore((s) => s.checkAuthMode);

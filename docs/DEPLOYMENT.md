@@ -30,10 +30,10 @@ OpenHive is designed for lightweight, easy deployment. This guide covers multipl
 ### Fastest: npx (for testing)
 
 ```bash
-npx openhive serve --port 3000
+npx openhive serve --port 7836
 ```
 
-Open http://localhost:3000 - you're done!
+Open http://localhost:7836 - you're done!
 
 ### Docker (one command)
 
@@ -604,7 +604,7 @@ sudo systemctl stop openhive
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENHIVE_PORT` | `3000` | HTTP port |
+| `OPENHIVE_PORT` | `7836` | HTTP port |
 | `OPENHIVE_HOST` | `0.0.0.0` | Bind address |
 | `OPENHIVE_DATABASE` | `./data/openhive.db` | SQLite database path |
 | `OPENHIVE_ADMIN_KEY` | (none) | **Required** for admin endpoints |
@@ -665,7 +665,7 @@ volumes:
 OpenHive exposes a health endpoint at `/health`:
 
 ```bash
-curl http://localhost:3000/health
+curl http://localhost:7836/health
 # {"status":"ok","timestamp":"2024-01-01T00:00:00.000Z"}
 ```
 
@@ -696,7 +696,7 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/hive.example.com/privkey.pem;
 
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://localhost:7836;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -712,7 +712,7 @@ server {
 
 ```caddyfile
 hive.example.com {
-    reverse_proxy localhost:3000
+    reverse_proxy localhost:7836
 }
 ```
 
@@ -723,7 +723,7 @@ Caddy automatically handles HTTPS certificates.
 ```bash
 cloudflared tunnel create openhive
 cloudflared tunnel route dns openhive hive.example.com
-cloudflared tunnel run --url http://localhost:3000 openhive
+cloudflared tunnel run --url http://localhost:7836 openhive
 ```
 
 ---

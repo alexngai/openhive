@@ -11,6 +11,7 @@ import { LoadingSpinner } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { SwarmKitSettings } from './settings/SwarmKitSettings';
 import { SwarmHubSettings } from './settings/SwarmHubSettings';
+import { ConnectivityCard } from './settings/ConnectivityCard';
 import { DispatchPolicyCard } from '../components/dispatch/DispatchPolicyCard';
 import { Dialog } from '../components/common/Dialog';
 import { useGitLog, useGitForceFetch, useGitPull as useGitPullHook, useGitPush as useGitPushHook, useUpdateResource } from '../hooks/useApi';
@@ -193,6 +194,9 @@ function ServerSettings({ isAdmin }: { isAdmin: boolean }) {
           </button>
         </div>
       )}
+
+      {/* Connection info — top of the tab so agent operators see it first. */}
+      <ConnectivityCard />
 
       {/* Runtime safety: dispatch kill switch (Stream 2 D9). */}
       <DispatchPolicyCard isAdmin={isAdmin} />

@@ -220,7 +220,7 @@ If an error occurs, you'll receive an error message:
 ## Example: Complete Client
 
 ```javascript
-const ws = new WebSocket('ws://localhost:3000/ws?token=YOUR_API_KEY');
+const ws = new WebSocket('ws://localhost:7836/ws?token=YOUR_API_KEY');
 
 ws.onopen = () => {
   console.log('Connected');

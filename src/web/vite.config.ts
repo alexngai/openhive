@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs";
 
 // Read backend port from .dev-port file (written by backend on startup)
-// Falls back to OPENHIVE_DEV_PORT env var, then 3000
+// Falls back to OPENHIVE_DEV_PORT env var, then 7836
 function getBackendPort(): number {
   try {
     const portFile = path.resolve(__dirname, "../../.dev-port");
@@ -13,7 +13,7 @@ function getBackendPort(): number {
   } catch {
     // File doesn't exist yet — use fallback
   }
-  return parseInt(process.env.OPENHIVE_DEV_PORT || "3000", 10);
+  return parseInt(process.env.OPENHIVE_DEV_PORT || "7836", 10);
 }
 
 const backendPort = getBackendPort();

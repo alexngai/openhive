@@ -1,4 +1,4 @@
-name: Build/Release Electron App
+name: Build & Release Electron App
 
 # Triggered by pushing a tag like `v0.1.0`. Each run builds the Electron
 # app on each target platform, packages it with electron-builder, and

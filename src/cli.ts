@@ -131,7 +131,7 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
 
     // Step 2: Instance details
     const instanceName = overrides.name ?? await prompt!.ask('  Instance name', 'OpenHive');
-    const portNum = overrides.port ?? (parseInt(await prompt!.ask('  Port', '3000'), 10) || 3000);
+    const portNum = overrides.port ?? (parseInt(await prompt!.ask('  Port', '7836'), 10) || 7836);
 
     // Step 3: Registration mode
     let verificationStrategy: string;
