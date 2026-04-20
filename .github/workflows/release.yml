@@ -57,7 +57,12 @@ jobs:
           cache: 'npm'
 
       - name: Install deps
-        run: npm ci
+        # Use `npm install` rather than `npm ci`: the lockfile is generated on
+        # macOS and omits platform-specific optional dependencies for other
+        # runners (notably @rollup/rollup-linux-x64-gnu), which breaks the
+        # Linux build with "Cannot find module …" at tsup/rollup load time.
+        # See https://github.com/npm/cli/issues/4828.
+        run: npm install --no-audit --no-fund
 
       - name: Build openhive (server + web)
         run: npm run build

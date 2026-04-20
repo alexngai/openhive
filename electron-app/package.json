@@ -51,7 +51,7 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": "dmg",
-      "identity": "Developer ID Application: Alexander Ngai (TKJJVX3QDY)",
+      "identity": "Alexander Ngai (TKJJVX3QDY)",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
