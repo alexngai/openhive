@@ -106,6 +106,23 @@ app.whenReady().then(async () => {
     return;
   }
   Menu.setApplicationMenu(buildMenu());
+
+  // Auto-update: only in packaged builds. Skipped on `electron .` dev
+  // launches (app.isPackaged === false). Publish destination is declared
+  // in package.json's `build.publish` (GitHub Releases); electron-updater
+  // reads the same config to know where to check.
+  if (app.isPackaged) {
+    try {
+      const { autoUpdater } = await import('electron-updater');
+      autoUpdater.checkForUpdatesAndNotify().catch((err: Error) => {
+        console.warn(`[supervisor] auto-update check failed: ${err.message}`);
+      });
+    } catch (err) {
+      console.warn(
+        `[supervisor] auto-update unavailable: ${(err as Error).message}`,
+      );
+    }
+  }
 });
 
 app.on('activate', async () => {
@@ -252,9 +269,66 @@ export async function restartHive(
 }
 
 // ── Menu ──────────────────────────────────────────────────────────────
+
+/**
+ * Manual update check — menu-item driven. `checkForUpdatesAndNotify` on
+ * app-ready handles the passive path; this one surfaces "you're on the
+ * latest version" / "checking now…" for users who want to force it.
+ *
+ * No-op in dev launches (app.isPackaged=false) — electron-updater refuses
+ * to run there anyway; we present a friendly message rather than an error.
+ */
+async function manualCheckForUpdates(): Promise<void> {
+  if (!app.isPackaged) {
+    await dialog.showMessageBox({
+      type: 'info',
+      message: 'Updates are only checked in packaged builds.',
+      detail: 'Run from a signed .dmg or AppImage to enable auto-update.',
+    });
+    return;
+  }
+  try {
+    const { autoUpdater } = await import('electron-updater');
+    const result = await autoUpdater.checkForUpdates();
+    const latest = result?.updateInfo?.version;
+    if (!latest || latest === app.getVersion()) {
+      await dialog.showMessageBox({
+        type: 'info',
+        message: `You're on the latest version (${app.getVersion()}).`,
+      });
+    }
+    // If a newer version exists, electron-updater downloads in the
+    // background and fires its own native "ready to install" notification
+    // via the update-downloaded event. No further UI needed here.
+  } catch (err) {
+    await dialog.showMessageBox({
+      type: 'error',
+      message: 'Update check failed',
+      detail: (err as Error).message,
+    });
+  }
+}
+
 function buildMenu(): Menu {
   return Menu.buildFromTemplate([
-    { role: 'appMenu' },
+    {
+      // Override the default appMenu so we can inject "Check for Updates…"
+      // near the top — matches the macOS convention for About / Preferences.
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { label: 'Check for Updates…', click: () => { void manualCheckForUpdates(); } },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
     { role: 'editMenu' },
     { role: 'viewMenu' },
     {

@@ -1,0 +1,87 @@
+name: Release
+
+# Triggered by pushing a tag like `v0.1.0`. Each run builds the Electron
+# app on each target platform, packages it with electron-builder, and
+# publishes the artifacts (DMG / AppImage / deb / latest-*.yml) to the
+# GitHub Release matching the tag.
+#
+# Auto-update for installed apps is wired in main.ts via electron-updater,
+# which reads `build.publish` from electron-app/package.json and polls
+# this same GitHub Releases feed.
+#
+# Signing + notarization are NOT configured yet — the first releases will
+# be unsigned, so macOS users must right-click → Open on first launch.
+# Add the APPLE_* / CSC_* secrets and update electron-app/package.json's
+# `mac.identity` when ready.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required for electron-builder to publish releases
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macos-arm64
+          - os: ubuntu-latest
+            label: linux-x64
+
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build openhive (server + web)
+        run: npm run build
+
+      - name: Build electron-app TypeScript
+        run: npm -w openhive-electron run build
+
+      - name: Package and publish
+        working-directory: electron-app
+        env:
+          # GitHub Releases destination (the default workflow token is
+          # enough because `permissions: contents: write` is set above).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # macOS signing + notarization. These are all optional — when
+          # the repo secrets aren't set, the variables expand to empty
+          # strings, electron-builder detects no cert, and produces
+          # an unsigned build. Once you've set up an Apple Developer ID:
+          #
+          # 1. Add these 5 secrets at Settings → Secrets and variables → Actions:
+          #      CSC_LINK                    base64 of the .p12 cert
+          #      CSC_KEY_PASSWORD            the .p12 export password
+          #      APPLE_ID                    your Apple developer email
+          #      APPLE_APP_SPECIFIC_PASSWORD the notarization password from
+          #                                  appleid.apple.com
+          #      APPLE_TEAM_ID               10-char Team ID
+          #
+          # 2. In electron-app/package.json, flip `"identity": null` to
+          #    `"identity": "Developer ID Application: Your Name (TEAMID)"`
+          #    and `"notarize": false` to `"notarize": true`.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --publish always

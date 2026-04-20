@@ -13,6 +13,7 @@
     "postinstall": "node scripts/fix-better-sqlite3.mjs"
   },
   "dependencies": {
+    "electron-updater": "^6.3.9",
     "openhive": "file:.."
   },
   "devDependencies": {
@@ -27,6 +28,13 @@
     "directories": {
       "output": "../release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "alexngai",
+        "repo": "openhive"
+      }
+    ],
     "files": [
       "dist/**/*",
       "package.json",
@@ -41,7 +49,12 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": "dmg",
-      "identity": null
+      "identity": "Developer ID Application: Alexander Ngai (TKJJVX3QDY)",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true
     },
     "linux": {
       "target": ["AppImage", "deb"],
