@@ -111,6 +111,24 @@ export function findAgentByName(name: string): Agent | null {
   return row ? rowToAgent(row) : null;
 }
 
+/**
+ * Bulk-resolve a list of agent ids to their public profiles in a single
+ * query. Missing ids are simply omitted from the result — callers should
+ * treat any id not in the returned map as an unknown/external participant.
+ *
+ * Used by the chat enrichment layer to decorate user/supervisor messages
+ * with the sender's display name + avatar. Keeps the turn payload free of
+ * identity metadata (the server stamps only `participant_id`).
+ */
+export function findAgentsByIds(ids: string[]): Agent[] {
+  if (ids.length === 0) return [];
+  const db = getDatabase();
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT * FROM agents WHERE id IN (${placeholders})`)
+    .all(...ids) as Array<Record<string, unknown>>;
+  return rows.map(rowToAgent);
+}
+
 export async function findAgentByApiKey(apiKey: string): Promise<Agent | null> {
   const db = getDatabase();
   const agents = db.prepare('SELECT * FROM agents WHERE api_key_hash IS NOT NULL').all() as Record<string, unknown>[];

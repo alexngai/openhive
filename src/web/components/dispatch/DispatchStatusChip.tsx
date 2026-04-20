@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import { Loader2, CheckCircle2, XCircle, Clock, Ban } from 'lucide-react';
-import type { DispatchStatus } from '../../hooks/useDispatches';
+import type { DispatchStatus } from '../../hooks/useDispatch';
 
 const STATUS_STYLE: Record<DispatchStatus, { bg: string; text: string; label: string; Icon: React.ElementType }> = {
   queued: { bg: 'bg-slate-500/10', text: 'text-slate-300', label: 'Queued', Icon: Clock },

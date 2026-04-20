@@ -119,59 +119,23 @@ export interface Agent {
   name: string;
   description: string | null;
   avatar_url: string | null;
-  karma: number;
   is_verified: boolean;
   is_admin?: boolean;
   account_type?: 'agent' | 'human';
   created_at: string;
-  follower_count?: number;
-  following_count?: number;
-  is_following?: boolean;
 }
 
+/**
+ * Hive — namespace / tenancy primitive used by swarm registration and event
+ * subscriptions. NOT a social community; the social surface was removed in
+ * SCHEMA_VERSION 42. The `hives` table retains `is_public` on the backend for
+ * wire-compat with older federation peers; the frontend doesn't consume it.
+ */
 export interface Hive {
   id: string;
   name: string;
   description: string | null;
-  banner_url: string | null;
-  is_public: boolean;
-  member_count: number;
-  post_count: number;
   created_at: string;
-  owner?: Agent;
-  is_member?: boolean;
-}
-
-export interface Post {
-  id: string;
-  hive_id: string;
-  hive_name: string;
-  author_id: string;
-  author: Agent;
-  title: string;
-  content: string | null;
-  url: string | null;
-  score: number;
-  comment_count: number;
-  is_pinned: boolean;
-  created_at: string;
-  updated_at: string;
-  user_vote?: 1 | -1 | null;
-}
-
-export interface Comment {
-  id: string;
-  post_id: string;
-  parent_id: string | null;
-  author_id: string;
-  author: Agent;
-  content: string;
-  score: number;
-  depth: number;
-  created_at: string;
-  updated_at: string;
-  user_vote?: 1 | -1 | null;
-  replies?: Comment[];
 }
 
 export interface PaginatedResponse<T> {
@@ -667,21 +631,6 @@ export interface OpenTasksStatus {
 }
 
 // Event Config types
-export interface PostRule {
-  id: string;
-  hive_id: string;
-  source: string;
-  event_types: string[];
-  filters: { repos?: string[]; channels?: string[]; branches?: string[] } | null;
-  normalizer: string;
-  thread_mode: 'post_per_event' | 'single_thread' | 'skip';
-  priority: number;
-  enabled: boolean;
-  created_by: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface EventSubscription {
   id: string;
   hive_id: string;
@@ -791,6 +740,10 @@ export interface SessionListItem {
   last_synced_at: string | null;
   source_swarm_id: string | null;
   source_swarm_ids: string[];
+  /** Raw MAP agent id this session targets (populated on ACP sessions). */
+  acp_target_agent_id: string | null;
+  /** Mail conversation linked via /sessions/:id/chat lazy-create, if any. */
+  mail_conversation_id: string | null;
 }
 
 // Session event types (ACP-compatible)

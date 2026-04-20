@@ -3,23 +3,21 @@
   "version": "0.1.1",
   "description": "Lightweight control plane for agent swarms",
   "type": "module",
-  "main": "dist/index.mjs",
-  "module": "dist/index.mjs",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "default": "./dist/index.js"
     },
     "./map": {
       "types": "./dist/map.d.ts",
-      "import": "./dist/map.mjs",
-      "require": "./dist/map.js"
+      "default": "./dist/map.js"
     }
   },
   "bin": {
-    "openhive": "./bin/openhive.mjs"
+    "openhive": "./bin/openhive.js"
   },
   "files": [
     "dist",

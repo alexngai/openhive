@@ -72,7 +72,7 @@ function BridgeLinks() {
         </span>
       </Link>
       <Link
-        to="/sessions"
+        to="/threads"
         className="flex items-center gap-1 hover:text-honey-500 transition-colors"
       >
         <Activity className="w-3 h-3" />
@@ -134,7 +134,7 @@ function BridgeStatusBar() {
         </span>
       </Link>
       <Link
-        to="/sessions"
+        to="/threads"
         className="flex items-center gap-1 hover:text-honey-500 transition-colors"
       >
         <Activity className="w-3 h-3" />

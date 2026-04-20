@@ -1,17 +1,24 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { FileText, Plus } from 'lucide-react';
 import { SpecList } from '../components/specs/SpecList';
 import { useSpecs } from '../hooks/useSpecs';
 import { useSpecsRealtime } from '../hooks/useSpecsRealtime';
+import { ListFilters, useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
 
 export function Specs() {
   const [includeArchived, setIncludeArchived] = useState(false);
+  const [search, setSearch] = useState('');
+  const q = useDebouncedValue(search);
   const { data, isLoading, error } = useSpecs({ includeArchived });
   useSpecsRealtime();
 
   const specs = data?.data ?? [];
   const errors = data?.errors ?? [];
+  const filtered = useMemo(
+    () => specs.filter((s) => matchesSearch(q, s.title, s.content, s.resource_name)),
+    [specs, q],
+  );
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
@@ -33,9 +40,23 @@ export function Specs() {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <Link
+          to="/specs/new"
+          className="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded bg-honey-500 text-black font-medium hover:bg-honey-400 shrink-0"
+        >
+          <Plus className="h-4 w-4" />
+          New spec
+        </Link>
+      </div>
+
+      <ListFilters
+        search={search}
+        onSearchChange={setSearch}
+        placeholder="Search specs…"
+        count={{ visible: filtered.length, total: specs.length, noun: 'spec' }}
+        right={
           <label
-            className="flex items-center gap-2 text-sm cursor-pointer"
+            className="flex items-center gap-2 text-xs cursor-pointer"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             <input
@@ -46,15 +67,8 @@ export function Specs() {
             />
             Include archived
           </label>
-          <Link
-            to="/specs/new"
-            className="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded bg-honey-500 text-black font-medium hover:bg-honey-400"
-          >
-            <Plus className="h-4 w-4" />
-            New spec
-          </Link>
-        </div>
-      </div>
+        }
+      />
 
       {error && (
         <div
@@ -80,7 +94,7 @@ export function Specs() {
         </div>
       )}
 
-      <SpecList specs={specs} loading={isLoading} />
+      <SpecList specs={filtered} loading={isLoading} />
     </div>
   );
 }

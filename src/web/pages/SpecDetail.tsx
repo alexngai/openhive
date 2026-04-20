@@ -13,7 +13,8 @@ import { SpecMarkdown } from '../components/specs/SpecMarkdown';
 import { SpecEditor } from '../components/specs/SpecEditor';
 import { LinkedNodesPanel } from '../components/specs/LinkedNodesPanel';
 import { DispatchModal } from '../components/dispatch/DispatchModal';
-import { SpecDispatchesPanel } from '../components/dispatch/SpecDispatchesPanel';
+import { SpecDispatchPanel } from '../components/dispatch/SpecDispatchPanel';
+import { SpecRecentDispatchStrip } from '../components/dispatch/SpecRecentDispatchStrip';
 import { PageLoader } from '../components/common/LoadingSpinner';
 
 const PRIORITY_COLORS: Record<number, string> = {
@@ -129,9 +130,15 @@ export function SpecDetail() {
         </div>
 
         <div className="flex items-start justify-between gap-3">
-          <h1 className="text-2xl font-bold" style={{ color: 'var(--color-text)' }}>
-            {spec.title || 'Untitled spec'}
-          </h1>
+          <div className="flex-1 min-w-0">
+            <h1 className="text-2xl font-bold" style={{ color: 'var(--color-text)' }}>
+              {spec.title || 'Untitled spec'}
+            </h1>
+            {/* Recent dispatches strip — surfaces the 3 most recent so the
+                author sees at a glance that the spec has been acted on.
+                Sidebar SpecDispatchPanel still carries the full history. */}
+            <SpecRecentDispatchStrip resourceId={spec.resource_id} specId={spec.id} />
+          </div>
           <div className="flex items-center gap-2 shrink-0">
             {spec.priority !== undefined && spec.priority <= 3 && (
               <span
@@ -240,7 +247,7 @@ export function SpecDetail() {
 
         {/* Sidebar — linked nodes */}
         <div className="space-y-4">
-          <SpecDispatchesPanel resourceId={spec.resource_id} specId={spec.id} />
+          <SpecDispatchPanel resourceId={spec.resource_id} specId={spec.id} />
           <LinkedNodesPanel
             title="Tasks"
             icon={<ListTodo className="h-4 w-4 text-honey-500" />}

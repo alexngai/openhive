@@ -1,15 +1,14 @@
 /**
  * Event Routing Data Access Layer
  *
- * CRUD for post rules, event subscriptions, and delivery log.
- * Follows the same patterns as bridge.ts DAL.
+ * CRUD for event subscriptions (which swarms receive which webhook events
+ * via MAP) and the delivery log. The post-rules side of the dispatcher
+ * was removed with the social layer.
  */
 
 import { nanoid } from 'nanoid';
 import { getDatabase } from '../index.js';
 import type {
-  PostRule,
-  PostRuleThreadMode,
   EventSubscription,
   EventFilters,
   EventDeliveryLog,
@@ -18,23 +17,6 @@ import type {
 // ============================================================================
 // Row Converters
 // ============================================================================
-
-function rowToPostRule(row: Record<string, unknown>): PostRule {
-  return {
-    id: row.id as string,
-    hive_id: row.hive_id as string,
-    source: row.source as string,
-    event_types: JSON.parse(row.event_types as string),
-    filters: row.filters ? JSON.parse(row.filters as string) : null,
-    normalizer: row.normalizer as string,
-    thread_mode: row.thread_mode as PostRuleThreadMode,
-    priority: row.priority as number,
-    enabled: !!(row.enabled as number),
-    created_by: row.created_by as string | null,
-    created_at: row.created_at as string,
-    updated_at: row.updated_at as string,
-  };
-}
 
 function rowToSubscription(row: Record<string, unknown>): EventSubscription {
   return {
@@ -64,120 +46,6 @@ function rowToDeliveryLog(row: Record<string, unknown>): EventDeliveryLog {
     error: row.error as string | null,
     created_at: row.created_at as string,
   };
-}
-
-// ============================================================================
-// Post Rules CRUD
-// ============================================================================
-
-export function createPostRule(input: {
-  hive_id: string;
-  source: string;
-  event_types: string[];
-  filters?: EventFilters | null;
-  normalizer?: string;
-  thread_mode?: PostRuleThreadMode;
-  priority?: number;
-  created_by?: string;
-}): PostRule {
-  const db = getDatabase();
-  const id = `epr_${nanoid()}`;
-
-  db.prepare(`
-    INSERT INTO event_post_rules (id, hive_id, source, event_types, filters, normalizer, thread_mode, priority, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    input.hive_id,
-    input.source,
-    JSON.stringify(input.event_types),
-    input.filters ? JSON.stringify(input.filters) : null,
-    input.normalizer ?? 'default',
-    input.thread_mode ?? 'post_per_event',
-    input.priority ?? 100,
-    input.created_by ?? null,
-  );
-
-  return findPostRuleById(id)!;
-}
-
-export function findPostRuleById(id: string): PostRule | null {
-  const db = getDatabase();
-  const row = db.prepare('SELECT * FROM event_post_rules WHERE id = ?').get(id) as Record<string, unknown> | undefined;
-  return row ? rowToPostRule(row) : null;
-}
-
-export function listPostRules(hiveId?: string): PostRule[] {
-  const db = getDatabase();
-  if (hiveId) {
-    const rows = db.prepare(
-      'SELECT * FROM event_post_rules WHERE hive_id = ? ORDER BY priority ASC, created_at ASC',
-    ).all(hiveId) as Record<string, unknown>[];
-    return rows.map(rowToPostRule);
-  }
-  const rows = db.prepare(
-    'SELECT * FROM event_post_rules ORDER BY priority ASC, created_at ASC',
-  ).all() as Record<string, unknown>[];
-  return rows.map(rowToPostRule);
-}
-
-export function updatePostRule(id: string, input: {
-  source?: string;
-  event_types?: string[];
-  filters?: EventFilters | null;
-  normalizer?: string;
-  thread_mode?: PostRuleThreadMode;
-  priority?: number;
-  enabled?: boolean;
-}): PostRule | null {
-  const db = getDatabase();
-  const existing = findPostRuleById(id);
-  if (!existing) return null;
-
-  const sets: string[] = [];
-  const params: unknown[] = [];
-
-  if (input.source !== undefined) { sets.push('source = ?'); params.push(input.source); }
-  if (input.event_types !== undefined) { sets.push('event_types = ?'); params.push(JSON.stringify(input.event_types)); }
-  if (input.filters !== undefined) { sets.push('filters = ?'); params.push(input.filters ? JSON.stringify(input.filters) : null); }
-  if (input.normalizer !== undefined) { sets.push('normalizer = ?'); params.push(input.normalizer); }
-  if (input.thread_mode !== undefined) { sets.push('thread_mode = ?'); params.push(input.thread_mode); }
-  if (input.priority !== undefined) { sets.push('priority = ?'); params.push(input.priority); }
-  if (input.enabled !== undefined) { sets.push('enabled = ?'); params.push(input.enabled ? 1 : 0); }
-
-  if (sets.length === 0) return existing;
-
-  sets.push("updated_at = datetime('now')");
-  params.push(id);
-
-  db.prepare(`UPDATE event_post_rules SET ${sets.join(', ')} WHERE id = ?`).run(...params);
-  return findPostRuleById(id)!;
-}
-
-export function deletePostRule(id: string): boolean {
-  const db = getDatabase();
-  const result = db.prepare('DELETE FROM event_post_rules WHERE id = ?').run(id);
-  return result.changes > 0;
-}
-
-/**
- * Get post rules matching a source and event type.
- * Matches rules where:
- * - source matches or is '*'
- * - event_types JSON array contains the event type or '*'
- */
-export function getMatchingPostRules(source: string, eventType: string): PostRule[] {
-  const db = getDatabase();
-  const rows = db.prepare(`
-    SELECT * FROM event_post_rules
-    WHERE enabled = 1
-      AND (source = ? OR source = '*')
-      AND (
-        EXISTS (SELECT 1 FROM json_each(event_types) WHERE value = ? OR value = '*')
-      )
-    ORDER BY priority ASC, created_at ASC
-  `).all(source, eventType) as Record<string, unknown>[];
-  return rows.map(rowToPostRule);
 }
 
 // ============================================================================

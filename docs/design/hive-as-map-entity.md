@@ -1,7 +1,14 @@
 # Design: Hive as Addressable MAP Entity
 
-> Status: Draft
+> **Status: DEPRECATED (historical)**
 > Date: 2026-03-07
+>
+> This design proposed converging the MAP protocol with the social-community
+> layer (hives as channels with posts/comments as mail turns). The social
+> layer was removed from OpenHive (see SCHEMA_VERSION 42); hives are now
+> namespace/tenancy tags for MAP swarm grouping only. The hive-router and
+> mail-handler files prescribed below were never implemented and are not
+> planned. Kept as historical design rationale.
 
 ## Problem Statement
 

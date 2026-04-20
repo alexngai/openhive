@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
-import { initDatabase, closeDatabase } from '../../db/index.js';
+import { initDatabase } from '../../db/index.js';
 import * as eventsDAL from '../../db/dal/events.js';
 import { eventsRoutes } from '../../api/routes/events.js';
-import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
+import { testRoot, testDbPath } from '../helpers/test-dirs.js';
 
 // Mock auth middleware to inject a test agent
 vi.mock('../../api/middleware/auth.js', () => ({
@@ -62,131 +62,6 @@ describe('Events API Routes', () => {
 
   afterAll(async () => {
     await app.close();
-    closeDatabase();
-    cleanTestRoot(TEST_ROOT);
-  });
-
-  // ==========================================================================
-  // Post Rules
-  // ==========================================================================
-
-  describe('Post Rules CRUD', () => {
-    let createdRuleId: string;
-
-    it('POST /events/post-rules — creates a post rule', async () => {
-      const res = await app.inject({
-        method: 'POST',
-        url: '/api/v1/events/post-rules',
-        payload: {
-          hive_id: testHiveId,
-          source: 'github',
-          event_types: ['push', 'pull_request.opened'],
-          filters: { repos: ['org/repo'] },
-          priority: 50,
-        },
-      });
-
-      expect(res.statusCode).toBe(201);
-      const body = JSON.parse(res.body);
-      expect(body.id).toMatch(/^epr_/);
-      expect(body.source).toBe('github');
-      expect(body.event_types).toEqual(['push', 'pull_request.opened']);
-      expect(body.filters).toEqual({ repos: ['org/repo'] });
-      expect(body.created_by).toBe('api');
-      createdRuleId = body.id;
-    });
-
-    it('POST /events/post-rules — rejects missing required fields', async () => {
-      const res = await app.inject({
-        method: 'POST',
-        url: '/api/v1/events/post-rules',
-        payload: { source: 'github' },
-      });
-
-      expect(res.statusCode).toBe(400);
-      const body = JSON.parse(res.body);
-      expect(body.error).toContain('required');
-    });
-
-    it('GET /events/post-rules — lists all rules', async () => {
-      const res = await app.inject({
-        method: 'GET',
-        url: '/api/v1/events/post-rules',
-      });
-
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.data.length).toBeGreaterThanOrEqual(1);
-    });
-
-    it('GET /events/post-rules?hive_id= — filters by hive', async () => {
-      const res = await app.inject({
-        method: 'GET',
-        url: `/api/v1/events/post-rules?hive_id=${testHiveId}`,
-      });
-
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.data.every((r: any) => r.hive_id === testHiveId)).toBe(true);
-    });
-
-    it('PUT /events/post-rules/:id — updates a rule', async () => {
-      const res = await app.inject({
-        method: 'PUT',
-        url: `/api/v1/events/post-rules/${createdRuleId}`,
-        payload: {
-          source: 'slack',
-          priority: 200,
-          enabled: false,
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.source).toBe('slack');
-      expect(body.priority).toBe(200);
-      expect(body.enabled).toBe(false);
-    });
-
-    it('PUT /events/post-rules/:id — returns 404 for nonexistent rule', async () => {
-      const res = await app.inject({
-        method: 'PUT',
-        url: '/api/v1/events/post-rules/epr_nonexistent',
-        payload: { source: 'slack' },
-      });
-
-      expect(res.statusCode).toBe(404);
-    });
-
-    it('DELETE /events/post-rules/:id — deletes a rule', async () => {
-      // Create a rule to delete
-      const createRes = await app.inject({
-        method: 'POST',
-        url: '/api/v1/events/post-rules',
-        payload: {
-          hive_id: testHiveId,
-          source: 'github',
-          event_types: ['issues.opened'],
-        },
-      });
-      const toDelete = JSON.parse(createRes.body).id;
-
-      const res = await app.inject({
-        method: 'DELETE',
-        url: `/api/v1/events/post-rules/${toDelete}`,
-      });
-
-      expect(res.statusCode).toBe(204);
-    });
-
-    it('DELETE /events/post-rules/:id — returns 404 for nonexistent rule', async () => {
-      const res = await app.inject({
-        method: 'DELETE',
-        url: '/api/v1/events/post-rules/epr_nonexistent',
-      });
-
-      expect(res.statusCode).toBe(404);
-    });
   });
 
   // ==========================================================================

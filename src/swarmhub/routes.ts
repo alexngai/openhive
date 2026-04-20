@@ -16,7 +16,7 @@ import { normalize, routeEvent } from '../events/index.js';
 import * as eventsDAL from '../db/dal/events.js';
 import type { SwarmHubConnector } from './connector.js';
 import type { ForwardedSlackEvent } from './types.js';
-import type { EventFilters, PostRuleThreadMode } from '../events/types.js';
+import type { EventFilters } from '../events/types.js';
 
 export async function swarmhubRoutes(
   fastify: FastifyInstance,
@@ -259,7 +259,6 @@ export async function swarmhubWebhookRoutes(
     return reply.status(200).send({
       ok: true,
       source: source || 'unknown',
-      posts_created: result.posts_created,
       swarms_notified: result.swarms_notified,
     });
   });
@@ -275,15 +274,8 @@ export async function swarmhubWebhookRoutes(
     }
 
     const body = request.body as {
-      post_rules?: Array<{
-        hive_id: string;
-        source: string;
-        event_types: string[];
-        filters?: EventFilters;
-        normalizer?: string;
-        thread_mode?: PostRuleThreadMode;
-        priority?: number;
-      }>;
+      // `post_rules` may still be present on older SwarmHub hubs; ignored.
+      post_rules?: unknown;
       subscriptions?: Array<{
         hive_id: string;
         swarm_id?: string;
@@ -294,15 +286,7 @@ export async function swarmhubWebhookRoutes(
       }>;
     };
 
-    let rulesCreated = 0;
     let subsCreated = 0;
-
-    if (body.post_rules) {
-      for (const rule of body.post_rules) {
-        eventsDAL.createPostRule({ ...rule, created_by: 'swarmhub' });
-        rulesCreated++;
-      }
-    }
 
     if (body.subscriptions) {
       for (const sub of body.subscriptions) {
@@ -313,7 +297,6 @@ export async function swarmhubWebhookRoutes(
 
     return reply.status(200).send({
       ok: true,
-      post_rules_created: rulesCreated,
       subscriptions_created: subsCreated,
     });
   });
@@ -345,7 +328,7 @@ function handleSlackWebhook(body: Record<string, unknown>, reply: FastifyReply) 
     team_id: event.team_id,
     event_type: event.event_type,
     result: result
-      ? { action: result.action, post_id: result.postId, comment_id: result.commentId }
+      ? { action: result.action, reason: result.reason }
       : { action: 'skipped' },
   });
 }

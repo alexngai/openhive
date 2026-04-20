@@ -4,7 +4,7 @@ import clsx from 'clsx';
 import {
   useDispatchPolicy,
   useUpdateDispatchPolicy,
-} from '../../hooks/useDispatches';
+} from '../../hooks/useDispatch';
 
 interface DispatchPolicyCardProps {
   /** Hide the card entirely for non-admins. */

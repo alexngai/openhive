@@ -222,7 +222,7 @@ export function listAllSessions(limit = 50, offset = 0, swarmId?: string, search
   const rows = db.prepare(`
     SELECT
       r.id, r.name, r.description, r.visibility, r.owner_agent_id,
-      r.last_commit_hash, r.last_push_at,
+      r.last_commit_hash, r.last_push_at, r.metadata,
       COUNT(tc.id) as total_checkpoints,
       MAX(tc.synced_at) as last_synced_at
     FROM syncable_resources r
@@ -259,6 +259,19 @@ export function listAllSessions(limit = 50, offset = 0, swarmId?: string, search
       }
     }
 
+    // Expose select metadata fields so the frontend can link sessions back
+    // to mail conversations (for group-thread participant drill-in) and
+    // identify the ACP target without a separate per-session fetch.
+    let acpTargetAgentId: string | null = null;
+    let mailConversationId: string | null = null;
+    if (typeof row.metadata === 'string') {
+      try {
+        const md = JSON.parse(row.metadata) as Record<string, unknown>;
+        if (typeof md.acp_target_agent_id === 'string') acpTargetAgentId = md.acp_target_agent_id;
+        if (typeof md.mail_conversation_id === 'string') mailConversationId = md.mail_conversation_id;
+      } catch { /* malformed metadata — leave null */ }
+    }
+
     return {
       id: row.id as string,
       name: row.name as string,
@@ -274,6 +287,8 @@ export function listAllSessions(limit = 50, offset = 0, swarmId?: string, search
       last_synced_at: (row.last_synced_at as string) ?? null,
       source_swarm_id: latestCheckpoint?.source_swarm_id ?? null,
       source_swarm_ids: swarmIdRows.map((r) => r.source_swarm_id),
+      acp_target_agent_id: acpTargetAgentId,
+      mail_conversation_id: mailConversationId,
     };
   });
 
