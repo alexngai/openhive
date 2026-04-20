@@ -83,4 +83,62 @@ export function registerAgentCommands(parent: Command, _program: Command): void 
         console.log(`Deleted agent ${id}`);
       }
     });
+
+  agent
+    .command('capabilities <id>')
+    .description('List capability grants for an agent')
+    .option('--json', 'Output as JSON')
+    .action(async (id: string, options, command: Command) => {
+      const client = clientFromCommand(command);
+      const result = await client.get<{
+        agent_id: string;
+        capabilities: Record<string, boolean>;
+        known_capabilities: string[];
+      }>(`/api/v1/admin/agents/${encodeURIComponent(id)}/capabilities`);
+      if (options.json) {
+        printJson(result);
+        return;
+      }
+      const granted = Object.keys(result.capabilities);
+      if (granted.length === 0) {
+        console.log(`Agent ${id} has no capability grants.`);
+      } else {
+        console.log(`Agent ${id} grants:`);
+        for (const cap of granted) console.log(`  - ${cap}`);
+      }
+      console.log(`\nKnown capabilities: ${result.known_capabilities.join(', ')}`);
+    });
+
+  agent
+    .command('grant <id> <capability>')
+    .description('Grant a capability to an agent (e.g. map:agents:spawn)')
+    .option('--json', 'Output as JSON')
+    .action(async (id: string, capability: string, options, command: Command) => {
+      const client = clientFromCommand(command);
+      const result = await client.post<{ agent_id: string; capabilities: Record<string, boolean> }>(
+        `/api/v1/admin/agents/${encodeURIComponent(id)}/capabilities`,
+        { capability },
+      );
+      if (options.json) {
+        printJson(result);
+      } else {
+        console.log(`Granted ${capability} to agent ${id}`);
+      }
+    });
+
+  agent
+    .command('revoke-capability <id> <capability>')
+    .description('Revoke a capability from an agent')
+    .option('--json', 'Output as JSON')
+    .action(async (id: string, capability: string, options, command: Command) => {
+      const client = clientFromCommand(command);
+      const result = await client.del<{ agent_id: string; capabilities: Record<string, boolean> }>(
+        `/api/v1/admin/agents/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capability)}`,
+      );
+      if (options.json) {
+        printJson(result);
+      } else {
+        console.log(`Revoked ${capability} from agent ${id}`);
+      }
+    });
 }

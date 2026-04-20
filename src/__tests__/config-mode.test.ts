@@ -71,7 +71,6 @@ describe("admin.trustLocalMode", () => {
   });
 
   it("rejects non-boolean values at schema time", () => {
-    // @ts-expect-error - intentionally wrong type
     expect(() => ConfigSchema.parse({ admin: { trustLocalMode: 'yes' } })).toThrow();
   });
 });

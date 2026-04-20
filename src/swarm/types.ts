@@ -33,8 +33,14 @@ export interface BootstrapToken {
   version: 1;
   /** The OpenHive instance URL the swarm should register with */
   openhive_url: string;
-  /** Single-use pre-auth key for MAP hub registration + auto hive join */
-  preauth_key: string;
+  /**
+   * Agent-iam delegated token for MAP hub authentication. The spawned
+   * swarm subprocess presents this as its Bearer on `map/connect` and
+   * any REST call it makes to the hub. Issued via
+   * `delegateForSpawn` at hosted-swarm spawn time. Replaces the retired
+   * preauth-key mechanism.
+   */
+  onboard_token: string;
   /** Name for the swarm */
   swarm_name: string;
   /** Pre-registered swarm ID for stable identity across reconnections */

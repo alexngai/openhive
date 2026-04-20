@@ -31,6 +31,7 @@ import { syncRoutes } from '../api/routes/sync.js';
 import { dispatchesRoutes } from '../api/routes/dispatches.js';
 import { adminRoutes } from '../api/routes/admin.js';
 import { setLocalAgent } from '../api/middleware/auth.js';
+import { initTokenService, _resetTokenService } from '../map/token-service.js';
 import { ConfigSchema, type Config } from '../config.js';
 import { renderDocument, renderFragment } from '../api/skill-fragments/index.js';
 import { generateSkillMd } from '../skill.js';
@@ -153,6 +154,7 @@ describe('Headless-mode E2E', () => {
 
   beforeAll(async () => {
     initDatabase(TEST_DB_PATH);
+    initTokenService(undefined, TEST_ROOT);
     const admin = await agentsDAL.createAgent({
       name: 'headless-admin',
       description: 'admin for headless e2e',
@@ -168,13 +170,13 @@ describe('Headless-mode E2E', () => {
   });
 
   afterAll(() => {
+    _resetTokenService();
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
   });
 
   beforeEach(() => {
     getDatabase().prepare('DELETE FROM dispatches').run();
-    getDatabase().prepare('DELETE FROM map_preauth_keys').run();
     broadcastSpy.mockClear();
   });
 
@@ -292,92 +294,10 @@ describe('Headless-mode E2E', () => {
   // ==========================================================================
   // 4. Admin-key bypass on MAP preauth routes
   // ==========================================================================
-  describe('/map/preauth-keys admin-key bypass', () => {
-    it('accepts X-Admin-Key for POST (creates a key)', async () => {
-      const app = await makeApp(makeConfig());
-      const res = await app.inject({
-        method: 'POST',
-        url: '/api/v1/map/preauth-keys',
-        headers: { 'x-admin-key': ADMIN_KEY },
-        payload: { uses: 3 },
-      });
-      expect(res.statusCode).toBe(201);
-      const body = JSON.parse(res.payload);
-      expect(body.key).toBeDefined();
-      expect(body.uses_left).toBe(3);
-      await app.close();
-    });
-
-    it('rejects wrong X-Admin-Key', async () => {
-      const app = await makeApp(makeConfig());
-      const res = await app.inject({
-        method: 'POST',
-        url: '/api/v1/map/preauth-keys',
-        headers: { 'x-admin-key': 'wrong-key' },
-        payload: { uses: 1 },
-      });
-      // Falls through to authMiddleware which (in local mode) auto-auths as
-      // local agent; then requireAdmin fails because local agent isn't admin.
-      // In any case — should not succeed.
-      expect(res.statusCode).not.toBe(201);
-      await app.close();
-    });
-
-    it('accepts admin-agent Bearer token too', async () => {
-      const app = await makeApp(makeConfig());
-      const res = await app.inject({
-        method: 'POST',
-        url: '/api/v1/map/preauth-keys',
-        headers: { authorization: `Bearer ${adminAgent.apiKey}` },
-        payload: { uses: 1 },
-      });
-      expect(res.statusCode).toBe(201);
-      await app.close();
-    });
-
-    it('rejects non-admin Bearer token', async () => {
-      const app = await makeApp(makeConfig());
-      const res = await app.inject({
-        method: 'POST',
-        url: '/api/v1/map/preauth-keys',
-        headers: { authorization: `Bearer ${regularAgent.apiKey}` },
-        payload: { uses: 1 },
-      });
-      expect(res.statusCode).toBe(403);
-      await app.close();
-    });
-
-    it('GET + DELETE round-trip with X-Admin-Key', async () => {
-      const app = await makeApp(makeConfig());
-      // Create
-      const created = await app.inject({
-        method: 'POST',
-        url: '/api/v1/map/preauth-keys',
-        headers: { 'x-admin-key': ADMIN_KEY },
-        payload: { uses: 1 },
-      });
-      const { id } = JSON.parse(created.payload);
-
-      // List
-      const listed = await app.inject({
-        method: 'GET',
-        url: '/api/v1/map/preauth-keys',
-        headers: { 'x-admin-key': ADMIN_KEY },
-      });
-      expect(listed.statusCode).toBe(200);
-      const list = JSON.parse(listed.payload);
-      expect(list.data.some((k: { id: string }) => k.id === id)).toBe(true);
-
-      // Delete
-      const deleted = await app.inject({
-        method: 'DELETE',
-        url: `/api/v1/map/preauth-keys/${id}`,
-        headers: { 'x-admin-key': ADMIN_KEY },
-      });
-      expect(deleted.statusCode).toBe(204);
-      await app.close();
-    });
-  });
+  // NOTE: The "/map/preauth-keys admin-key bypass" suite was retired in
+  // RFC v4 — the preauth REST routes no longer exist. Swarms bootstrap
+  // via `map/agents/spawn` (tested in spawn-handler.test.ts) or
+  // `admin onboard-token` (tested in admin-onboard-token.test.ts).
 
   // ==========================================================================
   // 5. Admin-key bypass on /sync/peers
@@ -480,7 +400,7 @@ describe('Headless-mode E2E', () => {
   describe('strict admin-auth (local-auth auto-agent does NOT grant admin)', () => {
     it('POST /map/preauth-keys with no headers → 401 even when local admin set', async () => {
       // Simulate the production local-auth path: setLocalAgent(admin). Prior
-      // to the strict-auth fix, a bare `curl -XPOST /api/v1/map/preauth-keys`
+      // to the strict-auth fix, a bare `curl -XPOST /api/v1/admin/onboard-token`
       // would succeed because authMiddleware auto-populates request.agent
       // and requireAdmin passes.
       setLocalAgent({ id: adminAgent.id, name: 'local', is_admin: true } as Parameters<typeof setLocalAgent>[0]);
@@ -488,8 +408,8 @@ describe('Headless-mode E2E', () => {
         const app = await makeApp(makeConfig());
         const res = await app.inject({
           method: 'POST',
-          url: '/api/v1/map/preauth-keys',
-          payload: { uses: 1 },
+          url: '/api/v1/admin/onboard-token',
+          payload: { scopes: ["map:*"] },
         });
         expect(res.statusCode).toBe(401);
         const body = JSON.parse(res.payload);
@@ -548,14 +468,14 @@ describe('Headless-mode E2E', () => {
       const app = await makeApp(makeConfig());
       const res = await app.inject({
         method: 'POST',
-        url: '/api/v1/map/preauth-keys',
+        url: '/api/v1/admin/onboard-token',
         headers: {
           'x-admin-key': 'deliberately-wrong',
           authorization: `Bearer ${adminAgent.apiKey}`,
         },
-        payload: { uses: 1 },
+        payload: { scopes: ["map:*"] },
       });
-      expect(res.statusCode).toBe(201);
+      expect(res.statusCode).toBe(200);
       await app.close();
     });
 
@@ -563,11 +483,11 @@ describe('Headless-mode E2E', () => {
       const app = await makeApp(makeConfig());
       const res = await app.inject({
         method: 'POST',
-        url: '/api/v1/map/preauth-keys',
+        url: '/api/v1/admin/onboard-token',
         headers: { 'x-admin-key': ADMIN_KEY },
-        payload: { uses: 1 },
+        payload: { scopes: ["map:*"] },
       });
-      expect(res.statusCode).toBe(201);
+      expect(res.statusCode).toBe(200);
       await app.close();
     });
 
@@ -575,9 +495,9 @@ describe('Headless-mode E2E', () => {
       const app = await makeApp(makeConfig());
       const res = await app.inject({
         method: 'POST',
-        url: '/api/v1/map/preauth-keys',
+        url: '/api/v1/admin/onboard-token',
         headers: { 'x-admin-key': ADMIN_KEY.slice(0, -1) },
-        payload: { uses: 1 },
+        payload: { scopes: ["map:*"] },
       });
       // Wrong key → falls through to Bearer requirement → no Bearer → 401
       expect(res.statusCode).toBe(401);
@@ -598,12 +518,12 @@ describe('Headless-mode E2E', () => {
         }));
         const res = await app.inject({
           method: 'POST',
-          url: '/api/v1/map/preauth-keys',
-          payload: { uses: 1 },
+          url: '/api/v1/admin/onboard-token',
+          payload: { scopes: ["map:*"] },
         });
-        expect(res.statusCode).toBe(201);
+        expect(res.statusCode).toBe(200);
         const body = JSON.parse(res.payload);
-        expect(body.key).toMatch(/^ohpak_/);
+        expect(body.token).toBeTruthy();
         await app.close();
       } finally {
         setLocalAgent(null);
@@ -639,8 +559,8 @@ describe('Headless-mode E2E', () => {
       }));
       const res = await app.inject({
         method: 'POST',
-        url: '/api/v1/map/preauth-keys',
-        payload: { uses: 1 },
+        url: '/api/v1/admin/onboard-token',
+        payload: { scopes: ["map:*"] },
       });
       expect(res.statusCode).toBe(401);
       await app.close();
@@ -657,8 +577,8 @@ describe('Headless-mode E2E', () => {
         }));
         const res = await app.inject({
           method: 'POST',
-          url: '/api/v1/map/preauth-keys',
-          payload: { uses: 1 },
+          url: '/api/v1/admin/onboard-token',
+          payload: { scopes: ["map:*"] },
         });
         expect(res.statusCode).toBe(403);
         await app.close();
@@ -675,11 +595,65 @@ describe('Headless-mode E2E', () => {
       }));
       const res = await app.inject({
         method: 'POST',
-        url: '/api/v1/map/preauth-keys',
+        url: '/api/v1/admin/onboard-token',
         headers: { 'x-admin-key': ADMIN_KEY },
-        payload: { uses: 1 },
+        payload: { scopes: ["map:*"] },
       });
-      expect(res.statusCode).toBe(201);
+      expect(res.statusCode).toBe(200);
+      await app.close();
+    });
+  });
+
+  // ==========================================================================
+  // 6.7. Agent capability grants — v4 vocabulary (map:agents:spawn)
+  //      The enforcement mechanism moved to MAP method dispatch in v4;
+  //      these tests cover the admin grant/revoke REST surface.
+  // ==========================================================================
+  describe('agent capability grants (admin REST surface)', () => {
+    it('admin can grant map:agents:spawn to an agent', async () => {
+      const app = await makeApp(makeConfig());
+      const grantRes = await app.inject({
+        method: 'POST',
+        url: `/api/v1/admin/agents/${regularAgent.id}/capabilities`,
+        headers: { 'x-admin-key': ADMIN_KEY },
+        payload: { capability: 'map:agents:spawn' },
+      });
+      expect(grantRes.statusCode).toBe(200);
+      const body = JSON.parse(grantRes.payload);
+      expect(body.capabilities['map:agents:spawn']).toBe(true);
+
+      // Cleanup
+      await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/admin/agents/${regularAgent.id}/capabilities/map:agents:spawn`,
+        headers: { 'x-admin-key': ADMIN_KEY },
+      });
+      await app.close();
+    });
+
+    it('unknown capability is rejected at grant time', async () => {
+      const app = await makeApp(makeConfig());
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/admin/agents/${regularAgent.id}/capabilities`,
+        headers: { 'x-admin-key': ADMIN_KEY },
+        payload: { capability: 'not.a.real.capability' },
+      });
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.payload);
+      expect(body.error).toBe('Unknown Capability');
+      await app.close();
+    });
+
+    it('grant endpoint requires admin auth', async () => {
+      const app = await makeApp(makeConfig());
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/admin/agents/${regularAgent.id}/capabilities`,
+        headers: { authorization: `Bearer ${regularAgent.apiKey}` },
+        payload: { capability: 'map:agents:spawn' },
+      });
+      expect(res.statusCode).toBe(403);
       await app.close();
     });
   });

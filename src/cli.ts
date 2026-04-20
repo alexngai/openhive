@@ -94,6 +94,8 @@ interface InitOverrides {
   port?: number;
   authMode?: string;
   verification?: string;
+  mode?: string;
+  trustLocalMode?: boolean;
 }
 
 // ============================================================================
@@ -164,6 +166,40 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
       authMode = ['local', 'token'][authIndex];
     }
 
+    // Step 4b: Hub mode (full web UI vs headless agent-only)
+    let hubMode: string;
+    if (overrides.mode) {
+      hubMode = overrides.mode;
+    } else if (nonInteractive) {
+      hubMode = 'full';
+    } else {
+      const modeIndex = await prompt!.choose(
+        '  Hub mode:',
+        [
+          'Full - web UI + API (default, for human-facing deployments)',
+          'Server - headless, agents-only (no web UI; manage via `openhive admin` CLI)',
+        ],
+        0,
+      );
+      hubMode = ['full', 'server'][modeIndex];
+    }
+
+    // Step 4c: trustLocalMode escape hatch — only offered for local+server combo
+    // where the single-operator friction cost is highest. Default off.
+    let trustLocalMode: boolean;
+    if (overrides.trustLocalMode !== undefined) {
+      trustLocalMode = overrides.trustLocalMode;
+    } else if (nonInteractive) {
+      trustLocalMode = false;
+    } else if (authMode === 'local' && hubMode === 'server') {
+      trustLocalMode = await prompt!.confirm(
+        '  Trust local mode? (admin routes accept NO credentials — only safe on localhost/trusted networks)',
+        false,
+      );
+    } else {
+      trustLocalMode = false;
+    }
+
     // Step 5: Generate admin key
     const adminKey = nanoid(32);
 
@@ -176,7 +212,11 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
     console.log(`    Config:            ${paths.config}`);
     console.log(`    Instance name:     ${instanceName}`);
     console.log(`    Port:              ${portNum}`);
+    console.log(`    Hub mode:          ${hubMode}${hubMode === 'server' ? ' (headless)' : ''}`);
     console.log(`    Auth mode:         ${authMode}`);
+    if (trustLocalMode) {
+      console.log(`    Trust local:       yes (admin auth bypassed in local mode)`);
+    }
     console.log(`    Registration:      ${verificationStrategy}`);
     console.log(`    Admin key:         ${adminKey}`);
     console.log('');
@@ -196,9 +236,10 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
     console.log(`    Created ${dataDir}`);
 
     // Write config file (JSON format — editable by UI)
-    const configObj = {
+    const configObj: Record<string, unknown> = {
       port: portNum,
       host: '0.0.0.0',
+      mode: hubMode,
       database: paths.database,
       instance: {
         name: instanceName,
@@ -207,6 +248,7 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
       },
       admin: {
         key: adminKey,
+        ...(trustLocalMode ? { trustLocalMode: true } : {}),
       },
       auth: {
         mode: authMode,
@@ -510,6 +552,8 @@ program
   .option('--port <port>', 'Port number (non-interactive)')
   .option('--auth-mode <mode>', 'Auth mode: local or token (non-interactive)')
   .option('--verification <strategy>', 'Registration: open, invite, or manual (non-interactive)')
+  .option('--mode <mode>', 'Hub mode: full or server (non-interactive)')
+  .option('--trust-local-mode', 'Enable admin.trustLocalMode (bypass admin auth in local mode — see docs)')
   .action(async (options) => {
     const globalOpts = program.opts();
 
@@ -530,6 +574,8 @@ program
       port: options.port ? parseInt(options.port, 10) : undefined,
       authMode: options.authMode,
       verification: options.verification,
+      mode: options.mode,
+      trustLocalMode: options.trustLocalMode,
     });
   });
 
@@ -592,7 +638,7 @@ admin
     closeDatabase();
   });
 
-// HTTP-backed admin subcommands (preauth, agent, invite, swarms, ...)
+// HTTP-backed admin subcommands (onboard-token, agent, invite, swarms, ...)
 // These talk to a running hub via the admin API. DB-direct commands above
 // (create-key, create-invite, create-agent) remain for bootstrap / offline use.
 registerAdminHttpCommands(admin, program);

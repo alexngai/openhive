@@ -25,7 +25,7 @@ Trust models (configurable):
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| POST | /map/swarms | Pre-auth key or admin | Register a swarm |
+| POST | /map/swarms | Bearer (agent-iam onboard token) or admin | Register a swarm |
 | GET | /map/swarms | No | List registered swarms |
 | GET | /map/swarms/:id | No | Swarm details |
 | PUT | /map/swarms/:id | Owner token | Update swarm |
@@ -36,11 +36,75 @@ Trust models (configurable):
 | POST | /map/nodes | Owner token | Register agent node |
 | GET | /map/nodes | No | Discover nodes |
 | GET | /map/peers/:swarmId | Owner token | Peer list |
-| POST | /map/preauth-keys | Admin | Create pre-auth key |
-| GET | /map/preauth-keys | Admin | List pre-auth keys |
-| DELETE | /map/preauth-keys/:id | Admin | Revoke pre-auth key |
 | GET | /map/stats | No | Hub stats |
 | GET | /map/connections | No | Live connection health |
+
+### Onboarding new swarms
+
+There is exactly one way to mint credentials for a new swarm: the
+operator runs
+
+\`\`\`
+openhive admin onboard-token --scopes map:agents:spawn --ttl-hours 24
+\`\`\`
+
+which calls \`POST /api/v1/admin/onboard-token\` (admin-only) and returns
+an agent-iam token plus an \`env\` record ready to drop into the swarm's
+process environment. The swarm presents that token as \`Authorization:
+Bearer <token>\` when it opens the MAP WebSocket — the hub verifies the
+signature, attaches the token's scopes to the session, and the scopes
+are enforced on every subsequent MAP method dispatch.
+
+There are no pre-auth keys and no out-of-band registration flow. All
+onboarding is a signed token with a known scope set and TTL.
+
+### Agent-to-agent spawning — \`map/agents/spawn\`
+
+A coordinator holding \`map:agents:spawn\` can delegate a narrower token
+to a child it launches as a subprocess. Over its MAP session:
+
+\`\`\`json
+→ {
+    "jsonrpc": "2.0", "id": 1, "method": "map/agents/spawn",
+    "params": {
+      "parent": "<coordinator-agent-id>",
+      "name": "worker-1",
+      "requestedScopes": ["map:tasks:create"],
+      "ttlMinutes": 60
+    }
+  }
+
+← {
+    "agent": { "id": "...", "name": "worker-1", ... },
+    "delegatedCredentials": {
+      "method": "x-agent-iam",
+      "credentials": { "token": "<signed>" },
+      "env": { "AGENT_TOKEN": "<signed>", "MAP_CREDENTIAL": "<signed>" }
+    }
+  }
+\`\`\`
+
+The hub checks the coordinator's session scopes, creates the child
+agent row, and mints an agent-iam token with \`requestedScopes \\subseteq
+parentScopes\` and \`delegatable: false\` (children cannot delegate
+further). The coordinator passes the returned \`env\` record to its child
+subprocess; the child connects with the delegated token as its
+Bearer.
+
+Scope attenuation is strict — wildcards (\`map:*\`) in the parent's
+scopes can only delegate narrower scopes, never broader.
+
+### Capability vocabulary (v4)
+
+| Capability | Unlocks |
+|---|---|
+| \`map:agents:spawn\` | \`map/agents/spawn\` — mint a delegated token for a child agent |
+| \`map:*\` | All MAP capabilities (wildcard; granted to admins automatically) |
+
+Grants live on the \`agents.capabilities\` column. Revoking a grant takes
+effect on the next MAP session (\`map/connect\` re-resolves the scope
+list). Existing long-lived delegated tokens remain valid for their TTL
+— keep TTLs short if you want fast revocation.
 
 ### Core MAP JSON-RPC Methods
 

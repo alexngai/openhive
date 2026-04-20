@@ -40,6 +40,8 @@ import {
 } from '../map/connection-registry.js';
 import { findSwarmById } from '../db/dal/map.js';
 import { mapRoutes } from '../api/routes/map.js';
+import { adminRoutes } from '../api/routes/admin.js';
+import { initTokenService, _resetTokenService } from '../map/token-service.js';
 import { setupWebSocket, stopHeartbeat } from '../realtime/index.js';
 import { ConfigSchema } from '../config.js';
 import { testRoot, testDbPath, cleanTestRoot } from './helpers/test-dirs.js';
@@ -207,6 +209,7 @@ describe('Headless MAP WS E2E', () => {
   beforeAll(async () => {
     cleanTestRoot(TEST_ROOT);
     initDatabase(TEST_DB_PATH);
+    initTokenService(undefined, TEST_ROOT);
 
     const { agent, apiKey } = await agentsDAL.createAgent({
       name: 'headless-map-owner',
@@ -247,6 +250,7 @@ describe('Headless MAP WS E2E', () => {
     await app.register(
       async (api) => {
         await api.register(mapRoutes, { config });
+        await api.register(adminRoutes, { config });
       },
       { prefix: '/api/v1' },
     );
@@ -265,6 +269,7 @@ describe('Headless MAP WS E2E', () => {
     stopHeartbeat();
     await app?.close();
     await sleep(100);
+    _resetTokenService();
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
     setHeartbeatInterval(30_000);
@@ -291,33 +296,33 @@ describe('Headless MAP WS E2E', () => {
   });
 
   // ==========================================================================
-  // Flow 1: Full bootstrap — operator → preauth → swarm register → MAP WS
+  // Flow 1: Full bootstrap — operator → onboard-token → swarm register → MAP WS
   //         → agent register
   // ==========================================================================
   describe('Flow 1: headless bootstrap', () => {
-    it('operator creates preauth key (admin-key), swarm registers, connects MAP WS, agent registers', async () => {
-      // Step 1: Create preauth key as operator using ONLY X-Admin-Key
-      const preauthRes = await fetch(`${baseUrl}/api/v1/map/preauth-keys`, {
+    it('operator mints onboard-token (admin-key), swarm registers, connects MAP WS, agent registers', async () => {
+      // Step 1: Mint an onboard-token as operator. In v4 there are no
+      // preauth keys — the operator hands a signed agent-iam token to
+      // the swarm out of band and the swarm uses it as its Bearer.
+      const tokenRes = await fetch(`${baseUrl}/api/v1/admin/onboard-token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Admin-Key': ADMIN_KEY },
-        body: JSON.stringify({ uses: 2 }),
+        body: JSON.stringify({ scopes: ['map:agents:spawn'], ttl_hours: 1 }),
       });
-      expect(preauthRes.status).toBe(201);
-      const preauth = (await preauthRes.json()) as { id: string; key: string; uses_left: number };
-      expect(preauth.key).toMatch(/^ohpak_/);
+      expect(tokenRes.status).toBe(200);
+      const token = (await tokenRes.json()) as { agent_id: string; token: string };
+      expect(token.token).toBeTruthy();
 
-      // Step 2: Swarm registers via REST, consuming the preauth key.
-      // A real swarm would do this on its first-ever boot.
+      // Step 2: Swarm registers via REST using the onboard-token as Bearer.
       const swarmRes = await fetch(`${baseUrl}/api/v1/map/swarms`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${ownerAgent.apiKey}`,
+          Authorization: `Bearer ${token.token}`,
         },
         body: JSON.stringify({
           name: 'bootstrap-swarm',
           map_endpoint: 'ws://localhost:19999/map',
-          preauth_key: preauth.key,
         }),
       });
       expect(swarmRes.status).toBe(201);
@@ -373,6 +378,46 @@ describe('Headless MAP WS E2E', () => {
       const swarm = (await getRes.json()) as { capabilities: Record<string, unknown> };
       expect(swarm.capabilities).toBeDefined();
       expect((swarm.capabilities.mail as Record<string, unknown>).canJoin).toBe(true);
+    });
+
+    it('delegated agent-iam token opens the WS gate end-to-end', async () => {
+      // H4 of v4 review: the previous test uses ownerAgent.apiKey for
+      // the WS connect; this one proves the delegated token the
+      // operator just minted also opens `/ws/map?token=<delegated>`
+      // (previously only REST accepted it).
+      const tokenRes = await fetch(`${baseUrl}/api/v1/admin/onboard-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Admin-Key': ADMIN_KEY },
+        body: JSON.stringify({ scopes: ['map:agents:spawn'], ttl_hours: 1 }),
+      });
+      expect(tokenRes.status).toBe(200);
+      const { token, agent_id } = (await tokenRes.json()) as {
+        token: string; agent_id: string;
+      };
+
+      // Connect to the MAP WS using the delegated token as the query
+      // param credential. If authenticateToken failed to accept the
+      // token (C1 regression), this would get a 401 close.
+      const handle = await connectMap(baseUrl, token, `delegated-swarm-${agent_id}`);
+      openHandles.push(handle);
+
+      const gotWelcome = await waitFor(
+        () => handle.messages.some((m) => m.method === 'hub/welcome'),
+        3000,
+      );
+      expect(gotWelcome).toBe(true);
+
+      // Session scope resolution should have picked up the token's
+      // scopes — map/agents/register must succeed because the onboarded
+      // agent has the relevant MAP-level capabilities (no scope gate on
+      // this method).
+      const regResp = await mapRpc(handle.ws, 'map/agents/register', {
+        name: 'delegated-worker',
+        role: 'worker',
+        capabilities: { messaging: { canReceive: true } },
+      });
+      expect(regResp.error).toBeUndefined();
+      expect(regResp.result).toBeDefined();
     });
   });
 
@@ -645,22 +690,19 @@ describe('Headless MAP WS E2E', () => {
       expect(resp.result !== undefined || resp.error !== undefined).toBe(true);
     });
 
-    it('REST /map/swarms rejects unknown preauth_key (auth failure at REST boundary)', async () => {
+    it('REST /map/swarms rejects bogus Bearer credentials (auth failure at REST boundary)', async () => {
       const swarmRes = await fetch(`${baseUrl}/api/v1/map/swarms`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${ownerAgent.apiKey}`,
+          Authorization: 'Bearer not-a-real-token',
         },
         body: JSON.stringify({
-          name: 'bad-preauth-swarm',
+          name: 'bad-auth-swarm',
           map_endpoint: 'ws://localhost:19991/map',
-          preauth_key: 'ohpak_definitely-not-a-real-key',
         }),
       });
       expect(swarmRes.status).toBe(401);
-      const body = (await swarmRes.json()) as { error: string };
-      expect(body.error).toMatch(/INVALID_PREAUTH_KEY/i);
     });
   });
 });

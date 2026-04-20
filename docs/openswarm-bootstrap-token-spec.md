@@ -17,8 +17,8 @@ interface BootstrapToken {
   version: 1;
   /** The OpenHive instance URL to register with */
   openhive_url: string;        // e.g. "http://localhost:3000"
-  /** Single-use pre-auth key for MAP hub registration */
-  preauth_key: string;         // e.g. "ohpak_abc123..."
+  /** Signed agent-iam delegated token used as Bearer for MAP hub + WS */
+  onboard_token: string;       // JWT-like, verifiable against the hub's iam-secret.key
   /** Name for the swarm */
   swarm_name: string;
   /** OpenSwarm adapter to use */
@@ -69,11 +69,14 @@ After the MAP server is healthy, call the OpenHive MAP hub to register:
 
 ```typescript
 // POST {token.openhive_url}/api/v1/map/swarms
+// The onboard_token is the Bearer credential; there is no separate
+// preauth_key step. The hub verifies the token's signature and resolves
+// the scope list for session enforcement.
 const response = await fetch(`${token.openhive_url}/api/v1/map/swarms`, {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${agentApiKey}`, // See auth note below
+    'Authorization': `Bearer ${token.onboard_token}`,
   },
   body: JSON.stringify({
     name: token.swarm_name,
@@ -85,7 +88,6 @@ const response = await fetch(`${token.openhive_url}/api/v1/map/swarms`, {
       lifecycle: true,
     },
     metadata: token.metadata,
-    preauth_key: token.preauth_key,
   }),
 });
 ```

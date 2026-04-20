@@ -24,13 +24,14 @@ vi.mock('../realtime/swarm-events.js', () => ({
   broadcastSwarmLifecycleEvent: vi.fn(),
 }));
 
-import { initDatabase, closeDatabase, getDatabase } from '../db/index.js';
+import { initDatabase, closeDatabase } from '../db/index.js';
 import * as agentsDAL from '../db/dal/agents.js';
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import { mapRoutes } from '../api/routes/map.js';
 import { syncRoutes } from '../api/routes/sync.js';
 import { dispatchesRoutes } from '../api/routes/dispatches.js';
 import { adminRoutes } from '../api/routes/admin.js';
+import { initTokenService, _resetTokenService } from '../map/token-service.js';
 import { ConfigSchema, type Config } from '../config.js';
 import { testRoot, testDbPath, cleanTestRoot } from './helpers/test-dirs.js';
 import { createAdminClient } from '../cli/admin-client.js';
@@ -71,6 +72,7 @@ describe('CLI admin E2E', () => {
 
   beforeAll(async () => {
     initDatabase(TEST_DB_PATH);
+    initTokenService(undefined, TEST_ROOT);
     // Seed an admin + regular agent so admin.ts has data to list.
     await agentsDAL.createAgent({
       name: 'cli-admin',
@@ -95,12 +97,12 @@ describe('CLI admin E2E', () => {
 
   afterAll(async () => {
     await app?.close();
+    _resetTokenService();
     closeDatabase();
     cleanTestRoot(TEST_ROOT);
   });
 
   beforeEach(() => {
-    getDatabase().prepare('DELETE FROM map_preauth_keys').run();
     broadcastSpy.mockClear();
   });
 
@@ -109,13 +111,13 @@ describe('CLI admin E2E', () => {
       const client = createAdminClient({ server: baseUrl, adminKey: ADMIN_KEY });
       expect(client.baseUrl).toBe(baseUrl);
 
-      const result = await client.post<{ id: string; key: string; uses_left: number }>(
-        '/api/v1/map/preauth-keys',
-        { uses: 2 },
+      const result = await client.post<{ agent_id: string; token: string; scopes: string[] }>(
+        '/api/v1/admin/onboard-token',
+        { scopes: ['map:agents:spawn'], ttl_hours: 1 },
       );
-      expect(result.id).toBeDefined();
-      expect(result.key).toMatch(/^ohpak_/);
-      expect(result.uses_left).toBe(2);
+      expect(result.agent_id).toBeDefined();
+      expect(result.token).toBeTruthy();
+      expect(result.scopes).toEqual(['map:agents:spawn']);
     });
 
     it('reads admin key from HIVE_ADMIN_KEY env var', async () => {
@@ -123,7 +125,7 @@ describe('CLI admin E2E', () => {
       process.env.HIVE_ADMIN_KEY = ADMIN_KEY;
       try {
         const client = createAdminClient({ server: baseUrl });
-        const result = await client.get<{ data: unknown[] }>('/api/v1/map/preauth-keys');
+        const result = await client.get<{ data: unknown[]; total: number }>('/api/v1/admin/agents');
         expect(result.data).toBeInstanceOf(Array);
       } finally {
         if (originalEnv === undefined) delete process.env.HIVE_ADMIN_KEY;
@@ -148,19 +150,20 @@ describe('CLI admin E2E', () => {
 
     it('surfaces server error messages on non-2xx responses', async () => {
       const client = createAdminClient({ server: baseUrl, adminKey: 'wrong-key' });
-      await expect(client.post('/api/v1/map/preauth-keys', { uses: 1 })).rejects.toThrow(
-        /40[13]/,
-      );
+      await expect(
+        client.post('/api/v1/admin/onboard-token', { scopes: ['map:agents:spawn'] }),
+      ).rejects.toThrow(/40[13]/);
     });
 
-    it('round-trips create → list → delete for preauth keys', async () => {
+    it('mints an onboard token with the requested scopes', async () => {
       const client = createAdminClient({ server: baseUrl, adminKey: ADMIN_KEY });
-      const created = await client.post<{ id: string }>('/api/v1/map/preauth-keys', { uses: 1 });
-      const listed = await client.get<{ data: Array<{ id: string }> }>('/api/v1/map/preauth-keys');
-      expect(listed.data.some((k) => k.id === created.id)).toBe(true);
-      await client.del(`/api/v1/map/preauth-keys/${created.id}`);
-      const listedAfter = await client.get<{ data: Array<{ id: string }> }>('/api/v1/map/preauth-keys');
-      expect(listedAfter.data.some((k) => k.id === created.id)).toBe(false);
+      const created = await client.post<{ agent_id: string; token: string; scopes: string[] }>(
+        '/api/v1/admin/onboard-token',
+        { scopes: ['map:agents:spawn'], ttl_hours: 2, agent_name: 'cli-onboarded' },
+      );
+      expect(created.agent_id).toBeTruthy();
+      expect(created.token).toBeTruthy();
+      expect(created.scopes).toEqual(['map:agents:spawn']);
     });
 
     it('lists agents through the admin surface', async () => {

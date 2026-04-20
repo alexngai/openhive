@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 41;
+export const SCHEMA_VERSION = 43;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -28,7 +28,16 @@ CREATE TABLE IF NOT EXISTS agents (
   password_reset_token TEXT,
   password_reset_expires TEXT,
   -- SwarmHub OAuth fields
-  swarmhub_user_id TEXT UNIQUE
+  swarmhub_user_id TEXT UNIQUE,
+  -- Capability grants (V42) — JSON object keyed by canonical capability
+  -- string, values true when granted. See docs/RFC_AGENT_CAPABILITIES.md.
+  capabilities TEXT,
+  -- grant_version (V43) is kept for backwards compatibility with installs
+  -- that already applied the migration. v4 (see RFC) retired the
+  -- mechanism — session scopes resolve at map/connect time instead. The
+  -- column is unused by current code; leaving it in place avoids a
+  -- destructive migration.
+  grant_version INTEGER DEFAULT 0
 );
 
 -- Hives (communities) table
@@ -921,6 +930,23 @@ CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence);
 // a retry timeline without reconstructing state from the WS log.
 export const MIGRATION_V41_DISPATCH_ATTEMPTS_HISTORY = `
 ALTER TABLE dispatches ADD COLUMN attempts_history TEXT NOT NULL DEFAULT '[]';
+`;
+
+// Migration V42: agents.capabilities — JSON object of grant flags.
+// Enables operator-gated capabilities (e.g. `map:agents:spawn`) that
+// grant narrower-than-admin access to specific MAP methods. See
+// docs/RFC_AGENT_CAPABILITIES.md for the full design.
+export const MIGRATION_V42_AGENT_CAPABILITIES = `
+ALTER TABLE agents ADD COLUMN capabilities TEXT;
+`;
+
+// Migration V43: agents.grant_version — monotonic counter bumped on every
+// capability grant change. Agent-iam tokens carry the version at issue time;
+// verify rejects stale tokens. Replaces the revocation-list-based revoke-
+// on-grant-change mechanism, which collided with legitimate permanent bans
+// via POST /map/swarms/:id/revoke. See RFC_AGENT_CAPABILITIES.md v3.
+export const MIGRATION_V43_GRANT_VERSION = `
+ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0;
 `;
 
 // ============================================================================

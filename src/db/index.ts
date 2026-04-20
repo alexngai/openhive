@@ -34,6 +34,8 @@ import {
   MIGRATION_V39_CASCADE_PR,
   MIGRATION_V40_NODE_PRESENCE,
   MIGRATION_V41_DISPATCH_ATTEMPTS_HISTORY,
+  MIGRATION_V42_AGENT_CAPABILITIES,
+  MIGRATION_V43_GRANT_VERSION,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -285,6 +287,11 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   40: MIGRATION_V40_NODE_PRESENCE,
   // Version 41: Per-attempt dispatch history JSON column
   41: MIGRATION_V41_DISPATCH_ATTEMPTS_HISTORY,
+  // Version 42: agents.capabilities JSON column for narrow grant gates
+  42: MIGRATION_V42_AGENT_CAPABILITIES,
+  // Version 43: agents.grant_version counter — replaces revocation-based
+  // grant-change invalidation. See RFC_AGENT_CAPABILITIES.md.
+  43: MIGRATION_V43_GRANT_VERSION,
 };
 
 /** Get the SQL for a specific migration version.
@@ -365,6 +372,8 @@ function repairSchema(database: Database.Database): void {
     "ALTER TABLE dispatches ADD COLUMN attempts_history TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE map_nodes ADD COLUMN presence TEXT NOT NULL DEFAULT 'offline'",
     "CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence)",
+    "ALTER TABLE agents ADD COLUMN capabilities TEXT",
+    "ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0",
   ];
   for (const sql of repairs) {
     try {

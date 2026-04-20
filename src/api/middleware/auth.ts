@@ -1,10 +1,18 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
-import { findAgentById, findAgentByApiKey, updateAgentLastSeen } from '../../db/dal/agents.js';
+import {
+  findAgentById,
+  findAgentByApiKey,
+  updateAgentLastSeen,
+} from '../../db/dal/agents.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../../auth/jwks.js';
 import { findOrCreateSwarmHubAgent } from '../../db/dal/agents.js';
 import { validateIngestKey } from '../../db/dal/ingest-keys.js';
 import type { Agent, IngestKeyScope } from '../../types.js';
+
+// NOTE: `path4HitCount` (the REST capability enforcement usage metric)
+// was retired in RFC v4 along with the `createAdminOrCapability`
+// middleware. Capability enforcement now lives at MAP method dispatch.
 
 /**
  * Constant-time compare for the admin-key header.
@@ -171,6 +179,31 @@ export async function authMiddleware(
   // 2. Try SwarmHub JWT authentication (for humans via OAuth)
   if (!agent) {
     agent = await trySwarmHubAuth(token);
+  }
+
+  // 3. Try agent-iam token (for swarms bootstrapped via map/agents/spawn
+  //    or `openhive admin onboard-token`). See RFC v4. The token carries
+  //    the agent id; we look up the existing DB row.
+  //
+  //    Scope enforcement is NOT done here — auth just resolves identity.
+  //    Per-route scope gates (e.g. requireCapability for map/agents/spawn)
+  //    run separately at the dispatch layer.
+  if (!agent) {
+    try {
+      // Dynamic import avoids a module initialization cycle (token-service
+      // → db/dal/agents → api/middleware/auth would circle back).
+      const { verifyToken: verifyAgentIamToken, isTokenServiceInitialized } =
+        await import('../../map/token-service.js');
+      if (isTokenServiceInitialized()) {
+        const result = verifyAgentIamToken(token);
+        if (result.valid && result.token) {
+          const found = findAgentById(result.token.agentId);
+          if (found) agent = found;
+        }
+      }
+    } catch {
+      /* agent-iam not available — treat as miss, fall through to 401 */
+    }
   }
 
   if (!agent) {
@@ -341,3 +374,9 @@ export function createAuthOrAdminKey(config: { admin: { key?: string } }) {
     if (reply.sent) return;
   };
 }
+
+// NOTE: `createAdminOrCapability` was retired in RFC v4. Capability
+// enforcement for agent-facing operations moved from REST middleware to
+// MAP method dispatch (see `src/map/session-scopes.ts` +
+// `src/map/spawn-handler.ts`). Admin-gated REST routes revert to strict
+// `createAdminAuth`.

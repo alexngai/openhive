@@ -6,8 +6,8 @@ import { createAdminClient, type AdminClient, type AdminClientOptions } from '..
  *
  * `optsWithGlobals()` merges subcommand-local flags with every ancestor
  * command's flags, so values set via either `openhive admin --server X
- * preauth list` or `openhive admin preauth list --server X` both resolve.
- * Local flags win when both are set (commander default).
+ * onboard-token create` or `openhive admin onboard-token create --server X`
+ * both resolve. Local flags win when both are set (commander default).
  *
  * `dataDir` is read off the root `program` because it's the global Hive
  * flag (declared on cli.ts line ~415), not on the admin subtree.

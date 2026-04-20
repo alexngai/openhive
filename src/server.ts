@@ -49,8 +49,8 @@ import { sendToSwarm } from "./map/sync-listener.js";
 import type { Orchestrator } from "swarm-dispatch";
 import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
 import { initMail, getMailJsonRpc, getMailStorage, getMailEvents } from "./mail/index.js";
-import { setupMapWebSocket, stopMapWebSocket } from "./map/ws-map.js";
-import { initTokenService, loadRevocations, setPersistence } from "./map/token-service.js";
+import { setupMapWebSocket, stopMapWebSocket, disconnectSessionsForAgent } from "./map/ws-map.js";
+import { initTokenService, loadRevocations, setPersistence, setSessionCleanupHook } from "./map/token-service.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { SwarmHubConnector } from "./swarmhub/connector.js";
 import { normalize, routeEvent } from "./events/index.js";
@@ -215,30 +215,45 @@ export async function createHive(
 
   // Register MAP inbound WebSocket (/ws/map) for agents connecting to the hub
   if (config.mapHub.enabled) {
-    // Initialize agent-iam TokenService for verified mode
-    if (config.mapHub.trustModel === 'verified') {
-      const { getDatabaseConfig } = await import("./db/index.js");
-      const dbConf = getDatabaseConfig();
-      const dataDir = dbConf?.type === 'sqlite' && dbConf.path
-        ? path.dirname(path.dirname(dbConf.path)) // <dataDir>/data/openhive.db → <dataDir>
-        : undefined;
-      initTokenService(config.mapHub.iamSecret, dataDir);
+    // Initialize agent-iam TokenService UNIVERSALLY (all trust modes).
+    //
+    // Historically this was gated on `trustModel === 'verified'`, but with
+    // agent-iam scopes replacing the DB-backed capability system (see
+    // docs/RFC_AGENT_CAPABILITIES.md), the token service needs to be
+    // available in `open` trust too so agents can exchange their API key
+    // for a scoped token and use it on REST routes. Cost is negligible
+    // — an HMAC secret and an in-memory revocation set.
+    const { getDatabaseConfig } = await import("./db/index.js");
+    const dbConf = getDatabaseConfig();
+    const dataDir = dbConf?.type === 'sqlite' && dbConf.path
+      ? path.dirname(path.dirname(dbConf.path)) // <dataDir>/data/openhive.db → <dataDir>
+      : undefined;
+    initTokenService(config.mapHub.iamSecret, dataDir);
 
-      // Wire up DB persistence for token revocation
-      try {
-        const { addRevokedToken, removeRevokedToken, listRevokedTokens } = await import("./db/dal/map.js");
-        setPersistence({ revoke: addRevokedToken, unrevoke: removeRevokedToken });
+    // Note: agent-iam tokens for regular agents are now minted only via
+    // `map/agents/spawn` (by parent agents) or `admin onboard-token`
+    // (by operators). Session scopes are resolved at map/connect time
+    // from DB capabilities, so grant changes take effect on next
+    // reconnect. See docs/RFC_AGENT_CAPABILITIES.md v4.
 
-        // Load persisted revocations from the database
-        const revoked = listRevokedTokens();
-        if (revoked.length > 0) {
-          loadRevocations(revoked);
-          console.log(`[openhive] Loaded ${revoked.length} persisted token revocation(s)`);
-        }
-      } catch {
-        // Table may not exist yet on first run before migration
+    // Wire up DB persistence for token revocation
+    try {
+      const { addRevokedToken, removeRevokedToken, listRevokedTokens } = await import("./db/dal/map.js");
+      setPersistence({ revoke: addRevokedToken, unrevoke: removeRevokedToken });
+
+      // Load persisted revocations from the database
+      const revoked = listRevokedTokens();
+      if (revoked.length > 0) {
+        loadRevocations(revoked);
+        console.log(`[openhive] Loaded ${revoked.length} persisted token revocation(s)`);
       }
+    } catch {
+      // Table may not exist yet on first run before migration
     }
+    // Close in-flight WS sessions when their token is revoked so the
+    // scope cache doesn't outlive the revocation. See RFC v4 §"Session
+    // scope resolution" and H2 in the review addendum.
+    setSessionCleanupHook(disconnectSessionsForAgent);
     setupMapWebSocket(fastify, config);
   }
 

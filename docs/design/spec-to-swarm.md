@@ -21,7 +21,7 @@ Today OpenHive is strong at the middle and end of that pipeline (task graph, ses
 - **OpenTasks integration**: full CRUD, graph view, ready/blocked queries, local + remote daemon routing (`src/api/routes/resource-content.ts`, `src/map/task-handler.ts`, `src/map/opentasks-remote.ts`).
 - **Chat contract**: unified `useChatChannel` from swarmcraft with ACP + Mail adapters, used across Sessions / Conversation / Agent / SwarmDetail.
 - **Sessions & trajectories**: five-tier content resolution, event stream rendering, on-demand transcript fetch, capability-gated chat.
-- **Swarm hosting + MAP**: spawn local/sandboxed/remote swarms, preauth-key registration, capability aggregation, trajectory sync.
+- **Swarm hosting + MAP**: spawn local/sandboxed/remote swarms, agent-iam onboard-token registration, capability aggregation, trajectory sync.
 - **MAP participant capabilities**: agents declare capabilities at registration; the hub aggregates and gates operations per-agent.
 
 ### Weak seams
@@ -92,7 +92,7 @@ Dispatch                 — NEW, hub-native
 
 ### Autonomy via topology + audit, not authorization
 
-Agents author and dispatch specs through MAP. The v1 stance is **permissive**: any registered MAP agent can call `map/specs/*`. The trust boundary is admission to the network (preauth-keys, who you invite) plus the shape of the topology that produced the agents (coordinator vs. worker, team template) — not a per-agent capability table.
+Agents author and dispatch specs through MAP. The v1 stance is **permissive**: any registered MAP agent can call `map/specs/*`. The trust boundary is admission to the network (operator-minted onboard tokens, `map/agents/spawn` delegation, who you invite) plus the shape of the topology that produced the agents (coordinator vs. worker, team template) — not a per-agent capability table.
 
 **Audit as the safety net.** Every spec creation and every dispatch records an `initiator: { type: 'user' | 'agent', id }`. Every state change emits an event. The UI surfaces this prominently — who dispatched, when, against which spec revision — so a human can always trace what happened and why.
 

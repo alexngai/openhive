@@ -22,9 +22,8 @@
  *
  *   GET    /map/peers/:swarmId       - Get peer list (headscale-style)
  *
- *   POST   /map/preauth-keys         - Create pre-auth key (admin)
- *   GET    /map/preauth-keys         - List pre-auth keys (admin)
- *   DELETE /map/preauth-keys/:id     - Revoke pre-auth key (admin)
+ *   (Preauth keys retired in RFC v4 — swarms bootstrap via agent-iam
+ *   delegated tokens minted via `map/agents/spawn` or admin onboard-token.)
  *
  *   GET    /map/stats                - Hub stats
  *   GET    /map/connections          - Live connection health (all)
@@ -33,7 +32,7 @@
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { authMiddleware, optionalAuthMiddleware, createAdminAuth } from '../middleware/auth.js';
+import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
 import * as mapDal from '../../db/dal/map.js';
 import {
   registerSwarm,
@@ -80,8 +79,12 @@ const RegisterSwarmSchema = z.object({
   auth_method: z.enum(['bearer', 'api-key', 'mtls', 'none']).optional(),
   auth_token: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),
-  preauth_key: z.string().optional(),
   stable_identity: z.string().max(500).optional(),
+  // NOTE: `preauth_key` field was removed in v4 of the capability RFC.
+  // Swarms bootstrap by connecting with an agent-iam delegated token (from
+  // `map/agents/spawn` or `openhive admin onboard-token`) directly as
+  // their Bearer on this endpoint. `authMiddleware` resolves the token
+  // into `request.agent`, which becomes the swarm's owner automatically.
 });
 
 const UpdateSwarmSchema = z.object({
@@ -126,12 +129,6 @@ const UpdateNodeSchema = z.object({
 
 const JoinHiveSchema = z.object({
   hive_name: z.string().min(1),
-});
-
-const CreatePreauthKeySchema = z.object({
-  hive_id: z.string().optional(),
-  uses: z.number().int().min(1).max(1000).optional(),
-  expires_in_hours: z.number().min(1).max(8760).optional(), // max 1 year
 });
 
 const NetworkProvisionSchema = z.object({
@@ -193,7 +190,6 @@ export async function mapRoutes(
   fastify: FastifyInstance,
   opts: { config: Config }
 ): Promise<void> {
-  const adminAuth = createAdminAuth(opts.config);
 
   // ==========================================================================
   // Swarm Routes
@@ -649,7 +645,11 @@ export async function mapRoutes(
     }
   });
 
-  // POST /map/swarms/:id/delegate -- Delegate a narrower token for a child agent
+  // POST /map/swarms/:id/delegate -- Delegate a narrower token for a child agent.
+  // REST companion to `map/agents/spawn`. Use this only when you cannot
+  // hold a MAP WS session open (e.g. scripted one-shot mints). Both
+  // paths now use agent-iam's parent-chain delegation, so cascade
+  // revocation works identically.
   fastify.post<{ Params: { id: string }; Body: { parent_token: string; agent_id: string; scopes?: string[]; ttl_minutes?: number } }>('/map/swarms/:id/delegate', {
     preHandler: [authMiddleware],
   }, async (request, reply) => {
@@ -833,76 +833,13 @@ export async function mapRoutes(
   });
 
   // ==========================================================================
-  // Pre-auth Key Routes (admin only)
+  // NOTE: Preauth key routes removed in v4 of the capability RFC. Swarms
+  // now bootstrap via:
+  //   - `map/agents/spawn` (MAP WS method, used by parent agents)
+  //   - `openhive admin onboard-token create` (operator CLI)
+  // Both mint delegated agent-iam tokens that the new swarm presents as
+  // a Bearer on `POST /map/swarms`. See docs/RFC_AGENT_CAPABILITIES.md v4.
   // ==========================================================================
-
-  // POST /map/preauth-keys -- Create pre-auth key
-  fastify.post('/map/preauth-keys', {
-    preHandler: adminAuth,
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const body = CreatePreauthKeySchema.parse(request.body);
-      // When called via X-Admin-Key there is no authenticated agent.
-      // `created_by` is a nullable FK — pass null rather than inventing a
-      // sentinel id the agents table doesn't contain.
-      const createdBy = request.agent?.id ?? null;
-      const result = mapDal.createPreauthKey(createdBy, body);
-
-      return reply.status(201).send({
-        id: result.key.id,
-        key: result.plaintext_key,
-        hive_id: result.key.hive_id,
-        uses_left: result.key.uses_left,
-        expires_at: result.key.expires_at,
-        created_at: result.key.created_at,
-      });
-    } catch (error) {
-      return handleMapError(error, reply);
-    }
-  });
-
-  // GET /map/preauth-keys -- List pre-auth keys
-  fastify.get<{
-    Querystring: { hive_id?: string; limit?: string; offset?: string };
-  }>('/map/preauth-keys', {
-    preHandler: adminAuth,
-  }, async (request, reply) => {
-    const { hive_id, limit, offset } = request.query;
-
-    const keys = mapDal.listPreauthKeys({
-      hive_id,
-      limit: parseIntParam(limit, MAX_PAGE_SIZE),
-      offset: parseIntParam(offset),
-    });
-
-    // Don't return key_hash in the response
-    const data = keys.map((k) => ({
-      id: k.id,
-      hive_id: k.hive_id,
-      uses_left: k.uses_left,
-      expires_at: k.expires_at,
-      created_by: k.created_by,
-      created_at: k.created_at,
-      last_used_at: k.last_used_at,
-    }));
-
-    return reply.send({ data });
-  });
-
-  // DELETE /map/preauth-keys/:id -- Revoke pre-auth key
-  fastify.delete<{ Params: { id: string } }>('/map/preauth-keys/:id', {
-    preHandler: adminAuth,
-  }, async (request, reply) => {
-    try {
-      const deleted = mapDal.deletePreauthKey(request.params.id);
-      if (!deleted) {
-        return reply.status(404).send({ error: 'Not Found', message: 'Pre-auth key not found' });
-      }
-      return reply.status(204).send();
-    } catch (error) {
-      return handleMapError(error, reply);
-    }
-  });
 
   // ==========================================================================
   // Stats

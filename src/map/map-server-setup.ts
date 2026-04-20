@@ -18,6 +18,7 @@ import { handleTrajectoryRequest, TrajectoryRequestError } from './trajectory-ha
 import { CASCADE_METHOD_SET, CascadeRequestError } from './cascade-types.js';
 import { handleCascadeRequest } from './cascade-handler.js';
 import { consumeCascadeToken } from './cascade-rate-limit.js';
+import { SPAWN_METHOD, handleSpawnRequest } from './spawn-handler.js';
 import type { Config } from '../config.js';
 
 let mapServer: any | null = null;
@@ -248,6 +249,31 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
       return { ok: true, resource_id: resourceId };
     };
   }
+
+  // ── map/agents/spawn — native MAP delegation primitive ─────────
+  // Overrides the ts-sdk's built-in spawn handler because:
+  //   1. The SDK's built-in uses an in-memory AgentRegistry; OpenHive
+  //      uses its DB `agents` table for agent persistence.
+  //   2. The SDK's built-in only wires delegation when MAPServer is
+  //      configured with an AuthManager, which OpenHive doesn't use
+  //      (we have a custom OpenHiveIAMAuthenticator instead).
+  // Our handler does the scope check, creates the DB agent row, and
+  // mints a delegated credential via delegateForSpawn.
+  //
+  // See docs/RFC_AGENT_CAPABILITIES.md v4.
+  handlers[SPAWN_METHOD] = async (params: any, ctx: any) => {
+    // ws-map.ts stores the connection's swarm + hub agent under these
+    // metadata keys when it calls `mapServer.accept(...)`.
+    const swarmId = ctx.session?.metadata?.swarmId;
+    const hubAgentId = ctx.session?.metadata?.hubAgentId;
+    if (!swarmId || !hubAgentId) {
+      throw Object.assign(
+        new Error('spawn requires an authenticated MAP session'),
+        { code: -32000 },
+      );
+    }
+    return await handleSpawnRequest(params, { swarmId, hubAgentId });
+  };
 
   // ── Ping/Pong ────────────────────────────────────────────────────
   // Ping is a notification (no id), handled in the notification interceptor.

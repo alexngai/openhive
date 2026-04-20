@@ -286,7 +286,6 @@ export interface MapStats {
   swarms: { total: number; online: number; offline: number };
   nodes: { total: number; active: number };
   hive_memberships: number;
-  preauth_keys: { total: number; active: number };
 }
 
 export interface SyncableResource {

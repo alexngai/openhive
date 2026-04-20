@@ -50,8 +50,6 @@ export type {
   MapNodeVisibility,
   // Membership
   MapSwarmHive,
-  // Pre-auth keys
-  MapPreauthKey,
   // Federation log
   MapFederationLogEntry,
   FederationConnectionStatus,
@@ -61,7 +59,6 @@ export type {
   RegisterNodeInput,
   UpdateNodeInput,
   DiscoverNodesOptions,
-  CreatePreauthKeyInput,
   // Peer list
   SwarmPeer,
   PeerList,

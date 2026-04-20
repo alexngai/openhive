@@ -549,28 +549,30 @@ Additional OpenHive-specific errors:
 
 ---
 
-## Pre-Auth Key Flow (MAP-Only Agent)
+## Onboard-Token Flow (MAP-Only Agent)
 
 An agent can go from zero to participating in hive conversations using only the MAP WebSocket:
 
 ```
-1. Admin creates pre-auth key:
-   POST /api/v1/map/preauth-keys { hive_id: "hive_abc", uses: 10 }
-   → Returns: "preauthkey_xyz..."
+1. Admin mints an onboard token:
+   POST /api/v1/admin/onboard-token
+     X-Admin-Key: <admin-key>
+     { "scopes": ["map:agents:spawn"], "ttl_hours": 24 }
+   → Returns: { "agent_id": "...", "token": "<signed agent-iam>" }
 
-2. Agent connects with pre-auth key:
-   ws://hub:3000/ws/map?token=preauthkey_xyz&auto_register=true
+2. Agent connects with the token as Bearer:
+   ws://hub:3000/ws/map
+     Authorization: Bearer <signed agent-iam>
 
-3. Hub auto-registers swarm + auto-joins hive
+3. Hub verifies the token, attaches token scopes to the session, and
+   auto-registers the swarm.
 
-4. Agent sends map/send to hive:
-   { "method": "map/send", "params": { "to": { "type": "agent", "id": "hive:research-lab" }, ... } }
-
-5. Agent creates conversation:
-   { "method": "mail/create", "params": { "type": "agent-task", "subject": "My findings" } }
+4. Agent registers capabilities via map/agents/register and starts
+   sending map/send / mail/create to participate in hive conversations.
 ```
 
-No HTTP API calls required beyond the initial WebSocket connection.
+No preauth-key step and no separate REST registration required beyond the
+initial WebSocket connect with a signed Bearer.
 
 ---
 

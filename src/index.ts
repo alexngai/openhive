@@ -102,7 +102,6 @@ export type {
   MapNodeState,
   MapNodeVisibility,
   MapSwarmHive,
-  MapPreauthKey,
   MapFederationLogEntry,
   SwarmPeer,
   PeerList,
@@ -111,7 +110,6 @@ export type {
   RegisterNodeInput,
   UpdateNodeInput,
   DiscoverNodesOptions,
-  CreatePreauthKeyInput,
   // Sync messages (JSON-RPC 2.0)
   MapSyncMessage,
   MapSyncMethod,
