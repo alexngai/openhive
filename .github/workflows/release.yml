@@ -1,4 +1,4 @@
-name: Release
+name: Build/Release Electron App
 
 # Triggered by pushing a tag like `v0.1.0`. Each run builds the Electron
 # app on each target platform, packages it with electron-builder, and
@@ -18,6 +18,15 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish artifacts to GitHub Releases'
+        type: choice
+        default: always
+        options:
+          - always   # create/update draft release with artifacts
+          - never    # build + sign + notarize, no Release (artifacts stay as job artifacts for 90d)
+          - onTag    # publish only if this run is triggered by a tag push
 
 permissions:
   contents: write   # required for electron-builder to publish releases
@@ -84,4 +93,21 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npx electron-builder --publish always
+        run: npx electron-builder --publish ${{ github.event.inputs.publish || 'always' }}
+
+      # Also attach the built installers as GitHub Action artifacts so they're
+      # downloadable for 90d without needing a Release. Useful for
+      # `workflow_dispatch` runs with publish=never.
+      - name: Upload installers as job artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openhive-${{ matrix.label }}
+          path: |
+            release/*.dmg
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/latest-*.yml
+          if-no-files-found: warn
+          retention-days: 90
