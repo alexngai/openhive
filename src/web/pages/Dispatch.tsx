@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Send, Zap, FileText, User, Bot } from 'lucide-react';
 import clsx from 'clsx';
-import { useDispatches, type DispatchStatus } from '../hooks/useDispatches';
-import { useDispatchesRealtime } from '../hooks/useDispatchesRealtime';
+import { useDispatchList, type DispatchStatus } from '../hooks/useDispatch';
+import { useDispatchRealtime } from '../hooks/useDispatchRealtime';
 import { useMapSwarmsForPicker } from '../hooks/useApi';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -11,16 +11,16 @@ import { ListFilters, useDebouncedValue, matchesSearch } from '../components/com
 
 const ALL_STATUSES: DispatchStatus[] = ['queued', 'running', 'complete', 'failed', 'cancelled'];
 
-export function Dispatches() {
+export function Dispatch() {
   const [statusFilter, setStatusFilter] = useState<Set<DispatchStatus>>(new Set());
   const [swarmFilter, setSwarmFilter] = useState<string>('');
   const [search, setSearch] = useState('');
   const q = useDebouncedValue(search);
 
-  useDispatchesRealtime();
+  useDispatchRealtime();
   const { data: swarms = [] } = useMapSwarmsForPicker();
 
-  const { data, isLoading, error } = useDispatches({
+  const { data, isLoading, error } = useDispatchList({
     status: statusFilter.size > 0 ? Array.from(statusFilter) : undefined,
     target_swarm_id: swarmFilter || undefined,
   });
@@ -59,7 +59,7 @@ export function Dispatches() {
           style={{ color: 'var(--color-text)' }}
         >
           <Send className="h-6 w-6 text-honey-500" />
-          Dispatches
+          Dispatch
         </h1>
         <p className="mt-1 text-sm" style={{ color: 'var(--color-text-muted)' }}>
           Work handed off to swarms. Each row is one (spec, swarm) pair.
@@ -163,7 +163,7 @@ export function Dispatches() {
             return (
               <Link
                 key={d.id}
-                to={`/dispatches/${d.id}`}
+                to={`/dispatch/${d.id}`}
                 className="block rounded-md border p-3 transition-colors hover:bg-white/5"
                 style={{
                   borderColor: 'var(--color-border-subtle)',

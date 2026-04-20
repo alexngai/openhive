@@ -74,7 +74,7 @@ export function Sidebar() {
         { to: '/threads', icon: MessageSquare, label: 'Threads' },
         { to: '/swarms', icon: CirclePile, label: 'Swarms', badge: onlineSwarmCount || undefined },
         { to: '/events', icon: Bell, label: 'Events' },
-        { to: '/streams', icon: GitBranch, label: 'Streams' },
+        { to: '/dispatch', icon: Send, label: 'Dispatch' },
       ],
     },
     {
@@ -82,8 +82,8 @@ export function Sidebar() {
       label: 'Work',
       items: [
         { to: '/specs', icon: FileText, label: 'Specs' },
-        { to: '/dispatches', icon: Send, label: 'Dispatches' },
         { to: '/tasks', icon: ListTodo, label: 'Tasks' },
+        { to: '/changes', icon: GitBranch, label: 'Changes' },
       ],
     },
     {

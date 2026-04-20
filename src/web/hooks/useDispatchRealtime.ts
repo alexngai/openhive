@@ -1,5 +1,5 @@
 /**
- * Dispatches Real-time Hook
+ * Dispatch Real-time Hook
  *
  * Subscribes to live dispatch events on the `map:dispatches` channel and
  * invalidates dispatch-related React Query caches so the UI reflects state
@@ -20,7 +20,7 @@ function extractDispatchId(data: unknown): string | undefined {
   return d?.dispatch?.id ?? d?.taskId;
 }
 
-export function useDispatchesRealtime() {
+export function useDispatchRealtime() {
   const qc = useQueryClient();
 
   useSubscribe(['map:dispatches']);

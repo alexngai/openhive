@@ -17,9 +17,9 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
-vi.mock('../../../hooks/useDispatches', async () => {
-  const actual = await vi.importActual<typeof import('../../../hooks/useDispatches')>(
-    '../../../hooks/useDispatches',
+vi.mock('../../../hooks/useDispatch', async () => {
+  const actual = await vi.importActual<typeof import('../../../hooks/useDispatch')>(
+    '../../../hooks/useDispatch',
   );
   return {
     ...actual,
@@ -203,7 +203,7 @@ describe('<DispatchModal />', () => {
     });
     // Single-swarm → navigate to the detail page, suppress toast (the
     // detail page carries its own confirmation via status chip).
-    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/dispatches/disp_x'));
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/dispatch/disp_x'));
     expect(mockToastSuccess).not.toHaveBeenCalled();
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });

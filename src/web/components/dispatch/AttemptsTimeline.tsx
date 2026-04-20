@@ -14,7 +14,7 @@ import { useEffect, useState } from 'react';
 import { CheckCircle2, AlertTriangle, Loader2, Clock, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import { TimeAgo } from '../common/TimeAgo';
-import type { DispatchAttempt } from '../../hooks/useDispatches';
+import type { DispatchAttempt } from '../../hooks/useDispatch';
 
 interface AttemptsTimelineProps {
   attempts: DispatchAttempt[];

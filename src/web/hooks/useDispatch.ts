@@ -67,7 +67,7 @@ export interface CreateDispatchInput {
 // Queries
 // ============================================================================
 
-export interface UseDispatchesOptions {
+export interface UseDispatchListOptions {
   status?: DispatchStatus | DispatchStatus[];
   target_swarm_id?: string;
   spec_resource_id?: string;
@@ -78,7 +78,7 @@ export interface UseDispatchesOptions {
   offset?: number;
 }
 
-export function useDispatches(options: UseDispatchesOptions = {}) {
+export function useDispatchList(options: UseDispatchListOptions = {}) {
   const params = new URLSearchParams();
   if (options.status) {
     const v = Array.isArray(options.status) ? options.status.join(',') : options.status;
@@ -106,7 +106,7 @@ export function useDispatch(id: string | undefined) {
     enabled: !!id,
     staleTime: 15_000,
     // Polling fallback for the running window: the primary source of
-    // truth is the `map:dispatches` WS channel (see useDispatchesRealtime),
+    // truth is the `map:dispatches` WS channel (see useDispatchRealtime),
     // but if the socket drops or the server doesn't emit for any reason,
     // a 5s tick keeps the detail view honest. Stops automatically once
     // the dispatch settles — compare status against the known terminal

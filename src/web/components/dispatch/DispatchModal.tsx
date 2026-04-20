@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import clsx from 'clsx';
 import { Loader2, Send, X, Zap, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useMapSwarmsForPicker } from '../../hooks/useApi';
-import { useCreateDispatch, type CreatedDispatch } from '../../hooks/useDispatches';
+import { useCreateDispatch, type CreatedDispatch } from '../../hooks/useDispatch';
 import { toast } from '../../stores/toast';
 import { Dialog } from '../common/Dialog';
 import { TimeAgo } from '../common/TimeAgo';
@@ -92,10 +92,10 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
       // Single-swarm dispatch: auto-navigate to the detail page so the user
       // sees status + outcome progress immediately. Multi-swarm: fall back
       // to a toast (no single detail to land on) and let the user drill in
-      // from the Dispatches list — navigating to one of N would be
+      // from the Dispatch list — navigating to one of N would be
       // arbitrary.
       if (n === 1) {
-        navigate(`/dispatches/${result.dispatches[0].id}`);
+        navigate(`/dispatch/${result.dispatches[0].id}`);
       } else {
         const swarmNames = result.dispatches
           .map((d) => d.target_swarm_name ?? d.target_swarm_id)

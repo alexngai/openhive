@@ -95,14 +95,12 @@ Keep the sticky header (name + status + key actions) above the tab bar so contex
 
 ---
 
-### 4. `[~]` Surface buried routes — **partial**
+### 4. `[x]` Surface buried routes — **DONE**
 
 **Shipped**
-- **Events** — now in the sidebar under Control Plane with a Bell icon, between Swarms and Streams. The page manages fleet-wide post rules, event subscriptions, and the delivery log — distinct from SwarmDetail's per-swarm Events section.
-- **Terminal** — no sidebar entry needed; entry point is now the Operations tab on SwarmDetail (after #3). Prominence is fine there.
-
-**Still pending**
-- **Streams** — blocked on concept refinement. Needs a product conversation before UI work: what decisions does this page help the user make? What's the primary action? Until that's answered, the sidebar entry stays as-is and the page keeps its current shape.
+- **Events** — now in the sidebar under Control Plane with a Bell icon, between Swarms and Streams. The page manages fleet-wide event subscriptions + delivery log.
+- **Terminal** — no sidebar entry; entry point lives on SwarmDetail. Prominence fine there.
+- **Streams** — rebuilt and renamed to **Changes** (see notes below). Primary actor is a human reviewer with override write access; default view is a triage-first list (Needs attention / In progress / Recently landed). Stack + Graph demoted to secondary views. Conflicts converted from a top-level view into a filter chip. Force-resolve copy reframed as an escape hatch so the design leans on agents to handle conflict resolution when possible. URL renamed `/streams` → `/changes` with redirect. Layout promoted to full-width. Deferred to a future pass: manual stack creation / override writes, and a MAP method to ping agent owners for conflict resolution.
 
 ---
 

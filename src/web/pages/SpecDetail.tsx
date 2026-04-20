@@ -13,8 +13,8 @@ import { SpecMarkdown } from '../components/specs/SpecMarkdown';
 import { SpecEditor } from '../components/specs/SpecEditor';
 import { LinkedNodesPanel } from '../components/specs/LinkedNodesPanel';
 import { DispatchModal } from '../components/dispatch/DispatchModal';
-import { SpecDispatchesPanel } from '../components/dispatch/SpecDispatchesPanel';
-import { SpecRecentDispatchesStrip } from '../components/dispatch/SpecRecentDispatchesStrip';
+import { SpecDispatchPanel } from '../components/dispatch/SpecDispatchPanel';
+import { SpecRecentDispatchStrip } from '../components/dispatch/SpecRecentDispatchStrip';
 import { PageLoader } from '../components/common/LoadingSpinner';
 
 const PRIORITY_COLORS: Record<number, string> = {
@@ -136,8 +136,8 @@ export function SpecDetail() {
             </h1>
             {/* Recent dispatches strip — surfaces the 3 most recent so the
                 author sees at a glance that the spec has been acted on.
-                Sidebar SpecDispatchesPanel still carries the full history. */}
-            <SpecRecentDispatchesStrip resourceId={spec.resource_id} specId={spec.id} />
+                Sidebar SpecDispatchPanel still carries the full history. */}
+            <SpecRecentDispatchStrip resourceId={spec.resource_id} specId={spec.id} />
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {spec.priority !== undefined && spec.priority <= 3 && (
@@ -247,7 +247,7 @@ export function SpecDetail() {
 
         {/* Sidebar — linked nodes */}
         <div className="space-y-4">
-          <SpecDispatchesPanel resourceId={spec.resource_id} specId={spec.id} />
+          <SpecDispatchPanel resourceId={spec.resource_id} specId={spec.id} />
           <LinkedNodesPanel
             title="Tasks"
             icon={<ListTodo className="h-4 w-4 text-honey-500" />}

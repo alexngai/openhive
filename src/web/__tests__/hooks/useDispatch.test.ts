@@ -6,11 +6,11 @@ import { createElement } from 'react';
 import {
   useCancelDispatch,
   useDispatch,
-  useDispatches,
+  useDispatchList,
   useCreateDispatch,
   useDispatchPolicy,
   useUpdateDispatchPolicy,
-} from '../../hooks/useDispatches';
+} from '../../hooks/useDispatch';
 
 const mockGet = vi.fn();
 const mockPost = vi.fn();
@@ -43,11 +43,11 @@ describe('Dispatch hooks', () => {
     vi.clearAllMocks();
   });
 
-  describe('useDispatches', () => {
+  describe('useDispatchList', () => {
     it('fetches with default limit/offset', async () => {
       mockGet.mockResolvedValue({ data: [], total: 0, limit: 50, offset: 0 });
       const { Wrapper } = createWrapper();
-      const { result } = renderHook(() => useDispatches(), { wrapper: Wrapper });
+      const { result } = renderHook(() => useDispatchList(), { wrapper: Wrapper });
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
       const url = mockGet.mock.calls[0]?.[0] as string;
       expect(url).toContain('/dispatches?');
@@ -59,7 +59,7 @@ describe('Dispatch hooks', () => {
       mockGet.mockResolvedValue({ data: [], total: 0, limit: 50, offset: 0 });
       const { Wrapper } = createWrapper();
       const { result } = renderHook(
-        () => useDispatches({ status: ['queued', 'running'] }),
+        () => useDispatchList({ status: ['queued', 'running'] }),
         { wrapper: Wrapper },
       );
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -72,7 +72,7 @@ describe('Dispatch hooks', () => {
       const { Wrapper } = createWrapper();
       const { result } = renderHook(
         () =>
-          useDispatches({
+          useDispatchList({
             spec_resource_id: 'res_a',
             spec_id: 's-1',
             target_swarm_id: 'swarm_x',

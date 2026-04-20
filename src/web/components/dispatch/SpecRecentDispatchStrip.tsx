@@ -1,13 +1,13 @@
 import { Link } from 'react-router-dom';
 import { Zap } from 'lucide-react';
-import { useDispatches } from '../../hooks/useDispatches';
-import { useDispatchesRealtime } from '../../hooks/useDispatchesRealtime';
+import { useDispatchList } from '../../hooks/useDispatch';
+import { useDispatchRealtime } from '../../hooks/useDispatchRealtime';
 import { useMapSwarms } from '../../hooks/useApi';
 import { DispatchStatusChip } from './DispatchStatusChip';
 import { TimeAgo } from '../common/TimeAgo';
 
 /** How many dispatches to surface inline before the "see all" affordance
- *  points the user at the sidebar panel / Dispatches list. Three feels
+ *  points the user at the sidebar panel / Dispatch list. Three feels
  *  right — a row strip stays scannable, and the full history is always one
  *  click away in the sidebar panel. */
 const INLINE_LIMIT = 3;
@@ -19,16 +19,16 @@ interface Props {
 
 /**
  * Horizontal strip surfacing recent dispatches for a spec, planted under
- * the spec title on SpecDetail. Complements the sidebar SpecDispatchesPanel
+ * the spec title on SpecDetail. Complements the sidebar SpecDispatchPanel
  * (full history) — readers who just authored a spec usually want the
  * recent-3 visible without scanning the sidebar.
  *
  * Renders nothing when the spec has no dispatches yet; the sidebar panel
  * already handles the "no dispatches" copy.
  */
-export function SpecRecentDispatchesStrip({ resourceId, specId }: Props) {
-  useDispatchesRealtime();
-  const { data } = useDispatches({
+export function SpecRecentDispatchStrip({ resourceId, specId }: Props) {
+  useDispatchRealtime();
+  const { data } = useDispatchList({
     spec_resource_id: resourceId,
     spec_id: specId,
     limit: INLINE_LIMIT,
@@ -53,7 +53,7 @@ export function SpecRecentDispatchesStrip({ resourceId, specId }: Props) {
       {dispatches.map((d) => (
         <Link
           key={d.id}
-          to={`/dispatches/${d.id}`}
+          to={`/dispatch/${d.id}`}
           className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-md transition-colors hover:bg-white/5 shrink-0"
           style={{
             border: '1px solid var(--color-border-subtle)',

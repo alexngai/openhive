@@ -1,13 +1,15 @@
 /**
- * Streams Page — visualize and manage git-cascade streams.
+ * Changes Page — review and manage in-flight agent changes (git-cascade streams).
  *
- * Three views selectable via toolbar toggle:
- * - DAG: sigma.js graph of stream parent/child + merge relationships
- * - Stack: Graphite-style vertical stack from a selected root
- * - List: table view for simple scanning
+ * Default view is a triage-first list grouping rows by state:
+ *   1. Needs attention — streams with open conflicts
+ *   2. In progress — active + paused streams with no conflicts
+ *   3. Recently landed — merged/abandoned in the last 7 days (collapsible)
  *
- * Clicking a stream in any view opens the StreamDetailSidebar with a
- * vertical timeline of commits, merges, conflicts, and status changes.
+ * Stack + Graph are secondary power-user views, reachable from the toolbar
+ * switcher or from the per-row detail sidebar. Conflicts is a filter chip,
+ * not a separate view. Clicking any row opens StreamDetailSidebar with a
+ * vertical timeline, actions, branch / PR / commit controls.
  */
 
 import { useState, useMemo, useCallback } from 'react';
@@ -17,11 +19,9 @@ import {
   GitMerge,
   GitPullRequestDraft,
   Layers,
-  List,
   Network,
   Clock,
   AlertTriangle,
-  FileText,
   Users,
   X,
   ChevronDown,
@@ -34,7 +34,8 @@ import {
   Save,
   ExternalLink,
   Edit3,
-  Github,
+  Search,
+  Inbox,
 } from 'lucide-react';
 import {
   useCascadeDAG,
@@ -48,7 +49,6 @@ import {
   useGitHubStatus,
   type StreamDAGNode,
   type StreamDAGEdge,
-  type StreamTimelineEvent,
   type CascadeAction,
   type CascadePullRequest,
 } from '../hooks/useApi';
@@ -56,22 +56,38 @@ import { useCascadeStreamsRealtime } from '../hooks/useRealtimeInvalidation';
 import { useMapSwarms } from '../hooks/useApi';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
+import { useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
 import { StreamDAGView } from '../components/streams/StreamDAGView';
 import { StreamStatusDot, STATUS_COLORS, STATUS_LABELS, TimelineEntry } from '../components/streams/shared';
 
-// NOTE: StreamListView, StreamStackView, StreamDetailSidebar, ConflictTriageView
-// are defined inline below. Consider extracting to src/web/components/streams/
-// when the component count stabilizes.
+type ViewMode = 'list' | 'stack' | 'dag';
 
-type ViewMode = 'dag' | 'stack' | 'list' | 'conflicts';
+const RECENTLY_LANDED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-// STATUS_COLORS, STATUS_LABELS, StreamStatusDot, TimelineEntry imported from shared.tsx
+type TriageBucket = 'needs-attention' | 'in-progress' | 'recently-landed';
 
-export function Streams() {
+function bucketForNode(node: StreamDAGNode): TriageBucket | null {
+  if (node.status === 'conflicted' || node.open_conflict_count > 0) {
+    return 'needs-attention';
+  }
+  if (node.status === 'active' || node.status === 'paused') {
+    return 'in-progress';
+  }
+  if (node.status === 'merged' || node.status === 'abandoned') {
+    const ageMs = Date.now() - new Date(node.last_event_at).getTime();
+    return ageMs <= RECENTLY_LANDED_WINDOW_MS ? 'recently-landed' : null;
+  }
+  return null;
+}
+
+export function Changes() {
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [selectedSwarmId, setSelectedSwarmId] = useState<string | undefined>();
   const [selectedStreamId, setSelectedStreamId] = useState<string | null>(null);
   const [stackRootId, setStackRootId] = useState<string | null>(null);
+  const [conflictsOnly, setConflictsOnly] = useState(false);
+  const [searchRaw, setSearchRaw] = useState('');
+  const search = useDebouncedValue(searchRaw, 180);
 
   const { data: dagResponse, isLoading } = useCascadeDAG({
     source_swarm_id: selectedSwarmId,
@@ -83,23 +99,37 @@ export function Streams() {
   const dag = dagResponse?.data;
   const swarms = swarmsResponse?.data ?? [];
 
-  const stats = useMemo(() => {
-    if (!dag) return null;
-    const nodes = dag.nodes;
-    return {
-      total: nodes.length,
-      active: nodes.filter((n) => n.status === 'active').length,
-      conflicted: nodes.filter((n) => n.status === 'conflicted').length,
-      merged: nodes.filter((n) => n.status === 'merged').length,
-      totalCommits: nodes.reduce((s, n) => s + n.commit_count, 0),
+  const { buckets, filteredCount, totalCount } = useMemo(() => {
+    const all = dag?.nodes ?? [];
+    const filtered = all.filter((n) => {
+      if (conflictsOnly && !(n.status === 'conflicted' || n.open_conflict_count > 0)) {
+        return false;
+      }
+      if (search && !matchesSearch(search, n.name, n.stream_id, n.source_agent_id)) {
+        return false;
+      }
+      return true;
+    });
+    const groups: Record<TriageBucket, StreamDAGNode[]> = {
+      'needs-attention': [],
+      'in-progress': [],
+      'recently-landed': [],
     };
-  }, [dag]);
+    for (const node of filtered) {
+      const bucket = bucketForNode(node);
+      if (bucket) groups[bucket].push(node);
+    }
+    const sortByActivity = (a: StreamDAGNode, b: StreamDAGNode) =>
+      new Date(b.last_event_at).getTime() - new Date(a.last_event_at).getTime();
+    groups['needs-attention'].sort(sortByActivity);
+    groups['in-progress'].sort(sortByActivity);
+    groups['recently-landed'].sort(sortByActivity);
+    return { buckets: groups, filteredCount: filtered.length, totalCount: all.length };
+  }, [dag, conflictsOnly, search]);
 
-  // Build stack from a root node
   const stack = useMemo(() => {
     if (!dag || !stackRootId) return null;
     const nodeMap = new Map(dag.nodes.map((n) => [n.id, n]));
-    // Find children by walking parent_stream_id edges
     const childrenOf = new Map<string, string[]>();
     for (const edge of dag.edges) {
       if (edge.type === 'parent') {
@@ -108,33 +138,57 @@ export function Streams() {
         childrenOf.set(edge.source, existing);
       }
     }
-
     const ordered: StreamDAGNode[] = [];
     const visited = new Set<string>();
-    function walk(id: string, depth: number) {
+    function walk(id: string) {
       if (visited.has(id)) return;
       visited.add(id);
       const node = nodeMap.get(id);
       if (node) ordered.push(node);
-      for (const childId of childrenOf.get(id) ?? []) {
-        walk(childId, depth + 1);
-      }
+      for (const childId of childrenOf.get(id) ?? []) walk(childId);
     }
-    walk(stackRootId, 0);
+    walk(stackRootId);
     return ordered;
   }, [dag, stackRootId]);
+
+  const openStackFrom = useCallback((streamRowId: string) => {
+    if (!dag) return;
+    const byStreamId = new Map(dag.nodes.map((n) => [n.stream_id, n]));
+    let cursor = dag.nodes.find((n) => n.id === streamRowId);
+    while (cursor?.parent_stream_id) {
+      const parent = byStreamId.get(cursor.parent_stream_id);
+      if (!parent) break;
+      cursor = parent;
+    }
+    if (cursor) {
+      setStackRootId(cursor.id);
+      setViewMode('stack');
+    }
+  }, [dag]);
 
   if (isLoading) return <PageLoader />;
 
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
-        <div className="flex items-center gap-3">
-          <h1 className="text-base font-semibold flex items-center gap-2">
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b flex-wrap" style={{ borderColor: 'var(--color-border-subtle)' }}>
+        <div className="flex items-center gap-3 min-w-0">
+          <h1 className="text-base font-semibold flex items-center gap-2 shrink-0">
             <GitBranch className="w-4 h-4 text-honey-500" />
-            Streams
+            Changes
           </h1>
+
+          {/* Search */}
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2" style={{ color: 'var(--color-text-muted)' }} />
+            <input
+              type="text"
+              placeholder="Search by name, id, or agent..."
+              className="input text-xs py-1 pl-7 pr-2 w-56"
+              value={searchRaw}
+              onChange={(e) => setSearchRaw(e.target.value)}
+            />
+          </div>
 
           {/* Swarm filter */}
           <select
@@ -147,23 +201,31 @@ export function Streams() {
               <option key={s.id} value={s.id}>{s.name ?? s.id}</option>
             ))}
           </select>
+
+          {/* Conflicts filter chip */}
+          <button
+            type="button"
+            className="text-2xs flex items-center gap-1 px-2 py-1 rounded-md border transition-colors"
+            style={{
+              borderColor: conflictsOnly ? 'var(--color-danger)' : 'var(--color-border)',
+              backgroundColor: conflictsOnly ? 'rgba(239,68,68,0.08)' : 'transparent',
+              color: conflictsOnly ? 'var(--color-danger)' : 'var(--color-text-muted)',
+            }}
+            onClick={() => setConflictsOnly((v) => !v)}
+            aria-pressed={conflictsOnly}
+          >
+            <AlertTriangle className="w-3 h-3" />
+            Conflicts only
+          </button>
         </div>
 
-        <div className="flex items-center gap-1">
-          {/* Stats pills */}
-          {stats && (
-            <div className="flex items-center gap-3 mr-4 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-              <span>{stats.total} streams</span>
-              <span>{stats.totalCommits} commits</span>
-              {stats.conflicted > 0 && (
-                <span style={{ color: 'var(--color-danger)' }}>
-                  {stats.conflicted} conflicted
-                </span>
-              )}
-            </div>
-          )}
+        <div className="flex items-center gap-3">
+          <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+            {filteredCount === totalCount
+              ? `${totalCount} ${totalCount === 1 ? 'change' : 'changes'}`
+              : `${filteredCount} of ${totalCount}`}
+          </span>
 
-          {/* View toggle */}
           <ViewToggle mode={viewMode} onChange={setViewMode} />
         </div>
       </div>
@@ -174,10 +236,11 @@ export function Streams() {
           {!dag || dag.nodes.length === 0 ? (
             <EmptyState />
           ) : viewMode === 'list' ? (
-            <StreamListView
-              nodes={dag.nodes}
+            <ChangesList
+              buckets={buckets}
+              filteredCount={filteredCount}
               onSelect={setSelectedStreamId}
-              onViewStack={(id) => { setStackRootId(id); setViewMode('stack'); }}
+              onViewStack={openStackFrom}
               selectedId={selectedStreamId}
             />
           ) : viewMode === 'stack' ? (
@@ -186,12 +249,7 @@ export function Streams() {
               dag={dag}
               rootId={stackRootId}
               onSelectRoot={setStackRootId}
-              onSelect={setSelectedStreamId}
-              selectedId={selectedStreamId}
-            />
-          ) : viewMode === 'conflicts' ? (
-            <ConflictTriageView
-              nodes={dag.nodes}
+              onBackToList={() => { setStackRootId(null); setViewMode('list'); }}
               onSelect={setSelectedStreamId}
               selectedId={selectedStreamId}
             />
@@ -205,12 +263,13 @@ export function Streams() {
           )}
         </div>
 
-        {/* Sidebar */}
         {selectedStreamId && (
           <StreamDetailSidebar
             streamRowId={selectedStreamId}
             node={dag?.nodes.find((n) => n.id === selectedStreamId) ?? null}
             onClose={() => setSelectedStreamId(null)}
+            onViewStack={openStackFrom}
+            onViewGraph={() => setViewMode('dag')}
           />
         )}
       </div>
@@ -221,11 +280,10 @@ export function Streams() {
 // ─── View Toggle ──────────────────────────────────────────────────────
 
 function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode) => void }) {
-  const items: Array<{ value: ViewMode; icon: JSX.Element; label: string }> = [
-    { value: 'list', icon: <List className="w-3.5 h-3.5" />, label: 'List' },
-    { value: 'stack', icon: <Layers className="w-3.5 h-3.5" />, label: 'Stack' },
-    { value: 'dag', icon: <Network className="w-3.5 h-3.5" />, label: 'DAG' },
-    { value: 'conflicts', icon: <AlertTriangle className="w-3.5 h-3.5" />, label: 'Conflicts' },
+  const items: Array<{ value: ViewMode; icon: JSX.Element; label: string; title: string }> = [
+    { value: 'list',  icon: <Inbox   className="w-3.5 h-3.5" />, label: 'List',  title: 'Triaged list (default)' },
+    { value: 'stack', icon: <Layers  className="w-3.5 h-3.5" />, label: 'Stack', title: 'Graphite-style stack from a root' },
+    { value: 'dag',   icon: <Network className="w-3.5 h-3.5" />, label: 'Graph', title: 'Full DAG of parent/child + merges' },
   ];
 
   return (
@@ -234,6 +292,7 @@ function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode
         <button
           key={item.value}
           type="button"
+          title={item.title}
           className={`px-2.5 py-1 text-2xs flex items-center gap-1.5 transition-colors
             ${mode === item.value ? 'text-honey-500' : ''}
             focus:outline-none focus-visible:ring-2 focus-visible:ring-honey-500/60`}
@@ -258,77 +317,220 @@ function EmptyState() {
     <div className="flex flex-col items-center justify-center h-full p-8">
       <GitBranch className="w-8 h-8 mb-3" style={{ color: 'var(--color-text-muted)' }} />
       <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-        No cascade streams yet. Streams appear when a cascade-aware agent
-        creates a stream and emits events to this hub.
+        No changes yet. A change appears here when a cascade-aware agent opens
+        a stream and emits events to this hub.
       </p>
     </div>
   );
 }
 
-// ─── List View ────────────────────────────────────────────────────────
+// ─── Triaged List View ────────────────────────────────────────────────
 
-function StreamListView({
+type BucketConfig = {
+  key: TriageBucket;
+  label: string;
+  Icon: typeof AlertTriangle;
+  accent: string;
+  defaultCollapsed: boolean;
+  emptyHint?: string;
+};
+
+const BUCKET_CONFIG: BucketConfig[] = [
+  {
+    key: 'needs-attention',
+    label: 'Needs attention',
+    Icon: AlertTriangle,
+    accent: 'var(--color-danger)',
+    defaultCollapsed: false,
+  },
+  {
+    key: 'in-progress',
+    label: 'In progress',
+    Icon: GitBranch,
+    accent: 'var(--color-honey, #f59e0b)',
+    defaultCollapsed: false,
+  },
+  {
+    key: 'recently-landed',
+    label: 'Recently landed',
+    Icon: Clock,
+    accent: 'var(--color-text-muted)',
+    defaultCollapsed: true,
+    emptyHint: 'Nothing landed in the last 7 days.',
+  },
+];
+
+function ChangesList({
+  buckets,
+  filteredCount,
+  onSelect,
+  onViewStack,
+  selectedId,
+}: {
+  buckets: Record<TriageBucket, StreamDAGNode[]>;
+  filteredCount: number;
+  onSelect: (id: string) => void;
+  onViewStack: (id: string) => void;
+  selectedId: string | null;
+}) {
+  if (filteredCount === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full p-8">
+        <Inbox className="w-6 h-6 mb-2" style={{ color: 'var(--color-text-muted)' }} />
+        <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
+          No changes match the current filters.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="py-1">
+      {BUCKET_CONFIG.map((cfg) => (
+        <BucketSection
+          key={cfg.key}
+          cfg={cfg}
+          nodes={buckets[cfg.key]}
+          onSelect={onSelect}
+          onViewStack={onViewStack}
+          selectedId={selectedId}
+        />
+      ))}
+    </div>
+  );
+}
+
+function BucketSection({
+  cfg,
   nodes,
   onSelect,
   onViewStack,
   selectedId,
 }: {
+  cfg: BucketConfig;
   nodes: StreamDAGNode[];
   onSelect: (id: string) => void;
   onViewStack: (id: string) => void;
   selectedId: string | null;
 }) {
+  const [collapsed, setCollapsed] = useState(cfg.defaultCollapsed);
+
+  // Hide "recently landed" when empty to reduce chrome; always show the other
+  // two so the user sees the expected triage shape.
+  if (nodes.length === 0 && cfg.key === 'recently-landed') return null;
+
+  const { Icon } = cfg;
+
   return (
-    <div className="divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
-      {nodes.map((node) => (
-        <button
-          key={node.id}
-          type="button"
-          className="w-full text-left px-4 py-3 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-honey-500/60"
-          style={{
-            backgroundColor: selectedId === node.id ? 'var(--color-elevated)' : undefined,
-          }}
-          onClick={() => onSelect(node.id)}
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 min-w-0">
-              <StreamStatusDot status={node.status} />
-              <span className="text-sm font-medium truncate">{node.name || node.stream_id}</span>
-              <code className="text-2xs font-mono px-1 py-0.5 rounded shrink-0" style={{ backgroundColor: 'var(--color-elevated)' }}>
-                {node.stream_id.slice(0, 8)}
-              </code>
-            </div>
-            <div className="flex items-center gap-3 text-2xs shrink-0" style={{ color: 'var(--color-text-muted)' }}>
-              <span className="flex items-center gap-1">
-                <GitCommit className="w-3 h-3" />
-                {node.commit_count}
-              </span>
-              {node.open_conflict_count > 0 && (
-                <span className="flex items-center gap-1" style={{ color: 'var(--color-danger)' }}>
-                  <AlertTriangle className="w-3 h-3" />
-                  {node.open_conflict_count}
-                </span>
-              )}
-              <span className="flex items-center gap-1">
-                <Users className="w-3 h-3" />
-                {node.source_agent_id}
-              </span>
-              <TimeAgo date={node.last_event_at} />
-              {!node.parent_stream_id && (
-                <button
-                  type="button"
-                  className="btn-ghost px-1.5 py-0.5 text-2xs"
-                  onClick={(e) => { e.stopPropagation(); onViewStack(node.id); }}
-                  title="View as stack"
-                >
-                  <Layers className="w-3 h-3" />
-                </button>
-              )}
-            </div>
+    <section className="mb-2">
+      <button
+        type="button"
+        className="w-full flex items-center gap-2 px-4 py-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-honey-500/60"
+        onClick={() => setCollapsed((v) => !v)}
+        aria-expanded={!collapsed}
+      >
+        {collapsed
+          ? <ChevronRight className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+          : <ChevronDown  className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+        }
+        <Icon className="w-3.5 h-3.5" style={{ color: cfg.accent }} />
+        <span className="text-2xs font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
+          {cfg.label}
+        </span>
+        <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+          {nodes.length}
+        </span>
+      </button>
+
+      {!collapsed && (
+        nodes.length === 0 ? (
+          <p className="px-11 py-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+            {cfg.emptyHint ?? 'Nothing here.'}
+          </p>
+        ) : (
+          <div className="divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
+            {nodes.map((node) => (
+              <ChangeRow
+                key={node.id}
+                node={node}
+                isSelected={selectedId === node.id}
+                onSelect={() => onSelect(node.id)}
+                onViewStack={() => onViewStack(node.id)}
+              />
+            ))}
           </div>
-        </button>
-      ))}
-    </div>
+        )
+      )}
+    </section>
+  );
+}
+
+function ChangeRow({
+  node,
+  isSelected,
+  onSelect,
+  onViewStack,
+}: {
+  node: StreamDAGNode;
+  isSelected: boolean;
+  onSelect: () => void;
+  onViewStack: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="w-full text-left px-4 py-3 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-honey-500/60"
+      style={{
+        backgroundColor: isSelected ? 'var(--color-elevated)' : undefined,
+      }}
+      onClick={onSelect}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <StreamStatusDot status={node.status} />
+          <span className="text-sm font-medium truncate">{node.name || node.stream_id}</span>
+          <code className="text-2xs font-mono px-1 py-0.5 rounded shrink-0" style={{ backgroundColor: 'var(--color-elevated)' }}>
+            {node.stream_id.slice(0, 8)}
+          </code>
+          {node.status !== 'active' && (
+            <span
+              className="text-2xs px-1.5 py-0.5 rounded shrink-0"
+              style={{
+                backgroundColor: 'var(--color-elevated)',
+                color: STATUS_COLORS[node.status] ?? 'var(--color-text-muted)',
+              }}
+            >
+              {STATUS_LABELS[node.status] ?? node.status}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-2xs shrink-0" style={{ color: 'var(--color-text-muted)' }}>
+          <span className="flex items-center gap-1">
+            <GitCommit className="w-3 h-3" />
+            {node.commit_count}
+          </span>
+          {node.open_conflict_count > 0 && (
+            <span className="flex items-center gap-1" style={{ color: 'var(--color-danger)' }}>
+              <AlertTriangle className="w-3 h-3" />
+              {node.open_conflict_count}
+            </span>
+          )}
+          <span className="flex items-center gap-1">
+            <Users className="w-3 h-3" />
+            {node.source_agent_id}
+          </span>
+          <TimeAgo date={node.last_event_at} />
+          <button
+            type="button"
+            className="btn-ghost px-1.5 py-0.5 text-2xs"
+            onClick={(e) => { e.stopPropagation(); onViewStack(); }}
+            title="View as stack"
+          >
+            <Layers className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+    </button>
   );
 }
 
@@ -339,6 +541,7 @@ function StreamStackView({
   dag,
   rootId,
   onSelectRoot,
+  onBackToList,
   onSelect,
   selectedId,
 }: {
@@ -346,17 +549,25 @@ function StreamStackView({
   dag: { nodes: StreamDAGNode[]; edges: StreamDAGEdge[] };
   rootId: string | null;
   onSelectRoot: (id: string | null) => void;
+  onBackToList: () => void;
   onSelect: (id: string) => void;
   selectedId: string | null;
 }) {
-  // Find root streams (no parent)
   const roots = dag.nodes.filter((n) => !n.parent_stream_id);
 
   if (!rootId || !stack) {
     return (
       <div className="p-4">
+        <button
+          type="button"
+          className="btn-ghost text-2xs mb-3 flex items-center gap-1"
+          onClick={onBackToList}
+        >
+          <ChevronRight className="w-3 h-3 rotate-180" />
+          Back to list
+        </button>
         <p className="text-sm mb-3" style={{ color: 'var(--color-text-muted)' }}>
-          Select a root stream to view its stack:
+          Select a root change to view its stack:
         </p>
         <div className="space-y-2">
           {roots.map((root) => (
@@ -378,7 +589,7 @@ function StreamStackView({
           ))}
           {roots.length === 0 && (
             <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-              No root streams found.
+              No root changes found.
             </p>
           )}
         </div>
@@ -388,13 +599,23 @@ function StreamStackView({
 
   return (
     <div className="p-4">
-      <button
-        type="button"
-        className="btn-ghost text-2xs mb-3 flex items-center gap-1"
-        onClick={() => onSelectRoot(null)}
-      >
-        Back to roots
-      </button>
+      <div className="flex items-center gap-2 mb-3">
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1"
+          onClick={onBackToList}
+        >
+          <ChevronRight className="w-3 h-3 rotate-180" />
+          Back to list
+        </button>
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1"
+          onClick={() => onSelectRoot(null)}
+        >
+          Change root
+        </button>
+      </div>
 
       <div className="space-y-0">
         {stack.map((node, idx) => (
@@ -516,144 +737,20 @@ function StackLevel({
   );
 }
 
-// ─── Conflict Triage View ─────────────────────────────────────────────
-
-function ConflictTriageView({
-  nodes,
-  onSelect,
-  selectedId,
-}: {
-  nodes: StreamDAGNode[];
-  onSelect: (id: string) => void;
-  selectedId: string | null;
-}) {
-  const conflicted = nodes.filter((n) => n.status === 'conflicted' || n.open_conflict_count > 0);
-
-  if (conflicted.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full p-8">
-        <AlertTriangle className="w-8 h-8 mb-3" style={{ color: 'var(--color-text-muted)' }} />
-        <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-          No conflicts detected across any streams.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <AlertTriangle className="w-4 h-4" style={{ color: 'var(--color-danger)' }} />
-        <h3 className="text-sm font-semibold">
-          {conflicted.length} stream{conflicted.length === 1 ? '' : 's'} with conflicts
-        </h3>
-      </div>
-      <div className="space-y-2">
-        {conflicted.map((node) => (
-          <ConflictStreamCard
-            key={node.id}
-            node={node}
-            isSelected={selectedId === node.id}
-            onSelect={() => onSelect(node.id)}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ConflictStreamCard({
-  node,
-  isSelected,
-  onSelect,
-}: {
-  node: StreamDAGNode;
-  isSelected: boolean;
-  onSelect: () => void;
-}) {
-  const { data: timelineResp } = useCascadeStreamTimeline(node.id);
-  const conflicts = timelineResp?.data?.filter((e) => e.type === 'conflict_detected') ?? [];
-  const pendingConflicts = conflicts.filter(
-    (c) => (c.data.status as string) === 'pending',
-  );
-
-  return (
-    <button
-      type="button"
-      className="w-full text-left card p-3 transition-colors
-                 focus:outline-none focus-visible:ring-2 focus-visible:ring-honey-500/60"
-      style={{
-        borderColor: isSelected ? 'var(--color-danger)' : 'var(--color-danger-border)',
-      }}
-      onClick={onSelect}
-    >
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <StreamStatusDot status={node.status} />
-          <span className="text-sm font-medium">{node.name || node.stream_id}</span>
-          <code
-            className="text-2xs font-mono px-1 py-0.5 rounded"
-            style={{ backgroundColor: 'var(--color-elevated)' }}
-          >
-            {node.stream_id.slice(0, 8)}
-          </code>
-        </div>
-        <span className="text-2xs flex items-center gap-1" style={{ color: 'var(--color-danger)' }}>
-          <AlertTriangle className="w-3 h-3" />
-          {node.open_conflict_count} open
-        </span>
-      </div>
-
-      {/* Conflict details */}
-      {pendingConflicts.length > 0 && (
-        <div className="space-y-1 mt-1">
-          {pendingConflicts.map((cf, idx) => (
-            <div
-              key={idx}
-              className="text-2xs px-2 py-1 rounded"
-              style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
-            >
-              <div className="flex items-center justify-between">
-                <span>
-                  Files: {(cf.data.conflicted_files as string[])?.join(', ')}
-                </span>
-                {cf.data.source && (
-                  <span
-                    className="uppercase tracking-wider"
-                    style={{ color: 'var(--color-text-muted)', fontSize: '0.6rem' }}
-                  >
-                    {cf.data.source as string}
-                  </span>
-                )}
-              </div>
-              <div className="mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-                <TimeAgo date={cf.timestamp} />
-                {cf.data.agent_id && <span className="ml-2">{cf.data.agent_id as string}</span>}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="flex items-center gap-3 mt-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-        <span>{node.commit_count} commits</span>
-        <span>{node.source_agent_id}</span>
-        <TimeAgo date={node.last_event_at} />
-      </div>
-    </button>
-  );
-}
-
 // ─── Detail Sidebar ───────────────────────────────────────────────────
 
 function StreamDetailSidebar({
   streamRowId,
   node,
   onClose,
+  onViewStack,
+  onViewGraph,
 }: {
   streamRowId: string;
   node: StreamDAGNode | null;
   onClose: () => void;
+  onViewStack: (streamRowId: string) => void;
+  onViewGraph: () => void;
 }) {
   const { data: timelineResp, isLoading } = useCascadeStreamTimeline(streamRowId);
   const timeline = timelineResp?.data ?? [];
@@ -720,6 +817,30 @@ function StreamDetailSidebar({
       {/* Actions */}
       {node && (
         <StreamActions streamRowId={streamRowId} node={node} />
+      )}
+
+      {/* Secondary views — drill into stack or graph from here */}
+      {node && (
+        <div className="px-3 py-2 border-b flex items-center gap-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
+          <button
+            type="button"
+            className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+            onClick={() => onViewStack(streamRowId)}
+            title="View this change within its stack"
+          >
+            <Layers className="w-3 h-3" />
+            Stack
+          </button>
+          <button
+            type="button"
+            className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+            onClick={onViewGraph}
+            title="View the full DAG centered here"
+          >
+            <Network className="w-3 h-3" />
+            Graph
+          </button>
+        </div>
       )}
 
       {/* Branch + PR + Commit */}
@@ -1053,7 +1174,7 @@ function StreamActions({
           className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
           onClick={() => fire('pause', { reason: 'operator-paused' })}
           disabled={isPending}
-          title="Pause this stream"
+          title="Pause this change"
         >
           <Pause className="w-3 h-3" />
           Pause
@@ -1065,14 +1186,16 @@ function StreamActions({
           className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
           onClick={() => fire('resume')}
           disabled={isPending}
-          title="Resume this stream"
+          title="Resume this change"
         >
           <Play className="w-3 h-3" />
           Resume
         </button>
       )}
 
-      {/* Resolve — available when conflicted */}
+      {/* Force-resolve — escape hatch. Agents usually handle conflicts on their
+          own; this button exists for the rare case where a human has to break
+          the deadlock by taking 'ours'. */}
       {isConflicted && node.open_conflict_count > 0 && (
         <button
           type="button"
@@ -1080,10 +1203,10 @@ function StreamActions({
           style={{ color: 'var(--color-danger)' }}
           onClick={() => fire('resolve', { strategy: 'ours' })}
           disabled={isPending}
-          title="Request conflict resolution (strategy: ours)"
+          title="Force-resolve with 'ours'. Agents usually handle conflicts themselves — use only if stuck."
         >
           <Wrench className="w-3 h-3" />
-          Resolve
+          Force resolve
         </button>
       )}
 
@@ -1094,7 +1217,7 @@ function StreamActions({
         style={{ color: 'var(--color-text-muted)' }}
         onClick={() => fire('abandon', { reason: 'operator-abandoned' })}
         disabled={isPending}
-        title="Abandon this stream"
+        title="Abandon this change"
       >
         <Trash2 className="w-3 h-3" />
         Abandon

@@ -2,24 +2,24 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { SpecDispatchesPanel } from '../../../components/dispatch/SpecDispatchesPanel';
+import { SpecDispatchPanel } from '../../../components/dispatch/SpecDispatchPanel';
 
-const mockUseDispatches = vi.fn();
-const mockUseDispatchesRealtime = vi.fn();
+const mockUseDispatchList = vi.fn();
+const mockUseDispatchRealtime = vi.fn();
 const mockUseMapSwarms = vi.fn();
 
-vi.mock('../../../hooks/useDispatches', async () => {
-  const actual = await vi.importActual<typeof import('../../../hooks/useDispatches')>(
-    '../../../hooks/useDispatches',
+vi.mock('../../../hooks/useDispatch', async () => {
+  const actual = await vi.importActual<typeof import('../../../hooks/useDispatch')>(
+    '../../../hooks/useDispatch',
   );
   return {
     ...actual,
-    useDispatches: (...args: unknown[]) => mockUseDispatches(...args),
+    useDispatchList: (...args: unknown[]) => mockUseDispatchList(...args),
   };
 });
 
-vi.mock('../../../hooks/useDispatchesRealtime', () => ({
-  useDispatchesRealtime: () => mockUseDispatchesRealtime(),
+vi.mock('../../../hooks/useDispatchRealtime', () => ({
+  useDispatchRealtime: () => mockUseDispatchRealtime(),
 }));
 
 vi.mock('../../../hooks/useApi', async () => {
@@ -35,26 +35,26 @@ function renderPanel(resourceId = 'res_a', specId = 's-1') {
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
-        <SpecDispatchesPanel resourceId={resourceId} specId={specId} />
+        <SpecDispatchPanel resourceId={resourceId} specId={specId} />
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-describe('<SpecDispatchesPanel />', () => {
+describe('<SpecDispatchPanel />', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseMapSwarms.mockReturnValue({ data: [{ id: 'sw_a', name: 'alpha' }] });
   });
 
   it('subscribes to realtime and queries scoped to (resource_id, spec_id)', () => {
-    mockUseDispatches.mockReturnValue({
+    mockUseDispatchList.mockReturnValue({
       data: { data: [], total: 0, limit: 50, offset: 0 },
       isLoading: false,
     });
     renderPanel('res_a', 's-1');
-    expect(mockUseDispatchesRealtime).toHaveBeenCalled();
-    expect(mockUseDispatches).toHaveBeenCalledWith({
+    expect(mockUseDispatchRealtime).toHaveBeenCalled();
+    expect(mockUseDispatchList).toHaveBeenCalledWith({
       spec_resource_id: 'res_a',
       spec_id: 's-1',
       limit: 50,
@@ -62,7 +62,7 @@ describe('<SpecDispatchesPanel />', () => {
   });
 
   it('renders empty state when no dispatches', () => {
-    mockUseDispatches.mockReturnValue({
+    mockUseDispatchList.mockReturnValue({
       data: { data: [], total: 0, limit: 50, offset: 0 },
       isLoading: false,
     });
@@ -71,13 +71,13 @@ describe('<SpecDispatchesPanel />', () => {
   });
 
   it('shows loading state', () => {
-    mockUseDispatches.mockReturnValue({ data: undefined, isLoading: true });
+    mockUseDispatchList.mockReturnValue({ data: undefined, isLoading: true });
     renderPanel();
     expect(screen.getByText('Loading…')).toBeDefined();
   });
 
   it('renders dispatch list with status chip and swarm name', () => {
-    mockUseDispatches.mockReturnValue({
+    mockUseDispatchList.mockReturnValue({
       data: {
         data: [
           {

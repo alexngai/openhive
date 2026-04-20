@@ -2,31 +2,31 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Dispatches } from '../../pages/Dispatches';
+import { Dispatch } from '../../pages/Dispatch';
 
-const mockUseDispatches = vi.fn();
-const mockUseDispatchesRealtime = vi.fn();
-const mockUseMapSwarms = vi.fn();
+const mockUseDispatchList = vi.fn();
+const mockUseDispatchRealtime = vi.fn();
+const mockUseMapSwarmsForPicker = vi.fn();
 
-vi.mock('../../hooks/useDispatches', async () => {
-  const actual = await vi.importActual<typeof import('../../hooks/useDispatches')>(
-    '../../hooks/useDispatches',
+vi.mock('../../hooks/useDispatch', async () => {
+  const actual = await vi.importActual<typeof import('../../hooks/useDispatch')>(
+    '../../hooks/useDispatch',
   );
   return {
     ...actual,
-    useDispatches: (...args: unknown[]) => mockUseDispatches(...args),
+    useDispatchList: (...args: unknown[]) => mockUseDispatchList(...args),
   };
 });
 
-vi.mock('../../hooks/useDispatchesRealtime', () => ({
-  useDispatchesRealtime: () => mockUseDispatchesRealtime(),
+vi.mock('../../hooks/useDispatchRealtime', () => ({
+  useDispatchRealtime: () => mockUseDispatchRealtime(),
 }));
 
 vi.mock('../../hooks/useApi', async () => {
   const actual = await vi.importActual<typeof import('../../hooks/useApi')>('../../hooks/useApi');
   return {
     ...actual,
-    useMapSwarms: () => mockUseMapSwarms(),
+    useMapSwarmsForPicker: () => mockUseMapSwarmsForPicker(),
   };
 });
 
@@ -35,16 +35,16 @@ function renderPage() {
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
-        <Dispatches />
+        <Dispatch />
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-describe('<Dispatches /> page', () => {
+describe('<Dispatch /> page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUseMapSwarms.mockReturnValue({
+    mockUseMapSwarmsForPicker.mockReturnValue({
       data: [
         { id: 'sw_a', name: 'alpha' },
         { id: 'sw_b', name: 'beta' },
@@ -53,7 +53,7 @@ describe('<Dispatches /> page', () => {
   });
 
   it('renders empty state when no dispatches', () => {
-    mockUseDispatches.mockReturnValue({
+    mockUseDispatchList.mockReturnValue({
       data: { data: [], total: 0, limit: 50, offset: 0 },
       isLoading: false,
       error: null,
@@ -63,7 +63,7 @@ describe('<Dispatches /> page', () => {
   });
 
   it('renders dispatch cards with status chip and swarm name', () => {
-    mockUseDispatches.mockReturnValue({
+    mockUseDispatchList.mockReturnValue({
       data: {
         data: [
           {
@@ -96,26 +96,26 @@ describe('<Dispatches /> page', () => {
   });
 
   it('toggles status filter when chip clicked', () => {
-    mockUseDispatches.mockReturnValue({
+    mockUseDispatchList.mockReturnValue({
       data: { data: [], total: 0, limit: 50, offset: 0 },
       isLoading: false,
       error: null,
     });
     renderPage();
-    expect(mockUseDispatches).toHaveBeenLastCalledWith({
+    expect(mockUseDispatchList).toHaveBeenLastCalledWith({
       status: undefined,
       target_swarm_id: undefined,
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'running' }));
-    expect(mockUseDispatches).toHaveBeenLastCalledWith({
+    expect(mockUseDispatchList).toHaveBeenLastCalledWith({
       status: ['running'],
       target_swarm_id: undefined,
     });
   });
 
   it('filters by swarm via the dropdown', () => {
-    mockUseDispatches.mockReturnValue({
+    mockUseDispatchList.mockReturnValue({
       data: { data: [], total: 0, limit: 50, offset: 0 },
       isLoading: false,
       error: null,
@@ -123,19 +123,19 @@ describe('<Dispatches /> page', () => {
     renderPage();
 
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'sw_b' } });
-    expect(mockUseDispatches).toHaveBeenLastCalledWith({
+    expect(mockUseDispatchList).toHaveBeenLastCalledWith({
       status: undefined,
       target_swarm_id: 'sw_b',
     });
   });
 
   it('subscribes to realtime updates', () => {
-    mockUseDispatches.mockReturnValue({
+    mockUseDispatchList.mockReturnValue({
       data: { data: [], total: 0, limit: 50, offset: 0 },
       isLoading: false,
       error: null,
     });
     renderPage();
-    expect(mockUseDispatchesRealtime).toHaveBeenCalled();
+    expect(mockUseDispatchRealtime).toHaveBeenCalled();
   });
 });

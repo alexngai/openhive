@@ -1,12 +1,12 @@
 import { Link } from 'react-router-dom';
 import { Send, Zap } from 'lucide-react';
-import { useDispatches } from '../../hooks/useDispatches';
-import { useDispatchesRealtime } from '../../hooks/useDispatchesRealtime';
+import { useDispatchList } from '../../hooks/useDispatch';
+import { useDispatchRealtime } from '../../hooks/useDispatchRealtime';
 import { useMapSwarms } from '../../hooks/useApi';
 import { DispatchStatusChip } from './DispatchStatusChip';
 import { TimeAgo } from '../common/TimeAgo';
 
-interface SpecDispatchesPanelProps {
+interface SpecDispatchPanelProps {
   resourceId: string;
   specId: string;
 }
@@ -16,9 +16,9 @@ interface SpecDispatchesPanelProps {
  * Used by SpecDetail; subscribes to realtime so a dispatch from elsewhere
  * (the modal, an autonomous agent, etc.) shows up here without refresh.
  */
-export function SpecDispatchesPanel({ resourceId, specId }: SpecDispatchesPanelProps) {
-  useDispatchesRealtime();
-  const { data, isLoading } = useDispatches({
+export function SpecDispatchPanel({ resourceId, specId }: SpecDispatchPanelProps) {
+  useDispatchRealtime();
+  const { data, isLoading } = useDispatchList({
     spec_resource_id: resourceId,
     spec_id: specId,
     limit: 50,
@@ -43,7 +43,7 @@ export function SpecDispatchesPanel({ resourceId, specId }: SpecDispatchesPanelP
         <div className="flex items-center gap-2">
           <Send className="h-4 w-4 text-honey-500" />
           <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>
-            Dispatches
+            Dispatch
           </h3>
         </div>
         <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
@@ -68,7 +68,7 @@ export function SpecDispatchesPanel({ resourceId, specId }: SpecDispatchesPanelP
               style={{ borderColor: 'var(--color-border-subtle)' }}
             >
               <Link
-                to={`/dispatches/${d.id}`}
+                to={`/dispatch/${d.id}`}
                 className="flex items-center justify-between gap-2 hover:opacity-80"
               >
                 <div className="min-w-0 flex-1">

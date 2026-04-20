@@ -17,6 +17,11 @@ function MailIdRedirect() {
   return <Navigate to={`/threads/mail/${id ?? ''}`} replace />;
 }
 
+function DispatchIdRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={`/dispatch/${id ?? ''}`} replace />;
+}
+
 // Lazy load page components for code splitting
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
 const About = lazy(() => import('./pages/About').then(m => ({ default: m.About })));
@@ -34,7 +39,7 @@ const TaskDetail = lazy(() => import('./pages/TaskDetail').then(m => ({ default:
 const Specs = lazy(() => import('./pages/Specs').then(m => ({ default: m.Specs })));
 const SpecNew = lazy(() => import('./pages/SpecNew').then(m => ({ default: m.SpecNew })));
 const SpecDetail = lazy(() => import('./pages/SpecDetail').then(m => ({ default: m.SpecDetail })));
-const Dispatches = lazy(() => import('./pages/Dispatches').then(m => ({ default: m.Dispatches })));
+const Dispatch = lazy(() => import('./pages/Dispatch').then(m => ({ default: m.Dispatch })));
 const DispatchDetail = lazy(() => import('./pages/DispatchDetail').then(m => ({ default: m.DispatchDetail })));
 const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
 const MemoryDetail = lazy(() => import('./pages/MemoryDetail').then(m => ({ default: m.MemoryDetail })));
@@ -42,7 +47,7 @@ const Skills = lazy(() => import('./pages/Skills').then(m => ({ default: m.Skill
 const SkillDetail = lazy(() => import('./pages/SkillDetail').then(m => ({ default: m.SkillDetail })));
 const Learning = lazy(() => import('./pages/Learning').then(m => ({ default: m.Learning })));
 const LearningPlaybookDetail = lazy(() => import('./pages/LearningPlaybookDetail').then(m => ({ default: m.LearningPlaybookDetail })));
-const Streams = lazy(() => import('./pages/Streams').then(m => ({ default: m.Streams })));
+const Changes = lazy(() => import('./pages/Changes').then(m => ({ default: m.Changes })));
 
 export default function App() {
   // Initialize WebSocket connection
@@ -86,15 +91,19 @@ export default function App() {
               <Route path="skills/:resourceId" element={<SkillDetail />} />
               <Route path="learning" element={<Learning />} />
               <Route path="learning/playbooks/:id" element={<LearningPlaybookDetail />} />
-              <Route path="streams" element={<Streams />} />
+              <Route path="changes" element={<Changes />} />
+              <Route path="streams" element={<Navigate to="/changes" replace />} />
               <Route path="tasks" element={<TaskGraph />} />
               <Route path="tasks/list" element={<TasksList />} />
               <Route path="tasks/:resourceId/:nodeId" element={<TaskDetail />} />
               <Route path="specs" element={<Specs />} />
               <Route path="specs/new" element={<SpecNew />} />
               <Route path="specs/:resourceId/:specId" element={<SpecDetail />} />
-              <Route path="dispatches" element={<Dispatches />} />
-              <Route path="dispatches/:id" element={<DispatchDetail />} />
+              <Route path="dispatch" element={<Dispatch />} />
+              <Route path="dispatch/:id" element={<DispatchDetail />} />
+              {/* Redirect legacy /dispatches URLs */}
+              <Route path="dispatches" element={<Navigate to="/dispatch" replace />} />
+              <Route path="dispatches/:id" element={<DispatchIdRedirect />} />
 
               {/* Redirects for removed routes */}
               <Route path="resources" element={<Navigate to="/memory" replace />} />

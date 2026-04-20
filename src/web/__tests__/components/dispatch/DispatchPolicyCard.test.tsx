@@ -7,9 +7,9 @@ const mockUpdate = vi.fn();
 const mockUseDispatchPolicy = vi.fn();
 const mockUseUpdateDispatchPolicy = vi.fn();
 
-vi.mock('../../../hooks/useDispatches', async () => {
-  const actual = await vi.importActual<typeof import('../../../hooks/useDispatches')>(
-    '../../../hooks/useDispatches',
+vi.mock('../../../hooks/useDispatch', async () => {
+  const actual = await vi.importActual<typeof import('../../../hooks/useDispatch')>(
+    '../../../hooks/useDispatch',
   );
   return {
     ...actual,

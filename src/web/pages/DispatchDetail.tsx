@@ -3,8 +3,8 @@ import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Send, Zap, FileText, User, Bot, Ban, AlertCircle,
 } from 'lucide-react';
-import { useDispatch, useCancelDispatch } from '../hooks/useDispatches';
-import { useDispatchesRealtime, useCancelAckWarnings } from '../hooks/useDispatchesRealtime';
+import { useDispatch, useCancelDispatch } from '../hooks/useDispatch';
+import { useDispatchRealtime, useCancelAckWarnings } from '../hooks/useDispatchRealtime';
 import { useMapSwarm } from '../hooks/useApi';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
 import { AttemptsTimeline } from '../components/dispatch/AttemptsTimeline';
@@ -18,7 +18,7 @@ export function DispatchDetail() {
   const { data: swarm } = useMapSwarm(data?.dispatch.target_swarm_id ?? '');
   const cancel = useCancelDispatch();
   const [cancelError, setCancelError] = useState<string | null>(null);
-  useDispatchesRealtime();
+  useDispatchRealtime();
   const { warned: cancelNotAcked, dismiss: dismissCancelWarning } = useCancelAckWarnings(id);
 
   if (isLoading) return <PageLoader />;
@@ -27,12 +27,12 @@ export function DispatchDetail() {
     return (
       <div className="p-6 max-w-4xl mx-auto">
         <Link
-          to="/dispatches"
+          to="/dispatch"
           className="inline-flex items-center gap-1 text-sm mb-4"
           style={{ color: 'var(--color-text-muted)' }}
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to dispatches
+          Back to Dispatch
         </Link>
         <div
           className="rounded-md border p-4 text-sm"
@@ -69,12 +69,12 @@ export function DispatchDetail() {
     <ChatFabContextProvider items={chatFabItems}>
     <div className="p-6 max-w-4xl mx-auto">
       <Link
-        to="/dispatches"
+        to="/dispatch"
         className="inline-flex items-center gap-1 text-sm mb-4 hover:opacity-80"
         style={{ color: 'var(--color-text-muted)' }}
       >
         <ArrowLeft className="h-4 w-4" />
-        Back to dispatches
+        Back to Dispatch
       </Link>
 
       {/* Header */}
