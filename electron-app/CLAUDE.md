@@ -37,6 +37,34 @@ and coordinators can't call back. openhive's `start()` now also updates the
 instance URL after `listen()` (server-side fix), but we keep the probe as
 belt-and-suspenders.
 
+## Renderer ↔ main bridge (`window.openhive`)
+
+`electron-app/src/preload.ts` exposes a tightly-scoped API via
+`contextBridge`. Always guard for `window.openhive` being undefined — the
+SPA also runs in plain browsers (`npm run dev:web`) where the bridge isn't
+present.
+
+```ts
+window.openhive?.platform                    // 'darwin' | 'linux' | 'win32' | …
+window.openhive?.notify({title, body, route?})  // OS notification; click → focus + onFocusRoute
+window.openhive?.setBadge(count)             // dock badge (macOS) / app badge (Linux)
+const dispose = window.openhive?.onDeepLink(url => { … })
+const dispose = window.openhive?.onFocusRoute(route => { … })
+```
+
+Renderer integration:
+- `src/web/hooks/useElectronDeepLinks.ts` wires `onDeepLink` + `onFocusRoute`
+  into react-router. URL contract: `openhive://path/to/route` →
+  `/path/to/route`. Wired once from `App.tsx`.
+- `notify` / `setBadge` are intentionally **not** auto-wired. Trigger
+  policy (which WS events fire what, dedup against focused window, what
+  counts as "unread") is design-heavy and lives in feature code as it gets
+  added. The bridge is just the OS call.
+
+Cold-start deep links (URL clicked while app was closed) are gated on the
+first hive's `did-finish-load` so the IPC doesn't fire into a renderer
+that hasn't subscribed yet.
+
 ## Build + run
 
 ```bash

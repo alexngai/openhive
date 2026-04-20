@@ -75,3 +75,20 @@ await rm(iconsetDir, { recursive: true, force: true });
 
 console.log(`[icons] wrote ${icnsOut}`);
 console.log(`[icons] wrote ${linuxOut}`);
+
+// macOS menu-bar tray icon. The `Template` suffix on the filename tells
+// AppKit to treat the image as a template — it auto-tints to match the
+// menu bar's current appearance instead of blasting in the source colors.
+const trayTemplateSvg = join(buildDir, 'tray-icon-template.svg');
+if (existsSync(trayTemplateSvg)) {
+  const trayBuf = await sharp(trayTemplateSvg).png().toBuffer();
+  await sharp(trayBuf)
+    .resize(22, 22, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .png()
+    .toFile(join(buildDir, 'tray-iconTemplate.png'));
+  await sharp(trayBuf)
+    .resize(44, 44, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .png()
+    .toFile(join(buildDir, 'tray-iconTemplate@2x.png'));
+  console.log(`[icons] wrote tray-iconTemplate.png + @2x`);
+}

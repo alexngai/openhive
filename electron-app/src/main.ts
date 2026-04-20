@@ -11,14 +11,22 @@ import {
   app,
   BrowserWindow,
   Menu,
+  Notification,
+  Tray,
+  crashReporter,
   dialog,
+  ipcMain,
+  nativeImage,
   nativeTheme,
   screen,
+  session,
   shell,
+  type MenuItemConstructorOptions,
   type WebContents,
 } from 'electron';
 import { fork, type ChildProcess } from 'node:child_process';
 import * as net from 'node:net';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -68,6 +76,49 @@ for (const s of [process.stderr, process.stdout]) {
 // to "Electron" when it can't find name metadata via its usual lookup
 // (happens with `electron <script>` invocations in dev).
 app.setName('OpenHive');
+
+// Local-only crash dump capture. We don't run a Sentry-style upload
+// endpoint; crashes get written to <userData>/Crashpad/ for the user (or
+// us, when they share a bug report) to inspect. Must be called before
+// app.whenReady to capture early-startup crashes.
+crashReporter.start({
+  uploadToServer: false,
+  productName: 'OpenHive',
+  ignoreSystemCrashHandler: false,
+});
+
+// Register as the OS handler for openhive:// URLs. Clicking such a URL
+// from a browser, terminal, or other app will route through `open-url`
+// (macOS) or a fresh argv entry (Linux/Windows, surfaced via the
+// single-instance second-instance event).
+//
+// Dev-mode caveat: when running unpackaged (`electron dist/main.js`),
+// macOS registers Electron itself as the handler — which is useless. We
+// only register in packaged builds where the .app bundle owns the scheme.
+if (app.isPackaged) {
+  app.setAsDefaultProtocolClient('openhive');
+}
+
+// Augment $PATH for GUI launches. Apps started from Finder/Dock inherit a
+// minimal $PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), missing the locations
+// where most users have their actual `git`, `node`, `headscale`, etc. The
+// hive-child fork inherits this PATH, so OpenHive's swarm/git/network
+// integrations would silently fail without it.
+//
+// Order: prepend (don't replace) so any user-set PATH still wins for
+// duplicates. Non-existent dirs are harmless — PATH lookup just skips them.
+{
+  const extras: string[] = [];
+  if (process.platform === 'darwin') {
+    extras.push(
+      '/opt/homebrew/bin', '/opt/homebrew/sbin',  // Apple Silicon Homebrew
+      '/usr/local/bin', '/usr/local/sbin',        // Intel Homebrew + manual
+    );
+  }
+  extras.push(path.join(os.homedir(), '.local', 'bin')); // XDG user-bin
+  const sep = process.platform === 'win32' ? ';' : ':';
+  process.env.PATH = [...extras, process.env.PATH ?? ''].filter(Boolean).join(sep);
+}
 
 // Lock the chromium-side colour scheme to dark. The SPA is dark-only and
 // already sets `documentElement.className = 'dark'` early in index.html;
@@ -238,23 +289,288 @@ type ChildMessage =
 
 const hives = new Map<string, HiveEntry>();
 
+// ── Recent hives ──────────────────────────────────────────────────────
+//
+// Persisted MRU list of dataDir paths the user has opened. Surfaced as the
+// "Open Recent" submenu under Hive. Lives at the supervisor scope (under
+// app.getPath('userData')), not per-hive, so it tracks every hive the user
+// has interacted with regardless of which one they're in right now.
+
+const RECENT_HIVES_MAX = 10;
+let recentHives: string[] = [];
+
+function recentHivesPath(): string {
+  return path.join(app.getPath('userData'), 'recent-hives.json');
+}
+
+function loadRecentHives(): string[] {
+  try {
+    const raw = fs.readFileSync(recentHivesPath(), 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((p): p is string => typeof p === 'string').slice(0, RECENT_HIVES_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentHives(): void {
+  try {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    fs.writeFileSync(
+      recentHivesPath(),
+      JSON.stringify(recentHives, null, 2),
+      'utf-8',
+    );
+  } catch {
+    /* non-fatal */
+  }
+}
+
+/** Bump dataDir to the front of the MRU list, dedup, persist, refresh menu. */
+function recordRecentHive(dataDir: string): void {
+  const filtered = recentHives.filter((p) => p !== dataDir);
+  recentHives = [dataDir, ...filtered].slice(0, RECENT_HIVES_MAX);
+  saveRecentHives();
+  if (app.isReady()) Menu.setApplicationMenu(buildMenu());
+}
+
+function clearRecentHives(): void {
+  recentHives = [];
+  saveRecentHives();
+  Menu.setApplicationMenu(buildMenu());
+}
+
+/**
+ * Focus an already-open hive's window, or boot a new hive at this dataDir.
+ * Used by the "New Hive…" menu, the recent-hives submenu, and the default
+ * userData spawn on launch.
+ */
+async function openHive(dataDir: string): Promise<void> {
+  const existing = hives.get(dataDir);
+  if (existing) {
+    if (existing.window.isMinimized()) existing.window.restore();
+    existing.window.focus();
+    recordRecentHive(dataDir);
+    return;
+  }
+  try {
+    await spawnHive(dataDir);
+    recordRecentHive(dataDir);
+  } catch (err) {
+    dialog.showErrorBox('Could not open hive', (err as Error).message);
+  }
+}
+
+// ── Deep links (openhive://…) ─────────────────────────────────────────
+//
+// URLs arrive via two paths:
+//   - macOS: `app.on('open-url')` — the OS delegates to the running app.
+//   - Linux/Windows: the URL shows up as an argv entry when the OS launches
+//     us (caught by the single-instance lock's `second-instance` handler,
+//     which inspects the extra argv it received).
+//
+// Renderer integration lives in src/web/hooks/useDeepLinks.ts — the hook
+// subscribes to the `openhive:deep-link` IPC channel and maps URLs to
+// react-router routes.
+
+function focusFirstHive(): BrowserWindow | null {
+  const first = hives.values().next().value;
+  if (!first) return null;
+  const { window } = first;
+  if (window.isMinimized()) window.restore();
+  if (!window.isVisible()) window.show();
+  window.focus();
+  return window;
+}
+
+// Resolved when the first hive's renderer has finished loading — i.e. when
+// the React app has mounted and the deep-link IPC listener is wired. Cold-
+// start deep links (clicked while the app was closed) wait on this so the
+// IPC doesn't fire into a renderer that hasn't subscribed yet.
+let firstHiveReady: Promise<BrowserWindow> | null = null;
+let firstHiveReadyResolve: ((w: BrowserWindow) => void) | null = null;
+function ensureFirstHivePromise(): Promise<BrowserWindow> {
+  if (!firstHiveReady) {
+    firstHiveReady = new Promise<BrowserWindow>((resolve) => {
+      firstHiveReadyResolve = resolve;
+    });
+  }
+  return firstHiveReady;
+}
+
+async function processDeepLink(url: string): Promise<void> {
+  if (!url.startsWith('openhive://')) return;
+  // Send to whichever hive is already loaded, or wait for one if cold.
+  const live = focusFirstHive();
+  const target = live ?? await ensureFirstHivePromise();
+  if (live !== target) {
+    if (target.isMinimized()) target.restore();
+    target.focus();
+  }
+  target.webContents.send('openhive:deep-link', url);
+}
+
+function findDeepLinkInArgv(argv: string[]): string | undefined {
+  return argv.find((a) => a.startsWith('openhive://'));
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  // Queue until ready — macOS can deliver open-url during app boot.
+  if (app.isReady()) void processDeepLink(url);
+  else app.whenReady().then(() => { void processDeepLink(url); });
+});
+
 // ── Single-instance lock ──────────────────────────────────────────────
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    const first = hives.values().next().value;
-    if (first?.window) {
-      if (first.window.isMinimized()) first.window.restore();
-      first.window.focus();
+  app.on('second-instance', (_event, argv) => {
+    const deepLink = findDeepLinkInArgv(argv);
+    if (deepLink) {
+      void processDeepLink(deepLink);
+      return;
+    }
+    focusFirstHive();
+  });
+  // Handle the initial launch argv too — the URL that triggered the launch
+  // is in process.argv on Linux/Windows. macOS uses open-url instead.
+  const initial = findDeepLinkInArgv(process.argv.slice(1));
+  if (initial) {
+    app.whenReady().then(() => { void processDeepLink(initial); });
+  }
+}
+
+// ── IPC: renderer → main bridge ───────────────────────────────────────
+//
+// Preload (electron-app/src/preload.ts) exposes these as
+// `window.openhive.{notify,setBadge}`. Main validates payload shape then
+// hands off to the OS.
+
+interface NotifyPayload {
+  title: string;
+  body: string;
+  /** Optional `openhive://` URL or hash fragment to focus on click. */
+  route?: string;
+}
+
+function isNotifyPayload(x: unknown): x is NotifyPayload {
+  if (!x || typeof x !== 'object') return false;
+  const p = x as Record<string, unknown>;
+  return typeof p.title === 'string'
+    && typeof p.body === 'string'
+    && (p.route === undefined || typeof p.route === 'string');
+}
+
+ipcMain.on('openhive:notify', (event, payload: unknown) => {
+  if (!isNotifyPayload(payload)) return;
+  if (!Notification.isSupported()) return;
+  const n = new Notification({
+    title: payload.title,
+    body: payload.body,
+    silent: false,
+  });
+  n.on('click', () => {
+    // Focus the BrowserWindow that requested the notification — not just
+    // the first hive — so multi-hive users land in the right window.
+    const sender = BrowserWindow.fromWebContents(event.sender);
+    if (sender && !sender.isDestroyed()) {
+      if (sender.isMinimized()) sender.restore();
+      if (!sender.isVisible()) sender.show();
+      sender.focus();
+      if (payload.route) {
+        sender.webContents.send('openhive:focus-route', payload.route);
+      }
     }
   });
+  n.show();
+});
+
+ipcMain.on('openhive:set-badge', (_event, raw: unknown) => {
+  const count = typeof raw === 'number' && Number.isFinite(raw)
+    ? Math.max(0, Math.floor(raw))
+    : 0;
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.setBadge(count > 0 ? String(count) : '');
+  } else {
+    app.setBadgeCount(count);
+  }
+});
+
+// ── Tray icon ─────────────────────────────────────────────────────────
+//
+// Menu-bar/system-tray entry that's always present. Clicking brings the
+// first hive window forward; the submenu offers Show/New Hive/Quit for
+// when the window is fully hidden (closed on Linux, minimized-into-dock
+// on macOS). Held in a module-level ref so GC doesn't collect the Tray
+// and drop the icon from the menu bar.
+let tray: Tray | null = null;
+
+function setupTray(): void {
+  const templateIcon = path.join(__dirname, '..', 'build', 'tray-iconTemplate.png');
+  const fallbackIcon = path.join(__dirname, '..', 'build', 'icon.png');
+  const iconPath = fs.existsSync(templateIcon) ? templateIcon : fallbackIcon;
+  const image = nativeImage.createFromPath(iconPath);
+  if (image.isEmpty()) return;  // missing asset — skip tray silently
+
+  tray = new Tray(image);
+  tray.setToolTip('OpenHive');
+
+  const rebuild = (): void => {
+    if (!tray) return;
+    const menu = Menu.buildFromTemplate([
+      {
+        label: 'Show OpenHive',
+        click: () => { focusFirstHive(); },
+      },
+      {
+        label: 'New Hive…',
+        click: async () => {
+          const r = await dialog.showOpenDialog({
+            properties: ['openDirectory', 'createDirectory'],
+            title: 'Choose a folder for the new hive',
+          });
+          if (r.canceled || !r.filePaths[0]) return;
+          await openHive(r.filePaths[0]);
+        },
+      },
+      { type: 'separator' },
+      { label: 'Quit', click: () => app.quit() },
+    ]);
+    tray.setContextMenu(menu);
+  };
+  rebuild();
+
+  // Left-click (macOS) / single-click (Linux) focuses the window without
+  // needing the context menu.
+  tray.on('click', () => { focusFirstHive(); });
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
+  recentHives = loadRecentHives();
+
+  // Conservative permission posture: deny everything the SPA hasn't asked
+  // for yet. We can whitelist as we add features (e.g. native notifications
+  // in Tier 3 will need 'notifications'). Both handlers must agree —
+  // requestHandler covers prompts; checkHandler covers synchronous APIs
+  // like `navigator.permissions.query()`.
+  const allowed: ReadonlySet<string> = new Set([
+    'fullscreen',                 // SPA terminal/trajectory views may go fullscreen
+    'clipboard-sanitized-write',  // copy buttons throughout the UI
+  ]);
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(allowed.has(permission));
+  });
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
+    return allowed.has(permission);
+  });
+
+  const defaultHive = app.getPath('userData');
   try {
-    await spawnHive(app.getPath('userData'));
+    await spawnHive(defaultHive);
+    recordRecentHive(defaultHive);
   } catch (err) {
     dialog.showErrorBox(
       'OpenHive failed to start',
@@ -264,6 +580,7 @@ app.whenReady().then(async () => {
     return;
   }
   Menu.setApplicationMenu(buildMenu());
+  setupTray();
 
   // Auto-update: only in packaged builds. Skipped on `electron .` dev
   // launches (app.isPackaged === false). Publish destination is declared
@@ -283,9 +600,9 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('activate', async () => {
+app.on('activate', () => {
   if (hives.size === 0 && app.isReady()) {
-    await spawnHive(app.getPath('userData')).catch(() => { /* already surfaced */ });
+    void openHive(app.getPath('userData'));
   }
 });
 
@@ -390,6 +707,14 @@ async function spawnHive(
   if (state.fullscreen) window.setFullScreen(true);
   hardenWebContents(window.webContents, new URL(url).origin);
   window.once('ready-to-show', () => window.show());
+  // First hive ready → resolve the deep-link wait. Subsequent hives don't
+  // re-resolve. Listener attached before loadURL so we can't miss the event.
+  window.webContents.once('did-finish-load', () => {
+    if (firstHiveReadyResolve) {
+      firstHiveReadyResolve(window);
+      firstHiveReadyResolve = null;
+    }
+  });
   try {
     await window.loadURL(url);
   } catch (err) {
@@ -494,6 +819,32 @@ async function manualCheckForUpdates(): Promise<void> {
   }
 }
 
+const REPO_URL = 'https://github.com/alexngai/openhive';
+const ISSUES_URL = `${REPO_URL}/issues`;
+const DOCS_URL = `${REPO_URL}#readme`;
+const RELEASES_URL = `${REPO_URL}/releases`;
+
+/** Truncate a long path for menu display: keep the last two segments. */
+function shortenPath(p: string): string {
+  const parts = p.split(path.sep).filter(Boolean);
+  if (parts.length <= 2) return p;
+  return `…${path.sep}${parts.slice(-2).join(path.sep)}`;
+}
+
+function buildOpenRecentSubmenu(): MenuItemConstructorOptions[] {
+  if (recentHives.length === 0) {
+    return [{ label: 'No recent hives', enabled: false }];
+  }
+  const items: MenuItemConstructorOptions[] = recentHives.map((dataDir) => ({
+    label: shortenPath(dataDir),
+    toolTip: dataDir,
+    click: () => { void openHive(dataDir); },
+  }));
+  items.push({ type: 'separator' });
+  items.push({ label: 'Clear Menu', click: () => clearRecentHives() });
+  return items;
+}
+
 function buildMenu(): Menu {
   return Menu.buildFromTemplate([
     {
@@ -528,20 +879,23 @@ function buildMenu(): Menu {
               title: 'Choose a folder for the new hive',
             });
             if (r.canceled || !r.filePaths[0]) return;
-            const dataDir = r.filePaths[0];
-            if (hives.has(dataDir)) {
-              hives.get(dataDir)!.window.focus();
-              return;
-            }
-            try {
-              await spawnHive(dataDir);
-            } catch (err) {
-              dialog.showErrorBox('Could not open hive', (err as Error).message);
-            }
+            await openHive(r.filePaths[0]);
           },
         },
+        { type: 'separator' },
+        { label: 'Open Recent', submenu: buildOpenRecentSubmenu() },
       ],
     },
     { role: 'windowMenu' },
+    {
+      role: 'help',
+      submenu: [
+        { label: 'Documentation', click: () => { void shell.openExternal(DOCS_URL); } },
+        { label: 'Releases',      click: () => { void shell.openExternal(RELEASES_URL); } },
+        { label: 'Report an Issue…', click: () => { void shell.openExternal(ISSUES_URL); } },
+        { type: 'separator' },
+        { label: 'View on GitHub',   click: () => { void shell.openExternal(REPO_URL); } },
+      ],
+    },
   ]);
 }
