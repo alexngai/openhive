@@ -19,7 +19,6 @@ function MailIdRedirect() {
 
 // Lazy load page components for code splitting
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
-const Search = lazy(() => import('./pages/Search').then(m => ({ default: m.Search })));
 const About = lazy(() => import('./pages/About').then(m => ({ default: m.About })));
 const Login = lazy(() => import('./pages/Login').then(m => ({ default: m.Login })));
 const AuthCallback = lazy(() => import('./pages/AuthCallback').then(m => ({ default: m.AuthCallback })));
@@ -67,7 +66,6 @@ export default function App() {
             {/* Protected routes */}
             <Route element={<ProtectedRoute />}>
               <Route index element={<Dashboard />} />
-              <Route path="search" element={<Search />} />
               <Route path="about" element={<About />} />
               <Route path="settings" element={<Settings />} />
               <Route path="swarms" element={<Swarms />} />

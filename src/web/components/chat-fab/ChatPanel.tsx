@@ -125,16 +125,16 @@ export function ChatPanel() {
         />
       </div>
 
-      {/* Permission dialog (ACP tool approval) */}
-      {channel.permissions && channel.permissions.length > 0 && (
-        <div className="px-3 py-2 border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
-          <PermissionDialog
-            permissions={channel.permissions}
-            onReply={channel.replyPermission}
-            variant="inline"
-          />
-        </div>
-      )}
+      {/* Permission dialog (ACP tool approval). Sticky-external matches the
+          variant used on SessionDetail + MailThreadView — consistent Allow/
+          Deny surface across every openhive chat and it doesn't consume
+          vertical space inside the scrollable message list. */}
+      <PermissionDialog
+        channel={channel}
+        variant="sticky-external"
+        descriptionAs="code"
+        approveLabel="Allow"
+      />
 
       {/* Context menu + input */}
       <div

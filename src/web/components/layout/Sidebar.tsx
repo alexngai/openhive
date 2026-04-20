@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Menu, X, CirclePile,
   User, MessageSquare, ChevronLeft, ChevronDown,
   ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings, FileText, Send,
-  GitBranch,
+  GitBranch, Bell,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
@@ -81,12 +81,19 @@ export function Sidebar() {
       label: 'Control Plane',
       items: [
         { to: '/', icon: LayoutDashboard, label: 'Overview' },
+        { to: '/threads', icon: MessageSquare, label: 'Threads' },
+        { to: '/swarms', icon: CirclePile, label: 'Swarms', badge: onlineSwarmCount || undefined },
+        { to: '/events', icon: Bell, label: 'Events' },
+        { to: '/streams', icon: GitBranch, label: 'Streams' },
+      ],
+    },
+    {
+      id: 'work',
+      label: 'Work',
+      items: [
         { to: '/specs', icon: FileText, label: 'Specs' },
         { to: '/dispatches', icon: Send, label: 'Dispatches' },
         { to: '/tasks', icon: ListTodo, label: 'Tasks' },
-        { to: '/streams', icon: GitBranch, label: 'Streams' },
-        { to: '/swarms', icon: CirclePile, label: 'Swarms', badge: onlineSwarmCount || undefined },
-        { to: '/threads', icon: MessageSquare, label: 'Threads' },
       ],
     },
     {

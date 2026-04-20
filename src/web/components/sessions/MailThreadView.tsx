@@ -304,7 +304,20 @@ export function MailThreadView({ conversationId }: { conversationId: string }) {
         descriptionAs="code"
         approveLabel="Allow"
       />
-      <ChatInput channel={channel} showModeBadge />
+      <ChatInput
+        channel={channel}
+        showModeBadge
+        // Override the generic "Agent is offline" fallback when the thread
+        // itself was closed — the swarm may be fine, just this conversation
+        // is terminated. Only applies once the conversation has loaded;
+        // during the loading gap the default "No channel available" is
+        // more accurate.
+        unavailableReason={
+          conversation.status !== 'active'
+            ? `Conversation ${conversation.status} — replies disabled`
+            : undefined
+        }
+      />
     </div>
   );
 }

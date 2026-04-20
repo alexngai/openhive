@@ -2,6 +2,7 @@
  * Memory Page — Lists all memory bank resources with summaries.
  */
 
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Brain, FileText, ChevronRight, Clock, Network, Tag,
@@ -10,6 +11,7 @@ import { useResourcesByType, useMemoryFiles, useKnowledgeGraphFull } from '../ho
 import { useResourcesRealtime } from '../hooks/useRealtimeInvalidation';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
+import { ListFilters, useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
 import type { SyncableResource } from '../lib/api';
 
 function MemoryResourceCard({ resource }: { resource: SyncableResource }) {
@@ -89,13 +91,19 @@ function MemoryResourceCard({ resource }: { resource: SyncableResource }) {
 export function Memory() {
   const { data: resourcesData, isLoading } = useResourcesByType('memory_bank');
   useResourcesRealtime();
+  const [search, setSearch] = useState('');
+  const q = useDebouncedValue(search);
 
   const resources = resourcesData?.data || [];
+  const filtered = useMemo(
+    () => resources.filter((r) => matchesSearch(q, r.name, r.description, r.scope)),
+    [resources, q],
+  );
 
   if (isLoading) return <PageLoader />;
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6 space-y-8">
+    <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
       <div>
         <h1 className="text-lg font-bold">Memory</h1>
         <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
@@ -103,35 +111,36 @@ export function Memory() {
         </p>
       </div>
 
-      <section>
-        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
-          <Brain className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
-          Memory Banks
-          {resources.length > 0 && (
-            <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>
-              {resources.length} bank{resources.length !== 1 ? 's' : ''}
-            </span>
-          )}
-        </h2>
+      {resources.length > 0 && (
+        <ListFilters
+          search={search}
+          onSearchChange={setSearch}
+          placeholder="Search memory banks…"
+          count={{ visible: filtered.length, total: resources.length, noun: 'bank' }}
+        />
+      )}
 
-        {resources.length === 0 ? (
-          <div className="card p-8 text-center">
-            <Brain className="w-8 h-8 mx-auto mb-2" style={{ color: 'var(--color-text-muted)' }} />
-            <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-              No memory banks yet
-            </p>
-            <p className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
-              Memory banks appear when discovered locally or registered by connected swarms.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {resources.map((resource) => (
-              <MemoryResourceCard key={resource.id} resource={resource} />
-            ))}
-          </div>
-        )}
-      </section>
+      {resources.length === 0 ? (
+        <div className="card p-8 text-center">
+          <Brain className="w-8 h-8 mx-auto mb-2" style={{ color: 'var(--color-text-muted)' }} />
+          <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
+            No memory banks yet
+          </p>
+          <p className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+            Memory banks appear when discovered locally or registered by connected swarms.
+          </p>
+        </div>
+      ) : filtered.length === 0 ? (
+        <p className="text-xs text-center py-8" style={{ color: 'var(--color-text-muted)' }}>
+          No memory banks match “{q}”.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((resource) => (
+            <MemoryResourceCard key={resource.id} resource={resource} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
