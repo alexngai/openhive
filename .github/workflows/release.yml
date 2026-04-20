@@ -102,8 +102,23 @@ jobs:
         if: runner.os == 'Linux'
         run: rm -f package-lock.json
 
+      # Deleting the lockfile on Linux (above) forces a full fresh resolve
+      # every run, which hits the registry hard. `ECONNRESET` mid-install is
+      # a recurring transient; retry up to 3× with npm's own fetch retries
+      # bumped too.
       - name: Install deps
-        run: npm install --no-audit --no-fund
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm install --no-audit --no-fund \
+              --fetch-retries=5 \
+              --fetch-retry-mintimeout=20000 \
+              --fetch-retry-maxtimeout=120000 && exit 0
+            echo "npm install failed (attempt $attempt/3), retrying in 15s..."
+            sleep 15
+          done
+          echo "npm install failed after 3 attempts" >&2
+          exit 1
 
       - name: Build openhive (server + web)
         run: npm run build
