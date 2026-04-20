@@ -482,32 +482,16 @@ export function SessionDetail() {
     return undefined;
   })();
 
-  if (resourceLoading) return <PageLoader />;
-
-  if (!resource) {
-    return (
-      <div className="px-4 py-12 text-center">
-        <p style={{ color: 'var(--color-text-muted)' }}>Session not found.</p>
-      </div>
-    );
-  }
-
+  // Compute sourceSwarmId from already-fetched hooks so the dispatch/spec
+  // lineage hooks below can run unconditionally — placing them after the
+  // early returns violates rules-of-hooks (hook count must be stable across
+  // renders).
   const checkpoints = checkpointsData?.data ?? [];
   const total = checkpointsData?.total ?? 0;
   const meta = (resource?.metadata ?? {}) as Record<string, unknown>;
   const sourceSwarmId = checkpoints[0]?.source_swarm_id
     ?? (meta.source_swarm_id as string)
     ?? null;
-  // Existing ACP stream/session from create-acp endpoint (avoids duplicate stream creation).
-  // URL search params survive page reloads; metadata is the async fallback.
-  const existingAcpStreamId = searchParams.get('streamId') ?? (meta.acpStreamId as string) ?? null;
-  const existingAcpSessionId = searchParams.get('sessionId') ?? (meta.sessionId as string) ?? null;
-  // Provider session ID (Claude Code's UUID) enables the macro-agent to recover
-  // history from its on-disk JSONL via ACP loadSession._meta, even across its
-  // own process restarts.
-  const providerSessionId = (meta.provider_session_id as string) ?? null;
-  // Enable trajectory/chat for sessions with checkpoints OR eagerly-created ACP sessions
-  const hasTrajectorySupport = total > 0 || !!sourceSwarmId;
 
   // Upstream lineage heuristic: if this session was spawned by a dispatch,
   // the dispatch on the same swarm will list this session's id. Small query
@@ -524,6 +508,27 @@ export function SessionDetail() {
     sourceDispatch?.spec_resource_id,
     sourceDispatch?.spec_id,
   );
+
+  if (resourceLoading) return <PageLoader />;
+
+  if (!resource) {
+    return (
+      <div className="px-4 py-12 text-center">
+        <p style={{ color: 'var(--color-text-muted)' }}>Session not found.</p>
+      </div>
+    );
+  }
+
+  // Existing ACP stream/session from create-acp endpoint (avoids duplicate stream creation).
+  // URL search params survive page reloads; metadata is the async fallback.
+  const existingAcpStreamId = searchParams.get('streamId') ?? (meta.acpStreamId as string) ?? null;
+  const existingAcpSessionId = searchParams.get('sessionId') ?? (meta.sessionId as string) ?? null;
+  // Provider session ID (Claude Code's UUID) enables the macro-agent to recover
+  // history from its on-disk JSONL via ACP loadSession._meta, even across its
+  // own process restarts.
+  const providerSessionId = (meta.provider_session_id as string) ?? null;
+  // Enable trajectory/chat for sessions with checkpoints OR eagerly-created ACP sessions
+  const hasTrajectorySupport = total > 0 || !!sourceSwarmId;
 
   return (
     <>

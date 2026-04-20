@@ -108,6 +108,13 @@ export default function App() {
               {/* Redirects for removed routes */}
               <Route path="resources" element={<Navigate to="/memory" replace />} />
               <Route path="swarmcraft" element={<Navigate to="/" replace />} />
+              {/* Agents concept was removed — operational agent context
+                  lives on SwarmDetail's Registered Agents section. */}
+              <Route path="agents" element={<Navigate to="/swarms" replace />} />
+              <Route path="a/:agentName" element={<Navigate to="/swarms" replace />} />
+              {/* Catch-all: anything else falls back to the dashboard so users
+                  never land on an empty frame. */}
+              <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Route>
         </Routes>

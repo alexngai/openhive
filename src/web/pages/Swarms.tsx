@@ -1677,10 +1677,14 @@ export function Swarms() {
     ? mapSwarms?.filter((s) => !hostedLinkedSwarmIds.has(s.id))
     : onlineSwarms;
 
-  // Auto-collapse empty sections (only before user has toggled)
+  // Auto-collapse when the only hosted swarms are stopped/failed — avoids
+  // a wall of "Stopped" rows dominating the page on first load. The user
+  // can still expand to access Restart / Clear actions.
+  const hasActiveHosted =
+    (hostedSwarms ?? []).some((h) => h.state !== 'stopped' && h.state !== 'failed');
   const hostedExpanded =
     showHosted ??
-    (hostedLoading || (hostedSwarms != null && hostedSwarms.length > 0));
+    (hostedLoading || hasActiveHosted);
   const registeredExpanded =
     showRegistered ??
     (mapLoading || (visibleMapSwarms != null && visibleMapSwarms.length > 0));
