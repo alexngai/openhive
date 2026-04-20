@@ -429,9 +429,8 @@ program
           const database = getDatabase();
           const agents = database.prepare('SELECT COUNT(*) as count FROM agents').get() as { count: number };
           const hives = database.prepare('SELECT COUNT(*) as count FROM hives').get() as { count: number };
-          const posts = database.prepare('SELECT COUNT(*) as count FROM posts').get() as { count: number };
           console.log(`  Database:       ${paths.database}`);
-          console.log(`  Agents: ${agents.count}  Hives: ${hives.count}  Posts: ${posts.count}`);
+          console.log(`  Agents: ${agents.count}  Hives: ${hives.count}`);
           closeDatabase();
         } catch {
           console.log(`  Database:       ${paths.database}`);
@@ -609,14 +608,10 @@ dbCmd
 
     const agents = database.prepare('SELECT COUNT(*) as count FROM agents').get() as { count: number };
     const hives = database.prepare('SELECT COUNT(*) as count FROM hives').get() as { count: number };
-    const posts = database.prepare('SELECT COUNT(*) as count FROM posts').get() as { count: number };
-    const comments = database.prepare('SELECT COUNT(*) as count FROM comments').get() as { count: number };
 
     console.log(`\nDatabase: ${dbPath}`);
     console.log(`Agents: ${agents.count}`);
     console.log(`Hives: ${hives.count}`);
-    console.log(`Posts: ${posts.count}`);
-    console.log(`Comments: ${comments.count}`);
 
     closeDatabase();
   });

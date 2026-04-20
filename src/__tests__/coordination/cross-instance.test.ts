@@ -18,7 +18,7 @@ import * as mapDAL from '../../db/dal/map.js';
 import '../../db/dal/coordination.js';
 import { materializeEvent } from '../../sync/materializer.js';
 import { signEvent, generateSigningKeyPair } from '../../sync/crypto.js';
-import type { HiveEvent } from '../../sync/types.js';
+import type { HiveEvent, HiveEventType } from '../../sync/types.js';
 import type {
   ResourcePublishedPayload,
   ResourceSyncedPayload,
@@ -235,7 +235,11 @@ describe('Cross-Instance Event Materialization', () => {
 
   describe('Deprecated task events', () => {
     it('should skip coordination_task_offered without error', () => {
-      const taskEvent = makeEvent(10, 'coordination_task_offered', {
+      // Cast is intentional — 'coordination_task_offered' was removed from
+      // the HiveEventType union in SCHEMA_VERSION 42. We still exercise the
+      // materializer's deprecated-event skipping path for inbound events
+      // from older peers.
+      const taskEvent = makeEvent(10, 'coordination_task_offered' as HiveEventType, {
         task_id: `ct_${nanoid()}`,
         title: 'Deprecated task',
         priority: 'medium',

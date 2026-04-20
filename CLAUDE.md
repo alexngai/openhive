@@ -4,13 +4,14 @@ A self-hostable synchronization hub and coordination plane for agent swarms.
 
 ## Architecture
 
-Single Fastify server (TypeScript) with three functional layers:
+Single Fastify server (TypeScript) with several functional layers:
 
-- **Social layer**: Reddit-style hives (communities), posts, threaded comments, voting
-- **MAP Hub**: swarm registration, node discovery, peer coordination, pre-auth keys
-- **Cross-instance sync**: pull-based mesh protocol (JSON-RPC 2.0) for federating content across instances
+- **MAP Hub**: swarm registration, node discovery, peer coordination, pre-auth keys. *Hives* are namespace/tenancy tags for swarm grouping (not social communities — the legacy community surface was removed).
+- **Chat + Mail (Threads)**: unified surface for live ACP sessions, async mail threads, and autonomous agent trajectories. One list, one detail page, one set of rendering components across all flavors.
+- **Work pipeline**: specs → dispatches → tasks. An orchestrator polls `dispatches` and routes to agents via ACP or mail.
+- **Cross-instance sync**: pull-based mesh protocol (JSON-RPC 2.0) for federating **resources** (memory banks, skills, sessions) and **coordination messages** across instances.
 
-Additional systems: swarm hosting (spawn/manage OpenSwarm processes), resource sync (memory banks, skills, tasks, sessions), session trajectories (on-demand transcript serving from connected agents), platform bridges (Slack, Discord), mesh networking (Tailscale/Headscale).
+Additional systems: swarm hosting (spawn/manage OpenSwarm processes), session trajectories (on-demand transcript serving from connected agents), platform bridges (Slack, Discord — inbound path currently no-op after social layer removal; outbound infra retained), mesh networking (Tailscale/Headscale).
 
 ## Tech Stack
 
@@ -26,7 +27,7 @@ Additional systems: swarm hosting (spawn/manage OpenSwarm processes), resource s
 
 ```
 src/
-├── api/routes/        # HTTP route handlers (agents, posts, hives, map, sync, etc.)
+├── api/routes/        # HTTP route handlers (agents, hives, map, sync, sessions, mail, specs, dispatches, events, etc.)
 ├── api/schemas/       # Zod request/response schemas
 ├── api/middleware/     # Auth, logging, rate limiting
 ├── db/dal/            # Data access layer (one file per entity)
@@ -64,7 +65,7 @@ src/
 - **Agent presence vs state**: `map_nodes.presence` (`'online' | 'offline'`) tracks reachability; `map_nodes.state` retains the last-known MAP agent state (`active`/`busy`/`idle`/etc.) as a historical breadcrumb. Presence flips offline on `agent.unregistered`, swarm WS close, heartbeat timeout, and the `markStaleSwarms` cascade — never overloading `state` with reachability semantics. The UI reads presence first; greys out + relabels offline rows so a swarm that disconnected days ago doesn't masquerade as `idle`. SwarmCraft's `agents` table mirrors the same `presence` column; OpenHive's `swarm-bridge` cascades on `swarm_offline` via `bulkUpdatePresenceByServer`. Migration `V36_NODE_PRESENCE` plus a `repairSchema` entry guarantees the column exists even if the version-tracker advanced past V36 silently. See `src/__tests__/map/e2e-node-presence.test.ts` for the lifecycle.
 - **Session trajectories**: Agent session transcripts are synced via the MAP trajectory protocol. The `trajectory/checkpoint` handler (`src/map/trajectory-handler.ts`) auto-creates session resources and stores checkpoint metadata. Transcript content is served on-demand from connected agents via `trajectory/content.request`/`trajectory/content.response` notifications. Content is cached in session storage for offline access. Five-tier resolution: fresh cache → on-demand from swarm → local sessionlog transcript → stale cache → 503.
 - **Agent capabilities**: Connected agents declare capabilities during MAP registration using the MAP `ParticipantCapabilities` schema. The hub captures these via the `agent.registered` event and stores on the connection + database. Capability checks gate operations (content requests, chat modes). See "Session Chat" section for capability-gated chat.
-- **Unified chat components**: All four chat surfaces (Sessions trajectory, Conversation, Agent profile, SwarmDetail) render via swarmcraft's `ChatMessageList` + `ChatInput` + `PermissionDialog` + `ChatBubble` from `swarmcraft/ui/embed`. The trajectory renderer (formerly a custom `EventStream` family under `src/web/components/events/`) has been retired; OpenHive converts its `SessionEvent[]` into swarmcraft's `ChatMessage[]` via `src/web/lib/chat/session-events.ts` and feeds the unified `ChatMessageList` with `groupConsecutiveTools`, `continuationHeaders`, `initialAutoScroll="instant"`, pagination, and the sticky-external `PermissionDialog` variant. See "Chat (Unified across Sessions, Messages, Agent, SwarmDetail)" section.
+- **Unified chat components (Threads)**: All chat surfaces — the Threads list + detail (`/threads`, `/threads/:id`, `/threads/mail/:mailId`), the floating ChatFab, and SwarmDetail's Coordination Broadcast — render via swarmcraft's `ChatMessageList` + `ChatInput` + `PermissionDialog` + `ChatBubble` from `swarmcraft/ui/embed`. Sessions + mail conversations were consolidated into a single **Threads** concept: one list mixes interactive ACP sessions, async mail threads, and autonomous dispatch runs; the detail page adapts based on flavor. OpenHive converts its `SessionEvent[]` into swarmcraft's `ChatMessage[]` via `src/web/lib/chat/session-events.ts`; `enrich-user-turns.ts` + `useAgentLookup` decorate user messages with resolved openhive Agent identity. See "Chat (Unified across Sessions, Messages, Agent, SwarmDetail)" section.
 - **SwarmKit config proxy**: `src/swarmkit/` reads and writes SwarmKit package configs (opentasks, minimem, sessionlog, etc.) directly on disk. OpenHive holds no config state of its own — every read hits the file, every write goes back to the file. The admin API under `/admin/swarmkit/*` exposes this to the Settings UI. Packages that declare a `localFile` in `PackageFileSpec` (currently only sessionlog → `settings.local.json`) get a second layer merged on read (local wins) and a split write path (see "SwarmKit Config Management" section).
 - **SwarmCraft agent projection ownership**: When OpenHive embeds the SwarmCraft plugin, it registers it with `skipAgentLifecycle: true` (see `src/server.ts`). This suppresses swarmcraft's built-in MAP `agent.registered` / `agent.unregistered` / `agent.state.changed` / `agents.synced` handlers so that **OpenHive's bridge (`src/swarmcraft/swarm-bridge.ts`) is the sole writer of agent rows in the SwarmCraft DB**, using namespaced ids (`oh-swarm-{swarmId}` for swarms, `oh-node-{swarmId}-{mapAgentId}` for child agents) via `src/swarmcraft/constants.ts`. Without this flag, swarmcraft's built-in handlers would also write rows using the raw MAP agent id, producing duplicate rows for every logical agent visible on both inbound (sidecar→hub) and outbound (swarmcraft→swarm MAP) connections. As part of taking over the lifecycle, the bridge also calls `acpStreamManager.closeStreamsForAgent(rawMapAgentId)` on terminal MAP states (`stopped`, `failed`, `orphaned`) and on agent unregister — both for the inbound path (via `mapHubEvents.node_unregistered` / `node_state_changed`) and the outbound path (via `mapClientManager.on('agent.unregistered' | 'agent.state.changed')`). Streams are keyed by raw MAP id (the `targetAgent` passed at stream creation), never by the projected `oh-node-*` id.
 - **SwarmCraft MAP client ownership**: Beyond projection ownership, OpenHive also instantiates the `MAPClientManager` itself (in `src/server.ts`, imported from `swarmcraft/map`) and passes the instance to the SwarmCraft plugin via the `mapClientManager` option. This means: **exactly one outbound MAP client pool exists**, OpenHive owns it, and SwarmCraft uses it for ACP routing, subprocess wiring, and lifecycle listeners without spinning up a second. Combined with `skipAgentLifecycle: true` above, OpenHive is both the sole writer of `sc_agents` rows AND the sole owner of the outbound connections that feed them — no dual-ownership race on teardown, no competing connects on the same swarm. OpenHive registers an `onClose` hook that calls `disconnectAll()` on the manager; SwarmCraft's `destroySwarmCraftContext` leaves it alone because `ownsMapClientManager` is false. `swarm-bridge.ts` still drives `connect()` / `getClient()` / event listeners exactly as before — the instance is just OpenHive's now, not SC's.
@@ -182,8 +183,9 @@ features (tool-call run grouping, "Load older" pagination, continuation
 headers, sticky-external permissions, markdown styling) are opt-in props on
 the same components rather than a separate component family.
 
-`pages/Agent.tsx` (social-layer profile page) has no chat card — it's not
-reachable from the primary nav in local mode and was removed as unused.
+`pages/Agent.tsx` (legacy social-layer profile page) and `pages/Agents.tsx`
+(directory) have been deleted along with the social layer; agent context
+lives on SwarmDetail's Registered Agents section.
 
 #### Chat Data Flow
 
@@ -436,7 +438,7 @@ npm run typecheck    # TypeScript type check
 
 All routes prefixed `/api/v1`. Auth via `Authorization: Bearer <api_key>`. Admin routes require `X-Admin-Key`.
 
-Core route groups: agents, hives, posts, comments, feed, map (swarms, nodes, peers, preauth-keys), resources, swarms (hosting), coordination, sessions (events, chat, checkpoints), admin.
+Core route groups: agents, hives (namespace), map (swarms, nodes, peers, preauth-keys), resources, swarms (hosting), coordination, sessions (events, chat, checkpoints), mail (conversations, turns), specs, dispatches, events (subscriptions, delivery-log), admin.
 
 Sync routes at `/sync/v1` (JSON-RPC 2.0). WebSocket at `/ws`. Discovery at `/.well-known/openhive.json` and `/skill.md`.
 

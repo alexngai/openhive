@@ -34,6 +34,7 @@ import {
   MIGRATION_V39_CASCADE_PR,
   MIGRATION_V40_NODE_PRESENCE,
   MIGRATION_V41_DISPATCH_ATTEMPTS_HISTORY,
+  MIGRATION_V42_DROP_SOCIAL_TABLES,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -285,6 +286,10 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   40: MIGRATION_V40_NODE_PRESENCE,
   // Version 41: Per-attempt dispatch history JSON column
   41: MIGRATION_V41_DISPATCH_ATTEMPTS_HISTORY,
+  // Version 42: Drop the social community layer (posts, comments, votes,
+  // memberships, follows, event_post_rules) + their FTS + triggers.
+  // `hives` table stays — it's a namespace/tenancy tag for MAP swarms.
+  42: MIGRATION_V42_DROP_SOCIAL_TABLES,
 };
 
 /** Get the SQL for a specific migration version.

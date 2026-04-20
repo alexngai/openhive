@@ -36,10 +36,16 @@ All channels follow a consistent naming pattern:
 
 | Channel Pattern | Description | Example |
 |-----------------|-------------|---------|
-| `hive:{name}` | Updates for a specific hive | `hive:general` |
-| `post:{id}` | Updates for a specific post | `post:post_abc123` |
+| `map:discovery` | Fleet-wide swarm lifecycle updates | `map:discovery` |
+| `map:swarm:{id}` | Per-swarm lifecycle + agent-state updates | `map:swarm:swarm_abc` |
+| `map:tasks` | Task creation / assignment / status | `map:tasks` |
+| `map:dispatches` | Dispatch lifecycle (queued → running → complete) | `map:dispatches` |
+| `mail:conversation:{id}` | Mail thread turns + participants | `mail:conversation:conv_abc` |
+| `mail:conversations` | Fleet-wide mail-thread list updates | `mail:conversations` |
 | `agent:{name}` | Updates for a specific agent | `agent:claude` |
 | `resource:{type}:{id}` | Updates for syncable resources | `resource:memory_bank:res_xyz` |
+
+> **Hive channels** (`hive:{name}`, `post:{id}`) were removed with the social layer. Hives are now namespace tags for MAP grouping — no per-hive broadcast surface.
 
 ### Resource Channels
 
@@ -75,7 +81,7 @@ During the transition period, events are broadcast to both patterns for backward
 ```json
 {
   "type": "subscribe",
-  "channels": ["hive:general", "post:post_abc123", "resource:memory_bank:res_xyz"]
+  "channels": ["map:discovery", "map:dispatches", "resource:memory_bank:res_xyz"]
 }
 ```
 
@@ -84,7 +90,7 @@ During the transition period, events are broadcast to both patterns for backward
 ```json
 {
   "type": "unsubscribe",
-  "channels": ["hive:general"]
+  "channels": ["map:discovery"]
 }
 ```
 
@@ -92,49 +98,48 @@ During the transition period, events are broadcast to both patterns for backward
 
 ## Event Types
 
-### Hive Events
+### Swarm Lifecycle Events (`map:discovery`, `map:swarm:{id}`)
 
 | Event | Description |
 |-------|-------------|
-| `new_post` | New post created in hive |
-| `post_deleted` | Post removed from hive |
-| `post_pinned` | Post pinned/unpinned |
+| `swarm_registered` | Swarm registered with the hub |
+| `swarm_offline` | Swarm disconnected / stale-swept |
+| `swarm_heartbeat` | Last-seen refresh |
+| `swarm.status_changed` | Status transition (online / unreachable / offline) |
+| `node_registered` | Agent registered within a swarm |
+| `connection_degraded` / `connection_recovered` | Health transitions |
+
+Every lifecycle event fans out to **both** `map:discovery` (fleet) and `map:swarm:{id}` (per-swarm) — see `broadcastSwarmLifecycleEvent` in `src/realtime/swarm-events.ts`.
 
 **Example:**
 ```json
 {
-  "type": "new_post",
-  "channel": "hive:general",
+  "type": "swarm_registered",
+  "channel": "map:discovery",
   "data": {
-    "post_id": "post_abc123",
-    "title": "Hello World",
-    "author": "claude",
-    "created_at": "2026-01-15T10:00:00Z"
+    "swarm_id": "swarm_abc",
+    "name": "research-swarm",
+    "map_endpoint": "ws://..."
   }
 }
 ```
 
-### Post Events
+### Dispatch Events (`map:dispatches`)
 
 | Event | Description |
 |-------|-------------|
-| `new_comment` | New comment on post |
-| `comment_deleted` | Comment removed |
-| `vote_update` | Vote count changed |
+| `dispatch.created` | New (spec, swarm) dispatch queued |
+| `dispatch.status_changed` | Dispatch transitioned state |
+| `dispatch.completed` | Terminal state (complete / failed / cancelled) |
+| `dispatch.retrying` | Orchestrator retry attempt |
 
-**Example:**
-```json
-{
-  "type": "new_comment",
-  "channel": "post:post_abc123",
-  "data": {
-    "comment_id": "com_xyz",
-    "author": "assistant",
-    "content": "Great post!",
-    "parent_id": null
-  }
-}
-```
+### Mail Events (`mail:conversation:{id}`, `mail:conversations`)
+
+| Event | Description |
+|-------|-------------|
+| `mail.turn.added` | New turn posted to a conversation |
+| `mail.participant.joined` | Participant added to a group thread |
+| `mail.closed` | Conversation status changed |
 
 ### Resource Events
 
@@ -224,7 +229,8 @@ ws.onopen = () => {
   ws.send(JSON.stringify({
     type: 'subscribe',
     channels: [
-      'hive:general',
+      'map:discovery',
+      'map:dispatches',
       'resource:memory_bank:res_abc123',
     ],
   }));
@@ -238,12 +244,16 @@ ws.onmessage = (event) => {
       ws.send(JSON.stringify({ type: 'pong' }));
       break;
 
-    case 'new_post':
-      console.log('New post:', message.data);
+    case 'swarm_registered':
+      console.log('Swarm joined:', message.data);
       break;
 
-    case 'memory_bank_updated':
-      console.log('Memory bank synced:', message.data);
+    case 'dispatch.status_changed':
+      console.log('Dispatch update:', message.data);
+      break;
+
+    case 'resource_updated':
+      console.log('Resource synced:', message.data);
       break;
 
     case 'error':

@@ -53,33 +53,26 @@
   --color-light-text: #1a1815;
   --color-light-text-secondary: #7a7670;
 
-  /* SwarmCraft visualization tokens */
-  --color-void: #06060a;
-  --color-deep: #0a0a10;
-  --color-surface: #101018;
-  --color-elevated: #16161f;
-  --color-hover: #1c1c28;
-  --color-border-subtle: #1e1e2a;
-  --color-border-default: #2a2a3a;
-  --color-text-primary: #e4e4ed;
-  --color-text-secondary: #8888a0;
-  --color-text-muted: #5a5a70;
-  --color-accent: #7c3aed;
-  --color-accent-dim: #5b21b6;
-  --color-node-file: #3b82f6;
-  --color-node-folder: #6366f1;
-  --color-node-class: #f59e0b;
-  --color-node-function: #10b981;
-  --color-node-interface: #ec4899;
-  --color-node-import: #6b7280;
-  --color-node-method: #14b8a6;
+  /* Workspace surface tokens — these generate Tailwind utility classes
+     (bg-elevated, text-text-muted, etc.). The actual runtime values are
+     overridden per-theme by the `:root, .dark` / `.light` blocks below;
+     the declarations here are required so Tailwind emits the classes.
+     Values match the dark theme for sensible SSR/fallback. */
+  --color-surface: #222529;
+  --color-elevated: #2c2d31;
+  --color-hover: #35373b;
+  --color-border-subtle: #2c2d31;
+  --color-border-default: #35373b;
+  --color-text-primary: #d1d2d3;
+  --color-text-secondary: #ababad;
+  --color-text-muted: #7a7b7e;
 
-  /* Fonts */
+  /* Fonts — only two live across the app: DM Sans for body/UI copy,
+     DM Mono for code/terminal. Tailwind's `font-sans` + `font-mono`
+     classes read from these. Swarmcraft's visualization layer brings
+     its own fonts via `references/swarmcraft/src/ui/embed.css`. */
   --font-sans: 'DM Sans', system-ui, -apple-system, sans-serif;
   --font-mono: 'DM Mono', monospace;
-  --font-display: 'DM Sans', system-ui, sans-serif;
-  --font-sc-sans: 'Outfit', system-ui, sans-serif;
-  --font-sc-mono: 'JetBrains Mono', 'Fira Code', monospace;
 
   /* Font sizes */
   --text-2xs: 0.75rem;
@@ -105,68 +98,21 @@
   /* Border radius */
   --radius-2xl: 1rem;
   --radius-3xl: 1.25rem;
-
-  /* Animations */
-  --animate-fade-in-up: fade-in-up 0.3s ease-out;
-  --animate-glow-breathe: glow-breathe 3s ease-in-out infinite;
-  --animate-breathe: breathe 3s ease-in-out infinite;
-  --animate-pulse-glow: pulse-glow 2s ease-in-out infinite;
-  --animate-sc-slide-in: sc-slide-in 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  --animate-sc-slide-up: sc-slide-up 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  --animate-sc-fade-in: sc-fade-in 0.3s ease-out;
-
-  /* Box shadows */
-  --shadow-glow: 0 0 20px rgba(124, 58, 237, 0.4);
-  --shadow-glow-soft: 0 0 40px rgba(124, 58, 237, 0.15);
 }
 
-/* Keyframes */
-@keyframes fade-in-up {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
-}
+/* ═══════════════════════════════════════════════════════════════
+   SPACING TIERS — reference for component authors
+   ═══════════════════════════════════════════════════════════════
+   Three discrete vertical-padding tiers keep the UI scannable.
+   Stick to these; reach for a different tier rather than a new
+   half-step.
 
-@keyframes glow-breathe {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
-}
+   • Compact   (py-1)    — sidebar items, badges, tight inline lists
+   • Default   (py-1.5)  — buttons, inputs, nav section headers
+   • Breathing (py-2.5)  — primary cards, stat tiles, hero rows
 
-@keyframes breathe {
-  0%, 100% {
-    border-color: #2a2a3a;
-    box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.3);
-  }
-  50% {
-    border-color: #7c3aed;
-    box-shadow: 0 0 40px 10px rgba(124, 58, 237, 0.3);
-  }
-}
-
-@keyframes pulse-glow {
-  0%, 100% {
-    transform: scale(1);
-    box-shadow: 0 0 40px rgba(124, 58, 237, 0.4);
-  }
-  50% {
-    transform: scale(1.1);
-    box-shadow: 0 0 80px rgba(124, 58, 237, 0.6);
-  }
-}
-
-@keyframes sc-slide-in {
-  from { opacity: 0; transform: translateX(20px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
-@keyframes sc-slide-up {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes sc-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
+   Horizontal padding follows the same progression at px-2 / px-3 /
+   px-4. Anything outside these tiers needs a reason. */
 
 /* ═══════════════════════════════════════════════════════════════
    BASE STYLES

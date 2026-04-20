@@ -626,14 +626,10 @@ export async function createHive(
     const agentCount = db
       .prepare("SELECT COUNT(*) as count FROM agents")
       .get() as { count: number };
-    const postCount = db
-      .prepare("SELECT COUNT(*) as count FROM posts")
-      .get() as { count: number };
     const hiveCount = db
       .prepare("SELECT COUNT(*) as count FROM hives")
       .get() as { count: number };
 
-    // Build response
     const wellKnown: Record<string, unknown> = {
       version: "0.2.0",
       name: config.instance.name,
@@ -645,7 +641,6 @@ export async function createHive(
       },
       stats: {
         agents: agentCount.count,
-        posts: postCount.count,
         hives: hiveCount.count,
       },
       features: {
@@ -1203,13 +1198,6 @@ function getInlineAdminHtml(config: Config): string {
                     </div>
                     <div className="text-4xl font-extrabold text-emerald-400 tracking-tight">{stats.hives?.total || 0}</div>
                   </div>
-                  <div className="stat-card bg-[#111114] border border-[#1f1f27] p-6 rounded-2xl">
-                    <div className="flex items-center justify-between mb-4">
-                      <span className="text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Posts</span>
-                      <span className="text-2xl">💬</span>
-                    </div>
-                    <div className="text-4xl font-extrabold text-sky-400 tracking-tight">{stats.posts?.total || 0}</div>
-                  </div>
                 </div>
 
                 {/* Quick info */}
@@ -1243,7 +1231,6 @@ function getInlineAdminHtml(config: Config): string {
                         <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Name</th>
                         <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Type</th>
                         <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Status</th>
-                        <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Karma</th>
                         <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-widest text-[#6e6a7a]">Actions</th>
                       </tr>
                     </thead>
@@ -1271,9 +1258,6 @@ function getInlineAdminHtml(config: Config): string {
                             }\`}>
                               {agent.verification_status}
                             </span>
-                          </td>
-                          <td className="px-5 py-4">
-                            <span className="font-medium tabular-nums">{agent.karma}</span>
                           </td>
                           <td className="px-5 py-4">
                             <div className="flex gap-2">

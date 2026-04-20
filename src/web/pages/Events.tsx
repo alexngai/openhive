@@ -1,16 +1,15 @@
 import { useState } from 'react';
 import {
-  Plus, Trash2, Pencil, X, Bell, Radio, FileText,
+  Plus, Trash2, Pencil, X, Bell, Radio,
   ChevronDown, ChevronUp, Settings2, Check, XCircle,
   GitCommit, GitPullRequest, CircleDot, Github, MessageSquare, Play,
 } from 'lucide-react';
 import {
-  usePostRules, useCreatePostRule, useUpdatePostRule, useDeletePostRule,
   useEventSubscriptions, useCreateSubscription, useUpdateSubscription, useDeleteSubscription,
   useDeliveryLog, useHives, useMapSwarms,
 } from '../hooks/useApi';
 import { useSwarmRealtime } from '../hooks/useRealtimeInvalidation';
-import type { PostRule, EventSubscription } from '../lib/api';
+import type { EventSubscription } from '../lib/api';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
 import { toast } from '../stores/toast';
 import clsx from 'clsx';
@@ -19,8 +18,8 @@ import clsx from 'clsx';
 // Shared
 // =============================================================================
 
-type Tab = 'rules' | 'subscriptions' | 'log';
-type FormMode = 'none' | 'create-rule' | 'edit-rule' | 'create-sub' | 'edit-sub';
+type Tab = 'subscriptions' | 'log';
+type FormMode = 'none' | 'create-sub' | 'edit-sub';
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -80,14 +79,6 @@ interface Preset {
   thread_mode?: string;
 }
 
-const POST_RULE_PRESETS: Preset[] = [
-  { label: 'GitHub Code', icon: GitCommit, source: 'github', event_types: 'push', thread_mode: 'post_per_event' },
-  { label: 'GitHub PRs', icon: GitPullRequest, source: 'github', event_types: 'pull_request.opened, pull_request.closed', thread_mode: 'post_per_event' },
-  { label: 'GitHub Issues', icon: CircleDot, source: 'github', event_types: 'issues.opened, issues.closed', thread_mode: 'post_per_event' },
-  { label: 'GitHub All', icon: Github, source: 'github', event_types: 'push, pull_request.*, issues.*', thread_mode: 'post_per_event' },
-  { label: 'Slack Messages', icon: MessageSquare, source: 'slack', event_types: 'message', thread_mode: 'post_per_event' },
-];
-
 const SUBSCRIPTION_PRESETS: Preset[] = [
   { label: 'GitHub Code', icon: GitCommit, source: 'github', event_types: 'push' },
   { label: 'GitHub PRs', icon: GitPullRequest, source: 'github', event_types: 'pull_request.*' },
@@ -141,314 +132,6 @@ function PresetPicker({
           <Settings2 className="w-3 h-3" />
           Custom
         </button>
-      </div>
-    </div>
-  );
-}
-
-// =============================================================================
-// Post Rule Form
-// =============================================================================
-
-function PostRuleForm({
-  mode,
-  rule,
-  onClose,
-}: {
-  mode: 'create-rule' | 'edit-rule';
-  rule?: PostRule;
-  onClose: () => void;
-}) {
-  const { data: hives } = useHives({ sort: 'popular', limit: 50 });
-  const createMutation = useCreatePostRule();
-  const updateMutation = useUpdatePostRule();
-
-  const [selectedPreset, setSelectedPreset] = useState<string | null>(mode === 'create-rule' ? null : null);
-  const [hiveId, setHiveId] = useState(rule?.hive_id || '');
-  const [source, setSource] = useState(rule?.source || 'github');
-  const [eventTypesRaw, setEventTypesRaw] = useState(rule?.event_types.join(', ') || '');
-  const [threadMode, setThreadMode] = useState(rule?.thread_mode || 'post_per_event');
-  const [priority, setPriority] = useState(rule?.priority ?? 100);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [filtersRaw, setFiltersRaw] = useState(
-    rule?.filters ? JSON.stringify(rule.filters, null, 2) : '',
-  );
-
-  const isPending = createMutation.isPending || updateMutation.isPending;
-
-  const handlePresetSelect = (preset: Preset | null) => {
-    if (preset) {
-      setSelectedPreset(preset.label);
-      setSource(preset.source);
-      setEventTypesRaw(preset.event_types);
-      if (preset.thread_mode) setThreadMode(preset.thread_mode);
-    } else {
-      setSelectedPreset('custom');
-      setSource('github');
-      setEventTypesRaw('');
-      setThreadMode('post_per_event');
-    }
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const eventTypes = eventTypesRaw.split(',').map((s) => s.trim()).filter(Boolean);
-    if (eventTypes.length === 0) {
-      toast.error('Validation', 'At least one event type is required');
-      return;
-    }
-
-    let filters = undefined;
-    if (filtersRaw.trim()) {
-      try {
-        filters = JSON.parse(filtersRaw);
-      } catch {
-        toast.error('Invalid JSON', 'Filters must be valid JSON');
-        return;
-      }
-    }
-
-    try {
-      if (mode === 'create-rule') {
-        await createMutation.mutateAsync({
-          hive_id: hiveId,
-          source,
-          event_types: eventTypes,
-          thread_mode: threadMode as any,
-          priority,
-          filters,
-        });
-        toast.success('Rule created', 'Post rule has been created');
-      } else if (rule) {
-        await updateMutation.mutateAsync({
-          id: rule.id,
-          source,
-          event_types: eventTypes,
-          thread_mode: threadMode as any,
-          priority,
-          filters: filtersRaw.trim() ? filters : null,
-        });
-        toast.success('Rule updated', 'Post rule has been updated');
-      }
-      onClose();
-    } catch (err) {
-      toast.error('Failed', (err as Error).message);
-    }
-  };
-
-  return (
-    <div className="card p-4 mb-3">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-semibold flex items-center gap-1.5">
-          <FileText className="w-3.5 h-3.5 text-honey-500" />
-          {mode === 'create-rule' ? 'New Post Rule' : 'Edit Post Rule'}
-        </h2>
-        <button onClick={onClose} className="btn btn-ghost p-1">
-          <X className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      {mode === 'create-rule' && (
-        <PresetPicker
-          presets={POST_RULE_PRESETS}
-          selected={selectedPreset}
-          onSelect={handlePresetSelect}
-        />
-      )}
-
-      <form onSubmit={handleSubmit} className="space-y-3">
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <SectionLabel>Hive <span className="text-red-400">*</span></SectionLabel>
-            <select
-              value={hiveId}
-              onChange={(e) => setHiveId(e.target.value)}
-              className="input w-full"
-              required
-              disabled={mode === 'edit-rule'}
-            >
-              <option value="">Select hive...</option>
-              {hives?.map((h) => (
-                <option key={h.id} value={h.id}>{h.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <SectionLabel>Source <span className="text-red-400">*</span></SectionLabel>
-            <select
-              value={source}
-              onChange={(e) => setSource(e.target.value)}
-              className="input w-full"
-            >
-              <option value="github">github</option>
-              <option value="slack">slack</option>
-              <option value="*">* (all sources)</option>
-            </select>
-          </div>
-        </div>
-
-        <div>
-          <SectionLabel>Event Types <span className="text-red-400">*</span></SectionLabel>
-          <input
-            type="text"
-            value={eventTypesRaw}
-            onChange={(e) => setEventTypesRaw(e.target.value)}
-            className="input w-full"
-            placeholder="push, pull_request.opened, issues.*"
-            required
-          />
-          <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-            Comma-separated. Use * for all events.
-          </p>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <SectionLabel>Thread Mode</SectionLabel>
-            <select
-              value={threadMode}
-              onChange={(e) => setThreadMode(e.target.value)}
-              className="input w-full"
-            >
-              <option value="post_per_event">Post per event</option>
-              <option value="single_thread">Single thread</option>
-              <option value="skip">Skip (MAP only)</option>
-            </select>
-          </div>
-          <div>
-            <SectionLabel>Priority</SectionLabel>
-            <input
-              type="number"
-              value={priority}
-              onChange={(e) => setPriority(parseInt(e.target.value, 10) || 100)}
-              className="input w-full"
-              min={0}
-              max={1000}
-            />
-          </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setShowAdvanced(!showAdvanced)}
-          className="flex items-center gap-1 text-2xs font-medium transition-colors"
-          style={{ color: 'var(--color-text-muted)' }}
-        >
-          <Settings2 className="w-3 h-3" />
-          Filters
-          {showAdvanced ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-        </button>
-
-        {showAdvanced && (
-          <div className="pl-3 border-l-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
-            <SectionLabel>Filters (JSON)</SectionLabel>
-            <textarea
-              value={filtersRaw}
-              onChange={(e) => setFiltersRaw(e.target.value)}
-              className="input w-full font-mono text-2xs min-h-[60px] resize-y"
-              placeholder='{"repos": ["org/repo"], "branches": ["main"]}'
-            />
-          </div>
-        )}
-
-        <div className="flex items-center gap-2 pt-1">
-          <button
-            type="submit"
-            disabled={isPending || !hiveId || !eventTypesRaw.trim()}
-            className="btn btn-primary flex items-center gap-1.5 text-xs"
-          >
-            {isPending ? <LoadingSpinner size="sm" /> : mode === 'create-rule' ? <Plus className="w-3 h-3" /> : <Check className="w-3 h-3" />}
-            {mode === 'create-rule' ? 'Create' : 'Save'}
-          </button>
-          <button type="button" onClick={onClose} className="btn btn-ghost text-xs">Cancel</button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-// =============================================================================
-// Post Rule Card
-// =============================================================================
-
-function PostRuleCard({
-  rule,
-  hives,
-  onEdit,
-}: {
-  rule: PostRule;
-  hives?: Array<{ id: string; name: string }>;
-  onEdit: () => void;
-}) {
-  const deleteMutation = useDeletePostRule();
-  const updateMutation = useUpdatePostRule();
-  const hiveName = hives?.find((h) => h.id === rule.hive_id)?.name || rule.hive_id;
-
-  const handleDelete = async () => {
-    try {
-      await deleteMutation.mutateAsync(rule.id);
-      toast.success('Rule deleted', 'Post rule has been removed');
-    } catch (err) {
-      toast.error('Delete failed', (err as Error).message);
-    }
-  };
-
-  const handleToggle = async () => {
-    try {
-      await updateMutation.mutateAsync({ id: rule.id, enabled: !rule.enabled });
-    } catch (err) {
-      toast.error('Update failed', (err as Error).message);
-    }
-  };
-
-  const isTransitioning = deleteMutation.isPending || updateMutation.isPending;
-
-  return (
-    <div className="card px-3 py-2.5">
-      <div className="flex items-center gap-3">
-        <EnabledDot enabled={rule.enabled} />
-
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <SourceBadge source={rule.source} />
-            <span className="text-xs font-medium truncate">
-              {rule.event_types.join(', ')}
-            </span>
-          </div>
-          <div className="flex items-center gap-2 mt-0.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-            <span>#{hiveName}</span>
-            <span>p:{rule.priority}</span>
-            {rule.thread_mode !== 'post_per_event' && (
-              <span className="text-2xs px-1 py-0 rounded" style={{ backgroundColor: 'var(--color-elevated)' }}>
-                {rule.thread_mode}
-              </span>
-            )}
-            {rule.filters && <span>filtered</span>}
-            {rule.created_by && <span>by {rule.created_by}</span>}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={handleToggle}
-            disabled={isTransitioning}
-            className="btn btn-ghost p-1.5"
-            title={rule.enabled ? 'Disable' : 'Enable'}
-          >
-            {rule.enabled ? <Check className="w-3 h-3 text-green-400" /> : <XCircle className="w-3 h-3" />}
-          </button>
-          <button onClick={onEdit} className="btn btn-ghost p-1.5" title="Edit">
-            <Pencil className="w-3 h-3" />
-          </button>
-          <button
-            onClick={handleDelete}
-            disabled={isTransitioning}
-            className="btn btn-ghost p-1.5 text-red-400 hover:bg-red-500/10"
-            title="Delete"
-          >
-            {deleteMutation.isPending ? <LoadingSpinner size="sm" /> : <Trash2 className="w-3 h-3" />}
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -874,61 +557,44 @@ function DeliveryLogView() {
 // =============================================================================
 
 export function Events() {
-  const { data: rules, isLoading: rulesLoading } = usePostRules();
   const { data: subs, isLoading: subsLoading } = useEventSubscriptions();
   const { data: hives } = useHives({ sort: 'popular', limit: 50 });
   const { data: swarms } = useMapSwarms();
   useSwarmRealtime();
 
-  const [activeTab, setActiveTab] = useState<Tab>('rules');
+  const [activeTab, setActiveTab] = useState<Tab>('subscriptions');
   const [formMode, setFormMode] = useState<FormMode>('none');
-  const [editingRule, setEditingRule] = useState<PostRule | undefined>();
   const [editingSub, setEditingSub] = useState<EventSubscription | undefined>();
 
   const tabs: { id: Tab; label: string; icon: React.ElementType; count?: number }[] = [
-    { id: 'rules', label: 'Post Rules', icon: FileText, count: rules?.length },
     { id: 'subscriptions', label: 'Subscriptions', icon: Radio, count: subs?.length },
     { id: 'log', label: 'Delivery Log', icon: Bell },
   ];
 
-  const handleNewClick = () => {
-    if (activeTab === 'rules') {
-      setFormMode('create-rule');
-      setEditingRule(undefined);
-    } else if (activeTab === 'subscriptions') {
-      setFormMode('create-sub');
-      setEditingSub(undefined);
-    }
-  };
-
   const closeForm = () => {
     setFormMode('none');
-    setEditingRule(undefined);
     setEditingSub(undefined);
   };
 
-  const isLoading = activeTab === 'rules' ? rulesLoading : activeTab === 'subscriptions' ? subsLoading : false;
+  const isLoading = activeTab === 'subscriptions' ? subsLoading : false;
 
   return (
     <div>
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <h1 className="text-lg font-semibold">Events</h1>
-        {formMode === 'none' && activeTab !== 'log' && (
+        {formMode === 'none' && activeTab === 'subscriptions' && (
           <button
-            onClick={handleNewClick}
+            onClick={() => { setFormMode('create-sub'); setEditingSub(undefined); }}
             className="btn btn-primary flex items-center gap-1.5 text-xs"
           >
             <Plus className="w-3 h-3" />
-            New {activeTab === 'rules' ? 'Rule' : 'Subscription'}
+            New Subscription
           </button>
         )}
       </div>
 
-      {/* Forms */}
-      {(formMode === 'create-rule' || formMode === 'edit-rule') && (
-        <PostRuleForm mode={formMode} rule={editingRule} onClose={closeForm} />
-      )}
+      {/* Form */}
       {(formMode === 'create-sub' || formMode === 'edit-sub') && (
         <SubscriptionForm mode={formMode} sub={editingSub} onClose={closeForm} />
       )}
@@ -964,33 +630,6 @@ export function Events() {
       {/* Content */}
       {isLoading ? (
         <PageLoader />
-      ) : activeTab === 'rules' ? (
-        rules && rules.length > 0 ? (
-          <div className="space-y-1">
-            {rules.map((rule) => (
-              <PostRuleCard
-                key={rule.id}
-                rule={rule}
-                hives={hives}
-                onEdit={() => {
-                  setEditingRule(rule);
-                  setFormMode('edit-rule');
-                }}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="py-8 text-center">
-            <FileText className="w-8 h-8 mx-auto mb-2 opacity-20" style={{ color: 'var(--color-text-muted)' }} />
-            <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>No post rules configured</p>
-            <button
-              onClick={() => { setFormMode('create-rule'); setEditingRule(undefined); }}
-              className="mt-2 text-xs text-honey-500 hover:text-honey-400 transition-colors"
-            >
-              Create your first rule
-            </button>
-          </div>
-        )
       ) : activeTab === 'subscriptions' ? (
         subs && subs.length > 0 ? (
           <div className="space-y-1">

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { Layout } from './components/layout/Layout';
 import { PageLoader } from './components/common/LoadingSpinner';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
@@ -7,11 +7,23 @@ import { ProtectedRoute } from './components/common/ProtectedRoute';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAuthStore } from './stores/auth';
 
+function SessionIdRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={`/threads/${id ?? ''}`} replace />;
+}
+
+function MailIdRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={`/threads/mail/${id ?? ''}`} replace />;
+}
+
+function DispatchIdRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={`/dispatch/${id ?? ''}`} replace />;
+}
+
 // Lazy load page components for code splitting
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
-const Agent = lazy(() => import('./pages/Agent').then(m => ({ default: m.Agent })));
-const Agents = lazy(() => import('./pages/Agents').then(m => ({ default: m.Agents })));
-const Search = lazy(() => import('./pages/Search').then(m => ({ default: m.Search })));
 const About = lazy(() => import('./pages/About').then(m => ({ default: m.About })));
 const Login = lazy(() => import('./pages/Login').then(m => ({ default: m.Login })));
 const AuthCallback = lazy(() => import('./pages/AuthCallback').then(m => ({ default: m.AuthCallback })));
@@ -27,17 +39,15 @@ const TaskDetail = lazy(() => import('./pages/TaskDetail').then(m => ({ default:
 const Specs = lazy(() => import('./pages/Specs').then(m => ({ default: m.Specs })));
 const SpecNew = lazy(() => import('./pages/SpecNew').then(m => ({ default: m.SpecNew })));
 const SpecDetail = lazy(() => import('./pages/SpecDetail').then(m => ({ default: m.SpecDetail })));
-const Dispatches = lazy(() => import('./pages/Dispatches').then(m => ({ default: m.Dispatches })));
+const Dispatch = lazy(() => import('./pages/Dispatch').then(m => ({ default: m.Dispatch })));
 const DispatchDetail = lazy(() => import('./pages/DispatchDetail').then(m => ({ default: m.DispatchDetail })));
 const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
 const MemoryDetail = lazy(() => import('./pages/MemoryDetail').then(m => ({ default: m.MemoryDetail })));
 const Skills = lazy(() => import('./pages/Skills').then(m => ({ default: m.Skills })));
 const SkillDetail = lazy(() => import('./pages/SkillDetail').then(m => ({ default: m.SkillDetail })));
-const Messages = lazy(() => import('./pages/Messages').then(m => ({ default: m.Messages })));
-const Conversation = lazy(() => import('./pages/Conversation').then(m => ({ default: m.Conversation })));
 const Learning = lazy(() => import('./pages/Learning').then(m => ({ default: m.Learning })));
 const LearningPlaybookDetail = lazy(() => import('./pages/LearningPlaybookDetail').then(m => ({ default: m.LearningPlaybookDetail })));
-const Streams = lazy(() => import('./pages/Streams').then(m => ({ default: m.Streams })));
+const Changes = lazy(() => import('./pages/Changes').then(m => ({ default: m.Changes })));
 
 export default function App() {
   // Initialize WebSocket connection
@@ -61,34 +71,39 @@ export default function App() {
             {/* Protected routes */}
             <Route element={<ProtectedRoute />}>
               <Route index element={<Dashboard />} />
-              <Route path="a/:agentName" element={<Agent />} />
-              <Route path="agents" element={<Agents />} />
-              <Route path="search" element={<Search />} />
               <Route path="about" element={<About />} />
               <Route path="settings" element={<Settings />} />
               <Route path="swarms" element={<Swarms />} />
               <Route path="swarms/:id" element={<SwarmDetail />} />
-              <Route path="sessions" element={<Sessions />} />
-              <Route path="sessions/:id" element={<Sessions />} />
+              <Route path="threads" element={<Sessions />} />
+              <Route path="threads/:id" element={<Sessions />} />
+              <Route path="threads/mail/:mailId" element={<Sessions />} />
               <Route path="events" element={<Events />} />
               <Route path="terminal/:swarmId" element={<Terminal />} />
-              <Route path="messages" element={<Messages />} />
-              <Route path="messages/:id" element={<Conversation />} />
+              {/* Redirects from legacy routes */}
+              <Route path="sessions" element={<Navigate to="/threads" replace />} />
+              <Route path="sessions/:id" element={<SessionIdRedirect />} />
+              <Route path="messages" element={<Navigate to="/threads" replace />} />
+              <Route path="messages/:id" element={<MailIdRedirect />} />
               <Route path="memory" element={<Memory />} />
               <Route path="memory/:resourceId" element={<MemoryDetail />} />
               <Route path="skills" element={<Skills />} />
               <Route path="skills/:resourceId" element={<SkillDetail />} />
               <Route path="learning" element={<Learning />} />
               <Route path="learning/playbooks/:id" element={<LearningPlaybookDetail />} />
-              <Route path="streams" element={<Streams />} />
+              <Route path="changes" element={<Changes />} />
+              <Route path="streams" element={<Navigate to="/changes" replace />} />
               <Route path="tasks" element={<TaskGraph />} />
               <Route path="tasks/list" element={<TasksList />} />
               <Route path="tasks/:resourceId/:nodeId" element={<TaskDetail />} />
               <Route path="specs" element={<Specs />} />
               <Route path="specs/new" element={<SpecNew />} />
               <Route path="specs/:resourceId/:specId" element={<SpecDetail />} />
-              <Route path="dispatches" element={<Dispatches />} />
-              <Route path="dispatches/:id" element={<DispatchDetail />} />
+              <Route path="dispatch" element={<Dispatch />} />
+              <Route path="dispatch/:id" element={<DispatchDetail />} />
+              {/* Redirect legacy /dispatches URLs */}
+              <Route path="dispatches" element={<Navigate to="/dispatch" replace />} />
+              <Route path="dispatches/:id" element={<DispatchIdRedirect />} />
 
               {/* Redirects for removed routes */}
               <Route path="resources" element={<Navigate to="/memory" replace />} />

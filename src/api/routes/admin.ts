@@ -2,7 +2,6 @@ import { FastifyInstance } from 'fastify';
 import { authMiddleware, requireAdmin } from '../middleware/auth.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
-import * as postsDAL from '../../db/dal/posts.js';
 import * as invitesDAL from '../../db/dal/invites.js';
 import * as ingestKeysDAL from '../../db/dal/ingest-keys.js';
 import type { Config } from '../../config.js';
@@ -48,7 +47,6 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
       version: '0.1.0',
       agent_count: agentsDAL.countAgents(),
       hive_count: hivesDAL.countHives(),
-      post_count: postsDAL.countPosts(),
       federation_enabled: options.config.federation.enabled,
       swarm_hosting_enabled: options.config.swarmHosting.enabled,
       swarmcraft_enabled: options.config.swarmcraft.enabled,
@@ -239,9 +237,6 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
       },
       hives: {
         total: hivesDAL.countHives(),
-      },
-      posts: {
-        total: postsDAL.countPosts(),
       },
     });
   });

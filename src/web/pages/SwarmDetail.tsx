@@ -1,7 +1,7 @@
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Activity, AlertTriangle, Bell, ChevronRight, ChevronDown, ChevronUp, Clock, Cpu, FileText, Globe,
-  Link2, Loader2, MessageSquare, Monitor, Network, Play, Plus, Settings2, Share2,
+  GitBranch, Link2, Loader2, Megaphone, MessageSquare, Monitor, Network, Play, Plus, Send, Settings2, Share2,
   Square, RotateCw, Terminal, Trash2, User, Wifi, WifiOff,
   CheckCircle2, Zap,
 } from 'lucide-react';
@@ -17,8 +17,13 @@ import {
   useResumableSessions,
   useResumeAllSessions,
   useResumeSession,
+  useCascadeDAG,
   type ResumableSession,
+  type StreamDAGNode,
 } from '../hooks/useApi';
+import { useDispatchList } from '../hooks/useDispatch';
+import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
+import { StreamStatusDot } from '../components/streams/shared';
 import { useSwarmRealtime, useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
@@ -592,10 +597,14 @@ function RegisteredAgentCard({
   agent,
   swarmId,
   projectPath,
+  openChanges,
+  activeSessionsCount,
 }: {
   agent: LiveRegisteredAgent;
   swarmId: string;
   projectPath?: string;
+  openChanges: StreamDAGNode[];
+  activeSessionsCount: number;
 }) {
   const navigate = useNavigate();
   const connectAcp = useConnectAcp();
@@ -622,7 +631,7 @@ function RegisteredAgentCard({
         streamId: result.acp_stream_id,
         sessionId: result.acp_session_id,
       });
-      navigate(`/sessions/${result.session_resource_id}?${params}`);
+      navigate(`/threads/${result.session_resource_id}?${params}`);
     } catch {
       // Error state is rendered below via the mutation's isError flag
     }
@@ -671,8 +680,33 @@ function RegisteredAgentCard({
               </span>
             ))}
           </div>
-          <div className="mt-0.5 text-2xs font-mono truncate" style={{ color: 'var(--color-text-muted)' }}>
-            {agent.id}
+          <div className="mt-0.5 flex items-center gap-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+            <span className="font-mono truncate">{agent.id}</span>
+            {openChanges.length > 0 && (
+              <Link
+                to="/changes"
+                className="inline-flex items-center gap-0.5 shrink-0 hover:opacity-80"
+                style={{ color: 'var(--color-text-muted)' }}
+                title={`${openChanges.length} open change${openChanges.length === 1 ? '' : 's'}`}
+              >
+                <GitBranch className="w-3 h-3 text-honey-500" />
+                {openChanges.length}
+                {openChanges.some((c) => c.open_conflict_count > 0) && (
+                  <AlertTriangle className="w-3 h-3 ml-0.5" style={{ color: 'var(--color-danger)' }} />
+                )}
+              </Link>
+            )}
+            {activeSessionsCount > 0 && (
+              <Link
+                to="/threads"
+                className="inline-flex items-center gap-0.5 shrink-0 hover:opacity-80"
+                style={{ color: 'var(--color-text-muted)' }}
+                title={`${activeSessionsCount} session${activeSessionsCount === 1 ? '' : 's'}`}
+              >
+                <MessageSquare className="w-3 h-3 text-honey-500" />
+                {activeSessionsCount}
+              </Link>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
@@ -712,10 +746,164 @@ function RegisteredAgentCard({
   );
 }
 
+/**
+ * Active Work section — combines in-flight dispatches + open cascade changes
+ * for this swarm into one operational-visibility surface. Hidden when both
+ * lists are empty so it doesn't add chrome for idle swarms.
+ */
+function ActiveWorkSection({ swarmId }: { swarmId: string }) {
+  const { data: dispatchResp } = useDispatchList({
+    target_swarm_id: swarmId,
+    status: ['queued', 'running'],
+    limit: 10,
+  });
+  const { data: cascadeResp } = useCascadeDAG({ source_swarm_id: swarmId });
+
+  const dispatches = dispatchResp?.data ?? [];
+  const openChanges = useMemo(
+    () => (cascadeResp?.data?.nodes ?? []).filter(
+      (n) => n.status !== 'merged' && n.status !== 'abandoned',
+    ),
+    [cascadeResp],
+  );
+
+  if (dispatches.length === 0 && openChanges.length === 0) return null;
+
+  return (
+    <div className="mt-4">
+      <h3 className="text-sm font-semibold flex items-center gap-2 mb-2">
+        <Activity className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+        Active Work
+      </h3>
+      <div className="grid md:grid-cols-2 gap-3">
+        {/* In-flight dispatches */}
+        <div
+          className="rounded-md border p-3"
+          style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-surface)' }}
+        >
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
+              <Send className="h-3.5 w-3.5 text-honey-500" />
+              In-flight dispatches
+              <span>{dispatches.length}</span>
+            </div>
+            {dispatches.length > 0 && (
+              <Link
+                to="/dispatch"
+                className="text-2xs hover:opacity-80"
+                style={{ color: 'var(--color-text-muted)' }}
+              >
+                View all →
+              </Link>
+            )}
+          </div>
+          {dispatches.length === 0 ? (
+            <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+              Nothing running.
+            </p>
+          ) : (
+            <ul className="space-y-1">
+              {dispatches.slice(0, 5).map((d) => (
+                <li key={d.id}>
+                  <Link
+                    to={`/dispatch/${d.id}`}
+                    className="flex items-center justify-between gap-2 text-sm hover:opacity-80"
+                    style={{ color: 'var(--color-text)' }}
+                  >
+                    <span className="font-mono text-xs truncate">{d.spec_id}</span>
+                    <DispatchStatusChip status={d.status} />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {/* Open changes */}
+        <div
+          className="rounded-md border p-3"
+          style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-surface)' }}
+        >
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
+              <GitBranch className="h-3.5 w-3.5 text-honey-500" />
+              Open changes
+              <span>{openChanges.length}</span>
+            </div>
+            {openChanges.length > 0 && (
+              <Link
+                to="/changes"
+                className="text-2xs hover:opacity-80"
+                style={{ color: 'var(--color-text-muted)' }}
+              >
+                View all →
+              </Link>
+            )}
+          </div>
+          {openChanges.length === 0 ? (
+            <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+              No streams open.
+            </p>
+          ) : (
+            <ul className="space-y-1">
+              {openChanges.slice(0, 5).map((n) => (
+                <li key={n.id}>
+                  <Link
+                    to="/changes"
+                    className="flex items-center gap-2 text-sm hover:opacity-80"
+                    style={{ color: 'var(--color-text)' }}
+                  >
+                    <StreamStatusDot status={n.status} />
+                    <span className="truncate">{n.name || n.stream_id}</span>
+                    {n.open_conflict_count > 0 && (
+                      <span
+                        className="text-2xs flex items-center gap-0.5 shrink-0"
+                        style={{ color: 'var(--color-danger)' }}
+                      >
+                        <AlertTriangle className="w-3 h-3" />
+                        {n.open_conflict_count}
+                      </span>
+                    )}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RegisteredAgentsSection({ swarm, swarmId, hosted }: { swarm: MapSwarm; swarmId: string; hosted?: HostedSwarm }) {
   const allAgents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined ?? [];
   const sidecars = allAgents.filter((a) => a.role === 'sidecar');
   const agents = allAgents.filter((a) => a.role !== 'sidecar');
+
+  // Fan data into per-agent buckets for inline chips. Single query at the
+  // section level; cards consume the derived maps.
+  const { data: cascadeResp } = useCascadeDAG({ source_swarm_id: swarmId });
+  const { data: sessionsResp } = useSessionsList({ swarm_id: swarmId, limit: 100 });
+
+  const openChangesByAgent = useMemo(() => {
+    const map = new Map<string, StreamDAGNode[]>();
+    for (const n of cascadeResp?.data?.nodes ?? []) {
+      if (n.status === 'merged' || n.status === 'abandoned') continue;
+      const list = map.get(n.source_agent_id) ?? [];
+      list.push(n);
+      map.set(n.source_agent_id, list);
+    }
+    return map;
+  }, [cascadeResp]);
+
+  const sessionCountByAgent = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const s of sessionsResp?.data ?? []) {
+      if (!s.acp_target_agent_id) continue;
+      map.set(s.acp_target_agent_id, (map.get(s.acp_target_agent_id) ?? 0) + 1);
+    }
+    return map;
+  }, [sessionsResp]);
 
   // Derive the swarm's effective cwd. Mirror the backend resolution chain in
   // src/api/routes/map.ts: hosted bootstrap.cwd → swarm metadata.cwd →
@@ -762,9 +950,19 @@ function RegisteredAgentsSection({ swarm, swarmId, hosted }: { swarm: MapSwarm; 
       {swarmActions.dialog}
       {agents.length > 0 ? (
         <div className="space-y-1">
-          {agents.map((agent) => (
-            <RegisteredAgentCard key={agent.id} agent={agent} swarmId={swarmId} projectPath={projectPath} />
-          ))}
+          {agents.map((agent) => {
+            const peerId = getPeerMapId(agent.metadata) ?? agent.id;
+            return (
+              <RegisteredAgentCard
+                key={agent.id}
+                agent={agent}
+                swarmId={swarmId}
+                projectPath={projectPath}
+                openChanges={openChangesByAgent.get(peerId) ?? []}
+                activeSessionsCount={sessionCountByAgent.get(peerId) ?? 0}
+              />
+            );
+          })}
         </div>
       ) : (
         <EmptyState message="No agents yet. Click Spawn Agent to create a coordinator." />
@@ -856,14 +1054,30 @@ function ComposeMessageSection({ swarmId }: { swarmId: string }) {
         onClick={() => setExpanded(!expanded)}
         className="flex items-center gap-2 text-xs font-medium px-2 py-1.5 rounded hover:bg-[var(--color-elevated)] transition-colors"
         style={{ color: 'var(--color-text-secondary)' }}
+        title="Swarm-to-swarm coordination. Not the same as chatting with an agent — use the Chat button on an agent for that."
       >
-        <MessageSquare className="w-3.5 h-3.5" />
-        {expanded ? 'Hide' : 'Send'} Coordination Message
+        <Megaphone className="w-3.5 h-3.5" />
+        {expanded ? 'Hide' : 'Open'} Coordination Broadcast
       </button>
       {expanded && (
-        <div className="card mt-1 overflow-hidden h-52 flex flex-col">
-          <ChatMessageList channel={channel} compact continuationHeaders />
-          <ChatInput channel={channel} compact />
+        <div
+          className="card mt-1 overflow-hidden flex flex-col"
+          style={{ borderLeft: '2px solid var(--color-accent)' }}
+        >
+          <div
+            className="px-3 py-1.5 text-2xs border-b"
+            style={{
+              color: 'var(--color-text-muted)',
+              borderColor: 'var(--color-border-subtle)',
+              backgroundColor: 'var(--color-elevated)',
+            }}
+          >
+            Swarm-to-swarm coordination · not agent chat
+          </div>
+          <div className="h-52 flex flex-col">
+            <ChatMessageList channel={channel} compact continuationHeaders />
+            <ChatInput channel={channel} compact />
+          </div>
         </div>
       )}
     </div>
@@ -1038,7 +1252,7 @@ function SessionCard({ session }: { session: SessionListItem }) {
 
   return (
     <Link
-      to={`/sessions/${session.id}`}
+      to={`/threads/${session.id}`}
       className="card card-hover px-3 py-2.5 flex items-start gap-3 group"
     >
       <div
@@ -1130,7 +1344,7 @@ function ResumableSessionRow({
   };
 
   const goToSession = () => {
-    navigate(`/sessions/${session.session_resource_id}`);
+    navigate(`/threads/${session.session_resource_id}`);
   };
 
   return (
@@ -1366,6 +1580,8 @@ export function SwarmDetail() {
       </div>
 
       <SwarmHeader swarm={swarm} swarmId={id!} hosted={hosted} />
+
+      <ActiveWorkSection swarmId={id!} />
 
       {hosted && <TerminalSection hosted={hosted} />}
 

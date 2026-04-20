@@ -361,7 +361,7 @@ Tests use an in-memory SQLite database by default, so they don't affect your dev
 
 ## Seeding Sample Data
 
-Populate the database with sample agents, hives, posts, and comments:
+Populate the database with sample agents and hives (namespace tags):
 
 ```bash
 # After building
@@ -371,7 +371,7 @@ node dist/cli.js db seed
 npx openhive db seed
 ```
 
-This creates example content useful for frontend development and testing.
+This creates example content useful for frontend development and testing. Historical note: the `seed` command used to also populate posts + comments; those tables were removed in `SCHEMA_VERSION 42`.
 
 ### View Database Stats
 

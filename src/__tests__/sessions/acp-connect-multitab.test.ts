@@ -32,13 +32,23 @@ import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 const TEST_ROOT = testRoot('acp-connect-multitab');
 const TEST_DB_PATH = testDbPath(TEST_ROOT, 'acp-connect-multitab.db');
 
+interface MockStreamState {
+  serverId: string;
+  targetAgent: string;
+  isClosed?: boolean;
+  initialized?: boolean;
+}
 interface MockCounters {
   createStream: number;
   initialize: number;
   newSession: number;
   /** Streams that have been created (by streamId). Mock can drop entries to
-   *  simulate hub restart / stream death. */
-  streams: Map<string, { serverId: string; targetAgent: string }>;
+   *  simulate hub restart / stream death, or flip `isClosed` / `initialized`
+   *  to simulate mid-flight failure / unfinished handshake. */
+  streams: Map<string, MockStreamState>;
+  /** Outbound MAP connection state. Toggle to simulate the socket dropping
+   *  under a live stream — liveness check should detect this. */
+  mapConnected: Map<string, boolean>;
 }
 
 function createMockAcpManager(counters: MockCounters) {
@@ -49,20 +59,44 @@ function createMockAcpManager(counters: MockCounters) {
      *  manager's createStream simultaneously. Add a tiny artificial delay so
      *  both POSTs land in the critical section before either resolves. */
     streams: counters.streams,
+    getStreamInfo: (streamId: string) => {
+      const s = counters.streams.get(streamId);
+      if (!s) return null;
+      return {
+        streamId,
+        serverId: s.serverId,
+        targetAgent: s.targetAgent,
+        isClosed: s.isClosed ?? false,
+        initialized: s.initialized ?? true,
+      };
+    },
     createStream: async (serverId: string, targetAgent: string) => {
       counters.createStream++;
       await new Promise((r) => setTimeout(r, 50));
       const streamId = `mock-stream-${++nextStreamSeq}`;
-      counters.streams.set(streamId, { serverId, targetAgent });
+      counters.streams.set(streamId, {
+        serverId,
+        targetAgent,
+        isClosed: false,
+        initialized: false,
+      });
       return { streamId, serverId, targetAgent };
     },
-    initialize: async (_streamId: string) => {
+    initialize: async (streamId: string) => {
       counters.initialize++;
+      const s = counters.streams.get(streamId);
+      if (s) s.initialized = true;
     },
     newSession: async (_streamId: string, _opts: unknown) => {
       counters.newSession++;
       return { sessionId: `mock-session-${++nextSessionSeq}` };
     },
+  };
+}
+
+function createMockMapClientManager(counters: MockCounters) {
+  return {
+    isConnected: (serverId: string) => counters.mapConnected.get(serverId) ?? true,
   };
 }
 
@@ -127,13 +161,20 @@ describe('E2E: /sessions/acp-connect multi-tab session sharing', () => {
       }]]),
     });
 
-    counters = { createStream: 0, initialize: 0, newSession: 0, streams: new Map() };
+    counters = {
+      createStream: 0,
+      initialize: 0,
+      newSession: 0,
+      streams: new Map(),
+      mapConnected: new Map([[SWARM_ID, true]]),
+    };
 
     app = Fastify({ logger: false });
     app.decorateRequest('agent');
     // Stub SwarmCraft plugin context with the mock manager.
     (app as unknown as { swarmcraft: unknown }).swarmcraft = {
       acpStreamManager: createMockAcpManager(counters),
+      mapClientManager: createMockMapClientManager(counters),
     };
     await app.register(sessionsRoutes, { prefix: '/api/v1', config: buildConfig() });
     await app.ready();
@@ -154,6 +195,8 @@ describe('E2E: /sessions/acp-connect multi-tab session sharing', () => {
     counters.initialize = 0;
     counters.newSession = 0;
     counters.streams.clear();
+    counters.mapConnected.clear();
+    counters.mapConnected.set(SWARM_ID, true);
     getDatabase().prepare(`DELETE FROM syncable_resources WHERE resource_type = 'session'`).run();
   });
 
@@ -258,6 +301,90 @@ describe('E2E: /sessions/acp-connect multi-tab session sharing', () => {
     // Manager ran twice (one per owner).
     expect(counters.createStream).toBe(2);
     expect(counters.newSession).toBe(2);
+  });
+
+  // ── Liveness check layers (7a) ──
+  //
+  // Each of these simulates a failure mode where the cached stream entry
+  // exists in the manager's Map but is no longer usable. The route must
+  // detect each case and fall through to a fresh create instead of handing
+  // a corpse to the tab.
+
+  it('falls through to recreate when cached stream is marked closed mid-flight', async () => {
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/acp-connect',
+      payload: { swarm_id: SWARM_ID, agent_id: ACP_AGENT_ID },
+    });
+    const firstBody = JSON.parse(first.body);
+
+    // Simulate the stream closing but the close-listener not having fired
+    // yet (there's a brief async window where streams.has(id) is still true
+    // but isClosed flipped).
+    const state = counters.streams.get(firstBody.acp_stream_id);
+    if (state) state.isClosed = true;
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/acp-connect',
+      payload: { swarm_id: SWARM_ID, agent_id: ACP_AGENT_ID },
+    });
+    const secondBody = JSON.parse(second.body);
+    expect(second.statusCode).toBe(200);
+    expect(secondBody.created).toBe(true);
+    expect(secondBody.acp_stream_id).not.toBe(firstBody.acp_stream_id);
+    expect(counters.createStream).toBe(2);
+  });
+
+  it('falls through to recreate when cached stream never completed its init handshake', async () => {
+    // Plant a stream directly in the manager that's present but not yet
+    // initialized — mimicking a createStream that crashed between the
+    // createStream() return and a retry's subsequent initialize() call.
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/acp-connect',
+      payload: { swarm_id: SWARM_ID, agent_id: ACP_AGENT_ID },
+    });
+    const firstBody = JSON.parse(first.body);
+
+    const state = counters.streams.get(firstBody.acp_stream_id);
+    if (state) state.initialized = false;
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/acp-connect',
+      payload: { swarm_id: SWARM_ID, agent_id: ACP_AGENT_ID },
+    });
+    const secondBody = JSON.parse(second.body);
+    expect(second.statusCode).toBe(200);
+    expect(secondBody.created).toBe(true);
+    expect(secondBody.acp_stream_id).not.toBe(firstBody.acp_stream_id);
+  });
+
+  it('falls through to recreate when the underlying MAP client is no longer connected', async () => {
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/acp-connect',
+      payload: { swarm_id: SWARM_ID, agent_id: ACP_AGENT_ID },
+    });
+    const firstBody = JSON.parse(first.body);
+
+    // Outbound connection dropped — stream entry still in the Map + looks
+    // healthy, but nothing can actually reach the agent.
+    counters.mapConnected.set(SWARM_ID, false);
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/acp-connect',
+      payload: { swarm_id: SWARM_ID, agent_id: ACP_AGENT_ID },
+    });
+    const secondBody = JSON.parse(second.body);
+    expect(second.statusCode).toBe(200);
+    expect(secondBody.created).toBe(true);
+    expect(secondBody.acp_stream_id).not.toBe(firstBody.acp_stream_id);
+
+    // Restore connection for subsequent tests.
+    counters.mapConnected.set(SWARM_ID, true);
   });
 
   it('falls through to recreate when the in-memory stream has died', async () => {

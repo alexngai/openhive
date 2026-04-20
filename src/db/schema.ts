@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 41;
+export const SCHEMA_VERSION = 42;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -59,76 +59,10 @@ CREATE INDEX IF NOT EXISTS idx_remote_agents_origin
   ON remote_agents_cache(origin_instance_id);
 
 -- Posts table
-CREATE TABLE IF NOT EXISTS posts (
-  id TEXT PRIMARY KEY,
-  hive_id TEXT NOT NULL REFERENCES hives(id) ON DELETE CASCADE,
-  author_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  content TEXT,
-  url TEXT,
-  score INTEGER DEFAULT 0,
-  comment_count INTEGER DEFAULT 0,
-  is_pinned INTEGER DEFAULT 0,
-  -- Sync origin tracking
-  sync_event_id TEXT,
-  origin_instance_id TEXT,
-  origin_post_id TEXT,
-  remote_author_id TEXT REFERENCES remote_agents_cache(id),
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
--- Comments table with materialized path for threading
-CREATE TABLE IF NOT EXISTS comments (
-  id TEXT PRIMARY KEY,
-  post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-  parent_id TEXT REFERENCES comments(id) ON DELETE CASCADE,
-  author_id TEXT NOT NULL,
-  content TEXT NOT NULL,
-  score INTEGER DEFAULT 0,
-  depth INTEGER DEFAULT 0,
-  path TEXT NOT NULL,
-  -- Sync origin tracking
-  sync_event_id TEXT,
-  origin_instance_id TEXT,
-  origin_comment_id TEXT,
-  remote_author_id TEXT REFERENCES remote_agents_cache(id),
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
--- Votes table
-CREATE TABLE IF NOT EXISTS votes (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL,
-  target_type TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
-  target_id TEXT NOT NULL,
-  value INTEGER NOT NULL CHECK (value IN (-1, 1)),
-  -- Sync origin tracking
-  sync_event_id TEXT,
-  origin_instance_id TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(agent_id, target_type, target_id)
-);
-
--- Memberships table
-CREATE TABLE IF NOT EXISTS memberships (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  hive_id TEXT NOT NULL REFERENCES hives(id) ON DELETE CASCADE,
-  role TEXT DEFAULT 'member' CHECK (role IN ('member', 'moderator', 'owner')),
-  joined_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(agent_id, hive_id)
-);
-
--- Follows table
-CREATE TABLE IF NOT EXISTS follows (
-  id TEXT PRIMARY KEY,
-  follower_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  following_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  created_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(follower_id, following_id)
-);
+-- Social-community tables (posts, comments, votes, memberships, follows)
+-- were removed in SCHEMA_VERSION 42. MIGRATION_V42_DROP_SOCIAL_TABLES
+-- cleans them up on existing installs. Fresh installs skip creation
+-- entirely — no orphan tables.
 
 -- Invite codes table
 CREATE TABLE IF NOT EXISTS invite_codes (
@@ -323,17 +257,8 @@ CREATE INDEX IF NOT EXISTS idx_session_forks_parent ON session_forks(parent_sess
 CREATE INDEX IF NOT EXISTS idx_session_forks_child ON session_forks(child_session_id);
 
 -- Indexes for common queries
-CREATE INDEX IF NOT EXISTS idx_posts_hive_id ON posts(hive_id);
-CREATE INDEX IF NOT EXISTS idx_posts_author_id ON posts(author_id);
-CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id);
-CREATE INDEX IF NOT EXISTS idx_comments_author_id ON comments(author_id);
-CREATE INDEX IF NOT EXISTS idx_comments_path ON comments(path);
-CREATE INDEX IF NOT EXISTS idx_votes_target ON votes(target_type, target_id);
-CREATE INDEX IF NOT EXISTS idx_memberships_agent ON memberships(agent_id);
-CREATE INDEX IF NOT EXISTS idx_memberships_hive ON memberships(hive_id);
-CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_id);
-CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id);
+-- (posts/comments/votes/memberships/follows indexes removed with the
+--  social layer; see MIGRATION_V42_DROP_SOCIAL_TABLES.)
 CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name);
 CREATE INDEX IF NOT EXISTS idx_agents_email ON agents(email);
 CREATE INDEX IF NOT EXISTS idx_uploads_agent ON uploads(agent_id);
@@ -415,12 +340,6 @@ CREATE INDEX IF NOT EXISTS idx_hive_events_group_seq ON hive_events(sync_group_i
 CREATE INDEX IF NOT EXISTS idx_hive_events_type ON hive_events(sync_group_id, event_type);
 CREATE INDEX IF NOT EXISTS idx_hive_events_origin ON hive_events(origin_instance_id);
 CREATE INDEX IF NOT EXISTS idx_hive_events_origin_ts ON hive_events(origin_ts);
-
--- Dedup indexes for synced content
-CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_origin
-  ON posts(origin_instance_id, origin_post_id) WHERE origin_instance_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_comments_origin
-  ON comments(origin_instance_id, origin_comment_id) WHERE origin_instance_id IS NOT NULL;
 
 -- Causal ordering queue (events waiting on dependencies)
 CREATE TABLE IF NOT EXISTS hive_events_pending (
@@ -735,22 +654,12 @@ VALUES ('default-general', 'general', 'General discussion for all agents', 1, 0)
 `;
 
 // Full-text search schema
+//
+// The social FTS tables (posts_fts, comments_fts) and their triggers were
+// removed with the social layer (SCHEMA_VERSION 42). Only agents + hives
+// FTS remain — agents is used for agent lookup; hives FTS is unused today
+// but cheap to keep around since the hives table stays.
 export const FTS_SCHEMA = `
--- FTS5 virtual table for posts
-CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
-  title,
-  content,
-  content='posts',
-  content_rowid='rowid'
-);
-
--- FTS5 virtual table for comments
-CREATE VIRTUAL TABLE IF NOT EXISTS comments_fts USING fts5(
-  content,
-  content='comments',
-  content_rowid='rowid'
-);
-
 -- FTS5 virtual table for agents
 CREATE VIRTUAL TABLE IF NOT EXISTS agents_fts USING fts5(
   name,
@@ -766,32 +675,6 @@ CREATE VIRTUAL TABLE IF NOT EXISTS hives_fts USING fts5(
   content='hives',
   content_rowid='rowid'
 );
-
--- Triggers to keep FTS in sync with posts
-CREATE TRIGGER IF NOT EXISTS posts_fts_insert AFTER INSERT ON posts BEGIN
-  INSERT INTO posts_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS posts_fts_update AFTER UPDATE ON posts BEGIN
-  UPDATE posts_fts SET title = new.title, content = new.content WHERE rowid = old.rowid;
-END;
-
-CREATE TRIGGER IF NOT EXISTS posts_fts_delete AFTER DELETE ON posts BEGIN
-  DELETE FROM posts_fts WHERE rowid = old.rowid;
-END;
-
--- Triggers to keep FTS in sync with comments
-CREATE TRIGGER IF NOT EXISTS comments_fts_insert AFTER INSERT ON comments BEGIN
-  INSERT INTO comments_fts(rowid, content) VALUES (new.rowid, new.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS comments_fts_update AFTER UPDATE ON comments BEGIN
-  UPDATE comments_fts SET content = new.content WHERE rowid = old.rowid;
-END;
-
-CREATE TRIGGER IF NOT EXISTS comments_fts_delete AFTER DELETE ON comments BEGIN
-  DELETE FROM comments_fts WHERE rowid = old.rowid;
-END;
 
 -- Triggers to keep FTS in sync with agents
 CREATE TRIGGER IF NOT EXISTS agents_fts_insert AFTER INSERT ON agents BEGIN
@@ -921,6 +804,33 @@ CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence);
 // a retry timeline without reconstructing state from the WS log.
 export const MIGRATION_V41_DISPATCH_ATTEMPTS_HISTORY = `
 ALTER TABLE dispatches ADD COLUMN attempts_history TEXT NOT NULL DEFAULT '[]';
+`;
+
+// Migration V42: Drop the social community layer.
+// The posts/comments/votes/memberships/follows/event_post_rules tables (and
+// their FTS + triggers) are removed. The `hives` table stays — MAP still
+// uses it as a namespace/tenancy tag for swarm grouping and pre-auth key
+// scoping; the remaining columns (`is_public`, `member_count`, etc.) are
+// unused by MAP but harmless. A later cleanup can slim the hives schema.
+//
+// DROP IF EXISTS on both triggers and virtual tables avoids errors on
+// installs that never created them (e.g. old installs that missed the
+// v12 FTS migration).
+export const MIGRATION_V42_DROP_SOCIAL_TABLES = `
+DROP TRIGGER IF EXISTS posts_fts_insert;
+DROP TRIGGER IF EXISTS posts_fts_update;
+DROP TRIGGER IF EXISTS posts_fts_delete;
+DROP TRIGGER IF EXISTS comments_fts_insert;
+DROP TRIGGER IF EXISTS comments_fts_update;
+DROP TRIGGER IF EXISTS comments_fts_delete;
+DROP TABLE IF EXISTS posts_fts;
+DROP TABLE IF EXISTS comments_fts;
+DROP TABLE IF EXISTS event_post_rules;
+DROP TABLE IF EXISTS votes;
+DROP TABLE IF EXISTS follows;
+DROP TABLE IF EXISTS memberships;
+DROP TABLE IF EXISTS comments;
+DROP TABLE IF EXISTS posts;
 `;
 
 // ============================================================================
@@ -1292,14 +1202,18 @@ CREATE TABLE IF NOT EXISTS bridge_proxy_agents (
   UNIQUE(bridge_id, platform_user_id)
 );
 
--- Message mappings (platform message -> post/comment for thread tracking)
+-- Message mappings (platform message -> bridged content for thread
+-- tracking). The post_id/comment_id columns remain as plain TEXT after
+-- SCHEMA_VERSION 42; they used to FK to posts/comments but those tables
+-- were removed with the social layer. Kept column-shape-compatible so
+-- the bridge infra can be repurposed later without a migration.
 CREATE TABLE IF NOT EXISTS bridge_message_mappings (
   id TEXT PRIMARY KEY,
   bridge_id TEXT NOT NULL REFERENCES bridge_configs(id) ON DELETE CASCADE,
   platform_message_id TEXT NOT NULL,
   platform_channel_id TEXT NOT NULL,
-  post_id TEXT REFERENCES posts(id) ON DELETE CASCADE,
-  comment_id TEXT REFERENCES comments(id) ON DELETE CASCADE,
+  post_id TEXT,
+  comment_id TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   UNIQUE(bridge_id, platform_message_id)
 );
@@ -1317,28 +1231,11 @@ CREATE INDEX IF NOT EXISTS idx_bridge_message_mappings_post ON bridge_message_ma
 CREATE INDEX IF NOT EXISTS idx_bridge_message_mappings_channel ON bridge_message_mappings(bridge_id, platform_channel_id);
 `;
 
-// Migration V19: Event routing — post rules, subscriptions, delivery log
+// Migration V19: Event routing — subscriptions, delivery log.
+// The `event_post_rules` table that originally lived here was removed in
+// V42 along with the social layer; the SCHEMA_VERSION-42 drop migration
+// handles removal on existing installs.
 export const MIGRATION_V19_EVENT_ROUTING = `
--- Which events become posts in which hive
-CREATE TABLE IF NOT EXISTS event_post_rules (
-  id TEXT PRIMARY KEY,
-  hive_id TEXT NOT NULL REFERENCES hives(id) ON DELETE CASCADE,
-  source TEXT NOT NULL,
-  event_types TEXT NOT NULL,
-  filters TEXT,
-  normalizer TEXT NOT NULL DEFAULT 'default',
-  thread_mode TEXT DEFAULT 'post_per_event'
-    CHECK (thread_mode IN ('post_per_event', 'single_thread', 'skip')),
-  priority INTEGER DEFAULT 100,
-  enabled INTEGER DEFAULT 1,
-  created_by TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_event_post_rules_hive ON event_post_rules(hive_id);
-CREATE INDEX IF NOT EXISTS idx_event_post_rules_source ON event_post_rules(source);
-
 -- Which swarms receive which events via MAP
 CREATE TABLE IF NOT EXISTS event_subscriptions (
   id TEXT PRIMARY KEY,
@@ -1745,16 +1642,6 @@ CREATE INDEX IF NOT EXISTS idx_cascade_prs_state ON cascade_pull_requests(state)
 
 // Populate FTS tables from existing data
 export const FTS_POPULATE = `
--- Populate posts FTS
-INSERT INTO posts_fts(rowid, title, content)
-SELECT rowid, title, content FROM posts WHERE true
-ON CONFLICT DO NOTHING;
-
--- Populate comments FTS
-INSERT INTO comments_fts(rowid, content)
-SELECT rowid, content FROM comments WHERE true
-ON CONFLICT DO NOTHING;
-
 -- Populate agents FTS
 INSERT INTO agents_fts(rowid, name, description)
 SELECT rowid, name, description FROM agents WHERE true

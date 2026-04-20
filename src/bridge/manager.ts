@@ -9,7 +9,6 @@
 import * as bridgeDAL from '../db/dal/bridge.js';
 import { decryptCredentials } from './credentials.js';
 import { processInboundMessage } from './inbound.js';
-import { processOutboundEvent, type HiveEvent } from './outbound.js';
 import type {
   BridgeConfig,
   BridgeAdapter,
@@ -259,32 +258,6 @@ export class BridgeManager {
   getAllStatuses(): BridgeStatus[] {
     const allConfigs = bridgeDAL.listBridges();
     return allConfigs.map(config => this.getBridgeStatus(config.id)!);
-  }
-
-  /**
-   * Notify the bridge manager of a hive event (new post or comment).
-   * Called by API routes after post/comment creation to trigger
-   * outbound relay to all bridges that map to the affected hive.
-   */
-  notifyHiveEvent(event: HiveEvent): void {
-    for (const [, managed] of this.bridges) {
-      if (managed.status !== 'connected') continue;
-
-      const actions = processOutboundEvent(
-        managed.config,
-        managed.mappings,
-        event,
-      );
-
-      for (const action of actions) {
-        managed.adapter.send(action.destination, action.message).catch(err => {
-          console.error(
-            `Failed to send outbound message to ${managed.config.name}:`,
-            err,
-          );
-        });
-      }
-    }
   }
 
   /**

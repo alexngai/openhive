@@ -322,57 +322,9 @@ describe('BridgeManager', () => {
     expect(mgr.getBridgeStatus('nonexistent')).toBeNull();
   });
 
-  // ── Outbound relay ──
-
-  it('relays hive events to connected bridges', async () => {
-    const mgr = createManager();
-    const bridgeId = createTestBridge('outbound-relay');
-
-    bridgeDAL.addChannelMapping(bridgeId, {
-      platform_channel_id: 'C_RELAY',
-      hive_name: 'general',
-      direction: 'bidirectional',
-    });
-
-    // Re-register adapter so it gets the mappings
-    mockAdapter = createMockAdapter();
-    mgr.registerAdapter('slack', () => mockAdapter);
-
-    await mgr.startBridge(bridgeId);
-
-    mgr.notifyHiveEvent({
-      type: 'new_post',
-      postId: 'post_relay_1',
-      authorId: testAgentId,
-      authorName: 'Test User',
-      hiveName: 'general',
-      title: 'Relayed Post',
-      content: 'This should be relayed',
-    });
-
-    // Give the async send a moment
-    await new Promise(r => setTimeout(r, 50));
-
-    expect(mockAdapter.sentMessages.length).toBe(1);
-    expect(mockAdapter.sentMessages[0].destination.platformChannelId).toBe('C_RELAY');
-    expect(mockAdapter.sentMessages[0].message.text).toContain('Relayed Post');
-  });
-
-  it('skips outbound relay for disconnected bridges', async () => {
-    const mgr = createManager();
-
-    // Don't start any bridge, just call notifyHiveEvent
-    mgr.notifyHiveEvent({
-      type: 'new_post',
-      postId: 'post_skip',
-      authorId: testAgentId,
-      authorName: 'Test',
-      hiveName: 'general',
-      content: 'Should not relay',
-    });
-
-    // No error thrown, no messages sent
-  });
+  // Outbound-relay tests were dropped with the social layer: posts/comments
+  // no longer exist, so there's no hive event to relay to bridge adapters.
+  // `BridgeManager.notifyHiveEvent` has been removed.
 
   // ── Mapping reload ──
 

@@ -83,7 +83,8 @@ describe('Skills Page', () => {
 
     it('shows resource count', () => {
       renderSkills();
-      expect(screen.getByText(/1 resource/)).toBeDefined();
+      // Shared ListFilters toolbar labels skill lists as "libraries".
+      expect(screen.getByText(/1 library/)).toBeDefined();
     });
   });
 

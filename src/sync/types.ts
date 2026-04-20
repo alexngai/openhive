@@ -25,13 +25,21 @@ export interface AgentSnapshot {
 
 // ── Event Types ─────────────────────────────────────────────────
 
+/**
+ * Event types that flow through the sync mesh.
+ *
+ * The social-community event types (`post_*`, `comment_*`, `vote_cast`,
+ * `hive_setting_changed`, `membership_changed`, `moderator_changed`) and the
+ * deprecated task-coordination types (`coordination_task_offered`,
+ * `coordination_task_claimed`, `coordination_task_completed`) used to live
+ * in this union. Inbound events of those deprecated types are still silently
+ * skipped by `materializer.ts` for backward compat with older peers, but no
+ * local code emits them anymore, so they're no longer in the TypeScript
+ * surface.
+ */
 export type HiveEventType =
-  | 'post_created' | 'post_updated' | 'post_deleted'
-  | 'comment_created' | 'comment_updated' | 'comment_deleted'
-  | 'vote_cast'
-  | 'hive_setting_changed' | 'membership_changed' | 'moderator_changed'
   | 'resource_published' | 'resource_updated' | 'resource_unpublished' | 'resource_synced'
-  | 'coordination_task_offered' | 'coordination_task_claimed' | 'coordination_task_completed' | 'coordination_message';
+  | 'coordination_message';
 
 export interface HiveEvent {
   id: string;
@@ -47,73 +55,8 @@ export interface HiveEvent {
 }
 
 // ── Event Payloads ──────────────────────────────────────────────
-
-export interface PostCreatedPayload {
-  post_id: string;
-  title: string;
-  content: string | null;
-  url: string | null;
-  author: AgentSnapshot;
-}
-
-export interface PostUpdatedPayload {
-  post_id: string;
-  title?: string;
-  content?: string;
-  url?: string;
-  updated_by: AgentSnapshot;
-}
-
-export interface PostDeletedPayload {
-  post_id: string;
-  deleted_by: AgentSnapshot;
-  reason?: string;
-}
-
-export interface CommentCreatedPayload {
-  comment_id: string;
-  post_id: string;
-  parent_comment_id: string | null;
-  content: string;
-  author: AgentSnapshot;
-}
-
-export interface CommentUpdatedPayload {
-  comment_id: string;
-  content: string;
-  updated_by: AgentSnapshot;
-}
-
-export interface CommentDeletedPayload {
-  comment_id: string;
-  deleted_by: AgentSnapshot;
-  reason?: string;
-}
-
-export interface VoteCastPayload {
-  target_type: 'post' | 'comment';
-  target_id: string;
-  voter: { instance_id: string; agent_id: string };
-  value: 1 | -1 | 0;
-}
-
-export interface HiveSettingChangedPayload {
-  key: string;
-  value: unknown;
-  changed_by: AgentSnapshot;
-}
-
-export interface MembershipChangedPayload {
-  agent: AgentSnapshot;
-  action: 'join' | 'leave' | 'ban' | 'unban';
-  by: AgentSnapshot;
-}
-
-export interface ModeratorChangedPayload {
-  agent: AgentSnapshot;
-  action: 'add' | 'remove';
-  by: AgentSnapshot;
-}
+// (Social-layer payloads — Post/Comment/Vote/HiveSetting/Membership/
+//  Moderator — were removed with the social community surface.)
 
 export interface ResourcePublishedPayload {
   resource_id: string;
@@ -155,37 +98,11 @@ export interface ResourceSyncedPayload {
 }
 
 // ── Coordination Event Payloads ─────────────────────────────────
-
-export interface CoordinationTaskOfferedPayload {
-  task_id: string;
-  title: string;
-  description: string | null;
-  priority: 'low' | 'medium' | 'high' | 'critical';
-  offered_by: AgentSnapshot;
-  hive_id: string;
-  assigned_to_swarm_id: string | null;
-  context: Record<string, unknown> | null;
-  deadline: string | null;
-}
-
-export interface CoordinationTaskClaimedPayload {
-  task_id: string;
-  /** Origin of the task if it was replicated from another instance */
-  origin_instance_id?: string | null;
-  origin_task_id?: string | null;
-  claimed_by: AgentSnapshot;
-}
-
-export interface CoordinationTaskCompletedPayload {
-  task_id: string;
-  /** Origin of the task if it was replicated from another instance */
-  origin_instance_id?: string | null;
-  origin_task_id?: string | null;
-  completed_by: AgentSnapshot;
-  status: 'completed' | 'failed';
-  result: Record<string, unknown> | null;
-  error: string | null;
-}
+// Task-coordination payloads (`CoordinationTaskOfferedPayload`,
+// `CoordinationTaskClaimedPayload`, `CoordinationTaskCompletedPayload`)
+// were removed — task coordination now flows through OpenTasks graphs
+// rather than sync events. Only cross-instance coordination messages
+// remain on the sync mesh.
 
 export interface CoordinationMessagePayload {
   message_id: string;

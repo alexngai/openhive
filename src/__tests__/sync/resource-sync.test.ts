@@ -20,7 +20,7 @@ import * as mapDAL from '../../db/dal/map.js';
 import { signEvent } from '../../sync/crypto.js';
 import { materializeEvent } from '../../sync/materializer.js';
 import { getMaterializerRepo } from '../../sync/materializer-repo.js';
-import type { HiveEvent } from '../../sync/types.js';
+import type { HiveEvent, HiveEventType } from '../../sync/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 // Mock broadcastToChannel so we can assert on broadcasts without a real WS server
@@ -565,7 +565,10 @@ describe('Resource Sync System', () => {
         hive_id: testHiveId,
         assigned_to_swarm_id: swarm1Id,
       });
-      const event = makeEvent({ event_type: 'coordination_task_offered', payload });
+      // 'coordination_task_offered' was removed from the HiveEventType union
+      // in SCHEMA_VERSION 42; cast keeps the deprecated-event skipping path
+      // exercised for inbound events from older peers.
+      const event = makeEvent({ event_type: 'coordination_task_offered' as HiveEventType, payload });
       expect(() => materializeEvent(event, testHiveId, testHiveName, false)).not.toThrow();
     });
   });
