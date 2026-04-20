@@ -2,6 +2,7 @@
   "name": "openhive-electron",
   "version": "0.1.0",
   "description": "Electron desktop shell for OpenHive",
+  "author": "Alex Ngai",
   "private": true,
   "type": "module",
   "main": "dist/main.js",
@@ -25,6 +26,7 @@
   "build": {
     "appId": "com.openhive.desktop",
     "productName": "OpenHive",
+    "electronVersion": "37.10.3",
     "directories": {
       "output": "../release"
     },
