@@ -208,7 +208,10 @@ export function useMapSwarmsForPicker(opts?: { status?: string; recency_days?: n
       api.get<{ data: (MapSwarm & { variant_count?: number })[]; total: number }>(
         `/map/swarms?${params}`,
       ),
-    select: (data) => data.data,
+    // Drop ephemeral `session swarm_*` rows — they're registrations that
+    // back a single session and aren't valid dispatch / chat targets. The
+    // hub returns them for dedupe/variant context; pickers don't need them.
+    select: (data) => data.data.filter((s) => !s.name?.startsWith('session ')),
     // Pure WS-driven now that the HMR leak + stale-emit-closure in
     // `useWebSocket` is fixed. `useSwarmRealtime` invalidates
     // `['map-swarms-picker']` on swarm lifecycle events, which refetches

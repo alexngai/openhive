@@ -22,7 +22,10 @@ export interface ListFiltersProps {
   /** Auto-focus the input on mount. Default: false. */
   autoFocus?: boolean;
   /** Visible / total counts shown alongside the search. Omit to hide. */
-  count?: { visible: number; total: number; noun?: string };
+  /** Visible / total counts shown alongside the search. Omit to hide.
+   *  `noun` is the singular form (e.g. "dispatch"); `nounPlural` overrides
+   *  the default "add s" pluralization for irregular nouns. */
+  count?: { visible: number; total: number; noun?: string; nounPlural?: string };
   /** Page-specific controls rendered on the right side of the toolbar
    *  (status chips, filter toggles, action buttons, etc.). */
   right?: React.ReactNode;
@@ -83,7 +86,11 @@ export function ListFilters({
       {count && (
         <span className="text-xs shrink-0" style={{ color: 'var(--color-text-muted)' }}>
           {count.visible === count.total
-            ? `${count.total} ${count.noun ?? 'item'}${count.total !== 1 ? 's' : ''}`
+            ? `${count.total} ${
+                count.total === 1
+                  ? (count.noun ?? 'item')
+                  : (count.nounPlural ?? `${count.noun ?? 'item'}s`)
+              }`
             : `${count.visible} of ${count.total}`}
         </span>
       )}
