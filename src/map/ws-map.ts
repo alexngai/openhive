@@ -22,7 +22,7 @@ import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
 import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findNodeBySwarmAndAgentId, findSwarmById, bulkUpdateSwarmNodesPresence } from '../db/dal/map.js';
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
-import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
+import { isMapTaskEvent, handleMapTaskEvent, isMapContextEvent, handleMapContextEvent } from '../coordination/listener.js';
 import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities, getPeerMapId, getAgentOnSwarm } from './connection-registry.js';
 import { resolveSessionScopes } from './session-scopes.js';
 import { verifyToken, isTokenServiceInitialized } from './token-service.js';
@@ -327,6 +327,13 @@ function createNotificationInterceptor(
         handleSyncMessage(msg, swarmId);
       } else if (isMapTaskEvent(msg)) {
         handleMapTaskEvent(msg.payload as Record<string, unknown>, swarmId);
+      } else if (isMapContextEvent(msg)) {
+        const conn = getInbound(swarmId);
+        handleMapContextEvent(
+          msg.payload as Record<string, unknown>,
+          swarmId,
+          conn?.agentId ?? swarmId,
+        );
       } else if (msg.method === 'ping') {
         sendJsonRpc(ws, 'pong', {});
       } else if (msg.method === 'trajectory/content.response') {
@@ -392,27 +399,35 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     const payload = message.payload as Record<string, unknown>;
     if (typeof payload.type !== 'string') return;
 
-    // Only handle task events
+    // Only handle task + context events
     const taskTypes = new Set(['task.created', 'task.assigned', 'task.status']);
-    if (!taskTypes.has(payload.type)) return;
+    const contextTypes = new Set(['context.created', 'context.updated']);
+    const isTask = taskTypes.has(payload.type);
+    const isContext = contextTypes.has(payload.type);
+    if (!isTask && !isContext) return;
 
-    // Resolve the OpenHive agent ID from the MAP message sender.
+    // Resolve the OpenHive agent ID + swarm ID from the MAP message sender.
     // message.from is the MAP session agent ID (a ULID assigned by MAPServer),
     // not the OpenHive swarmId or agentId. We need to find which inbound
     // connection this MAP agent belongs to, then use its OpenHive agentId.
+    // Context events additionally need the swarmId to look up the connection's
+    // default task graph (→ resource_id) in the broadcast.
     const mapFrom = typeof message.from === 'string' ? message.from : 'unknown';
     let resolvedAgentId = mapFrom;
+    let resolvedSwarmId: string | undefined;
 
     // Try direct lookup (message.from might be a swarmId)
     const directConn = getInbound(mapFrom);
     if (directConn) {
       resolvedAgentId = directConn.agentId;
+      resolvedSwarmId = directConn.swarmId;
     } else {
       // Search all connections — message.from might be a MAP session agent ID
       // or a registered agent name. Check both registeredAgents and the ULID match.
       for (const [, conn] of getAllInbound()) {
         if (conn.registeredAgents.has(mapFrom)) {
           resolvedAgentId = conn.agentId;
+          resolvedSwarmId = conn.swarmId;
           break;
         }
       }
@@ -425,6 +440,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
           for (const [, regAgent] of conn.registeredAgents) {
             if (regAgent.id === mapFrom || regAgent.name === mapFrom) {
               resolvedAgentId = conn.agentId;
+              resolvedSwarmId = conn.swarmId;
               break;
             }
           }
@@ -434,13 +450,19 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         if (resolvedAgentId === mapFrom) {
           const allInbound = getAllInbound();
           if (allInbound.size === 1) {
-            resolvedAgentId = [...allInbound.values()][0].agentId;
+            const only = [...allInbound.values()][0];
+            resolvedAgentId = only.agentId;
+            resolvedSwarmId = only.swarmId;
           }
         }
       }
     }
 
-    handleMapTaskEvent(payload, resolvedAgentId);
+    if (isTask) {
+      handleMapTaskEvent(payload, resolvedAgentId);
+    } else if (isContext && resolvedSwarmId) {
+      handleMapContextEvent(payload, resolvedSwarmId, resolvedAgentId);
+    }
   });
 
   fastify.get('/ws/map', { websocket: true }, async (socket, request) => {
