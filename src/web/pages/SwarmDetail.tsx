@@ -70,11 +70,20 @@ function SectionHeading({ icon: Icon, label, count }: {
   );
 }
 
+/**
+ * Compact placeholder used by idle sections (Registered Agents, Sessions,
+ * Messages, etc.). Single-line, subdued — keeps the page scannable when
+ * a swarm has nothing to show. An earlier version used a full card which
+ * stacked three tall empty panels on idle swarms.
+ */
 function EmptyState({ message }: { message: string }) {
   return (
-    <div className="card px-4 py-6 text-center" style={{ color: 'var(--color-text-muted)' }}>
-      <p className="text-xs">{message}</p>
-    </div>
+    <p
+      className="px-3 py-1.5 text-xs"
+      style={{ color: 'var(--color-text-muted)' }}
+    >
+      {message}
+    </p>
   );
 }
 
@@ -278,7 +287,9 @@ function SwarmHeader({
             <span className="opacity-30">·</span>
             <span>
               <span className="font-medium" style={{ color: 'var(--color-text-secondary)' }}>Agents </span>
-              {health.registeredAgentCount}
+              {/* Exclude sidecars from the visible count so it matches the
+                  Registered Agents section body, which hides sidecars. */}
+              {health.registeredAgents.filter((a) => a.role !== 'sidecar').length}
             </span>
             <span className="opacity-30">·</span>
             <span>
