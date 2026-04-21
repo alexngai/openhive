@@ -758,9 +758,20 @@ export async function specsRoutes(
 
       if (shouldBroadcastSpecEvent('spec.updated', resourceId, specId)) {
         try {
+          // Shape matches PATCH /specs's spec.updated envelope so the
+          // frontend's `useSpecsRealtime.invalidateOne` can extract
+          // `spec.id` to invalidate the detail query — link edits should
+          // refresh both list and detail views.
           broadcastToChannel('map:tasks', {
             type: 'spec.updated',
-            data: { spec_id: specId, target_id: body.target_id, edge_type: body.type, resource_id: resourceId },
+            data: {
+              spec: { id: specId },
+              resource_id: resourceId,
+              link: {
+                target_id: body.target_id,
+                edge_type: body.type,
+              },
+            },
           });
         } catch { /* best effort */ }
       }
@@ -815,7 +826,15 @@ export async function specsRoutes(
         try {
           broadcastToChannel('map:tasks', {
             type: 'spec.updated',
-            data: { spec_id: specId, target_id: body.target_id, edge_type: body.type, resource_id: resourceId, removed: true },
+            data: {
+              spec: { id: specId },
+              resource_id: resourceId,
+              link: {
+                target_id: body.target_id,
+                edge_type: body.type,
+                removed: true,
+              },
+            },
           });
         } catch { /* best effort */ }
       }
