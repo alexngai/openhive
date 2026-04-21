@@ -8,13 +8,34 @@
 
 import type { WebSocket } from 'ws';
 
+/**
+ * Cascade-related capability flags an agent may declare during MAP
+ * registration. Stored under `capabilities.cascade` in the generic
+ * `Record<string, unknown>` bag; this alias documents the expected shape
+ * for consumers (task-binder, policy resolver). Nothing else enforces it —
+ * the aggregate helper preserves arbitrary keys.
+ */
+export interface CascadeCapability {
+  /**
+   * When true, the agent delegates task-close decisions to the hub: when a
+   * cascade stream carrying a `task_ref` merges, the hub transitions the
+   * linked task to `completed` without requiring the agent to drive it.
+   * Per-task metadata overrides (see policy resolver).
+   */
+  autoCloseOnMerge?: boolean;
+}
+
 export interface RegisteredAgent {
   id: string;
   name: string;
   role: string;
   state: string;
   scopes: string[];
-  /** Capabilities declared by this specific agent during MAP registration. */
+  /**
+   * Capabilities declared by this specific agent during MAP registration.
+   * Known nested shapes include `mail`, `messaging`, `trajectory`, `acp`,
+   * `protocols`, and `cascade` (see `CascadeCapability`).
+   */
   capabilities?: Record<string, unknown>;
   /**
    * Metadata from the agent's registration. May include `peerMapId`, which

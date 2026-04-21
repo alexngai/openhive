@@ -23,28 +23,35 @@
  * Context sharing and messaging are handled by agent-inbox (not here).
  */
 
-import { mapHubEvents } from '../map/service.js';
-import { broadcastToChannel } from '../realtime/index.js';
-import { getDefaultTaskGraph } from '../map/connection-registry.js';
-import { shouldBroadcastSpecEvent } from '../map/spec-broadcast-dedup.js';
+import { mapHubEvents } from "../map/service.js";
+import { broadcastToChannel } from "../realtime/index.js";
+import { shouldBroadcastSpecEvent } from "../map/spec-broadcast-dedup.js";
+import { broadcastTaskStatus } from "../map/task-broadcast.js";
+import { getDefaultTaskGraph } from "../map/connection-registry.js";
 
 // =============================================================================
 // MAP Scope Task Messages (from cc-swarm / macro-agent)
 // =============================================================================
 
 /** MAP scope message payload types for task events */
-const MAP_TASK_EVENT_TYPES = new Set(['task.created', 'task.assigned', 'task.status']);
+const MAP_TASK_EVENT_TYPES = new Set([
+  "task.created",
+  "task.assigned",
+  "task.status",
+]);
 
 /**
  * Type guard: is the incoming data a MAP scope message containing a task event?
  * These arrive as MAP `send()` messages with payload.type set to a task event.
  */
 export function isMapTaskEvent(data: unknown): boolean {
-  if (!data || typeof data !== 'object') return false;
+  if (!data || typeof data !== "object") return false;
   const msg = data as Record<string, unknown>;
-  if (!msg.payload || typeof msg.payload !== 'object') return false;
+  if (!msg.payload || typeof msg.payload !== "object") return false;
   const payload = msg.payload as Record<string, unknown>;
-  return typeof payload.type === 'string' && MAP_TASK_EVENT_TYPES.has(payload.type);
+  return (
+    typeof payload.type === "string" && MAP_TASK_EVENT_TYPES.has(payload.type)
+  );
 }
 
 /**
@@ -56,11 +63,11 @@ export function handleMapTaskEvent(
   sourceSwarmId: string,
 ): void {
   switch (payload.type) {
-    case 'task.created': {
+    case "task.created": {
       const task = payload.task as Record<string, unknown> | undefined;
       if (!task?.title) return;
 
-      mapHubEvents.emit('task_assigned', {
+      mapHubEvents.emit("task_assigned", {
         task_id: task.id,
         title: task.title,
         description: task.description,
@@ -71,12 +78,12 @@ export function handleMapTaskEvent(
       break;
     }
 
-    case 'task.assigned': {
+    case "task.assigned": {
       const taskId = payload.taskId as string | undefined;
       const assignee = payload.assignee as string | undefined;
       if (!taskId) return;
 
-      mapHubEvents.emit('task_assigned', {
+      mapHubEvents.emit("task_assigned", {
         task_id: taskId,
         assigned_to_swarm: assignee,
         source_swarm_id: sourceSwarmId,
@@ -84,17 +91,20 @@ export function handleMapTaskEvent(
       break;
     }
 
-    case 'task.status': {
+    case "task.status": {
       const taskId = payload.taskId as string | undefined;
       const current = payload.current as string | undefined;
       const previous = payload.previous as string | undefined;
       if (!taskId || !current) return;
 
-      mapHubEvents.emit('task_status_changed', {
-        task_id: taskId,
-        status: current,
-        previous,
-      });
+      // Inbound path: agent scope-message reports task state. The bridge
+      // event itself is unscoped, but we can recover the owning resource_id
+      // from the connection's registered defaultTaskGraph so the cascade
+      // enrichment matches hub-initiated broadcasts (prevents a mixed pair
+      // of enriched + unenriched events when a hub-side close causes the
+      // remote swarm to echo its own status transition).
+      const resourceId = getDefaultTaskGraph(sourceSwarmId)?.resource_id;
+      broadcastTaskStatus({ taskId, status: current, previous, resourceId });
       break;
     }
   }
@@ -105,7 +115,7 @@ export function handleMapTaskEvent(
 // =============================================================================
 
 /** MAP scope message payload types for context events */
-const MAP_CONTEXT_EVENT_TYPES = new Set(['context.created', 'context.updated']);
+const MAP_CONTEXT_EVENT_TYPES = new Set(["context.created", "context.updated"]);
 
 /**
  * Type guard: is the incoming data a MAP scope message containing a context
@@ -114,11 +124,14 @@ const MAP_CONTEXT_EVENT_TYPES = new Set(['context.created', 'context.updated']);
  * payload.type set.
  */
 export function isMapContextEvent(data: unknown): boolean {
-  if (!data || typeof data !== 'object') return false;
+  if (!data || typeof data !== "object") return false;
   const msg = data as Record<string, unknown>;
-  if (!msg.payload || typeof msg.payload !== 'object') return false;
+  if (!msg.payload || typeof msg.payload !== "object") return false;
   const payload = msg.payload as Record<string, unknown>;
-  return typeof payload.type === 'string' && MAP_CONTEXT_EVENT_TYPES.has(payload.type);
+  return (
+    typeof payload.type === "string" &&
+    MAP_CONTEXT_EVENT_TYPES.has(payload.type)
+  );
 }
 
 /**
@@ -144,7 +157,8 @@ export function handleMapContextEvent(
   sourceAgentId: string,
 ): void {
   const contextRaw = payload.context as Record<string, unknown> | undefined;
-  const contextId = typeof contextRaw?.id === 'string' ? contextRaw.id : undefined;
+  const contextId =
+    typeof contextRaw?.id === "string" ? contextRaw.id : undefined;
   if (!contextId) return;
 
   const taskGraph = getDefaultTaskGraph(sourceSwarmId);
@@ -152,10 +166,11 @@ export function handleMapContextEvent(
   if (!resourceId) return;
 
   const metadata = contextRaw?.metadata as Record<string, unknown> | undefined;
-  const isSpec = metadata?.kind === 'spec';
+  const isSpec = metadata?.kind === "spec";
   if (!isSpec) return;
 
-  const type = payload.type === 'context.created' ? 'spec.created' : 'spec.updated';
+  const type =
+    payload.type === "context.created" ? "spec.created" : "spec.updated";
 
   // Suppress the watcher-driven broadcast if an explicit broadcaster (REST
   // handler / map/specs/author) already fired for this same spec event
@@ -164,12 +179,12 @@ export function handleMapContextEvent(
   if (!shouldBroadcastSpecEvent(type, resourceId, contextId)) return;
 
   try {
-    broadcastToChannel('map:tasks', {
+    broadcastToChannel("map:tasks", {
       type,
       data: {
         spec: contextRaw,
         resource_id: resourceId,
-        initiator: { type: 'agent', id: sourceAgentId },
+        initiator: { type: "agent", id: sourceAgentId },
       },
     });
   } catch {
