@@ -6,7 +6,7 @@
  * import { createHive } from 'openhive';
  *
  * const hive = await createHive({
- *   port: 3000,
+ *   port: 7836,
  *   database: './data/openhive.db',
  *   instance: {
  *     name: 'My Hive',

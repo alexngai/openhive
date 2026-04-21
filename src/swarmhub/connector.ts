@@ -421,7 +421,7 @@ export class SwarmHubConnector extends EventEmitter {
     this.stopTunnel();
 
     // Determine local port from env or default
-    const localPort = parseInt(process.env.PORT || '3000', 10);
+    const localPort = parseInt(process.env.PORT || '7836', 10);
     const tunnel = TunnelClient.fromEnv(localPort);
 
     if (tunnel) {

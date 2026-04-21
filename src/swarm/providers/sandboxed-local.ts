@@ -188,7 +188,7 @@ export class SandboxedLocalProvider implements HostingProvider {
 
     // Parse the command
     const parts = this.openswarmCommand.split(/\s+/);
-    const bin = parts[0];
+    let bin = parts[0];
     const baseArgs = parts.slice(1);
 
     const args = [
@@ -239,6 +239,15 @@ export class SandboxedLocalProvider implements HostingProvider {
 
     // Merge sandbox policy: per-spawn overrides > default policy
     const effectivePolicy = sandboxPolicy ?? this.defaultPolicy;
+
+    // Electron compat: when `bin` is node, redirect to process.execPath and
+    // set ELECTRON_RUN_AS_NODE=1 so the Electron binary runs as Node. No-op
+    // in plain Node (process.execPath === node). See LocalProvider for
+    // rationale.
+    if (bin === 'node' || bin === 'node.exe') {
+      bin = process.execPath;
+      env.ELECTRON_RUN_AS_NODE = '1';
+    }
 
     let child: ChildProcess;
 
@@ -356,8 +365,11 @@ export class SandboxedLocalProvider implements HostingProvider {
     // Initialize sandbox manager with this config
     await SandboxManager.initialize(srtConfig);
 
-    // Build the full command string to wrap
-    const fullCommand = `${bin} ${args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')}`;
+    // Build the full command string to wrap. Shell-escape bin as well —
+    // under Electron it can resolve to a path with spaces
+    // (e.g. /Applications/OpenHive.app/Contents/MacOS/OpenHive).
+    const shellEscape = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+    const fullCommand = `${shellEscape(bin)} ${args.map(shellEscape).join(' ')}`;
 
     // Wrap the command with sandbox restrictions
     const wrappedCommand = await SandboxManager.wrapWithSandbox(fullCommand);

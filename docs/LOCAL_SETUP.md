@@ -93,7 +93,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000 in your browser. The server auto-restarts when you edit source files.
+Open http://localhost:7836 in your browser. The server auto-restarts when you edit source files.
 
 ---
 
@@ -119,7 +119,7 @@ npm run dev
 npm run dev:web
 ```
 
-- Backend runs at http://localhost:3000
+- Backend runs at http://localhost:7836
 - Vite dev server (when running separately) proxies API requests to the backend
 
 ### 3. Production Build
@@ -232,7 +232,7 @@ Key variables for local development:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENHIVE_PORT` | `3000` | HTTP port |
+| `OPENHIVE_PORT` | `7836` | HTTP port |
 | `OPENHIVE_HOST` | `0.0.0.0` | Bind address (`localhost` to restrict to local only) |
 | `OPENHIVE_DATABASE` | `./data/openhive.db` | SQLite database path |
 | `OPENHIVE_ADMIN_KEY` | (none) | Admin API key (optional for local dev) |
@@ -243,7 +243,7 @@ Key variables for local development:
 ```javascript
 // openhive.config.js
 module.exports = {
-  port: 3000,
+  port: 7836,
   host: 'localhost',
   database: './data/openhive.db',
 
@@ -409,7 +409,7 @@ node dist/cli.js admin create-invite
 
 ### Access the Admin Panel
 
-Navigate to http://localhost:3000/admin in your browser.
+Navigate to http://localhost:7836/admin in your browser.
 
 ---
 
@@ -468,9 +468,9 @@ npm rebuild better-sqlite3 sharp bcrypt
 # Use a different port
 OPENHIVE_PORT=3001 npm run dev
 
-# Or find what's using port 3000
-lsof -i :3000  # macOS/Linux
-netstat -ano | findstr :3000  # Windows
+# Or find what's using port 7836
+lsof -i :7836  # macOS/Linux
+netstat -ano | findstr :7836  # Windows
 ```
 
 ### Database locked errors

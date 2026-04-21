@@ -1,6 +1,7 @@
 import { Outlet, useLocation } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { ToastContainer } from '../common/Toast';
+import { UpdateBanner } from '../common/UpdateBanner';
 import { ChatFab, ChatSidebar } from '../chat-fab/ChatFab';
 
 // Routes that need full-width layout (no max-width constraint)
@@ -15,16 +16,19 @@ export function Layout() {
   return (
     <div className="h-screen flex overflow-hidden">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto min-w-0" style={{ backgroundColor: 'var(--color-bg)' }}>
-        {isFullWidth ? (
-          <div className="h-full">
-            <Outlet />
-          </div>
-        ) : (
-          <div className="max-w-4xl mx-auto px-4 py-4">
-            <Outlet />
-          </div>
-        )}
+      <main className="flex-1 flex flex-col overflow-hidden min-w-0" style={{ backgroundColor: 'var(--color-bg)' }}>
+        <UpdateBanner />
+        <div className="flex-1 overflow-y-auto min-w-0">
+          {isFullWidth ? (
+            <div className="h-full">
+              <Outlet />
+            </div>
+          ) : (
+            <div className="max-w-4xl mx-auto px-4 py-4">
+              <Outlet />
+            </div>
+          )}
+        </div>
       </main>
       <ChatSidebar />
       <ToastContainer />

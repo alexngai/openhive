@@ -1,0 +1,183 @@
+name: Build & Release Electron App
+
+# Triggered by pushing a tag like `v0.1.0`. Each run builds the Electron
+# app on each target platform, packages it with electron-builder, and
+# publishes the artifacts (DMG / AppImage / deb / latest-*.yml) to the
+# GitHub Release matching the tag.
+#
+# Auto-update for installed apps is wired in main.ts via electron-updater,
+# which reads `build.publish` from electron-app/package.json and polls
+# this same GitHub Releases feed.
+#
+# Signing + notarization are NOT configured yet — the first releases will
+# be unsigned, so macOS users must right-click → Open on first launch.
+# Add the APPLE_* / CSC_* secrets and update electron-app/package.json's
+# `mac.identity` when ready.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      build_macos:
+        description: 'Build macOS (arm64 .dmg)'
+        type: boolean
+        default: true
+      build_linux:
+        description: 'Build Linux (x64 AppImage + deb)'
+        type: boolean
+        default: true
+      publish:
+        description: 'Publish artifacts to GitHub Releases'
+        type: choice
+        default: always
+        options:
+          - always   # create/update draft release with artifacts
+          - never    # build + sign + notarize, no Release (artifacts stay as job artifacts for 90d)
+          - onTag    # publish only if this run is triggered by a tag push
+
+permissions:
+  contents: write   # required for electron-builder to publish releases
+
+jobs:
+  # Tag pushes always build both platforms; workflow_dispatch honors the
+  # checkboxes. We compute the matrix up front because `matrix.*` can't be
+  # referenced in `jobs.<id>.if` — GitHub's expression parser rejects it
+  # even though matrix is bound at step-level. Dynamic `include` keeps the
+  # matching job count accurate in the Actions UI (skipped jobs don't even
+  # materialize) instead of showing per-step skips.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - id: plan
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BUILD_MACOS: ${{ inputs.build_macos }}
+          BUILD_LINUX: ${{ inputs.build_linux }}
+        run: |
+          targets='[]'
+          if [[ "$EVENT" != "workflow_dispatch" || "$BUILD_MACOS" == "true" ]]; then
+            targets=$(jq -c '. + [{"os":"macos-14","label":"macos-arm64","platform":"macos"}]' <<<"$targets")
+          fi
+          if [[ "$EVENT" != "workflow_dispatch" || "$BUILD_LINUX" == "true" ]]; then
+            targets=$(jq -c '. + [{"os":"ubuntu-latest","label":"linux-x64","platform":"linux"}]' <<<"$targets")
+          fi
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: plan
+    if: ${{ needs.plan.outputs.targets != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.targets) }}
+
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # npm bug #4828: the committed package-lock.json is generated on macOS
+      # and pins optional-dep entries (like @rollup/rollup-linux-x64-gnu and
+      # lightningcss-linux-x64-gnu) to zero copies. `npm install` under the
+      # lockfile then skips the Linux binaries, breaking vite/rollup + tailwind
+      # /lightningcss at build time on ubuntu-latest. The package author's
+      # own recommended workaround (see the "Cannot find native binding"
+      # error message from lightningcss) is to delete the lockfile on the
+      # other platform and let npm resolve fresh. macOS keeps the lockfile
+      # intact because its own deps ARE correct there.
+      - name: Remove lockfile on Linux (npm bug #4828)
+        if: runner.os == 'Linux'
+        run: rm -f package-lock.json
+
+      # Deleting the lockfile on Linux (above) forces a full fresh resolve
+      # every run, which hits the registry hard. `ECONNRESET` mid-install is
+      # a recurring transient; retry up to 3× with npm's own fetch retries
+      # bumped too.
+      - name: Install deps
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm install --no-audit --no-fund \
+              --fetch-retries=5 \
+              --fetch-retry-mintimeout=20000 \
+              --fetch-retry-maxtimeout=120000 && exit 0
+            echo "npm install failed (attempt $attempt/3), retrying in 15s..."
+            sleep 15
+          done
+          echo "npm install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Build openhive (server + web)
+        run: npm run build
+
+      - name: Build electron-app TypeScript
+        run: npm -w openhive-electron run build
+
+      # Replace the workspace symlink at node_modules/openhive with a pruned
+      # copy (dist/, bin/, package.json). Without this, electron-builder
+      # follows the symlink to the repo root and bundles references/, .git/,
+      # data/, prior release/ builds, etc. — ballooning the .dmg by several
+      # GB. See electron-app/scripts/stage-openhive.mjs.
+      - name: Stage openhive package
+        working-directory: electron-app
+        run: node scripts/stage-openhive.mjs
+
+      - name: Package and publish
+        working-directory: electron-app
+        env:
+          # GitHub Releases destination (the default workflow token is
+          # enough because `permissions: contents: write` is set above).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # macOS signing + notarization. These are all optional — when
+          # the repo secrets aren't set, the variables expand to empty
+          # strings, electron-builder detects no cert, and produces
+          # an unsigned build. Once you've set up an Apple Developer ID:
+          #
+          # 1. Add these 5 secrets at Settings → Secrets and variables → Actions:
+          #      CSC_LINK                    base64 of the .p12 cert
+          #      CSC_KEY_PASSWORD            the .p12 export password
+          #      APPLE_ID                    your Apple developer email
+          #      APPLE_APP_SPECIFIC_PASSWORD the notarization password from
+          #                                  appleid.apple.com
+          #      APPLE_TEAM_ID               10-char Team ID
+          #
+          # 2. In electron-app/package.json, flip `"identity": null` to
+          #    `"identity": "Developer ID Application: Your Name (TEAMID)"`
+          #    and `"notarize": false` to `"notarize": true`.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --publish ${{ github.event.inputs.publish || 'always' }}
+
+      # Also attach the built installers as GitHub Action artifacts so they're
+      # downloadable for 90d without needing a Release. Useful for
+      # `workflow_dispatch` runs with publish=never.
+      - name: Upload installers as job artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openhive-${{ matrix.label }}
+          path: |
+            release/*.dmg
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/latest-*.yml
+          if-no-files-found: warn
+          retention-days: 90

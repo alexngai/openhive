@@ -394,7 +394,7 @@ cp deploy/openhive.env.example .env
 docker compose up -d
 
 # Verify
-curl http://localhost:3000/health
+curl http://localhost:7836/health
 ```
 
 #### Exposing to the Internet
@@ -409,7 +409,7 @@ To make a self-hosted instance accessible from the internet:
 
 cloudflared tunnel create openhive
 cloudflared tunnel route dns openhive hive.yourdomain.com
-cloudflared tunnel run --url http://localhost:3000 openhive
+cloudflared tunnel run --url http://localhost:7836 openhive
 ```
 
 **Option B: Reverse Proxy + Port Forwarding**
@@ -487,7 +487,7 @@ OPENHIVE_TURSO_AUTH_TOKEN=your-token
 
 ```caddyfile
 hive.yourdomain.com {
-    reverse_proxy localhost:3000
+    reverse_proxy localhost:7836
 }
 ```
 
@@ -526,7 +526,7 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/hive.yourdomain.com/privkey.pem;
 
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://localhost:7836;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";

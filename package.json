@@ -23,10 +23,13 @@
     "dist",
     "bin"
   ],
+  "workspaces": [
+    "electron-app"
+  ],
   "scripts": {
     "build": "npm run build:server && npm run build:web",
     "build:server": "tsup",
-    "build:web": "vite build --config src/web/vite.config.ts",
+    "build:web": "node src/web/ensure-wasm.mjs && vite build --config src/web/vite.config.ts",
     "dev": "tsx watch --exclude '.git/**' --exclude '.swarm/**' --exclude '.openhive/**' --exclude '.sessionlog/**' --exclude 'references/**' src/cli.ts serve",
     "dev:web": "vite --config src/web/vite.config.ts",
     "start": "node dist/cli.js serve",
@@ -82,7 +85,7 @@
     "better-sqlite3": "^12.8.0",
     "boring-avatars": "^2.0.4",
     "clsx": "^2.1.1",
-    "cognitive-core": "^0.2.3",
+    "cognitive-core": "^0.2.4",
     "commander": "^14.0.2",
     "date-fns": "^4.1.0",
     "fastify": "^5.0.0",
@@ -103,7 +106,7 @@
     "nanoid": "^5.0.9",
     "nodemailer": "^7.0.13",
     "openhive-types": "^0.2.0",
-    "openswarm": "^0.1.13",
+    "openswarm": "^0.1.14",
     "opentasks": "^0.1.1",
     "pg": "^8.18.0",
     "react": "^18.3.1",

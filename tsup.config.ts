@@ -10,7 +10,9 @@ export default defineConfig({
   shims: true,
   dts: true,
   splitting: false,
-  sourcemap: true,
+  // Server sourcemaps add ~6 MB to the bundle but are only useful when
+  // debugging tsup-bundled server code. Opt in with TSUP_SOURCEMAP=true.
+  sourcemap: process.env.TSUP_SOURCEMAP === 'true',
   clean: true,
   target: 'node18',
   outDir: 'dist',

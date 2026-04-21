@@ -1,0 +1,18 @@
+<!--
+  macOS menu-bar template icon source.
+  Pure black on transparent — macOS auto-tints based on menu-bar appearance
+  (light/dark mode, focused/unfocused). The `Template` suffix on the
+  rasterized PNG is the magic flag that triggers this behaviour.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <!-- Hexagon outline, sized to leave 1px breathing room -->
+  <path
+    d="M11 1.4 L19.16 6.1 V15.5 L11 20.2 L2.84 15.5 V6.1 Z"
+    fill="none"
+    stroke="black"
+    stroke-width="2"
+    stroke-linejoin="round"
+  />
+  <!-- Center dot -->
+  <circle cx="11" cy="10.8" r="2.6" fill="black" />
+</svg>

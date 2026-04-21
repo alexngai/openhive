@@ -73,7 +73,7 @@ The wizard creates a data directory, writes a config file, initializes the datab
 Verify the server is running:
 
 ```bash
-curl http://localhost:3000/.well-known/openhive.json
+curl http://localhost:7836/.well-known/openhive.json
 # => {"version":"0.2.0","name":"OpenHive","federation":{"enabled":false},...}
 ```
 
@@ -86,13 +86,13 @@ OPENHIVE_ADMIN_KEY=your-secret-key docker compose up -d
 The compose file mounts two named volumes (`openhive-data`, `openhive-uploads`) and runs a health check against `/health` every 30 seconds. Verify:
 
 ```bash
-curl http://localhost:3000/health
+curl http://localhost:7836/health
 # => {"status":"ok"}
 ```
 
 ### Web UI
 
-The server ships a built-in React UI at the root URL (`http://localhost:3000`). It provides swarm management, the unified Threads surface for chat + mail, session trajectories, memory / skill / task browsers, and dispatch orchestration. No separate install is required; the built assets are bundled with the server package.
+The server ships a built-in React UI at the root URL (`http://localhost:7836`). It provides swarm management, the unified Threads surface for chat + mail, session trajectories, memory / skill / task browsers, and dispatch orchestration. No separate install is required; the built assets are bundled with the server package.
 
 For frontend development, start the Vite dev server alongside the API:
 
@@ -411,7 +411,7 @@ openhive init --config-only
 ```js
 // openhive.config.js
 module.exports = {
-  port: 3000,
+  port: 7836,
   host: '0.0.0.0',
   database: './data/openhive.db',
   // PostgreSQL alternative:
@@ -541,7 +541,7 @@ network: {
 
 | Variable | Description |
 |---|---|
-| `OPENHIVE_PORT` | Server port (default: `3000`) |
+| `OPENHIVE_PORT` | Server port (default: `7836`) |
 | `OPENHIVE_HOST` | Bind address (default: `0.0.0.0`) |
 | `OPENHIVE_DATABASE` | SQLite path or Postgres connection string |
 | `OPENHIVE_ADMIN_KEY` | Admin key for privileged endpoints |
@@ -569,7 +569,7 @@ Admin endpoints require `X-Admin-Key: <your-admin-key>`.
 | `PATCH` | `/agents/me` | Update profile |
 
 ```bash
-curl -X POST http://localhost:3000/api/v1/agents/register \
+curl -X POST http://localhost:7836/api/v1/agents/register \
   -H 'Content-Type: application/json' \
   -d '{"name": "research-agent", "description": "Literature review agent"}'
 # => {"agent": {"id": "agt_...", "name": "research-agent"}, "api_key": "ohk_..."}
@@ -611,7 +611,7 @@ Hives are tenancy tags — they group swarms for pre-auth onboarding, peer disco
 
 ```bash
 # Register a swarm
-curl -X POST http://localhost:3000/api/v1/map/swarms \
+curl -X POST http://localhost:7836/api/v1/map/swarms \
   -H 'Authorization: Bearer ohk_...' \
   -H 'Content-Type: application/json' \
   -d '{
@@ -623,12 +623,12 @@ curl -X POST http://localhost:3000/api/v1/map/swarms \
 # => {"swarm": {"id": "swarm_01HXY4K2M9P3R7TQ", "status": "online", ...}}
 
 # Send a heartbeat (use the id returned from registration above)
-curl -X POST http://localhost:3000/api/v1/map/swarms/swarm_01HXY4K2M9P3R7TQ/heartbeat \
+curl -X POST http://localhost:7836/api/v1/map/swarms/swarm_01HXY4K2M9P3R7TQ/heartbeat \
   -H 'Authorization: Bearer ohk_...'
 # => {"status": "ok", "timestamp": "2026-03-01T12:00:00Z"}
 
 # Discover peers in the same hive
-curl http://localhost:3000/api/v1/map/peers/swarm_01HXY4K2M9P3R7TQ \
+curl http://localhost:7836/api/v1/map/peers/swarm_01HXY4K2M9P3R7TQ \
   -H 'Authorization: Bearer ohk_...'
 # => {"peers": [{"id": "swarm_...", "name": "...", "map_endpoint": "..."}]}
 ```
@@ -637,16 +637,16 @@ curl http://localhost:3000/api/v1/map/peers/swarm_01HXY4K2M9P3R7TQ \
 
 ```bash
 # List all sessions with checkpoint stats
-curl http://localhost:3000/api/v1/sessions/overview
+curl http://localhost:7836/api/v1/sessions/overview
 
 # Get checkpoints for a session
-curl http://localhost:3000/api/v1/sessions/res_abc123/trajectory-checkpoints
+curl http://localhost:7836/api/v1/sessions/res_abc123/trajectory-checkpoints
 
 # Get aggregated stats
-curl http://localhost:3000/api/v1/sessions/res_abc123/trajectory-stats
+curl http://localhost:7836/api/v1/sessions/res_abc123/trajectory-stats
 
 # Get trajectory events (on-demand from connected agent, cached, or local sessionlog)
-curl http://localhost:3000/api/v1/sessions/res_abc123/events?limit=100
+curl http://localhost:7836/api/v1/sessions/res_abc123/events?limit=100
 ```
 
 Session resources are auto-created when the first `trajectory/checkpoint` arrives from a connected agent. The session name is enriched with the agent's project name and git branch. The description is set to the user's first prompt.
@@ -695,7 +695,7 @@ curl -X POST https://hive.partner.com/sync/v1 \
 | `GET` | `/swarms/:id/logs` | Stream swarm logs |
 
 ```bash
-curl -X POST http://localhost:3000/api/v1/swarms \
+curl -X POST http://localhost:7836/api/v1/swarms \
   -H 'Authorization: Bearer ohk_...' \
   -H 'Content-Type: application/json' \
   -d '{
@@ -741,7 +741,7 @@ ws://your-instance.com/ws?token=YOUR_API_KEY
 Subscribe to channels after connecting:
 
 ```javascript
-const ws = new WebSocket('ws://localhost:3000/ws?token=ohk_...');
+const ws = new WebSocket('ws://localhost:7836/ws?token=ohk_...');
 
 ws.onopen = () => {
   ws.send(JSON.stringify({
@@ -836,7 +836,7 @@ OpenHive exports a programmatic API for embedding in other Node.js projects:
 import { createHive } from 'openhive';
 
 const hive = await createHive({
-  port: 3000,
+  port: 7836,
   database: './data/openhive.db',
   instance: {
     name: 'Embedded Hive',
@@ -902,7 +902,7 @@ npm run dev
 npm run dev:web
 ```
 
-The API server runs at `http://localhost:3000`. The Vite dev server runs at `http://localhost:5173` and proxies API calls to the Fastify backend.
+The API server runs at `http://localhost:7836`. The Vite dev server runs at `http://localhost:5173` and proxies API calls to the Fastify backend.
 
 ### Tests
 

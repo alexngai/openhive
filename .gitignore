@@ -1,5 +1,7 @@
 node_modules/
 dist/
+electron-app/dist/
+release/
 data/
 uploads/
 logs/

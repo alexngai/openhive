@@ -24,7 +24,7 @@ module.exports = {
     env: {
       NODE_ENV: 'production',
       OPENHIVE_HOST: '0.0.0.0',
-      OPENHIVE_PORT: 3000,
+      OPENHIVE_PORT: 7836,
       OPENHIVE_DATABASE: './data/openhive.db',
     },
 
@@ -32,7 +32,7 @@ module.exports = {
     env_development: {
       NODE_ENV: 'development',
       OPENHIVE_HOST: 'localhost',
-      OPENHIVE_PORT: 3000,
+      OPENHIVE_PORT: 7836,
       OPENHIVE_DATABASE: './data/openhive-dev.db',
     },
 
