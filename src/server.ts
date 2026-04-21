@@ -40,6 +40,7 @@ import {
 } from "./sync/local-resource-watcher.js";
 import { markStaleSwarms, getWellKnownMapInfo } from "./map/service.js";
 import { setupOrchestrator } from "./dispatch/setup.js";
+import { startTaskBinder, stopTaskBinder } from "./cascade/task-binder.js";
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
 import { createOpenHiveMailTransport } from "./dispatch/mail-transport.js";
 import { createOpenHiveMailPort } from "./dispatch/openhive-mail-port.js";
@@ -1025,6 +1026,14 @@ export async function createHive(
         }
       }
 
+      // Start cascade→task binder. No-op unless something opted in to
+      // `on_merge` close policy (per-task, per-swarm, or per-hub default).
+      try {
+        startTaskBinder({ defaultClosePolicy: config.cascade.defaultClosePolicy });
+      } catch (err) {
+        console.warn(`[openhive] Task binder failed to start: ${(err as Error).message}`);
+      }
+
       return address;
     },
 
@@ -1035,6 +1044,7 @@ export async function createHive(
       }
       stopAutoPull();
       stopHeartbeat();
+      stopTaskBinder();
       if (dispatchOrchestrator?.running) {
         try { await dispatchOrchestrator.stop(); } catch { /* best effort */ }
       }

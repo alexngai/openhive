@@ -396,6 +396,66 @@ Agents sync tasks between each other via `pushSyncEvent` (in cc-swarm's `opentas
 
 This runs during the agent's `UserPromptSubmit` hook when incoming task events are read from the inbox.
 
+## Cascade ↔ Task Binding
+
+Wires the cascade projection's `task_ref` join into a hub-side orchestrator that can optionally drive task state on merge, and uniformly enriches all `task.status` broadcasts with commit-range data when a task closes. Default behavior is **no-op** — the binder runs but takes no action unless something explicitly opted in. Design spec: [`docs/superpowers/specs/2026-04-21-cascade-task-binding-design.md`](docs/superpowers/specs/2026-04-21-cascade-task-binding-design.md).
+
+### Three layers
+
+Mirrors the dispatch-orchestrator shape: relay + derivation + named orchestration with explicit opt-in.
+
+- **Relay**: unchanged — cascade events fan out on WS.
+- **Derivation** (`src/map/task-broadcast.ts`): single shared helper for every `task.status` broadcast. On terminal transitions (`completed | closed | done | failed | cancelled`) it calls `getCommitRangeForTask` and attaches a `cascade` block to the broadcast payload. Consolidates three previously-drifted emit sites (`coordination/listener.ts`, `map/task-handler.ts`, `api/routes/resource-content.ts`) so downstream consumers see one shape regardless of initiator.
+- **Orchestration** (`src/cascade/task-binder.ts`): subscribes to `mapHubEvents.cascade_stream_merged`, resolves a policy chain, and (if authorized) transitions the linked task to `completed` via the existing daemon/remote update path. Lifecycle wired into `server.ts` next to the dispatch orchestrator; operators can kill the feature by holding `defaultClosePolicy: manual` (the default).
+
+### Policy resolution chain
+
+Most specific wins. Default at every scope is `manual`.
+
+| Scope | Shape | Set at |
+|---|---|---|
+| Per-task | `resource.metadata.close_policy`: `'manual' \| 'on_merge'` | Task creation (agent, user, dispatch) |
+| Per-swarm | `capabilities.cascade.autoCloseOnMerge: true\|false` | MAP registration (`CascadeCapability`) |
+| Per-hub | `config.cascade.defaultClosePolicy`: `'manual' \| 'on_merge'` | `openhive.config.json` / Settings |
+
+An explicit per-swarm `false` overrides a permissive hub default. Resolver is a pure function in `src/cascade/policy.ts` with no I/O.
+
+### Event flow (auto-close case)
+
+```
+agent merges → git-cascade → x-cascade/stream.merged → cascade-handler
+  → recordMerge, updateStreamStatus('merged')
+  → emits cascade_stream_merged with task_ref attached (extracted from
+    metadata, with fallback to source/target stream's persisted task_ref)
+
+task-binder listens → resolveClosePolicy(task, swarm, hub)
+  → if 'on_merge': route to daemon (local) or remote swarm (MAP) with
+    status='completed' → on success: broadcastTaskStatus(...)
+
+broadcastTaskStatus (any caller)
+  → if terminal status AND resourceId: getCommitRangeForTask → cascade block
+  → mapHubEvents.emit('task_status_changed', { ..., cascade? })
+  → WS broadcast on map:tasks AND resource:task:<id>
+```
+
+For inbound MAP scope `task.status` from swarms, the listener resolves `resourceId` from the connection's `defaultTaskGraph` so swarm-echo and hub-initiated broadcasts carry the same cascade shape (no UI flicker from mixed enriched/unenriched pairs).
+
+### Key Files
+
+- `src/cascade/policy.ts` — Pure `resolveClosePolicy(task, swarm, hub)` resolver
+- `src/cascade/task-binder.ts` — `start/stopTaskBinder`, `handleCascadeStreamMerged`; subscribes to hub events
+- `src/map/task-broadcast.ts` — `broadcastTaskStatus` shared helper with cascade enrichment
+- `src/map/cascade-handler.ts` — `handleStreamMerged` attaches `task_ref` to the emitted hub event
+- `src/map/connection-registry.ts` — `CascadeCapability` type (`autoCloseOnMerge`)
+- `src/config.ts` — `cascade.defaultClosePolicy` (default `'manual'`)
+
+### What the hub does NOT do
+
+- Persist task state (opentasks daemons own that).
+- Retry failed auto-closes (best-effort; a missed close stays as the task's pre-merge status).
+- Mutate task state on any event besides `cascade_stream_merged`.
+- Decide for agents that haven't opted in. Default is full agent autonomy; the binder fires, hits `manual`, and returns.
+
 ## SwarmKit Config Management
 
 OpenHive acts as a read/write proxy for SwarmKit package configs — the Settings UI edits files owned by sessionlog, opentasks, minimem, etc. The hub never caches config; every UI action hits disk.
