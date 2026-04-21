@@ -51,7 +51,10 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, "../../dist/web"),
     emptyOutDir: true,
-    sourcemap: true,
+    // Default to no sourcemaps so production builds don't ship ~17 MB of
+    // .map files to end users. Set VITE_BUILD_SOURCEMAP=true to re-enable
+    // when debugging a production bundle.
+    sourcemap: process.env.VITE_BUILD_SOURCEMAP === "true",
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, "index.html"),
