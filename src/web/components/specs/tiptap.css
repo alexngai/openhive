@@ -1,0 +1,172 @@
+/* Tiptap spec editor — inherently-editable surface. Styling tuned for
+ * openhive's dark theme variables so the editor feels native next to the
+ * rest of the UI. */
+
+.tiptap-spec-editor .ProseMirror {
+  outline: none;
+  min-height: 320px;
+  color: var(--color-text);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.tiptap-spec-editor .ProseMirror > * + * {
+  margin-top: 0.75em;
+}
+
+.tiptap-spec-editor .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--color-text-muted);
+  pointer-events: none;
+  height: 0;
+}
+
+.tiptap-spec-editor .ProseMirror h1 {
+  font-size: 1.6rem;
+  font-weight: 700;
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
+  color: var(--color-text);
+}
+
+.tiptap-spec-editor .ProseMirror h2 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin-top: 1em;
+  margin-bottom: 0.4em;
+  color: var(--color-text);
+}
+
+.tiptap-spec-editor .ProseMirror h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-top: 0.8em;
+  margin-bottom: 0.3em;
+  color: var(--color-text);
+}
+
+.tiptap-spec-editor .ProseMirror h4,
+.tiptap-spec-editor .ProseMirror h5,
+.tiptap-spec-editor .ProseMirror h6 {
+  font-weight: 600;
+  margin-top: 0.6em;
+  margin-bottom: 0.2em;
+  color: var(--color-text);
+}
+
+.tiptap-spec-editor .ProseMirror p {
+  color: var(--color-text-secondary);
+}
+
+.tiptap-spec-editor .ProseMirror ul,
+.tiptap-spec-editor .ProseMirror ol {
+  padding-left: 1.5rem;
+}
+
+.tiptap-spec-editor .ProseMirror ul {
+  list-style: disc;
+}
+
+.tiptap-spec-editor .ProseMirror ol {
+  list-style: decimal;
+}
+
+.tiptap-spec-editor .ProseMirror li {
+  color: var(--color-text-secondary);
+  margin: 0.15em 0;
+}
+
+.tiptap-spec-editor .ProseMirror li > p {
+  margin: 0;
+}
+
+.tiptap-spec-editor .ProseMirror code {
+  background: var(--color-surface);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85em;
+}
+
+.tiptap-spec-editor .ProseMirror pre {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  padding: 0.8em 1em;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+
+.tiptap-spec-editor .ProseMirror pre code {
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+}
+
+.tiptap-spec-editor .ProseMirror blockquote {
+  border-left: 3px solid var(--color-border-subtle);
+  padding-left: 1em;
+  font-style: italic;
+  color: var(--color-text-muted);
+}
+
+.tiptap-spec-editor .ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--color-border-subtle);
+  margin: 1.5em 0;
+}
+
+.tiptap-spec-editor .ProseMirror a {
+  color: var(--color-honey-500, #f59e0b);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tiptap-spec-editor .ProseMirror table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+}
+
+.tiptap-spec-editor .ProseMirror th,
+.tiptap-spec-editor .ProseMirror td {
+  border: 1px solid var(--color-border-subtle);
+  padding: 0.4em 0.75em;
+  text-align: left;
+}
+
+.tiptap-spec-editor .ProseMirror th {
+  background: var(--color-surface);
+  font-weight: 600;
+}
+
+/* highlight.js syntax colors — subtle, honey-accented dark theme */
+.tiptap-spec-editor .ProseMirror .hljs-comment,
+.tiptap-spec-editor .ProseMirror .hljs-quote {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.tiptap-spec-editor .ProseMirror .hljs-keyword,
+.tiptap-spec-editor .ProseMirror .hljs-selector-tag,
+.tiptap-spec-editor .ProseMirror .hljs-literal {
+  color: #f59e0b;
+}
+
+.tiptap-spec-editor .ProseMirror .hljs-string,
+.tiptap-spec-editor .ProseMirror .hljs-attr {
+  color: #84cc16;
+}
+
+.tiptap-spec-editor .ProseMirror .hljs-number,
+.tiptap-spec-editor .ProseMirror .hljs-variable {
+  color: #38bdf8;
+}
+
+.tiptap-spec-editor .ProseMirror .hljs-title,
+.tiptap-spec-editor .ProseMirror .hljs-class {
+  color: #c084fc;
+}
