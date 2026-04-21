@@ -92,7 +92,9 @@ describe('<Dispatch /> page', () => {
     expect(screen.getByText('s-1')).toBeDefined();
     // 'alpha' appears in both the dispatch card and the swarm filter <option>.
     expect(screen.getAllByText('alpha').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('Running')).toBeDefined();
+    // 'Running' appears in both the status filter chip and the row's status
+    // chip. The presence of either is enough for this smoke assertion.
+    expect(screen.getAllByText('Running').length).toBeGreaterThanOrEqual(1);
   });
 
   it('toggles status filter when chip clicked', () => {
@@ -107,7 +109,7 @@ describe('<Dispatch /> page', () => {
       target_swarm_id: undefined,
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'running' }));
+    fireEvent.click(screen.getByRole('button', { name: /running/i }));
     expect(mockUseDispatchList).toHaveBeenLastCalledWith({
       status: ['running'],
       target_swarm_id: undefined,

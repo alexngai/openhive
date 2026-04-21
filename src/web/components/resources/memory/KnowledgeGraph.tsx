@@ -1,10 +1,9 @@
 import { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import Sigma from 'sigma';
 import Graph from 'graphology';
-import { random as randomLayout } from 'graphology-layout';
-import forceAtlas2 from 'graphology-layout-forceatlas2';
 import { ZoomIn, ZoomOut, Maximize2, X, Network } from 'lucide-react';
 import { applySigmaPerfSettings } from '../../../utils/sigmaPerf';
+import { applySigmaLayout } from '../../../utils/sigmaLayout';
 import { useKnowledgeGraphFull } from '../../../hooks/useApi';
 import { Markdown } from '../../common/Markdown';
 import type { KnowledgeSearchResult } from '../../../lib/api';
@@ -159,11 +158,7 @@ export function KnowledgeGraph({ resourceId }: { resourceId: string }) {
   // Apply layout
   useEffect(() => {
     if (!graph || graph.order === 0) return;
-    randomLayout.assign(graph);
-    forceAtlas2.assign(graph, {
-      iterations: 100,
-      settings: { gravity: 1, scalingRatio: 2, barnesHutOptimize: graph.order > 50, strongGravityMode: true },
-    });
+    applySigmaLayout(graph);
   }, [graph]);
 
   // Initialize sigma
