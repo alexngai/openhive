@@ -46,6 +46,9 @@
       "dist/**/*",
       "package.json",
       "node_modules/**/*",
+      "build/icon.png",
+      "build/tray-iconTemplate.png",
+      "build/tray-iconTemplate@2x.png",
       {
         "from": "../node_modules",
         "to": "node_modules",

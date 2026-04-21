@@ -95,11 +95,11 @@ ENV NODE_ENV=production \
     OPENHIVE_DATABASE=/app/data/openhive.db
 
 # Expose the default port
-EXPOSE 3000
+EXPOSE 7836
 
 # Health check - verify the server is responding
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD node -e "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+    CMD node -e "fetch('http://localhost:7836/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 # Start via entrypoint (handles Litestream if configured, else starts normally)
 CMD ["/app/docker-entrypoint.sh"]

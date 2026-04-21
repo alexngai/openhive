@@ -16,7 +16,7 @@ The bootstrap token is a **base64-encoded JSON object** passed via the `OPENSWAR
 interface BootstrapToken {
   version: 1;
   /** The OpenHive instance URL to register with */
-  openhive_url: string;        // e.g. "http://localhost:3000"
+  openhive_url: string;        // e.g. "http://localhost:7836"
   /** Signed agent-iam delegated token used as Bearer for MAP hub + WS */
   onboard_token: string;       // JWT-like, verifiable against the hub's iam-secret.key
   /** Name for the swarm */

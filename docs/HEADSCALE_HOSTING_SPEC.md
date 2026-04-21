@@ -268,7 +268,7 @@ In this mode, OpenHive doesn't manage the headscale process. Instead, it connect
 | tcp/443 | Headscale control + DERP | Open on VPS | Port forward from router | Tunneled via VPS |
 | tcp/80 | ACME (Let's Encrypt) | Open on VPS | Port forward from router | On VPS (Caddy handles it) |
 | udp/3478 | STUN | Open on VPS | Port forward (**same port**) | Skip (use public DERP) |
-| tcp/3000 | OpenHive API | Open or proxied | LAN only (or port forward) | LAN only (or tunnel) |
+| tcp/7836 | OpenHive API | Open or proxied | LAN only (or port forward) | LAN only (or tunnel) |
 | tcp/8085 | Headscale API (internal) | localhost only | localhost only | localhost only |
 
 ---

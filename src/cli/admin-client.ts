@@ -42,7 +42,7 @@ function resolve(opts: AdminClientOptions): { baseUrl: string; adminKey: string 
   const config = readConfigJson(dataDir);
 
   const configAdmin = (config?.admin as Record<string, unknown> | undefined)?.key;
-  const configPort = typeof config?.port === 'number' ? config.port : 3000;
+  const configPort = typeof config?.port === 'number' ? config.port : 7836;
   const configHost = typeof config?.host === 'string' ? config.host : '0.0.0.0';
   const configInstanceUrl = (config?.instance as Record<string, unknown> | undefined)?.url;
 

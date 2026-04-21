@@ -568,7 +568,7 @@ An agent can go from zero to participating in hive conversations using only the 
    → Returns: { "agent_id": "...", "token": "<signed agent-iam>" }
 
 2. Agent connects with the token as Bearer:
-   ws://hub:3000/ws/map
+   ws://hub:7836/ws/map
      Authorization: Bearer <signed agent-iam>
 
 3. Hub verifies the token, attaches token scopes to the session, and

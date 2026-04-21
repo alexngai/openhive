@@ -423,7 +423,7 @@ function AddTaskRepoDialog({
                         type="text"
                         value={mapServer}
                         onChange={(e) => setMapServer(e.target.value)}
-                        placeholder="ws://localhost:3000/ws/map"
+                        placeholder="ws://localhost:7836/ws/map"
                         className="input w-full text-sm font-mono"
                       />
                     </div>

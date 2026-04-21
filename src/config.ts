@@ -73,7 +73,7 @@ const DatabaseSchema = z
 
 // Configuration schema
 export const ConfigSchema = z.object({
-  port: z.number().default(3000),
+  port: z.number().default(7836),
   host: z.string().default("0.0.0.0"),
 
   /**
@@ -819,7 +819,7 @@ export function loadConfig(configPath?: string): Config {
 // Generate a sample config file (JSON format)
 export function generateSampleConfig(): string {
   const sample = {
-    port: 3000,
+    port: 7836,
     host: "0.0.0.0",
     database: "./data/openhive.db",
     instance: {

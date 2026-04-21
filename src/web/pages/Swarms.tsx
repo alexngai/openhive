@@ -753,7 +753,7 @@ export function ConnectFormDialog({ onClose }: { onClose: () => void }) {
               value={endpoint}
               onChange={(e) => setEndpoint(e.target.value)}
               className="input w-full font-mono text-xs"
-              placeholder="ws://192.168.1.50:3000"
+              placeholder="ws://192.168.1.50:7836"
               required
             />
             <p

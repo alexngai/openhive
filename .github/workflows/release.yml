@@ -1,4 +1,4 @@
-name: Build/Release Electron App
+name: Build & Release Electron App
 
 # Triggered by pushing a tag like `v0.1.0`. Each run builds the Electron
 # app on each target platform, packages it with electron-builder, and
@@ -40,25 +40,40 @@ permissions:
   contents: write   # required for electron-builder to publish releases
 
 jobs:
+  # Tag pushes always build both platforms; workflow_dispatch honors the
+  # checkboxes. We compute the matrix up front because `matrix.*` can't be
+  # referenced in `jobs.<id>.if` — GitHub's expression parser rejects it
+  # even though matrix is bound at step-level. Dynamic `include` keeps the
+  # matching job count accurate in the Actions UI (skipped jobs don't even
+  # materialize) instead of showing per-step skips.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - id: plan
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BUILD_MACOS: ${{ inputs.build_macos }}
+          BUILD_LINUX: ${{ inputs.build_linux }}
+        run: |
+          targets='[]'
+          if [[ "$EVENT" != "workflow_dispatch" || "$BUILD_MACOS" == "true" ]]; then
+            targets=$(jq -c '. + [{"os":"macos-14","label":"macos-arm64","platform":"macos"}]' <<<"$targets")
+          fi
+          if [[ "$EVENT" != "workflow_dispatch" || "$BUILD_LINUX" == "true" ]]; then
+            targets=$(jq -c '. + [{"os":"ubuntu-latest","label":"linux-x64","platform":"linux"}]' <<<"$targets")
+          fi
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
   release:
+    needs: plan
+    if: ${{ needs.plan.outputs.targets != '[]' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-14
-            label: macos-arm64
-            platform: macos
-          - os: ubuntu-latest
-            label: linux-x64
-            platform: linux
-
-    # Tag pushes build both platforms; workflow_dispatch honors the
-    # checkboxes. `inputs.build_macos` is null for non-dispatch events,
-    # hence the `!= 'false'` pattern (null defaults to truthy).
-    if: |
-      github.event_name != 'workflow_dispatch' ||
-      (matrix.platform == 'macos' && inputs.build_macos) ||
-      (matrix.platform == 'linux' && inputs.build_linux)
+        include: ${{ fromJSON(needs.plan.outputs.targets) }}
 
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
@@ -87,8 +102,23 @@ jobs:
         if: runner.os == 'Linux'
         run: rm -f package-lock.json
 
+      # Deleting the lockfile on Linux (above) forces a full fresh resolve
+      # every run, which hits the registry hard. `ECONNRESET` mid-install is
+      # a recurring transient; retry up to 3× with npm's own fetch retries
+      # bumped too.
       - name: Install deps
-        run: npm install --no-audit --no-fund
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm install --no-audit --no-fund \
+              --fetch-retries=5 \
+              --fetch-retry-mintimeout=20000 \
+              --fetch-retry-maxtimeout=120000 && exit 0
+            echo "npm install failed (attempt $attempt/3), retrying in 15s..."
+            sleep 15
+          done
+          echo "npm install failed after 3 attempts" >&2
+          exit 1
 
       - name: Build openhive (server + web)
         run: npm run build
