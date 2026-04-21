@@ -948,6 +948,16 @@ export async function dispatchSpecToSwarms(input: {
       prompt_override: input.prompt ?? null,
     });
 
+    // Persist the spec's linked tasks so downstream lifecycle hooks
+    // (advance-on-start, cascade artifact enrichment) can find them without
+    // re-querying the opentasks daemon.
+    if (linkedTasks.length > 0) {
+      dispatchesDAL.addDispatchLinkedTasks(
+        dispatch.id,
+        linkedTasks.map((t) => ({ resource_id: resource.id, node_id: t.id })),
+      );
+    }
+
     const seedPrompt = buildDispatchSeedPrompt({
       dispatchId: dispatch.id,
       resourceId: resource.id,

@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 44;
+export const SCHEMA_VERSION = 45;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -654,6 +654,18 @@ CREATE INDEX IF NOT EXISTS idx_dispatches_swarm ON dispatches(target_swarm_id);
 CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
 CREATE INDEX IF NOT EXISTS idx_dispatches_initiator ON dispatches(initiator_id);
 CREATE INDEX IF NOT EXISTS idx_dispatches_created ON dispatches(created_at DESC);
+
+-- dispatch_linked_tasks (V45): dispatch → opentasks task refs captured at
+-- creation. Powers advance-on-start + cascade artifact enrichment.
+CREATE TABLE IF NOT EXISTS dispatch_linked_tasks (
+  dispatch_id TEXT NOT NULL REFERENCES dispatches(id) ON DELETE CASCADE,
+  resource_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  advanced_on_start INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (dispatch_id, resource_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dispatch_linked_tasks_ref
+  ON dispatch_linked_tasks(resource_id, node_id);
 `;
 
 export const SEED_DATA = `
@@ -858,6 +870,23 @@ ALTER TABLE agents ADD COLUMN capabilities TEXT;
 // migration".
 export const MIGRATION_V44_GRANT_VERSION = `
 ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0;
+`;
+
+// Migration V45: dispatch_linked_tasks — join rows from a dispatch back to
+// the opentasks tasks it was seeded with. Populated at dispatch creation
+// from the spec's linked-task neighbors. Powers (a) advance-on-start task
+// state transitions, (b) cascade artifact enrichment on completion via the
+// (task_resource_id, task_node_id) join with cascade_streams.
+export const MIGRATION_V45_DISPATCH_LINKED_TASKS = `
+CREATE TABLE IF NOT EXISTS dispatch_linked_tasks (
+  dispatch_id TEXT NOT NULL REFERENCES dispatches(id) ON DELETE CASCADE,
+  resource_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  advanced_on_start INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (dispatch_id, resource_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dispatch_linked_tasks_ref
+  ON dispatch_linked_tasks(resource_id, node_id);
 `;
 
 // ============================================================================

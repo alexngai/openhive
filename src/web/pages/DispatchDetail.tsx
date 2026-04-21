@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Send, Zap, FileText, User, Bot, Ban, AlertCircle, GitBranch, GitCommit,
+  ListChecks, CheckCircle2, Circle,
 } from 'lucide-react';
 import { useDispatch, useCancelDispatch } from '../hooks/useDispatch';
 import { useDispatchRealtime, useCancelAckWarnings } from '../hooks/useDispatchRealtime';
@@ -337,6 +338,55 @@ export function DispatchDetail() {
         </div>
       )}
 
+      {/* Linked tasks — captured at dispatch creation; `advanced_on_start`
+          reflects whether the orchestrator bumped the task `open` → `in_progress`. */}
+      {data.linked_tasks && data.linked_tasks.length > 0 && (
+        <div
+          className="rounded-md border p-4 mb-6"
+          style={{
+            borderColor: 'var(--color-border-subtle)',
+            backgroundColor: 'var(--color-surface)',
+          }}
+        >
+          <div className="text-xs mb-2 flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
+            <ListChecks className="h-3.5 w-3.5 text-honey-500" />
+            Linked tasks
+          </div>
+          <ul className="space-y-1.5">
+            {data.linked_tasks.map((t) => {
+              const advanced = Boolean(t.advanced_on_start);
+              const Icon = advanced ? CheckCircle2 : Circle;
+              return (
+                <li key={`${t.resource_id}:${t.node_id}`}>
+                  <Link
+                    to={`/tasks/${t.resource_id}/${t.node_id}`}
+                    className="flex items-center gap-2 text-sm hover:opacity-80"
+                    style={{ color: 'var(--color-text)' }}
+                  >
+                    <Icon
+                      className="h-3.5 w-3.5 shrink-0"
+                      style={{ color: advanced ? 'var(--color-honey-500, #f59e0b)' : 'var(--color-text-muted)' }}
+                    />
+                    <code
+                      className="text-2xs font-mono px-1 py-0.5 rounded shrink-0"
+                      style={{ backgroundColor: 'var(--color-elevated)' }}
+                    >
+                      {t.node_id}
+                    </code>
+                    <span
+                      className="text-2xs shrink-0"
+                      style={{ color: 'var(--color-text-muted)' }}
+                    >
+                      {advanced ? 'advanced on start' : 'not advanced'}
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
       {/* Outcome */}
       {d.outcome && (
         <div
@@ -359,12 +409,37 @@ export function DispatchDetail() {
           )}
           {d.outcome.artifacts && d.outcome.artifacts.length > 0 && (
             <ul className="space-y-1 text-sm">
-              {d.outcome.artifacts.map((a, i) => (
-                <li key={i} style={{ color: 'var(--color-text-secondary)' }}>
-                  <span className="font-mono text-xs mr-2">{a.kind}</span>
-                  {a.ref}
-                </li>
-              ))}
+              {d.outcome.artifacts.map((a, i) => {
+                // cascade_stream refs are `${swarm_id}/${stream_id}` — the
+                // Changes page groups streams fleet-wide; there's no
+                // per-stream detail route so we link there.
+                const isCascadeStream = a.kind === 'cascade_stream';
+                const streamId = isCascadeStream ? a.ref.split('/').slice(1).join('/') : null;
+                const body = (
+                  <>
+                    <span className="font-mono text-xs mr-2">{a.kind}</span>
+                    {isCascadeStream ? (
+                      <span className="inline-flex items-center gap-1">
+                        <GitBranch className="h-3 w-3" />
+                        <span>{streamId || a.ref}</span>
+                      </span>
+                    ) : (
+                      <span>{a.ref}</span>
+                    )}
+                  </>
+                );
+                return (
+                  <li key={i} style={{ color: 'var(--color-text-secondary)' }}>
+                    {isCascadeStream ? (
+                      <Link to="/changes" className="hover:opacity-80">
+                        {body}
+                      </Link>
+                    ) : (
+                      body
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

@@ -9,6 +9,7 @@ import { createSqlSource } from 'swarm-dispatch/client';
 import type { DispatchTaskSource, DispatchTask } from 'swarm-dispatch';
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import type { Dispatch } from '../db/dal/dispatches.js';
+import { advanceLinkedTasksOnStart } from './start.js';
 
 export interface SpecContentFetcher {
   fetch(resourceId: string, specId: string): Promise<{
@@ -95,8 +96,15 @@ export function createOpenHiveDispatchSource(
 
     releaseRow: (id, fence) => dispatchesDAL.releaseDispatch(id, fence),
 
-    transitionRow: (id, action, fence) =>
-      dispatchesDAL.transitionDispatch(id, action, fence),
+    transitionRow: (id, action, fence) => {
+      dispatchesDAL.transitionDispatch(id, action, fence);
+      // On successful claim, advance opentasks tasks linked to the spec from
+      // `open` → `in_progress`. Fire-and-forget: daemon hiccups must not
+      // block the dispatch itself.
+      if (action === 'start') {
+        void advanceLinkedTasksOnStart(id);
+      }
+    },
 
     getRow: (id) => dispatchesDAL.findDispatchById(id),
 

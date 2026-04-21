@@ -16,6 +16,7 @@ import { createOpenHiveRoster } from './openhive-roster.js';
 import { openHivePromptBuilder } from './prompt.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import * as dispatchesDAL from '../db/dal/dispatches.js';
+import { finalizeDispatch } from './finalize.js';
 import type { Config } from '../config.js';
 
 export interface SetupOrchestratorOptions {
@@ -95,12 +96,14 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
 
     // Terminal: agent completed successfully → mark dispatch complete
     // Guard: skip if already terminal (map/dispatches/report may have written first)
+    //
+    // No hub-authored summary here — narrative is agent-owned via
+    // map/dispatches/report. Silent agents leave summary undefined; observed
+    // facts (attempts, session_ids, cascade artifacts) still populate.
     if (event.type === 'completed') {
       const current = dispatchesDAL.findDispatchById(event.taskId);
       if (current && current.status !== 'complete' && current.status !== 'failed' && current.status !== 'cancelled') {
-        dispatchesDAL.updateDispatchStatus(event.taskId, 'complete', {
-          summary: 'Agent completed successfully',
-        });
+        finalizeDispatch(event.taskId, 'complete');
         const record = orchestrator.tracker.getTask(event.taskId);
         if (record) {
           dispatchesDAL.updateDispatchAttemptTurn(
@@ -120,15 +123,16 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
 
     // Terminal: all retries exhausted → mark dispatch failed with last error
     // Guard: skip if already terminal
+    //
+    // Hub doesn't author the narrative here either — `lastError` lives in
+    // `attempts_history[n].error` and `attempts` in the dispatch row, so
+    // the observed facts are preserved without shadowing the agent's voice.
     if (event.type === 'dead') {
       const current = dispatchesDAL.findDispatchById(event.taskId);
       if (current && current.status !== 'complete' && current.status !== 'failed' && current.status !== 'cancelled') {
         const lastError = 'lastError' in event ? (event as { lastError?: string }).lastError : undefined;
         const attempts = 'attempts' in event ? (event as { attempts?: number }).attempts : undefined;
-        dispatchesDAL.updateDispatchStatus(event.taskId, 'failed', {
-          error: lastError ?? 'All retry attempts exhausted',
-          summary: `Failed after ${attempts ?? '?'} attempt(s)`,
-        });
+        finalizeDispatch(event.taskId, 'failed');
         dispatchesDAL.updateDispatchAttemptTurn(
           event.taskId,
           attempts ?? 0,

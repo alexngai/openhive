@@ -83,7 +83,8 @@ export async function dispatchesRoutes(
     if (!dispatch) {
       return reply.status(404).send({ error: 'Not Found', message: 'Dispatch not found' });
     }
-    return reply.send({ dispatch });
+    const linked_tasks = dispatchesDAL.getDispatchLinkedTasks(request.params.id);
+    return reply.send({ dispatch, linked_tasks });
   });
 
   /**

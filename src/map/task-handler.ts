@@ -19,6 +19,7 @@ import {
   daemonUpdateTask,
   daemonAssignTask,
   daemonListTasks,
+  daemonGetNodeWithNeighbors,
   resolveDaemonSocket,
   TaskDaemonError,
 } from './task-daemon-client.js';
@@ -372,6 +373,96 @@ export async function handleTaskRequest(
     default:
       throw new MAPTaskRequestError(-32601, `Unknown task method: ${method}`);
   }
+}
+
+// ============================================================================
+// Internal (hub-originated) task helpers
+//
+// These bypass canAccessResource because the hub acts on its own behalf when
+// driving tasks from dispatch lifecycle (advance-on-start, completion). They
+// reuse the same local/remote target resolution as the MAP handler so
+// hub-initiated writes land in the right daemon or swarm.
+// ============================================================================
+
+async function resolveResourceTargetInternal(
+  resource: SyncableResource,
+  label: string,
+): Promise<ResolvedTarget> {
+  const meta = resource.metadata as Record<string, unknown> | null;
+  if (resource.resource_type !== 'task' || !meta?.opentasks) {
+    throw new MAPTaskRequestError(-32602, `Resource is not an OpenTasks resource: ${label}`);
+  }
+  let localPath = resolveLocalPath(resource);
+  if (!localPath) {
+    const strategy = resource.sync_strategy;
+    if (strategy === 'ls-remote' || strategy === 'mirror') {
+      const clonePath = await getSyncOrchestrator().ensureContent(resource);
+      if (clonePath) localPath = clonePath;
+    }
+  }
+  if (localPath && existsSync(localPath) && statSync(localPath).isDirectory()) {
+    return { type: 'local', localPath, socketPath: resolveDaemonSocket(localPath) };
+  }
+  const swarmId = findSwarmForResource(resource);
+  if (swarmId) return { type: 'remote', swarmId, resource };
+  throw new MAPTaskRequestError(-32002, `Resource not available locally or via connected swarm: ${label}`);
+}
+
+/**
+ * Fetch a single task node by id. Local-only today — remote lookups are not
+ * wired because the opentasks remote query surface doesn't expose a
+ * single-node-by-id operation. Returns null when the resource is remote.
+ */
+export async function getTaskInternal(
+  target: { resource_id: string },
+  taskId: string,
+): Promise<Record<string, unknown> | null> {
+  const resource = resourcesDAL.findResourceById(target.resource_id);
+  if (!resource) return null;
+  const resolved = await resolveResourceTargetInternal(resource, target.resource_id);
+  if (resolved.type === 'local') {
+    const result = await daemonGetNodeWithNeighbors(resolved.socketPath, taskId, resolved.localPath);
+    return result.node;
+  }
+  return null;
+}
+
+/**
+ * Apply updates to a task from hub-internal code. Local paths drive the
+ * opentasks daemon directly; remote paths route through the MAP opentasks
+ * request surface (status-only today, mirroring the existing remote helper).
+ */
+export async function updateTaskInternal(
+  target: { resource_id: string },
+  taskId: string,
+  updates: {
+    status?: string;
+    title?: string;
+    description?: string;
+    assignee?: string | null;
+  },
+): Promise<Record<string, unknown> | null> {
+  const resource = resourcesDAL.findResourceById(target.resource_id);
+  if (!resource) throw new MAPTaskRequestError(-32001, `Resource not found: ${target.resource_id}`);
+  const resolved = await resolveResourceTargetInternal(resource, target.resource_id);
+  if (resolved.type === 'local') {
+    const result = await daemonUpdateTask(
+      resolved.socketPath,
+      taskId,
+      {
+        status: updates.status,
+        title: updates.title,
+        description: updates.description,
+        assignee: updates.assignee ?? undefined,
+      },
+      resolved.localPath,
+    );
+    return result as unknown as Record<string, unknown>;
+  }
+  if (updates.status) {
+    return remoteUpdateTask(resolved.swarmId, taskId, updates.status);
+  }
+  return null;
 }
 
 // ============================================================================

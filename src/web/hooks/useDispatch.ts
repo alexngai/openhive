@@ -99,10 +99,21 @@ export function useDispatchList(options: UseDispatchListOptions = {}) {
   });
 }
 
+export interface DispatchLinkedTaskRef {
+  resource_id: string;
+  node_id: string;
+  advanced_on_start?: boolean;
+}
+
+export interface DispatchDetailResponse {
+  dispatch: Dispatch;
+  linked_tasks?: DispatchLinkedTaskRef[];
+}
+
 export function useDispatch(id: string | undefined) {
   return useQuery({
     queryKey: ['dispatch', id],
-    queryFn: () => api.get<{ dispatch: Dispatch }>(`/dispatches/${id}`),
+    queryFn: () => api.get<DispatchDetailResponse>(`/dispatches/${id}`),
     enabled: !!id,
     staleTime: 15_000,
     // Polling fallback for the running window: the primary source of
