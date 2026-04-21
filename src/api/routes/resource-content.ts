@@ -1155,7 +1155,12 @@ export async function resourceContentRoutes(
           assignee: body.assignee,
         }, localPath);
         if (body.status) {
-          try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.status', data: { taskId: request.params.nodeId, current: body.status } }); } catch { /* best effort */ }
+          const { broadcastTaskStatus } = await import('../../map/task-broadcast.js');
+          broadcastTaskStatus({
+            taskId: request.params.nodeId,
+            status: body.status,
+            resourceId: resource.id,
+          });
         }
         return reply.send({ node_id: request.params.nodeId, previous_status: null, new_status: body.status ?? null });
       } catch (err) {
@@ -1192,7 +1197,12 @@ export async function resourceContentRoutes(
         if (!updated) {
           return reply.status(503).send({ error: 'Service Unavailable', message: 'Remote swarm did not respond' });
         }
-        try { const { broadcastToChannel } = await import('../../realtime/index.js'); broadcastToChannel('map:tasks', { type: 'task.status', data: { taskId: request.params.nodeId, current: body.status } }); } catch { /* best effort */ }
+        const { broadcastTaskStatus } = await import('../../map/task-broadcast.js');
+        broadcastTaskStatus({
+          taskId: request.params.nodeId,
+          status: body.status,
+          resourceId: resource.id,
+        });
       }
       if (updated) {
         return reply.send({ node_id: request.params.nodeId, previous_status: null, new_status: body.status ?? null });
