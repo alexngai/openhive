@@ -601,7 +601,10 @@ function showSplash(): void {
   // have the slower hive-boot from the cold disk read of node_modules.
   if (!app.isPackaged) return;
 
-  const iconPath = path.join(__dirname, '..', 'build', 'icon.png');
+  // Transparent logo so the splash's dark background shows through the
+  // negative space (hexagon / frame edges) instead of sitting inside an
+  // opaque tile that looks like a sticker on the panel.
+  const iconPath = path.join(__dirname, '..', 'build', 'logo-transparent.png');
   let iconData = '';
   try { iconData = fs.readFileSync(iconPath).toString('base64'); }
   catch { /* missing — splash still works, just without the logo */ }
