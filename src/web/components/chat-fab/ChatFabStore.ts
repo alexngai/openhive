@@ -10,6 +10,15 @@ import { api } from '../../lib/api';
 
 export type ChatFabMode = 'floating' | 'docked';
 
+/**
+ * Which view the ChatFab body is showing. Drives both the body content and
+ * the header title / back-button behaviour.
+ *
+ * - `picker`: agent/session picker (default when no session)
+ * - `chat`: active chat session
+ */
+export type ChatFabView = 'picker' | 'chat';
+
 const MODE_STORAGE_KEY = 'chat-fab-mode';
 const OPEN_STORAGE_KEY = 'chat-fab-open';
 
@@ -70,6 +79,8 @@ export interface ChatFabAgentRef {
 export interface ChatFabState {
   /** FAB expanded or collapsed */
   open: boolean;
+  /** Which panel view is active */
+  view: ChatFabView;
   /** Active chat session ID (null = show picker) */
   sessionId: string | null;
   /** Swarm the active session is on */
@@ -99,6 +110,8 @@ export interface ChatFabState {
   // Actions
   toggle: () => void;
   collapse: () => void;
+  /** Navigate to a specific view within the panel. */
+  navigate: (view: ChatFabView) => void;
   setSession: (
     sessionId: string,
     swarmId: string,
@@ -124,6 +137,7 @@ export interface ChatFabState {
 
 export const useChatFabStore = create<ChatFabState>((set) => ({
   open: loadOpen(),
+  view: 'picker',
   sessionId: null,
   swarmId: null,
   sessionLabel: null,
@@ -144,6 +158,8 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
     set({ open: false });
   },
 
+  navigate: (view) => set({ view }),
+
   setSession: (sessionId, swarmId, label, resume, agentRef) =>
     set({
       sessionId,
@@ -152,6 +168,7 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
       agentRef: agentRef ?? null,
       resume: resume ?? null,
       connectError: null,
+      view: 'chat',
     }),
 
   clearSession: () =>
@@ -162,6 +179,7 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
       agentRef: null,
       resume: null,
       connectError: null,
+      view: 'picker',
     }),
 
   setMode: (mode) => {
@@ -177,7 +195,7 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
 
   connectAndOpen: async (swarmId, agentId, label, peerMapId) => {
     saveOpen(true);
-    set({ connecting: true, connectError: null, open: true });
+    set({ connecting: true, connectError: null, open: true, view: 'chat' });
     try {
       const result = await api.post<{
         session_resource_id: string;
