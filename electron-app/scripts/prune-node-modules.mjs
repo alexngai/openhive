@@ -292,18 +292,18 @@ function dirSize(p) {
 /**
  * Delete a path safely — NEVER follow symlinks into `references/`.
  *
- * The `node_modules/<pkg>` entry for workspace-linked packages (like
- * `cognitive-core`) is a symlink pointing at `references/<pkg>`. A naive
- * `fs.rmSync(path, { recursive: true })` with a mid-path symlink will
- * resolve through the link and delete the REAL submodule source. That
- * happened once and cost a git-reset to recover. Now we:
+ * If any first-party dep ever gets workspace-linked (`file:references/<pkg>`),
+ * the `node_modules/<pkg>` entry becomes a symlink pointing at
+ * `references/<pkg>`. A naive `fs.rmSync(path, { recursive: true })` with a
+ * mid-path symlink would then resolve through the link and delete the REAL
+ * submodule source. That happened once and cost a git-reset to recover
+ * (when `cognitive-core` was file:-linked). No deps are currently linked
+ * this way, but the guard stays:
  *
  *   1. If the leaf itself is a symlink → `fs.unlinkSync` (removes the
  *      link only, leaves the target alone).
  *   2. Resolve the realpath of the target. If it escapes
- *      `<repo>/node_modules/`, refuse the delete — this catches the
- *      `node_modules/cognitive-core/src` case where `cognitive-core` is
- *      a symlink into `references/`.
+ *      `<repo>/node_modules/`, refuse the delete.
  */
 function removeDir(dir, label) {
   let stat;
@@ -401,7 +401,8 @@ function walkNodeModules(nodeModulesDir, depth = 0) {
           removeDir(subPath, 'cross-platform CLI');
           continue;
         }
-        // Don't recurse through a symlink (e.g. `cognitive-core` → `references/cognitive-core`).
+        // Don't recurse through a symlink — workspace-linked packages
+        // (if any) point into `references/` and we must not descend there.
         if (isSymlink(subPath)) continue;
         // Recurse into nested node_modules.
         const inner = path.join(subPath, 'node_modules');

@@ -8,11 +8,14 @@
  * ----------------------
  * Three failure modes collide in OpenHive's dependency tree:
  *
- * 1. Several transitive deps (git-cascade, skill-tree-indexer, cognitive-core
- *    and swarmcraft — the latter two now file:-linked from references/) pin
+ * 1. Several transitive deps (git-cascade, skill-tree-indexer, etc.) pin
  *    older better-sqlite3 versions that (a) don't compile under modern Xcode
- *    and (b) don't ship Electron prebuilds for current versions. Left alone,
- *    those nested copies shadow the top-level one and fail at load time.
+ *    and (b) don't ship Electron prebuilds for current versions. If any of
+ *    these end up with a nested copy in node_modules/ or (historically) a
+ *    file:-linked package under references/, that copy shadows the top-level
+ *    one and fails at load time. All first-party refs currently resolve from
+ *    the npm registry, but the walk is kept defensively for future workspace
+ *    links.
  *
  * 2. `electron-builder install-app-deps` rebuilds better-sqlite3 from source
  *    against Electron's V8 headers. The resulting binary silently aborts the
