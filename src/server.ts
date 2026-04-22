@@ -6,9 +6,11 @@ import multipart from "@fastify/multipart";
 import * as path from "path";
 import * as fs from "fs";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const requireFrom = createRequire(import.meta.url);
 import { Config, loadConfig } from "./config.js";
 import { initDatabase, closeDatabase, getDatabase } from "./db/index.js";
 import { registerRoutes } from "./api/index.js";
@@ -669,6 +671,48 @@ export async function createHive(
         );
     });
   } else if (actualWebPath) {
+    // Serve tree-sitter / kuzu WASM grammars directly from the swarmcraft
+    // package. Same physical files are otherwise bundled twice — once here
+    // and once under `node_modules/swarmcraft/public/wasm/` for the
+    // server-side parser-loader. This route dedupes the ~24 MB duplicate
+    // out of the packaged app by pointing the HTTP `/wasm/*` route at the
+    // swarmcraft copy (which is required by swarmcraft's own runtime).
+    //
+    // Must register BEFORE the `/` SPA route so the more-specific prefix
+    // wins in Fastify's radix routing.
+    //
+    // `swarmcraft`'s `package.json` isn't listed under its `exports`
+    // field so we can't require.resolve it directly under strict ESM.
+    // Resolve the main entry instead, then walk up to find the package
+    // root (where `public/wasm/` lives).
+    try {
+      let dir = path.dirname(requireFrom.resolve("swarmcraft"));
+      while (dir !== path.dirname(dir)) {
+        const pkgPath = path.join(dir, "package.json");
+        if (fs.existsSync(pkgPath)) {
+          try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+            if (pkg.name === "swarmcraft") break;
+          } catch {
+            // ignore malformed package.json and keep walking
+          }
+        }
+        dir = path.dirname(dir);
+      }
+      const swarmcraftWasm = path.join(dir, "public", "wasm");
+      if (fs.existsSync(swarmcraftWasm)) {
+        await fastify.register(fastifyStatic, {
+          root: swarmcraftWasm,
+          prefix: "/wasm/",
+          decorateReply: !staticRegistered,
+        });
+        staticRegistered = true;
+      }
+    } catch {
+      // swarmcraft not resolvable (unusual); fall through — the `/` SPA
+      // static below will still serve dist/web/wasm/ if vite built it.
+    }
+
     await fastify.register(fastifyStatic, {
       root: actualWebPath,
       prefix: "/",
