@@ -161,6 +161,9 @@
 
   html {
     @apply antialiased;
+    /* Root font-size is set imperatively by the theme store (see
+       stores/theme.ts:applyTextScale). Base is 15px, scaled by the
+       user's selected tier. Fallback for pre-hydration/SSR: */
     font-size: 15px;
   }
 
