@@ -161,23 +161,26 @@ const DELETE_PACKAGES = [
   // dependency of swarmcraft (swarmcraft/dist/server/sessionlog imports
   // it). Don't prune.
 
-  // ---- Electron-builder infra (not needed in packaged app) ----
-  'electron',
-  '@electron',
-  'electron-builder',
-  'electron-builder-squirrel-windows',
-  'electron-winstaller',
-  'app-builder-bin',
-  'app-builder-lib',
-  'dmg-builder',
-  'dmg-license',
-  'builder-util',
-  'builder-util-runtime',
-  '7zip-bin',
-  'postject',
-  '@malept',
-  'flatpak-bundler',
-  'node-gyp',
+  // ---- Electron-builder infra ----
+  // Electron-builder and its direct deps are NOT deleted here because
+  // electron-builder (+ dmg-builder, app-builder-lib, @electron/osx-sign,
+  // @electron/notarize, etc.) run AFTER this script in the dist chain:
+  //   `… && node scripts/prune-node-modules.mjs && electron-builder`
+  // Deleting `node_modules/electron-builder/` leaves a dangling
+  // `.bin/electron-builder` symlink → the subsequent shell step fails
+  // with "command not found". Same for its subprocess spawns
+  // (dmg-builder, osx-sign) which need the files on disk.
+  //
+  // These packages are kept OUT of the asar via the `files` filter in
+  // electron-app/package.json (see `!**/electron/**`, `!**/@electron/**`,
+  // `!**/electron-builder*/**`, `!**/dmg-builder/**`, etc.). No runtime
+  // package declares any of these as a dep, so electron-builder's
+  // dep-tree walk doesn't pull them into the asar either. Files filter
+  // is sufficient here.
+  //
+  // If you want the disk-space saving for dev environments, restore via
+  // `npm install` after the build — which is already the documented
+  // cleanup step. Deleting them pre-build only breaks the build.
 
   // ---- Extraneous / dev leftovers (not reachable from package.json) ----
   'happy-dom',
@@ -231,6 +234,13 @@ const DELETE_SUBPATHS = [
   // only uses the better-sqlite3 one. But `relations.js` cross-imports
   // from pg-core etc. at module-load time, so we can't prune dialects
   // without breaking drizzle's core. Keep them.
+  // better-sqlite3 compile-time inputs: deps/sqlite3 is the upstream
+  // SQLite C source (9.6M), src/ is the C++ addon source (160K), and
+  // binding.gyp is the gyp build descriptor. None are loaded at runtime —
+  // runtime uses the prebuilt `build/Release/better_sqlite3.node` binary
+  // we pulled via `fix-better-sqlite3.mjs`. Safe to drop.
+  ['better-sqlite3', 'deps'],
+  ['better-sqlite3', 'src'],
 ];
 
 // Platform-specific binary pruning. For a mac-arm64 build we keep

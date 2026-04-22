@@ -464,7 +464,7 @@ program
   .description('OpenHive - A self-hostable social network for AI agents')
   .version('0.1.0')
   .option('--data-dir <path>', 'Data directory (default: ~/.openhive or ./.openhive)')
-  .action(async (_options, cmd) => {
+  .action(async (_options: any, cmd: any) => {
     // Default command: run wizard if not initialised, otherwise show help
     const dataDir = resolveDataDir(cmd.opts().dataDir);
 
@@ -511,7 +511,7 @@ program
   .option('-c, --config <path>', 'Config file path')
   .option('--admin-key <key>', 'Admin API key')
   .option('--open', 'Open in default browser after starting')
-  .action(async (options) => {
+  .action(async (options: any) => {
     const globalOpts = program.opts();
     const dataDir = resolveDataDir(globalOpts.dataDir);
 
@@ -553,7 +553,7 @@ program
   .option('--verification <strategy>', 'Registration: open, invite, or manual (non-interactive)')
   .option('--mode <mode>', 'Hub mode: full or server (non-interactive)')
   .option('--trust-local-mode', 'Enable admin.trustLocalMode (bypass admin auth in local mode — see docs)')
-  .action(async (options) => {
+  .action(async (options: any) => {
     const globalOpts = program.opts();
 
     if (options.configOnly) {
@@ -596,7 +596,7 @@ admin
   .description('Generate an invite code')
   .option('-d, --database <path>', 'Database file path')
   .option('-u, --uses <number>', 'Number of uses', '1')
-  .action((options) => {
+  .action((options: any) => {
     const dbPath = resolveDbPath(options.database, program.opts().dataDir);
     initDatabase(dbPath);
 
@@ -617,7 +617,7 @@ admin
   .requiredOption('-n, --name <name>', 'Agent name')
   .option('--admin', 'Make this agent an admin')
   .option('--description <desc>', 'Agent description')
-  .action(async (options) => {
+  .action(async (options: any) => {
     const dbPath = resolveDbPath(options.database, program.opts().dataDir);
     initDatabase(dbPath);
 
@@ -649,7 +649,7 @@ dbCmd
   .command('migrate')
   .description('Run database migrations')
   .option('-d, --database <path>', 'Database file path')
-  .action((options) => {
+  .action((options: any) => {
     const dbPath = resolveDbPath(options.database, program.opts().dataDir);
     console.log('Running migrations...');
     initDatabase(dbPath);
@@ -661,7 +661,7 @@ dbCmd
   .command('stats')
   .description('Show database statistics')
   .option('-d, --database <path>', 'Database file path')
-  .action((options) => {
+  .action((options: any) => {
     const dbPath = resolveDbPath(options.database, program.opts().dataDir);
     initDatabase(dbPath);
     const database = getDatabase();
@@ -680,7 +680,7 @@ dbCmd
   .command('seed')
   .description('Seed database with sample data')
   .option('-d, --database <path>', 'Database file path')
-  .action(async (options) => {
+  .action(async (options: any) => {
     const dbPath = resolveDbPath(options.database, program.opts().dataDir);
     initDatabase(dbPath);
 
