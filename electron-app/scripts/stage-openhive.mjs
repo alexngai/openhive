@@ -41,6 +41,16 @@ const SHIP = ['dist', 'bin'];
 // Runtime deps the bundled server actually imports (static + dynamic).
 // Keep this aligned with imports found in `dist/index.js` / `dist/cli.js`.
 // Everything else (frontend libs, build tools, test infra) is pruned.
+//
+// Packages in DUPLICATED_BY_NESTING (below) are INTENTIONALLY omitted.
+// Electron-builder's dep-tree walk creates a nested copy at
+// `node_modules/openhive/node_modules/<pkg>/` for each dep declared here.
+// For packages whose same version is also present at the asar's top-level
+// `node_modules/<pkg>/` (copied via the blanket `**/*` filter from
+// `../node_modules`), the nested copy is pure duplication. Omitting them
+// from the staged package.json stops electron-builder from synthesizing
+// the nested path; Node.js's module resolution at runtime walks up from
+// `node_modules/openhive/` and finds the top-level copy just fine.
 const RUNTIME_DEPS = new Set([
   '@anthropic-ai/sandbox-runtime',
   '@fastify/cors',
@@ -50,7 +60,6 @@ const RUNTIME_DEPS = new Set([
   '@fastify/websocket',
   '@lydell/node-pty',
   '@multi-agent-protocol/sdk',
-  'agent-iam',
   'agent-inbox',
   'agent-workspace',
   'bcrypt',
@@ -69,7 +78,6 @@ const RUNTIME_DEPS = new Set([
   'nodemailer',
   'openhive-types',
   'openswarm',
-  'opentasks',
   'pg',
   'sharp',
   'skill-tree',
@@ -82,6 +90,20 @@ const RUNTIME_DEPS = new Set([
   'ws',
   'zod',
 ]);
+
+// Deps whose nested copy at `openhive/node_modules/<pkg>/` was observed
+// to duplicate the top-level asar copy. They used to be in RUNTIME_DEPS;
+// omitting them saves ~8 MB in the packaged asar without affecting
+// runtime resolution. If you add a package here, verify (a) the same
+// version lives at the asar top level, and (b) no code in `dist/index.js`
+// uses `require.resolve('<pkg>/...')` with a package-local path
+// assumption — those break when the nested copy disappears. See asar
+// extract + `diff -rq` against a baseline build.
+// eslint-disable-next-line no-unused-vars
+const DUPLICATED_BY_NESTING = [
+  'agent-iam',
+  'opentasks',
+];
 
 // Optional runtime deps — keep in optionalDependencies so npm doesn't fail
 // if they can't install (e.g. @google-cloud/storage on ARM edge cases).
@@ -166,6 +188,19 @@ for (const target of targets) {
     }
     fs.cpSync(src, path.join(target, entry), { recursive: true, dereference: true });
     console.log(`[stage-openhive]   copied ${entry}`);
+  }
+
+  // Dedupe dist/web/wasm/ — vite's build dereferences the src/web/public/wasm
+  // symlink (created by ensure-wasm.mjs) and copies ~24 MB of tree-sitter +
+  // kuzu grammar WASM into dist/web/wasm/. Those exact bytes also ship in
+  // node_modules/swarmcraft/public/wasm/ because swarmcraft's own server-side
+  // parser-loader requires them at runtime. At Fastify startup we route
+  // `/wasm/*` directly to the swarmcraft copy (see src/server.ts), so the
+  // dist/web/wasm/ copy is unused in the packaged app. Safe to drop.
+  const wasmDir = path.join(target, 'dist', 'web', 'wasm');
+  if (fs.existsSync(wasmDir)) {
+    fs.rmSync(wasmDir, { recursive: true, force: true });
+    console.log(`[stage-openhive]   pruned dist/web/wasm (served from swarmcraft at runtime)`);
   }
 
   fs.writeFileSync(
