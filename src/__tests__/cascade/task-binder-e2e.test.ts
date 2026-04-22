@@ -12,28 +12,30 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 
 const broadcastToChannel = vi.fn();
 const daemonUpdateTask = vi.fn();
-const resolveDaemonSocket = vi.fn(() => '/tmp/fake-socket');
+const resolveDaemonSocket = vi.fn((_opentasksDir: string) => '/tmp/fake-socket');
 const remoteUpdateTask = vi.fn();
 const findSwarmForResource = vi.fn();
 const getAggregateCapabilities = vi.fn();
 
 vi.mock('../../realtime/index.js', () => ({
-  broadcastToChannel: (...args: unknown[]) => broadcastToChannel(...args),
+  broadcastToChannel: (channel: string, event: unknown) => broadcastToChannel(channel, event),
 }));
 vi.mock('../../map/task-daemon-client.js', () => ({
-  daemonUpdateTask: (...args: unknown[]) => daemonUpdateTask(...args),
-  resolveDaemonSocket: (...args: unknown[]) => resolveDaemonSocket(...args),
+  daemonUpdateTask: (socketPath: string, taskId: string, updates: unknown, opentasksDir?: string) =>
+    daemonUpdateTask(socketPath, taskId, updates, opentasksDir),
+  resolveDaemonSocket: (opentasksDir: string) => resolveDaemonSocket(opentasksDir),
   TaskDaemonError: class TaskDaemonError extends Error {},
 }));
 vi.mock('../../map/opentasks-remote.js', () => ({
-  remoteUpdateTask: (...args: unknown[]) => remoteUpdateTask(...args),
-  findSwarmForResource: (...args: unknown[]) => findSwarmForResource(...args),
+  remoteUpdateTask: (swarmId: string, taskId: string, status: string) =>
+    remoteUpdateTask(swarmId, taskId, status),
+  findSwarmForResource: (resource: unknown) => findSwarmForResource(resource),
 }));
 vi.mock('../../map/connection-registry.js', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../../map/connection-registry.js');
   return {
     ...actual,
-    getAggregateCapabilities: (...args: unknown[]) => getAggregateCapabilities(...args),
+    getAggregateCapabilities: (swarmId: string) => getAggregateCapabilities(swarmId),
   };
 });
 

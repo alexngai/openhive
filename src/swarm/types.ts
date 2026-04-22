@@ -135,6 +135,24 @@ export interface SpawnSwarmInput {
   inject_resources?: string[];
   /** Boot-time agent provisioning (e.g. auto-spawn coordinator) */
   bootstrap?: SwarmBootstrap;
+  /**
+   * Optional git-sync config for the swarm's OWN opentasks workspace.
+   * When set, the manager writes `.opentasks/config.json` into the
+   * spawn's `dataDir` BEFORE the subprocess starts, so the embedded
+   * daemon reads it on first boot — no PATCH + hot-reload needed.
+   *
+   * Shape mirrors `metadata.git_sync` on a resource (see
+   * `src/swarmkit/git-sync-config.ts` for the schema).
+   */
+  git_sync?: {
+    enabled: boolean;
+    remote?: string;
+    autoCommit?: boolean;
+    autoPush?: boolean;
+    pullOnStartup?: boolean;
+    pushDebounceMs?: number;
+    pullOnSignal?: boolean;
+  };
 }
 
 /** Internal config passed to the hosting provider */

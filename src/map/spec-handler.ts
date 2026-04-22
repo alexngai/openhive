@@ -12,6 +12,7 @@ import { resolveLocalPath } from '../api/routes/_resource-helpers.js';
 import { daemonCreateSpec, resolveDaemonSocket, TaskDaemonError } from './task-daemon-client.js';
 import { dispatchSpecToSwarms } from '../api/routes/specs.js';
 import { isAutonomousDispatchPaused } from './dispatch-policy.js';
+import { shouldBroadcastSpecEvent } from './spec-broadcast-dedup.js';
 
 // ============================================================================
 // Method Constants
@@ -103,18 +104,24 @@ export async function handleSpecRequest(
       // Broadcast for hub WS subscribers (frontend invalidation).
       // Reuses the existing `map:tasks` channel — specs and tasks are both
       // opentasks graph nodes, so subscribing surfaces share the same channel.
-      try {
-        const { broadcastToChannel } = await import('../realtime/index.js');
-        broadcastToChannel('map:tasks', {
-          type: 'spec.created',
-          data: {
-            spec: { id: (node as Record<string, unknown>).id, title: (node as Record<string, unknown>).title },
-            resource_id: resourceId,
-            initiator: { type: 'agent', id: context.agentId },
-          },
-        });
-      } catch {
-        /* best effort */
+      // Gated by the broadcast-dedup cache so a watcher-driven rebroadcast
+      // from a co-located cc-swarm sidecar doesn't double-fire.
+      const specNode = node as Record<string, unknown>;
+      const specNodeId = typeof specNode.id === 'string' ? specNode.id : undefined;
+      if (specNodeId && shouldBroadcastSpecEvent('spec.created', resourceId, specNodeId)) {
+        try {
+          const { broadcastToChannel } = await import('../realtime/index.js');
+          broadcastToChannel('map:tasks', {
+            type: 'spec.created',
+            data: {
+              spec: { id: specNodeId, title: specNode.title },
+              resource_id: resourceId,
+              initiator: { type: 'agent', id: context.agentId },
+            },
+          });
+        } catch {
+          /* best effort */
+        }
       }
 
       return { spec: node };

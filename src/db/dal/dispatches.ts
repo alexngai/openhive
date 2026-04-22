@@ -455,3 +455,63 @@ export function listInProgressDispatches(): Dispatch[] {
     .all() as DispatchRow[];
   return rows.map(rowToDispatch);
 }
+
+// ============================================================================
+// Linked tasks (dispatch → opentasks task refs captured at creation)
+// ============================================================================
+
+export interface DispatchLinkedTaskRef {
+  resource_id: string;
+  node_id: string;
+  advanced_on_start?: boolean;
+}
+
+interface LinkedTaskRow {
+  resource_id: string;
+  node_id: string;
+  advanced_on_start: number;
+}
+
+export function addDispatchLinkedTasks(
+  dispatchId: string,
+  refs: Array<{ resource_id: string; node_id: string }>,
+): void {
+  if (refs.length === 0) return;
+  const db = getDatabase();
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO dispatch_linked_tasks (dispatch_id, resource_id, node_id)
+     VALUES (?, ?, ?)`,
+  );
+  const insertAll = db.transaction((items: Array<{ resource_id: string; node_id: string }>) => {
+    for (const ref of items) {
+      stmt.run(dispatchId, ref.resource_id, ref.node_id);
+    }
+  });
+  insertAll(refs);
+}
+
+export function getDispatchLinkedTasks(dispatchId: string): DispatchLinkedTaskRef[] {
+  const db = getDatabase();
+  const rows = db
+    .prepare(
+      `SELECT resource_id, node_id, advanced_on_start
+       FROM dispatch_linked_tasks WHERE dispatch_id = ?`,
+    )
+    .all(dispatchId) as LinkedTaskRow[];
+  return rows.map((r) => ({
+    resource_id: r.resource_id,
+    node_id: r.node_id,
+    advanced_on_start: Boolean(r.advanced_on_start),
+  }));
+}
+
+export function markTaskAdvanced(
+  dispatchId: string,
+  ref: { resource_id: string; node_id: string },
+): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE dispatch_linked_tasks SET advanced_on_start = 1
+     WHERE dispatch_id = ? AND resource_id = ? AND node_id = ?`,
+  ).run(dispatchId, ref.resource_id, ref.node_id);
+}

@@ -1,5 +1,16 @@
 # OpenTasks Sync Integration Design Document
 
+## Status
+
+**Phase 1 Complete (2026-04-21)**: Git-sync + MAP signaling layer has shipped. See `GIT_SOURCE_OF_TRUTH.md` for production implementation details.
+
+- ✅ Daemon git operations (commit, push, pull, merge) with configurable timers
+- ✅ Hub resource metadata flag (`metadata.git_sync`) + REST toggle endpoint
+- ✅ Hot-reload IPC (`sync.reload`) for flag changes without daemon restart
+- ✅ MAP context event → pull trigger with debouncing
+- ✅ UI toggle component with live/pending status indication
+- ⏳ **Phases 2–6 pending**: `ls-remote`, `mirror`, `bundle` strategies; task graph UI; coordination module deprecation
+
 ## Overview
 
 This document describes the integration between OpenHive and [OpenTasks](https://github.com/alexngai/open-tasks) — covering what has been built, what remains, and the design for configurable sync strategies that allow OpenTasks graphs to be discovered, read, and synchronized across instances and swarms without mandating a single approach.

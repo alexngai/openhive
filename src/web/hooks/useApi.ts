@@ -361,6 +361,124 @@ export function useResourceEvents(id: string, options?: { limit?: number }) {
   });
 }
 
+// ============================================================================
+// Git sync (opentasks-backed task resources)
+// ============================================================================
+
+export interface GitSyncMetadata {
+  enabled: boolean;
+  remote?: string;
+  autoCommit?: boolean;
+  autoPush?: boolean;
+  pullOnStartup?: boolean;
+  pushDebounceMs?: number;
+  /** When true, hub-received MAP context events fire an immediate pull. */
+  pullOnSignal?: boolean;
+}
+
+/**
+ * Recent health snapshot from the resource's daemon. Present when git
+ * sync is enabled AND the daemon is reachable; null otherwise.
+ *
+ * `lastError` being null with a non-null `lastSuccessAt` means the most
+ * recent cycle succeeded. A non-null `lastError` is sticky until the
+ * corresponding op (commit/pull/push) succeeds again.
+ */
+export interface GitSyncHealth {
+  lastError: string | null;
+  lastErrorAt: string | null;
+  lastErrorOp: "commit" | "pull" | "push" | null;
+  lastSuccessAt: string | null;
+}
+
+export interface GitSyncResponse {
+  git_sync: GitSyncMetadata | null;
+  health: GitSyncHealth | null;
+}
+
+export interface UpdateGitSyncResponse {
+  resource: SyncableResource;
+  git_sync: GitSyncMetadata;
+  /**
+   * Present when a running daemon picked up the new config in-place.
+   * Null if the daemon wasn't reachable (flag still persists; next
+   * daemon restart will apply it).
+   */
+  daemon_applied: { enabled: boolean; remote?: string } | null;
+}
+
+/**
+ * Read the current git_sync block + live health for a resource. Only
+ * meaningful on task resources backed by a local opentasks workspace.
+ *
+ * Refetches every 15s so operators see push failures surface without
+ * having to reload the page.
+ */
+export function useResourceGitSync(resourceId: string | undefined) {
+  return useQuery({
+    queryKey: ["resource-git-sync", resourceId],
+    queryFn: () =>
+      api.get<GitSyncResponse>(`/resources/${resourceId}/git-sync`),
+    enabled: !!resourceId,
+    refetchInterval: 15000,
+  });
+}
+
+export interface SyncNowResponse {
+  ran: boolean;
+  reason?: string;
+  result?: {
+    commit: { committed: boolean; hash?: string };
+    pull: { pulled: boolean; hasChanges: boolean; error?: string };
+    push: { pushed: boolean; error?: string };
+  };
+}
+
+/**
+ * Force an immediate sync cycle (commit + pull + push) on a resource's
+ * daemon. Used by the "Sync now" button in the GitSyncToggle popover to
+ * let operators verify their auth + remote config without waiting for
+ * the auto-sync debounce.
+ */
+export function useRunGitSyncNow() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (resourceId: string) =>
+      api.post<SyncNowResponse>(`/resources/${resourceId}/git-sync/run`, {}),
+    onSuccess: (_data, resourceId) => {
+      // Refetch git-sync data so the new health snapshot lands in the UI.
+      queryClient.invalidateQueries({ queryKey: ["resource-git-sync", resourceId] });
+    },
+  });
+}
+
+/**
+ * Toggle git_sync on/off for a resource. PATCH writes the metadata,
+ * writes the opentasks daemon's `.opentasks/config.json`, and attempts
+ * a live sync.reload on the daemon so the change takes effect without
+ * a restart (see `daemon_applied` on the response).
+ */
+export function useUpdateResourceGitSync() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      resourceId,
+      gitSync,
+    }: {
+      resourceId: string;
+      gitSync: GitSyncMetadata;
+    }) =>
+      api.patch<UpdateGitSyncResponse>(
+        `/resources/${resourceId}/git-sync`,
+        gitSync,
+      ),
+    onSuccess: (_data, { resourceId }) => {
+      queryClient.invalidateQueries({ queryKey: ["resource-git-sync", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["resource", resourceId] });
+    },
+  });
+}
+
 export function useCheckUpdates() {
   const queryClient = useQueryClient();
 

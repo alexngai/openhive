@@ -11,6 +11,7 @@
 
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import type { DispatchOutcome, DispatchStatus } from '../db/dal/dispatches.js';
+import { finalizeDispatch } from '../dispatch/finalize.js';
 
 // ============================================================================
 // Method Constants
@@ -102,7 +103,13 @@ export async function handleDispatchRequest(
       }
 
       const outcome: DispatchOutcome | undefined = outcomeRaw as DispatchOutcome | undefined;
-      const updated = dispatchesDAL.updateDispatchStatus(dispatchId, status, outcome);
+      // `running` is a non-terminal acknowledgement — leave it to the plain
+      // status updater. Terminal transitions go through finalizeDispatch so
+      // cascade artifacts get enriched onto the outcome.
+      const updated =
+        status === 'complete' || status === 'failed'
+          ? finalizeDispatch(dispatchId, status, outcome)
+          : dispatchesDAL.updateDispatchStatus(dispatchId, status, outcome);
       if (!updated) {
         throw new MAPDispatchRequestError(-32000, 'Failed to persist status update');
       }

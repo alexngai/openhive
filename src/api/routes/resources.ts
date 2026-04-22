@@ -9,6 +9,16 @@ import { watchNewResource } from '../../sync/local-resource-watcher.js';
 import type { SyncableResourceType, ResourceVisibility, ResourceScope } from '../../types.js';
 import { onResourcePublished, onResourceUpdated, onResourceUnpublished } from '../../sync/resource-hooks.js';
 import { getSyncOrchestrator } from '../../sync/sync-orchestrator.js';
+import {
+  applyGitSyncConfig,
+  GitSyncMetadataSchema,
+  type GitSyncMetadata,
+} from '../../swarmkit/git-sync-config.js';
+import {
+  reloadSyncerForResource,
+  getSyncHealthForResource,
+  syncNowForResource,
+} from '../../map/git-pull-trigger.js';
 import type { Config } from '../../config.js';
 
 // Valid resource types
@@ -1035,4 +1045,180 @@ export async function resourcesRoutes(
       });
     });
   }
+
+  // ========================================================================
+  // Git sync toggle
+  //
+  // Flips the `metadata.git_sync` flag on a task resource and propagates
+  // the corresponding `sync.git` config into the resource's opentasks
+  // daemon config.json on disk. This is the OpenHive-side entrypoint for
+  // the "git is source of truth, MAP is signaling" stance — once enabled,
+  // the daemon auto-commits and auto-pushes, and the hub's MAP listener
+  // will trigger pulls when peers signal via `context.*` events.
+  // ========================================================================
+  fastify.patch<{ Params: { id: string } }>(
+    '/resources/:id/git-sync',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const parsed = GitSyncMetadataSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: 'Validation Error',
+          details: parsed.error.issues,
+        });
+      }
+      const gitSync: GitSyncMetadata = parsed.data;
+
+      const resource = resourcesDAL.findResourceById(request.params.id);
+      if (!resource) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Resource not found' });
+      }
+      if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
+        return reply.status(403).send({ error: 'Forbidden', message: 'No access to resource' });
+      }
+
+      // Git sync is only meaningful for task resources with a local
+      // opentasks daemon — otherwise there's no `.opentasks/` to own.
+      if (resource.resource_type !== 'task') {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: 'git_sync is only supported on task resources',
+        });
+      }
+      if (!resource.local_path) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: 'Resource has no local_path — git_sync requires a local opentasks workspace',
+        });
+      }
+
+      // Merge the new git_sync block into metadata and persist.
+      const existingMetadata =
+        (resource.metadata as Record<string, unknown> | null) ?? {};
+      const nextMetadata = { ...existingMetadata, git_sync: gitSync };
+      const updated = resourcesDAL.updateResource(resource.id, { metadata: nextMetadata });
+
+      // Write the corresponding opentasks sync.git config. Best-effort:
+      // if the daemon hasn't been initialized on disk yet (.opentasks/
+      // doesn't exist), the helper creates it. Hard failures here mean
+      // the flag persisted in the DB but the daemon won't see it — we
+      // surface the error so the caller can retry.
+      try {
+        applyGitSyncConfig(resource.local_path, gitSync);
+      } catch (err) {
+        return reply.status(500).send({
+          error: 'Config Write Failed',
+          message: (err as Error).message,
+          resource: updated,
+        });
+      }
+
+      // Hot-swap the running daemon's syncer so the flag takes effect
+      // immediately — without this, the flip only lands on next daemon
+      // restart. Best-effort: if the daemon isn't running, isn't
+      // reachable, or is an older version without sync.reload, we just
+      // return the written config and let the next restart pick it up.
+      let daemonApplied: { enabled: boolean; remote?: string } | null = null;
+      try {
+        daemonApplied = await reloadSyncerForResource(resource.id);
+      } catch {
+        /* best-effort */
+      }
+
+      return reply.send({
+        resource: updated,
+        git_sync: gitSync,
+        daemon_applied: daemonApplied,
+      });
+    },
+  );
+
+  fastify.get<{ Params: { id: string } }>(
+    '/resources/:id/git-sync',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const resource = resourcesDAL.findResourceById(request.params.id);
+      if (!resource) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Resource not found' });
+      }
+      if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
+        return reply.status(403).send({ error: 'Forbidden', message: 'No access to resource' });
+      }
+
+      const metadata = (resource.metadata as Record<string, unknown> | null) ?? {};
+      const gitSync = metadata.git_sync as GitSyncMetadata | undefined;
+
+      // Fetch live health from the daemon if sync is enabled. Silent
+      // failures (daemon down, older opentasks without sync.status health,
+      // remote unreachable) resolve to `health: null` so callers can tell
+      // "no info available" apart from "ok, no recent errors" — which
+      // would show up as `{ lastError: null, lastSuccessAt: '...' }`.
+      let health = null;
+      if (gitSync?.enabled) {
+        try {
+          health = await getSyncHealthForResource(resource.id);
+        } catch {
+          /* best-effort */
+        }
+      }
+
+      return reply.send({ git_sync: gitSync ?? null, health });
+    },
+  );
+
+  /**
+   * Force an immediate sync cycle (commit + pull + push) on a resource's
+   * daemon. Used by the "Sync now" UI button for operators who want to
+   * skip the auto-sync debounce — useful after enabling git_sync to
+   * check that auth + remote access work before the next timer tick.
+   *
+   * Returns the daemon's `sync.now` response verbatim:
+   *   { ran: false, reason: "..." } when the daemon isn't reachable or
+   *   sync isn't enabled, or
+   *   { ran: true, result: { commit, pull, push } } on a successful round.
+   */
+  fastify.post<{ Params: { id: string } }>(
+    '/resources/:id/git-sync/run',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const resource = resourcesDAL.findResourceById(request.params.id);
+      if (!resource) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Resource not found' });
+      }
+      if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
+        return reply.status(403).send({ error: 'Forbidden', message: 'No access to resource' });
+      }
+      if (resource.resource_type !== 'task') {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: 'git_sync is only supported on task resources',
+        });
+      }
+      if (!resource.local_path) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: 'Resource has no local_path — no daemon to run sync on',
+        });
+      }
+
+      const metadata = (resource.metadata as Record<string, unknown> | null) ?? {};
+      const gitSync = metadata.git_sync as GitSyncMetadata | undefined;
+      if (!gitSync?.enabled) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: 'git_sync is not enabled for this resource',
+        });
+      }
+
+      const result = await syncNowForResource(resource.id);
+      if (result === null) {
+        return reply.status(503).send({
+          error: 'Service Unavailable',
+          message: "Daemon didn't respond — it may be stopped or starting",
+        });
+      }
+
+      return reply.send(result);
+    },
+  );
 }

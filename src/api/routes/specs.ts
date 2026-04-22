@@ -25,6 +25,7 @@ import {
 } from '../../map/task-daemon-client.js';
 import { findSwarmForResource, remoteGetGraph } from '../../map/opentasks-remote.js';
 import { broadcastToChannel } from '../../realtime/index.js';
+import { shouldBroadcastSpecEvent } from '../../map/spec-broadcast-dedup.js';
 import * as dispatchesDAL from '../../db/dal/dispatches.js';
 import { findSwarmById } from '../../db/dal/map.js';
 import { canRouteToSwarm } from '../../dispatch/routing.js';
@@ -612,17 +613,19 @@ export async function specsRoutes(
       );
       const normalized = normalizeNode(node, resource, 'local');
 
-      try {
-        broadcastToChannel('map:tasks', {
-          type: 'spec.created',
-          data: {
-            spec: { id: normalized.id, title: normalized.title },
-            resource_id: resource.id,
-            initiator: { type: 'user', id: request.agent!.id },
-          },
-        });
-      } catch {
-        /* best effort */
+      if (shouldBroadcastSpecEvent('spec.created', resource.id, normalized.id)) {
+        try {
+          broadcastToChannel('map:tasks', {
+            type: 'spec.created',
+            data: {
+              spec: { id: normalized.id, title: normalized.title },
+              resource_id: resource.id,
+              initiator: { type: 'user', id: request.agent!.id },
+            },
+          });
+        } catch {
+          /* best effort */
+        }
       }
 
       return reply.status(201).send({ spec: normalized });
@@ -686,17 +689,19 @@ export async function specsRoutes(
       );
       const normalized = normalizeNode(node, resource, 'local');
 
-      try {
-        broadcastToChannel('map:tasks', {
-          type: 'spec.updated',
-          data: {
-            spec: { id: normalized.id, title: normalized.title, archived: normalized.archived },
-            resource_id: resource.id,
-            initiator: { type: 'user', id: request.agent!.id },
-          },
-        });
-      } catch {
-        /* best effort */
+      if (shouldBroadcastSpecEvent('spec.updated', resource.id, normalized.id)) {
+        try {
+          broadcastToChannel('map:tasks', {
+            type: 'spec.updated',
+            data: {
+              spec: { id: normalized.id, title: normalized.title, archived: normalized.archived },
+              resource_id: resource.id,
+              initiator: { type: 'user', id: request.agent!.id },
+            },
+          });
+        } catch {
+          /* best effort */
+        }
       }
 
       return reply.send({ spec: normalized });
@@ -751,12 +756,25 @@ export async function specsRoutes(
         localPath,
       );
 
-      try {
-        broadcastToChannel('map:tasks', {
-          type: 'spec.updated',
-          data: { spec_id: specId, target_id: body.target_id, edge_type: body.type, resource_id: resourceId },
-        });
-      } catch { /* best effort */ }
+      if (shouldBroadcastSpecEvent('spec.updated', resourceId, specId)) {
+        try {
+          // Shape matches PATCH /specs's spec.updated envelope so the
+          // frontend's `useSpecsRealtime.invalidateOne` can extract
+          // `spec.id` to invalidate the detail query — link edits should
+          // refresh both list and detail views.
+          broadcastToChannel('map:tasks', {
+            type: 'spec.updated',
+            data: {
+              spec: { id: specId },
+              resource_id: resourceId,
+              link: {
+                target_id: body.target_id,
+                edge_type: body.type,
+              },
+            },
+          });
+        } catch { /* best effort */ }
+      }
 
       return reply.status(201).send({ edge_id: result.edgeId, from_id: fromId, to_id: toId, type: body.type });
     } catch (err) {
@@ -804,12 +822,22 @@ export async function specsRoutes(
       try { await daemonRemoveLink(socketPath, { fromId: body.target_id, toId: specId, type: body.type }, localPath); } catch { /* may not exist in this direction */ }
       try { await daemonRemoveLink(socketPath, { fromId: specId, toId: body.target_id, type: body.type }, localPath); } catch { /* may not exist in this direction */ }
 
-      try {
-        broadcastToChannel('map:tasks', {
-          type: 'spec.updated',
-          data: { spec_id: specId, target_id: body.target_id, edge_type: body.type, resource_id: resourceId, removed: true },
-        });
-      } catch { /* best effort */ }
+      if (shouldBroadcastSpecEvent('spec.updated', resourceId, specId)) {
+        try {
+          broadcastToChannel('map:tasks', {
+            type: 'spec.updated',
+            data: {
+              spec: { id: specId },
+              resource_id: resourceId,
+              link: {
+                target_id: body.target_id,
+                edge_type: body.type,
+                removed: true,
+              },
+            },
+          });
+        } catch { /* best effort */ }
+      }
 
       return reply.send({ ok: true });
     } catch (err) {
@@ -947,6 +975,16 @@ export async function dispatchSpecToSwarms(input: {
       initiator_id: input.agentId,
       prompt_override: input.prompt ?? null,
     });
+
+    // Persist the spec's linked tasks so downstream lifecycle hooks
+    // (advance-on-start, cascade artifact enrichment) can find them without
+    // re-querying the opentasks daemon.
+    if (linkedTasks.length > 0) {
+      dispatchesDAL.addDispatchLinkedTasks(
+        dispatch.id,
+        linkedTasks.map((t) => ({ resource_id: resource.id, node_id: t.id })),
+      );
+    }
 
     const seedPrompt = buildDispatchSeedPrompt({
       dispatchId: dispatch.id,
