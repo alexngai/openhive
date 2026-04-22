@@ -28,6 +28,7 @@ import { broadcastToChannel } from "../realtime/index.js";
 import { shouldBroadcastSpecEvent } from "../map/spec-broadcast-dedup.js";
 import { broadcastTaskStatus } from "../map/task-broadcast.js";
 import { getDefaultTaskGraph } from "../map/connection-registry.js";
+import { triggerPullForResource } from "../map/git-pull-trigger.js";
 
 // =============================================================================
 // MAP Scope Task Messages (from cc-swarm / macro-agent)
@@ -171,6 +172,19 @@ export function handleMapContextEvent(
 
   const type =
     payload.type === "context.created" ? "spec.created" : "spec.updated";
+
+  // If this resource has git sync enabled + pullOnSignal (default), fire
+  // a debounced pull so our daemon converges on whatever the peer hub
+  // pushed to the shared remote. This runs BEFORE the dedup check so the
+  // pull happens even in the "we already broadcast locally" case — the
+  // peer's edit may still contain new state we should pull into the
+  // local JSONL (the initiator dedup only covers the broadcast fan-out,
+  // not the git convergence).
+  try {
+    triggerPullForResource(resourceId);
+  } catch {
+    /* pull trigger is best-effort */
+  }
 
   // Suppress the watcher-driven broadcast if an explicit broadcaster (REST
   // handler / map/specs/author) already fired for this same spec event

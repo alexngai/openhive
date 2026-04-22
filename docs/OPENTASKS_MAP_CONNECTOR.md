@@ -271,3 +271,7 @@ Remote MAP request → connector.handleNotification() → local daemon query →
 3. **cc-swarm**: Declare opentasks capabilities on registration
 4. **openhive** (optional): Add hub-side remote query for REST endpoints
 5. **opentasks**: Update MAP provider to use connector for remote operations
+
+## See Also
+
+This document describes the MAP protocol surface for querying remote task graphs. For the git sync strategy that keeps local graphs converged with a shared remote, see `GIT_SOURCE_OF_TRUTH.md`. The two work together: git-sync ensures all instances have current copies of graph.jsonl, while the MAP connector allows agents to query each other's graphs directly over the MAP protocol when live queries are needed.

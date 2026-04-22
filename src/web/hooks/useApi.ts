@@ -361,6 +361,76 @@ export function useResourceEvents(id: string, options?: { limit?: number }) {
   });
 }
 
+// ============================================================================
+// Git sync (opentasks-backed task resources)
+// ============================================================================
+
+export interface GitSyncMetadata {
+  enabled: boolean;
+  remote?: string;
+  autoCommit?: boolean;
+  autoPush?: boolean;
+  pullOnStartup?: boolean;
+  pushDebounceMs?: number;
+  /** When true, hub-received MAP context events fire an immediate pull. */
+  pullOnSignal?: boolean;
+}
+
+export interface GitSyncResponse {
+  git_sync: GitSyncMetadata | null;
+}
+
+export interface UpdateGitSyncResponse {
+  resource: SyncableResource;
+  git_sync: GitSyncMetadata;
+  /**
+   * Present when a running daemon picked up the new config in-place.
+   * Null if the daemon wasn't reachable (flag still persists; next
+   * daemon restart will apply it).
+   */
+  daemon_applied: { enabled: boolean; remote?: string } | null;
+}
+
+/**
+ * Read the current git_sync block for a resource. Only meaningful on
+ * task resources backed by a local opentasks workspace.
+ */
+export function useResourceGitSync(resourceId: string | undefined) {
+  return useQuery({
+    queryKey: ["resource-git-sync", resourceId],
+    queryFn: () =>
+      api.get<GitSyncResponse>(`/resources/${resourceId}/git-sync`),
+    enabled: !!resourceId,
+  });
+}
+
+/**
+ * Toggle git_sync on/off for a resource. PATCH writes the metadata,
+ * writes the opentasks daemon's `.opentasks/config.json`, and attempts
+ * a live sync.reload on the daemon so the change takes effect without
+ * a restart (see `daemon_applied` on the response).
+ */
+export function useUpdateResourceGitSync() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      resourceId,
+      gitSync,
+    }: {
+      resourceId: string;
+      gitSync: GitSyncMetadata;
+    }) =>
+      api.patch<UpdateGitSyncResponse>(
+        `/resources/${resourceId}/git-sync`,
+        gitSync,
+      ),
+    onSuccess: (_data, { resourceId }) => {
+      queryClient.invalidateQueries({ queryKey: ["resource-git-sync", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["resource", resourceId] });
+    },
+  });
+}
+
 export function useCheckUpdates() {
   const queryClient = useQueryClient();
 

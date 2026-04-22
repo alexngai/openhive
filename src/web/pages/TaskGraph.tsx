@@ -11,6 +11,7 @@ import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { ChevronDown, Network, LayoutGrid, Check, Settings, ArrowDownToLine, ArrowUpFromLine, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import { useResource, useResourcesByType, useGitSyncStatus, useGitPull, useGitPush } from '../hooks/useApi';
+import { GitSyncToggle } from '../components/git-sync/GitSyncToggle';
 import { useQueries } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { useTaskGraph, buildGraphologyGraph, STATUS_COLORS } from '../components/task-graph/useTaskGraph';
@@ -398,6 +399,9 @@ export function TaskGraph() {
                 )}
               </div>
             )}
+
+            {/* Auto git-sync toggle (flips the daemon's autoCommit/autoPush flags) */}
+            <GitSyncToggle resource={resource} className="ml-1" />
 
             <Link
               to="/tasks/list"
