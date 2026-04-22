@@ -8,7 +8,7 @@
  * Close always collapses back to the FAB button.
  */
 
-import { Bot, X, PanelRightOpen, PanelRightClose, Loader2, AlertCircle } from 'lucide-react';
+import { Bot, X, PanelRightOpen, PanelRightClose, Loader2, AlertCircle, ChevronLeft } from 'lucide-react';
 import clsx from 'clsx';
 import { useLocation } from 'react-router-dom';
 import { useChatFabStore, type ChatFabAgentRef } from './ChatFabStore';
@@ -120,17 +120,24 @@ function useLiveAgent(agentRef: ChatFabAgentRef | null): LiveAgentInfo {
 }
 
 function ChatHeader({ isDocked }: { isDocked: boolean }) {
-  const { sessionId, sessionLabel, agentRef, clearSession, collapse, toggleMode } = useChatFabStore();
+  const { view, sessionId, sessionLabel, agentRef, clearSession, collapse, toggleMode } = useChatFabStore();
   useLiveSwarmRefresh(agentRef?.swarmId ?? null);
   const live = useLiveAgent(agentRef);
   const headerName = live.name ?? sessionLabel ?? 'Agent';
-  // State dot reflects what the agent is currently doing; swarmStatus
-  // (online/offline/unreachable) decides whether to show "live" colours.
   const swarmReachable = live.swarmStatus === 'online' || live.swarmStatus === null;
   const stateColor = !swarmReachable
     ? '#6b7280'
     : (live.state ? STATE_COLORS[live.state] ?? STATE_COLORS.registered : STATE_COLORS.registered);
   const isWorking = swarmReachable && (live.state === 'active' || live.state === 'busy');
+
+  // View-specific header titles and subtitles
+  const viewMeta: Record<string, { title: string; subtitle?: string }> = {
+    picker: { title: 'Agent Chat', subtitle: 'Pick an agent to chat with' },
+  };
+  const currentMeta = viewMeta[view];
+
+  // Whether this view has a back button to the picker
+  const hasBack = view === 'chat' && !!sessionId;
 
   return (
     <div
@@ -138,16 +145,24 @@ function ChatHeader({ isDocked }: { isDocked: boolean }) {
       style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-elevated)' }}
     >
       <div className="flex items-center gap-2 text-sm min-w-0" style={{ color: 'var(--color-text)' }}>
-        {sessionId ? (
+        {hasBack && (
+          <button
+            type="button"
+            onClick={clearSession}
+            className="p-0.5 -ml-0.5 rounded hover:bg-white/10 shrink-0"
+            style={{ color: 'var(--color-text-muted)' }}
+            title="Back"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+        )}
+        {view === 'chat' && sessionId ? (
           <div className="relative shrink-0">
             <AgentAvatar
               name={headerName}
               size={26}
               borderColor={stateColor}
             />
-            {/* State dot mirrors swarmcraft's AgentPortrait so identity reads
-                consistently across surfaces. Pulses only when the agent is
-                actively working *and* the swarm is reachable. */}
             <span
               className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full ${isWorking ? 'animate-pulse' : ''}`}
               style={{
@@ -162,9 +177,9 @@ function ChatHeader({ isDocked }: { isDocked: boolean }) {
         )}
         <div className="flex flex-col min-w-0">
           <span className="font-medium truncate leading-tight">
-            {sessionId ? headerName : 'Agent Chat'}
+            {view === 'chat' && sessionId ? headerName : (currentMeta?.title ?? 'Agent Chat')}
           </span>
-          {sessionId && (live.role || live.swarmName) && (
+          {view === 'chat' && sessionId && (live.role || live.swarmName) ? (
             <span
               className="text-2xs truncate leading-tight"
               style={{ color: 'var(--color-text-muted)' }}
@@ -174,21 +189,17 @@ function ChatHeader({ isDocked }: { isDocked: boolean }) {
               {live.role && live.swarmName ? <span> · </span> : null}
               {live.swarmName}
             </span>
-          )}
+          ) : currentMeta?.subtitle ? (
+            <span
+              className="text-2xs truncate leading-tight"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              {currentMeta.subtitle}
+            </span>
+          ) : null}
         </div>
       </div>
       <div className="flex items-center gap-1 shrink-0">
-        {sessionId && (
-          <button
-            type="button"
-            onClick={clearSession}
-            className="px-2 py-0.5 rounded text-2xs hover:bg-white/10"
-            style={{ color: 'var(--color-text-muted)' }}
-            title="Switch session"
-          >
-            Switch
-          </button>
-        )}
         <button
           type="button"
           onClick={toggleMode}
@@ -213,6 +224,7 @@ function ChatHeader({ isDocked }: { isDocked: boolean }) {
 }
 
 function ChatBody() {
+  const view = useChatFabStore((s) => s.view);
   const sessionId = useChatFabStore((s) => s.sessionId);
   const connecting = useChatFabStore((s) => s.connecting);
   const connectError = useChatFabStore((s) => s.connectError);
@@ -222,7 +234,7 @@ function ChatBody() {
   // Mid-flight connect (no session yet) — show a clean spinner so the user
   // sees we acted on their click. Without this the picker re-appears for a
   // beat which is jarring.
-  if (!sessionId && connecting) {
+  if (view === 'chat' && !sessionId && connecting) {
     return (
       <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 text-xs"
         style={{ color: 'var(--color-text-muted)' }}>
@@ -234,10 +246,7 @@ function ChatBody() {
 
   return (
     <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-      {/* Failed connect surface — banner above the picker so the user sees why
-          their click didn't open a chat (e.g. swarm has no outbound MAP server,
-          agent isn't ACP-capable, etc.). Dismiss clears `connectError` via
-          clearSession. */}
+      {/* Failed connect surface */}
       {!sessionId && connectError && (
         <div className="px-3 py-2 border-b flex items-start gap-2 text-xs"
           style={{
@@ -260,7 +269,7 @@ function ChatBody() {
           </button>
         </div>
       )}
-      {sessionId ? <ChatPanel /> : <SessionPicker />}
+      {view === 'chat' && sessionId ? <ChatPanel /> : <SessionPicker />}
     </div>
   );
 }

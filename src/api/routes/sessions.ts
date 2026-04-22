@@ -155,8 +155,8 @@ function isAcpStreamLive(
     if (!mgr.streams?.has(streamId)) return false;
   }
 
-  const isConnected = sc?.mapClientManager?.isConnected;
-  if (typeof isConnected === 'function' && !isConnected(serverId)) {
+  const mcm = sc?.mapClientManager;
+  if (mcm && typeof mcm.isConnected === 'function' && !mcm.isConnected(serverId)) {
     return false;
   }
 

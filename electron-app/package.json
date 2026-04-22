@@ -176,7 +176,15 @@
           "!**/*.test.js", "!**/*.spec.js",
           "!**/*.test.mjs", "!**/*.spec.mjs",
           "!**/bun.lock", "!**/bun.lockb",
-          "!**/pnpm-lock.yaml", "!**/yarn.lock"
+          "!**/pnpm-lock.yaml", "!**/yarn.lock",
+
+          "!**/postject/**",
+          "!**/node-gyp/**",
+          "!**/@malept/**",
+          "!**/flatpak-bundler/**",
+          "!**/@develar/**",
+
+          "!**/openhive/dist/web/wasm/**"
         ]
       }
     ],

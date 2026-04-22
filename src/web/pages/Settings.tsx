@@ -31,10 +31,10 @@ export function Settings() {
   }
 
   const tabs = [
+    { id: 'server' as const, label: 'Server', icon: Server },
     { id: 'profile' as const, label: 'Profile', icon: User },
     { id: 'display' as const, label: 'Display', icon: Sun },
     { id: 'api-keys' as const, label: 'API Keys', icon: Key },
-    { id: 'server' as const, label: 'Server', icon: Server },
     { id: 'swarmkit' as const, label: 'SwarmKit', icon: Boxes },
     { id: 'swarmhub' as const, label: 'SwarmHub', icon: Globe },
     { id: 'git-sync' as const, label: 'Git Sync', icon: GitBranch },
@@ -803,7 +803,7 @@ function ProfileSettings({ agent }: { agent: { name: string; email?: string | nu
 }
 
 function DisplaySettings() {
-  const { theme, setTheme } = useThemeStore();
+  const { theme, setTheme, textScale, setTextScale } = useThemeStore();
 
   const themes = [
     { value: 'light' as const, icon: Sun, label: 'Light', description: 'Light background with dark text' },
@@ -811,31 +811,65 @@ function DisplaySettings() {
     { value: 'system' as const, icon: Monitor, label: 'System', description: 'Follows your operating system setting' },
   ];
 
+  const textScales = [
+    { value: 'sm' as const, label: 'Small', sample: 'text-xs' },
+    { value: 'md' as const, label: 'Default', sample: 'text-sm' },
+    { value: 'lg' as const, label: 'Large', sample: 'text-base' },
+    { value: 'xl' as const, label: 'Extra large', sample: 'text-lg' },
+  ];
+
   return (
-    <div className="card p-4">
-      <h2 className="text-sm font-semibold mb-3">Theme</h2>
-      <div className="space-y-1.5">
-        {themes.map(({ value, icon: Icon, label, description }) => (
-          <button
-            key={value}
-            onClick={() => setTheme(value)}
-            className={clsx(
-              'w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-left transition-colors cursor-pointer',
-              theme === value
-                ? 'bg-honey-500/10 text-honey-500'
-                : 'hover:bg-workspace-hover'
-            )}
-            style={theme !== value ? { color: 'var(--color-text-secondary)' } : undefined}
-          >
-            <Icon className="w-4 h-4 shrink-0" />
-            <div>
-              <p className="text-sm font-medium">{label}</p>
-              <p className="text-xs" style={{ color: theme === value ? 'var(--color-text-muted)' : 'var(--color-text-muted)' }}>
-                {description}
-              </p>
-            </div>
-          </button>
-        ))}
+    <div className="space-y-3">
+      <div className="card p-4">
+        <h2 className="text-sm font-semibold mb-3">Theme</h2>
+        <div className="space-y-1.5">
+          {themes.map(({ value, icon: Icon, label, description }) => (
+            <button
+              key={value}
+              onClick={() => setTheme(value)}
+              className={clsx(
+                'w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-left transition-colors cursor-pointer',
+                theme === value
+                  ? 'bg-honey-500/10 text-honey-500'
+                  : 'hover:bg-workspace-hover'
+              )}
+              style={theme !== value ? { color: 'var(--color-text-secondary)' } : undefined}
+            >
+              <Icon className="w-4 h-4 shrink-0" />
+              <div>
+                <p className="text-sm font-medium">{label}</p>
+                <p className="text-xs" style={{ color: theme === value ? 'var(--color-text-muted)' : 'var(--color-text-muted)' }}>
+                  {description}
+                </p>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="card p-4">
+        <h2 className="text-sm font-semibold mb-1">Text size</h2>
+        <p className="text-xs mb-3" style={{ color: 'var(--color-text-muted)' }}>
+          Scales the entire interface. Takes effect immediately.
+        </p>
+        <div className="grid grid-cols-4 gap-1.5">
+          {textScales.map(({ value, label, sample }) => (
+            <button
+              key={value}
+              onClick={() => setTextScale(value)}
+              className={clsx(
+                'flex flex-col items-center justify-center gap-1 px-2 py-3 rounded-md text-center transition-colors cursor-pointer',
+                textScale === value
+                  ? 'bg-honey-500/10 text-honey-500'
+                  : 'hover:bg-workspace-hover'
+              )}
+              style={textScale !== value ? { color: 'var(--color-text-secondary)' } : undefined}
+            >
+              <span className={clsx(sample, 'font-semibold leading-none')}>Aa</span>
+              <span className="text-xs font-medium">{label}</span>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
