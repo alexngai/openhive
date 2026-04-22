@@ -15,6 +15,8 @@
  */
 
 import { mapHubEvents } from '../map/service.js';
+import { broadcastTaskStatus } from '../map/task-broadcast.js';
+import { getDefaultTaskGraph } from '../map/connection-registry.js';
 
 // =============================================================================
 // MAP Scope Task Messages (from cc-swarm / macro-agent)
@@ -78,11 +80,14 @@ export function handleMapTaskEvent(
       const previous = payload.previous as string | undefined;
       if (!taskId || !current) return;
 
-      mapHubEvents.emit('task_status_changed', {
-        task_id: taskId,
-        status: current,
-        previous,
-      });
+      // Inbound path: agent scope-message reports task state. The bridge
+      // event itself is unscoped, but we can recover the owning resource_id
+      // from the connection's registered defaultTaskGraph so the cascade
+      // enrichment matches hub-initiated broadcasts (prevents a mixed pair
+      // of enriched + unenriched events when a hub-side close causes the
+      // remote swarm to echo its own status transition).
+      const resourceId = getDefaultTaskGraph(sourceSwarmId)?.resource_id;
+      broadcastTaskStatus({ taskId, status: current, previous, resourceId });
       break;
     }
   }

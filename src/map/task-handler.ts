@@ -32,6 +32,7 @@ import {
 } from './opentasks-remote.js';
 import { getSyncOrchestrator } from '../sync/sync-orchestrator.js';
 import * as resourcesDAL from '../db/dal/syncable-resources.js';
+import { broadcastTaskStatus } from './task-broadcast.js';
 import type { SyncableResource } from '../types.js';
 
 /** Resolved graph target — either local (daemon path) or remote (swarm connection) */
@@ -39,6 +40,8 @@ type ResolvedTarget = {
   type: 'local';
   localPath: string;
   socketPath: string;
+  /** Owning syncable_resources row (when known — always set for id/hash lookups). */
+  resourceId?: string;
 } | {
   type: 'remote';
   swarmId: string;
@@ -164,7 +167,7 @@ async function resolveResourceTarget(resource: SyncableResource, agentId: string
   // Try local first
   const localPath = await resolveLocalForResource(resource, agentId, label);
   if (localPath) {
-    return { type: 'local', localPath, socketPath: resolveDaemonSocket(localPath) };
+    return { type: 'local', localPath, socketPath: resolveDaemonSocket(localPath), resourceId: resource.id };
   }
 
   // Try remote — find connected swarm that owns this graph
@@ -334,10 +337,12 @@ export async function handleTaskRequest(
       }
 
       if (p.status) {
-        try {
-          const { broadcastToChannel } = await import('../realtime/index.js');
-          broadcastToChannel('map:tasks', { type: 'task.status', data: { taskId: p.taskId, current: p.status } });
-        } catch { /* best effort */ }
+        const resourceId = target.type === 'local' ? target.resourceId : target.resource.id;
+        broadcastTaskStatus({
+          taskId: p.taskId as string,
+          status: p.status as string,
+          resourceId,
+        });
       }
 
       return { task: result };

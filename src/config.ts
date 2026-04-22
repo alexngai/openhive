@@ -628,6 +628,25 @@ export const ConfigSchema = z.object({
       scorer: z.enum(["heuristic", "noop"]).default("heuristic"),
     })
     .default({}),
+
+  // Cascade ↔ task binding
+  cascade: z
+    .object({
+      /**
+       * Hub-wide default policy for closing tasks on observed cascade merges.
+       *
+       * `manual` (default) — hub never auto-closes; agents and users drive task
+       *   state themselves. Cascade metadata still flows to the UI via the
+       *   changelog enrichment on task status broadcasts.
+       *
+       * `on_merge` — when a cascade stream carrying a task_ref merges, the
+       *   hub transitions the linked task to `completed`. Overridable per-task
+       *   via `task.metadata.close_policy` and per-swarm via the
+       *   `cascade.autoCloseOnMerge` capability.
+       */
+      defaultClosePolicy: z.enum(["manual", "on_merge"]).default("manual"),
+    })
+    .default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

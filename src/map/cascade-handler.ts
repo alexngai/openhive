@@ -301,6 +301,16 @@ function handleStreamMerged(
     updateStreamStatus(sourceStream.id, 'merged', { closed: true });
   }
 
+  // Resolve task_ref: prefer explicit metadata on the merge event; fall back
+  // to source stream's persisted task_ref, then target stream's. This lets
+  // the task-binder act on the event without re-querying the DB for the
+  // common case, and matches the propagation contract the cascade-streams
+  // schema already upholds.
+  const taskRef =
+    extractTaskRef(params.metadata) ??
+    taskRefFromStream(sourceStream) ??
+    taskRefFromStream(targetStream);
+
   emitHubEvent('cascade_stream_merged', {
     source_swarm_id: context.swarmId,
     merge_row_id: merge.id,
@@ -311,6 +321,7 @@ function handleStreamMerged(
     merge_commit: merge.merge_commit,
     strategy: merge.strategy,
     agent_id: merge.agent_id,
+    task_ref: taskRef,
     created,
   });
 
@@ -902,8 +913,8 @@ function extractTaskRef(metadata: EventMetadata | undefined): TaskRef | undefine
   return { resource_id: tr.resource_id, node_id: tr.node_id };
 }
 
-function taskRefFromStream(stream: CascadeStream): TaskRef | undefined {
-  if (!stream.task_resource_id || !stream.task_node_id) return undefined;
+function taskRefFromStream(stream: CascadeStream | null | undefined): TaskRef | undefined {
+  if (!stream || !stream.task_resource_id || !stream.task_node_id) return undefined;
   return {
     resource_id: stream.task_resource_id,
     node_id: stream.task_node_id,
