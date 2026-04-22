@@ -19,6 +19,7 @@ import { RefreshCw, GitBranch, CheckCircle2, XCircle, AlertCircle } from 'lucide
 import {
   useResourceGitSync,
   useUpdateResourceGitSync,
+  useRunGitSyncNow,
   type GitSyncMetadata,
 } from '../../hooks/useApi';
 import type { SyncableResource } from '../../lib/api';
@@ -45,6 +46,7 @@ export function GitSyncToggle({ resource, className = '' }: GitSyncToggleProps) 
   const eligible = isEligible(resource);
   const { data, isLoading } = useResourceGitSync(eligible ? resource?.id : undefined);
   const mutation = useUpdateResourceGitSync();
+  const syncNow = useRunGitSyncNow();
 
   const [open, setOpen] = useState(false);
   const [applyNotice, setApplyNotice] = useState<null | {
@@ -77,9 +79,21 @@ export function GitSyncToggle({ resource, className = '' }: GitSyncToggleProps) 
 
   const gitSync = data?.git_sync;
   const enabled = !!gitSync?.enabled;
+  const health = data?.health;
+  const hasError = enabled && !!health?.lastError;
 
-  const label = isLoading ? 'Sync: …' : enabled ? 'Sync: on' : 'Sync: off';
-  const color = enabled ? '#34d399' : 'var(--color-text-muted)';
+  const label = isLoading
+    ? 'Sync: …'
+    : hasError
+      ? 'Sync: error'
+      : enabled
+        ? 'Sync: on'
+        : 'Sync: off';
+  const color = hasError
+    ? '#f87171'
+    : enabled
+      ? '#34d399'
+      : 'var(--color-text-muted)';
 
   const onToggle = (nextEnabled: boolean) => {
     if (!resource) return;
@@ -151,6 +165,67 @@ export function GitSyncToggle({ resource, className = '' }: GitSyncToggleProps) 
           {gitSync?.remote && (
             <div className="text-2xs mt-2" style={{ color: 'var(--color-text-muted)' }}>
               Remote: <code>{gitSync.remote}</code>
+            </div>
+          )}
+
+          {hasError && health?.lastError && (
+            <div
+              className="text-2xs mt-3 p-2 rounded"
+              style={{ color: '#fca5a5', backgroundColor: 'rgba(248, 113, 113, 0.08)' }}
+            >
+              <div className="flex items-center gap-1 font-semibold mb-1">
+                <AlertCircle className="w-3 h-3" />
+                Last {health.lastErrorOp ?? 'op'} failed
+                {health.lastErrorAt && (
+                  <span className="font-normal opacity-70">
+                    · {new Date(health.lastErrorAt).toLocaleString()}
+                  </span>
+                )}
+              </div>
+              <code className="block break-all" style={{ color: '#fecaca' }}>
+                {health.lastError}
+              </code>
+            </div>
+          )}
+
+          {enabled && !hasError && health?.lastSuccessAt && (
+            <div className="text-2xs mt-2" style={{ color: 'var(--color-text-muted)' }}>
+              Last synced: {new Date(health.lastSuccessAt).toLocaleString()}
+            </div>
+          )}
+
+          {enabled && resource && (
+            <div className="mt-3 pt-3 border-t" style={{ borderColor: 'var(--color-border, #374151)' }}>
+              <button
+                type="button"
+                disabled={syncNow.isPending}
+                onClick={() => syncNow.mutate(resource.id)}
+                className="w-full flex items-center justify-center gap-1 px-2 py-1.5 rounded text-2xs font-medium transition-colors"
+                style={{
+                  color: 'var(--color-text)',
+                  backgroundColor: 'rgba(255, 255, 255, 0.06)',
+                }}
+              >
+                {syncNow.isPending ? (
+                  <>
+                    <RefreshCw className="w-3 h-3 animate-spin" /> Syncing…
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="w-3 h-3" /> Sync now
+                  </>
+                )}
+              </button>
+              {syncNow.isError && (
+                <div className="text-2xs mt-2" style={{ color: '#f87171' }}>
+                  {(syncNow.error as Error).message}
+                </div>
+              )}
+              {syncNow.data && !syncNow.data.ran && (
+                <div className="text-2xs mt-2" style={{ color: '#fbbf24' }}>
+                  {syncNow.data.reason ?? 'sync.now returned without running'}
+                </div>
+              )}
             </div>
           )}
 

@@ -14,7 +14,11 @@ import {
   GitSyncMetadataSchema,
   type GitSyncMetadata,
 } from '../../swarmkit/git-sync-config.js';
-import { reloadSyncerForResource } from '../../map/git-pull-trigger.js';
+import {
+  reloadSyncerForResource,
+  getSyncHealthForResource,
+  syncNowForResource,
+} from '../../map/git-pull-trigger.js';
 import type { Config } from '../../config.js';
 
 // Valid resource types
@@ -1143,7 +1147,78 @@ export async function resourcesRoutes(
 
       const metadata = (resource.metadata as Record<string, unknown> | null) ?? {};
       const gitSync = metadata.git_sync as GitSyncMetadata | undefined;
-      return reply.send({ git_sync: gitSync ?? null });
+
+      // Fetch live health from the daemon if sync is enabled. Silent
+      // failures (daemon down, older opentasks without sync.status health,
+      // remote unreachable) resolve to `health: null` so callers can tell
+      // "no info available" apart from "ok, no recent errors" — which
+      // would show up as `{ lastError: null, lastSuccessAt: '...' }`.
+      let health = null;
+      if (gitSync?.enabled) {
+        try {
+          health = await getSyncHealthForResource(resource.id);
+        } catch {
+          /* best-effort */
+        }
+      }
+
+      return reply.send({ git_sync: gitSync ?? null, health });
+    },
+  );
+
+  /**
+   * Force an immediate sync cycle (commit + pull + push) on a resource's
+   * daemon. Used by the "Sync now" UI button for operators who want to
+   * skip the auto-sync debounce — useful after enabling git_sync to
+   * check that auth + remote access work before the next timer tick.
+   *
+   * Returns the daemon's `sync.now` response verbatim:
+   *   { ran: false, reason: "..." } when the daemon isn't reachable or
+   *   sync isn't enabled, or
+   *   { ran: true, result: { commit, pull, push } } on a successful round.
+   */
+  fastify.post<{ Params: { id: string } }>(
+    '/resources/:id/git-sync/run',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const resource = resourcesDAL.findResourceById(request.params.id);
+      if (!resource) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Resource not found' });
+      }
+      if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
+        return reply.status(403).send({ error: 'Forbidden', message: 'No access to resource' });
+      }
+      if (resource.resource_type !== 'task') {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: 'git_sync is only supported on task resources',
+        });
+      }
+      if (!resource.local_path) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: 'Resource has no local_path — no daemon to run sync on',
+        });
+      }
+
+      const metadata = (resource.metadata as Record<string, unknown> | null) ?? {};
+      const gitSync = metadata.git_sync as GitSyncMetadata | undefined;
+      if (!gitSync?.enabled) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: 'git_sync is not enabled for this resource',
+        });
+      }
+
+      const result = await syncNowForResource(resource.id);
+      if (result === null) {
+        return reply.status(503).send({
+          error: 'Service Unavailable',
+          message: "Daemon didn't respond — it may be stopped or starting",
+        });
+      }
+
+      return reply.send(result);
     },
   );
 }

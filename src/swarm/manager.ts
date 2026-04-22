@@ -14,6 +14,7 @@ import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-
 import { broadcastToChannel } from '../realtime/index.js';
 import { registerSwarm } from '../map/service.js';
 import { delegateForSpawn } from '../map/delegate-for-spawn.js';
+import { applyGitSyncConfig } from '../swarmkit/git-sync-config.js';
 import * as mapDal from '../db/dal/map.js';
 import * as dal from './dal.js';
 import { LocalProvider } from './providers/local.js';
@@ -351,6 +352,24 @@ export class SwarmManager {
     try {
       // Provision via the hosting provider
       dal.updateHostedSwarm(hosted.id, { state: 'starting' });
+
+      // If the caller requested git-sync on this hosted swarm's own
+      // workspace, write the opentasks config.json BEFORE the subprocess
+      // starts so the embedded daemon picks it up on first boot. This
+      // closes the "spawn-time propagation" gap — without it, a fresh
+      // hosted swarm always starts with sync off even when the operator
+      // already knows they want it on.
+      if (input.git_sync?.enabled) {
+        try {
+          fs.mkdirSync(dataDir, { recursive: true });
+          applyGitSyncConfig(dataDir, input.git_sync);
+        } catch (err) {
+          console.warn(
+            `[swarm-manager] git_sync config write failed for ${hosted.id}: ${(err as Error).message}`,
+          );
+          // Non-fatal: the swarm still spawns, user can PATCH later.
+        }
+      }
 
       // Resolve sandbox policy for sandboxed providers
       const sandboxPolicy = this.resolveSandboxPolicy(input.hive);

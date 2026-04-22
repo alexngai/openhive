@@ -30,6 +30,7 @@ import * as resourcesDAL from '../db/dal/syncable-resources.js';
 import { resolveDaemonSocket } from './task-daemon-client.js';
 import type { GitSyncMetadata } from '../swarmkit/git-sync-config.js';
 import type { SyncableResource } from '../types.js';
+import { createIPCClient } from 'opentasks';
 
 /**
  * Extract the `git_sync` block from a resource's metadata, typed.
@@ -73,24 +74,18 @@ async function sendDaemonRequest<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<T | null> {
+  const client = createIPCClient(socketPath);
   try {
-    const { createIPCClient } = await import('opentasks');
-    const client = createIPCClient(socketPath);
-    try {
-      await client.connect();
-    } catch {
-      return null; // daemon not running
-    }
-    try {
-      return await client.request<T>(method, params);
-    } catch {
-      return null; // daemon returned an error — best-effort
-    } finally {
-      try { client.disconnect(); } catch { /* ignore */ }
-    }
+    await client.connect();
   } catch {
-    /* opentasks import failed — degrade silently */
-    return null;
+    return null; // daemon not running
+  }
+  try {
+    return await client.request<T>(method, params);
+  } catch {
+    return null; // daemon returned an error — best-effort
+  } finally {
+    try { client.disconnect(); } catch { /* ignore */ }
   }
 }
 
@@ -126,7 +121,11 @@ export function triggerPullForResource(resourceId: string): boolean {
   // within PULL_DEBOUNCE_MS with the latest state.
   if (pending.has(resourceId)) return true;
 
-  const timer = setTimeout(() => {
+  // Callback is async so test harnesses (vitest's `advanceTimersByTimeAsync`)
+  // wait for the IPC roundtrip when they flush the timer — without the
+  // await, the dynamic `import('opentasks')` inside `sendPull` is out of
+  // reach and assertions trailing a timer advance race it.
+  const timer = setTimeout(async () => {
     pending.delete(resourceId);
     if (inFlight.has(resourceId)) {
       // Coalesce: one more pull right after the in-flight one finishes
@@ -134,9 +133,11 @@ export function triggerPullForResource(resourceId: string): boolean {
       return;
     }
     inFlight.add(resourceId);
-    void sendPull(socketPath).finally(() => {
+    try {
+      await sendPull(socketPath);
+    } finally {
       inFlight.delete(resourceId);
-    });
+    }
   }, PULL_DEBOUNCE_MS);
 
   // Don't keep the event loop alive purely for pending pulls during shutdown.
@@ -144,6 +145,74 @@ export function triggerPullForResource(resourceId: string): boolean {
 
   pending.set(resourceId, timer);
   return true;
+}
+
+/**
+ * Health shape surfaced on `sync.status`. Present when git sync is enabled
+ * on a running daemon; absent otherwise (e.g., daemon down, sync disabled,
+ * or older opentasks before the field was added).
+ */
+export interface DaemonSyncHealth {
+  lastError: string | null;
+  lastErrorAt: string | null;
+  lastErrorOp: 'commit' | 'pull' | 'push' | null;
+  lastSuccessAt: string | null;
+}
+
+/**
+ * Run a full sync cycle (commitIfDirty → pull → push) on a resource's
+ * daemon. Used by the `POST /resources/:id/git-sync/run` endpoint for
+ * operator-driven "force sync now" actions.
+ *
+ * Returns the cycle's result on success, or `null` when the daemon
+ * isn't reachable / doesn't have sync enabled.
+ */
+export async function syncNowForResource(
+  resourceId: string,
+): Promise<{
+  ran: boolean;
+  result?: {
+    commit: { committed: boolean; hash?: string };
+    pull: { pulled: boolean; hasChanges: boolean; error?: string };
+    push: { pushed: boolean; error?: string };
+  };
+  reason?: string;
+} | null> {
+  const resource = resourcesDAL.findResourceById(resourceId);
+  if (!resource?.local_path) return null;
+
+  const socketPath = resolveDaemonSocket(resource.local_path);
+  const result = await sendDaemonRequest<{
+    ran: boolean;
+    result?: {
+      commit: { committed: boolean; hash?: string };
+      pull: { pulled: boolean; hasChanges: boolean; error?: string };
+      push: { pushed: boolean; error?: string };
+    };
+    reason?: string;
+  }>(socketPath, 'sync.now');
+  return result;
+}
+
+/**
+ * Fetch the current sync health from a resource's daemon via IPC. Returns
+ * `null` when the daemon isn't reachable or doesn't have sync enabled.
+ * Used by the REST GET handler to surface recent failures to the UI.
+ */
+export async function getSyncHealthForResource(
+  resourceId: string,
+): Promise<DaemonSyncHealth | null> {
+  const resource = resourcesDAL.findResourceById(resourceId);
+  if (!resource?.local_path) return null;
+
+  const socketPath = resolveDaemonSocket(resource.local_path);
+  type StatusResult = {
+    enabled: boolean;
+    health?: DaemonSyncHealth;
+  };
+  const status = await sendDaemonRequest<StatusResult>(socketPath, 'sync.status');
+  if (!status?.enabled) return null;
+  return status.health ?? null;
 }
 
 /**

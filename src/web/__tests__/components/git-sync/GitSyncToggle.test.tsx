@@ -7,10 +7,13 @@ import type { SyncableResource } from '../../../lib/api';
 const useResourceGitSync = vi.fn();
 const mutate = vi.fn();
 const useUpdateResourceGitSync = vi.fn();
+const runSyncMutate = vi.fn();
+const useRunGitSyncNow = vi.fn();
 
 vi.mock('../../../hooks/useApi', () => ({
   useResourceGitSync: (...args: unknown[]) => useResourceGitSync(...args),
   useUpdateResourceGitSync: (...args: unknown[]) => useUpdateResourceGitSync(...args),
+  useRunGitSyncNow: (...args: unknown[]) => useRunGitSyncNow(...args),
 }));
 
 function renderWithQuery(ui: React.ReactElement) {
@@ -40,11 +43,19 @@ function taskResource(overrides: Partial<SyncableResource> = {}): SyncableResour
 beforeEach(() => {
   useResourceGitSync.mockReset();
   mutate.mockReset();
+  runSyncMutate.mockReset();
   useUpdateResourceGitSync.mockReset().mockReturnValue({
     mutate,
     isPending: false,
     isError: false,
     error: null,
+  });
+  useRunGitSyncNow.mockReset().mockReturnValue({
+    mutate: runSyncMutate,
+    isPending: false,
+    isError: false,
+    error: null,
+    data: undefined,
   });
 });
 

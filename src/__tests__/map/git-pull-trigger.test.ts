@@ -96,8 +96,12 @@ describe('triggerPullForResource', () => {
     // No pull yet — timer pending.
     expect(ipcRequest).not.toHaveBeenCalled();
 
-    // Advance past the 2s debounce.
+    // Advance past the 2s debounce. The extra microtask flushes after
+    // give the async timer callback (which awaits a dynamic `import`
+    // inside `sendPull`) a chance to complete.
     await vi.advanceTimersByTimeAsync(2100);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
 
     expect(ipcRequest).toHaveBeenCalledWith('sync.pull', {});
     expect(ipcClientFactory).toHaveBeenCalledWith('/tmp/fake/.opentasks/daemon.sock');
@@ -112,6 +116,8 @@ describe('triggerPullForResource', () => {
     triggerPullForResource('res_1');
 
     await vi.advanceTimersByTimeAsync(2100);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
 
     expect(ipcRequest).toHaveBeenCalledTimes(1);
   });
@@ -129,6 +135,8 @@ describe('triggerPullForResource', () => {
     expect(triggerPullForResource('res_b')).toBe(true);
 
     await vi.advanceTimersByTimeAsync(2100);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
 
     expect(ipcRequest).toHaveBeenCalledTimes(2);
   });
@@ -139,6 +147,8 @@ describe('triggerPullForResource', () => {
 
     triggerPullForResource('res_1');
     await vi.advanceTimersByTimeAsync(2100);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
     // should not throw; runner stays alive
     expect(true).toBe(true);
   });

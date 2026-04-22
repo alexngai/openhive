@@ -376,8 +376,24 @@ export interface GitSyncMetadata {
   pullOnSignal?: boolean;
 }
 
+/**
+ * Recent health snapshot from the resource's daemon. Present when git
+ * sync is enabled AND the daemon is reachable; null otherwise.
+ *
+ * `lastError` being null with a non-null `lastSuccessAt` means the most
+ * recent cycle succeeded. A non-null `lastError` is sticky until the
+ * corresponding op (commit/pull/push) succeeds again.
+ */
+export interface GitSyncHealth {
+  lastError: string | null;
+  lastErrorAt: string | null;
+  lastErrorOp: "commit" | "pull" | "push" | null;
+  lastSuccessAt: string | null;
+}
+
 export interface GitSyncResponse {
   git_sync: GitSyncMetadata | null;
+  health: GitSyncHealth | null;
 }
 
 export interface UpdateGitSyncResponse {
@@ -392,8 +408,11 @@ export interface UpdateGitSyncResponse {
 }
 
 /**
- * Read the current git_sync block for a resource. Only meaningful on
- * task resources backed by a local opentasks workspace.
+ * Read the current git_sync block + live health for a resource. Only
+ * meaningful on task resources backed by a local opentasks workspace.
+ *
+ * Refetches every 15s so operators see push failures surface without
+ * having to reload the page.
  */
 export function useResourceGitSync(resourceId: string | undefined) {
   return useQuery({
@@ -401,6 +420,35 @@ export function useResourceGitSync(resourceId: string | undefined) {
     queryFn: () =>
       api.get<GitSyncResponse>(`/resources/${resourceId}/git-sync`),
     enabled: !!resourceId,
+    refetchInterval: 15000,
+  });
+}
+
+export interface SyncNowResponse {
+  ran: boolean;
+  reason?: string;
+  result?: {
+    commit: { committed: boolean; hash?: string };
+    pull: { pulled: boolean; hasChanges: boolean; error?: string };
+    push: { pushed: boolean; error?: string };
+  };
+}
+
+/**
+ * Force an immediate sync cycle (commit + pull + push) on a resource's
+ * daemon. Used by the "Sync now" button in the GitSyncToggle popover to
+ * let operators verify their auth + remote config without waiting for
+ * the auto-sync debounce.
+ */
+export function useRunGitSyncNow() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (resourceId: string) =>
+      api.post<SyncNowResponse>(`/resources/${resourceId}/git-sync/run`, {}),
+    onSuccess: (_data, resourceId) => {
+      // Refetch git-sync data so the new health snapshot lands in the UI.
+      queryClient.invalidateQueries({ queryKey: ["resource-git-sync", resourceId] });
+    },
   });
 }
 
