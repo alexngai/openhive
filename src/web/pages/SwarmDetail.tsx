@@ -45,6 +45,9 @@ import {
 import { createCoordinationChatAdapter } from '../adapters/coordination-chat-adapter';
 import { SpawnAgentDialog } from '../components/swarm/SpawnAgentDialog';
 import { getPeerMapId } from '../lib/map';
+import { usePageContext } from '../components/chat-fab/usePageContext';
+import { swarmContextItem } from '../components/chat-fab/context-types';
+import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1543,6 +1546,30 @@ export function SwarmDetail() {
   // useHostedSwarms has `select: d => d.data`, so `hostedSwarms` is the array.
   const hosted = hostedSwarms?.find(
     (h) => h.swarm_id === id || h.id === id
+  );
+
+  // Declare chat context items. Unconditional (before early returns) so
+  // hook order is stable across loading/missing states.
+  usePageContext(
+    () => {
+      if (!swarm) return [];
+      const items: ChatFabContextItem[] = [
+        swarmContextItem(
+          {
+            id: swarm.id,
+            name: swarm.name,
+            status: swarm.status,
+            agent_count: swarm.agent_count,
+            registered_agent_count: swarm.registered_agents?.length,
+            last_seen_at: swarm.last_seen_at,
+            description: swarm.description,
+          },
+          { primary: true },
+        ),
+      ];
+      return items;
+    },
+    [swarm],
   );
 
   if (mapLoading) return <PageLoader />;

@@ -16,6 +16,12 @@ import {
 } from 'swarmcraft/ui/embed';
 import { useConversationCapabilityResolver, conversationTarget } from '../../lib/chat/resolvers';
 import { useOpenHiveAdapters } from '../../adapters/openhive-adapters';
+import { usePageContext } from '../chat-fab/usePageContext';
+import {
+  conversationContextItem,
+  type ConversationTurnRef,
+} from '../chat-fab/context-types';
+import type { ChatFabContextItem } from '../chat-fab/chat-fab-item';
 
 /** Participant enrichment — maps the raw agent id on a mail turn/participant
  *  to the linked session and, when available, a better display name pulled
@@ -115,6 +121,51 @@ export function MailThreadView({ conversationId }: { conversationId: string }) {
   // identity. Unified across surfaces so the same viewer sees the same
   // user avatar + name in mail, trajectory, and coordination chat.
   const enrichedMessages = useEnrichedUserTurns(agentEnriched);
+
+  // Declare chat context items. Primary is the conversation; the last few
+  // turns ride inline in the conversation body via recent_turns. Runs
+  // unconditionally before the early returns below so hook order is stable.
+  const conversationForContext = data?.conversation;
+  const turnsForContext = data?.turns;
+  const turnCountForContext = data?.turn_count;
+  usePageContext(
+    () => {
+      if (!conversationForContext) return [];
+      const recent: ConversationTurnRef[] = (turnsForContext ?? [])
+        .slice(-3)
+        .map((t) => {
+          const content = t.content as unknown;
+          let content_text: string | undefined;
+          if (typeof content === 'string') {
+            content_text = content;
+          } else if (content && typeof content === 'object') {
+            const c = content as Record<string, unknown>;
+            if (typeof c.text === 'string') content_text = c.text;
+          }
+          return {
+            participant_id: t.participant_id,
+            content_text,
+            created_at: t.created_at,
+          };
+        });
+      const items: ChatFabContextItem[] = [
+        conversationContextItem(
+          {
+            id: conversationForContext.id,
+            subject: conversationForContext.subject,
+            status: conversationForContext.status,
+            scope: conversationForContext.scope,
+            participant_count: conversationForContext.participants?.length,
+            turn_count: turnCountForContext,
+            recent_turns: recent.length > 0 ? recent : undefined,
+          },
+          { primary: true },
+        ),
+      ];
+      return items;
+    },
+    [conversationForContext, turnsForContext, turnCountForContext],
+  );
 
   if (isLoading) {
     return (
