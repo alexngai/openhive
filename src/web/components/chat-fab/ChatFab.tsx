@@ -11,6 +11,10 @@
 import { Bot, X, PanelRightOpen, PanelRightClose, Loader2, AlertCircle, ChevronLeft } from 'lucide-react';
 import clsx from 'clsx';
 import { useLocation } from 'react-router-dom';
+// Side-effect import: registers every built-in context type on the
+// registry. Keeping this next to the ChatFab's Layout mount guarantees
+// `listContextTypes()` is populated by the time ContextMenu renders.
+import './context-types';
 import { useChatFabStore, type ChatFabAgentRef } from './ChatFabStore';
 import { SessionPicker } from './SessionPicker';
 import { ChatPanel } from './ChatPanel';

@@ -26,6 +26,14 @@ import { useSessionCapabilityResolver, sessionTarget } from '../lib/chat/resolve
 import { useOpenHiveAdapters } from '../adapters/openhive-adapters';
 import { sessionEventsToChatMessages } from '../lib/chat/session-events';
 import { useEnrichedUserTurns } from '../hooks/useEnrichedUserTurns';
+import { usePageContext } from '../components/chat-fab/usePageContext';
+import {
+  sessionContextItem,
+  conversationContextItem,
+  specContextItem,
+  dispatchContextItem,
+} from '../components/chat-fab/context-types';
+import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
 import clsx from 'clsx';
 
 // ============================================================================
@@ -507,6 +515,83 @@ export function SessionDetail() {
   const { data: sourceSpecResp } = useSpec(
     sourceDispatch?.spec_resource_id,
     sourceDispatch?.spec_id,
+  );
+
+  // Declare chat context items. Unconditional — runs before early returns
+  // so hook order is stable. Primary is the session itself; source spec +
+  // dispatch + linked conversation ride along when present.
+  const mailConversationId = resource?.metadata
+    ? ((resource.metadata as Record<string, unknown>).mail_conversation_id as
+        | string
+        | undefined)
+    : undefined;
+  const firstCheckpoint = checkpoints[0];
+  const sourceSpec = sourceSpecResp?.spec;
+  usePageContext(
+    () => {
+      if (!resource || !id) return [];
+      const rmeta = (resource.metadata ?? {}) as Record<string, unknown>;
+      const items: ChatFabContextItem[] = [
+        sessionContextItem(
+          {
+            id,
+            name: resource.name,
+            swarm_id: sourceSwarmId ?? undefined,
+            project: (rmeta.project as string | undefined) ?? undefined,
+            project_path:
+              (rmeta.project_path as string | undefined) ?? undefined,
+            branch:
+              firstCheckpoint?.branch ?? (rmeta.branch as string | undefined),
+            first_prompt: (rmeta.first_prompt as string | undefined) ?? undefined,
+            state: (rmeta.state as string | undefined) ?? undefined,
+            checkpoint_count: total,
+            owner_agent_id: resource.owner_agent_id,
+            description: resource.description ?? null,
+          },
+          { primary: true },
+        ),
+      ];
+      if (mailConversationId) {
+        items.push(
+          conversationContextItem({
+            id: mailConversationId,
+            swarm_id: sourceSwarmId ?? undefined,
+          }),
+        );
+      }
+      if (sourceSpec) {
+        items.push(
+          specContextItem({
+            id: sourceSpec.id,
+            resource_id: sourceSpec.resource_id,
+            title: sourceSpec.title,
+            content: sourceSpec.content ?? '',
+          }),
+        );
+      }
+      if (sourceDispatch) {
+        items.push(
+          dispatchContextItem({
+            id: sourceDispatch.id,
+            spec_id: sourceDispatch.spec_id,
+            target_swarm_id: sourceDispatch.target_swarm_id,
+            status: sourceDispatch.status,
+            created_at: sourceDispatch.created_at,
+          }),
+        );
+      }
+      return items;
+    },
+    [
+      resource,
+      id,
+      sourceSwarmId,
+      firstCheckpoint,
+      total,
+      mailConversationId,
+      sourceSpec,
+      sourceDispatch,
+    ],
   );
 
   if (resourceLoading) return <PageLoader />;

@@ -7,7 +7,12 @@ import {
 import clsx from 'clsx';
 import { useSpec, useUpdateSpec, useLinkSpec, useUnlinkSpec } from '../hooks/useSpecs';
 import type { EdgeType } from '../hooks/useSpecs';
-import { ChatFabContextProvider, type ChatFabContextItem } from '../components/chat-fab/ChatFabContext';
+import { usePageContext } from '../components/chat-fab/usePageContext';
+import {
+  specContextItem,
+  tasksContextItem,
+} from '../components/chat-fab/context-types';
+import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
 import { useSpecsRealtime } from '../hooks/useSpecsRealtime';
 import { TiptapSpecEditor, type TocItem } from '../components/specs/TiptapSpecEditor';
 import { SpecTableOfContents } from '../components/specs/SpecTableOfContents';
@@ -40,6 +45,32 @@ export function SpecDetail() {
   const linkSpec = useLinkSpec(resourceId ?? '', specId ?? '');
   const unlinkSpec = useUnlinkSpec(resourceId ?? '', specId ?? '');
   useSpecsRealtime();
+
+  // Declare this page's chat context items. Re-runs on spec/tasks change;
+  // cleared on unmount. Registry-backed formatting lives in context-types.
+  const pageSpec = data?.spec;
+  const pageTasks = data?.linked.tasks;
+  usePageContext(
+    () => {
+      if (!pageSpec) return [];
+      const items: ChatFabContextItem[] = [
+        specContextItem(
+          {
+            id: pageSpec.id,
+            resource_id: pageSpec.resource_id,
+            title: pageSpec.title,
+            content: pageSpec.content ?? '',
+          },
+          { primary: true },
+        ),
+      ];
+      if (pageTasks && pageTasks.length > 0) {
+        items.push(tasksContextItem(pageTasks));
+      }
+      return items;
+    },
+    [pageSpec, pageTasks],
+  );
 
   const [saveError, setSaveError] = useState<string | null>(null);
   const [dispatchOpen, setDispatchOpen] = useState(false);
@@ -209,13 +240,6 @@ export function SpecDetail() {
     await unlinkSpec.mutateAsync({ target_id: targetId, type: edgeType });
   };
 
-  const chatFabItems: ChatFabContextItem[] = [
-    { label: `Spec: ${spec.title}`, type: 'spec', data: { id: spec.id, title: spec.title, content: spec.content, resource_id: spec.resource_id } },
-    ...(linked.tasks.length > 0
-      ? [{ label: `Linked tasks (${linked.tasks.length})`, type: 'tasks' as const, data: { tasks: linked.tasks } }]
-      : []),
-  ];
-
   const handleArchiveToggle = async () => {
     try {
       await updateSpec.mutateAsync({ archived: !spec.archived });
@@ -228,7 +252,7 @@ export function SpecDetail() {
   const saveStatus = saving ? 'Saving…' : 'Saved';
 
   return (
-    <ChatFabContextProvider items={chatFabItems}>
+    <>
       <div className="flex h-[calc(100vh-4rem)] flex-col">
         {/* Sticky header */}
         <div
@@ -490,6 +514,6 @@ export function SpecDetail() {
           spec={spec}
         />
       </div>
-    </ChatFabContextProvider>
+    </>
   );
 }

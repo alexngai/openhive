@@ -632,7 +632,6 @@ export async function resourceContentRoutes(
       parentVersion: skill.parentVersion || null,
       derivedFrom: skill.derivedFrom || [],
       forks: skill.forks || [],
-      metrics: skill.metrics || null,
       serving: skill.serving || null,
       raw,
     });

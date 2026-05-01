@@ -67,6 +67,12 @@ import { PageLoader } from '../components/common/LoadingSpinner';
 import { useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
 import { StreamDAGView } from '../components/streams/StreamDAGView';
 import { StreamStatusDot, STATUS_COLORS, STATUS_LABELS, TimelineEntry } from '../components/streams/shared';
+import { usePageContext } from '../components/chat-fab/usePageContext';
+import {
+  streamContextItem,
+  taskContextItem,
+} from '../components/chat-fab/context-types';
+import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
 
 type ViewMode = 'list' | 'stack' | 'dag';
 
@@ -173,6 +179,52 @@ export function Changes() {
       setViewMode('stack');
     }
   }, [dag]);
+
+  // Declare the chat context for the currently-selected stream (if any).
+  // Stream is the primary item; a linked task ref rides as a secondary when
+  // the stream carries one. Cleared on unmount / when no stream is selected.
+  const selectedNode = useMemo(
+    () =>
+      selectedStreamId
+        ? dag?.nodes.find((n) => n.id === selectedStreamId) ?? null
+        : null,
+    [dag, selectedStreamId],
+  );
+  usePageContext(
+    () => {
+      if (!selectedNode) return [];
+      const items: ChatFabContextItem[] = [
+        streamContextItem(
+          {
+            id: selectedNode.id,
+            stream_id: selectedNode.stream_id,
+            source_swarm_id: selectedNode.source_swarm_id,
+            source_agent_id: selectedNode.source_agent_id,
+            name: selectedNode.name,
+            status: selectedNode.status,
+            publish_branch: selectedNode.publish_branch ?? undefined,
+            task_resource_id: selectedNode.task_resource_id ?? undefined,
+            task_node_id: selectedNode.task_node_id ?? undefined,
+            commit_count: selectedNode.commit_count,
+            open_conflict_count: selectedNode.open_conflict_count,
+            last_event_at: selectedNode.last_event_at,
+            parent_stream_id: selectedNode.parent_stream_id ?? undefined,
+          },
+          { primary: true },
+        ),
+      ];
+      if (selectedNode.task_resource_id && selectedNode.task_node_id) {
+        items.push(
+          taskContextItem({
+            id: selectedNode.task_node_id,
+            resource_id: selectedNode.task_resource_id,
+          }),
+        );
+      }
+      return items;
+    },
+    [selectedNode],
+  );
 
   if (isLoading) return <PageLoader />;
 

@@ -23,6 +23,13 @@ import {
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { CascadeBlock } from '../components/CascadeBlock';
+import { usePageContext } from '../components/chat-fab/usePageContext';
+import {
+  taskContextItem,
+  tasksContextItem,
+  type TaskRef,
+} from '../components/chat-fab/context-types';
+import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
 
 export function TaskDetail() {
   const { resourceId, nodeId } = useParams<{ resourceId: string; nodeId: string }>();
@@ -37,6 +44,81 @@ export function TaskDetail() {
     if (!graph || !nodeId) return undefined;
     return graph.nodes.find((n) => n.id === nodeId);
   }, [graph, nodeId]);
+
+  // Parents, children, and block edges for the chat-context items. The
+  // task primary carries its own blocked_by/blocks inline; the plural
+  // `tasks` items render the dependency subtrees as bulleted lists.
+  const { parents, children, blockedBy, blocks } = useMemo(() => {
+    if (!graph || !nodeId) {
+      return {
+        parents: [] as TaskRef[],
+        children: [] as TaskRef[],
+        blockedBy: [] as string[],
+        blocks: [] as string[],
+      };
+    }
+    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+    const parentIds = new Set<string>();
+    const childIds = new Set<string>();
+    const blockedByIds: string[] = [];
+    const blocksIds: string[] = [];
+    for (const edge of graph.edges ?? []) {
+      const e = edge as { type?: string; source?: string; target?: string };
+      if (e.type === 'parent' && e.target === nodeId && e.source) {
+        parentIds.add(e.source);
+      }
+      if (e.type === 'parent' && e.source === nodeId && e.target) {
+        childIds.add(e.target);
+      }
+      if (e.type === 'blocks' && e.target === nodeId && e.source) {
+        blockedByIds.push(e.source);
+      }
+      if (e.type === 'blocks' && e.source === nodeId && e.target) {
+        blocksIds.push(e.target);
+      }
+    }
+    const toRef = (id: string): TaskRef => {
+      const n = byId.get(id);
+      return {
+        id,
+        title: n?.title,
+        status: n?.status,
+      };
+    };
+    return {
+      parents: Array.from(parentIds).map(toRef),
+      children: Array.from(childIds).map(toRef),
+      blockedBy: blockedByIds,
+      blocks: blocksIds,
+    };
+  }, [graph, nodeId]);
+
+  // Declare page context items. Runs unconditionally before the early
+  // returns below so hook order is stable.
+  usePageContext(
+    () => {
+      if (!resourceId || !nodeId || !node) return [];
+      const items: ChatFabContextItem[] = [
+        taskContextItem(
+          {
+            id: nodeId,
+            resource_id: resourceId,
+            title: node.title,
+            description: node.description ?? undefined,
+            status: node.status,
+            assignee: node.assignee ?? undefined,
+            blocked_by: blockedBy.length > 0 ? blockedBy : undefined,
+            blocks: blocks.length > 0 ? blocks : undefined,
+          },
+          { primary: true },
+        ),
+      ];
+      if (parents.length > 0) items.push(tasksContextItem(parents));
+      if (children.length > 0) items.push(tasksContextItem(children));
+      return items;
+    },
+    [resourceId, nodeId, node, parents, children, blockedBy, blocks],
+  );
 
   const isLoading = resourceLoading || graphLoading;
 

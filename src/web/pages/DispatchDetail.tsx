@@ -13,7 +13,13 @@ import { AttemptsTimeline } from '../components/dispatch/AttemptsTimeline';
 import { StreamStatusDot } from '../components/streams/shared';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
-import { ChatFabContextProvider } from '../components/chat-fab/ChatFabContext';
+import { usePageContext } from '../components/chat-fab/usePageContext';
+import {
+  dispatchContextItem,
+  specContextItem,
+  tasksContextItem,
+} from '../components/chat-fab/context-types';
+import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
 
 export function DispatchDetail() {
   const { id } = useParams<{ id: string }>();
@@ -49,6 +55,64 @@ export function DispatchDetail() {
     if (agentIds.size === 0) return [];
     return cascadeResp.data.nodes.filter((n) => agentIds.has(n.source_agent_id));
   }, [data, sessionsResp, cascadeResp]);
+
+  // Declare this page's chat context items. Re-runs when the dispatch,
+  // source spec, or linked tasks change; cleared on unmount. Must stay
+  // unconditional so hook order is stable across loading/error returns.
+  const dispatchRec = data?.dispatch;
+  const sourceSpec = specResp?.spec;
+  const linkedTasks = data?.linked_tasks;
+  usePageContext(
+    () => {
+      if (!dispatchRec) return [];
+      const latest = dispatchRec.attempts_history?.length
+        ? dispatchRec.attempts_history[dispatchRec.attempts_history.length - 1]
+        : undefined;
+      const items: ChatFabContextItem[] = [
+        dispatchContextItem(
+          {
+            id: dispatchRec.id,
+            spec_id: dispatchRec.spec_id,
+            target_swarm_id: dispatchRec.target_swarm_id,
+            status: dispatchRec.status,
+            created_at: dispatchRec.created_at,
+            latest_attempt: latest
+              ? {
+                  attempt: latest.attempt,
+                  status: latest.status,
+                  started_at: latest.started_at,
+                  error: latest.error,
+                }
+              : undefined,
+          },
+          { primary: true },
+        ),
+      ];
+      if (sourceSpec) {
+        items.push(
+          specContextItem({
+            id: sourceSpec.id,
+            resource_id: sourceSpec.resource_id,
+            title: sourceSpec.title,
+            content: sourceSpec.content ?? '',
+          }),
+        );
+      }
+      // `linked_tasks` on the dispatch carries `{ resource_id, node_id }`
+      // refs — best-effort mapping to the TaskRef shape the registry
+      // expects. Titles/statuses aren't on the payload without a new
+      // fetch, so the block renders ids alone.
+      if (linkedTasks && linkedTasks.length > 0) {
+        items.push(
+          tasksContextItem(
+            linkedTasks.map((t) => ({ id: t.node_id })),
+          ),
+        );
+      }
+      return items;
+    },
+    [dispatchRec, sourceSpec, linkedTasks],
+  );
 
   if (isLoading) return <PageLoader />;
 
@@ -90,12 +154,7 @@ export function DispatchDetail() {
     }
   };
 
-  const chatFabItems = [
-    { label: `Dispatch: ${d.id.slice(0, 15)}…`, type: 'dispatch' as const, data: { id: d.id, spec_id: d.spec_id, status: d.status, target_swarm_id: d.target_swarm_id } },
-  ];
-
   return (
-    <ChatFabContextProvider items={chatFabItems}>
     <div className="p-6 max-w-4xl mx-auto">
       <Link
         to="/dispatch"
@@ -466,6 +525,5 @@ export function DispatchDetail() {
         </div>
       )}
     </div>
-    </ChatFabContextProvider>
   );
 }

@@ -153,17 +153,6 @@ function SkillDetailView({ resourceId, skillId, onBack }: { resourceId: string; 
         </div>
       )}
 
-      {/* Metrics */}
-      {skill.metrics && (
-        <div className="mb-3">
-          <h4 className="text-xs font-semibold mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>Metrics</h4>
-          <div className="flex gap-3 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-            {Object.entries(skill.metrics).map(([k, v]) => (
-              <span key={k}>{k}: <span className="font-mono">{String(v)}</span></span>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
