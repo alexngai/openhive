@@ -398,7 +398,6 @@ export interface SkillRelationship {
 
 export interface SkillDetail extends SkillSummary {
   instructions: string | null;
-  metrics: Record<string, unknown> | null;
   serving: Record<string, unknown> | null;
   namespace: Record<string, unknown> | null;
   raw: string;
