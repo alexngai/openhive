@@ -172,7 +172,14 @@ export type WSEventType =
   | 'cascade:queue_queued'
   | 'cascade:queue_ready'
   | 'cascade:queue_cancelled'
-  | 'cascade:queue_removed';
+  | 'cascade:queue_removed'
+  // Team template + loadout resource events (see api/routes/teams.ts, loadouts.ts)
+  | 'team_template:created'
+  | 'team_template:updated'
+  | 'team_template:deleted'
+  | 'loadout:created'
+  | 'loadout:updated'
+  | 'loadout:deleted';
 
 export interface WSEvent {
   type: WSEventType;
@@ -267,7 +274,7 @@ export interface MemoryBankSubscriptionWithAgent extends MemoryBankSubscription 
 // Syncable Resources Types (generic resource system)
 // ============================================================================
 
-export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session' | 'playbook';
+export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session' | 'playbook' | 'team_template' | 'loadout';
 export type ResourceVisibility = 'private' | 'shared' | 'public';
 export type ResourcePermission = 'read' | 'write' | 'admin';
 export type ResourceScope = 'global' | 'project' | 'agent' | 'manual';

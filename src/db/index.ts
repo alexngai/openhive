@@ -38,6 +38,7 @@ import {
   MIGRATION_V43_AGENT_CAPABILITIES,
   MIGRATION_V44_GRANT_VERSION,
   MIGRATION_V45_DISPATCH_LINKED_TASKS,
+  MIGRATION_V46_RESOURCE_TYPES_EXTEND,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -302,6 +303,9 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 45: dispatch_linked_tasks join table — dispatch → opentasks task refs
   // captured at creation time. Drives advance-on-start + cascade artifact enrichment.
   45: MIGRATION_V45_DISPATCH_LINKED_TASKS,
+  // Version 46: Extend syncable_resources.resource_type CHECK to admit
+  // 'playbook', 'team_template', and 'loadout'.
+  46: MIGRATION_V46_RESOURCE_TYPES_EXTEND,
 };
 
 /** Get the SQL for a specific migration version.

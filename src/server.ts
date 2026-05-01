@@ -543,6 +543,7 @@ export async function createHive(
             title: (node.title as string) ?? 'Untitled spec',
             content: (node.content as string) ?? '',
             tasks,
+            metadata: (node.metadata as Record<string, unknown> | undefined) ?? {},
           };
         },
       },

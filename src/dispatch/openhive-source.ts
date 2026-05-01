@@ -10,12 +10,20 @@ import type { DispatchTaskSource, DispatchTask } from 'swarm-dispatch';
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import type { Dispatch } from '../db/dal/dispatches.js';
 import { advanceLinkedTasksOnStart } from './start.js';
+import {
+  materializeLoadoutById,
+  materializeRoleLoadout,
+} from '../openteams/resolver.js';
+import { emptyMaterialization, type MaterializedLoadout } from '../openteams/types.js';
 
 export interface SpecContentFetcher {
   fetch(resourceId: string, specId: string): Promise<{
     title: string;
     content: string;
     tasks: Array<{ id: string; title?: string; status?: string }>;
+    /** Optional spec node metadata, passed through verbatim. The dispatch
+     *  source reads loadout_ref / team_role_ref from this. */
+    metadata?: Record<string, unknown>;
   } | null>;
 }
 
@@ -76,10 +84,78 @@ async function enrichWithSpec(
         spec_title: spec.title,
         criteria: spec.tasks.map((t) => t.title).filter(Boolean),
         description: spec.content,
+        // Pass spec metadata through so downstream enrichment steps (e.g.
+        // enrichWithLoadout) can read loadout_ref / team_role_ref.
+        spec_metadata: spec.metadata ?? {},
       },
     };
   } catch {
     return task;
+  }
+}
+
+interface SpecLoadoutBinding {
+  loadoutRef?: string;
+  teamRoleRef?: { teamTemplateId: string; role: string };
+}
+
+function readLoadoutBinding(meta: Record<string, unknown>): SpecLoadoutBinding | null {
+  const specMeta = (meta.spec_metadata as Record<string, unknown> | undefined) ?? {};
+  const loadoutRef =
+    typeof specMeta.loadout_ref === 'string' ? specMeta.loadout_ref : undefined;
+  const teamRoleRefRaw = specMeta.team_role_ref as
+    | { teamTemplateId?: unknown; role?: unknown }
+    | undefined;
+  const teamRoleRef =
+    teamRoleRefRaw &&
+    typeof teamRoleRefRaw.teamTemplateId === 'string' &&
+    typeof teamRoleRefRaw.role === 'string'
+      ? { teamTemplateId: teamRoleRefRaw.teamTemplateId, role: teamRoleRefRaw.role }
+      : undefined;
+  if (!loadoutRef && !teamRoleRef) return null;
+  return { loadoutRef, teamRoleRef };
+}
+
+/**
+ * Enrich a DispatchTask with a materialized loadout when the spec has a
+ * loadout_ref or team_role_ref binding. Best-effort — failures attach an
+ * `loadout_error` marker but never block dispatch.
+ *
+ * Precedence: direct loadout_ref > team_role_ref. Documented contract.
+ */
+async function enrichWithLoadout(task: DispatchTask): Promise<DispatchTask> {
+  const meta = task.metadata ?? {};
+  const binding = readLoadoutBinding(meta);
+  if (!binding) return task;
+
+  try {
+    let materialized: MaterializedLoadout;
+    if (binding.loadoutRef) {
+      materialized = await materializeLoadoutById(binding.loadoutRef);
+    } else if (binding.teamRoleRef) {
+      materialized = await materializeRoleLoadout(
+        binding.teamRoleRef.teamTemplateId,
+        binding.teamRoleRef.role,
+      );
+    } else {
+      materialized = emptyMaterialization();
+    }
+
+    return {
+      ...task,
+      metadata: { ...meta, materializedLoadout: materialized },
+    };
+  } catch (err) {
+    // Best-effort: dispatch proceeds without enrichment. Surface the
+    // failure as a metadata marker so downstream consumers (UI, logs)
+    // can see it.
+    return {
+      ...task,
+      metadata: {
+        ...meta,
+        loadout_error: (err as Error).message,
+      },
+    };
   }
 }
 
@@ -117,6 +193,9 @@ export function createOpenHiveDispatchSource(
 
     renewRow: (id, fence) => dispatchesDAL.renewDispatchClaim(id, fence),
 
-    enrichContent: (task) => enrichWithSpec(task, specFetcher),
+    enrichContent: async (task) => {
+      const withSpec = await enrichWithSpec(task, specFetcher);
+      return enrichWithLoadout(withSpec);
+    },
   });
 }
