@@ -197,8 +197,9 @@ function buildLoadoutContent(): LoadoutContent {
     permissions: { allow: [] },
     mcp_servers: [],
     prompt_addendum: [
-      `SPECIAL INSTRUCTION: The very first characters of your response MUST be "${SENTINEL}".`,
-      `Do not add any preamble before it. Start your reply with "${SENTINEL}" and then answer normally.`,
+      `SPECIAL INSTRUCTION: When you finish, call the \`done\` tool from the macro-agent MCP server with summary starting with "${SENTINEL}".`,
+      `The summary string is what gets sent back as the reply, so the very first characters of the summary must be "${SENTINEL}".`,
+      `Do this immediately — do not respond with text before calling done. Just call done({ status: "completed", summary: "${SENTINEL} ..." }) right away.`,
     ].join('\n'),
   };
 }
@@ -803,7 +804,7 @@ describeIf(
         // dispatcher MessagePort can pick them up and route to a worker.
         // 300s: claude-code agent startup (~30-60s) + Claude API call (~60-120s)
         // + reply delivery via mail/turn MAP notification. 120s was too tight.
-        const level2WaitMs = 300_000;
+        const level2WaitMs = 60_000;
         console.log(
           `[live-loadout] Level 2: waiting up to ${level2WaitMs / 1000}s for macro-agent to ` +
           `reply with "${SENTINEL}" in a dispatch conversation turn...`,
@@ -921,8 +922,8 @@ describeIf(
           expect(level2Reached).toBe(true);
         }
       },
-      // 300s Level 2 wait + ~90s setup/teardown + Claude API round-trip headroom.
-      420_000,
+      // 60s Level 2 wait + ~30s setup/teardown headroom.
+      120_000,
     );
   },
 );

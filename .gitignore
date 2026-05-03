@@ -16,3 +16,4 @@ logs/
 test-data/
 .swarm/
 .claude/
+.omc/
