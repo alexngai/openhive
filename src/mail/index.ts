@@ -197,10 +197,17 @@ function ensurePendingRetryListener(): void {
 
     if (live.length === 0) return;
 
-    // Give the sidecar a brief moment to complete its MAP handshake
-    // (register + capability publishing) before we attempt delivery.
-    // 2 s is enough for connect+register round-trips on a local hub.
-    setTimeout(() => {
+    // Wait for the sidecar to register an agent (signal that it has
+    // completed its MAP handshake + capability publish) before delivering
+    // the queued notifications. A bare 2s wall-clock sleep is racy on slow
+    // boots; a 2s timeout fallback bounds the worst case so a buggy sidecar
+    // that never registers can't pin pending notifications indefinitely.
+    let drained = false;
+    const drain = (): void => {
+      if (drained) return;
+      drained = true;
+      mapHubEvents.off('node_registered', onRegistered);
+      clearTimeout(fallbackTimer);
       for (const { payload } of live) {
         try {
           sendToSwarm(swarmId, payload);
@@ -208,7 +215,12 @@ function ensurePendingRetryListener(): void {
           // best effort
         }
       }
-    }, 2_000);
+    };
+    const onRegistered = (ev: { swarm_id?: string }): void => {
+      if (ev?.swarm_id === swarmId) drain();
+    };
+    mapHubEvents.on('node_registered', onRegistered);
+    const fallbackTimer = setTimeout(drain, 2_000);
   });
 }
 

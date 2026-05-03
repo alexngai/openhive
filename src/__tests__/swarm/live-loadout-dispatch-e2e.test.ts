@@ -306,7 +306,11 @@ describeIf(
         trajectoryService: sc.trajectoryService,
         mapClientManager: sc.mapClientManager,
         acpStreamManager: sc.acpStreamManager,
-        pipelineService: sc.pipelineService,
+        // Skip pipelineService to disable the repo-bridge auto-analysis. The
+        // analysis runs on the entire openhive-2 source tree (~15k imports)
+        // and starves setTimeout via microtask hot-loop, breaking waitFor's
+        // polling. This test doesn't exercise SwarmCraft visualization.
+        pipelineService: undefined,
       });
 
       // Auth hook so API routes recognise testAgent's key.
