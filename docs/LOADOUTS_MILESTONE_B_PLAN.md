@@ -1,10 +1,50 @@
 # Loadouts — Milestone B: Verification
 
+**Status:** Verified end-to-end with a real Claude API worker (2026-05-03). 5/5 live tests pass in ~13s.
 **Goal:** End-to-end test coverage for the hub→swarm bridge that already shipped in Milestone A. Prove the dispatch flow with materialized loadouts works under realistic edits, against the real macro-agent process, and stays compatible with openteams as both libraries evolve.
 
 **Companion docs:**
 - [`LOADOUTS_DESIGN.md`](./LOADOUTS_DESIGN.md) — full architecture. The "Distribution to swarms" section is what these tests verify.
 - [`LOADOUTS_MILESTONE_A_PLAN.md`](./LOADOUTS_MILESTONE_A_PLAN.md) — what shipped before this.
+
+---
+
+## Verification status — 2026-05-03
+
+The full chain `loadout author → enrichWithLoadout → openHivePromptBuilder → mail port → swarm sidecar → mail-bridge → mail-inbound-consumer → agentManager.spawn → promptUntilDone (real Claude) → done() → handlers-v2 → mapSidecar.postMailTurn → hub mail.turn.added → capturedTurns` is live-tested end-to-end. The verification surfaced and closed nine downstream defects across openhive, macro-agent, openteams, and the MAP SDK. See "Defects closed during verification" below.
+
+### Live tests — green
+
+| Test | Cadence | Result |
+|---|---|---|
+| `live-loadout-dispatch-e2e.test.ts` (5 tests) | `LIVE_AGENT_E2E=true` | 5/5 pass in ~13s. Asserts SENTINEL from `prompt_addendum` reaches the worker's reply turn. |
+| `full-stack-loadout-prompt-receipt.test.ts` (7 tests) | `FULL_STACK_E2E=true` | 7/7 pass. Asserts dispatch with materialized loadout reaches the macro-agent process boundary. |
+| `mail/forward-retry.test.ts` (6 tests) | default | 6/6 pass. Hub-side retry-queue happy path, dedup, drain on `node_registered`, fallback timer, mismatched-swarm filter, skip-self. |
+
+### Defects closed during verification
+
+Each was found while tightening Milestone B coverage and patched in the same session:
+
+1. **macro-agent had no inbound mail consumer** — added `mail-bridge` (translates `mail/turn.received` notifications) + `mail-inbound-consumer` (classifies `x-dispatch/work`, spawns + drives the worker, posts the reply).
+2. **Schema buried under `data`** — `inboxAdapter.send` calls `agent-inbox`'s `normalizeContent`, which wraps any payload without a `type` field as `{type:"data", data: original}`. Bridge now sets `type: "data"` explicitly so `schema` stays at the top level.
+3. **Reply path missing** — `mapSidecar.postMailTurn` + `_lastSummary` storage in `handlers-v2.ts` for parentless workers, with `agentStore` plumbed into `HandlerDepsV2`.
+4. **Outbound `dispatch.enabled` gate covered the inbound path too** — Option 3: extracted the inbound mail-consumer into its own module wired unconditionally, leaving the outbound orchestrator opt-in.
+5. **`agentMeta.settingSources` not stripped for dispatch workers** — host-level claude-code-swarm / oh-my-claudecode plugins were auto-mounting and hanging session/new MCP-init. Added `SpawnAgentOptions.isolatedSettings` (consumer sets it; persisted to agent metadata so `resume` honors it).
+6. **`agentManager.spawn` only creates the session** — the consumer now also calls `agentManager.promptUntilDone(spawnedId, prompt)` so the model actually receives the user message and runs to `done()`.
+7. **openteams 0.2.2 had no loadout support** — published 0.3.0 with `ResolvedRole.loadout`, `resolved.loadouts`, snake_case → camelCase mapping for `prompt_addendum`. Resolver code path was already correct; the dependency wasn't.
+8. **MAP SDK stale-stream race** — `BaseConnection.#startReceiving()` could close a freshly reconnected stream when an old loop unblocked. Added `#streamGeneration` counter so close happens only when the loop's generation matches the current.
+9. **Hub-side mail forward had no retry** — `forwardTurnToSwarms` now always-queues alongside the live send, dedupes by `turn_id`, drains on `node_registered` (with 2s fallback). Recovers mid-turn WS disconnects.
+
+Plus three observability + safety fixes (stripped `_lastSummary` after post; bounded `seenTaskIds` with 1h TTL; surfaced malformed-envelope counter via `consumer.stats()`).
+
+### What's NOT covered by Milestone B (carried into the limitations table in `LOADOUTS_DESIGN.md`)
+
+- Cross-owner `extends` chains.
+- Loadout-provided MCP servers reaching the spawned worker.
+- `permissions.{allow,deny,ask}` enforced as Claude permission-mode config.
+- Cross-instance federation of loadouts under live dispatch.
+- Loadout version pinning on dispatches.
+- UI / Playwright coverage.
 
 ---
 

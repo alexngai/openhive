@@ -129,4 +129,76 @@ describe('openHivePromptBuilder + materializedLoadout', () => {
     expect(out).toContain('Role: reviewer');
     expect(out).not.toContain('## Reviewer');
   });
+
+  // ── MCP expectation hint (Gap 3 Phase 0 — operator-provisioned model) ────
+
+  it('omits MCP expectation hint when loadout has no providers or scope', () => {
+    const out = build(
+      makeTask({
+        materializedLoadout: makeLoadout({ mcpProviders: [], mcpScope: [] }),
+      }),
+      { attempt: 1, turnCount: 0, role: 'reviewer' },
+    );
+    expect(out).not.toContain('Expected MCP servers');
+  });
+
+  it('emits MCP expectation hint listing provider names', () => {
+    const out = build(
+      makeTask({
+        materializedLoadout: makeLoadout({
+          mcpProviders: [
+            { name: 'ast-grep', command: 'npx', args: ['ast-grep-mcp'] },
+            { name: '@openhive/secrets-scanner', command: 'node', args: ['scanner.js'] },
+          ],
+        }),
+      }),
+      { attempt: 1, turnCount: 0, role: 'reviewer' },
+    );
+    expect(out).toContain('Expected MCP servers for this role: ast-grep, @openhive/secrets-scanner');
+    expect(out).toContain('Verify availability before invoking');
+  });
+
+  it('includes scope-only declarations (bare names) in the hint', () => {
+    const out = build(
+      makeTask({
+        materializedLoadout: makeLoadout({
+          mcpProviders: [],
+          mcpScope: [
+            { server: 'chrome-devtools' },
+            { server: 'playwright' },
+          ],
+        }),
+      }),
+      { attempt: 1, turnCount: 0, role: 'reviewer' },
+    );
+    expect(out).toContain('Expected MCP servers for this role: chrome-devtools, playwright');
+  });
+
+  it('deduplicates between providers and scope', () => {
+    const out = build(
+      makeTask({
+        materializedLoadout: makeLoadout({
+          mcpProviders: [{ name: 'ast-grep', command: 'npx' }],
+          mcpScope: [{ server: 'ast-grep', tools: ['search'] }],
+        }),
+      }),
+      { attempt: 1, turnCount: 0, role: 'reviewer' },
+    );
+    // Only one occurrence in the hint line.
+    const hintLine = out.split('\n').find((l) => l.startsWith('Expected MCP servers'));
+    expect(hintLine).toBeDefined();
+    expect((hintLine!.match(/ast-grep/g) ?? []).length).toBe(1);
+  });
+
+  it('skips MCP hint on continuation turns', () => {
+    const out = build(
+      makeTask({
+        materializedLoadout: makeLoadout({
+          mcpProviders: [{ name: 'ast-grep', command: 'npx' }],
+        }),
+      }),
+      { attempt: 1, turnCount: 1, role: 'reviewer' },
+    );
+    expect(out).not.toContain('Expected MCP servers');
+  });
 });

@@ -1,10 +1,35 @@
 # Loadouts — Milestone A Implementation Plan
 
+**Status:** Shipped (2026-05-02). All slices landed; Milestone B closed the verification loop.
 **Goal:** Hub-side end-to-end. When this milestone lands, OpenHive can store openteams team templates and loadouts as resources, resolve and materialize them into curated bundles (skills + MCP scope + permissions + capabilities + prompt material), and dispatch can embed a materialized loadout into the boot prompt of an agent picking up a spec.
 
 **Companion:** [`LOADOUTS_DESIGN.md`](./LOADOUTS_DESIGN.md) — design rationale and full architecture context.
 
 **Slices in this milestone:** 1, 2, 3, 5 from the design doc, plus a small openteams modification (slice 12) coordinated alongside slice 2.
+
+---
+
+## Slice status — 2026-05-03
+
+| Slice | Status | Notes |
+|---|---|---|
+| 1 — resource types + DAL + CRUD | ✅ Shipped | `team_template` and `loadout` resource_types added; routes at `POST /api/v1/teams`, `POST /api/v1/loadouts`. Owner ACL via `canAccessResource`. |
+| 2 — openteams resolver bridge | ✅ Shipped | `src/openteams/resolver.ts` with `resolveTeam`, `materializeRoleLoadout`, `materializeLoadoutById`, `stageTemplate`. `resolveExternalLoadout` hook routes through hub-stored loadouts. |
+| 3 — MAP `resources/get` + `resources/list` | ⚠️ Dropped on review | Per `LOADOUTS_DESIGN.md` "What this design replaces" — agent-side fetch was rejected. Distribution is dispatch-only. |
+| 5 — dispatch enrichment + prompt builder | ✅ Shipped | `enrichWithLoadout` in `src/dispatch/openhive-source.ts`; `openHivePromptBuilder` in `src/dispatch/prompt.ts`. WS broadcast on materialization failure. |
+| 12 — openteams 0.3.0 (loadout schema + resolver hooks) | ✅ Shipped | Published. `ResolvedRole.loadout` carries the merged loadout; `resolved.loadouts` map exists; snake_case → camelCase mapping for `prompt_addendum` etc. |
+
+### Test coverage delivered alongside Milestone A
+
+- `src/__tests__/dispatch/loadout-prompt.test.ts` — prompt-builder + materialized-loadout integration (6 tests).
+- `src/__tests__/dispatch/openhive-source.test.ts` — `enrichWithLoadout` + `enrichWithSpec` semantics.
+- `src/__tests__/dal/team-templates-loadouts.test.ts` — DAL pattern.
+- `src/__tests__/integrations/loadout-author-to-dispatch.test.ts` — author REST → dispatch enrichment chain.
+- `src/__tests__/integrations/loadout-authorization.test.ts` — `canAccessResource` ACL on materialization.
+- `src/__tests__/integrations/loadout-concurrency.test.ts` — promise coalescing on concurrent materialize.
+- `src/__tests__/integrations/loadout-update-propagation.test.ts` — `(id, contentHash)` cache invalidation.
+- `src/__tests__/integrations/openteams-roundtrip.test.ts` — `stageTemplate` round-trips through openteams' `TemplateLoader`.
+- `src/__tests__/integrations/skill-bridge-on-disk.test.ts` — `compileSkillsForLoadout` with the real skill-tree compiler.
 
 ---
 

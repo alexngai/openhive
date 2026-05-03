@@ -87,6 +87,11 @@ import { ConfigSchema, type Config } from '../../config.js';
 import { _resetCacheForTest } from '../../openteams/cache.js';
 import { canRouteToSwarm } from '../../dispatch/routing.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
+import {
+  createTestSkillBank,
+  MARKER_SKILL,
+  SKILL_MARKER,
+} from '../helpers/skill-bank-fixture.js';
 import type { TeamTemplateContent } from '../../api/schemas/teams.js';
 import type { LoadoutContent } from '../../api/schemas/loadouts.js';
 
@@ -188,24 +193,74 @@ function createTestConfig(): Config {
   });
 }
 
-/** The loadout content that the agent must demonstrably receive. */
-function buildLoadoutContent(): LoadoutContent {
-  return {
+/**
+ * The loadout content that the agent must demonstrably receive.
+ *
+ * When `skillBankRef` is set, the loadout binds to a real test skill bank
+ * via the consumer extension namespace (`openhive.skillBankRef`). This
+ * exercises the full `compileSkillsForLoadout → SkillGraphServer →
+ * rendered fragment → prompt prepend` path end-to-end.
+ *
+ * The addendum directs the agent through three verifiable tasks before
+ * calling done:
+ *   1. Read the rendered skills catalog and follow the marker skill's
+ *      embedded self-instruction (proves SKILL CONTENT was consumed,
+ *      not just delivered as catalog text).
+ *   2. Call the agent-inbox MCP server's `list_agents` tool and report
+ *      the count (proves an MCP TOOL declared in the loadout was
+ *      actually invoked — the agent cannot know the count without
+ *      calling the tool).
+ *   3. Emit a structured summary the test can grep for all three proofs.
+ *
+ * `mcp_servers: ['agent-inbox']` is a scope-only declaration — agent-inbox
+ * is provisioned by the macro-agent host (operator-provisioned model per
+ * Gap 3 Phase 0), the loadout merely advertises that the role expects
+ * access to it. The prompt builder surfaces this as an "Expected MCP
+ * servers" hint above the addendum.
+ */
+function buildLoadoutContent(skillBankRef?: string): LoadoutContent {
+  const base: LoadoutContent = {
     name: 'live-dispatch-loadout',
     description: 'Loadout for live dispatch E2E',
     capabilities: [],
     permissions: { allow: [] },
-    mcp_servers: [],
+    // Scope-only declaration — agent-inbox is environment-available on
+    // macro-agent hosts (operator-provisioned). Surfaces as an "Expected
+    // MCP servers" advisory hint in the dispatch prompt.
+    mcp_servers: ['agent-inbox'],
     prompt_addendum: [
-      `SPECIAL INSTRUCTION: When you finish, call the \`done\` tool from the macro-agent MCP server with summary starting with "${SENTINEL}".`,
-      `The summary string is what gets sent back as the reply, so the very first characters of the summary must be "${SENTINEL}".`,
-      `Do this immediately — do not respond with text before calling done. Just call done({ status: "completed", summary: "${SENTINEL} ..." }) right away.`,
+      `You have three required tasks before calling done. Complete all three.`,
+      ``,
+      `Task 1 — Skill consumption: Read your <available_skills> section. If you find a skill named "Marker Skill", extract the marker string from its description (a token like SKILL_MARKER_*).`,
+      ``,
+      `Task 2 — MCP invocation: Call the \`list_agents\` tool from the agent-inbox MCP server. Note the count of agents returned.`,
+      ``,
+      `Task 3 — Reply: Call the \`done\` tool from the macro-agent MCP server with status="completed" and a summary that contains, in this order:`,
+      `  - The literal prefix "${SENTINEL}" at the very start of the summary`,
+      `  - The marker token from Task 1 (verbatim, e.g. SKILL_MARKER_WIDGET_99)`,
+      `  - The literal text "AGENT_COUNT=N" where N is the integer count from Task 2`,
+      ``,
+      `Example summary format: "${SENTINEL} SKILL_MARKER_WIDGET_99 AGENT_COUNT=2 (reply text optional)"`,
+      ``,
+      `Do not respond with prose before calling done. Execute the three tasks then call done.`,
     ].join('\n'),
   };
+
+  if (skillBankRef) {
+    return {
+      ...base,
+      skills: { include: [MARKER_SKILL.id] },
+      // Consumer extension namespace — see docs/LOADOUTS_DESIGN.md
+      // "skillBankRef binding". Lock-in test:
+      // src/__tests__/openteams/skill-bank-ref.test.ts.
+      openhive: { skillBankRef },
+    } as LoadoutContent;
+  }
+  return base;
 }
 
 /** A minimal team template that wraps the loadout under the 'executor' role. */
-function buildTeamContent(): TeamTemplateContent {
+function buildTeamContent(skillBankRef?: string): TeamTemplateContent {
   return {
     manifest: {
       name: 'live-dispatch-team',
@@ -213,7 +268,7 @@ function buildTeamContent(): TeamTemplateContent {
       roles: ['executor'],
       topology: { root: { role: 'executor' } },
     },
-    roles: { executor: { loadout: buildLoadoutContent() } },
+    roles: { executor: { loadout: buildLoadoutContent(skillBankRef) } },
     loadouts: {},
     prompts: {},
   };
@@ -235,6 +290,7 @@ describeIf(
     let hostedSwarmId: string | undefined;
     let orchestrator: Orchestrator | undefined;
     let mailTransportCleanup: (() => void) | undefined;
+    let skillBankId: string | undefined;
     const originalHome = process.env.OPENHIVE_HOME;
 
     // Accumulated mail turns from mail.turn.added events.
@@ -267,6 +323,17 @@ describeIf(
       });
       testAgent = { id: agentResult.agent.id, apiKey: agentResult.apiKey };
       setLocalAgent(agentResult.agent);
+
+      // Create a real skill bank with a marker-bearing skill so the loadout's
+      // skills.rendered fragment travels with the dispatch envelope. Asserted
+      // below — proves the full compileSkillsForLoadout → SkillGraphServer →
+      // prompt builder → mail port chain delivers the rendered bundle.
+      skillBankId = createTestSkillBank({
+        agentId: testAgent.id,
+        bankDir: path.join(TEST_ROOT, 'skill-bank'),
+        nameSuffix: '-live-loadout',
+      });
+      console.log(`[live-loadout] Test skill bank created: ${skillBankId}`);
 
       hivesDAL.createHive({
         name: 'live-dispatch-hive',
@@ -481,20 +548,27 @@ describeIf(
     // ── Author loadout + team_template ───────────────────────────────────────
 
     it('authors loadout and team_template via REST', async () => {
+      expect(skillBankId).toBeDefined();
       const ldtRes = await app.inject({
         method: 'POST',
         url: '/api/v1/loadouts',
         headers: { authorization: `Bearer ${testAgent.apiKey}` },
-        payload: { name: 'live-dispatch-loadout', content: buildLoadoutContent() },
+        payload: {
+          name: 'live-dispatch-loadout',
+          content: buildLoadoutContent(skillBankId),
+        },
       });
       expect(ldtRes.statusCode).toBe(201);
-      console.log('[live-loadout] Loadout created');
+      console.log('[live-loadout] Loadout created (with skill bank binding)');
 
       const tmplRes = await app.inject({
         method: 'POST',
         url: '/api/v1/teams',
         headers: { authorization: `Bearer ${testAgent.apiKey}` },
-        payload: { name: 'live-dispatch-team', content: buildTeamContent() },
+        payload: {
+          name: 'live-dispatch-team',
+          content: buildTeamContent(skillBankId),
+        },
       });
       expect(tmplRes.statusCode).toBe(201);
       console.log('[live-loadout] Team template created');
@@ -719,6 +793,19 @@ describeIf(
             expect(body).toBeDefined();
             expect(typeof body?.prompt).toBe('string');
             expect(body!.prompt as string).toContain(SENTINEL);
+
+            // Skills.rendered assertion: the marker from the loadout's
+            // bound skill bank must appear in the prompt body. Proves the
+            // openhive.skillBankRef → compileSkillsForLoadout →
+            // SkillGraphServer → openHivePromptBuilder → mail port chain
+            // delivered the rendered skill catalog. If this regresses,
+            // the fast lock-in test in
+            // src/__tests__/openteams/skill-bank-ref.test.ts should fire
+            // first.
+            expect(body!.prompt as string).toContain(SKILL_MARKER);
+            console.log(
+              `[live-loadout] Skill marker "${SKILL_MARKER}" confirmed in delivered prompt body.`,
+            );
           }
         }
 
@@ -806,9 +893,11 @@ describeIf(
         // Bounded wait. macro-agent's sidecar mail-bridge forwards
         // `mail/turn.received` notifications into its local inbox, so the
         // dispatcher MessagePort can pick them up and route to a worker.
-        // 300s: claude-code agent startup (~30-60s) + Claude API call (~60-120s)
-        // + reply delivery via mail/turn MAP notification. 120s was too tight.
-        const level2WaitMs = 60_000;
+        // The strengthened addendum directs the agent through three tasks
+        // (read skill catalog, call list_agents from agent-inbox, then
+        // done) so the budget is wider than the original SENTINEL-only
+        // run.
+        const level2WaitMs = 90_000;
         console.log(
           `[live-loadout] Level 2: waiting up to ${level2WaitMs / 1000}s for macro-agent to ` +
           `reply with "${SENTINEL}" in a dispatch conversation turn...`,
@@ -864,6 +953,103 @@ describeIf(
           );
           // Full Level 2 assertion: reply contains the sentinel.
           expect(level2Reached).toBe(true);
+
+          // ── Capability proofs (Gap 4 + Gap 3 strengthening) ──────────────
+          //
+          // All three are hard-asserted. The MCP-actually-invoked
+          // assertion intentionally FAILS today as a regression target
+          // for the wiring fix in macro-agent (see "Loadout-provided MCP
+          // servers" in docs/LOADOUTS_DESIGN.md → live finding 2026-05-03,
+          // and the Option A spec in the strengthening discussion).
+          //
+          // Three layers of evidence:
+          //
+          //   1. SENTINEL in reply → addendum was read (already proven
+          //      above by isAgentReplyWithSentinel).
+          //   2. SKILL_MARKER in reply → the agent read the skill catalog
+          //      AND followed the marker skill's embedded self-instruction.
+          //      Proves skill CONTENT was consumed, not merely delivered.
+          //   3. AGENT_COUNT=<N> with N > 0 → the agent invoked
+          //      list_agents from the agent-inbox MCP server and got real
+          //      data back. The agent CANNOT know the count without
+          //      calling the tool, so this proves the loadout-declared
+          //      MCP was actually executable on the spawned worker.
+          //
+          // When the MCP is not wired into the spawned worker's
+          // .mcp.json — the current state for mail-inbound + parentless +
+          // isolatedSettings:true — the agent honestly reports 0 with a
+          // note in the reply ("agent-inbox MCP server not available").
+          // The hard assertion makes the test fail in that case so the
+          // wiring gap is forced into visibility, not silently bypassed.
+          const skillUsed = raw.includes(SKILL_MARKER);
+          const agentCountMatch = raw.match(/AGENT_COUNT\s*=\s*(\d+)/);
+          const mcpFollowThrough = agentCountMatch !== null;
+          const reportedCount = mcpFollowThrough
+            ? parseInt(agentCountMatch![1], 10)
+            : null;
+          const mcpActuallyInvoked = reportedCount !== null && reportedCount > 0;
+
+          if (!skillUsed) {
+            console.warn(
+              `[live-loadout] CAPABILITY GAP — Skill marker "${SKILL_MARKER}" ` +
+                `NOT in reply. Agent received the skill catalog but did not ` +
+                `consume the embedded instruction. Reply: ${raw.slice(0, 600)}`,
+            );
+          } else {
+            console.log(
+              `[live-loadout] CAPABILITY PROVEN (HARD) — Skill consumption: ` +
+                `agent included "${SKILL_MARKER}" from skill description in ` +
+                `reply.`,
+            );
+          }
+
+          if (!mcpFollowThrough) {
+            console.warn(
+              `[live-loadout] CAPABILITY GAP — AGENT_COUNT=N pattern NOT in ` +
+                `reply. Agent did not follow the three-task addendum through ` +
+                `to the MCP step. Reply: ${raw.slice(0, 600)}`,
+            );
+          } else {
+            console.log(
+              `[live-loadout] CAPABILITY PROVEN (HARD) — Multi-step ` +
+                `instruction follow-through: agent emitted AGENT_COUNT=` +
+                `${reportedCount} per addendum format.`,
+            );
+          }
+
+          if (mcpActuallyInvoked) {
+            console.log(
+              `[live-loadout] CAPABILITY PROVEN (HARD) — MCP tool actually ` +
+                `invoked: agent-inbox.list_agents returned ${reportedCount} ` +
+                `agent(s).`,
+            );
+          } else if (mcpFollowThrough) {
+            console.error(
+              `[live-loadout] CAPABILITY NOT PROVEN — MCP tool was not ` +
+                `invokable on the spawned worker. Agent reported 0 with a ` +
+                `note in the reply. This is the wiring gap discovered ` +
+                `2026-05-03: agent-inbox MCP server is not present in the ` +
+                `mail-inbound worker's .mcp.json under ` +
+                `\`isolatedSettings: true\`. The fix lives in macro-agent ` +
+                `(\`agentManager.spawn\` should always write the per-spawn ` +
+                `MCP trinity — agent-inbox, opentasks, built-ins — ` +
+                `independent of host-user settings). Until that ships, ` +
+                `this hard assertion will fail and surface the gap.`,
+            );
+          } else {
+            console.error(
+              `[live-loadout] CAPABILITY NOT PROVEN — Agent did not emit ` +
+                `the AGENT_COUNT=N pattern at all. Either Claude skipped ` +
+                `Task 2 of the addendum, or the reply format diverged. ` +
+                `Reply: ${raw.slice(0, 600)}`,
+            );
+          }
+
+          // All three hard assertions. mcpActuallyInvoked is intentionally
+          // a regression target — see comment above the capability block.
+          expect(skillUsed).toBe(true);
+          expect(mcpFollowThrough).toBe(true);
+          expect(mcpActuallyInvoked).toBe(true);
         } else {
           // Level 2 did not pass within budget. Dump diagnostics.
           const replyTurns = capturedTurns.filter(
@@ -926,8 +1112,8 @@ describeIf(
           expect(level2Reached).toBe(true);
         }
       },
-      // 60s Level 2 wait + ~30s setup/teardown headroom.
-      120_000,
+      // 90s Level 2 wait (3-task agent run) + ~60s setup/teardown headroom.
+      150_000,
     );
   },
 );

@@ -88,6 +88,22 @@ export const openHivePromptBuilder: PromptBuilder = (
     lines.push(String(hints.additionalContext));
   }
 
+  // MCP expectations — advisory list of servers the role expects.
+  // OpenHive does not ship MCP install configs to workers (see
+  // docs/LOADOUTS_DESIGN.md → "MCP defaults — graceful degradation").
+  // Provisioning is the operator's responsibility; this hint exists so the
+  // worker can verify availability against its environment's active set.
+  if (loadout) {
+    const expectedMcps = collectExpectedMcpNames(loadout);
+    if (expectedMcps.length > 0) {
+      lines.push('');
+      lines.push(
+        `Expected MCP servers for this role: ${expectedMcps.join(', ')}. ` +
+          `Verify availability before invoking; missing servers are not a hard failure.`,
+      );
+    }
+  }
+
   // Role-specific addendum sits below criteria so it shapes execution
   // style without overriding what to do.
   if (loadout?.promptAddendum) {
@@ -100,3 +116,30 @@ export const openHivePromptBuilder: PromptBuilder = (
 
   return lines.join('\n');
 };
+
+/**
+ * Collect unique MCP server names from a materialized loadout for the
+ * advisory expected-MCP hint. Pulls from both:
+ *   - mcpProviders[].name (resolved install specs from authored refs +
+ *     inline specs)
+ *   - mcpScope[].server (scope-only declarations like bare names)
+ *
+ * Deduplicated and order-preserving (providers first, then scope).
+ */
+function collectExpectedMcpNames(loadout: MaterializedLoadout): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const provider of loadout.mcpProviders) {
+    if (provider.name && !seen.has(provider.name)) {
+      seen.add(provider.name);
+      names.push(provider.name);
+    }
+  }
+  for (const scope of loadout.mcpScope) {
+    if (scope.server && !seen.has(scope.server)) {
+      seen.add(scope.server);
+      names.push(scope.server);
+    }
+  }
+  return names;
+}

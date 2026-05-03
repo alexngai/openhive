@@ -1,10 +1,53 @@
 # Loadouts: Design
 
-**Status:** Proposed — design locked, implementation pending.
-**Date:** 2026-05-01
+**Status:** Implemented — Milestone A shipped, Milestone B verified end-to-end (live agent, 2026-05-03).
+**Date:** 2026-05-01 (design); 2026-05-03 (status update)
 **Scope:** OpenHive's role as the source-of-truth and resolution layer for openteams team templates and loadouts, used hub-side for dispatch prompt building and UI authoring. Compatibility with the existing skill-tree loadout flow.
 
 **Out of scope:** any swarm-side fetch mechanism for templates or loadouts. The hub→swarm bridge is **dispatch carrying baked-in prompts**, not template distribution. Agent-side template consumption stays on openteams' existing install path (git clone → local disk → `TemplateLoader.load`); OpenHive is not in that path.
+
+---
+
+## Implementation status — 2026-05-03
+
+The dispatch-driven flow (author → resolve → materialize → dispatch → agent receives → reply) is fully shipped and verified live against a real macro-agent worker. See `LOADOUTS_MILESTONE_A_PLAN.md` and `LOADOUTS_MILESTONE_B_PLAN.md` for slice-level state.
+
+### Working today
+
+- **Author**: `POST /api/v1/loadouts`, `POST /api/v1/teams` create resources owned by an agent. ACL gates read access via `canAccessResource`.
+- **Resolve / materialize**: `materializeLoadoutById(id, viewerAgentId?)` and `materializeRoleLoadout(templateId, role, viewerAgentId?)` produce `MaterializedLoadout` with `promptAddendum` (camelCase from snake_case YAML), compiled `skills`, resolved MCP refs, permissions. Cached by `(templateId, contentHash)` with promise coalescing.
+- **Dispatch enrichment**: `enrichWithLoadout` reads `spec_metadata.loadout_ref` (preferred) or `spec_metadata.team_role_ref`, materializes, attaches as `task.metadata.materializedLoadout`. Failures attach a `loadout_error` marker and broadcast a `dispatch.materialization_failed` event on `map:dispatches` rather than blocking dispatch.
+- **Prompt builder**: `openHivePromptBuilder` embeds `loadout.skills.rendered` at the top, `loadout.promptAddendum` below the task body and above the role line. Continuations skip loadout sections.
+- **Mail-routed delivery**: hub `forwardTurnToSwarms` writes to live WS + always-queues for retry; drain on `node_registered` (with 2s fallback timer); hub-side dedup by `turn_id` prevents queue growth.
+- **Worker pickup (macro-agent)**: `mail-bridge` translates hub `mail/turn.received` → local inbox; `mail-inbound-consumer` dedupes by taskId (1h TTL), spawns the worker via `agentManager.spawn({isolatedSettings: true})`, drives Claude with `promptUntilDone`, posts the worker's `done()` summary back via `mapSidecar.postMailTurn`.
+- **Reply path**: hub stores reply turn → `mail.turn.added` → dispatch initiator's listener captures it. Echo containment: bridge correctly drops the re-broadcast plain-text reply (no second worker spawn).
+- **MAP SDK + openteams alignment**: openteams 0.3.0 in use (full `ResolvedRole.loadout` shape); MAP SDK's `BaseConnection` carries a `#streamGeneration` guard so a stale receive loop can't kill a freshly reconnected stream.
+
+### Test coverage
+
+- `src/__tests__/swarm/live-loadout-dispatch-e2e.test.ts` — 5/5 pass with real Claude API in ~18s. Three hard-asserted layers of evidence: (1) **delivery** — SENTINEL from `prompt_addendum` and `SKILL_MARKER_WIDGET_99` from the rendered skill catalog both appear in the delivered envelope's prompt body; (2) **skill consumption** — `SKILL_MARKER_WIDGET_99` appears in the agent's reply because the marker skill's description carries an embedded self-instruction the agent followed; (3) **MCP actually invoked** — `AGENT_COUNT=N` with `N > 0` in the reply, proving the loadout-declared MCP (agent-inbox.list_agents) was executable on the spawned worker. The first run of Layer 3 surfaced that agent-inbox wasn't mounted on mail-inbound workers; the macro-agent fix landed the same day and the assertion is now durably green. Test continues to serve as a regression guard against future spawn changes that would silently drop MCP wiring.
+- `src/__tests__/openteams/skill-bank-ref.test.ts` — 4/4 fast lock-in tests covering `loadout.openhive.skillBankRef` resolution: loadout-level ref wins, team-level `defaultSkillBankRef` fallback, loadout overrides team default, missing-bank-id degrades to `skills:null`. Fires immediately on any openteams version bump that drops the consumer extension namespace.
+- `src/__tests__/helpers/skill-bank-fixture.ts` — shared `createTestSkillBank()` + `MARKER_SKILL` + `SKILL_MARKER` helpers used by the lock-in test and the live e2e.
+- `src/__tests__/swarm/full-stack-loadout-prompt-receipt.test.ts` — 7/7 pass under `FULL_STACK_E2E=true`. Asserts dispatch exercises real materialization against a real DB with a real macro-agent process.
+- `src/__tests__/mail/forward-retry.test.ts` — 6/6 covering live happy path, dedup, stale → drain on reconnect, fallback timer, mismatched-swarm filter, skip-self.
+- `src/__tests__/integrations/dispatch-mail-routing.test.ts`, `dispatch-multi-turn.test.ts`, `dispatch-source-prompt.test.ts`, `loadout-author-to-dispatch.test.ts`, `loadout-authorization.test.ts`, `loadout-concurrency.test.ts`, `loadout-update-propagation.test.ts`, `openteams-roundtrip.test.ts`, `skill-bridge-on-disk.test.ts` — hub-side flow segments.
+- `references/macro-agent/src/dispatch/__tests__/mail-inbound-consumer.test.ts` (14/14) — failure-mode coverage: spawn rejecting, missing `_lastSummary`, missing `conversationId`, dedup TTL expiry, malformed-envelope counter via `consumer.stats()`, `_lastSummary` cleared after `postMailTurn`.
+- `references/macro-agent/src/dispatch/__tests__/mail-inbound-consumer.integration.test.ts` (5/5) — bridge↔consumer composition; echo-loop containment (plain-text + JSON-shaped non-dispatch schema); `type: "data"` regression guard.
+
+### Known limitations
+
+| Area | State | Notes |
+|---|---|---|
+| `extends` chains across owners | Designed; not live-tested | Same-owner chains work via openteams 0.3.0's `resolveExternalLoadout`; cross-owner chains have no live coverage. |
+| Cache invalidation mid-dispatch | Designed; race exists | `(templateId, contentHash)` keying invalidates on edit, but in-flight orchestrator state could race with a loadout edit during dispatch. No test asserts propagation. |
+| Loadout-provided MCP servers | Phase 0 + macro-agent trinity wiring shipped (2026-05-03); Phase 1 scope-filter + Phase 2 install-spec delivery still deferred | Hub does not install MCPs on workers — that's the operator's responsibility on the macro-agent host. The loadout's `mcp_servers` and `mcp_scope` are advisory: the prompt builder appends "Expected MCP servers for this role: …". **Resolved live (2026-05-03):** an earlier verification pass found that even built-in MCPs like `agent-inbox` and `opentasks` were not being mounted on mail-inbound spawned workers (`parent: null` + `isolatedSettings: true`) — the architecture docs claimed they were, but `agentManager.spawn` only mounted the macro-agent MCP server. Fixed in macro-agent: `agentManager.spawn` now always writes per-spawn entries for `agent-inbox` (via `dist/cli/inbox-mcp-proxy.js` → `InboxMcpProxy(socketPath, agentId)`) and `opentasks` (via the `opentasks mcp` CLI subcommand), independent of `isolatedSettings`. Live test now confirms `list_agents` returns real data. Phase 1 (hub-side scope filter that narrows the worker's MCP set per loadout) and Phase 2 (delivering loadout-authored inline install specs) remain deferred. See "MCP defaults" section for the operator-provisioned trust model. |
+| Loadout `skills.rendered` at runtime | Live-tested end-to-end (2026-05-03) | `live-loadout-dispatch-e2e.test.ts` binds a real test skill bank via `loadout.openhive.skillBankRef`; asserts the rendered skill catalog (with marker `SKILL_MARKER_WIDGET_99`) appears in the delivered prompt body and macro-agent's reply. Lock-in unit test at `src/__tests__/openteams/skill-bank-ref.test.ts` covers the resolution chain (loadout-level ref / team-default fallback / loadout-overrides-team / missing-bank-graceful-null). |
+| Permission propagation | Materialized; not enforced | `permissions.{allow,deny,ask}` are in the resolved bundle but not wired into the worker's Claude permission-mode config. |
+| UI authoring | REST surface works; UI exists | React routes for the Loadouts page work against the same endpoints. No Playwright/visual coverage. |
+| Federation | Loadouts sync; cross-instance dispatch untested | Mesh sync treats loadouts as syncable resources. No test pushes a loadout cross-instance and dispatches against the federated copy. |
+| Versioning / pinning | Not implemented | Dispatches always materialize the latest contentHash; no surface for "use loadout X at version Y". |
+| Hierarchical role loadouts | Out of scope | Children spawned via the `spawn_agent` MCP tool inherit parent runtime context, not a per-role loadout. The mail-inbound consumer always spawns parentless workers. |
+| Loadout audit log | Not implemented | `materializedLoadout` lives in in-memory task metadata, not persisted to the dispatch row. |
 
 ---
 
