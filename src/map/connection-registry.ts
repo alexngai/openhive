@@ -177,6 +177,16 @@ export function getAllInbound(): Map<string, MapInboundConnection> {
   return result;
 }
 
+/**
+ * Returns ALL inbound connections, including stale ones (reconnecting sidecars).
+ * Callers MUST NOT use the `ws` field on stale entries — it is closed.
+ * Use only for metadata reads (capabilities, registeredAgents) during the
+ * 30-second grace window before stale entries are garbage-collected.
+ */
+export function getAllInboundIncludingStale(): Map<string, MapInboundConnection> {
+  return new Map(inboundConnections);
+}
+
 export function getInboundCount(): number {
   // Count only non-stale; stale entries are invisible to health reporting.
   let n = 0;

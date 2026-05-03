@@ -113,6 +113,7 @@ export type WSEventType =
   | 'dispatch.status_changed'
   | 'dispatch.completed'
   | 'dispatch.cancelled'
+  | 'dispatch.materialization_failed'
   | 'node_registered'
   | 'node_state_changed'
   | 'swarm_heartbeat'

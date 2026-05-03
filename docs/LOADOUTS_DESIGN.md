@@ -2,7 +2,9 @@
 
 **Status:** Proposed — design locked, implementation pending.
 **Date:** 2026-05-01
-**Scope:** OpenHive's role as the source-of-truth and resolution layer for openteams team templates and loadouts. Agent-side wiring in claude-code-swarm to consume them via MAP. Compatibility with the existing skill-tree loadout flow.
+**Scope:** OpenHive's role as the source-of-truth and resolution layer for openteams team templates and loadouts, used hub-side for dispatch prompt building and UI authoring. Compatibility with the existing skill-tree loadout flow.
+
+**Out of scope:** any swarm-side fetch mechanism for templates or loadouts. The hub→swarm bridge is **dispatch carrying baked-in prompts**, not template distribution. Agent-side template consumption stays on openteams' existing install path (git clone → local disk → `TemplateLoader.load`); OpenHive is not in that path.
 
 ---
 
@@ -14,10 +16,10 @@ The design **layers the two systems**:
 
 - skill-tree continues to be the *skill compilation engine*.
 - openteams is the *role-bundle declaration layer* — the unit of saving, sharing, and binding.
-- OpenHive becomes the storage and resolution backend openteams was designed for.
-- Agents (claude-code-swarm) consume hub-resolved templates over MAP — no HTTP awareness.
+- OpenHive becomes the storage and resolution backend openteams was designed for, **for hub-side flows only**.
+- The hub→swarm bridge is **dispatch with materialized loadouts baked into the prompt**. No template fetch on the swarm side; no new MAP wire surface for templates/loadouts.
 
-Hub-side HTTP endpoints exist only for the OpenHive UI. Agents fetch via MAP `resources/get` + `resources/list` and materialize locally using their existing openteams + skill-tree clients.
+Hub-side HTTP endpoints exist only for the OpenHive UI. The materialized loadout — capabilities, MCP scope, permissions, rendered skill bundle, prompt addendum — travels with the dispatched task in its prompt body. Agents execute the prompt; they don't need to know which team it came from or where it was authored.
 
 ---
 
@@ -220,168 +222,43 @@ No new fetch RPC for loadouts. Three primitives cover all cases:
 
 The orchestrator's prompt builder (`src/dispatch/prompt.ts`) calls `materializeRoleLoadout` when a spec/dispatch metadata carries a `loadout_ref` and embeds the rendered output in the prompt. The agent receives a prompt that already contains the curated skill bundle — no resolution needed agent-side.
 
-### 3. MAP `resources/get` + `resources/list` — for agent-driven boot
+### 3. Swarm-side template loading — outside OpenHive's purview
 
-The swarm isn't a sync peer (it connects to one hub via MAP, doesn't run a mesh). For the boot-time team resolution flow, claude-code-swarm calls a generic resource-read primitive over its existing MAP connection:
+For "boot a swarm with team X" use cases (no dispatch, just team setup),
+**OpenHive is not in the path**. Templates are authored content distributed
+via openteams' existing mechanism: clone from a git repo into
+`.openteams/templates/<name>/`, then `TemplateLoader.load("<name>")`.
 
 ```
-MAP method: resources/get
-  request:  { id: string }
-  response: SyncableResource
-
-MAP method: resources/list
-  request:  { type: ResourceType, name?: string, filter?: object }
-  response: SyncableResource[]
+User authors template → publishes to a git remote
+                      → openteams template install <git-url>
+                      → cc-swarm: TemplateLoader.load(<name>)
 ```
 
-These are **generic, not loadout-specific** — useful for skills, sessions, anything else the agent might need to read on demand. They mirror the bulk operations sync already uses, exposed in request-response shape over MAP.
+OpenHive may *also* store an authored copy (for hub-side dispatch + UI),
+and could later grow a "publish authored content to a git remote" feature
+so users get integrated authoring + distribution. But that's an
+optional convenience, not a wire requirement. The swarm doesn't fetch
+from OpenHive directly.
 
-The earlier challenge to loadout-specific RPCs holds: we don't add `skills/loadout.fetch`. We add `resources/get`, which is the same primitive sync uses, just wrapped for non-peer consumers.
+**No MAP methods for templates or loadouts.** Earlier drafts proposed
+generic `resources/get` and then per-domain `openteams/template.get` —
+both rejected. Reasoning:
+
+- The hub→swarm bridge that *actually matters* is dispatch (§2 above).
+  It carries fully-baked prompts, so the swarm needs nothing else.
+- For non-dispatch boots, openteams' install path already exists.
+  Adding a parallel MAP fetcher duplicates a working mechanism.
+- HTTP from the swarm side is off the table (one of the design
+  principles); MAP methods solved that, but at the cost of a new wire
+  surface OpenHive shouldn't own.
+
+If/when a real use case for *live* swarm-side fetch appears (it hasn't
+yet), it would belong in openteams as a registered source — not in
+OpenHive's MAP server.
 
 ---
 
-## Agent-side wiring (claude-code-swarm)
-
-The agent already has most of this:
-
-- `template.mjs` calls `TemplateLoader.load()` (sync) — needs to move to `loadAsync()` for the hub path.
-- `skilltree-client.mjs` already bridges openteams `loadout.skills` → skill-tree `LoadoutCriteria` via `mergeOpenteamsSkillsIntoCriteria`.
-- `loadout-materializer.mjs` is a pure function over `ResolvedLoadout`. Hub vs file source doesn't matter to it.
-
-Three new modules, ~150–250 LOC each:
-
-```
-src/hive-source.mjs       # MAP-backed resource fetcher with read-through cache
-src/hive-resolver.mjs     # buildHiveResolvers(hiveSource) → openteams LoadOptions
-src/hive-template.mjs     # loadHiveTeam: stage authored content → openteams loadAsync
-```
-
-### Module: `hive-source.mjs`
-
-Single point of contact for hub data, scoped to one MAP connection.
-
-```js
-export function createHiveSource({ mapConnection, cacheDir, ttlMs = 5 * 60 * 1000 }) {
-  const memCache = new Map();   // resourceId → { content, fetchedAt }
-
-  async function getResource(id) {
-    const hit = memCache.get(id);
-    if (hit && Date.now() - hit.fetchedAt < ttlMs) return hit.content;
-    const result = await mapConnection.callExtension('resources/get', { id });
-    memCache.set(id, { content: result, fetchedAt: Date.now() });
-    persistCache(cacheDir, id, result);
-    return result;
-  }
-
-  async function getResourceByName(type, name) {
-    const list = await mapConnection.callExtension('resources/list', { type, name });
-    return list[0] ? getResource(list[0].id) : null;
-  }
-
-  return { getResource, getResourceByName };
-}
-```
-
-### Module: `hive-resolver.mjs`
-
-Wires hive-source into openteams' `LoadOptions`:
-
-```js
-export function buildHiveResolvers(hiveSource) {
-  return {
-    resolveExternalLoadout: async (refOrName) => {
-      const ldt = await hiveSource.getResourceByName('loadout', refOrName);
-      return ldt?.content;
-    },
-    resolveExternalRole: async (name) => {
-      // Optional — only if a `role` resource type is added later
-      return undefined;
-    },
-  };
-}
-```
-
-### Modified: `template.mjs:loadTeam`
-
-```js
-export async function loadTeam(templateRef, ctx = {}) {
-  const hiveRef = parseHiveRef(templateRef);   // "hive://gsd" → "gsd", else null
-
-  if (hiveRef && ctx.hiveSource) {
-    return loadHiveTeam(hiveRef, ctx);
-  }
-  return loadLocalTeam(templateRef);   // existing sync path, unchanged
-}
-
-async function loadHiveTeam(name, { hiveSource }) {
-  const tmpl = await hiveSource.getResourceByName('team_template', name);
-  if (!tmpl) return { success: false, error: `hive template not found: ${name}` };
-
-  // Stage authored content into a temp dir openteams' loader expects
-  const stagingDir = path.join(TMP_DIR, 'hive-templates', name);
-  await stageAuthoredToDir(tmpl.content, stagingDir);
-
-  const ot = loadOpenteams();
-  const resolved = await ot.TemplateLoader.loadAsync(
-    stagingDir,
-    buildHiveResolvers(hiveSource),
-  );
-
-  return finalizeTeam(resolved, name);  // existing artifact generation, unchanged
-}
-```
-
-`stageAuthoredToDir` writes the resource's `content` field back into a directory layout openteams' file-based loader recognizes (`team.yaml`, `loadouts/*.yaml`, `prompts/*`). The downstream pipeline doesn't change.
-
-### Skill-bank loading
-
-skill-tree currently expects a local basePath. Two options for hub-bound configs:
-
-- **Easy (ship-first):** prefetch skills via `hive-source.callList('skills', { skillBankRef })`, write to a temp dir, point the existing SkillBank at it.
-- **Right (later):** implement a `HiveStorageAdapter` for skill-tree (sibling to `MemoryStorageAdapter`/`CachedStorageAdapter`). Reads through hive-source on demand. Smaller cache footprint.
-
-Start with prefetch; promote when caching footprint matters.
-
-### Config
-
-```jsonc
-// .swarm/claude-swarm/config.json
-{
-  "template": "gsd"               // local — existing behavior
-}
-// or
-{
-  "template": "hive://gsd",       // hub-bound
-  "hive": {
-    "skillBankRef": "res_01HX...",       // optional team-level default
-    "resourceCacheTtlMs": 300000          // optional override
-  }
-}
-```
-
-### Boot flow with hive-bound template
-
-```
-1. SessionStart hook → bootstrap()
-2. MAP sidecar starts; MAP connection becomes available
-3. parseHiveRef(template) returns "gsd"
-4. createHiveSource({ mapConnection })
-5. loadTeam("hive://gsd", { hiveSource })
-   ├── hiveSource.getResourceByName('team_template', 'gsd')
-   ├── stageAuthoredToDir(tmpl.content, stagingDir)
-   ├── ot.TemplateLoader.loadAsync(stagingDir, buildHiveResolvers(hiveSource))
-   │   └── any extends: chains fetch via MAP
-   └── finalizeTeam(resolved)
-       ├── skilltree-client.compileAllRoleLoadouts(...)
-       │   └── (prefetches skill bank locally if hub-bound)
-       └── agent-generator.generateAllAgents(...)
-           └── per-role .claude/agents/<team>-<role>.md written
-6. /swarm coordinator spawns
-```
-
-**No HTTP awareness on the agent side.** All hub access flows through MAP via hive-source.
-
----
 
 ## Hub-side surface
 
@@ -404,35 +281,79 @@ POST   /loadouts/:id/materialize                       # MaterializedLoadout (pr
 
 These endpoints are **not on the agent path**. The implementation calls into `src/openteams/resolver.ts`, the same module dispatch uses internally — single code path for materialization.
 
-### MAP methods
+### MAP wire surface
 
-```
-resources/get   { id }                                 → SyncableResource
-resources/list  { type, name?, filter? }               → SyncableResource[]
-```
-
-Generic resource access. Authorized via the same ACL that gates REST. Used by claude-code-swarm and by future agent-driven consumers (e.g., a thin CLI tool reading hub state).
+**No new MAP namespace for templates or loadouts.** The hub→swarm
+content path is **dispatch with materialized prompts** (covered in the
+Distribution section above). The existing MAP namespaces (`map/tasks/*`,
+`mail/*`, `trajectory/*`, `opentasks/*`) carry the dispatch event;
+materialized loadout content rides along inside the prompt body.
 
 ### Internal modules
 
 ```
 src/openteams/
-  resolver.ts          # resolveTeam, materializeRoleLoadout
+  resolver.ts          # resolveTeam, materializeRoleLoadout, materializeLoadoutById
   skill-bridge.ts      # compileSkillsForLoadout — calls SkillGraphServer
   mcp-bridge.ts        # resolveMcpRefs — registry + bundled refs
   types.ts             # MaterializedLoadout, openteams type re-exports
-  events.ts            # emits team_template:changed, loadout:changed for sync + WS
+  cache.ts             # (templateId, contentHash) → ResolvedTemplate cache
+  refs/builtin.json    # bundled @openhive/* MCP ref → install spec map
 
 src/db/dal/
   team-templates.ts    # CRUD for resource_type='team_template'
   loadouts.ts          # CRUD for resource_type='loadout'
 
 src/api/routes/
-  teams.ts             # HTTP routes (UI surface)
-  loadouts.ts          # HTTP routes (UI surface)
-  resources.ts         # MAP methods resources/get + resources/list
-                       # (or wired into existing MAP handler module)
+  teams.ts             # HTTP routes (UI surface) — CRUD + materialize
+  loadouts.ts          # HTTP routes (UI surface) — CRUD + materialize
+
+src/dispatch/
+  openhive-source.ts   # enrichWithLoadout: reads spec metadata, calls resolver
+  prompt.ts            # embeds skills.rendered + promptAddendum in prompt
 ```
+
+---
+
+## Failure modes
+
+### Loadout materialization failure
+
+When `enrichWithLoadout` (in `src/dispatch/openhive-source.ts`) cannot resolve a
+`loadout_ref` or `team_role_ref` — for example, a typo'd `extends:` chain, a
+deleted loadout, or a non-existent team template id — it follows a best-effort
+strategy:
+
+1. **Dispatch proceeds** with the unenriched prompt (no skill bundle, no prompt
+   addendum). The agent still receives the spec body; it just lacks the loadout
+   overlay.
+2. **Operator signal** — a `dispatch.materialization_failed` event is broadcast
+   on the `map:dispatches` WebSocket channel carrying `{ dispatch_id, error }`.
+   Subscribers (UI, monitoring) see the failure immediately.
+3. **`console.warn`** at the catch site so the hub log captures the failure even
+   when no WS subscriber is connected.
+4. **`loadout_error`** is attached to the in-memory `DispatchTask.metadata` so
+   downstream consumers (prompt builder, tests) can detect the degraded state.
+   This field is not persisted to the `dispatches` DB row.
+
+**Why not fail the dispatch?** The "best-effort, never block" principle is
+deliberate — a misconfigured loadout should not silently kill an otherwise valid
+spec dispatch. The operator signal (WS event + warn log) surfaces the
+configuration error so it can be fixed without losing work.
+
+### listInProgress — enrichment intentionally skipped
+
+`listInProgress` is called once at orchestrator startup to reconstruct the
+in-memory tracker for dispatches that were `running` when the hub restarted.
+`reconstructFromTasks()` only reads `id`, `claimed_by`, `metadata.attempt`,
+`metadata.role`, `tags`, and `metadata.dimensions` — none of which come from
+loadout enrichment.
+
+Enrichment is **not** applied to `listInProgress` results. The orchestrator
+always re-enriches via `getTask()` (which calls `enrichContent`) before building
+any retry or continuation prompt, so the asymmetry has no correctness impact.
+Adding enrichment here would cause unnecessary spec fetches and resolver calls
+on every hub restart, with zero benefit.
 
 ---
 
@@ -517,9 +438,11 @@ cross-hub federation pressure them. They're not blockers for Milestone A.
 | Concept (old) | Replacement |
 |---|---|
 | `metadata.savedLoadouts` on skill resource | `loadout` resource type (openteams shape, only `skills:` field for the same use case) |
-| `skills/loadout.fetch` MAP RPC | `resources/get` MAP method (generic) |
+| `skills/loadout.fetch` MAP RPC (earlier draft) | Dropped. Hub→swarm content rides inside dispatch prompts (§Distribution); non-dispatch boot uses openteams' standard install path. |
+| Generic `resources/get` / `resources/list` MAP methods (earlier draft) | Dropped. Would leak OpenHive's resource-model shape onto the wire. |
+| Per-domain `openteams/template.*` + `openteams/loadout.*` MAP methods (earlier draft) | Dropped. Inventing a fetcher when openteams' install path already does the job; HTTP from the swarm side is also off the table per the no-HTTP-awareness principle. |
 | Per-resource skill loadout persistence in skill-tree | Authored openteams loadouts, stateless skill compilation on read |
-| Hub-side per-loadout endpoints for agent consumption | MAP `resources/get` + agent-side resolution |
+| Hub-side per-loadout endpoints for agent consumption | Dispatch carries materialized loadout in the prompt body. UI-only HTTP endpoints handle authoring + preview. |
 
 ---
 
@@ -532,21 +455,23 @@ cross-hub federation pressure them. They're not blockers for Milestone A.
 | Saved skill loadouts as a separate concept? | Drop. openteams loadouts subsume them. |
 | Storage shape: pre-resolved or authored? | Authored. Cache resolved by `(id, contentHash)`. |
 | Where to resolve cross-hub `extends:` chains? | Publishing hive. Materialized form crosses federation. |
-| Loadout-specific MAP fetch RPCs? | Drop. Use generic `resources/get` + sync + dispatch carry. |
+| MAP wire surface for templates/loadouts? | None. Hub→swarm content travels via dispatch prompts. Swarm-side template loading uses openteams' existing install path (git → local disk → `TemplateLoader.load`). |
 | HTTP endpoints required on agent path? | No. UI only. |
 | MCP default: untracked-but-installed | Active-set detection by consumer; hub doesn't centrally track. |
 | MCP default: missing declared | SessionStart warning, no block. |
 | MCP registry shape v1 | Bundled JSON file under `src/openteams/refs/`; promote to resource type later. |
+| `skill_bank_ref` location | Consumer extension namespace (`loadout.openhive.skillBankRef`), not on openteams' `SkillsConfig`. |
 
 ### Deferred
 
 | Question | Default behavior | When to revisit |
 |---|---|---|
 | `mcp_provider` as resource type | Bundled JSON registry suffices | When external authoring needed |
-| `HiveStorageAdapter` for skill-tree | Prefetch to local dir | When prefetch footprint matters |
+| Hub publishes authored content to a git remote | Out of scope; users manage their own template git repos | When integrated authoring + distribution is needed |
+| openteams `bake`/freeze step (resolve + serialize self-contained) | Not needed (dispatch flattens internally; openteams doesn't need a publish step yet) | If/when openteams gains a publish workflow |
 | Versioning for `team_template` / `loadout` | Use the existing skill resource version model | Once federation use cases mature |
 | Cross-hub `extends:` mid-resolution | Surface as `unresolvedExtends` if not federated | When cross-hub authoring is common |
-| Swarm as full sync peer | MAP `resources/get` is enough | When offline-capable swarms become a requirement |
+| Live swarm-side template fetch | Skip — dispatch covers the realtime use case; install path covers boot | If a real use case appears that neither covers |
 
 ---
 
@@ -554,35 +479,25 @@ cross-hub federation pressure them. They're not blockers for Milestone A.
 
 Sized so each slice ships independently with a demo-able outcome.
 
-### Hub side
+### Hub side (Milestone A — shipped)
 
-1. **`team_template` + `loadout` resource types** — DAL, schema, basic CRUD routes, sync registration. ~2 days. *Distribution works.*
-2. **`src/openteams/resolver.ts` + skill-bridge + mcp-bridge** — shared resolution code used by both UI and dispatch. ~1.5 days. *Materialization works.*
-3. **MAP `resources/get` + `resources/list`** — generic resource access. ~0.5 day. *Agents can read hub state.*
-4. **HTTP endpoints (UI surface)** — `GET /teams`, `/loadouts`, materialize previews. ~1 day. *UI authoring + browsing.*
-5. **Dispatch integration** — orchestrator calls resolver to embed materialized loadout in prompt. ~0.5 day. *Hub-side consumption demo.*
-6. **UI authoring pages** — teams browser, loadout authoring page. Larger, parallel.
+1. **`team_template` + `loadout` resource types** — DAL, schema, basic CRUD routes, sync registration. *Distribution works.*
+2. **`src/openteams/resolver.ts` + skill-bridge + mcp-bridge** — shared resolution code used by both UI and dispatch. *Materialization works.*
+3. **HTTP endpoints (UI surface)** — `GET /teams`, `/loadouts`, materialize previews. *UI authoring + browsing.*
+4. **Dispatch integration** — orchestrator calls resolver to embed materialized loadout in prompt. *Hub-side consumption demo.*
 
-### Agent side (claude-code-swarm)
+### Verification (Milestone B — current)
 
-7. **`hive-source.mjs` + tests** — pure resource fetcher with caching. ~0.5 day.
-8. **`loadTeam` async + hive branch** — `parseHiveRef`, `stageAuthoredToDir`, `loadAsync` wiring. ~1 day.
-9. **Skill-bank prefetch** for hive-bound configs. ~0.5 day. *Demo: swarm boots from hub.*
-10. **Cache invalidation via `resource.changed`** subscription. ~0.5 day. Skippable for v1; TTL is fine.
-11. **`HiveStorageAdapter` for skill-tree** — replaces step 9's prefetch. Future.
+5. **End-to-end author-to-dispatch tests** — author content via DAL/REST → enrich dispatch task → assert prompt embeds skills + addendum. Variants: `team_role_ref` and `loadout_ref`.
+6. **Update propagation tests** — edit content → next materialize call sees the update. Catches cache-invalidation regressions.
+7. **openteams round-trip test** — author via OpenHive → stage to tmpdir → openteams' `TemplateLoader.loadAsync` parses it correctly. Catches drift between OpenHive storage and openteams loader.
+8. **Full-stack hub→macro-agent test** — gated on `FULL_STACK_E2E=true`. Real OpenHive + OpenSwarm + macro-agent. Asserts the materialized loadout's distinctive markers reach the live agent's prompt.
 
-### openteams
+### Future (out of scope here)
 
-12. **Schema and `LoadOptions` modifications** (1–4 above). ~0.5 day. Coordinated with #2.
-
-### Suggested sequencing
-
-Two natural milestones:
-
-- **Milestone A** (after #1, #2, #3, #5): the hub can dispatch with curated loadouts. Hub-side end-to-end.
-- **Milestone B** (after #7, #8, #9, #12): swarms boot from hub-published team configs. Agent-side end-to-end.
-
-#4 (UI), #6 (UI authoring), and #10/#11 (caching upgrades) parallelize across both milestones.
+- UI authoring pages (teams browser, loadout authoring) — surfaced after Milestone B verifies the foundation.
+- Hub publishes authored content to a git remote — only if integrated distribution becomes a real ask.
+- openteams modifications (richer `resolveExternalLoadout` ref shape, `postProcessTemplate`, `unresolvedExtends`) — when authoring ergonomics or cross-hub federation pressure them.
 
 ---
 

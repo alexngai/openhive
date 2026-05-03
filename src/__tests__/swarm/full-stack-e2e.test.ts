@@ -26,6 +26,7 @@ import { WebSocket } from 'ws';
 import * as path from 'path';
 import * as fs from 'fs';
 import { initDatabase, closeDatabase } from '../../db/index.js';
+import { initTokenService } from '../../map/token-service.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import { swarmHostingRoutes } from '../../api/routes/swarm-hosting.js';
 import { SwarmManager } from '../../swarm/manager.js';
@@ -65,6 +66,7 @@ function createTestConfig(): Config {
     instance: { name: 'Full Stack E2E', description: 'Full stack test' },
     admin: { createOnStartup: false },
     auth: { mode: 'local' },
+    mapHub: { iamSecret: 'test-iam-secret-fs-e2e' },
     rateLimit: { enabled: false },
     cors: { enabled: false },
     swarmHosting: {
@@ -120,6 +122,10 @@ describeFn('Full Stack E2E: OpenHive → OpenSwarm → macro-agent', () => {
 
     // Initialize database
     initDatabase(TEST_DB_PATH);
+
+    // Token service is required for hosted-swarm spawn (mints onboard token).
+    // Production wiring lives in src/server.ts; mirror it here.
+    initTokenService(config.mapHub.iamSecret, path.dirname(TEST_DB_PATH));
 
     // Create test agents (matches existing e2e pattern)
     const agentResult = await agentsDAL.createAgent({

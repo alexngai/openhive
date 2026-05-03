@@ -258,6 +258,34 @@ describe('createOpenHiveDispatchSource', () => {
       expect(tasks).toHaveLength(1);
       expect(tasks[0].id).toBe(d2.id);
     });
+
+    it('returns raw rowToTask output without loadout enrichment (asymmetry is intentional)', async () => {
+      // listInProgress is used only for tracker reconstruction at startup.
+      // reconstructFromTasks() reads id, claimed_by, metadata.attempt,
+      // metadata.role, tags — none of which require enrichment. The
+      // orchestrator re-enriches via getTask() (enrichContent) before prompt
+      // building on any retry or continuation path. This test locks that
+      // contract: listInProgress must not call the spec fetcher.
+      let fetcherCallCount = 0;
+      const countingFetcher: SpecContentFetcher = {
+        async fetch(_resourceId, _specId) {
+          fetcherCallCount++;
+          return { title: 'T', content: 'c', tasks: [] };
+        },
+      };
+
+      const d = seedDispatch({ spec_id: 'c-inprogress' });
+      dispatchesDAL.claimDispatch(d.id, 'orch-1');
+
+      const source = createOpenHiveDispatchSource(countingFetcher, 'test-claimant');
+      const tasks = await source.listInProgress!();
+
+      // Task is returned (basic mapping works).
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].id).toBe(d.id);
+      // Spec fetcher was NOT called — enrichment is skipped for listInProgress.
+      expect(fetcherCallCount).toBe(0);
+    });
   });
 
   // ==========================================================================

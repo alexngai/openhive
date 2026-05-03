@@ -28,6 +28,7 @@ import yaml from 'js-yaml';
 import { TemplateLoader } from 'openteams';
 import { getTeamTemplate, getTeamTemplateContent } from '../db/dal/team-templates.js';
 import { getLoadout, getLoadoutByName, getLoadoutContent } from '../db/dal/loadouts.js';
+import { canAccessResource } from '../db/dal/syncable-resources.js';
 import { hashContent, resolveCachedOrCompute } from './cache.js';
 import { compileSkillsForLoadout } from './skill-bridge.js';
 import { resolveMcpRefs } from './mcp-bridge.js';
@@ -57,6 +58,13 @@ export class LoadoutNotFoundError extends Error {
   constructor(loadoutId: string) {
     super(`loadout ${loadoutId} not found`);
     this.name = 'LoadoutNotFoundError';
+  }
+}
+
+export class MaterializationForbiddenError extends Error {
+  constructor(resourceId: string, viewerAgentId: string) {
+    super(`unauthorized: viewer ${viewerAgentId} cannot access resource ${resourceId}`);
+    this.name = 'MaterializationForbiddenError';
   }
 }
 
@@ -135,9 +143,13 @@ export async function resolveTeam(templateId: string): Promise<ResolvedTemplate>
  */
 export async function materializeLoadoutById(
   loadoutId: string,
+  viewerAgentId?: string,
 ): Promise<MaterializedLoadout> {
   const ldt = getLoadout(loadoutId);
   if (!ldt) throw new LoadoutNotFoundError(loadoutId);
+  if (viewerAgentId !== undefined && !canAccessResource(viewerAgentId, ldt)) {
+    throw new MaterializationForbiddenError(loadoutId, viewerAgentId);
+  }
   const content = getLoadoutContent(ldt);
   if (!content) {
     throw new Error(`loadout ${loadoutId} has no content`);
@@ -221,7 +233,15 @@ export async function materializeLoadoutById(
 export async function materializeRoleLoadout(
   templateId: string,
   roleName: string,
+  viewerAgentId?: string,
 ): Promise<MaterializedLoadout> {
+  if (viewerAgentId !== undefined) {
+    const tmpl = getTeamTemplate(templateId);
+    if (!tmpl) throw new TemplateNotFoundError(templateId);
+    if (!canAccessResource(viewerAgentId, tmpl)) {
+      throw new MaterializationForbiddenError(templateId, viewerAgentId);
+    }
+  }
   const resolved = await resolveTeam(templateId);
   const role = resolved.roles.get(roleName);
   if (!role) throw new RoleNotFoundError(templateId, roleName);
@@ -262,7 +282,7 @@ export async function materializeRoleLoadout(
 // Internals — staging in-memory content into a directory openteams can read
 // ============================================================================
 
-async function stageTemplate(content: TeamTemplateContent): Promise<string> {
+export async function stageTemplate(content: TeamTemplateContent): Promise<string> {
   const stagingDir = await mkdtemp(path.join(tmpdir(), 'openhive-team-'));
 
   // team.yaml

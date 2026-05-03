@@ -20,6 +20,15 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>();
 const TTL_MS = 10 * 60 * 1000;
 
+/**
+ * In-flight Promise coalescer. When N concurrent callers see the same cold
+ * key, only the first one runs `compute()`; the rest await its result. Without
+ * this, a poll cycle that finds 50 queued dispatches against the same template
+ * would run 50 parallel `TemplateLoader.loadAsync` calls, each writing to its
+ * own staging tmpdir.
+ */
+const inflight = new Map<string, Promise<ResolvedTemplate>>();
+
 /** Stable hash of a JSON-serializable object — drives the cache key. */
 export function hashContent(content: unknown): string {
   const json = JSON.stringify(content, sortObjectKeys);
@@ -52,9 +61,24 @@ export async function resolveCachedOrCompute(
     return hit.template;
   }
 
-  const template = await compute();
-  cache.set(key, { template, expiresAt: Date.now() + TTL_MS });
-  return template;
+  // If a compute is already in flight for this key, await its result instead
+  // of starting a duplicate. The cache-check + inflight-attach + compute-run
+  // is single-threaded under Node's event loop, so this is race-free.
+  const pending = inflight.get(key);
+  if (pending) return pending;
+
+  const promise = (async () => {
+    try {
+      const template = await compute();
+      cache.set(key, { template, expiresAt: Date.now() + TTL_MS });
+      return template;
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+
+  inflight.set(key, promise);
+  return promise;
 }
 
 /**
@@ -68,7 +92,8 @@ export function evictTemplate(templateId: string): void {
   }
 }
 
-/** Test-only: reset the entire cache. */
+/** Test-only: reset the entire cache (including any in-flight promises). */
 export function _resetCacheForTest(): void {
   cache.clear();
+  inflight.clear();
 }

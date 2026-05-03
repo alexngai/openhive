@@ -13,8 +13,10 @@ import { advanceLinkedTasksOnStart } from './start.js';
 import {
   materializeLoadoutById,
   materializeRoleLoadout,
+  MaterializationForbiddenError,
 } from '../openteams/resolver.js';
 import { emptyMaterialization, type MaterializedLoadout } from '../openteams/types.js';
+import { broadcastToChannel } from '../realtime/index.js';
 
 export interface SpecContentFetcher {
   fetch(resourceId: string, specId: string): Promise<{
@@ -116,26 +118,56 @@ function readLoadoutBinding(meta: Record<string, unknown>): SpecLoadoutBinding |
   return { loadoutRef, teamRoleRef };
 }
 
+/** Injectable broadcast fn — production uses broadcastToChannel; tests inject a spy. */
+export type MaterializationBroadcastFn = (dispatchId: string, errorMessage: string) => void;
+
+function defaultBroadcast(dispatchId: string, errorMessage: string): void {
+  try {
+    broadcastToChannel('map:dispatches', {
+      type: 'dispatch.materialization_failed',
+      data: {
+        dispatch_id: dispatchId,
+        error: errorMessage,
+      },
+    });
+  } catch {
+    /* best effort — realtime layer may not be initialized in all contexts */
+  }
+}
+
 /**
  * Enrich a DispatchTask with a materialized loadout when the spec has a
- * loadout_ref or team_role_ref binding. Best-effort — failures attach an
+ * loadout_ref or team_role_ref binding. Best-effort — failures attach a
  * `loadout_error` marker but never block dispatch.
+ *
+ * On failure: emits a `dispatch.materialization_failed` event on the
+ * `map:dispatches` WS channel so operators see the error, logs a warning,
+ * and returns the task unenriched.
  *
  * Precedence: direct loadout_ref > team_role_ref. Documented contract.
  */
-async function enrichWithLoadout(task: DispatchTask): Promise<DispatchTask> {
+export async function enrichWithLoadout(
+  task: DispatchTask,
+  _broadcast: MaterializationBroadcastFn = defaultBroadcast,
+): Promise<DispatchTask> {
   const meta = task.metadata ?? {};
   const binding = readLoadoutBinding(meta);
   if (!binding) return task;
 
+  // Use the dispatch initiator's identity for ACL checks so a dispatcher
+  // cannot leak content from resources they cannot access.
+  const viewerAgentId =
+    typeof meta.initiator_id === 'string' ? meta.initiator_id : undefined;
+
   try {
     let materialized: MaterializedLoadout;
     if (binding.loadoutRef) {
-      materialized = await materializeLoadoutById(binding.loadoutRef);
+      materialized = await materializeLoadoutById(binding.loadoutRef, viewerAgentId);
     } else if (binding.teamRoleRef) {
       materialized = await materializeRoleLoadout(
         binding.teamRoleRef.teamTemplateId,
         binding.teamRoleRef.role,
+        viewerAgentId,
       );
     } else {
       materialized = emptyMaterialization();
@@ -146,14 +178,23 @@ async function enrichWithLoadout(task: DispatchTask): Promise<DispatchTask> {
       metadata: { ...meta, materializedLoadout: materialized },
     };
   } catch (err) {
-    // Best-effort: dispatch proceeds without enrichment. Surface the
-    // failure as a metadata marker so downstream consumers (UI, logs)
-    // can see it.
+    // Use a generic message for authorization failures so iterated resource
+    // ids cannot enumerate ACL-protected resources via error text.
+    const errorMessage =
+      err instanceof MaterializationForbiddenError ? 'unauthorized' : (err as Error).message;
+    // Best-effort: dispatch proceeds without enrichment. Surface the failure
+    // via WS broadcast so operators see it, and attach a metadata marker for
+    // downstream consumers. A typo'd extends: or missing loadout id should
+    // never be silent.
+    console.warn(
+      `[dispatch] loadout materialization failed for dispatch ${task.id}: ${errorMessage}`,
+    );
+    _broadcast(task.id, errorMessage);
     return {
       ...task,
       metadata: {
         ...meta,
-        loadout_error: (err as Error).message,
+        loadout_error: errorMessage,
       },
     };
   }
@@ -163,7 +204,12 @@ export function createOpenHiveDispatchSource(
   specFetcher: SpecContentFetcher,
   claimantId: string,
 ): DispatchTaskSource {
-  return createSqlSource<Dispatch>({
+  async function enrich(task: DispatchTask): Promise<DispatchTask> {
+    const withSpec = await enrichWithSpec(task, specFetcher);
+    return enrichWithLoadout(withSpec);
+  }
+
+  const source = createSqlSource<Dispatch>({
     claimantId,
 
     queryReady: ({ limit }) => dispatchesDAL.listQueuedDispatches(limit),
@@ -184,6 +230,13 @@ export function createOpenHiveDispatchSource(
 
     getRow: (id) => dispatchesDAL.findDispatchById(id),
 
+    // listInProgress is called once at orchestrator startup to reconstruct the
+    // in-memory tracker from rows that were running before the hub restarted.
+    // reconstructFromTasks() only reads id, claimed_by, metadata.attempt,
+    // metadata.role, tags, and metadata.dimensions — none of which come from
+    // loadout enrichment. Enrichment is intentionally skipped here; the
+    // orchestrator always re-enriches via getTask() (which calls enrichContent)
+    // before building a prompt for any retry or continuation.
     listInProgress: () => dispatchesDAL.listInProgressDispatches(),
 
     rowToTask: dispatchToTask,
@@ -193,9 +246,24 @@ export function createOpenHiveDispatchSource(
 
     renewRow: (id, fence) => dispatchesDAL.renewDispatchClaim(id, fence),
 
-    enrichContent: async (task) => {
-      const withSpec = await enrichWithSpec(task, specFetcher);
-      return enrichWithLoadout(withSpec);
-    },
+    // enrichContent is called by createSqlSource on getTask() — used for
+    // continuations, retries, and reconciliation paths. The initial dispatch
+    // path (queryReady → dispatchTask → promptBuilder) receives unenriched
+    // tasks from the library, so we also wrap queryReady below.
+    enrichContent: enrich,
   });
+
+  // swarm-dispatch's createSqlSource calls enrichContent only on getTask(),
+  // not on queryReady(). The orchestrator builds the first-run prompt from
+  // the task returned by queryReady, so without this wrapper the loadout
+  // content (spec body, promptAddendum, skills) would be absent from the
+  // first prompt. Wrap queryReady to enrich every returned task so the
+  // prompt builder sees the full materialized payload regardless of path.
+  const originalQueryReady = source.queryReady.bind(source);
+  source.queryReady = async (opts) => {
+    const tasks = await originalQueryReady(opts);
+    return Promise.all(tasks.map(enrich));
+  };
+
+  return source;
 }

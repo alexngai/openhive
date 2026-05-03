@@ -175,7 +175,7 @@ export async function loadoutsRoutes(
       }
 
       try {
-        const materialized = await materializeLoadoutById(request.params.id);
+        const materialized = await materializeLoadoutById(request.params.id, request.agent?.id);
         return reply.send({ materialized });
       } catch (err) {
         if (err instanceof LoadoutNotFoundError) {

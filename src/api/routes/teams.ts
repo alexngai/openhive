@@ -193,6 +193,7 @@ export async function teamsRoutes(
         const materialized = await materializeRoleLoadout(
           request.params.id,
           request.params.role,
+          request.agent?.id,
         );
         return reply.send({ materialized });
       } catch (err) {
