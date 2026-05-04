@@ -29,7 +29,10 @@ import { verifyToken, isTokenServiceInitialized } from './token-service.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { handleTrajectoryRequest } from './trajectory-handler.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
-import { handleNotificationPairResponse } from './notification-rpc.js';
+import {
+  handleNotificationPairResponse,
+  rejectPendingForSwarm,
+} from './notification-rpc.js';
 import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { pushDispatchMapReply } from '../dispatch/mail-ingress.js';
@@ -521,6 +524,10 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
       clearHeartbeatDebounce(sid);
       unregisterInbound(sid);
+      // Fail any pending notification-pair RPCs to this swarm fast,
+      // instead of waiting out their (default 30s) timeouts. Callers see
+      // a typed `NotificationPairTransportLost` error and can retry.
+      try { rejectPendingForSwarm(sid, 'swarm_ws_closed'); } catch { /* non-critical */ }
       try {
         if (!hasOutboundConnection(sid)) {
           updateSwarm(sid, { status: 'unreachable' });

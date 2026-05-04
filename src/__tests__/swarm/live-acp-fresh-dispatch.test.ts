@@ -58,7 +58,6 @@ import { initTokenService } from '../../map/token-service.js';
 import {
   getAllInbound,
   getInbound,
-  hasCapability,
 } from '../../map/connection-registry.js';
 import { SwarmManager } from '../../swarm/manager.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
@@ -596,24 +595,46 @@ describeIf(
         expect(newAgentSpawned).toBe(true);
         expect(acpAgentsAfter.length).toBeGreaterThan(beforeCount);
 
-        // Inspect swarm logs for the spawn-agent handler invocation —
-        // strong confirmation the notification-pair RPC delivered.
+        // Cross-correlate: the swarm handler logs the freshly-spawned
+        // agentId. We extract it from the log and verify it matches one
+        // of the newly-registered ACP-capable agents in the connection
+        // registry. This is stronger than log-string presence — the
+        // agentId in the log MUST refer to an agent that actually
+        // exists on the swarm.
         const logs = await swarmManager
           .getLogs(hostedSwarmId!, testAgent.id, { lines: 80 })
           .catch(() => '');
-        const sawHandlerInvocation = logs.includes(
-          '[dispatch/spawn-agent] Spawning fresh',
+        const handlerLogMatch = logs.match(
+          /\[dispatch\/spawn-agent\] Spawn complete agentId=([\w-]+)/,
         );
-        if (sawHandlerInvocation) {
-          console.log(
-            '[live-acp-fresh] CAPABILITY PROVEN — dispatch/spawn-agent handler ' +
-              'invoked on swarm side (notification-pair RPC end-to-end).',
+        if (handlerLogMatch) {
+          const reportedAgentId = handlerLogMatch[1];
+          const matchingAgent = acpAgentsAfter.find(
+            (a) => a.id === reportedAgentId,
           );
+          if (matchingAgent) {
+            console.log(
+              `[live-acp-fresh] CAPABILITY PROVEN — dispatch/spawn-agent ` +
+                `handler returned agentId=${reportedAgentId}, found in ` +
+                `registered agents (cross-correlation hard-asserted).`,
+            );
+            // Hard assertion: the agent the handler returned IS in the
+            // post-dispatch registered set. If the handler ran but the
+            // agent never registered, this catches the wiring break.
+            expect(matchingAgent).toBeDefined();
+          } else {
+            console.warn(
+              `[live-acp-fresh] Handler logged agentId=${reportedAgentId} ` +
+                `but no matching agent in registry — possible wiring race.`,
+            );
+          }
         } else {
           console.warn(
-            '[live-acp-fresh] dispatch/spawn-agent handler log line not found ' +
-              "in swarm logs (may be a log-buffering quirk; the agent count " +
-              'still grew, so the spawn happened).',
+            '[live-acp-fresh] No "Spawn complete agentId=" log line found. ' +
+              'Either the swarm-side handler did not run (notification-pair ' +
+              'broken) OR the log buffer was truncated. The agent count grew, ' +
+              'so something spawned a coordinator — but we cannot verify it ' +
+              'was via dispatch/spawn-agent.',
           );
         }
       },

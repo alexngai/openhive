@@ -24,6 +24,39 @@ interface PendingCall {
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   method: string;
+  swarmId: string;
+}
+
+/**
+ * Error thrown when the underlying transport to the swarm has gone away
+ * before a response arrived. Distinct from a timeout so callers can fail
+ * fast rather than wait the full timeout window.
+ */
+export class NotificationPairTransportLost extends Error {
+  readonly code = 'transport_lost';
+  constructor(method: string, swarmId: string, reason: string) {
+    super(
+      `notification-pair: ${method} to swarm ${swarmId} aborted — ${reason}`,
+    );
+    this.name = 'NotificationPairTransportLost';
+  }
+}
+
+/**
+ * Error thrown when the swarm side responded with an explicit error.
+ * Preserves the swarm-side `code` so callers can distinguish recoverable
+ * errors (e.g., `agent_busy`, `unauthorized`) from terminal ones.
+ */
+export class NotificationPairRemoteError extends Error {
+  constructor(
+    public readonly method: string,
+    public readonly swarmId: string,
+    public readonly code: number | string | undefined,
+    message: string,
+  ) {
+    super(`notification-pair: ${method} on ${swarmId} failed — ${message}`);
+    this.name = 'NotificationPairRemoteError';
+  }
 }
 
 const pending = new Map<string, PendingCall>();
@@ -62,6 +95,7 @@ export async function callViaNotificationPair<TParams, TResult>(
       reject,
       timer,
       method,
+      swarmId,
     });
 
     const sent = sendToSwarm(swarmId, {
@@ -107,10 +141,37 @@ export function handleNotificationPairResponse(params: unknown): void {
   pending.delete(correlationId);
 
   if (p.error) {
-    entry.reject(new Error(p.error.message ?? 'notification-pair: remote error'));
+    entry.reject(
+      new NotificationPairRemoteError(
+        entry.method,
+        entry.swarmId,
+        p.error.code,
+        p.error.message ?? 'remote error',
+      ),
+    );
     return;
   }
   entry.resolve(p.result);
+}
+
+/**
+ * Reject all pending notification-pair calls targeting a specific swarm
+ * with a `NotificationPairTransportLost` error. Called when the swarm's
+ * WebSocket disconnects so callers fail fast (orchestrator retry kicks
+ * in immediately) instead of waiting out the full 30s timeout.
+ */
+export function rejectPendingForSwarm(
+  swarmId: string,
+  reason = 'swarm disconnected',
+): void {
+  for (const [correlationId, entry] of pending) {
+    if (entry.swarmId !== swarmId) continue;
+    clearTimeout(entry.timer);
+    pending.delete(correlationId);
+    entry.reject(
+      new NotificationPairTransportLost(entry.method, swarmId, reason),
+    );
+  }
 }
 
 /**

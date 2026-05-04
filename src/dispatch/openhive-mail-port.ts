@@ -18,7 +18,11 @@
 import { createMailPort } from 'swarm-dispatch/client';
 import type { MessagePort } from 'swarm-dispatch';
 import { getInbound } from '../map/connection-registry.js';
-import { consumeLoadoutForDispatch } from './loadout-side-channel.js';
+import {
+  consumeLoadoutForDispatch,
+  peekHintsForDispatch,
+} from './loadout-side-channel.js';
+import { materializedLoadoutToWire } from './wire-loadout.js';
 
 export interface MailTransport {
   sendToAgent(
@@ -64,43 +68,20 @@ function injectLoadoutMetadata(envelope: {
   const loadout = consumeLoadoutForDispatch(taskId);
   if (!loadout) return envelope;
 
-  const hasPermissions =
-    (loadout.permissions.allow?.length ?? 0) +
-      (loadout.permissions.deny?.length ?? 0) +
-      (loadout.permissions.ask?.length ?? 0) >
-    0;
-
-  // Build the canonical `body.loadout` slot — runtime-translatable wire
-  // shape consumed by both mail-inbound (this path) and the new
-  // dispatch/spawn-agent ACP path.
-  const wireLoadout: Record<string, unknown> = {};
-  if (hasPermissions) {
-    wireLoadout.permissions = {
-      ...(loadout.permissions.allow?.length ? { allow: loadout.permissions.allow } : {}),
-      ...(loadout.permissions.deny?.length ? { deny: loadout.permissions.deny } : {}),
-      ...(loadout.permissions.ask?.length ? { ask: loadout.permissions.ask } : {}),
-    };
-  }
-  if (loadout.mcpProviders?.length) {
-    wireLoadout.mcpProviders = loadout.mcpProviders;
-  }
-  if (loadout.mcpScope?.length) {
-    wireLoadout.mcpScope = loadout.mcpScope;
-  }
-  if (loadout.capabilities?.length) {
-    wireLoadout.capabilities = loadout.capabilities;
-  }
+  // Canonical wire shape — produced by the shared helper so this path
+  // and the ACP `dispatch/spawn-agent` path can't drift.
+  const wireLoadout = materializedLoadoutToWire(loadout) as Record<string, unknown>;
 
   // Legacy fields — removed once consumers across the fleet read from
   // body.loadout. Two writes during the transition window.
   const legacyMetadata: Record<string, unknown> = {
     ...((envelope.body.metadata as Record<string, unknown> | undefined) ?? {}),
   };
-  if (hasPermissions) {
+  if (wireLoadout.permissions !== undefined) {
     legacyMetadata.permissions = wireLoadout.permissions;
   }
-  if (loadout.mcpProviders?.length) {
-    legacyMetadata.mcpProviders = loadout.mcpProviders;
+  if (wireLoadout.mcpProviders !== undefined) {
+    legacyMetadata.mcpProviders = wireLoadout.mcpProviders;
   }
 
   const hasNewSlot = Object.keys(wireLoadout).length > 0;
@@ -124,8 +105,26 @@ function injectLoadoutMetadata(envelope: {
 
 export function createOpenHiveMailPort(transport: MailTransport): MessagePort {
   return createMailPort({
-    send: (system, agentId, envelope) =>
-      transport.sendToAgent(system, agentId, injectLoadoutMetadata(envelope)),
+    send: async (system, agentId, envelope) => {
+      // Lifecycle-fresh dispatches must NOT take the mail route: the
+      // mail-inbound consumer would spawn a fresh worker (correct
+      // behavior) but bypasses the ACP path entirely. When a dispatch's
+      // hint says 'fresh' AND we're inside `prefer-route`, returning
+      // `delivered: false` here causes the orchestrator to fall through
+      // to the runtime adapter (ACP), which honors the hint and calls
+      // `dispatch/spawn-agent`.
+      //
+      // Peek (don't consume) so the runtime adapter still sees the
+      // hint when it runs next.
+      const taskId = (envelope.body as { taskId?: string })?.taskId;
+      if (taskId) {
+        const hints = peekHintsForDispatch(taskId);
+        if (hints?.acpLifecycle === 'fresh') {
+          return { delivered: false, reason: 'lifecycle_fresh' };
+        }
+      }
+      return transport.sendToAgent(system, agentId, injectLoadoutMetadata(envelope));
+    },
 
     onMessage: (handler) =>
       transport.onMessage((from, msg) =>

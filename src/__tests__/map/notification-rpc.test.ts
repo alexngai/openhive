@@ -11,6 +11,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   callViaNotificationPair,
   handleNotificationPairResponse,
+  rejectPendingForSwarm,
+  NotificationPairTransportLost,
   _clearPendingNotificationPairCallsForTest,
 } from '../../map/notification-rpc.js';
 import * as syncListener from '../../map/sync-listener.js';
@@ -53,7 +55,7 @@ describe('notification-pair RPC', () => {
     expect(result).toEqual({ agentId: 'agent-spawned-123' });
   });
 
-  it('rejects with the swarm-side error message on response.error', async () => {
+  it('rejects with NotificationPairRemoteError preserving the swarm-side code on response.error', async () => {
     const sentMessages: Array<Record<string, unknown>> = [];
     vi.spyOn(syncListener, 'sendToSwarm').mockImplementation((_swarmId, msg) => {
       sentMessages.push(msg as Record<string, unknown>);
@@ -69,10 +71,16 @@ describe('notification-pair RPC', () => {
     const params = sentMessages[0].params as Record<string, unknown>;
     handleNotificationPairResponse({
       correlation_id: params.correlation_id,
-      error: { message: 'spawn failed: unauthorized' },
+      error: { code: 'unauthorized', message: 'spawn failed: unauthorized' },
     });
 
     await expect(callPromise).rejects.toThrow(/spawn failed/);
+    await expect(callPromise).rejects.toMatchObject({
+      name: 'NotificationPairRemoteError',
+      code: 'unauthorized',
+      method: 'dispatch/spawn-agent',
+      swarmId: 'swarm-1',
+    });
   });
 
   it('rejects with timeout if no response arrives in time', async () => {
@@ -139,5 +147,59 @@ describe('notification-pair RPC', () => {
     const [resA, resB] = await Promise.all([a, b]);
     expect(resA).toEqual({ tag: 'A' });
     expect(resB).toEqual({ tag: 'B' });
+  });
+
+  it('rejectPendingForSwarm fails calls targeting that swarm with NotificationPairTransportLost', async () => {
+    vi.spyOn(syncListener, 'sendToSwarm').mockReturnValue(true);
+
+    const callPromise = callViaNotificationPair(
+      'doomed-swarm',
+      'dispatch/spawn-agent',
+      {},
+      { timeoutMs: 60_000 },
+    );
+
+    rejectPendingForSwarm('doomed-swarm', 'swarm_ws_closed');
+
+    await expect(callPromise).rejects.toBeInstanceOf(NotificationPairTransportLost);
+    await expect(callPromise).rejects.toMatchObject({
+      code: 'transport_lost',
+    });
+  });
+
+  it("rejectPendingForSwarm leaves pending calls for OTHER swarms untouched", async () => {
+    vi.spyOn(syncListener, 'sendToSwarm').mockReturnValue(true);
+
+    const a = callViaNotificationPair(
+      'swarm-A',
+      'dispatch/spawn-agent',
+      {},
+      { timeoutMs: 60_000 },
+    );
+    const b = callViaNotificationPair(
+      'swarm-B',
+      'dispatch/spawn-agent',
+      {},
+      { timeoutMs: 60_000 },
+    );
+
+    rejectPendingForSwarm('swarm-A', 'swarm_ws_closed');
+
+    await expect(a).rejects.toBeInstanceOf(NotificationPairTransportLost);
+    // B is still pending — settle via Promise.race with a quick timer
+    // to confirm it's NOT yet rejected.
+    const stillPending = await Promise.race([
+      b.then(() => 'resolved').catch(() => 'rejected'),
+      new Promise<string>((r) => setTimeout(() => r('still-pending'), 50)),
+    ]);
+    expect(stillPending).toBe('still-pending');
+
+    // Clean up b so it doesn't leak across tests
+    rejectPendingForSwarm('swarm-B', 'cleanup');
+    await expect(b).rejects.toBeInstanceOf(NotificationPairTransportLost);
+  });
+
+  it('rejectPendingForSwarm is a no-op when no pending calls match the swarm', () => {
+    expect(() => rejectPendingForSwarm('nonexistent-swarm')).not.toThrow();
   });
 });

@@ -593,50 +593,8 @@ describeIf(
   },
 );
 
-/**
- * Walk an ACP session_update payload's nested `content` blocks and
- * accumulate text fragments into the sink. Tolerant of payload shapes
- * because session_update events vary by update type (text chunk vs
- * tool_call vs thinking, etc.).
- */
-function collectTextFromUpdate(
-  update: unknown,
-  sink: string[],
-): void {
-  if (!update || typeof update !== 'object') return;
-  const u = update as Record<string, unknown>;
-
-  // session_update.update can be { content: [{type:'text', text:'...'}, ...] }
-  const content = u.content;
-  if (Array.isArray(content)) {
-    for (const block of content) {
-      if (
-        block &&
-        typeof block === 'object' &&
-        (block as Record<string, unknown>).type === 'text' &&
-        typeof (block as Record<string, unknown>).text === 'string'
-      ) {
-        sink.push((block as { text: string }).text);
-      } else if (block && typeof block === 'object') {
-        // Some shapes nest content again (e.g., tool_call_update with
-        // content: [{type: 'content', content: {type: 'text', text: '...'}}])
-        const inner = (block as Record<string, unknown>).content;
-        if (inner && typeof inner === 'object' && (inner as Record<string, unknown>).type === 'text') {
-          const text = (inner as Record<string, unknown>).text;
-          if (typeof text === 'string') sink.push(text);
-        }
-      }
-    }
-  }
-
-  // Also walk text directly (some chunk events have top-level `text`)
-  if (typeof u.text === 'string') sink.push(u.text);
-
-  // Walk into nested update fields (e.g., tool_call_update -> content)
-  for (const key of ['update', 'rawOutput', 'rawInput']) {
-    const nested = u[key];
-    if (nested && typeof nested === 'object') {
-      collectTextFromUpdate(nested, sink);
-    }
-  }
-}
+// Note: an earlier version of this test had a `collectTextFromUpdate`
+// helper that walked session_update payloads for text content. After
+// observing the actual event shapes, we switched to JSON-stringifying
+// the entire event for grep-like marker searches — simpler and tolerant
+// of any payload variation. The walker is preserved in git history.

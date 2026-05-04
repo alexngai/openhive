@@ -27,9 +27,10 @@ import type { Dispatch } from '../db/dal/dispatches.js';
 import { findAcpAgentInfo } from '../map/connection-registry.js';
 import { callViaNotificationPair } from '../map/notification-rpc.js';
 import {
-  peekLoadoutForDispatch,
   peekHintsForDispatch,
+  consumeLoadoutForDispatch,
 } from './loadout-side-channel.js';
+import { materializedLoadoutToWire } from './wire-loadout.js';
 import type { MaterializedLoadout } from '../openteams/types.js';
 
 export interface AcpStreamManager {
@@ -48,13 +49,26 @@ export interface AcpStreamManager {
 
 export interface OpenHiveRuntimeDeps {
   getAcpStreamManager: () => AcpStreamManager | undefined;
+  /**
+   * Timeout for the `dispatch/spawn-agent` notification-pair RPC, in
+   * milliseconds. Defaults to 30 seconds. Configurable so operators can
+   * tune for slow agent spawns or constrained environments.
+   */
+  spawnAgentTimeoutMs?: number;
 }
 
 /**
  * Read the per-dispatch ACP lifecycle preference. Precedence:
  *   1. side-channel hints (sourced from spec metadata at enrichment time)
- *   2. default 'fresh' (symmetric with mail's spawn-fresh-per-dispatch
- *      enforcement of loadout permissions)
+ *   2. default 'reuse' — backwards-compatible with the pre-this-work
+ *      ACP path (orchestrator routes to an existing ACP-capable agent
+ *      via findAcpAgentInfo). Specs that want fresh-spawn-per-dispatch
+ *      opt in via `metadata.acp_lifecycle: 'fresh'`.
+ *
+ * The default flipped from 'fresh' to 'reuse' on review: 'fresh' would
+ * silently break old swarms (without the dispatch/spawn-agent handler)
+ * by routing notification-pair RPCs that drop on the floor → 30s
+ * timeouts × maxRetries. 'reuse' preserves prior behavior.
  *
  * Future work (later milestone): layer in loadout-level default
  * (`loadout.openhive.acp_lifecycle`) once MaterializedLoadout carries
@@ -70,34 +84,15 @@ export function readDispatchLifecycle(
   if (hints?.acpLifecycle === 'fresh' || hints?.acpLifecycle === 'reuse') {
     return hints.acpLifecycle;
   }
-  return 'fresh';
+  return 'reuse';
 }
 
 /**
- * Convert a `MaterializedLoadout` to the wire-shape subset shipped on
- * `dispatch/spawn-agent`. Mirrors what `openhive-mail-port` writes into
- * `body.loadout` for the mail route — same structural shape, both routes
- * end up calling macro-agent's `loadoutToSpawnOptions` translator.
+ * @deprecated — use `materializedLoadoutToWire` from `./wire-loadout.js`
+ * directly. This re-export preserves the old name for the unit tests
+ * in `src/__tests__/dispatch/openhive-runtime-lifecycle.test.ts`.
  */
-export function toWireLoadout(loadout: MaterializedLoadout): Record<string, unknown> {
-  const wire: Record<string, unknown> = {};
-  const hasPermissions =
-    (loadout.permissions.allow?.length ?? 0) +
-      (loadout.permissions.deny?.length ?? 0) +
-      (loadout.permissions.ask?.length ?? 0) >
-    0;
-  if (hasPermissions) {
-    wire.permissions = {
-      ...(loadout.permissions.allow?.length ? { allow: loadout.permissions.allow } : {}),
-      ...(loadout.permissions.deny?.length ? { deny: loadout.permissions.deny } : {}),
-      ...(loadout.permissions.ask?.length ? { ask: loadout.permissions.ask } : {}),
-    };
-  }
-  if (loadout.mcpProviders?.length) wire.mcpProviders = loadout.mcpProviders;
-  if (loadout.mcpScope?.length) wire.mcpScope = loadout.mcpScope;
-  if (loadout.capabilities?.length) wire.capabilities = loadout.capabilities;
-  return wire;
-}
+export const toWireLoadout = materializedLoadoutToWire;
 
 export function createOpenHiveAgentRuntime(
   deps: OpenHiveRuntimeDeps,
@@ -110,8 +105,14 @@ export function createOpenHiveAgentRuntime(
       const dispatch = dispatchesDAL.findDispatchById(taskId);
       if (!dispatch) throw new Error(`Dispatch ${taskId} not found`);
 
-      const loadout = peekLoadoutForDispatch(taskId);
+      // ACP route consumes the side-channel entry — both the loadout
+      // and any hints. The mail port has its own consume on its
+      // delivery path; if a dispatch is mail-routed, it never reaches
+      // here. If we peeked instead of consumed, ACP-routed dispatches
+      // would leak entries (cache holds the MaterializedLoadout for the
+      // 5-min TTL even after the dispatch is fully delivered).
       const hints = peekHintsForDispatch(taskId);
+      const loadout = consumeLoadoutForDispatch(taskId);
       const lifecycle = readDispatchLifecycle(dispatch, loadout, hints);
 
       if (lifecycle === 'fresh') {
@@ -133,10 +134,10 @@ export function createOpenHiveAgentRuntime(
             role: 'coordinator',
             capabilities_required: ['acp'],
             lifecycle: 'fresh',
-            ...(loadout ? { loadout: toWireLoadout(loadout) } : {}),
+            ...(loadout ? { loadout: materializedLoadoutToWire(loadout) } : {}),
             fullAutonomous: true,
           },
-          { timeoutMs: 30_000 },
+          { timeoutMs: deps.spawnAgentTimeoutMs ?? 30_000 },
         );
         return {
           serverId: dispatch.target_swarm_id,

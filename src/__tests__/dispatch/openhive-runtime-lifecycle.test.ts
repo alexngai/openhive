@@ -64,13 +64,16 @@ function emptyLoadout(): MaterializedLoadout {
 // ============================================================================
 
 describe('readDispatchLifecycle', () => {
-  it("returns 'fresh' when no hint is provided (default)", () => {
-    expect(readDispatchLifecycle(fakeDispatch(), null, null)).toBe('fresh');
-    expect(readDispatchLifecycle(fakeDispatch(), emptyLoadout(), null)).toBe('fresh');
+  it("returns 'reuse' when no hint is provided (backwards-compatible default)", () => {
+    // Default flipped from 'fresh' to 'reuse' on review (#3): pre-this-
+    // work ACP path was reuse-only. 'fresh' would silently break old
+    // swarms by routing notification-pair RPCs they can't handle.
+    expect(readDispatchLifecycle(fakeDispatch(), null, null)).toBe('reuse');
+    expect(readDispatchLifecycle(fakeDispatch(), emptyLoadout(), null)).toBe('reuse');
   });
 
-  it("returns 'fresh' when hints.acpLifecycle is undefined", () => {
-    expect(readDispatchLifecycle(fakeDispatch(), null, {})).toBe('fresh');
+  it("returns 'reuse' when hints.acpLifecycle is undefined", () => {
+    expect(readDispatchLifecycle(fakeDispatch(), null, {})).toBe('reuse');
   });
 
   it("returns 'fresh' when hints.acpLifecycle is explicitly 'fresh'", () => {
@@ -85,38 +88,40 @@ describe('readDispatchLifecycle', () => {
     ).toBe('reuse');
   });
 
-  it("returns 'fresh' for invalid hint values (defensive default)", () => {
-    // Cast through unknown to simulate runtime-bad data slipping past the
-    // type system (e.g., from a corrupted spec metadata).
+  it("returns 'reuse' for invalid hint values (falls through to default)", () => {
+    // Cast through unknown to simulate runtime-bad data slipping past
+    // the type system (e.g., from a corrupted spec metadata). Invalid
+    // values fall through to the safe default rather than throwing.
     expect(
       readDispatchLifecycle(fakeDispatch(), null, {
         acpLifecycle: 'invalid' as unknown as 'fresh',
       }),
-    ).toBe('fresh');
+    ).toBe('reuse');
     expect(
       readDispatchLifecycle(fakeDispatch(), null, {
         acpLifecycle: '' as unknown as 'fresh',
       }),
-    ).toBe('fresh');
+    ).toBe('reuse');
     expect(
       readDispatchLifecycle(fakeDispatch(), null, {
         acpLifecycle: null as unknown as 'fresh',
       }),
-    ).toBe('fresh');
+    ).toBe('reuse');
   });
 
   it('does not consult dispatch or loadout fields today (Step 6 deferred)', () => {
-    // Documents the current shape: precedence is hint-only. When loadout-
-    // level (`loadout.openhive.acp_lifecycle`) and global config defaults
-    // are added in a follow-up, this test should be split + extended.
+    // Documents the current shape: precedence is hint-only. When
+    // loadout-level (`loadout.openhive.acp_lifecycle`) and global
+    // config defaults are added in a follow-up, this test should be
+    // split + extended.
     const dispatch = fakeDispatch();
     const loadout = emptyLoadout();
-    expect(readDispatchLifecycle(dispatch, loadout, null)).toBe('fresh');
+    expect(readDispatchLifecycle(dispatch, loadout, null)).toBe('reuse');
     // Even with synthetic dispatch.metadata-like fields, no lookup happens.
     (dispatch as unknown as { metadata: unknown }).metadata = {
-      acp_lifecycle: 'reuse',
+      acp_lifecycle: 'fresh',
     };
-    expect(readDispatchLifecycle(dispatch, loadout, null)).toBe('fresh');
+    expect(readDispatchLifecycle(dispatch, loadout, null)).toBe('reuse');
   });
 });
 
@@ -195,7 +200,7 @@ describe('toWireLoadout', () => {
     };
     loadout.promptAddendum = '## Reviewer\n\nFocus on correctness.';
     loadout.materializedAt = '2026-05-04T00:00:00.000Z';
-    const wire = toWireLoadout(loadout);
+    const wire = toWireLoadout(loadout) as Record<string, unknown>;
     expect(wire.skills).toBeUndefined();
     expect(wire.promptAddendum).toBeUndefined();
     expect(wire.materializedAt).toBeUndefined();
