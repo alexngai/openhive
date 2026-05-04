@@ -60,7 +60,7 @@ export interface OpenHiveRuntimeDeps {
  * (`loadout.openhive.acp_lifecycle`) once MaterializedLoadout carries
  * the consumer extension namespace, and a global config default.
  */
-function readDispatchLifecycle(
+export function readDispatchLifecycle(
   dispatch: Dispatch,
   loadout: MaterializedLoadout | null,
   hints: { acpLifecycle?: 'fresh' | 'reuse' } | null,
@@ -79,7 +79,7 @@ function readDispatchLifecycle(
  * `body.loadout` for the mail route — same structural shape, both routes
  * end up calling macro-agent's `loadoutToSpawnOptions` translator.
  */
-function toWireLoadout(loadout: MaterializedLoadout): Record<string, unknown> {
+export function toWireLoadout(loadout: MaterializedLoadout): Record<string, unknown> {
   const wire: Record<string, unknown> = {};
   const hasPermissions =
     (loadout.permissions.allow?.length ?? 0) +
