@@ -39,6 +39,7 @@ import {
   MIGRATION_V44_GRANT_VERSION,
   MIGRATION_V45_DISPATCH_LINKED_TASKS,
   MIGRATION_V46_RESOURCE_TYPES_EXTEND,
+  MIGRATION_V47_DISPATCH_ACP_LIFECYCLE,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -306,6 +307,10 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 46: Extend syncable_resources.resource_type CHECK to admit
   // 'playbook', 'team_template', and 'loadout'.
   46: MIGRATION_V46_RESOURCE_TYPES_EXTEND,
+  // Version 47: Per-dispatch ACP lifecycle hint column on dispatches.
+  // Transport-level concern; replaces the spec-metadata smell where
+  // `acp_lifecycle` was being read off opentasks task content.
+  47: MIGRATION_V47_DISPATCH_ACP_LIFECYCLE,
 };
 
 /** Get the SQL for a specific migration version.

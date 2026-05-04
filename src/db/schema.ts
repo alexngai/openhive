@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 46;
+export const SCHEMA_VERSION = 47;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -644,6 +644,13 @@ CREATE TABLE IF NOT EXISTS dispatches (
   outcome TEXT,
   -- optional caller-supplied prompt addendum
   prompt_override TEXT,
+  -- ACP lifecycle hint (V47): when this dispatch routes via ACP, controls
+  -- whether the orchestrator spawns a fresh coordinator ("fresh") or
+  -- reuses an existing ACP-capable agent ("reuse"). NULL means fall
+  -- through to config.dispatch.acp_lifecycle_default. Transport concern,
+  -- intentionally NOT in spec/loadout authoring (those are content layers).
+  acp_lifecycle TEXT
+    CHECK (acp_lifecycle IS NULL OR acp_lifecycle IN ('fresh', 'reuse')),
   -- timestamps
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
@@ -929,6 +936,16 @@ CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_re
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
+`;
+
+// Migration V47: Per-dispatch ACP lifecycle hint. Adds `acp_lifecycle` to
+// dispatches so callers can override the cluster default when creating a
+// dispatch via REST. Transport-level concern; intentionally not stored on
+// spec metadata or loadout content (those are content-authoring layers,
+// not routing).
+export const MIGRATION_V47_DISPATCH_ACP_LIFECYCLE = `
+ALTER TABLE dispatches ADD COLUMN acp_lifecycle TEXT
+  CHECK (acp_lifecycle IS NULL OR acp_lifecycle IN ('fresh', 'reuse'));
 `;
 
 export const MIGRATION_V45_DISPATCH_LINKED_TASKS = `

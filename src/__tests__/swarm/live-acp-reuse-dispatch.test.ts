@@ -508,7 +508,6 @@ describeIf(
                   teamTemplateId: tmpl!.id,
                   role: 'coordinator',
                 },
-                acp_lifecycle: 'reuse',
               },
             };
           },
@@ -521,6 +520,10 @@ describeIf(
           initiator_type: 'user',
           initiator_id: testAgent.id,
           status: 'queued',
+          // Explicit reuse — also matches the cluster-default of 'reuse',
+          // but stating it on the row exercises the per-dispatch override
+          // path so future regressions are caught immediately.
+          acp_lifecycle: 'reuse',
         });
         console.log(`[live-acp-reuse] Dispatch row inserted (id=${insertedDispatch.id})`);
 

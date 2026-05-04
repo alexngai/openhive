@@ -180,19 +180,17 @@ export async function enrichWithLoadout(
     // payload only carries {prompt, taskId, role}; this bridges that gap.
     // See src/dispatch/loadout-side-channel.ts.
     //
-    // Step 6 of the ACP+lifecycle plan: also stage the per-dispatch
-    // `acp_lifecycle` hint so `openhive-runtime.resolveTarget` can read
-    // it. Sourced from spec metadata first (most specific). Loadout-level
-    // override (`loadout.openhive.acp_lifecycle`) flows in once the
-    // materialized loadout grows a passthrough for the consumer extension
-    // namespace — for now, per-dispatch override is the primary control.
-    const specMeta = (meta.spec_metadata ?? {}) as Record<string, unknown>;
-    const acpLifecycleRaw =
-      (typeof meta.acp_lifecycle === 'string' ? meta.acp_lifecycle : undefined) ??
-      (typeof specMeta.acp_lifecycle === 'string' ? specMeta.acp_lifecycle : undefined);
+    // ACP lifecycle hint: read from the dispatch row's `acp_lifecycle`
+    // column (V47 schema). The column is set per-dispatch via the REST
+    // request body's `acp_lifecycle` field — this keeps the routing
+    // concern at the dispatch-creation layer, NOT on opentasks spec
+    // content (which is content authoring) or loadout content (which is
+    // a role-bundle abstraction). The resolver later applies the
+    // config-default fallback when the column is null.
+    const dispatchRow = dispatchesDAL.findDispatchById(task.id);
     const acpLifecycle =
-      acpLifecycleRaw === 'fresh' || acpLifecycleRaw === 'reuse'
-        ? acpLifecycleRaw
+      dispatchRow?.acp_lifecycle === 'fresh' || dispatchRow?.acp_lifecycle === 'reuse'
+        ? dispatchRow.acp_lifecycle
         : undefined;
     registerLoadoutForDispatch(
       task.id,

@@ -482,7 +482,6 @@ describeIf(
                   teamTemplateId: finalTmpl!.id,
                   role: 'coordinator',
                 },
-                acp_lifecycle: 'fresh',
               },
             };
           },
@@ -495,6 +494,7 @@ describeIf(
           initiator_type: 'user',
           initiator_id: testAgent.id,
           status: 'queued',
+          acp_lifecycle: 'fresh',
         });
         console.log(`[live-acp-fresh-e2e] Dispatch row inserted (id=${insertedDispatch.id})`);
 

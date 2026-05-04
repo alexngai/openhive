@@ -552,6 +552,7 @@ export async function createHive(
           const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: AcpStreamManager } }).swarmcraft;
           return sc?.acpStreamManager;
         },
+        acpLifecycleDefault: config.dispatch.acp_lifecycle_default,
       },
       messagePort,
       dispatchConfig: config.dispatch,

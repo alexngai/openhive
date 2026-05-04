@@ -23,8 +23,12 @@ export interface SetupOrchestratorOptions {
   specFetcher: SpecContentFetcher;
   runtimeDeps: OpenHiveRuntimeDeps;
   messagePort?: MessagePort;
-  /** Dispatch-specific config section. Optional so tests can omit. */
-  dispatchConfig?: Config['dispatch'];
+  /**
+   * Dispatch-specific config section. Optional so tests can omit. Accepts
+   * a partial — the helper applies its own defaults for any missing
+   * fields, mirroring the Zod-default behavior of the full config schema.
+   */
+  dispatchConfig?: Partial<Config['dispatch']>;
   /**
    * Orchestrator dispatch mode. Defaults to `'prefer-route'` (try mail
    * first, fall back to ACP spawn). Tests that want to exercise the ACP

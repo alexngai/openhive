@@ -626,6 +626,24 @@ export const ConfigSchema = z.object({
        * - `noop` — preserves source input order (previous default).
        */
       scorer: z.enum(["heuristic", "noop"]).default("heuristic"),
+      /**
+       * Cluster-wide default for the ACP-route lifecycle when a dispatch
+       * doesn't carry an explicit `acp_lifecycle` per-call override.
+       *
+       * - `reuse` (default) — orchestrator attaches to an existing
+       *   ACP-capable agent on the swarm via `findAcpAgentInfo`.
+       *   Backwards-compatible with the pre-this-work behavior; loadout
+       *   permissions are advisory because the existing session was
+       *   created earlier.
+       * - `fresh` — orchestrator spawns a fresh coordinator per dispatch
+       *   via the `dispatch/spawn-agent` notification-pair RPC. Loadout
+       *   permissions are enforced at spawn time. Requires the swarm to
+       *   be running a macro-agent build with the dispatch handler.
+       *
+       * Per-dispatch override via the dispatch request body's
+       * `acp_lifecycle` field takes precedence over this default.
+       */
+      acp_lifecycle_default: z.enum(["fresh", "reuse"]).default("reuse"),
     })
     .default({}),
 

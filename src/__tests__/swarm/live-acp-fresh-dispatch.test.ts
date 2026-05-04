@@ -507,7 +507,6 @@ describeIf(
                   teamTemplateId: tmpl!.id,
                   role: 'coordinator',
                 },
-                acp_lifecycle: 'fresh',
               },
             };
           },
@@ -520,6 +519,10 @@ describeIf(
           initiator_type: 'user',
           initiator_id: testAgent.id,
           status: 'queued',
+          // Per-dispatch override: now lives on the dispatch row, not on
+          // spec metadata. Mirrors what POST /specs/.../dispatch's
+          // body.acp_lifecycle would set in production.
+          acp_lifecycle: 'fresh',
         });
         console.log(`[live-acp-fresh] Dispatch row inserted (id=${insertedDispatch.id})`);
 

@@ -56,6 +56,14 @@ export interface Dispatch {
   attempt: number;
   turn_count: number;
   attempts_history: DispatchAttempt[];
+  /**
+   * ACP lifecycle hint (V47). When the orchestrator routes this dispatch
+   * via ACP, controls whether to spawn a fresh coordinator (`'fresh'`)
+   * or reuse an existing ACP-capable agent (`'reuse'`). `null` → fall
+   * through to `config.dispatch.acp_lifecycle_default` and ultimately
+   * the hardcoded `'reuse'` default.
+   */
+  acp_lifecycle: 'fresh' | 'reuse' | null;
   created_at: string;
   updated_at: string;
 }
@@ -77,6 +85,7 @@ interface DispatchRow {
   attempt: number | null;
   turn_count: number | null;
   attempts_history: string | null;
+  acp_lifecycle: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -125,6 +134,10 @@ function rowToDispatch(row: DispatchRow): Dispatch {
     attempt: row.attempt ?? 0,
     turn_count: row.turn_count ?? 0,
     attempts_history: parsedAttempts,
+    acp_lifecycle:
+      row.acp_lifecycle === 'fresh' || row.acp_lifecycle === 'reuse'
+        ? row.acp_lifecycle
+        : null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -145,6 +158,13 @@ export interface CreateDispatchInput {
   // Status defaults to 'queued'; tests may pre-seed.
   status?: DispatchStatus;
   session_ids?: string[];
+  /**
+   * Optional per-dispatch ACP lifecycle override. When omitted, the
+   * orchestrator falls back to `config.dispatch.acp_lifecycle_default`
+   * and finally to `'reuse'`. Transport-level concern — set by the
+   * caller of POST /specs/.../dispatch, NOT authored on spec or loadout.
+   */
+  acp_lifecycle?: 'fresh' | 'reuse';
 }
 
 export function createDispatch(input: CreateDispatchInput): Dispatch {
@@ -156,8 +176,8 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
     `INSERT INTO dispatches (
        id, spec_resource_id, spec_id, spec_captured_at, target_swarm_id,
        status, initiator_type, initiator_id, session_ids, prompt_override,
-       created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       acp_lifecycle, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.spec_resource_id,
@@ -169,6 +189,7 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
     input.initiator_id,
     JSON.stringify(input.session_ids ?? []),
     input.prompt_override ?? null,
+    input.acp_lifecycle ?? null,
     now,
     now,
   );
