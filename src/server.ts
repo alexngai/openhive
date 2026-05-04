@@ -521,7 +521,9 @@ export async function createHive(
       getMailEvents,
       sendToSwarm,
     });
-    const messagePort = createOpenHiveMailPort(mailTransport);
+    const messagePort = createOpenHiveMailPort(mailTransport, {
+      mailLifecycleDefault: config.dispatch.mail_lifecycle_default,
+    });
 
     dispatchOrchestrator = setupOrchestrator({
       specFetcher: {

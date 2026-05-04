@@ -64,6 +64,15 @@ export interface Dispatch {
    * the hardcoded `'reuse'` default.
    */
   acp_lifecycle: 'fresh' | 'reuse' | null;
+  /**
+   * Mail lifecycle hint (V48). When the orchestrator routes this dispatch
+   * via mail, controls whether the hub mail port forces routing to the
+   * connection's sidecar (`'fresh'` — sidecar's mail-inbound-consumer
+   * spawns a new ephemeral worker) or lets prefer-route pick a non-busy
+   * long-lived worker (`'reuse'`). `null` → fall through to
+   * `config.dispatch.mail_lifecycle_default` and ultimately `'reuse'`.
+   */
+  mail_lifecycle: 'fresh' | 'reuse' | null;
   created_at: string;
   updated_at: string;
 }
@@ -86,6 +95,7 @@ interface DispatchRow {
   turn_count: number | null;
   attempts_history: string | null;
   acp_lifecycle: string | null;
+  mail_lifecycle: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -138,6 +148,10 @@ function rowToDispatch(row: DispatchRow): Dispatch {
       row.acp_lifecycle === 'fresh' || row.acp_lifecycle === 'reuse'
         ? row.acp_lifecycle
         : null,
+    mail_lifecycle:
+      row.mail_lifecycle === 'fresh' || row.mail_lifecycle === 'reuse'
+        ? row.mail_lifecycle
+        : null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -165,6 +179,12 @@ export interface CreateDispatchInput {
    * caller of POST /specs/.../dispatch, NOT authored on spec or loadout.
    */
   acp_lifecycle?: 'fresh' | 'reuse';
+  /**
+   * Optional per-dispatch mail lifecycle override. When omitted, falls
+   * back to `config.dispatch.mail_lifecycle_default` and finally to
+   * `'reuse'`. Same transport-level concern semantics as `acp_lifecycle`.
+   */
+  mail_lifecycle?: 'fresh' | 'reuse';
 }
 
 export function createDispatch(input: CreateDispatchInput): Dispatch {
@@ -176,8 +196,8 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
     `INSERT INTO dispatches (
        id, spec_resource_id, spec_id, spec_captured_at, target_swarm_id,
        status, initiator_type, initiator_id, session_ids, prompt_override,
-       acp_lifecycle, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       acp_lifecycle, mail_lifecycle, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.spec_resource_id,
@@ -190,6 +210,7 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
     JSON.stringify(input.session_ids ?? []),
     input.prompt_override ?? null,
     input.acp_lifecycle ?? null,
+    input.mail_lifecycle ?? null,
     now,
     now,
   );

@@ -21,7 +21,8 @@ The dispatch-driven flow (author → resolve → materialize → dispatch → ag
 - **Loadout side-channel** (`src/dispatch/loadout-side-channel.ts`): module-level `Map<taskId, MaterializedLoadout>` with TTL bridges enrichment-time (where the loadout is known) to deliver-time (where the envelope is built). Needed because swarm-dispatch's `MessagePort.deliver(to, payload)` has a fixed payload shape with no metadata slot.
 - **Envelope metadata injection**: `openhive-mail-port.injectLoadoutMetadata` wraps the transport's `sendToAgent`, looks up the materialized loadout from the side-channel by taskId, and injects `body.metadata.permissions` and `body.metadata.mcpProviders` before the wire send. Consumed-on-read so memory stays bounded.
 - **Mail-routed delivery**: hub `forwardTurnToSwarms` writes to live WS + always-queues for retry; drain on `node_registered` (with 2s fallback timer); hub-side dedup by `turn_id` prevents queue growth.
-- **Worker pickup (macro-agent)**: `mail-bridge` translates hub `mail/turn.received` → local inbox; `mail-inbound-consumer` dedupes by taskId (1h TTL), reads `data.metadata.permissions` from the envelope, spawns the worker via `agentManager.spawn({ isolatedSettings: true, permissions, fullAutonomous: true })`, drives Claude with `promptUntilDone`, posts the worker's `done()` summary back via `mapSidecar.postMailTurn`.
+- **Worker pickup (mail+fresh, macro-agent)**: `mail-bridge` translates hub `mail/turn.received` → local inbox; `mail-inbound-consumer` filters envelopes addressed to the sidecar, dedupes by taskId (1h TTL), reads `data.loadout` (or legacy `data.metadata`), spawns a fresh worker via `agentManager.spawn({ isolatedSettings: true, permissions, fullAutonomous: true })`, drives Claude with `promptUntilDone`, posts the worker's `done()` summary back via `mapSidecar.postMailTurn`.
+- **Worker pickup (mail+reuse, macro-agent)**: `mail-inbound-reuse-consumer` filters envelopes addressed to **non-sidecar** agents (long-lived workers/coordinators), tracks `inflightDispatches` per agentId, drives the existing session via raw `agentManager.prompt(agentId, prompt)` (NOT `promptUntilDone` — that auto-terminates on `done()`, fatal for reuse), captures `args.summary` inline from the done() tool-call update, posts the summary back as a mail turn. Concurrent dispatches on a busy agent get rejected with `recipient_busy`; non-dispatch work (peer messages, user chat) does not block.
 - **Worker MCP trinity** (macro-agent's `agentManager.spawn`): per-spawn entries always written for `agent-inbox` (via `dist/cli/inbox-mcp-proxy.js` → `InboxMcpProxy(socketPath, agentId)`) and `opentasks` (via the `opentasks mcp` CLI subcommand, conditional on daemon). Independent of `isolatedSettings: true` — the flag strips host-user plugins but preserves per-spawn config. This is what gives the worker `list_agents`, `check_inbox`, `task`, etc. without depending on host-level Claude plugins.
 - **Worker permissions enforcement**: `agentManager.spawn` writes the loadout's permission rules to `agentMeta.claudeCode.options.settings.permissions` — an inline pass-through to Claude Agent SDK that triggers no `.claude/settings.json` file write. Concurrent spawns sharing a CWD don't collide. `deny` rules win over `permissionMode: "auto-approve"` (verified live). `ask` rules collapse based on `fullAutonomous`: `true` → `allow`, `false` → `deny` (autonomous workers shouldn't make judgment calls).
 - **Reply path**: hub stores reply turn → `mail.turn.added` → dispatch initiator's listener captures it. Echo containment: bridge correctly drops the re-broadcast plain-text reply (no second worker spawn).
@@ -321,6 +322,39 @@ data is and how it must be consumed. There is no one-size-fits-all path.
 | `permissions.{allow, deny, ask}` | `body.loadout.permissions` (mail) / `dispatch/spawn-agent` params (ACP+fresh) | `agentMeta.claudeCode.options.settings.permissions` (inline SDK pass-through) |
 | `mcpProviders` (resolved install specs) | `body.loadout.mcpProviders` (mail) / `dispatch/spawn-agent` params (ACP+fresh) | Currently unused; reserved for Phase 1/2 work |
 
+### Dispatch lifecycle matrix
+
+The orchestrator picks both a **transport** (mail vs ACP) and a
+**lifecycle** (fresh-spawn vs reuse-existing) per dispatch. Both axes are
+controlled by per-dispatch DB columns (V47 `acp_lifecycle`, V48
+`mail_lifecycle`) with cluster-wide defaults
+(`config.dispatch.acp_lifecycle_default`,
+`config.dispatch.mail_lifecycle_default`, both default `'reuse'`).
+
+| | Spawn fresh | Reuse existing |
+|---|---|---|
+| **Mail** | `mail_lifecycle: 'fresh'` — hub mail port overrides routing to the connection's sidecar; sidecar's `mail-inbound-consumer` spawns a new ephemeral worker per envelope. Loadout permissions enforced at spawn time. | `mail_lifecycle: 'reuse'` (default) — `prefer-route` picks a non-busy long-lived worker; `mail-inbound-reuse-consumer` drives the existing session and posts the summary back. Loadout permissions advisory (existing session has its own rules). Falls back to the sidecar (and fresh-spawn) when the roster has no non-busy match. |
+| **ACP** | `acp_lifecycle: 'fresh'` — runtime adapter calls `dispatch/spawn-agent` notification-pair RPC; macro-agent's handler spawns a fresh coordinator with the loadout applied. Loadout permissions enforced at spawn time. | `acp_lifecycle: 'reuse'` (default) — runtime adapter resolves the target via `findAcpAgentInfo` (an existing ACP-capable agent on the swarm). Loadout permissions advisory. |
+
+**Reuse semantics for both transports**: the existing agent's session was
+created earlier with whatever rules it had then; the dispatch's loadout
+informs the prompt body (skills, addendum) but cannot retroactively change
+permissions. This is documented as a known limitation, not a bug —
+operators choose `'fresh'` when they need strict permission enforcement.
+
+**Mid-task reject**: mail+reuse rejects a second dispatch on an
+already-busy agent with `recipient_busy` only when the agent is processing
+a **tracked dispatch**. Non-dispatch work (peer messages, user chat,
+team-internal coordination) does not gate; those stack naturally via the
+session's serial prompt loop.
+
+**Fresh-route override (mail)**: when `mail_lifecycle: 'fresh'` is set, the
+hub mail port (`openhive-mail-port.send`) reads the side-channel hint and
+overrides `executor.to.agentId` to the sidecar id (`findSidecarAgentId`).
+This bypasses any long-lived worker the roster might have picked. Falls
+through silently when no sidecar is registered or the picked agent already
+IS the sidecar.
+
 ### Channel 1 — text in the prompt body
 
 Used for content the agent reads as part of its system prompt context: the
@@ -418,7 +452,9 @@ capabilities are registered with the hub (so subsequent `findAcpAgentInfo`
 finds it). For `lifecycle === 'reuse'`, the orchestrator skips the MAP call
 and uses an existing ACP-capable agent's id directly — but in that case,
 loadout permissions are advisory (the existing agent's session was created
-with whatever rules it had then).
+with whatever rules it had then). The mail-route mirror of this advisory-
+permissions caveat applies to `mail_lifecycle: 'reuse'` as well; see the
+"Dispatch lifecycle matrix" table above.
 
 ### Channel 3 — operator-provisioned (no wire involvement)
 

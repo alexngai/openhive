@@ -283,6 +283,25 @@ export function findAcpAgentInfo(swarmId: string): {
 }
 
 /**
+ * Find the sidecar agent's id on a swarm. The sidecar is the connection-
+ * level agent that runs the swarm's mail-inbound-consumer (handles
+ * `x-dispatch/work` envelopes for fresh-spawn dispatch). Used by the mail
+ * port to force routing to the sidecar when `mail_lifecycle: 'fresh'` is
+ * set per-dispatch.
+ *
+ * Returns the hub-side agent id (suitable for `MailTransport.sendToAgent`).
+ * Returns null when no inbound connection or no sidecar-role agent exists.
+ */
+export function findSidecarAgentId(swarmId: string): string | null {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn || conn.isStale) return null;
+  for (const agent of conn.registeredAgents.values()) {
+    if (agent.role === 'sidecar') return agent.id;
+  }
+  return null;
+}
+
+/**
  * Look up a specific registered agent on a swarm. Returns undefined if the
  * connection is stale or the agent isn't registered.
  */

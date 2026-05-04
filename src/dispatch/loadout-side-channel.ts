@@ -26,13 +26,14 @@ import type { MaterializedLoadout } from '../openteams/types.js';
 
 /**
  * Per-dispatch hints that don't ride in MaterializedLoadout but are
- * needed by the runtime adapter at resolveTarget time. Step 6 of the
- * ACP+lifecycle plan: lifecycle override (fresh|reuse) sourced from
- * spec metadata (most specific) or loadout's `openhive.acp_lifecycle`
- * consumer extension namespace.
+ * needed by the runtime adapter at resolveTarget time (or by the mail
+ * port at deliver time). Both `acpLifecycle` and `mailLifecycle` are
+ * sourced from per-dispatch DB columns (V47 / V48) — transport-level
+ * concerns, not loadout-authoring concerns.
  */
 export interface DispatchHints {
   acpLifecycle?: 'fresh' | 'reuse';
+  mailLifecycle?: 'fresh' | 'reuse';
 }
 
 interface CacheEntry {

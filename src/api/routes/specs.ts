@@ -69,6 +69,14 @@ const DispatchSpecSchema = z.object({
    * (cluster-wide operator default), then to `'reuse'`.
    */
   acp_lifecycle: z.enum(['fresh', 'reuse']).optional(),
+  /**
+   * Per-dispatch mail lifecycle override. When the dispatch routes via
+   * mail, controls whether the hub mail port forces routing to the
+   * connection's sidecar (`'fresh'`) or lets prefer-route pick a
+   * non-busy long-lived worker (`'reuse'`). Omitted → falls back to
+   * `config.dispatch.mail_lifecycle_default`, then to `'reuse'`.
+   */
+  mail_lifecycle: z.enum(['fresh', 'reuse']).optional(),
 });
 
 const VALID_EDGE_TYPES = [
@@ -890,6 +898,7 @@ export async function specsRoutes(
         targetSwarms: body.target_swarms,
         prompt: body.prompt,
         ...(body.acp_lifecycle ? { acpLifecycle: body.acp_lifecycle } : {}),
+        ...(body.mail_lifecycle ? { mailLifecycle: body.mail_lifecycle } : {}),
       });
 
       if (!result.ok) {
@@ -920,6 +929,8 @@ export async function dispatchSpecToSwarms(input: {
   prompt?: string | null;
   /** Per-dispatch ACP lifecycle override (caller pass-through). */
   acpLifecycle?: 'fresh' | 'reuse';
+  /** Per-dispatch mail lifecycle override (caller pass-through). */
+  mailLifecycle?: 'fresh' | 'reuse';
 }): Promise<
   | {
       ok: true;
@@ -986,6 +997,7 @@ export async function dispatchSpecToSwarms(input: {
       initiator_id: input.agentId,
       prompt_override: input.prompt ?? null,
       ...(input.acpLifecycle ? { acp_lifecycle: input.acpLifecycle } : {}),
+      ...(input.mailLifecycle ? { mail_lifecycle: input.mailLifecycle } : {}),
     });
 
     // Persist the spec's linked tasks so downstream lifecycle hooks

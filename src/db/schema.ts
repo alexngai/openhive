@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 47;
+export const SCHEMA_VERSION = 48;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -651,6 +651,14 @@ CREATE TABLE IF NOT EXISTS dispatches (
   -- intentionally NOT in spec/loadout authoring (those are content layers).
   acp_lifecycle TEXT
     CHECK (acp_lifecycle IS NULL OR acp_lifecycle IN ('fresh', 'reuse')),
+  -- Mail lifecycle hint (V48): when this dispatch routes via mail, controls
+  -- whether the hub mail port forces routing to the connection's sidecar
+  -- ("fresh" — sidecar's mail-inbound-consumer spawns a new ephemeral
+  -- worker) or lets prefer-route pick a non-busy long-lived worker
+  -- ("reuse"). NULL means fall through to config.dispatch.mail_lifecycle_default.
+  -- Same transport-vs-content split as acp_lifecycle.
+  mail_lifecycle TEXT
+    CHECK (mail_lifecycle IS NULL OR mail_lifecycle IN ('fresh', 'reuse')),
   -- timestamps
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
@@ -946,6 +954,15 @@ CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_reso
 export const MIGRATION_V47_DISPATCH_ACP_LIFECYCLE = `
 ALTER TABLE dispatches ADD COLUMN acp_lifecycle TEXT
   CHECK (acp_lifecycle IS NULL OR acp_lifecycle IN ('fresh', 'reuse'));
+`;
+
+// Migration V48: Per-dispatch mail lifecycle hint. Adds `mail_lifecycle`
+// to dispatches mirroring V47's acp_lifecycle. Transport-level concern;
+// "fresh" forces routing to the sidecar (ephemeral spawn), "reuse" lets
+// prefer-route pick a non-busy long-lived worker.
+export const MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE = `
+ALTER TABLE dispatches ADD COLUMN mail_lifecycle TEXT
+  CHECK (mail_lifecycle IS NULL OR mail_lifecycle IN ('fresh', 'reuse'));
 `;
 
 export const MIGRATION_V45_DISPATCH_LINKED_TASKS = `

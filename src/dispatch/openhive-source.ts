@@ -180,23 +180,30 @@ export async function enrichWithLoadout(
     // payload only carries {prompt, taskId, role}; this bridges that gap.
     // See src/dispatch/loadout-side-channel.ts.
     //
-    // ACP lifecycle hint: read from the dispatch row's `acp_lifecycle`
-    // column (V47 schema). The column is set per-dispatch via the REST
-    // request body's `acp_lifecycle` field — this keeps the routing
-    // concern at the dispatch-creation layer, NOT on opentasks spec
-    // content (which is content authoring) or loadout content (which is
-    // a role-bundle abstraction). The resolver later applies the
-    // config-default fallback when the column is null.
+    // Lifecycle hints: read from the dispatch row's `acp_lifecycle` (V47)
+    // and `mail_lifecycle` (V48) columns. Both are set per-dispatch via
+    // the REST request body — this keeps the routing concern at the
+    // dispatch-creation layer, NOT on opentasks spec content (content
+    // authoring) or loadout content (role-bundle abstraction). The
+    // ACP runtime / mail port apply config-default fallbacks when the
+    // respective column is null.
     const dispatchRow = dispatchesDAL.findDispatchById(task.id);
     const acpLifecycle =
       dispatchRow?.acp_lifecycle === 'fresh' || dispatchRow?.acp_lifecycle === 'reuse'
         ? dispatchRow.acp_lifecycle
         : undefined;
-    registerLoadoutForDispatch(
-      task.id,
-      materialized,
-      acpLifecycle ? { acpLifecycle } : undefined,
-    );
+    const mailLifecycle =
+      dispatchRow?.mail_lifecycle === 'fresh' || dispatchRow?.mail_lifecycle === 'reuse'
+        ? dispatchRow.mail_lifecycle
+        : undefined;
+    const hints =
+      acpLifecycle || mailLifecycle
+        ? {
+            ...(acpLifecycle ? { acpLifecycle } : {}),
+            ...(mailLifecycle ? { mailLifecycle } : {}),
+          }
+        : undefined;
+    registerLoadoutForDispatch(task.id, materialized, hints);
 
     return {
       ...task,

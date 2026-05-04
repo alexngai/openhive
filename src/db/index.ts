@@ -40,6 +40,7 @@ import {
   MIGRATION_V45_DISPATCH_LINKED_TASKS,
   MIGRATION_V46_RESOURCE_TYPES_EXTEND,
   MIGRATION_V47_DISPATCH_ACP_LIFECYCLE,
+  MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -311,6 +312,10 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Transport-level concern; replaces the spec-metadata smell where
   // `acp_lifecycle` was being read off opentasks task content.
   47: MIGRATION_V47_DISPATCH_ACP_LIFECYCLE,
+  // Version 48: Per-dispatch mail lifecycle hint column on dispatches.
+  // Mirrors V47 — "fresh" forces sidecar routing, "reuse" lets
+  // prefer-route pick a non-busy long-lived worker.
+  48: MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE,
 };
 
 /** Get the SQL for a specific migration version.

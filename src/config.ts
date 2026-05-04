@@ -644,6 +644,24 @@ export const ConfigSchema = z.object({
        * `acp_lifecycle` field takes precedence over this default.
        */
       acp_lifecycle_default: z.enum(["fresh", "reuse"]).default("reuse"),
+      /**
+       * Cluster-wide default for the mail-route lifecycle when a dispatch
+       * doesn't carry an explicit `mail_lifecycle` per-call override.
+       *
+       * - `reuse` (default) — hub mail port lets prefer-route pick a
+       *   non-busy long-lived worker via the roster. Falls back to the
+       *   sidecar (and its mail-inbound-consumer fresh-spawn) when no
+       *   roster match is available. Loadout permissions are advisory
+       *   for the existing session, same as ACP+reuse.
+       * - `fresh` — hub mail port forces routing to the connection's
+       *   sidecar regardless of roster matches. The sidecar's
+       *   mail-inbound-consumer spawns a fresh ephemeral worker per
+       *   envelope. Loadout permissions are enforced at spawn time.
+       *
+       * Per-dispatch override via the dispatch request body's
+       * `mail_lifecycle` field takes precedence over this default.
+       */
+      mail_lifecycle_default: z.enum(["fresh", "reuse"]).default("reuse"),
     })
     .default({}),
 

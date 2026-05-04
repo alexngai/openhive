@@ -17,7 +17,7 @@
 
 import { createMailPort } from 'swarm-dispatch/client';
 import type { MessagePort } from 'swarm-dispatch';
-import { getInbound } from '../map/connection-registry.js';
+import { findSidecarAgentId, getInbound } from '../map/connection-registry.js';
 import {
   consumeLoadoutForDispatch,
   peekHintsForDispatch,
@@ -103,10 +103,47 @@ function injectLoadoutMetadata(envelope: {
   };
 }
 
-export function createOpenHiveMailPort(transport: MailTransport): MessagePort {
+export interface OpenHiveMailPortOptions {
+  /**
+   * Cluster-wide default for the mail-route lifecycle when a dispatch's
+   * `mail_lifecycle` column is null. Wired from
+   * `config.dispatch.mail_lifecycle_default` at server startup. Mirrors
+   * `OpenHiveRuntimeDeps.acpLifecycleDefault`.
+   */
+  mailLifecycleDefault?: 'fresh' | 'reuse';
+}
+
+/**
+ * Read the per-dispatch mail lifecycle preference. Precedence:
+ *
+ *   1. Side-channel hint sourced from the dispatch row's `mail_lifecycle`
+ *      column at enrichment time (set per-dispatch via REST).
+ *   2. `configDefault` — cluster-wide operator default from
+ *      `config.dispatch.mail_lifecycle_default`.
+ *   3. Hardcoded `'reuse'` — backwards-compatible default.
+ *
+ * Mirrors `readDispatchLifecycle` for the ACP route.
+ */
+export function readMailLifecycle(
+  hints: { mailLifecycle?: 'fresh' | 'reuse' } | null,
+  configDefault?: 'fresh' | 'reuse',
+): 'fresh' | 'reuse' {
+  if (hints?.mailLifecycle === 'fresh' || hints?.mailLifecycle === 'reuse') {
+    return hints.mailLifecycle;
+  }
+  if (configDefault === 'fresh' || configDefault === 'reuse') {
+    return configDefault;
+  }
+  return 'reuse';
+}
+
+export function createOpenHiveMailPort(
+  transport: MailTransport,
+  opts: OpenHiveMailPortOptions = {},
+): MessagePort {
   return createMailPort({
     send: async (system, agentId, envelope) => {
-      // Lifecycle-fresh dispatches must NOT take the mail route: the
+      // ACP-lifecycle-fresh dispatches must NOT take the mail route: the
       // mail-inbound consumer would spawn a fresh worker (correct
       // behavior) but bypasses the ACP path entirely. When a dispatch's
       // hint says 'fresh' AND we're inside `prefer-route`, returning
@@ -121,6 +158,20 @@ export function createOpenHiveMailPort(transport: MailTransport): MessagePort {
         const hints = peekHintsForDispatch(taskId);
         if (hints?.acpLifecycle === 'fresh') {
           return { delivered: false, reason: 'lifecycle_fresh' };
+        }
+        // Mail-lifecycle-fresh override: when a dispatch wants a fresh
+        // spawn via the mail route, re-route to the connection's sidecar
+        // regardless of whichever agent prefer-route picked. The
+        // sidecar's mail-inbound-consumer always spawns a new ephemeral
+        // worker per envelope (today's pre-this-work behavior). Falls
+        // through silently when no sidecar is registered or the picked
+        // agent already IS the sidecar.
+        const lifecycle = readMailLifecycle(hints, opts.mailLifecycleDefault);
+        if (lifecycle === 'fresh') {
+          const sidecarId = findSidecarAgentId(system);
+          if (sidecarId && sidecarId !== agentId) {
+            return transport.sendToAgent(system, sidecarId, injectLoadoutMetadata(envelope));
+          }
         }
       }
       return transport.sendToAgent(system, agentId, injectLoadoutMetadata(envelope));
