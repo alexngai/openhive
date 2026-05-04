@@ -25,6 +25,13 @@ export interface SetupOrchestratorOptions {
   messagePort?: MessagePort;
   /** Dispatch-specific config section. Optional so tests can omit. */
   dispatchConfig?: Config['dispatch'];
+  /**
+   * Orchestrator dispatch mode. Defaults to `'prefer-route'` (try mail
+   * first, fall back to ACP spawn). Tests that want to exercise the ACP
+   * path explicitly should pass `'spawn-only'` so the orchestrator goes
+   * through the runtime adapter regardless of mail availability.
+   */
+  dispatchMode?: 'prefer-route' | 'spawn-only' | 'route-only' | 'prefer-spawn';
 }
 
 export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator {
@@ -53,7 +60,7 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
     eligibility: { scorer },
     roster,
     messagePort: opts.messagePort,
-    dispatchMode: 'prefer-route',
+    dispatchMode: opts.dispatchMode ?? 'prefer-route',
     heartbeatIntervalMs: 30_000,
     // Reconcile the external-cancel → agent-terminate path quickly. The
     // default (60s) leaves the user watching a spinner after they click

@@ -223,26 +223,39 @@ function buildLoadoutContent(skillBankRef?: string): LoadoutContent {
     name: 'live-dispatch-loadout',
     description: 'Loadout for live dispatch E2E',
     capabilities: [],
-    permissions: { allow: [] },
+    // Permission rules — wired hub-side via openhive-mail-port's
+    // body.metadata.permissions, then macro-agent's spawn writes them
+    // to agentMeta.claudeCode.options.settings.permissions. `deny` wins
+    // over the worker's `auto-approve` mode (verified live).
+    // The deny rule below intentionally targets a no-op echo so the
+    // agent can attempt it without side effects, observe denial, and
+    // report PERM_DENIED=true in its reply.
+    permissions: {
+      allow: [],
+      deny: ['Bash(echo perm-deny-test:*)'],
+    },
     // Scope-only declaration — agent-inbox is environment-available on
     // macro-agent hosts (operator-provisioned). Surfaces as an "Expected
     // MCP servers" advisory hint in the dispatch prompt.
     mcp_servers: ['agent-inbox'],
     prompt_addendum: [
-      `You have three required tasks before calling done. Complete all three.`,
+      `You have four required tasks before calling done. Complete all four.`,
       ``,
       `Task 1 — Skill consumption: Read your <available_skills> section. If you find a skill named "Marker Skill", extract the marker string from its description (a token like SKILL_MARKER_*).`,
       ``,
       `Task 2 — MCP invocation: Call the \`list_agents\` tool from the agent-inbox MCP server. Note the count of agents returned.`,
       ``,
-      `Task 3 — Reply: Call the \`done\` tool from the macro-agent MCP server with status="completed" and a summary that contains, in this order:`,
+      `Task 3 — Permission probe: Try to run "echo perm-deny-test should-be-blocked" using the Bash tool. The dispatch loadout has a deny rule for this exact command pattern. If the call is denied (you'll see "Permission to use Bash ... has been denied" or similar), set PERM_DENIED=true. If the call somehow succeeds and the echo runs, set PERM_DENIED=false. Either outcome is fine — just report what happens accurately.`,
+      ``,
+      `Task 4 — Reply: Call the \`done\` tool from the macro-agent MCP server with status="completed" and a summary that contains, in this order:`,
       `  - The literal prefix "${SENTINEL}" at the very start of the summary`,
       `  - The marker token from Task 1 (verbatim, e.g. SKILL_MARKER_WIDGET_99)`,
       `  - The literal text "AGENT_COUNT=N" where N is the integer count from Task 2`,
+      `  - The literal text "PERM_DENIED=true" or "PERM_DENIED=false" from Task 3`,
       ``,
-      `Example summary format: "${SENTINEL} SKILL_MARKER_WIDGET_99 AGENT_COUNT=2 (reply text optional)"`,
+      `Example summary format: "${SENTINEL} SKILL_MARKER_WIDGET_99 AGENT_COUNT=2 PERM_DENIED=true (reply text optional)"`,
       ``,
-      `Do not respond with prose before calling done. Execute the three tasks then call done.`,
+      `Do not respond with prose before calling done. Execute the four tasks then call done.`,
     ].join('\n'),
   };
 
@@ -988,6 +1001,16 @@ describeIf(
             ? parseInt(agentCountMatch![1], 10)
             : null;
           const mcpActuallyInvoked = reportedCount !== null && reportedCount > 0;
+          // Permission enforcement (Gap 5 — symmetric with the MCP fix). The
+          // loadout's deny rule should block `Bash(echo perm-deny-test:*)`
+          // because the loadout permissions ride to the spawn config via
+          // openhive-mail-port.body.metadata.permissions →
+          // mail-inbound-consumer → agentManager.spawn({ permissions,
+          // fullAutonomous: true }) →
+          // agentMeta.claudeCode.options.settings.permissions. A
+          // PERM_DENIED=true in the reply proves the chain works.
+          const permFollowThrough = /PERM_DENIED\s*=\s*(true|false)/i.test(raw);
+          const permEnforced = /PERM_DENIED\s*=\s*true/i.test(raw);
 
           if (!skillUsed) {
             console.warn(
@@ -1045,11 +1068,39 @@ describeIf(
             );
           }
 
-          // All three hard assertions. mcpActuallyInvoked is intentionally
-          // a regression target — see comment above the capability block.
+          if (permFollowThrough && permEnforced) {
+            console.log(
+              `[live-loadout] CAPABILITY PROVEN (HARD) — Loadout ` +
+                `permissions enforced: agent attempted denied Bash command, ` +
+                `received denial, reported PERM_DENIED=true.`,
+            );
+          } else if (permFollowThrough && !permEnforced) {
+            console.error(
+              `[live-loadout] CAPABILITY NOT PROVEN — Agent ran the deny ` +
+                `command WITHOUT being blocked (PERM_DENIED=false). The ` +
+                `loadout's deny rule did not reach the spawned worker. ` +
+                `Check the chain: openhive-mail-port → envelope.body.metadata ` +
+                `→ mail-inbound-consumer → agentManager.spawn({ permissions, ` +
+                `fullAutonomous: true }) → agentMeta.claudeCode.options.` +
+                `settings.permissions. Reply: ${raw.slice(0, 600)}`,
+            );
+          } else {
+            console.error(
+              `[live-loadout] CAPABILITY NOT PROVEN — Agent did not emit ` +
+                `the PERM_DENIED=<bool> pattern at all. Either Claude skipped ` +
+                `Task 3, or the reply format diverged. ` +
+                `Reply: ${raw.slice(0, 600)}`,
+            );
+          }
+
+          // All four hard assertions. mcpActuallyInvoked and permEnforced
+          // are intentionally regression targets — they fail loudly if the
+          // wiring chain ever drops the structured loadout fields.
           expect(skillUsed).toBe(true);
           expect(mcpFollowThrough).toBe(true);
           expect(mcpActuallyInvoked).toBe(true);
+          expect(permFollowThrough).toBe(true);
+          expect(permEnforced).toBe(true);
         } else {
           // Level 2 did not pass within budget. Dump diagnostics.
           const replyTurns = capturedTurns.filter(

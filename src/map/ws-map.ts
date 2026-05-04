@@ -29,6 +29,7 @@ import { verifyToken, isTokenServiceInitialized } from './token-service.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { handleTrajectoryRequest } from './trajectory-handler.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
+import { handleNotificationPairResponse } from './notification-rpc.js';
 import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { pushDispatchMapReply } from '../dispatch/mail-ingress.js';
@@ -345,6 +346,15 @@ function createNotificationInterceptor(
       } else if (typeof msg.method === 'string' && msg.method.startsWith('opentasks/') && msg.method.endsWith('.response')) {
         // OpenTasks response from swarm — resolve pending remote query
         handleOpenTasksResponse(msg.params as Record<string, unknown>);
+      } else if (
+        typeof msg.method === 'string' &&
+        msg.method === 'dispatch/spawn-agent.response'
+      ) {
+        // Response side of the notification-pair RPC used for hub→swarm
+        // request/response on `dispatch/spawn-agent`. AgentConnection
+        // doesn't expose setRequestHandler, so we simulate request/response
+        // over notifications. See src/map/notification-rpc.ts.
+        handleNotificationPairResponse(msg.params);
       } else if (typeof msg.method === 'string' && msg.method.startsWith('mail/')) {
         // Mail notifications — fire and forget
         try { getMailJsonRpc().handleRequest(msg as any); } catch { /* ignore */ }

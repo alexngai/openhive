@@ -1,6 +1,6 @@
 # Loadouts — Milestone B: Verification
 
-**Status:** Verified end-to-end with a real Claude API worker (2026-05-03). 5/5 live tests pass in ~13s.
+**Status:** Verified end-to-end with a real Claude API worker (2026-05-03). 5/5 live tests pass in ~25s with four hard-asserted capability proofs (delivery, skill consumption, MCP invocation, permission enforcement).
 **Goal:** End-to-end test coverage for the hub→swarm bridge that already shipped in Milestone A. Prove the dispatch flow with materialized loadouts works under realistic edits, against the real macro-agent process, and stays compatible with openteams as both libraries evolve.
 
 **Companion docs:**
@@ -17,7 +17,7 @@ The full chain `loadout author → enrichWithLoadout → openHivePromptBuilder �
 
 | Test | Cadence | Result |
 |---|---|---|
-| `live-loadout-dispatch-e2e.test.ts` (5 tests) | `LIVE_AGENT_E2E=true` | 5/5 pass in ~13s. Asserts SENTINEL from `prompt_addendum` reaches the worker's reply turn. |
+| `live-loadout-dispatch-e2e.test.ts` (5 tests) | `LIVE_AGENT_E2E=true` | 5/5 pass in ~25s. Four hard-asserted capability proofs in the agent's reply: SENTINEL (addendum read), SKILL_MARKER_WIDGET_99 (skill catalog consumed), AGENT_COUNT=N with N>0 (loadout-declared MCP `agent-inbox.list_agents` invoked), PERM_DENIED=true (loadout's deny rule blocked a tool call). Each layer is a regression target — see "Defects closed" 10–12 below for the wiring fixes that made them flip green. |
 | `full-stack-loadout-prompt-receipt.test.ts` (7 tests) | `FULL_STACK_E2E=true` | 7/7 pass. Asserts dispatch with materialized loadout reaches the macro-agent process boundary. |
 | `mail/forward-retry.test.ts` (6 tests) | default | 6/6 pass. Hub-side retry-queue happy path, dedup, drain on `node_registered`, fallback timer, mismatched-swarm filter, skip-self. |
 
@@ -35,16 +35,28 @@ Each was found while tightening Milestone B coverage and patched in the same ses
 8. **MAP SDK stale-stream race** — `BaseConnection.#startReceiving()` could close a freshly reconnected stream when an old loop unblocked. Added `#streamGeneration` counter so close happens only when the loop's generation matches the current.
 9. **Hub-side mail forward had no retry** — `forwardTurnToSwarms` now always-queues alongside the live send, dedupes by `turn_id`, drains on `node_registered` (with 2s fallback). Recovers mid-turn WS disconnects.
 
+Follow-on work (post-Milestone B verification, same-day):
+
+10. **Skill catalog reached prompt but skill consumption was never proven.** Live test had no `skills` block in the loadout, so the entire `compileSkillsForLoadout → skill-tree → prompt prepend` path was unexercised. Added `src/__tests__/helpers/skill-bank-fixture.ts` (reusable test bank with `MARKER_SKILL` carrying `SKILL_MARKER_WIDGET_99`), `src/__tests__/openteams/skill-bank-ref.test.ts` (4-test fast lock-in for the `loadout.openhive.skillBankRef` resolution path), and extended the live e2e to assert the marker reaches the agent's reply (proving the agent both received AND consumed the catalog).
+11. **MCP "trinity" not actually mounted on mail-inbound workers.** Architecture docs claimed agent-inbox and opentasks were available to spawned workers, but `agentManager.spawn` only mounted macro-agent's own MCP server. With `isolatedSettings: true` stripping host-user plugins, mail-inbound workers had zero non-macro-agent MCP tools. Fixed in macro-agent: `spawn` now writes per-spawn entries for `agent-inbox` (via new `dist/cli/inbox-mcp-proxy.js` → `InboxMcpProxy`) and `opentasks` (via `opentasks mcp` CLI subcommand), independent of `isolatedSettings`. Bumped `agent-inbox` 0.1.8 → 0.1.9 to get the `InboxMcpProxy` export.
+12. **Loadout permissions never reached the worker's Claude SDK.** `MaterializedLoadout.permissions` was populated but went nowhere — workers ran with `permissionMode: "auto-approve"` and no rule enforcement. Built three new pieces:
+    - `src/dispatch/loadout-side-channel.ts` — bridges enrichment-time → deliver-time, since swarm-dispatch's `MessagePort.deliver` payload is fixed.
+    - `openhive-mail-port.injectLoadoutMetadata` — wraps `transport.sendToAgent` to add `body.metadata.permissions`.
+    - macro-agent's `agentManager.spawn` — writes permissions to `agentMeta.claudeCode.options.settings.permissions` (inline SDK pass-through; no `.claude/settings.json` file → no concurrent-spawn collision). New `fullAutonomous` flag controls `ask` rule resolution.
+
 Plus three observability + safety fixes (stripped `_lastSummary` after post; bounded `seenTaskIds` with 1h TTL; surfaced malformed-envelope counter via `consumer.stats()`).
 
 ### What's NOT covered by Milestone B (carried into the limitations table in `LOADOUTS_DESIGN.md`)
 
-- Cross-owner `extends` chains.
-- Loadout-provided MCP servers reaching the spawned worker.
-- `permissions.{allow,deny,ask}` enforced as Claude permission-mode config.
-- Cross-instance federation of loadouts under live dispatch.
-- Loadout version pinning on dispatches.
-- UI / Playwright coverage.
+Status updated 2026-05-03 after follow-on work:
+
+- ~~Loadout-provided MCP servers reaching the spawned worker.~~ **Closed.** macro-agent's `agentManager.spawn` now mounts the `agent-inbox` + `opentasks` trinity per-spawn (independent of `isolatedSettings`). Live test asserts `agent-inbox.list_agents` returns real data via `AGENT_COUNT > 0`. Loadout-declared MCPs beyond the trinity remain advisory (Phase 0); scope filter (Phase 1) and install-spec delivery (Phase 2) deferred.
+- ~~`permissions.{allow,deny,ask}` enforced as Claude permission-mode config.~~ **Closed.** Loadout permissions ride hub-side via the loadout side-channel → envelope `body.metadata.permissions` → mail-inbound-consumer → `agentManager.spawn({ permissions, fullAutonomous })` → `agentMeta.claudeCode.options.settings.permissions`. Live test asserts `PERM_DENIED=true` after the agent attempts a denied bash call. New `fullAutonomous` flag controls `ask` resolution (true → allow, false → deny).
+- Cross-owner `extends` chains. (Open — needs sharing/visibility model.)
+- Cross-instance federation of loadouts under live dispatch. (Open — depends on cross-owner.)
+- Loadout version pinning on dispatches. (Open — wait for use case.)
+- UI / Playwright coverage. (Open — wait until UI stops moving.)
+- Loadout audit log persistence. (Open — quick win available; ~half day.)
 
 ---
 

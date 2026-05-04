@@ -1,7 +1,7 @@
 # Loadouts: Design
 
-**Status:** Implemented — Milestone A shipped, Milestone B verified end-to-end (live agent, 2026-05-03).
-**Date:** 2026-05-01 (design); 2026-05-03 (status update)
+**Status:** Implemented — Milestones A + B shipped; structured-field propagation (skills, MCP trinity, permissions) wired end-to-end and live-asserted (2026-05-03).
+**Date:** 2026-05-01 (design); 2026-05-03 (status update — incl. propagation channels + per-spawn permission enforcement)
 **Scope:** OpenHive's role as the source-of-truth and resolution layer for openteams team templates and loadouts, used hub-side for dispatch prompt building and UI authoring. Compatibility with the existing skill-tree loadout flow.
 
 **Out of scope:** any swarm-side fetch mechanism for templates or loadouts. The hub→swarm bridge is **dispatch carrying baked-in prompts**, not template distribution. Agent-side template consumption stays on openteams' existing install path (git clone → local disk → `TemplateLoader.load`); OpenHive is not in that path.
@@ -16,16 +16,20 @@ The dispatch-driven flow (author → resolve → materialize → dispatch → ag
 
 - **Author**: `POST /api/v1/loadouts`, `POST /api/v1/teams` create resources owned by an agent. ACL gates read access via `canAccessResource`.
 - **Resolve / materialize**: `materializeLoadoutById(id, viewerAgentId?)` and `materializeRoleLoadout(templateId, role, viewerAgentId?)` produce `MaterializedLoadout` with `promptAddendum` (camelCase from snake_case YAML), compiled `skills`, resolved MCP refs, permissions. Cached by `(templateId, contentHash)` with promise coalescing.
-- **Dispatch enrichment**: `enrichWithLoadout` reads `spec_metadata.loadout_ref` (preferred) or `spec_metadata.team_role_ref`, materializes, attaches as `task.metadata.materializedLoadout`. Failures attach a `loadout_error` marker and broadcast a `dispatch.materialization_failed` event on `map:dispatches` rather than blocking dispatch.
-- **Prompt builder**: `openHivePromptBuilder` embeds `loadout.skills.rendered` at the top, `loadout.promptAddendum` below the task body and above the role line. Continuations skip loadout sections.
+- **Dispatch enrichment**: `enrichWithLoadout` reads `spec_metadata.loadout_ref` (preferred) or `spec_metadata.team_role_ref`, materializes, attaches as `task.metadata.materializedLoadout`, **and registers the materialization in the loadout side-channel keyed by taskId**. Failures attach a `loadout_error` marker and broadcast a `dispatch.materialization_failed` event on `map:dispatches` rather than blocking dispatch.
+- **Prompt builder**: `openHivePromptBuilder` embeds `loadout.skills.rendered` at the top, `loadout.promptAddendum` below the task body and above the role line, and an "Expected MCP servers for this role: …" advisory line above the addendum when `mcpProviders`/`mcpScope` is non-empty. Continuations skip loadout sections.
+- **Loadout side-channel** (`src/dispatch/loadout-side-channel.ts`): module-level `Map<taskId, MaterializedLoadout>` with TTL bridges enrichment-time (where the loadout is known) to deliver-time (where the envelope is built). Needed because swarm-dispatch's `MessagePort.deliver(to, payload)` has a fixed payload shape with no metadata slot.
+- **Envelope metadata injection**: `openhive-mail-port.injectLoadoutMetadata` wraps the transport's `sendToAgent`, looks up the materialized loadout from the side-channel by taskId, and injects `body.metadata.permissions` and `body.metadata.mcpProviders` before the wire send. Consumed-on-read so memory stays bounded.
 - **Mail-routed delivery**: hub `forwardTurnToSwarms` writes to live WS + always-queues for retry; drain on `node_registered` (with 2s fallback timer); hub-side dedup by `turn_id` prevents queue growth.
-- **Worker pickup (macro-agent)**: `mail-bridge` translates hub `mail/turn.received` → local inbox; `mail-inbound-consumer` dedupes by taskId (1h TTL), spawns the worker via `agentManager.spawn({isolatedSettings: true})`, drives Claude with `promptUntilDone`, posts the worker's `done()` summary back via `mapSidecar.postMailTurn`.
+- **Worker pickup (macro-agent)**: `mail-bridge` translates hub `mail/turn.received` → local inbox; `mail-inbound-consumer` dedupes by taskId (1h TTL), reads `data.metadata.permissions` from the envelope, spawns the worker via `agentManager.spawn({ isolatedSettings: true, permissions, fullAutonomous: true })`, drives Claude with `promptUntilDone`, posts the worker's `done()` summary back via `mapSidecar.postMailTurn`.
+- **Worker MCP trinity** (macro-agent's `agentManager.spawn`): per-spawn entries always written for `agent-inbox` (via `dist/cli/inbox-mcp-proxy.js` → `InboxMcpProxy(socketPath, agentId)`) and `opentasks` (via the `opentasks mcp` CLI subcommand, conditional on daemon). Independent of `isolatedSettings: true` — the flag strips host-user plugins but preserves per-spawn config. This is what gives the worker `list_agents`, `check_inbox`, `task`, etc. without depending on host-level Claude plugins.
+- **Worker permissions enforcement**: `agentManager.spawn` writes the loadout's permission rules to `agentMeta.claudeCode.options.settings.permissions` — an inline pass-through to Claude Agent SDK that triggers no `.claude/settings.json` file write. Concurrent spawns sharing a CWD don't collide. `deny` rules win over `permissionMode: "auto-approve"` (verified live). `ask` rules collapse based on `fullAutonomous`: `true` → `allow`, `false` → `deny` (autonomous workers shouldn't make judgment calls).
 - **Reply path**: hub stores reply turn → `mail.turn.added` → dispatch initiator's listener captures it. Echo containment: bridge correctly drops the re-broadcast plain-text reply (no second worker spawn).
-- **MAP SDK + openteams alignment**: openteams 0.3.0 in use (full `ResolvedRole.loadout` shape); MAP SDK's `BaseConnection` carries a `#streamGeneration` guard so a stale receive loop can't kill a freshly reconnected stream.
+- **MAP SDK + openteams alignment**: openteams 0.3.0 in use (full `ResolvedRole.loadout` shape); agent-inbox 0.1.9 in macro-agent (exports `InboxMcpProxy`); MAP SDK's `BaseConnection` carries a `#streamGeneration` guard so a stale receive loop can't kill a freshly reconnected stream.
 
 ### Test coverage
 
-- `src/__tests__/swarm/live-loadout-dispatch-e2e.test.ts` — 5/5 pass with real Claude API in ~18s. Three hard-asserted layers of evidence: (1) **delivery** — SENTINEL from `prompt_addendum` and `SKILL_MARKER_WIDGET_99` from the rendered skill catalog both appear in the delivered envelope's prompt body; (2) **skill consumption** — `SKILL_MARKER_WIDGET_99` appears in the agent's reply because the marker skill's description carries an embedded self-instruction the agent followed; (3) **MCP actually invoked** — `AGENT_COUNT=N` with `N > 0` in the reply, proving the loadout-declared MCP (agent-inbox.list_agents) was executable on the spawned worker. The first run of Layer 3 surfaced that agent-inbox wasn't mounted on mail-inbound workers; the macro-agent fix landed the same day and the assertion is now durably green. Test continues to serve as a regression guard against future spawn changes that would silently drop MCP wiring.
+- `src/__tests__/swarm/live-loadout-dispatch-e2e.test.ts` — 5/5 pass with real Claude API in ~25s. Four hard-asserted layers of evidence: (1) **delivery** — SENTINEL from `prompt_addendum` and `SKILL_MARKER_WIDGET_99` from the rendered skill catalog both appear in the delivered envelope's prompt body; (2) **skill consumption** — `SKILL_MARKER_WIDGET_99` appears in the agent's reply because the marker skill's description carries an embedded self-instruction the agent followed; (3) **MCP actually invoked** — `AGENT_COUNT=N` with `N > 0` in the reply, proving the loadout-declared MCP (`agent-inbox.list_agents`) was executable on the spawned worker; (4) **permissions enforced** — `PERM_DENIED=true` in the reply, proving the loadout's deny rule (`Bash(echo perm-deny-test:*)`) actually blocked a tool call on the spawned worker. Each of these layers caught a real wiring gap on first verification: agent-inbox wasn't mounted on mail-inbound workers (fixed); permissions weren't propagated past materialization (fixed). The test continues to serve as a regression guard against future spawn changes that would silently drop the structured loadout fields.
 - `src/__tests__/openteams/skill-bank-ref.test.ts` — 4/4 fast lock-in tests covering `loadout.openhive.skillBankRef` resolution: loadout-level ref wins, team-level `defaultSkillBankRef` fallback, loadout overrides team default, missing-bank-id degrades to `skills:null`. Fires immediately on any openteams version bump that drops the consumer extension namespace.
 - `src/__tests__/helpers/skill-bank-fixture.ts` — shared `createTestSkillBank()` + `MARKER_SKILL` + `SKILL_MARKER` helpers used by the lock-in test and the live e2e.
 - `src/__tests__/swarm/full-stack-loadout-prompt-receipt.test.ts` — 7/7 pass under `FULL_STACK_E2E=true`. Asserts dispatch exercises real materialization against a real DB with a real macro-agent process.
@@ -42,7 +46,7 @@ The dispatch-driven flow (author → resolve → materialize → dispatch → ag
 | Cache invalidation mid-dispatch | Designed; race exists | `(templateId, contentHash)` keying invalidates on edit, but in-flight orchestrator state could race with a loadout edit during dispatch. No test asserts propagation. |
 | Loadout-provided MCP servers | Phase 0 + macro-agent trinity wiring shipped (2026-05-03); Phase 1 scope-filter + Phase 2 install-spec delivery still deferred | Hub does not install MCPs on workers — that's the operator's responsibility on the macro-agent host. The loadout's `mcp_servers` and `mcp_scope` are advisory: the prompt builder appends "Expected MCP servers for this role: …". **Resolved live (2026-05-03):** an earlier verification pass found that even built-in MCPs like `agent-inbox` and `opentasks` were not being mounted on mail-inbound spawned workers (`parent: null` + `isolatedSettings: true`) — the architecture docs claimed they were, but `agentManager.spawn` only mounted the macro-agent MCP server. Fixed in macro-agent: `agentManager.spawn` now always writes per-spawn entries for `agent-inbox` (via `dist/cli/inbox-mcp-proxy.js` → `InboxMcpProxy(socketPath, agentId)`) and `opentasks` (via the `opentasks mcp` CLI subcommand), independent of `isolatedSettings`. Live test now confirms `list_agents` returns real data. Phase 1 (hub-side scope filter that narrows the worker's MCP set per loadout) and Phase 2 (delivering loadout-authored inline install specs) remain deferred. See "MCP defaults" section for the operator-provisioned trust model. |
 | Loadout `skills.rendered` at runtime | Live-tested end-to-end (2026-05-03) | `live-loadout-dispatch-e2e.test.ts` binds a real test skill bank via `loadout.openhive.skillBankRef`; asserts the rendered skill catalog (with marker `SKILL_MARKER_WIDGET_99`) appears in the delivered prompt body and macro-agent's reply. Lock-in unit test at `src/__tests__/openteams/skill-bank-ref.test.ts` covers the resolution chain (loadout-level ref / team-default fallback / loadout-overrides-team / missing-bank-graceful-null). |
-| Permission propagation | Materialized; not enforced | `permissions.{allow,deny,ask}` are in the resolved bundle but not wired into the worker's Claude permission-mode config. |
+| Permission propagation | Shipped end-to-end (2026-05-03); fullAutonomous flag controls `ask` resolution | Loadout `permissions.{allow, deny, ask}` ride from hub-side materialization → openhive-mail-port side-channel → envelope `body.metadata.permissions` → mail-inbound-consumer → `agentManager.spawn({ permissions, fullAutonomous: true })` → `agentMeta.claudeCode.options.settings.permissions`. Verified live: deny rules block tool calls even under `permissionMode: "auto-approve"`. **`fullAutonomous` semantics** (new spawn option): when `true`, `ask` rules collapse to `allow` (autonomous worker proceeds without human); when `false` (default), `ask` rules collapse to `deny` (safe — autonomous workers don't make judgment calls). Mail-inbound consumer sets `fullAutonomous: true` because no human is in the loop. Inline-via-SDK delivery (no `.claude/settings.json` written), so concurrent spawns sharing a CWD never collide. |
 | UI authoring | REST surface works; UI exists | React routes for the Loadouts page work against the same endpoints. No Playwright/visual coverage. |
 | Federation | Loadouts sync; cross-instance dispatch untested | Mesh sync treats loadouts as syncable resources. No test pushes a loadout cross-instance and dispatches against the federated copy. |
 | Versioning / pinning | Not implemented | Dispatches always materialize the latest contentHash; no surface for "use loadout X at version Y". |
@@ -302,6 +306,155 @@ OpenHive's MAP server.
 
 ---
 
+## Propagation channels for materialized fields
+
+The single `MaterializedLoadout` is produced once at the hub and fans out to
+the worker over **three distinct channels**, picked per-field by what the
+data is and how it must be consumed. There is no one-size-fits-all path.
+
+| Field | Channel | Where it lands on the worker |
+|---|---|---|
+| `promptAddendum` | Text in prompt body | Agent's system prompt context |
+| `skills.rendered` | Text in prompt body (top) | Agent's system prompt context |
+| `mcp_servers` (advisory) | Text in prompt body (advisory hint) | Agent reads as context only |
+| `mcp_servers` (trinity: agent-inbox, opentasks) | Operator-provisioned at macro-agent install | Spawn-time `.mcp.json` written by `agentManager.spawn` |
+| `permissions.{allow, deny, ask}` | `body.loadout.permissions` (mail) / `dispatch/spawn-agent` params (ACP+fresh) | `agentMeta.claudeCode.options.settings.permissions` (inline SDK pass-through) |
+| `mcpProviders` (resolved install specs) | `body.loadout.mcpProviders` (mail) / `dispatch/spawn-agent` params (ACP+fresh) | Currently unused; reserved for Phase 1/2 work |
+
+### Channel 1 — text in the prompt body
+
+Used for content the agent reads as part of its system prompt context: the
+addendum, the rendered skill catalog, and the advisory MCP-expectation hint.
+Built by `openHivePromptBuilder` in `src/dispatch/prompt.ts`. Section
+ordering is fixed:
+
+```
+[skills.rendered]            — system-prompt fragment, top of prompt
+[task.content / title]
+[acceptance criteria]
+[relevant files]
+[promptHints.additionalContext]
+[Expected MCP servers: …]    — advisory hint when mcp_servers is non-empty
+[promptAddendum]             — role-specific addendum
+[role line]                  — "Role: <role>"
+```
+
+Continuation/retry prompts deliberately skip the loadout sections — the
+agent already loaded them on turn 0.
+
+### Channel 2 — `loadout` as a first-class wire concept
+
+Structured loadout fields (permissions, MCP refs, capabilities) need to
+reach the worker as JSON, not as text in the prompt body. Both wire
+channels — the mail envelope's `body` and the `dispatch/spawn-agent` MAP
+method's request params — carry a single named slot called `loadout`,
+holding the same `MaterializedLoadout`-shaped payload:
+
+```jsonc
+// MaterializedLoadout subset, used as the canonical wire shape on both routes
+{
+  "permissions": { "allow": [...], "deny": [...], "ask": [...] },
+  "mcpProviders": [...],
+  "mcpScope": [...],
+  "capabilities": [...]
+  // skills.rendered + promptAddendum ride in prompt body for both routes
+}
+```
+
+**Why a single shape across routes**: each runtime that participates in
+dispatch implements its own translator from `MaterializedLoadout` to its
+native config (in macro-agent: `loadoutToSpawnOptions` in
+`src/dispatch/loadout-translation.ts`). The hub doesn't need to know
+runtime-specific spawn options — it just packs the loadout. New runtimes
+(beyond macro-agent) implement their own translator, no protocol changes.
+
+Hub-side, the loadout is staged in a module-level cache keyed by taskId
+(`src/dispatch/loadout-side-channel.ts`) at enrichment time, then consumed
+by whichever wire path the orchestrator chooses (mail port for mail-routed,
+runtime adapter for ACP-routed). This bridges the gap caused by
+`swarm-dispatch.MessagePort.deliver`'s fixed payload shape.
+
+#### Mail wire
+
+The mail envelope packs the loadout as `body.loadout`:
+
+```jsonc
+{
+  "type": "x-dispatch/work",
+  "body": {
+    "prompt": "...",
+    "taskId": "disp_...",
+    "role": "executor",
+    "loadout": { /* MaterializedLoadout subset */ }
+  }
+}
+```
+
+The hub also writes legacy `body.metadata.permissions/mcpProviders` for one
+deprecation cycle so older mail-inbound consumers keep working. The
+mail-inbound-consumer on the swarm side reads `body.loadout` first, falling
+back to the legacy fields only when the new slot is absent.
+
+#### ACP wire
+
+The orchestrator's runtime adapter calls a per-runtime MAP method when
+`lifecycle === 'fresh'`, passing the loadout in the request:
+
+```jsonc
+{
+  "method": "dispatch/spawn-agent",
+  "params": {
+    "role": "coordinator",
+    "cwd": "/path/to/cwd",
+    "capabilities_required": ["acp"],
+    "lifecycle": "fresh",
+    "loadout": { /* same shape as mail's body.loadout */ }
+  }
+}
+```
+
+The runtime returns `{ agentId }` once the agent is spawned and its
+capabilities are registered with the hub (so subsequent `findAcpAgentInfo`
+finds it). For `lifecycle === 'reuse'`, the orchestrator skips the MAP call
+and uses an existing ACP-capable agent's id directly — but in that case,
+loadout permissions are advisory (the existing agent's session was created
+with whatever rules it had then).
+
+### Channel 3 — operator-provisioned (no wire involvement)
+
+The MCP "trinity" — `agent-inbox`, `opentasks`, and macro-agent's own
+built-in MCP server — is mounted on every spawned worker by
+`agentManager.spawn` itself, as a per-spawn `.mcp.json` written
+independently of `isolatedSettings: true`. Operators get these for free by
+running macro-agent at all; loadouts don't need to declare them.
+
+The trust model is symmetric:
+- **Trinity**: trusted because the operator chose to install macro-agent.
+- **Loadout-declared `mcp_servers`**: advisory only (Phase 0). Loadout
+  authors can declare expectations; operators decide whether to satisfy
+  them.
+- **Loadout-declared install specs**: deferred (Phase 2). Would require a
+  trust model for arbitrary `command + args` from authored content.
+
+### Why three channels, not one
+
+Each channel is shaped by the data it carries:
+
+- **Text** is sufficient for content the agent just needs to see. Cheap to
+  add, cheap to consume.
+- **Sidechannel + inline SDK pass-through** is the only way to deliver
+  structured runtime config (permissions) without writing files that would
+  collide between concurrent spawns sharing a CWD.
+- **Operator-provisioned** keeps install decisions out of the hub→worker
+  wire entirely, eliminating the "loadout authors can run arbitrary code on
+  workers" attack surface.
+
+The verification strategy mirrors this: each channel has a marker in the
+agent's reply that proves end-to-end delivery worked (see "Test coverage"
+above).
+
+---
+
 
 ## Hub-side surface
 
@@ -352,8 +505,33 @@ src/api/routes/
   loadouts.ts          # HTTP routes (UI surface) — CRUD + materialize
 
 src/dispatch/
-  openhive-source.ts   # enrichWithLoadout: reads spec metadata, calls resolver
-  prompt.ts            # embeds skills.rendered + promptAddendum in prompt
+  openhive-source.ts          # enrichWithLoadout: materializes + registers in side-channel
+  prompt.ts                   # embeds skills.rendered + addendum + MCP advisory hint
+  loadout-side-channel.ts     # taskId → MaterializedLoadout map (TTL, consume-on-read)
+                              #   bridges enrichment-time → deliver-time for structured fields
+                              #   that can't ride in swarm-dispatch's fixed deliver payload
+  openhive-mail-port.ts       # injectLoadoutMetadata wraps transport: pulls from side-channel,
+                              #   adds body.metadata.{permissions, mcpProviders} before send
+```
+
+Worker-side files (in `references/macro-agent/`):
+
+```
+src/agent/agent-manager-v2.ts
+  - SpawnAgentOptions.permissions, .fullAutonomous added
+  - spawn() always mounts the trinity: agent-inbox + opentasks (+ macro-agent built-in)
+  - spawn() writes loadout permissions to agentMeta.claudeCode.options.settings.permissions
+    (inline pass-through to Claude Agent SDK; no .claude/settings.json file)
+  - `ask` rule resolution: fullAutonomous=true → allow, fullAutonomous=false → deny
+
+src/cli/inbox-mcp-proxy.ts
+  - Tiny stdio entry. Instantiates InboxMcpProxy(INBOX_SOCKET_PATH, MACRO_AGENT_ID),
+    starts via stdio. Mounted as the "agent-inbox" MCP server in every spawn.
+
+src/dispatch/mail-inbound-consumer.ts
+  - Reads data.metadata.permissions from the envelope
+  - Passes to spawn({ permissions, fullAutonomous: true }) — autonomous mail-inbound
+    workers have no human in the loop, so `ask` collapses to `allow`
 ```
 
 ---
