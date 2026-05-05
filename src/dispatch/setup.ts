@@ -17,14 +17,26 @@ import { openHivePromptBuilder } from './prompt.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import { finalizeDispatch } from './finalize.js';
+import { claimDelivery } from './delivery-tracker.js';
 import type { Config } from '../config.js';
 
 export interface SetupOrchestratorOptions {
   specFetcher: SpecContentFetcher;
   runtimeDeps: OpenHiveRuntimeDeps;
   messagePort?: MessagePort;
-  /** Dispatch-specific config section. Optional so tests can omit. */
-  dispatchConfig?: Config['dispatch'];
+  /**
+   * Dispatch-specific config section. Optional so tests can omit. Accepts
+   * a partial — the helper applies its own defaults for any missing
+   * fields, mirroring the Zod-default behavior of the full config schema.
+   */
+  dispatchConfig?: Partial<Config['dispatch']>;
+  /**
+   * Orchestrator dispatch mode. Defaults to `'prefer-route'` (try mail
+   * first, fall back to ACP spawn). Tests that want to exercise the ACP
+   * path explicitly should pass `'spawn-only'` so the orchestrator goes
+   * through the runtime adapter regardless of mail availability.
+   */
+  dispatchMode?: 'prefer-route' | 'spawn-only' | 'route-only' | 'prefer-spawn';
 }
 
 export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator {
@@ -53,7 +65,7 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
     eligibility: { scorer },
     roster,
     messagePort: opts.messagePort,
-    dispatchMode: 'prefer-route',
+    dispatchMode: opts.dispatchMode ?? 'prefer-route',
     heartbeatIntervalMs: 30_000,
     // Reconcile the external-cancel → agent-terminate path quickly. The
     // default (60s) leaves the user watching a spinner after they click
@@ -92,6 +104,22 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
         started_at: prior?.started_at ?? now,
         status: 'running',
       });
+      // Pair the orchestrator's view (event.agentId, event.via, event.attempt)
+      // with the OpenHive transport hint that the runtime/mail-port stashed
+      // in the delivery tracker. Merges into the same attempts_history row
+      // so the UI can show "ACP · spawn · agent_id" / "Mail · route · agent_id".
+      const eventDispatched = event as { agentId?: string; via?: 'spawn' | 'route' };
+      const hint = claimDelivery(event.taskId);
+      const transport = hint?.transport;
+      const agent_id = eventDispatched.agentId ?? hint?.agent_id;
+      const via = eventDispatched.via;
+      if (transport || agent_id || via) {
+        dispatchesDAL.recordAttemptDelivery(event.taskId, attempt, {
+          ...(transport ? { transport } : {}),
+          ...(agent_id ? { agent_id } : {}),
+          ...(via ? { via } : {}),
+        });
+      }
     }
 
     // Terminal: agent completed successfully → mark dispatch complete

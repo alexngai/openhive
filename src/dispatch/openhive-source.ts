@@ -10,12 +10,23 @@ import type { DispatchTaskSource, DispatchTask } from 'swarm-dispatch';
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import type { Dispatch } from '../db/dal/dispatches.js';
 import { advanceLinkedTasksOnStart } from './start.js';
+import {
+  materializeLoadoutById,
+  materializeRoleLoadout,
+  MaterializationForbiddenError,
+} from '../openteams/resolver.js';
+import { emptyMaterialization, type MaterializedLoadout } from '../openteams/types.js';
+import { registerLoadoutForDispatch } from './loadout-side-channel.js';
+import { broadcastToChannel } from '../realtime/index.js';
 
 export interface SpecContentFetcher {
   fetch(resourceId: string, specId: string): Promise<{
     title: string;
     content: string;
     tasks: Array<{ id: string; title?: string; status?: string }>;
+    /** Optional spec node metadata, passed through verbatim. The dispatch
+     *  source reads loadout_ref / team_role_ref from this. */
+    metadata?: Record<string, unknown>;
   } | null>;
 }
 
@@ -76,6 +87,9 @@ async function enrichWithSpec(
         spec_title: spec.title,
         criteria: spec.tasks.map((t) => t.title).filter(Boolean),
         description: spec.content,
+        // Pass spec metadata through so downstream enrichment steps (e.g.
+        // enrichWithLoadout) can read loadout_ref / team_role_ref.
+        spec_metadata: spec.metadata ?? {},
       },
     };
   } catch {
@@ -83,11 +97,201 @@ async function enrichWithSpec(
   }
 }
 
+interface SpecLoadoutBinding {
+  loadoutRef?: string;
+  teamRoleRef?: { teamTemplateId: string; role: string };
+}
+
+function readLoadoutBinding(meta: Record<string, unknown>): SpecLoadoutBinding | null {
+  const specMeta = (meta.spec_metadata as Record<string, unknown> | undefined) ?? {};
+  const loadoutRef =
+    typeof specMeta.loadout_ref === 'string' ? specMeta.loadout_ref : undefined;
+  const teamRoleRefRaw = specMeta.team_role_ref as
+    | { teamTemplateId?: unknown; role?: unknown }
+    | undefined;
+  const teamRoleRef =
+    teamRoleRefRaw &&
+    typeof teamRoleRefRaw.teamTemplateId === 'string' &&
+    typeof teamRoleRefRaw.role === 'string'
+      ? { teamTemplateId: teamRoleRefRaw.teamTemplateId, role: teamRoleRefRaw.role }
+      : undefined;
+  if (!loadoutRef && !teamRoleRef) return null;
+  return { loadoutRef, teamRoleRef };
+}
+
+/** Injectable broadcast fn — production uses broadcastToChannel; tests inject a spy. */
+export type MaterializationBroadcastFn = (dispatchId: string, errorMessage: string) => void;
+
+function defaultBroadcast(dispatchId: string, errorMessage: string): void {
+  try {
+    broadcastToChannel('map:dispatches', {
+      type: 'dispatch.materialization_failed',
+      data: {
+        dispatch_id: dispatchId,
+        error: errorMessage,
+      },
+    });
+  } catch {
+    /* best effort — realtime layer may not be initialized in all contexts */
+  }
+}
+
+/**
+ * Enrich a DispatchTask with a materialized loadout when the spec has a
+ * loadout_ref or team_role_ref binding. Best-effort — failures attach a
+ * `loadout_error` marker but never block dispatch.
+ *
+ * On failure: emits a `dispatch.materialization_failed` event on the
+ * `map:dispatches` WS channel so operators see the error, logs a warning,
+ * and returns the task unenriched.
+ *
+ * Precedence: direct loadout_ref > team_role_ref. Documented contract.
+ */
+export async function enrichWithLoadout(
+  task: DispatchTask,
+  _broadcast: MaterializationBroadcastFn = defaultBroadcast,
+): Promise<DispatchTask> {
+  const meta = task.metadata ?? {};
+  const binding = readLoadoutBinding(meta);
+  if (!binding) return task;
+
+  // Use the dispatch initiator's identity for ACL checks so a dispatcher
+  // cannot leak content from resources they cannot access.
+  const viewerAgentId =
+    typeof meta.initiator_id === 'string' ? meta.initiator_id : undefined;
+
+  // Stable string form of the binding for persistence — readers can resolve
+  // back to the originating loadout without re-walking the spec metadata.
+  const bindingRef = binding.loadoutRef
+    ? binding.loadoutRef
+    : binding.teamRoleRef
+      ? `team:${binding.teamRoleRef.teamTemplateId}/role:${binding.teamRoleRef.role}`
+      : '';
+
+  try {
+    let materialized: MaterializedLoadout;
+    if (binding.loadoutRef) {
+      materialized = await materializeLoadoutById(binding.loadoutRef, viewerAgentId);
+    } else if (binding.teamRoleRef) {
+      materialized = await materializeRoleLoadout(
+        binding.teamRoleRef.teamTemplateId,
+        binding.teamRoleRef.role,
+        viewerAgentId,
+      );
+    } else {
+      materialized = emptyMaterialization();
+    }
+
+    // Side-channel: register the materialized loadout so the mail port can
+    // inject structured fields (permissions, mcp metadata) into the envelope's
+    // body.metadata at deliver time. swarm-dispatch's MessagePort.deliver
+    // payload only carries {prompt, taskId, role}; this bridges that gap.
+    // See src/dispatch/loadout-side-channel.ts.
+    //
+    // Lifecycle hints: read from the dispatch row's `acp_lifecycle` (V47)
+    // and `mail_lifecycle` (V48) columns. Both are set per-dispatch via
+    // the REST request body — this keeps the routing concern at the
+    // dispatch-creation layer, NOT on opentasks spec content (content
+    // authoring) or loadout content (role-bundle abstraction). The
+    // ACP runtime / mail port apply config-default fallbacks when the
+    // respective column is null.
+    const dispatchRow = dispatchesDAL.findDispatchById(task.id);
+    const acpLifecycle =
+      dispatchRow?.acp_lifecycle === 'fresh' || dispatchRow?.acp_lifecycle === 'reuse'
+        ? dispatchRow.acp_lifecycle
+        : undefined;
+    const mailLifecycle =
+      dispatchRow?.mail_lifecycle === 'fresh' || dispatchRow?.mail_lifecycle === 'reuse'
+        ? dispatchRow.mail_lifecycle
+        : undefined;
+    const hints =
+      acpLifecycle || mailLifecycle
+        ? {
+            ...(acpLifecycle ? { acpLifecycle } : {}),
+            ...(mailLifecycle ? { mailLifecycle } : {}),
+          }
+        : undefined;
+    registerLoadoutForDispatch(task.id, materialized, hints);
+
+    // Persist resolution outcome (V49) so the detail UI shows what loadout
+    // was attached after the side-channel TTL expires (5 min) or after a
+    // page refresh — and so post-hoc audit doesn't have to replay events.
+    if (bindingRef) {
+      try {
+        dispatchesDAL.recordLoadoutResolution(task.id, {
+          ref: bindingRef,
+          status: 'materialized',
+        });
+      } catch {
+        /* best effort — DB hiccup must not block enrichment */
+      }
+    }
+
+    // Surface the spec's team_role_ref.role onto task.metadata.role so
+    // swarm-dispatch's chooseExecutor reads it (`task.metadata?.role ??
+    // config.defaultRole`) and passes it as the role filter to
+    // roster.findAvailable. Without this, prefer-route falls back to the
+    // hub's defaultRole (typically 'worker') which matches the sidecar's
+    // projected role and routes mail+reuse dispatches through the
+    // sidecar's fresh-spawn path instead of the dispatched role's
+    // long-lived agent. Only set when the spec carries a team_role_ref;
+    // direct loadout_ref dispatches stay role-less.
+    return {
+      ...task,
+      metadata: {
+        ...meta,
+        materializedLoadout: materialized,
+        ...(binding.teamRoleRef?.role ? { role: binding.teamRoleRef.role } : {}),
+      },
+    };
+  } catch (err) {
+    // Use a generic message for authorization failures so iterated resource
+    // ids cannot enumerate ACL-protected resources via error text.
+    const errorMessage =
+      err instanceof MaterializationForbiddenError ? 'unauthorized' : (err as Error).message;
+    // Best-effort: dispatch proceeds without enrichment. Surface the failure
+    // via WS broadcast so operators see it, and attach a metadata marker for
+    // downstream consumers. A typo'd extends: or missing loadout id should
+    // never be silent.
+    console.warn(
+      `[dispatch] loadout materialization failed for dispatch ${task.id}: ${errorMessage}`,
+    );
+    _broadcast(task.id, errorMessage);
+    // Sticky persistence (V49): the WS event only reaches clients
+    // subscribed at the moment it fires. Also write the failure to the
+    // dispatch row so the UI banner survives refresh and audit can read
+    // directly from the row.
+    if (bindingRef) {
+      try {
+        dispatchesDAL.recordLoadoutResolution(task.id, {
+          ref: bindingRef,
+          status: 'failed',
+          error: errorMessage,
+        });
+      } catch {
+        /* best effort */
+      }
+    }
+    return {
+      ...task,
+      metadata: {
+        ...meta,
+        loadout_error: errorMessage,
+      },
+    };
+  }
+}
+
 export function createOpenHiveDispatchSource(
   specFetcher: SpecContentFetcher,
   claimantId: string,
 ): DispatchTaskSource {
-  return createSqlSource<Dispatch>({
+  async function enrich(task: DispatchTask): Promise<DispatchTask> {
+    const withSpec = await enrichWithSpec(task, specFetcher);
+    return enrichWithLoadout(withSpec);
+  }
+
+  const source = createSqlSource<Dispatch>({
     claimantId,
 
     queryReady: ({ limit }) => dispatchesDAL.listQueuedDispatches(limit),
@@ -108,6 +312,13 @@ export function createOpenHiveDispatchSource(
 
     getRow: (id) => dispatchesDAL.findDispatchById(id),
 
+    // listInProgress is called once at orchestrator startup to reconstruct the
+    // in-memory tracker from rows that were running before the hub restarted.
+    // reconstructFromTasks() only reads id, claimed_by, metadata.attempt,
+    // metadata.role, tags, and metadata.dimensions — none of which come from
+    // loadout enrichment. Enrichment is intentionally skipped here; the
+    // orchestrator always re-enriches via getTask() (which calls enrichContent)
+    // before building a prompt for any retry or continuation.
     listInProgress: () => dispatchesDAL.listInProgressDispatches(),
 
     rowToTask: dispatchToTask,
@@ -117,6 +328,24 @@ export function createOpenHiveDispatchSource(
 
     renewRow: (id, fence) => dispatchesDAL.renewDispatchClaim(id, fence),
 
-    enrichContent: (task) => enrichWithSpec(task, specFetcher),
+    // enrichContent is called by createSqlSource on getTask() — used for
+    // continuations, retries, and reconciliation paths. The initial dispatch
+    // path (queryReady → dispatchTask → promptBuilder) receives unenriched
+    // tasks from the library, so we also wrap queryReady below.
+    enrichContent: enrich,
   });
+
+  // swarm-dispatch's createSqlSource calls enrichContent only on getTask(),
+  // not on queryReady(). The orchestrator builds the first-run prompt from
+  // the task returned by queryReady, so without this wrapper the loadout
+  // content (spec body, promptAddendum, skills) would be absent from the
+  // first prompt. Wrap queryReady to enrich every returned task so the
+  // prompt builder sees the full materialized payload regardless of path.
+  const originalQueryReady = source.queryReady.bind(source);
+  source.queryReady = async (opts) => {
+    const tasks = await originalQueryReady(opts);
+    return Promise.all(tasks.map(enrich));
+  };
+
+  return source;
 }

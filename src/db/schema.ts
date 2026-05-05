@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 45;
+export const SCHEMA_VERSION = 49;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 -- Syncable resources registry (git repos backing various resource types)
 CREATE TABLE IF NOT EXISTS syncable_resources (
   id TEXT PRIMARY KEY,
-  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session')),
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout')),
   name TEXT NOT NULL,
   description TEXT,
   git_remote_url TEXT NOT NULL,
@@ -644,6 +644,37 @@ CREATE TABLE IF NOT EXISTS dispatches (
   outcome TEXT,
   -- optional caller-supplied prompt addendum
   prompt_override TEXT,
+  -- ACP lifecycle hint (V47): when this dispatch routes via ACP, controls
+  -- whether the orchestrator spawns a fresh coordinator ("fresh") or
+  -- reuses an existing ACP-capable agent ("reuse"). NULL means fall
+  -- through to config.dispatch.acp_lifecycle_default. Transport concern,
+  -- intentionally NOT in spec/loadout authoring (those are content layers).
+  acp_lifecycle TEXT
+    CHECK (acp_lifecycle IS NULL OR acp_lifecycle IN ('fresh', 'reuse')),
+  -- Mail lifecycle hint (V48): when this dispatch routes via mail, controls
+  -- whether the hub mail port forces routing to the connection's sidecar
+  -- ("fresh" — sidecar's mail-inbound-consumer spawns a new ephemeral
+  -- worker) or lets prefer-route pick a non-busy long-lived worker
+  -- ("reuse"). NULL means fall through to config.dispatch.mail_lifecycle_default.
+  -- Same transport-vs-content split as acp_lifecycle.
+  mail_lifecycle TEXT
+    CHECK (mail_lifecycle IS NULL OR mail_lifecycle IN ('fresh', 'reuse')),
+  -- Loadout binding (V49): the spec_metadata.loadout_ref or team_role_ref
+  -- string captured at enrichment time. NULL = no binding. Persisted so
+  -- the detail UI can show what loadout was attached after the side-channel
+  -- TTL expires; also doubles as an audit trail.
+  loadout_ref TEXT,
+  -- Materialization status (V49): result of resolving loadout_ref into a
+  -- MaterializedLoadout. 'materialized' on success, 'failed' on resolution
+  -- error (loadout not found, ACL forbidden, etc.), NULL when no binding
+  -- exists. The UI uses this to surface a sticky failure banner that
+  -- survives page refresh, complementing the live WS event.
+  loadout_status TEXT
+    CHECK (loadout_status IS NULL OR loadout_status IN ('materialized', 'failed')),
+  -- Materialization error message (V49): populated when loadout_status='failed',
+  -- carries a short reason ('unauthorized', 'not found', etc.) suitable for
+  -- the UI banner. NULL otherwise.
+  loadout_error TEXT,
   -- timestamps
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
@@ -877,6 +908,94 @@ ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0;
 // from the spec's linked-task neighbors. Powers (a) advance-on-start task
 // state transitions, (b) cascade artifact enrichment on completion via the
 // (task_resource_id, task_node_id) join with cascade_streams.
+// Migration V46: Extend syncable_resources.resource_type CHECK to admit
+// 'playbook', 'team_template', and 'loadout'. ('playbook' was added to the
+// SyncableResourceType union earlier without a matching CHECK update; this
+// migration brings the constraint in line with the union.)
+//
+// SQLite can't ALTER a CHECK constraint in place, so we follow the same
+// recreate-and-rename pattern used by V30 + V31. All existing data is
+// copied verbatim.
+export const MIGRATION_V46_RESOURCE_TYPES_EXTEND = `
+CREATE TABLE IF NOT EXISTS syncable_resources_v46 (
+  id TEXT PRIMARY KEY,
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout')),
+  name TEXT NOT NULL,
+  description TEXT,
+  git_remote_url TEXT NOT NULL,
+  webhook_secret TEXT,
+  visibility TEXT DEFAULT 'private'
+    CHECK (visibility IN ('private', 'shared', 'public')),
+  last_commit_hash TEXT,
+  last_push_by TEXT,
+  last_push_at TEXT,
+  owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  scope TEXT DEFAULT 'manual'
+    CHECK (scope IN ('global', 'project', 'agent', 'manual')),
+  sync_strategy TEXT DEFAULT 'metadata'
+    CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle', 'federated')),
+  local_path TEXT,
+  metadata TEXT,
+  origin_instance_id TEXT,
+  origin_resource_id TEXT,
+  sync_event_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+INSERT OR IGNORE INTO syncable_resources_v46 SELECT * FROM syncable_resources;
+
+DROP TABLE IF EXISTS syncable_resources;
+ALTER TABLE syncable_resources_v46 RENAME TO syncable_resources;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_syncable_resources_git_url
+  ON syncable_resources(owner_agent_id, resource_type, git_remote_url)
+  WHERE git_remote_url IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_name_lookup
+  ON syncable_resources(owner_agent_id, resource_type, name);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_owner ON syncable_resources(owner_agent_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type ON syncable_resources(resource_type);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_visibility ON syncable_resources(visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_resources(resource_type, visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
+`;
+
+// Migration V47: Per-dispatch ACP lifecycle hint. Adds `acp_lifecycle` to
+// dispatches so callers can override the cluster default when creating a
+// dispatch via REST. Transport-level concern; intentionally not stored on
+// spec metadata or loadout content (those are content-authoring layers,
+// not routing).
+export const MIGRATION_V47_DISPATCH_ACP_LIFECYCLE = `
+ALTER TABLE dispatches ADD COLUMN acp_lifecycle TEXT
+  CHECK (acp_lifecycle IS NULL OR acp_lifecycle IN ('fresh', 'reuse'));
+`;
+
+// Migration V48: Per-dispatch mail lifecycle hint. Adds `mail_lifecycle`
+// to dispatches mirroring V47's acp_lifecycle. Transport-level concern;
+// "fresh" forces routing to the sidecar (ephemeral spawn), "reuse" lets
+// prefer-route pick a non-busy long-lived worker.
+export const MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE = `
+ALTER TABLE dispatches ADD COLUMN mail_lifecycle TEXT
+  CHECK (mail_lifecycle IS NULL OR mail_lifecycle IN ('fresh', 'reuse'));
+`;
+
+// Migration V49: Persist loadout resolution outcome on the dispatch row.
+// Adds three nullable columns:
+//   - loadout_ref: original binding string (e.g. "loadout_xxx" or
+//     "team:foo/role:bar") captured at enrichment time
+//   - loadout_status: 'materialized' | 'failed' | NULL (no binding)
+//   - loadout_error: short reason when status='failed'
+// Replaces the previous "ephemeral side-channel + WS-only failure event"
+// pattern: now the failure survives page refresh and is queryable.
+export const MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION = `
+ALTER TABLE dispatches ADD COLUMN loadout_ref TEXT;
+ALTER TABLE dispatches ADD COLUMN loadout_status TEXT
+  CHECK (loadout_status IS NULL OR loadout_status IN ('materialized', 'failed'));
+ALTER TABLE dispatches ADD COLUMN loadout_error TEXT;
+`;
+
 export const MIGRATION_V45_DISPATCH_LINKED_TASKS = `
 CREATE TABLE IF NOT EXISTS dispatch_linked_tasks (
   dispatch_id TEXT NOT NULL REFERENCES dispatches(id) ON DELETE CASCADE,

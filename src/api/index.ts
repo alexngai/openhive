@@ -23,6 +23,8 @@ import { swarmkitConfigRoutes } from "./routes/swarmkit-config.js";
 import { skillManagementRoutes } from "./routes/skill-management.js";
 import { specsRoutes } from "./routes/specs.js";
 import { dispatchesRoutes } from "./routes/dispatches.js";
+import { teamsRoutes } from "./routes/teams.js";
+import { loadoutsRoutes } from "./routes/loadouts.js";
 import { versionRoutes } from "./routes/version.js";
 import type { Config } from "../config.js";
 import type { BridgeManager } from "../bridge/manager.js";
@@ -75,6 +77,8 @@ export async function registerRoutes(
       await api.register(skillManagementRoutes, { config });
       await api.register(specsRoutes, { config });
       await api.register(dispatchesRoutes, { config });
+      await api.register(teamsRoutes, { config });
+      await api.register(loadoutsRoutes, { config });
       await api.register(versionRoutes);
       if (swarmhubConnector) {
         const { swarmhubRoutes, swarmhubWebhookRoutes } =

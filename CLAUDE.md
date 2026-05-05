@@ -341,6 +341,14 @@ The adapters compose generic factories from `swarm-dispatch/client` (static ESM 
 
 `Settings → Server → Autonomous dispatch` toggles `autonomousDispatchPaused`. When paused, agent-initiated dispatches via `map/specs/dispatch` return -32004; user-initiated REST dispatches still work. State is in-memory; hub restart resets to live.
 
+### Permission overlay enforcement (mail+reuse)
+
+For mail+reuse dispatches the dispatch consumer applies the loadout's deny rules at runtime via a per-agent overlay registry on the swarm side (macro-agent's `permission-overlay.ts`). Enforcement happens in macro-agent's prompt iterator (`agent-manager-v2.ts`), which intercepts the agent's `permission_request` ACP session updates, evaluates against the overlay, and answers via `respondToPermission`. Two settings make this work:
+- The bootstrap dispatch target spawns with `askForAllTools: true` (forces `settings.permissions.ask: ['*']` so the SDK consults `canUseTool` for every tool call) AND `permissionMode: 'interactive'` (so acp-factory emits the resulting request as a `permission_request` session update instead of auto-approving).
+- Chat agents (and any agent without an overlay set) see `permission_request` updates pass through unchanged so swarmcraft's `PermissionDialog` keeps rendering for ACP chat surfaces. Only dispatch-context agents have their requests intercepted.
+
+Earlier design used a Claude SDK PreToolUse JS-function hook installed at session creation. That mechanism was verified broken: function callbacks inside arrays are silently stripped to `null` by `JSON.stringify` across the macro-agent → claude-agent-acp stdio boundary. See `docs/PERMISSION_OVERLAY_ACP_DESIGN.md` for the full diagnosis, the four-process flow diagram, and the implementation notes.
+
 ## Task Coordination Architecture
 
 OpenHive acts as a **relay hub** for task events between agent swarms. It does NOT own or persist task state — each agent maintains its own task graph via a local OpenTasks daemon.

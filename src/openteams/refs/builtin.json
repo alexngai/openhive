@@ -1,0 +1,3 @@
+{
+  "_comment": "Built-in MCP ref registry. Maps `@openhive/<name>` symbolic refs to McpProviderSpec install entries. Empty by default — populate as known refs solidify. See docs/LOADOUTS_DESIGN.md (MCP defaults section)."
+}

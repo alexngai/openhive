@@ -61,6 +61,22 @@ const UpdateSpecSchema = z
 const DispatchSpecSchema = z.object({
   target_swarms: z.array(z.string().min(1)).min(1).max(20),
   prompt: z.string().max(5000).optional(),
+  /**
+   * Per-dispatch ACP lifecycle override. When the dispatch routes via
+   * ACP, controls whether the orchestrator spawns a fresh coordinator
+   * (`'fresh'`) or reuses an existing ACP-capable agent (`'reuse'`).
+   * Omitted → falls back to `config.dispatch.acp_lifecycle_default`
+   * (cluster-wide operator default), then to `'reuse'`.
+   */
+  acp_lifecycle: z.enum(['fresh', 'reuse']).optional(),
+  /**
+   * Per-dispatch mail lifecycle override. When the dispatch routes via
+   * mail, controls whether the hub mail port forces routing to the
+   * connection's sidecar (`'fresh'`) or lets prefer-route pick a
+   * non-busy long-lived worker (`'reuse'`). Omitted → falls back to
+   * `config.dispatch.mail_lifecycle_default`, then to `'reuse'`.
+   */
+  mail_lifecycle: z.enum(['fresh', 'reuse']).optional(),
 });
 
 const VALID_EDGE_TYPES = [
@@ -881,6 +897,8 @@ export async function specsRoutes(
         initiatorType: 'user',
         targetSwarms: body.target_swarms,
         prompt: body.prompt,
+        ...(body.acp_lifecycle ? { acpLifecycle: body.acp_lifecycle } : {}),
+        ...(body.mail_lifecycle ? { mailLifecycle: body.mail_lifecycle } : {}),
       });
 
       if (!result.ok) {
@@ -909,6 +927,10 @@ export async function dispatchSpecToSwarms(input: {
   initiatorType: 'user' | 'agent';
   targetSwarms: string[];
   prompt?: string | null;
+  /** Per-dispatch ACP lifecycle override (caller pass-through). */
+  acpLifecycle?: 'fresh' | 'reuse';
+  /** Per-dispatch mail lifecycle override (caller pass-through). */
+  mailLifecycle?: 'fresh' | 'reuse';
 }): Promise<
   | {
       ok: true;
@@ -974,6 +996,8 @@ export async function dispatchSpecToSwarms(input: {
       initiator_type: input.initiatorType,
       initiator_id: input.agentId,
       prompt_override: input.prompt ?? null,
+      ...(input.acpLifecycle ? { acp_lifecycle: input.acpLifecycle } : {}),
+      ...(input.mailLifecycle ? { mail_lifecycle: input.mailLifecycle } : {}),
     });
 
     // Persist the spec's linked tasks so downstream lifecycle hooks

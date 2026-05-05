@@ -4,11 +4,25 @@
  * Composes swarm-dispatch's generic createMailPort with OpenHive's
  * MAP connection registry for reachability checks and agent-inbox
  * transport for message delivery.
+ *
+ * Loadout metadata injection: swarm-dispatch's `MessagePort.deliver`
+ * payload is fixed to `{ prompt, taskId, role }`. We wrap the transport's
+ * `sendToAgent` so that any envelope with `body.taskId` matching a
+ * registered materialized loadout (via the side-channel) gets the
+ * loadout's structured fields (permissions, MCP metadata) injected into
+ * `body.metadata` before the wire-level send. The mail-inbound consumer
+ * on the swarm side reads `data.metadata` and passes the relevant fields
+ * to `agentManager.spawn()`.
  */
 
 import { createMailPort } from 'swarm-dispatch/client';
 import type { MessagePort } from 'swarm-dispatch';
-import { getInbound } from '../map/connection-registry.js';
+import { findSidecarAgentId, getInbound } from '../map/connection-registry.js';
+import {
+  consumeLoadoutForDispatch,
+  peekHintsForDispatch,
+} from './loadout-side-channel.js';
+import { materializedLoadoutToWire } from './wire-loadout.js';
 
 export interface MailTransport {
   sendToAgent(
@@ -23,10 +37,162 @@ export interface MailTransport {
   destroy?(): void;
 }
 
-export function createOpenHiveMailPort(transport: MailTransport): MessagePort {
+/**
+ * Inject loadout-derived structured fields into an outgoing dispatch
+ * envelope when the body's taskId matches a registered materialized
+ * loadout. Returns the envelope unchanged when no loadout is in the
+ * side-channel (cancel envelopes, non-dispatch messages, etc.).
+ *
+ * Wire shape (Step 3 of the ACP+lifecycle plan):
+ *
+ *   - `body.loadout` — the canonical structured slot, mirroring the
+ *     `MaterializedLoadout` subset that ACP-routed dispatches carry in
+ *     their `dispatch/spawn-agent` MAP request params. Both wire paths
+ *     use the same shape; the worker-side runtime translates per its
+ *     config model (macro-agent: `loadoutToSpawnOptions`).
+ *
+ *   - `body.metadata.permissions` / `body.metadata.mcpProviders` —
+ *     legacy fields kept for one deprecation cycle so older
+ *     `mail-inbound-consumer` builds continue to work. Removed in a
+ *     follow-up PR after the new shape has rolled out.
+ *
+ * Other materialized fields (skills.rendered, promptAddendum) ride in
+ * the prompt body for both routes and aren't included here.
+ */
+function injectLoadoutMetadata(envelope: {
+  type: string;
+  body: Record<string, unknown>;
+}): { type: string; body: Record<string, unknown> } {
+  const taskId = (envelope.body as { taskId?: string })?.taskId;
+  if (!taskId) return envelope;
+  const loadout = consumeLoadoutForDispatch(taskId);
+  if (!loadout) return envelope;
+
+  // Canonical wire shape — produced by the shared helper so this path
+  // and the ACP `dispatch/spawn-agent` path can't drift.
+  const wireLoadout = materializedLoadoutToWire(loadout) as Record<string, unknown>;
+
+  // Legacy fields — removed once consumers across the fleet read from
+  // body.loadout. Two writes during the transition window.
+  const legacyMetadata: Record<string, unknown> = {
+    ...((envelope.body.metadata as Record<string, unknown> | undefined) ?? {}),
+  };
+  if (wireLoadout.permissions !== undefined) {
+    legacyMetadata.permissions = wireLoadout.permissions;
+  }
+  if (wireLoadout.mcpProviders !== undefined) {
+    legacyMetadata.mcpProviders = wireLoadout.mcpProviders;
+  }
+
+  const hasNewSlot = Object.keys(wireLoadout).length > 0;
+  const hasLegacy =
+    Object.keys(legacyMetadata).length >
+    Object.keys(
+      (envelope.body.metadata as Record<string, unknown> | undefined) ?? {},
+    ).length;
+
+  if (!hasNewSlot && !hasLegacy) return envelope;
+
+  return {
+    ...envelope,
+    body: {
+      ...envelope.body,
+      ...(hasNewSlot ? { loadout: wireLoadout } : {}),
+      ...(hasLegacy ? { metadata: legacyMetadata } : {}),
+    },
+  };
+}
+
+export interface OpenHiveMailPortOptions {
+  /**
+   * Cluster-wide default for the mail-route lifecycle when a dispatch's
+   * `mail_lifecycle` column is null. Wired from
+   * `config.dispatch.mail_lifecycle_default` at server startup. Mirrors
+   * `OpenHiveRuntimeDeps.acpLifecycleDefault`.
+   */
+  mailLifecycleDefault?: 'fresh' | 'reuse';
+}
+
+/**
+ * Read the per-dispatch mail lifecycle preference. Precedence:
+ *
+ *   1. Side-channel hint sourced from the dispatch row's `mail_lifecycle`
+ *      column at enrichment time (set per-dispatch via REST).
+ *   2. `configDefault` — cluster-wide operator default from
+ *      `config.dispatch.mail_lifecycle_default`.
+ *   3. Hardcoded `'reuse'` — backwards-compatible default.
+ *
+ * Mirrors `readDispatchLifecycle` for the ACP route.
+ */
+export function readMailLifecycle(
+  hints: { mailLifecycle?: 'fresh' | 'reuse' } | null,
+  configDefault?: 'fresh' | 'reuse',
+): 'fresh' | 'reuse' {
+  if (hints?.mailLifecycle === 'fresh' || hints?.mailLifecycle === 'reuse') {
+    return hints.mailLifecycle;
+  }
+  if (configDefault === 'fresh' || configDefault === 'reuse') {
+    return configDefault;
+  }
+  return 'reuse';
+}
+
+export function createOpenHiveMailPort(
+  transport: MailTransport,
+  opts: OpenHiveMailPortOptions = {},
+): MessagePort {
   return createMailPort({
-    send: (system, agentId, envelope) =>
-      transport.sendToAgent(system, agentId, envelope),
+    send: async (system, agentId, envelope) => {
+      // ACP-lifecycle-fresh dispatches must NOT take the mail route: the
+      // mail-inbound consumer would spawn a fresh worker (correct
+      // behavior) but bypasses the ACP path entirely. When a dispatch's
+      // hint says 'fresh' AND we're inside `prefer-route`, returning
+      // `delivered: false` here causes the orchestrator to fall through
+      // to the runtime adapter (ACP), which honors the hint and calls
+      // `dispatch/spawn-agent`.
+      //
+      // Peek (don't consume) so the runtime adapter still sees the
+      // hint when it runs next.
+      const { markDelivery } = await import('./delivery-tracker.js');
+      const taskId = (envelope.body as { taskId?: string })?.taskId;
+
+      let recipient = agentId;
+      if (taskId) {
+        const hints = peekHintsForDispatch(taskId);
+        if (hints?.acpLifecycle === 'fresh') {
+          return { delivered: false, reason: 'lifecycle_fresh' };
+        }
+        // Mail-lifecycle-fresh override: when a dispatch wants a fresh
+        // spawn via the mail route, re-route to the connection's sidecar
+        // regardless of whichever agent prefer-route picked. The
+        // sidecar's mail-inbound-consumer always spawns a new ephemeral
+        // worker per envelope (today's pre-this-work behavior). Falls
+        // through silently when no sidecar is registered or the picked
+        // agent already IS the sidecar.
+        const lifecycle = readMailLifecycle(hints, opts.mailLifecycleDefault);
+        if (lifecycle === 'fresh') {
+          const sidecarId = findSidecarAgentId(system);
+          if (sidecarId && sidecarId !== agentId) {
+            recipient = sidecarId;
+          }
+        }
+      }
+
+      const result = await transport.sendToAgent(
+        system,
+        recipient,
+        injectLoadoutMetadata(envelope),
+      );
+      // Record the actual recipient + transport on the dispatch row's
+      // attempts_history once the orchestrator's `dispatched` event fires.
+      // We mark only on `delivered: true` — failed delivery falls through
+      // to the runtime adapter (ACP path) and the runtime would then mark
+      // its own attempt.
+      if (taskId && result.delivered) {
+        markDelivery(taskId, { transport: 'mail', agent_id: recipient });
+      }
+      return result;
+    },
 
     onMessage: (handler) =>
       transport.onMessage((from, msg) =>

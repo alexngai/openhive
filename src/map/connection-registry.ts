@@ -177,6 +177,16 @@ export function getAllInbound(): Map<string, MapInboundConnection> {
   return result;
 }
 
+/**
+ * Returns ALL inbound connections, including stale ones (reconnecting sidecars).
+ * Callers MUST NOT use the `ws` field on stale entries — it is closed.
+ * Use only for metadata reads (capabilities, registeredAgents) during the
+ * 30-second grace window before stale entries are garbage-collected.
+ */
+export function getAllInboundIncludingStale(): Map<string, MapInboundConnection> {
+  return new Map(inboundConnections);
+}
+
 export function getInboundCount(): number {
   // Count only non-stale; stale entries are invisible to health reporting.
   let n = 0;
@@ -270,6 +280,25 @@ export function findAcpAgentInfo(swarmId: string): {
     }
   }
   return undefined;
+}
+
+/**
+ * Find the sidecar agent's id on a swarm. The sidecar is the connection-
+ * level agent that runs the swarm's mail-inbound-consumer (handles
+ * `x-dispatch/work` envelopes for fresh-spawn dispatch). Used by the mail
+ * port to force routing to the sidecar when `mail_lifecycle: 'fresh'` is
+ * set per-dispatch.
+ *
+ * Returns the hub-side agent id (suitable for `MailTransport.sendToAgent`).
+ * Returns null when no inbound connection or no sidecar-role agent exists.
+ */
+export function findSidecarAgentId(swarmId: string): string | null {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn || conn.isStale) return null;
+  for (const agent of conn.registeredAgents.values()) {
+    if (agent.role === 'sidecar') return agent.id;
+  }
+  return null;
 }
 
 /**
