@@ -79,7 +79,9 @@ describe('notification-pair RPC', () => {
       name: 'NotificationPairRemoteError',
       code: 'unauthorized',
       method: 'dispatch/spawn-agent',
-      swarmId: 'swarm-1',
+      // Field renamed from `swarmId` → `target` when the helper moved
+      // into swarm-dispatch (transport-agnostic; "target" is generic).
+      target: 'swarm-1',
     });
   });
 

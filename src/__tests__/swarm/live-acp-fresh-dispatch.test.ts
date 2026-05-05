@@ -607,8 +607,11 @@ describeIf(
         const logs = await swarmManager
           .getLogs(hostedSwarmId!, testAgent.id, { lines: 80 })
           .catch(() => '');
+        // Match either log prefix:
+        //   - `[x-dispatch/spawn-agent]` (canonical, Tier 2+)
+        //   - `[dispatch/spawn-agent]` (legacy, pre-Tier 2)
         const handlerLogMatch = logs.match(
-          /\[dispatch\/spawn-agent\] Spawn complete agentId=([\w-]+)/,
+          /\[x?-?dispatch\/spawn-agent\] Spawn complete agentId=([\w-]+)/,
         );
         if (handlerLogMatch) {
           const reportedAgentId = handlerLogMatch[1];

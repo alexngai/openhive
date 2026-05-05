@@ -205,9 +205,22 @@ export async function enrichWithLoadout(
         : undefined;
     registerLoadoutForDispatch(task.id, materialized, hints);
 
+    // Surface the spec's team_role_ref.role onto task.metadata.role so
+    // swarm-dispatch's chooseExecutor reads it (`task.metadata?.role ??
+    // config.defaultRole`) and passes it as the role filter to
+    // roster.findAvailable. Without this, prefer-route falls back to the
+    // hub's defaultRole (typically 'worker') which matches the sidecar's
+    // projected role and routes mail+reuse dispatches through the
+    // sidecar's fresh-spawn path instead of the dispatched role's
+    // long-lived agent. Only set when the spec carries a team_role_ref;
+    // direct loadout_ref dispatches stay role-less.
     return {
       ...task,
-      metadata: { ...meta, materializedLoadout: materialized },
+      metadata: {
+        ...meta,
+        materializedLoadout: materialized,
+        ...(binding.teamRoleRef?.role ? { role: binding.teamRoleRef.role } : {}),
+      },
     };
   } catch (err) {
     // Use a generic message for authorization failures so iterated resource

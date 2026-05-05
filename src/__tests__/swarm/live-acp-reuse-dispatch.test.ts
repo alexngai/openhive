@@ -17,7 +17,7 @@
  *      coordinator and drives the dispatch's prompt against its
  *      already-running session.
  *
- * Capability semantics (the explicit tradeoff this test documents):
+ * Capability semantics (P4.2 — full overlay enforcement on the reuse path):
  *
  *   ✅ Addendum reaches the agent (SENTINEL in reply) — the prompt body
  *      is built fresh per dispatch.
@@ -26,15 +26,17 @@
  *   ✅ MCP tools work (AGENT_COUNT>0) — the existing coordinator's MCP
  *      trinity (agent-inbox, opentasks, macro-agent) was wired at its
  *      original spawn (boot-time), independent of dispatch.
- *   ❌ Loadout permissions are NOT enforced — the existing coordinator's
- *      Claude session was created at swarm boot, before this loadout was
- *      authored. Claude's permission engine takes session-level rules at
- *      session-creation; we can't retroactively inject them. Loadout
- *      permissions are advisory only on the reuse path.
+ *   ✅ Loadout permissions ARE enforced (P4.2). Before driving the
+ *      ACP prompt, the OpenHive runtime sends an
+ *      `x-dispatch/permissions.set` notification to the swarm carrying
+ *      the loadout's deny rules. Macro-agent's sidecar invokes
+ *      `setPermissionOverlay` on the named agent. The prompt iterator
+ *      in `agent-manager-v2.ts` intercepts the agent's
+ *      `permission_request` ACP session updates and answers with
+ *      'reject' for any matching the overlay. After the dispatch
+ *      completes, `closeStream` sends `permissions.clear`.
  *
- * The test asserts SENTINEL + SKILL_MARKER + AGENT_COUNT>0; PERM_DENIED
- * is INTENTIONALLY NOT ASSERTED. If you need loadout-driven permission
- * enforcement, route via mail+fresh or ACP+fresh.
+ * The test asserts all 4 markers including PERM_DENIED=true.
  *
  * No new ACP-capable agent should appear during the test — we assert
  * that the orchestrator did NOT spawn a fresh coordinator.
@@ -181,24 +183,32 @@ function buildLoadoutContent(skillBankRef?: string): LoadoutContent {
     capabilities: [],
     permissions: {
       allow: [],
-      // Included to verify the wire ships it cleanly even on the reuse
-      // path. NOT asserted in the test (would require a fresh session).
-      deny: ['Bash(echo perm-deny-test:*)'],
+      // Live-asserted (P4.2): the dispatch's deny rule is applied to the
+      // reused agent's session via the runtime overlay registry. The
+      // OpenHive runtime sends an `x-dispatch/permissions.set`
+      // notification to the swarm before driving the prompt; the swarm-
+      // side prompt iterator (in macro-agent) intercepts the agent's
+      // permission_request session updates and denies any matching the
+      // overlay. Cleared via `permissions.clear` on closeStream.
+      deny: ['Read(/tmp/perm-deny-test-target.txt)'],
     },
     mcp_servers: ['agent-inbox'],
     prompt_addendum: [
-      `You have three required tasks. Complete all three, then end your turn by calling the \`done\` tool from the macro-agent MCP server.`,
+      `You have four required tasks. Complete all four, then end your turn by calling the \`done\` tool from the macro-agent MCP server.`,
       ``,
       `Task 1 — Skill consumption: Read your <available_skills> section. If you find a skill named "Marker Skill", extract the marker token from its description (a token like SKILL_MARKER_*).`,
       ``,
       `Task 2 — MCP invocation: Call the \`list_agents\` tool from the agent-inbox MCP server. Note the count of agents returned.`,
       ``,
-      `Task 3 — Reply via done: Call \`done\` with status="completed" and a summary that contains, in order:`,
+      `Task 3 — Permission probe: Try to read the file "/tmp/perm-deny-test-target.txt" using the Read tool. The dispatch loadout has a deny rule for this exact path. If the call is denied (you'll see "Permission to use Read ... has been denied" or similar), set PERM_DENIED=true. If the call somehow succeeds and you see the file contents, set PERM_DENIED=false. Either outcome is fine — just report what happens accurately.`,
+      ``,
+      `Task 4 — Reply via done: Call \`done\` with status="completed" and a summary that contains, in order:`,
       `  - "${SENTINEL}" at the very start`,
       `  - The marker token from Task 1 (verbatim, e.g. ${SKILL_MARKER})`,
       `  - "AGENT_COUNT=N" (N is the integer count from Task 2)`,
+      `  - "PERM_DENIED=true" or "PERM_DENIED=false" from Task 3`,
       ``,
-      `Example summary: "${SENTINEL} ${SKILL_MARKER} AGENT_COUNT=2"`,
+      `Example summary: "${SENTINEL} ${SKILL_MARKER} AGENT_COUNT=2 PERM_DENIED=true"`,
       ``,
       `Also include the same marker line in your final visible reply text so the user can see it.`,
     ].join('\n'),
@@ -228,7 +238,7 @@ function buildTeamContent(skillBankRef?: string): TeamTemplateContent {
 }
 
 describeIf(
-  'Live Agent E2E — ACP + lifecycle=reuse: existing coordinator processes dispatch (permissions advisory)',
+  'Live Agent E2E — ACP + lifecycle=reuse: existing coordinator processes dispatch (overlay-enforced)',
   () => {
     let app: FastifyInstance;
     let config: Config;
@@ -452,7 +462,7 @@ describeIf(
     }, 30_000);
 
     it(
-      'existing coordinator handles dispatch with prompt-body capability proofs (permissions advisory)',
+      'existing coordinator handles dispatch with prompt-body capability proofs (overlay-enforced)',
       async () => {
         expect(swarmId).toBeDefined();
 
@@ -571,7 +581,8 @@ describeIf(
             return (
               all.includes(SENTINEL) &&
               all.includes(SKILL_MARKER) &&
-              /AGENT_COUNT\s*=\s*\d+/.test(all)
+              /AGENT_COUNT\s*=\s*\d+/.test(all) &&
+              /PERM_DENIED\s*=\s*(true|false)/.test(all)
             );
           },
           waitMs,
@@ -604,32 +615,56 @@ describeIf(
           );
         }
 
-        // ── Capability proofs (subset — permissions intentionally omitted) ──
+        // ── Capability proofs (4 markers — P4.2: full overlay enforcement on ACP+reuse) ──
         const sentinelSeen = allText.includes(SENTINEL);
         const skillUsed = allText.includes(SKILL_MARKER);
         const agentCountMatch = allText.match(/AGENT_COUNT\s*=\s*(\d+)/);
         const mcpFollowThrough = agentCountMatch !== null;
         const reportedCount = mcpFollowThrough ? parseInt(agentCountMatch![1], 10) : null;
         const mcpActuallyInvoked = reportedCount !== null && reportedCount > 0;
+        const permDeniedMatch = allText.match(/PERM_DENIED\s*=\s*(true|false)/);
+        const permDeniedReported = permDeniedMatch !== null;
+        const permEnforced = permDeniedMatch?.[1] === 'true';
 
         if (allMarkersSeen) {
           console.log(
             `[live-acp-reuse] CAPABILITY PROVEN — addendum: ${sentinelSeen}; ` +
-              `skill: ${skillUsed}; mcp: AGENT_COUNT=${reportedCount}.\n` +
-              `[live-acp-reuse] Permissions intentionally NOT asserted — see test docstring.`,
+              `skill: ${skillUsed}; mcp: AGENT_COUNT=${reportedCount}; ` +
+              `perm: PERM_DENIED=${permDeniedMatch?.[1]} ` +
+              `(overlay enforced via x-dispatch/permissions.set + ACP permission_request interception).`,
           );
         }
 
-        // Hard assertions: prompt-body fields reach the agent.
+        // Dump macro-agent logs when PERM_DENIED=false. Helps diagnose
+        // whether permissions.set landed + the prompt iterator fired +
+        // what tool input the agent passed to Read.
+        if (permDeniedMatch && permDeniedMatch[1] === 'false') {
+          const logs = await swarmManager
+            .getLogs(hostedSwarmId!, testAgent.id, { lines: 300 })
+            .catch(() => '(unavailable)');
+          console.warn(
+            `[live-acp-reuse] PERM_DENIED reported false. Macro-agent logs:\n` +
+              logs.slice(-8000),
+          );
+        }
+
+        // Hard assertions: prompt-body fields reach the agent + overlay
+        // enforcement worked (P4.2).
         expect(sentinelSeen).toBe(true);
         expect(skillUsed).toBe(true);
         expect(mcpFollowThrough).toBe(true);
         expect(mcpActuallyInvoked).toBe(true);
+        expect(permDeniedReported).toBe(true);
+        expect(permEnforced).toBe(true);
 
         // Hard assertion: NO new ACP coordinator spawned. The reuse path
-        // explicitly used the existing bootstrap coord. If this fails, the
-        // lifecycle hint plumbing routed to fresh-spawn instead of reuse.
-        expect(afterCount).toBe(beforeCount);
+        // explicitly used the existing bootstrap coord. The existing
+        // coord MAY have terminated as designed (the agent's done() in
+        // push mode returns shouldTerminate=true; for parentless agents
+        // that means the session exits). What we forbid is a FRESH spawn
+        // — that would mean the lifecycle hint plumbing routed to
+        // fresh-spawn instead of reuse, breaking the test's premise.
+        expect(afterCount).toBeLessThanOrEqual(beforeCount);
       },
       180_000,
     );

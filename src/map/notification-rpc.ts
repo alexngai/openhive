@@ -1,74 +1,64 @@
 /**
- * Notification-pair RPC — request/response over notifications.
+ * Notification-pair RPC — OpenHive-bound singleton over the
+ * swarm-dispatch generic registry.
  *
- * The MAP SDK's `AgentConnection` does NOT expose `setRequestHandler`;
- * inbound JSON-RPC requests can't be handled directly on the swarm side.
- * This module simulates request/response over the SDK's existing
- * notification surface using a correlation id:
+ * The library-level helper lives in `swarm-dispatch/client/notification-rpc.ts`
+ * (transport-agnostic). This module wires a process-singleton registry
+ * to OpenHive's `sendToSwarm` so existing callers don't need to thread
+ * a registry through and so legacy free-function signatures
+ * (`callViaNotificationPair(swarmId, method, params)`) keep working.
  *
- *     hub →  swarm:  notification `<method>.request` { correlation_id, ...params }
- *     swarm → hub:   notification `<method>.response` { correlation_id, result | error }
+ * Errors and types are re-exported directly from swarm-dispatch — same
+ * classes, no fork. Imports of `NotificationPairTransportLost` /
+ * `NotificationPairRemoteError` continue to work unchanged.
  *
- * The hub correlates by id, resolves the matching pending promise.
- *
- * Used today for `dispatch/spawn-agent` (ACP+fresh dispatch routing).
- * Future structured calls hub→swarm should use this mechanism until/unless
- * the SDK exposes inbound request handling on AgentConnection.
+ * Used today for `dispatch/spawn-agent` (legacy) and
+ * `x-dispatch/spawn-agent` (canonical) — see openhive-runtime's
+ * resolveTarget.
  */
 
-import { nanoid } from 'nanoid';
+import {
+  createNotificationPairRegistry,
+  type NotificationPairRegistry,
+} from 'swarm-dispatch/client';
 import { sendToSwarm } from './sync-listener.js';
 
-interface PendingCall {
-  resolve: (result: unknown) => void;
-  reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-  method: string;
-  swarmId: string;
-}
+export {
+  NotificationPairTransportLost,
+  NotificationPairRemoteError,
+} from 'swarm-dispatch/client';
 
 /**
- * Error thrown when the underlying transport to the swarm has gone away
- * before a response arrived. Distinct from a timeout so callers can fail
- * fast rather than wait the full timeout window.
+ * Process-singleton registry used by the wrapper helpers below. Exposed
+ * (via `getOpenHiveNotificationPairRegistry`) so callers wanting the
+ * library-shaped API directly (e.g., `callSpawnAgent(registry, ...)`)
+ * can reach the OpenHive-bound instance.
  */
-export class NotificationPairTransportLost extends Error {
-  readonly code = 'transport_lost';
-  constructor(method: string, swarmId: string, reason: string) {
-    super(
-      `notification-pair: ${method} to swarm ${swarmId} aborted — ${reason}`,
-    );
-    this.name = 'NotificationPairTransportLost';
-  }
-}
+const registry: NotificationPairRegistry = createNotificationPairRegistry({
+  sendNotification(target, method, params) {
+    return sendToSwarm(target, {
+      jsonrpc: '2.0',
+      method,
+      params,
+    });
+  },
+});
 
 /**
- * Error thrown when the swarm side responded with an explicit error.
- * Preserves the swarm-side `code` so callers can distinguish recoverable
- * errors (e.g., `agent_busy`, `unauthorized`) from terminal ones.
+ * Get the OpenHive-bound notification-pair registry singleton.
+ * Most callers should use the legacy free-function exports below; this
+ * is for code paths that prefer the library's typed API directly
+ * (e.g., `callSpawnAgent(registry, swarmId, req)`).
  */
-export class NotificationPairRemoteError extends Error {
-  constructor(
-    public readonly method: string,
-    public readonly swarmId: string,
-    public readonly code: number | string | undefined,
-    message: string,
-  ) {
-    super(`notification-pair: ${method} on ${swarmId} failed — ${message}`);
-    this.name = 'NotificationPairRemoteError';
-  }
+export function getOpenHiveNotificationPairRegistry(): NotificationPairRegistry {
+  return registry;
 }
-
-const pending = new Map<string, PendingCall>();
-
-const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
  * Send a request notification to a swarm and wait for the matching
- * response notification. Resolves with `result`, rejects with `error` or
- * timeout.
- *
- * @returns The result the swarm replied with.
+ * response notification. Resolves with `result`, rejects with `error`
+ * or timeout. Wraps the swarm-dispatch registry's `call()` with the
+ * existing OpenHive signature.
  */
 export async function callViaNotificationPair<TParams, TResult>(
   swarmId: string,
@@ -76,102 +66,26 @@ export async function callViaNotificationPair<TParams, TResult>(
   params: TParams,
   opts: { timeoutMs?: number } = {},
 ): Promise<TResult> {
-  const correlationId = nanoid();
-  const requestMethod = `${method}.request`;
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-
-  return new Promise<TResult>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pending.delete(correlationId);
-      reject(
-        new Error(
-          `notification-pair: ${method} timed out after ${timeoutMs}ms (swarm=${swarmId})`,
-        ),
-      );
-    }, timeoutMs);
-
-    pending.set(correlationId, {
-      resolve: (result) => resolve(result as TResult),
-      reject,
-      timer,
-      method,
-      swarmId,
-    });
-
-    const sent = sendToSwarm(swarmId, {
-      jsonrpc: '2.0',
-      method: requestMethod,
-      params: { correlation_id: correlationId, ...params },
-    });
-    if (!sent) {
-      const entry = pending.get(correlationId);
-      if (entry) {
-        clearTimeout(entry.timer);
-        pending.delete(correlationId);
-      }
-      reject(
-        new Error(
-          `notification-pair: failed to send ${requestMethod} — swarm ${swarmId} not reachable`,
-        ),
-      );
-    }
-  });
+  return registry.call<TParams, TResult>(swarmId, method, params, opts);
 }
 
 /**
  * Resolve a pending notification-pair call when the swarm sends back
  * `<method>.response`. Called by ws-map's notification dispatcher.
- *
- * Silently ignores responses with unknown correlation ids (late
- * responses, foreign messages).
  */
 export function handleNotificationPairResponse(params: unknown): void {
-  if (!params || typeof params !== 'object') return;
-  const p = params as {
-    correlation_id?: string;
-    result?: unknown;
-    error?: { message?: string; code?: number };
-  };
-  const correlationId = p.correlation_id;
-  if (!correlationId) return;
-
-  const entry = pending.get(correlationId);
-  if (!entry) return;
-  clearTimeout(entry.timer);
-  pending.delete(correlationId);
-
-  if (p.error) {
-    entry.reject(
-      new NotificationPairRemoteError(
-        entry.method,
-        entry.swarmId,
-        p.error.code,
-        p.error.message ?? 'remote error',
-      ),
-    );
-    return;
-  }
-  entry.resolve(p.result);
+  registry.handleResponse(params);
 }
 
 /**
- * Reject all pending notification-pair calls targeting a specific swarm
- * with a `NotificationPairTransportLost` error. Called when the swarm's
- * WebSocket disconnects so callers fail fast (orchestrator retry kicks
- * in immediately) instead of waiting out the full 30s timeout.
+ * Reject all pending notification-pair calls targeting a specific swarm.
+ * Called when the swarm's WebSocket disconnects so callers fail fast.
  */
 export function rejectPendingForSwarm(
   swarmId: string,
   reason = 'swarm disconnected',
 ): void {
-  for (const [correlationId, entry] of pending) {
-    if (entry.swarmId !== swarmId) continue;
-    clearTimeout(entry.timer);
-    pending.delete(correlationId);
-    entry.reject(
-      new NotificationPairTransportLost(entry.method, swarmId, reason),
-    );
-  }
+  registry.rejectPendingForTarget(swarmId, reason);
 }
 
 /**
@@ -179,9 +93,5 @@ export function rejectPendingForSwarm(
  * cross-test bleed.
  */
 export function _clearPendingNotificationPairCallsForTest(): void {
-  for (const entry of pending.values()) {
-    clearTimeout(entry.timer);
-    entry.reject(new Error('notification-pair: cleared by test'));
-  }
-  pending.clear();
+  registry._clearForTest();
 }

@@ -30,7 +30,8 @@ import type { DispatchAgentRuntime } from 'swarm-dispatch';
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import type { Dispatch } from '../db/dal/dispatches.js';
 import { findAcpAgentInfo } from '../map/connection-registry.js';
-import { callViaNotificationPair } from '../map/notification-rpc.js';
+import { callSpawnAgent } from 'swarm-dispatch/client';
+import { getOpenHiveNotificationPairRegistry } from '../map/notification-rpc.js';
 import {
   peekHintsForDispatch,
   consumeLoadoutForDispatch,
@@ -110,6 +111,111 @@ export function readDispatchLifecycle(
  */
 export const toWireLoadout = materializedLoadoutToWire;
 
+// ─────────────────────────────────────────────────────────────────────
+// Permission overlay staging (ACP+reuse path).
+//
+// Two-phase wiring because the runtime contract splits target resolution
+// from stream creation:
+//   - resolveTarget gets the loadout (consumed from cache) and the agent
+//     id, but no streamId yet.
+//   - createStream gets the streamId. Once we have it, we can pair the
+//     pending overlay with the stream and send `permissions.set` to the
+//     swarm via the x-dispatch notification-pair RPC.
+//   - closeStream tears down the stream — clears the overlay first so
+//     the long-lived agent isn't left with stale dispatch deny rules.
+//
+// Stage 1 (resolveTarget → stagePendingOverlay): Map<`${swarmId}::${agentId}`, ...>
+// Stage 2 (createStream → activatePendingOverlay): Map<streamId, ...>
+//
+// Cross-stream collisions are unlikely (one dispatch ↔ one stream ↔ one
+// overlay) but handled defensively: a re-stage overwrites the prior
+// pending entry on the same (swarmId, agentId) key. Stale pending
+// entries that never get activated leak — fine, they're tiny and time-
+// bounded by the orchestrator's reconcile cycle.
+// ─────────────────────────────────────────────────────────────────────
+
+interface StagedOverlay {
+  swarmId: string;
+  agentId: string;
+  deny: string[];
+  allow: string[];
+}
+
+interface ActiveOverlay {
+  swarmId: string;
+  agentId: string;
+}
+
+const pendingOverlays = new Map<string, StagedOverlay>();
+const activeOverlays = new Map<string, ActiveOverlay>();
+const PERMISSIONS_RPC_TIMEOUT_MS = 5_000;
+
+function pendingKey(swarmId: string, agentId: string): string {
+  return `${swarmId}::${agentId}`;
+}
+
+export function stagePendingOverlay(staged: StagedOverlay): void {
+  pendingOverlays.set(pendingKey(staged.swarmId, staged.agentId), staged);
+}
+
+export async function activatePendingOverlay(args: {
+  swarmId: string;
+  agentId: string;
+  streamId: string;
+}): Promise<void> {
+  const key = pendingKey(args.swarmId, args.agentId);
+  const staged = pendingOverlays.get(key);
+  if (!staged) return; // No pending overlay — nothing to activate.
+  pendingOverlays.delete(key);
+
+  const { callViaNotificationPair } = await import(
+    '../map/notification-rpc.js'
+  );
+  await callViaNotificationPair<
+    { agent_id: string; deny: string[]; allow: string[]; correlation_id: string },
+    { ok: boolean; error?: string }
+  >(
+    args.swarmId,
+    'x-dispatch/permissions.set.request',
+    {
+      agent_id: args.agentId,
+      deny: staged.deny,
+      allow: staged.allow,
+      correlation_id: '',  // filled in by the registry
+    },
+    { timeoutMs: PERMISSIONS_RPC_TIMEOUT_MS },
+  );
+  activeOverlays.set(args.streamId, {
+    swarmId: args.swarmId,
+    agentId: args.agentId,
+  });
+}
+
+export async function deactivateOverlay(streamId: string): Promise<void> {
+  const active = activeOverlays.get(streamId);
+  if (!active) return; // No active overlay for this stream — nothing to clear.
+  activeOverlays.delete(streamId);
+
+  const { callViaNotificationPair } = await import(
+    '../map/notification-rpc.js'
+  );
+  await callViaNotificationPair<
+    { agent_id: string; correlation_id: string },
+    { ok: boolean; error?: string }
+  >(
+    active.swarmId,
+    'x-dispatch/permissions.clear.request',
+    { agent_id: active.agentId, correlation_id: '' },
+    { timeoutMs: PERMISSIONS_RPC_TIMEOUT_MS },
+  );
+}
+
+/** Test helper — reset all in-memory overlay state. */
+export function _resetOverlayStateForTest(): void {
+  pendingOverlays.clear();
+  activeOverlays.clear();
+}
+
 export function createOpenHiveAgentRuntime(
   deps: OpenHiveRuntimeDeps,
 ): DispatchAgentRuntime {
@@ -137,26 +243,37 @@ export function createOpenHiveAgentRuntime(
       );
 
       if (lifecycle === 'fresh') {
-        // Notification-pair RPC — AgentConnection doesn't expose
-        // setRequestHandler so we simulate request/response over
-        // notifications. See src/map/notification-rpc.ts.
+        // Notification-pair RPC via swarm-dispatch's `callSpawnAgent`.
+        // The MAP SDK's AgentConnection doesn't expose
+        // setRequestHandler, so the helper sends an
+        // `x-dispatch/spawn-agent.request` notification with a
+        // correlation_id and awaits the matching `.response`.
+        //
+        // Library-shape fields (role, capabilities, lifecycle,
+        // fullAutonomous) ride at the top level; OpenHive-specific
+        // payload (the materialized loadout) goes under
+        // `consumer_extensions.openhive` so consumers from other hubs
+        // running their own dispatch can co-exist on the same wire.
         //
         // Default role is 'coordinator' (the only role that registers
-        // `protocols: ['acp']` per macro-agent's lifecycle-bridge);
-        // cwd defaults to the swarm's process.cwd() via the handler's
-        // own fallback to agentManager's defaultCwd.
-        const result = await callViaNotificationPair<
-          Record<string, unknown>,
-          { agentId: string }
-        >(
+        // `protocols: ['acp']` per macro-agent's lifecycle-bridge); cwd
+        // defaults to the swarm's process.cwd() via the handler's own
+        // fallback to agentManager's defaultCwd.
+        const result = await callSpawnAgent(
+          getOpenHiveNotificationPairRegistry(),
           dispatch.target_swarm_id,
-          'dispatch/spawn-agent',
           {
             role: 'coordinator',
             capabilities_required: ['acp'],
             lifecycle: 'fresh',
-            ...(loadout ? { loadout: materializedLoadoutToWire(loadout) } : {}),
             fullAutonomous: true,
+            ...(loadout
+              ? {
+                  consumer_extensions: {
+                    openhive: { loadout: materializedLoadoutToWire(loadout) },
+                  },
+                }
+              : {}),
           },
           { timeoutMs: deps.spawnAgentTimeoutMs ?? 30_000 },
         );
@@ -172,15 +289,49 @@ export function createOpenHiveAgentRuntime(
         throw new Error(`No ACP-capable agent on swarm ${dispatch.target_swarm_id}`);
       }
 
+      // Capture the loadout's permission rules to apply via the swarm-side
+      // overlay registry once the ACP stream is created. ACP+reuse uses
+      // the existing long-lived agent's session — so loadout permissions
+      // can't be wired at session-creation time the way ACP+fresh does.
+      // Instead, we send `x-dispatch/permissions.set` over MAP after
+      // createStream, and `permissions.clear` before closeStream. The
+      // swarm-side prompt iterator (in macro-agent's agent-manager-v2)
+      // enforces the overlay against permission_request session updates.
+      // See docs/PERMISSION_OVERLAY_ACP_DESIGN.md.
+      if (loadout?.permissions?.deny?.length || loadout?.permissions?.allow?.length) {
+        stagePendingOverlay({
+          swarmId: dispatch.target_swarm_id,
+          agentId: agentInfo.targetId,
+          deny: loadout.permissions.deny ?? [],
+          allow: loadout.permissions.allow ?? [],
+        });
+      }
+
       return {
         serverId: dispatch.target_swarm_id,
         agentId: agentInfo.targetId,
       };
     },
 
-    createStream: (serverId, agentId) => {
+    createStream: async (serverId, agentId) => {
       const mgr = deps.getAcpStreamManager()!;
-      return mgr.createStream(serverId, agentId);
+      const result = await mgr.createStream(serverId, agentId);
+      // After the stream is wired, push any staged overlay onto the
+      // swarm via the x-dispatch/permissions.set notification-pair RPC.
+      // We bind the staged entry to the new streamId so closeStream can
+      // pair it with a clear later.
+      await activatePendingOverlay({
+        swarmId: serverId,
+        agentId,
+        streamId: result.streamId,
+      }).catch((err) => {
+        console.warn(
+          `[openhive-runtime] permissions.set failed swarm=${serverId} agent=${agentId}: ${
+            (err as Error).message
+          } (continuing without overlay enforcement)`,
+        );
+      });
+      return result;
     },
 
     initializeStream: async (streamId) => {
@@ -199,6 +350,17 @@ export function createOpenHiveAgentRuntime(
     },
 
     closeStream: async (streamId) => {
+      // Clear any active overlay before tearing down the stream so the
+      // long-lived agent isn't left with stale dispatch deny rules.
+      // Errors here are non-fatal — the overlay times out / gets
+      // overwritten by the next dispatch anyway.
+      await deactivateOverlay(streamId).catch((err) => {
+        console.warn(
+          `[openhive-runtime] permissions.clear failed stream=${streamId}: ${
+            (err as Error).message
+          }`,
+        );
+      });
       await deps.getAcpStreamManager()?.closeStream(streamId);
     },
 

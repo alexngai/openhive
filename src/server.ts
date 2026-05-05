@@ -445,24 +445,13 @@ export async function createHive(
 
       // Bridge ACP events from SwarmCraft WS (/ws/swarmcraft) to OpenHive WS (/ws).
       // The frontend's useWebSocket hooks listen on /ws. ACP streaming events
-      // (acp.session.update, acp.prompt.completed, etc.) are broadcast on SwarmCraft's
-      // wsHub. We intercept broadcast() to forward acp.* events to OpenHive's system.
+      // (acp.session.update, acp.prompt.completed, etc.) are broadcast on
+      // SwarmCraft's wsHub. The bridge wraps wsHub.broadcast() so acp.*
+      // events from the `acp` topic also reach OpenHive's `global` channel.
+      // See src/realtime/acp-bridge.ts for the implementation.
       const { broadcastToChannel } = await import("./realtime/index.js");
-      const origBroadcast = sc.wsHub.broadcast.bind(sc.wsHub);
-      sc.wsHub.broadcast = (message: any, topic?: string) => {
-        // Forward to original SwarmCraft subscribers
-        origBroadcast(message, topic);
-
-        // Bridge acp.* events to OpenHive's WS.
-        // Only forward from the 'acp' topic to avoid duplicates — SwarmCraft
-        // broadcasts each ACP event to both 'events' and 'acp' topics.
-        if (topic === 'acp' && message?.type && typeof message.type === 'string' && message.type.startsWith('acp.')) {
-          broadcastToChannel('global', {
-            type: message.type,
-            data: message.payload ?? message.data ?? message,
-          });
-        }
-      };
+      const { installAcpBridge } = await import("./realtime/acp-bridge.js");
+      installAcpBridge(sc.wsHub, broadcastToChannel);
       console.log('[openhive] ACP event bridge active (SwarmCraft → OpenHive WS)');
       // onClose hook is already registered above (pre-`fastify.register`) so
       // SC's internal teardown runs first via LIFO ordering. See the comment

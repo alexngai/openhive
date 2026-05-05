@@ -36,6 +36,15 @@ export interface Dispatch {
   attempt?: number;
   turn_count?: number;
   attempts_history?: DispatchAttempt[];
+  /** Per-dispatch transport hint for ACP routing. `'fresh'` spawns a new
+   *  coordinator with loadout permissions enforced at spawn time;
+   *  `'reuse'` attaches to an existing ACP-capable agent (advisory). Null
+   *  falls through to `config.dispatch.acp_lifecycle_default`. */
+  acp_lifecycle: 'fresh' | 'reuse' | null;
+  /** Same shape as acp_lifecycle but for the mail transport. `'fresh'`
+   *  forces routing to the connection's sidecar (which spawns an
+   *  ephemeral worker per envelope); `'reuse'` lets the roster pick. */
+  mail_lifecycle: 'fresh' | 'reuse' | null;
   created_at: string;
   updated_at: string;
 }

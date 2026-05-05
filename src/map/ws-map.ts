@@ -351,12 +351,20 @@ function createNotificationInterceptor(
         handleOpenTasksResponse(msg.params as Record<string, unknown>);
       } else if (
         typeof msg.method === 'string' &&
-        msg.method === 'dispatch/spawn-agent.response'
+        (msg.method === 'x-dispatch/spawn-agent.response' ||
+          msg.method === 'dispatch/spawn-agent.response' ||
+          (msg.method.startsWith('x-dispatch/') &&
+            msg.method.endsWith('.response')))
       ) {
         // Response side of the notification-pair RPC used for hub→swarm
-        // request/response on `dispatch/spawn-agent`. AgentConnection
-        // doesn't expose setRequestHandler, so we simulate request/response
-        // over notifications. See src/map/notification-rpc.ts.
+        // request/response on x-dispatch/* methods. AgentConnection
+        // doesn't expose setRequestHandler, so we simulate request/
+        // response over notifications. Canonical method names live
+        // under `x-dispatch/` (owned by swarm-dispatch) — covers
+        // `spawn-agent`, `permissions.set`, `permissions.clear`, and
+        // any future additions. The legacy `dispatch/spawn-agent.response`
+        // is accepted for one release window so old swarms continue
+        // to work.
         handleNotificationPairResponse(msg.params);
       } else if (typeof msg.method === 'string' && msg.method.startsWith('mail/')) {
         // Mail notifications — fire and forget
