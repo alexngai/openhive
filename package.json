@@ -24,12 +24,14 @@
     "bin"
   ],
   "workspaces": [
-    "electron-app"
+    "electron-app",
+    "packages/openhive-headless"
   ],
   "scripts": {
     "build": "npm run build:server && npm run build:web",
     "build:server": "tsup",
     "build:web": "node src/web/ensure-wasm.mjs && vite build --config src/web/vite.config.ts",
+    "build:headless": "npm run build:server && npm -w openhive-headless run build",
     "dev": "tsx watch --exclude '.git/**' --exclude '.swarm/**' --exclude '.openhive/**' --exclude '.sessionlog/**' --exclude 'references/**' src/cli.ts serve",
     "dev:web": "vite --config src/web/vite.config.ts",
     "start": "node dist/cli.js serve",
