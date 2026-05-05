@@ -41,6 +41,7 @@ import {
   MIGRATION_V46_RESOURCE_TYPES_EXTEND,
   MIGRATION_V47_DISPATCH_ACP_LIFECYCLE,
   MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE,
+  MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -316,6 +317,11 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Mirrors V47 — "fresh" forces sidecar routing, "reuse" lets
   // prefer-route pick a non-busy long-lived worker.
   48: MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE,
+  // Version 49: Persist loadout resolution result on dispatches
+  // (loadout_ref, loadout_status, loadout_error). Powers the post-refresh
+  // detail UI panel and surfaces materialization failures durably, not
+  // just over the live WS event.
+  49: MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
 };
 
 /** Get the SQL for a specific migration version.
@@ -394,6 +400,9 @@ function repairSchema(database: Database.Database): void {
     "ALTER TABLE dispatches ADD COLUMN attempt INTEGER DEFAULT 0",
     "ALTER TABLE dispatches ADD COLUMN turn_count INTEGER DEFAULT 0",
     "ALTER TABLE dispatches ADD COLUMN attempts_history TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE dispatches ADD COLUMN loadout_ref TEXT",
+    "ALTER TABLE dispatches ADD COLUMN loadout_status TEXT",
+    "ALTER TABLE dispatches ADD COLUMN loadout_error TEXT",
     "ALTER TABLE map_nodes ADD COLUMN presence TEXT NOT NULL DEFAULT 'offline'",
     "CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence)",
     "ALTER TABLE agents ADD COLUMN capabilities TEXT",

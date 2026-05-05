@@ -19,6 +19,15 @@ export interface DispatchAttempt {
   error?: string;
   session_id?: string;
   next_retry_at?: string;
+  /** Transport that delivered this attempt (V49). Populated by the adapter
+   *  that performed delivery — `acp` from the runtime, `mail` from the
+   *  mail port. Absent on attempts that never reached delivery. */
+  transport?: 'acp' | 'mail';
+  /** Resolved target agent id at delivery time (V49). */
+  agent_id?: string;
+  /** Routing decision from swarm-dispatch (V49): `spawn` = fresh agent
+   *  started, `route` = existing agent picked. Diagnostic. */
+  via?: 'spawn' | 'route';
 }
 
 export interface Dispatch {
@@ -45,6 +54,13 @@ export interface Dispatch {
    *  forces routing to the connection's sidecar (which spawns an
    *  ephemeral worker per envelope); `'reuse'` lets the roster pick. */
   mail_lifecycle: 'fresh' | 'reuse' | null;
+  /** Loadout binding (V49): the original `loadout_ref` or
+   *  `team:<template>/role:<role>` string captured at enrichment. */
+  loadout_ref: string | null;
+  /** Materialization status (V49). `null` = no binding. */
+  loadout_status: 'materialized' | 'failed' | null;
+  /** Materialization error message when status='failed' (V49). */
+  loadout_error: string | null;
   created_at: string;
   updated_at: string;
 }

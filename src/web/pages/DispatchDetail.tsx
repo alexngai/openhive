@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Send, Zap, FileText, User, Bot, Ban, AlertCircle, GitBranch, GitCommit,
-  ListChecks, CheckCircle2, Circle,
+  ListChecks, CheckCircle2, Circle, Sparkles,
 } from 'lucide-react';
 import { useDispatch, useCancelDispatch } from '../hooks/useDispatch';
 import {
@@ -353,6 +353,16 @@ export function DispatchDetail() {
         )}
       </div>
 
+      {/* Loadout (V49) — sticky surface for materialization status. Banner
+          above is live-only; this section persists across refresh. */}
+      {d.loadout_status && (
+        <LoadoutPanel
+          loadoutRef={d.loadout_ref}
+          status={d.loadout_status}
+          error={d.loadout_error}
+        />
+      )}
+
       {/* Prompt override */}
       {d.prompt_override && (
         <div
@@ -578,6 +588,93 @@ export function DispatchDetail() {
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Persistent display of the dispatch's loadout binding + materialization
+ * outcome. Driven by the V49 columns on the dispatch row, so the data
+ * survives page refresh (unlike the live `materialization_failed` banner).
+ *
+ * `loadout_ref` may be a direct loadout resource id (e.g. `loadout_xxx`) or
+ * a synthetic `team:<template>/role:<role>` string. We link to the resource
+ * detail page only for the former.
+ */
+function LoadoutPanel({
+  loadoutRef,
+  status,
+  error,
+}: {
+  loadoutRef: string | null;
+  status: 'materialized' | 'failed';
+  error: string | null;
+}) {
+  const isFailed = status === 'failed';
+  const isTeamRoleRef = loadoutRef?.startsWith('team:') ?? false;
+  const isDirectLoadout = loadoutRef && !isTeamRoleRef;
+  const tone = isFailed
+    ? {
+        borderColor: 'rgba(245, 158, 11, 0.4)',
+        backgroundColor: 'rgba(245, 158, 11, 0.05)',
+      }
+    : {
+        borderColor: 'var(--color-border-subtle)',
+        backgroundColor: 'var(--color-surface)',
+      };
+  return (
+    <div
+      className="rounded-md border p-4 mb-6"
+      style={{ ...tone, color: 'var(--color-text)' }}
+    >
+      <div
+        className="text-xs mb-2 flex items-center gap-1.5"
+        style={{ color: 'var(--color-text-muted)' }}
+      >
+        <Sparkles className="h-3.5 w-3.5 text-honey-500" />
+        Loadout
+      </div>
+      <div className="flex items-start gap-2 text-sm">
+        {isFailed ? (
+          <AlertCircle className="h-4 w-4 mt-0.5 text-amber-400 shrink-0" />
+        ) : (
+          <CheckCircle2 className="h-4 w-4 mt-0.5 text-honey-500 shrink-0" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div>
+            <span style={{ color: 'var(--color-text-muted)' }}>
+              {isFailed ? 'Failed: ' : 'Materialized: '}
+            </span>
+            {isDirectLoadout ? (
+              <Link
+                to={`/resources/${loadoutRef}`}
+                className="font-mono hover:opacity-80"
+              >
+                {loadoutRef}
+              </Link>
+            ) : (
+              <span className="font-mono">{loadoutRef ?? '—'}</span>
+            )}
+          </div>
+          {isFailed && error && (
+            <div
+              className="text-xs mt-1"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              {error}. The dispatch ran without the loadout — agent used its
+              default permissions and skill set.
+            </div>
+          )}
+          {!isFailed && (
+            <div
+              className="text-xs mt-1"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              Permissions, MCP servers, and skill bank were applied at delivery.
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

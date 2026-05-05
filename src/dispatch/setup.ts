@@ -17,6 +17,7 @@ import { openHivePromptBuilder } from './prompt.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import { finalizeDispatch } from './finalize.js';
+import { claimDelivery } from './delivery-tracker.js';
 import type { Config } from '../config.js';
 
 export interface SetupOrchestratorOptions {
@@ -103,6 +104,22 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
         started_at: prior?.started_at ?? now,
         status: 'running',
       });
+      // Pair the orchestrator's view (event.agentId, event.via, event.attempt)
+      // with the OpenHive transport hint that the runtime/mail-port stashed
+      // in the delivery tracker. Merges into the same attempts_history row
+      // so the UI can show "ACP · spawn · agent_id" / "Mail · route · agent_id".
+      const eventDispatched = event as { agentId?: string; via?: 'spawn' | 'route' };
+      const hint = claimDelivery(event.taskId);
+      const transport = hint?.transport;
+      const agent_id = eventDispatched.agentId ?? hint?.agent_id;
+      const via = eventDispatched.via;
+      if (transport || agent_id || via) {
+        dispatchesDAL.recordAttemptDelivery(event.taskId, attempt, {
+          ...(transport ? { transport } : {}),
+          ...(agent_id ? { agent_id } : {}),
+          ...(via ? { via } : {}),
+        });
+      }
     }
 
     // Terminal: agent completed successfully → mark dispatch complete

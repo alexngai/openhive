@@ -37,6 +37,26 @@ export interface DispatchAttempt {
   session_id?: string;
   /** ISO timestamp of the next retry (set when status === 'retrying'). */
   next_retry_at?: string;
+  /**
+   * Transport that delivered this attempt's prompt. Written by the
+   * adapter that actually performed the delivery — `openhive-runtime.ts`
+   * for ACP, `openhive-mail-port.ts` for mail. Absent on attempts that
+   * never reached delivery (claim races, immediate failures).
+   */
+  transport?: 'acp' | 'mail';
+  /**
+   * Resolved target agent id at delivery time. For ACP fresh: the
+   * spawned coordinator's id; for ACP reuse: the picked existing agent.
+   * For mail: the recipient agent id (sidecar id when mail_lifecycle='fresh').
+   */
+  agent_id?: string;
+  /**
+   * Routing decision from swarm-dispatch's `dispatched` event. `'spawn'`
+   * means a new agent was started for this attempt; `'route'` means an
+   * existing one was selected. Diagnostic — derived from the orchestrator
+   * event, not the OpenHive transport.
+   */
+  via?: 'spawn' | 'route';
 }
 
 export interface Dispatch {
@@ -73,6 +93,22 @@ export interface Dispatch {
    * `config.dispatch.mail_lifecycle_default` and ultimately `'reuse'`.
    */
   mail_lifecycle: 'fresh' | 'reuse' | null;
+  /**
+   * Loadout binding (V49): the spec_metadata.loadout_ref or team_role_ref
+   * string captured at enrichment time. NULL if the spec had no binding.
+   * Persisted so the detail UI shows what was attached after the
+   * side-channel TTL expires; also an audit trail.
+   */
+  loadout_ref: string | null;
+  /**
+   * Materialization status (V49). `'materialized'` on success;
+   * `'failed'` when resolution errored (loadout not found, ACL forbidden,
+   * etc.); `null` when no binding existed. Powers the post-refresh
+   * sticky failure banner on DispatchDetail.
+   */
+  loadout_status: 'materialized' | 'failed' | null;
+  /** Materialization error message when status='failed'. */
+  loadout_error: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +132,9 @@ interface DispatchRow {
   attempts_history: string | null;
   acp_lifecycle: string | null;
   mail_lifecycle: string | null;
+  loadout_ref: string | null;
+  loadout_status: string | null;
+  loadout_error: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -152,6 +191,12 @@ function rowToDispatch(row: DispatchRow): Dispatch {
       row.mail_lifecycle === 'fresh' || row.mail_lifecycle === 'reuse'
         ? row.mail_lifecycle
         : null,
+    loadout_ref: row.loadout_ref ?? null,
+    loadout_status:
+      row.loadout_status === 'materialized' || row.loadout_status === 'failed'
+        ? row.loadout_status
+        : null,
+    loadout_error: row.loadout_error ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -474,6 +519,85 @@ export function upsertDispatchAttempt(id: string, entry: DispatchAttempt): void 
     history[idx] = { ...history[idx], ...entry };
   } else {
     history.push(entry);
+  }
+  history.sort((a, b) => a.attempt - b.attempt);
+
+  db.prepare(
+    `UPDATE dispatches SET attempts_history = ?, updated_at = datetime('now') WHERE id = ?`,
+  ).run(JSON.stringify(history), id);
+}
+
+/**
+ * Persist the result of resolving a dispatch's loadout binding. Called from
+ * `enrichWithLoadout` in the source adapter — both on success and failure
+ * — so the detail UI can render a sticky "Loadout: materialized" or
+ * "Loadout: failed (<reason>)" banner that survives refresh, complementing
+ * the live `dispatch.materialization_failed` WS event.
+ *
+ * Idempotent. No-op when the dispatch row no longer exists.
+ */
+export function recordLoadoutResolution(
+  id: string,
+  result:
+    | { ref: string; status: 'materialized'; error?: never }
+    | { ref: string; status: 'failed'; error: string },
+): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE dispatches
+       SET loadout_ref = ?, loadout_status = ?, loadout_error = ?,
+           updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(
+    result.ref,
+    result.status,
+    result.status === 'failed' ? result.error : null,
+    id,
+  );
+}
+
+/**
+ * Record the actually-used transport + resolved target on a specific
+ * `attempts_history` entry. Called from the OpenHive adapter that performed
+ * the delivery (`openhive-runtime.ts` for ACP, `openhive-mail-port.ts` for
+ * mail). Merges into the existing attempt row created by `upsertDispatchAttempt`,
+ * preserving `started_at` and any prior fields.
+ *
+ * Idempotent. If the attempt row doesn't yet exist (delivery raced ahead of
+ * the orchestrator's `dispatched` event), creates a stub with `status='running'`
+ * and `started_at=now` so the data isn't lost.
+ */
+export function recordAttemptDelivery(
+  id: string,
+  attempt: number,
+  delivery: { transport?: 'acp' | 'mail'; agent_id?: string; via?: 'spawn' | 'route' },
+): void {
+  const db = getDatabase();
+  const row = db
+    .prepare('SELECT attempts_history FROM dispatches WHERE id = ?')
+    .get(id) as { attempts_history: string | null } | undefined;
+  if (!row) return;
+
+  let history: DispatchAttempt[] = [];
+  if (row.attempts_history) {
+    try {
+      const parsed = JSON.parse(row.attempts_history);
+      if (Array.isArray(parsed)) history = parsed as DispatchAttempt[];
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const idx = history.findIndex((a) => a.attempt === attempt);
+  if (idx >= 0) {
+    history[idx] = { ...history[idx], ...delivery };
+  } else {
+    history.push({
+      attempt,
+      started_at: new Date().toISOString(),
+      status: 'running',
+      ...delivery,
+    });
   }
   history.sort((a, b) => a.attempt - b.attempt);
 

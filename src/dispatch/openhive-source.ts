@@ -160,6 +160,14 @@ export async function enrichWithLoadout(
   const viewerAgentId =
     typeof meta.initiator_id === 'string' ? meta.initiator_id : undefined;
 
+  // Stable string form of the binding for persistence — readers can resolve
+  // back to the originating loadout without re-walking the spec metadata.
+  const bindingRef = binding.loadoutRef
+    ? binding.loadoutRef
+    : binding.teamRoleRef
+      ? `team:${binding.teamRoleRef.teamTemplateId}/role:${binding.teamRoleRef.role}`
+      : '';
+
   try {
     let materialized: MaterializedLoadout;
     if (binding.loadoutRef) {
@@ -205,6 +213,20 @@ export async function enrichWithLoadout(
         : undefined;
     registerLoadoutForDispatch(task.id, materialized, hints);
 
+    // Persist resolution outcome (V49) so the detail UI shows what loadout
+    // was attached after the side-channel TTL expires (5 min) or after a
+    // page refresh — and so post-hoc audit doesn't have to replay events.
+    if (bindingRef) {
+      try {
+        dispatchesDAL.recordLoadoutResolution(task.id, {
+          ref: bindingRef,
+          status: 'materialized',
+        });
+      } catch {
+        /* best effort — DB hiccup must not block enrichment */
+      }
+    }
+
     // Surface the spec's team_role_ref.role onto task.metadata.role so
     // swarm-dispatch's chooseExecutor reads it (`task.metadata?.role ??
     // config.defaultRole`) and passes it as the role filter to
@@ -235,6 +257,21 @@ export async function enrichWithLoadout(
       `[dispatch] loadout materialization failed for dispatch ${task.id}: ${errorMessage}`,
     );
     _broadcast(task.id, errorMessage);
+    // Sticky persistence (V49): the WS event only reaches clients
+    // subscribed at the moment it fires. Also write the failure to the
+    // dispatch row so the UI banner survives refresh and audit can read
+    // directly from the row.
+    if (bindingRef) {
+      try {
+        dispatchesDAL.recordLoadoutResolution(task.id, {
+          ref: bindingRef,
+          status: 'failed',
+          error: errorMessage,
+        });
+      } catch {
+        /* best effort */
+      }
+    }
     return {
       ...task,
       metadata: {

@@ -43,6 +43,9 @@ function fakeDispatch(): Dispatch {
     attempts_history: [],
     acp_lifecycle: null,
     mail_lifecycle: null,
+    loadout_ref: null,
+    loadout_status: null,
+    loadout_error: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };

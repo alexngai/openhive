@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 48;
+export const SCHEMA_VERSION = 49;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -659,6 +659,22 @@ CREATE TABLE IF NOT EXISTS dispatches (
   -- Same transport-vs-content split as acp_lifecycle.
   mail_lifecycle TEXT
     CHECK (mail_lifecycle IS NULL OR mail_lifecycle IN ('fresh', 'reuse')),
+  -- Loadout binding (V49): the spec_metadata.loadout_ref or team_role_ref
+  -- string captured at enrichment time. NULL = no binding. Persisted so
+  -- the detail UI can show what loadout was attached after the side-channel
+  -- TTL expires; also doubles as an audit trail.
+  loadout_ref TEXT,
+  -- Materialization status (V49): result of resolving loadout_ref into a
+  -- MaterializedLoadout. 'materialized' on success, 'failed' on resolution
+  -- error (loadout not found, ACL forbidden, etc.), NULL when no binding
+  -- exists. The UI uses this to surface a sticky failure banner that
+  -- survives page refresh, complementing the live WS event.
+  loadout_status TEXT
+    CHECK (loadout_status IS NULL OR loadout_status IN ('materialized', 'failed')),
+  -- Materialization error message (V49): populated when loadout_status='failed',
+  -- carries a short reason ('unauthorized', 'not found', etc.) suitable for
+  -- the UI banner. NULL otherwise.
+  loadout_error TEXT,
   -- timestamps
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
@@ -963,6 +979,21 @@ ALTER TABLE dispatches ADD COLUMN acp_lifecycle TEXT
 export const MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE = `
 ALTER TABLE dispatches ADD COLUMN mail_lifecycle TEXT
   CHECK (mail_lifecycle IS NULL OR mail_lifecycle IN ('fresh', 'reuse'));
+`;
+
+// Migration V49: Persist loadout resolution outcome on the dispatch row.
+// Adds three nullable columns:
+//   - loadout_ref: original binding string (e.g. "loadout_xxx" or
+//     "team:foo/role:bar") captured at enrichment time
+//   - loadout_status: 'materialized' | 'failed' | NULL (no binding)
+//   - loadout_error: short reason when status='failed'
+// Replaces the previous "ephemeral side-channel + WS-only failure event"
+// pattern: now the failure survives page refresh and is queryable.
+export const MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION = `
+ALTER TABLE dispatches ADD COLUMN loadout_ref TEXT;
+ALTER TABLE dispatches ADD COLUMN loadout_status TEXT
+  CHECK (loadout_status IS NULL OR loadout_status IN ('materialized', 'failed'));
+ALTER TABLE dispatches ADD COLUMN loadout_error TEXT;
 `;
 
 export const MIGRATION_V45_DISPATCH_LINKED_TASKS = `

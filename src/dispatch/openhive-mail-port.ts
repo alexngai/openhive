@@ -153,7 +153,10 @@ export function createOpenHiveMailPort(
       //
       // Peek (don't consume) so the runtime adapter still sees the
       // hint when it runs next.
+      const { markDelivery } = await import('./delivery-tracker.js');
       const taskId = (envelope.body as { taskId?: string })?.taskId;
+
+      let recipient = agentId;
       if (taskId) {
         const hints = peekHintsForDispatch(taskId);
         if (hints?.acpLifecycle === 'fresh') {
@@ -170,11 +173,25 @@ export function createOpenHiveMailPort(
         if (lifecycle === 'fresh') {
           const sidecarId = findSidecarAgentId(system);
           if (sidecarId && sidecarId !== agentId) {
-            return transport.sendToAgent(system, sidecarId, injectLoadoutMetadata(envelope));
+            recipient = sidecarId;
           }
         }
       }
-      return transport.sendToAgent(system, agentId, injectLoadoutMetadata(envelope));
+
+      const result = await transport.sendToAgent(
+        system,
+        recipient,
+        injectLoadoutMetadata(envelope),
+      );
+      // Record the actual recipient + transport on the dispatch row's
+      // attempts_history once the orchestrator's `dispatched` event fires.
+      // We mark only on `delivered: true` — failed delivery falls through
+      // to the runtime adapter (ACP path) and the runtime would then mark
+      // its own attempt.
+      if (taskId && result.delivered) {
+        markDelivery(taskId, { transport: 'mail', agent_id: recipient });
+      }
+      return result;
     },
 
     onMessage: (handler) =>

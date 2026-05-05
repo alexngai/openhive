@@ -244,6 +244,10 @@ export function createOpenHiveAgentRuntime(
         deps.acpLifecycleDefault,
       );
 
+      // Lazy import to avoid binding setup.ts ↔ runtime ↔ mail-port
+      // into a cycle.
+      const { markDelivery } = await import('./delivery-tracker.js');
+
       if (lifecycle === 'fresh') {
         // Notification-pair RPC via swarm-dispatch's `callSpawnAgent`.
         // The MAP SDK's AgentConnection doesn't expose
@@ -279,6 +283,7 @@ export function createOpenHiveAgentRuntime(
           },
           { timeoutMs: deps.spawnAgentTimeoutMs ?? 30_000 },
         );
+        markDelivery(taskId, { transport: 'acp', agent_id: result.agentId });
         return {
           serverId: dispatch.target_swarm_id,
           agentId: result.agentId,
@@ -290,6 +295,7 @@ export function createOpenHiveAgentRuntime(
       if (!agentInfo) {
         throw new Error(`No ACP-capable agent on swarm ${dispatch.target_swarm_id}`);
       }
+      markDelivery(taskId, { transport: 'acp', agent_id: agentInfo.targetId });
 
       // Capture the loadout's permission rules to apply via the swarm-side
       // overlay registry once the ACP stream is created. ACP+reuse uses

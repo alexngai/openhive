@@ -118,12 +118,48 @@ describe('createOpenHiveRoster', () => {
     expect(workerCandidates).toHaveLength(1);
     expect(workerCandidates[0]?.agentId).toBe('sidecar-01');
 
-    // Asking for the literal 'sidecar' role no longer matches because the
-    // projection rewrote it. This is intentional — the orchestrator's
-    // canonical role for delivery targets is 'worker'.
+    // The literal 'sidecar' role still hits the sidecar — but now via the
+    // universal-fallback path (no exact match → fall back to sidecar)
+    // rather than the projection. The wider fallback layer was added so
+    // dispatches with `team_role_ref.role: 'executor'` (etc.) can route
+    // to sidecar-only swarms instead of dying when prefer-route can't
+    // find an exact-role match. See `openhive-roster.ts:findAvailable`.
     const sidecarCandidates = (await roster.findAvailable({ role: 'sidecar' }))
       .filter((c) => c.system === swarmId);
-    expect(sidecarCandidates).toHaveLength(0);
+    expect(sidecarCandidates).toHaveLength(1);
+    expect(sidecarCandidates[0]?.agentId).toBe('sidecar-01');
+  });
+
+  it('sidecar acts as fallback for arbitrary roles when no exact match exists', async () => {
+    const swarmId = track(freshSwarmId('swarm-sidecar-fallback'));
+    registerSwarm(swarmId, [
+      { id: 'sidecar-01', role: 'sidecar', state: 'active' },
+    ]);
+
+    const roster = createOpenHiveRoster();
+    // The original regression: spec carries team_role_ref with role
+    // 'executor'; on a sidecar-only swarm, the exact-role filter would
+    // eliminate everything and prefer-route would fall through to ACP,
+    // dying without a coordinator. Sidecar fallback keeps mail alive.
+    const candidates = (await roster.findAvailable({ role: 'executor' }))
+      .filter((c) => c.system === swarmId);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.agentId).toBe('sidecar-01');
+  });
+
+  it('exact-role agents win over sidecar fallback when both exist', async () => {
+    const swarmId = track(freshSwarmId('swarm-mixed'));
+    registerSwarm(swarmId, [
+      { id: 'sidecar-01', role: 'sidecar', state: 'active' },
+      { id: 'executor-01', role: 'executor', state: 'active' },
+    ]);
+
+    const roster = createOpenHiveRoster();
+    const candidates = (await roster.findAvailable({ role: 'executor' }))
+      .filter((c) => c.system === swarmId);
+    // Real executor wins; sidecar is only the fallback.
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.agentId).toBe('executor-01');
   });
 
   // ── State mapping ────────────────────────────────────────────────────────
