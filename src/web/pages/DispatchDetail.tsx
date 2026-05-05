@@ -2,10 +2,14 @@ import { useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Send, Zap, FileText, User, Bot, Ban, AlertCircle, GitBranch, GitCommit,
-  ListChecks, CheckCircle2, Circle,
+  ListChecks, CheckCircle2, Circle, Sparkles,
 } from 'lucide-react';
 import { useDispatch, useCancelDispatch } from '../hooks/useDispatch';
-import { useDispatchRealtime, useCancelAckWarnings } from '../hooks/useDispatchRealtime';
+import {
+  useDispatchRealtime,
+  useCancelAckWarnings,
+  useMaterializationWarnings,
+} from '../hooks/useDispatchRealtime';
 import { useMapSwarm, useSessionsList, useCascadeDAG } from '../hooks/useApi';
 import { useSpec } from '../hooks/useSpecs';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
@@ -30,6 +34,8 @@ export function DispatchDetail() {
   const [cancelError, setCancelError] = useState<string | null>(null);
   useDispatchRealtime();
   const { warned: cancelNotAcked, dismiss: dismissCancelWarning } = useCancelAckWarnings(id);
+  const { error: materializationError, dismiss: dismissMaterializationWarning } =
+    useMaterializationWarnings(id);
 
   // Sessions + cascade streams on this swarm — used to compute which changes
   // (if any) were opened by agents that ran this dispatch. Heuristic match:
@@ -232,6 +238,38 @@ export function DispatchDetail() {
             </button>
           </div>
         )}
+
+        {materializationError && (
+          <div
+            className="mt-2 rounded-md border p-2 text-sm flex items-start gap-2"
+            style={{
+              borderColor: 'rgba(245, 158, 11, 0.4)',
+              backgroundColor: 'rgba(245, 158, 11, 0.05)',
+              color: 'var(--color-text)',
+            }}
+          >
+            <AlertCircle className="h-4 w-4 mt-0.5 text-amber-400" />
+            <div className="flex-1">
+              <div className="font-medium">Loadout materialization failed</div>
+              <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                The bound loadout could not be resolved
+                {materializationError !== 'unknown error' ? (
+                  <> (<span className="font-mono">{materializationError}</span>)</>
+                ) : null}
+                . The dispatch is proceeding without it — the agent will run with
+                its default permissions and skill set.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={dismissMaterializationWarning}
+              className="text-xs opacity-70 hover:opacity-100"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              dismiss
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Metadata grid */}
@@ -297,7 +335,33 @@ export function DispatchDetail() {
             {d.spec_captured_at ? <TimeAgo date={d.spec_captured_at} /> : '—'}
           </span>
         </div>
+
+        {(d.acp_lifecycle || d.mail_lifecycle) && (
+          <div className="md:col-span-2">
+            <div className="text-xs mb-1" style={{ color: 'var(--color-text-muted)' }}>
+              Routing
+            </div>
+            <div className="flex flex-wrap gap-3 text-sm" style={{ color: 'var(--color-text)' }}>
+              {d.acp_lifecycle && (
+                <LifecycleChip transport="ACP" value={d.acp_lifecycle} />
+              )}
+              {d.mail_lifecycle && (
+                <LifecycleChip transport="Mail" value={d.mail_lifecycle} />
+              )}
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Loadout (V49) — sticky surface for materialization status. Banner
+          above is live-only; this section persists across refresh. */}
+      {d.loadout_status && (
+        <LoadoutPanel
+          loadoutRef={d.loadout_ref}
+          status={d.loadout_status}
+          error={d.loadout_error}
+        />
+      )}
 
       {/* Prompt override */}
       {d.prompt_override && (
@@ -525,5 +589,126 @@ export function DispatchDetail() {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Persistent display of the dispatch's loadout binding + materialization
+ * outcome. Driven by the V49 columns on the dispatch row, so the data
+ * survives page refresh (unlike the live `materialization_failed` banner).
+ *
+ * `loadout_ref` may be a direct loadout resource id (e.g. `loadout_xxx`) or
+ * a synthetic `team:<template>/role:<role>` string. We link to the resource
+ * detail page only for the former.
+ */
+function LoadoutPanel({
+  loadoutRef,
+  status,
+  error,
+}: {
+  loadoutRef: string | null;
+  status: 'materialized' | 'failed';
+  error: string | null;
+}) {
+  const isFailed = status === 'failed';
+  const isTeamRoleRef = loadoutRef?.startsWith('team:') ?? false;
+  const isDirectLoadout = loadoutRef && !isTeamRoleRef;
+  const tone = isFailed
+    ? {
+        borderColor: 'rgba(245, 158, 11, 0.4)',
+        backgroundColor: 'rgba(245, 158, 11, 0.05)',
+      }
+    : {
+        borderColor: 'var(--color-border-subtle)',
+        backgroundColor: 'var(--color-surface)',
+      };
+  return (
+    <div
+      className="rounded-md border p-4 mb-6"
+      style={{ ...tone, color: 'var(--color-text)' }}
+    >
+      <div
+        className="text-xs mb-2 flex items-center gap-1.5"
+        style={{ color: 'var(--color-text-muted)' }}
+      >
+        <Sparkles className="h-3.5 w-3.5 text-honey-500" />
+        Loadout
+      </div>
+      <div className="flex items-start gap-2 text-sm">
+        {isFailed ? (
+          <AlertCircle className="h-4 w-4 mt-0.5 text-amber-400 shrink-0" />
+        ) : (
+          <CheckCircle2 className="h-4 w-4 mt-0.5 text-honey-500 shrink-0" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div>
+            <span style={{ color: 'var(--color-text-muted)' }}>
+              {isFailed ? 'Failed: ' : 'Materialized: '}
+            </span>
+            {isDirectLoadout ? (
+              <Link
+                to={`/resources/${loadoutRef}`}
+                className="font-mono hover:opacity-80"
+              >
+                {loadoutRef}
+              </Link>
+            ) : (
+              <span className="font-mono">{loadoutRef ?? '—'}</span>
+            )}
+          </div>
+          {isFailed && error && (
+            <div
+              className="text-xs mt-1"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              {error}. The dispatch ran without the loadout — agent used its
+              default permissions and skill set.
+            </div>
+          )}
+          {!isFailed && (
+            <div
+              className="text-xs mt-1"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              Permissions, MCP servers, and skill bank were applied at delivery.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Compact display of an `acp_lifecycle` / `mail_lifecycle` hint. `fresh` means
+ * the transport spawns a new agent for this dispatch (loadout permissions
+ * enforced at spawn); `reuse` means it routes to an existing agent and the
+ * loadout is advisory.
+ */
+function LifecycleChip({
+  transport,
+  value,
+}: {
+  transport: 'ACP' | 'Mail';
+  value: 'fresh' | 'reuse';
+}) {
+  const tone =
+    value === 'fresh'
+      ? { color: 'var(--color-honey-500, #f59e0b)' }
+      : { color: 'var(--color-text-muted)' };
+  const explanation =
+    value === 'fresh'
+      ? 'spawns a new agent per dispatch with loadout permissions enforced at spawn'
+      : 'routes to an existing agent; loadout is advisory only';
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-sm"
+      title={explanation}
+    >
+      <span style={{ color: 'var(--color-text-muted)' }}>{transport}</span>
+      <span className="font-mono text-xs" style={tone}>
+        {value}
+      </span>
+    </span>
   );
 }

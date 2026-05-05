@@ -112,6 +112,43 @@ export function AttemptsTimeline({ attempts, turnCount }: AttemptsTimelineProps)
                     </span>
                   )}
                 </div>
+                {(a.transport || a.via || a.agent_id) && (
+                  <div
+                    className="mt-1 inline-flex items-center gap-1.5 text-xs"
+                    style={{ color: 'var(--color-text-muted)' }}
+                  >
+                    {a.transport && (
+                      <span
+                        className="font-medium uppercase"
+                        style={{
+                          color: a.transport === 'acp' ? 'var(--color-honey-500, #f59e0b)' : 'var(--color-text)',
+                        }}
+                      >
+                        {a.transport}
+                      </span>
+                    )}
+                    {a.via && (
+                      <>
+                        <span>·</span>
+                        <span>{a.via}</span>
+                      </>
+                    )}
+                    {a.agent_id && (
+                      <>
+                        <span>·</span>
+                        <code
+                          className="font-mono px-1 py-0.5 rounded"
+                          style={{ backgroundColor: 'var(--color-elevated)' }}
+                          title={a.agent_id}
+                        >
+                          {a.agent_id.length > 20
+                            ? `${a.agent_id.slice(0, 8)}…${a.agent_id.slice(-6)}`
+                            : a.agent_id}
+                        </code>
+                      </>
+                    )}
+                  </div>
+                )}
                 {a.error && (
                   <div
                     className="mt-1 text-xs font-mono whitespace-pre-wrap break-words"

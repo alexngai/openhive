@@ -29,6 +29,10 @@ import { verifyToken, isTokenServiceInitialized } from './token-service.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { handleTrajectoryRequest } from './trajectory-handler.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
+import {
+  handleNotificationPairResponse,
+  rejectPendingForSwarm,
+} from './notification-rpc.js';
 import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { pushDispatchMapReply } from '../dispatch/mail-ingress.js';
@@ -345,6 +349,23 @@ function createNotificationInterceptor(
       } else if (typeof msg.method === 'string' && msg.method.startsWith('opentasks/') && msg.method.endsWith('.response')) {
         // OpenTasks response from swarm — resolve pending remote query
         handleOpenTasksResponse(msg.params as Record<string, unknown>);
+      } else if (
+        typeof msg.method === 'string' &&
+        (msg.method === 'x-dispatch/spawn-agent.response' ||
+          msg.method === 'dispatch/spawn-agent.response' ||
+          (msg.method.startsWith('x-dispatch/') &&
+            msg.method.endsWith('.response')))
+      ) {
+        // Response side of the notification-pair RPC used for hub→swarm
+        // request/response on x-dispatch/* methods. AgentConnection
+        // doesn't expose setRequestHandler, so we simulate request/
+        // response over notifications. Canonical method names live
+        // under `x-dispatch/` (owned by swarm-dispatch) — covers
+        // `spawn-agent`, `permissions.set`, `permissions.clear`, and
+        // any future additions. The legacy `dispatch/spawn-agent.response`
+        // is accepted for one release window so old swarms continue
+        // to work.
+        handleNotificationPairResponse(msg.params);
       } else if (typeof msg.method === 'string' && msg.method.startsWith('mail/')) {
         // Mail notifications — fire and forget
         try { getMailJsonRpc().handleRequest(msg as any); } catch { /* ignore */ }
@@ -511,6 +532,10 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
       clearHeartbeatDebounce(sid);
       unregisterInbound(sid);
+      // Fail any pending notification-pair RPCs to this swarm fast,
+      // instead of waiting out their (default 30s) timeouts. Callers see
+      // a typed `NotificationPairTransportLost` error and can retry.
+      try { rejectPendingForSwarm(sid, 'swarm_ws_closed'); } catch { /* non-critical */ }
       try {
         if (!hasOutboundConnection(sid)) {
           updateSwarm(sid, { status: 'unreachable' });

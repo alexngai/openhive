@@ -15,7 +15,6 @@ import {
   createAgentsParser,
   builtInProfiles,
   type SkillBank,
-  type SkillGraphServer,
   type LoadoutCriteria,
   type LoadoutState,
 } from 'skill-tree';
@@ -23,47 +22,9 @@ import { authMiddleware } from '../middleware/auth.js';
 import { resolveResourceAndPath } from './_resource-helpers.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import { classifyViaSwarm, detectRelationshipsViaSwarm } from '../services/swarm-classifier.js';
+import { getServingLayer, evictServingLayer } from '../../skill-tree/serving.js';
 import type { SwarmAgentDelegate } from '../../learning/swarm-agent-backend.js';
 import type { Config } from '../../config.js';
-
-// ============================================================================
-// Serving Layer Cache (mirrors minimemCache pattern in resource-content.ts)
-// ============================================================================
-
-interface CachedServingLayer {
-  bank: SkillBank;
-  server: SkillGraphServer;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-const servingLayerCache = new Map<string, CachedServingLayer>();
-const SERVING_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
-
-function evictServingLayer(resourceId: string): void {
-  const cached = servingLayerCache.get(resourceId);
-  if (cached) {
-    cached.bank.shutdown().catch(() => {});
-    clearTimeout(cached.timer);
-    servingLayerCache.delete(resourceId);
-  }
-}
-
-async function getServingLayer(resourceId: string, localPath: string): Promise<{ bank: SkillBank; server: SkillGraphServer }> {
-  const cached = servingLayerCache.get(resourceId);
-  if (cached) {
-    clearTimeout(cached.timer);
-    cached.timer = setTimeout(() => evictServingLayer(resourceId), SERVING_CACHE_TTL);
-    return { bank: cached.bank, server: cached.server };
-  }
-
-  const bank = createSkillBank({ storage: { basePath: localPath } });
-  await bank.initialize();
-  const { server } = await bank.createServingLayer();
-
-  const timer = setTimeout(() => evictServingLayer(resourceId), SERVING_CACHE_TTL);
-  servingLayerCache.set(resourceId, { bank, server, timer });
-  return { bank, server };
-}
 
 // ============================================================================
 // Indexer Cache
