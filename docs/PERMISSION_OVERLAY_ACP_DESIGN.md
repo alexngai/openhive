@@ -62,23 +62,55 @@ OpenHive orchestrator
 | `src/map/ws-map.ts` | Generalize the response routing: `x-dispatch/<anything>.response` notifications dispatch to `handleNotificationPairResponse` (covers `spawn-agent`, `permissions.set`, `permissions.clear`, and any future additions). |
 | `src/__tests__/swarm/live-acp-reuse-dispatch.test.ts` | Drop the "permissions advisory" carve-out; restore PERM_DENIED to the asserted markers; relax `afterCount` to `≤ beforeCount` (the existing coord may terminate via `done()`'s shouldTerminate=true; what's forbidden is a fresh spawn). |
 
-### Known issue: `permissions.set` response routing timeout
+### P5.1 — two real bugs found and fixed (was masquerading as a routing timeout)
 
-The live test is observably correct (4/4 markers, including PERM_DENIED=true),
-but the OpenHive runtime logs `permissions.set failed ... timed out after
-5000ms (continuing without overlay enforcement)`. The set itself works — the
-swarm receives the notification, invokes `setPermissionOverlay`, and the
-prompt iterator denies the test target. What times out is the `.response`
-notification round-trip back to OpenHive. The runtime's catch path treats
-this as non-fatal and proceeds.
+The "permissions.set timed out" warning that earlier shipped as a "cosmetic"
+issue turned out to mask **two real enforcement bugs** that were producing a
+false-positive PERM_DENIED=true. Diagnosed by pre-populating the deny target
+file with known content (`/tmp/perm-deny-test-target.txt` ←
+`sentinel-content-must-not-be-read`) and asserting the content does NOT leak
+into the ACP stream.
 
-This is cosmetic for one-shot dispatches but problematic if the same agent
-is reused across many dispatches: a `clear` whose response also times out
-leaves the overlay set, and the next dispatch sees stale rules. Fix
-deferred — track as a follow-up; either tighten the response routing
-(add explicit ack) or make `clear` truly idempotent so a stale overlay
-gets overwritten by the next `set`. The mail+reuse path is unaffected
-(that path doesn't use the wire — sets the overlay directly).
+**Bug 1 — Double `.request` suffix on the OpenHive caller**
+
+`callViaNotificationPair(target, method, ...)` automatically appends
+`.request` to the method name (line 70 of swarm-dispatch's notification-rpc).
+The OpenHive runtime was passing `'x-dispatch/permissions.set.request'` as
+the base, producing the over-the-wire method `'x-dispatch/permissions.set.request.request'`
+— which macro-agent's handler (registered for `'x-dispatch/permissions.set.request'`)
+silently ignored. The handler never fired, the timeout was a real timeout,
+and `setPermissionOverlay` never ran. **Fix:** call with the BASE name
+`'x-dispatch/permissions.set'` (mirrors `callSpawnAgent`'s
+`SPAWN_AGENT_BASE` shape).
+
+**Bug 2 — Bootstrap coord didn't have `askForAllTools`**
+
+Even after Bug 1 was fixed and the overlay was being set correctly on the
+swarm, the prompt iterator wasn't seeing `permission_request` updates for
+Read calls. The reason: the **bootstrap coordinator** (the agent ACP+reuse
+dispatches against) wasn't spawned with `askForAllTools: true`, so the SDK
+auto-approved Read without consulting `canUseTool`. The overlay was set but
+the iterator's interception path was never entered. **Fix:** new
+`bootstrap.coordinator.dispatchTarget` boot config flag (env-var bridge
+`MACRO_BOOTSTRAP_COORDINATOR_DISPATCH_TARGET=true`) that spawns the coord
+with `askForAllTools: true` + `permissionMode: 'interactive'`. The flag is
+opt-in to preserve the existing chat-friendly defaults — only enable it on
+agents that need to receive ACP+reuse dispatches with overlay enforcement.
+
+**Diagnostic that catches this class of bug**
+
+The live test now creates `/tmp/perm-deny-test-target.txt` with known
+content in `beforeAll` and asserts `expect(fileContentSeen).toBe(false)`.
+If Read succeeds despite the deny rule, the file content shows up in the
+ACP stream and the test fails — even if the agent reports PERM_DENIED=true
+heuristically. This guards against any future regression where the agent
+self-reports the wrong outcome.
+
+**Verified end-to-end after fix**
+
+- `file-content-leaked-into-stream: false` (real deny fired)
+- No `permissions.set failed` timeout (wire works end-to-end)
+- 4/4 markers including PERM_DENIED=true
 
 ## Live regression sweep (2026-05-04, post-implementation)
 

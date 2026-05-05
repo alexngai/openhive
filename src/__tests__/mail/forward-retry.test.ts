@@ -69,8 +69,7 @@ function makeConn(swarmId: string, capture: SendCapture, opts?: {
     ]),
     capabilities: opts?.capabilities ?? { mail: { canJoin: true } },
     isStale: opts?.isStale,
-    // Required by MapInboundConnection but irrelevant here.
-    iamCanDelegate: true,
+    tokenDelegatable: true,
   };
 }
 

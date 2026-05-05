@@ -168,20 +168,22 @@ export async function activatePendingOverlay(args: {
   if (!staged) return; // No pending overlay — nothing to activate.
   pendingOverlays.delete(key);
 
+  // Registry convention: pass the BASE method name; the registry appends
+  // `.request` for the outgoing notification and listens for `.response`.
+  // Mirrors `callSpawnAgent`'s `SPAWN_AGENT_BASE` shape.
   const { callViaNotificationPair } = await import(
     '../map/notification-rpc.js'
   );
   await callViaNotificationPair<
-    { agent_id: string; deny: string[]; allow: string[]; correlation_id: string },
+    { agent_id: string; deny: string[]; allow: string[] },
     { ok: boolean; error?: string }
   >(
     args.swarmId,
-    'x-dispatch/permissions.set.request',
+    'x-dispatch/permissions.set',
     {
       agent_id: args.agentId,
       deny: staged.deny,
       allow: staged.allow,
-      correlation_id: '',  // filled in by the registry
     },
     { timeoutMs: PERMISSIONS_RPC_TIMEOUT_MS },
   );
@@ -200,12 +202,12 @@ export async function deactivateOverlay(streamId: string): Promise<void> {
     '../map/notification-rpc.js'
   );
   await callViaNotificationPair<
-    { agent_id: string; correlation_id: string },
+    { agent_id: string },
     { ok: boolean; error?: string }
   >(
     active.swarmId,
-    'x-dispatch/permissions.clear.request',
-    { agent_id: active.agentId, correlation_id: '' },
+    'x-dispatch/permissions.clear',
+    { agent_id: active.agentId },
     { timeoutMs: PERMISSIONS_RPC_TIMEOUT_MS },
   );
 }

@@ -251,6 +251,8 @@ describeIf(
     let skillBankId: string | undefined;
     const originalHome = process.env.OPENHIVE_HOME;
     const originalBootstrap = process.env.MACRO_BOOTSTRAP_COORDINATOR;
+    const originalBootstrapDispatchTarget =
+      process.env.MACRO_BOOTSTRAP_COORDINATOR_DISPATCH_TARGET;
 
     /**
      * Captured ACP event JSON blobs. Same hook as the deep ACP+fresh
@@ -264,8 +266,20 @@ describeIf(
       cleanTestRoot(TEST_ROOT);
       process.env.OPENHIVE_HOME = TEST_ROOT;
       process.env.MACRO_BOOTSTRAP_COORDINATOR = 'true';
+      // P5.1: spawn the bootstrap coord with askForAllTools + permissionMode='interactive'
+      // so the SDK consults canUseTool for every tool call. Required for
+      // ACP+reuse overlay enforcement — without this, Read auto-approves
+      // and the runtime overlay deny rules never fire.
+      process.env.MACRO_BOOTSTRAP_COORDINATOR_DISPATCH_TARGET = 'true';
 
       fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+      // Pre-populate the deny-rule target so a successful Read leaks the
+      // file content into the ACP stream — the test asserts the content
+      // does NOT appear, definitively catching false-positive PERM_DENIED.
+      fs.writeFileSync(
+        '/tmp/perm-deny-test-target.txt',
+        'sentinel-content-must-not-be-read',
+      );
       initDatabase(TEST_DB_PATH);
       _resetCacheForTest();
       await initMail();
@@ -459,6 +473,12 @@ describeIf(
       } else {
         delete process.env.MACRO_BOOTSTRAP_COORDINATOR;
       }
+      if (originalBootstrapDispatchTarget !== undefined) {
+        process.env.MACRO_BOOTSTRAP_COORDINATOR_DISPATCH_TARGET =
+          originalBootstrapDispatchTarget;
+      } else {
+        delete process.env.MACRO_BOOTSTRAP_COORDINATOR_DISPATCH_TARGET;
+      }
     }, 30_000);
 
     it(
@@ -590,9 +610,20 @@ describeIf(
         );
 
         const allText = capturedAcpText.join('\n');
+        // P5.1 — guard against false-positive PERM_DENIED. The deny rule
+        // target file (/tmp/perm-deny-test-target.txt) is created by the
+        // beforeAll fixture with sentinel content. If the agent reports
+        // PERM_DENIED=true while the file's actual content appears in the
+        // ACP stream, the deny didn't fire — Read returned the content,
+        // and the agent heuristically interpreted something else as a
+        // permission denial. Surface this as a hard failure.
+        const fileContentSeen = allText.includes(
+          'sentinel-content-must-not-be-read',
+        );
         console.log(
           `[live-acp-reuse] Captured ACP fragments: ${capturedAcpText.length}\n` +
-            `[live-acp-reuse] Excerpt: ${allText.slice(0, 600)}`,
+            `[live-acp-reuse] Excerpt: ${allText.slice(0, 600)}\n` +
+            `[live-acp-reuse] file-content-leaked-into-stream: ${fileContentSeen}`,
         );
 
         // After the dispatch — the bootstrap coord count must be unchanged.
@@ -649,13 +680,21 @@ describeIf(
         }
 
         // Hard assertions: prompt-body fields reach the agent + overlay
-        // enforcement worked (P4.2).
+        // enforcement worked (P4.2). The fileContentSeen check catches the
+        // class of false-positive where the agent reports PERM_DENIED=true
+        // for the wrong reason (Read actually succeeded but the agent
+        // misinterpreted the response).
         expect(sentinelSeen).toBe(true);
         expect(skillUsed).toBe(true);
         expect(mcpFollowThrough).toBe(true);
         expect(mcpActuallyInvoked).toBe(true);
         expect(permDeniedReported).toBe(true);
         expect(permEnforced).toBe(true);
+        // Definitive enforcement check: the file at the deny path was
+        // pre-populated in beforeAll with known content. If that content
+        // shows up in the ACP stream, Read succeeded — the deny didn't
+        // fire, regardless of what PERM_DENIED reports.
+        expect(fileContentSeen).toBe(false);
 
         // Hard assertion: NO new ACP coordinator spawned. The reuse path
         // explicitly used the existing bootstrap coord. The existing
