@@ -401,6 +401,49 @@ export async function swarmHostingRoutes(
     return reply.status(204).send();
   });
 
+  // POST /map/hosted/:id/codex/turn — Send a user turn to a codex-rpc swarm.
+  // Streaming output (item/agentMessage/delta, turn/completed, etc.) fans
+  // out to the WS channel `codex-rpc:<hostedSwarmId>` — subscribe there
+  // before posting if you want to capture the stream. Body: { text }.
+  fastify.post<{ Params: { id: string }; Body: { text?: string } }>(
+    '/map/hosted/:id/codex/turn',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const manager = getManager(request);
+        const text = (request.body?.text ?? '').toString();
+        if (!text.trim()) {
+          return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'text is required' });
+        }
+        const ack = await manager.sendCodexTurn(request.params.id, request.agent!.id, text);
+        return reply.send({ turn_id: ack.turn.id });
+      } catch (error) {
+        return handleSwarmError(error, reply);
+      }
+    },
+  );
+
+  // POST /map/hosted/:id/codex/interrupt — Clean cancel of the active turn.
+  // Body: { turn_id }. The thread stays usable; only the in-flight turn
+  // stops. No-op (404 NOT_FOUND) if the swarm isn't a live codex-rpc.
+  fastify.post<{ Params: { id: string }; Body: { turn_id?: string } }>(
+    '/map/hosted/:id/codex/interrupt',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const manager = getManager(request);
+        const turnId = (request.body?.turn_id ?? '').toString();
+        if (!turnId.trim()) {
+          return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'turn_id is required' });
+        }
+        await manager.interruptCodexTurn(request.params.id, request.agent!.id, turnId);
+        return reply.status(204).send();
+      } catch (error) {
+        return handleSwarmError(error, reply);
+      }
+    },
+  );
+
   // GET /map/hosted/:id/logs — Get logs from a hosted swarm
   fastify.get<{
     Params: { id: string };

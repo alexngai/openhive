@@ -164,6 +164,32 @@ export class SwarmManager {
     this.codexAppServerManager = mgr;
     this.codexRpcExitHandler = (event) => this.handleCodexRpcExit(event);
     mgr.on('session.exit', this.codexRpcExitHandler);
+
+    // Fan codex protocol notifications out to per-swarm WS channels so
+    // openhive's chat surface can render streaming output. The channel
+    // shape (`codex-rpc:<hostedSwarmId>`) keeps each session's stream
+    // isolated; subscribers attach via the existing realtime/ WS layer.
+    mgr.on('notification', (event: { sessionId: string; method: string; params?: unknown }) => {
+      const hostedId = this.findHostedIdByCodexSessionId(event.sessionId);
+      if (!hostedId) return;
+      broadcastToChannel(`codex-rpc:${hostedId}`, {
+        type: 'codex.notification',
+        data: {
+          hosted_swarm_id: hostedId,
+          method: event.method,
+          params: event.params,
+        },
+      });
+    });
+  }
+
+  /** Reverse lookup: codex session id → hosted swarm id. Linear scan is fine
+   *  given the small map size (capped at MAX_SESSIONS in CodexAppServerManager). */
+  private findHostedIdByCodexSessionId(codexSid: string): string | null {
+    for (const [hostedId, sid] of this.codexRpcSessions) {
+      if (sid === codexSid) return hostedId;
+    }
+    return null;
   }
 
   /**
@@ -174,6 +200,56 @@ export class SwarmManager {
    */
   getCodexRpcSessionId(hostedSwarmId: string): string | null {
     return this.codexRpcSessions.get(hostedSwarmId) ?? null;
+  }
+
+  /**
+   * Submit a user turn against a codex `mode: 'rpc'` hosted swarm.
+   * Auth-gated (only the spawn owner can drive). Returns the codex
+   * `turn/start` ack — streaming output arrives as notifications on the
+   * per-swarm WS channel (`codex-rpc:<hostedSwarmId>`).
+   */
+  async sendCodexTurn(
+    hostedSwarmId: string,
+    agentId: string,
+    text: string,
+  ): Promise<{ turn: { id: string } }> {
+    const hosted = dal.findHostedSwarmById(hostedSwarmId);
+    if (!hosted) throw new SwarmHostingError('NOT_FOUND', 'Hosted swarm not found');
+    if (hosted.spawned_by !== agentId) throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
+    if (hosted.kind !== 'codex' || hosted.config?.mode !== 'rpc') {
+      throw new SwarmHostingError('NOT_IMPLEMENTED', 'Hosted swarm is not a codex-rpc session');
+    }
+    if (!this.codexAppServerManager) {
+      throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', 'CodexAppServerManager is not configured');
+    }
+    const sid = this.codexRpcSessions.get(hostedSwarmId);
+    if (!sid) throw new SwarmHostingError('NOT_FOUND', 'No live codex-rpc session for this swarm');
+    return this.codexAppServerManager.sendTurn(sid, text);
+  }
+
+  /**
+   * Interrupt the in-flight turn for a codex `mode: 'rpc'` swarm.
+   * Auth-gated. The codex protocol's `turn/interrupt` is a clean cancel,
+   * not a kill — the agent stops the current turn but the thread stays
+   * usable. No-op if there's no active turn.
+   */
+  async interruptCodexTurn(
+    hostedSwarmId: string,
+    agentId: string,
+    turnId: string,
+  ): Promise<void> {
+    const hosted = dal.findHostedSwarmById(hostedSwarmId);
+    if (!hosted) throw new SwarmHostingError('NOT_FOUND', 'Hosted swarm not found');
+    if (hosted.spawned_by !== agentId) throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
+    if (hosted.kind !== 'codex' || hosted.config?.mode !== 'rpc') {
+      throw new SwarmHostingError('NOT_IMPLEMENTED', 'Hosted swarm is not a codex-rpc session');
+    }
+    if (!this.codexAppServerManager) {
+      throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', 'CodexAppServerManager is not configured');
+    }
+    const sid = this.codexRpcSessions.get(hostedSwarmId);
+    if (!sid) throw new SwarmHostingError('NOT_FOUND', 'No live codex-rpc session for this swarm');
+    await this.codexAppServerManager.interrupt(sid, turnId);
   }
 
   /**

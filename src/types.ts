@@ -125,6 +125,12 @@ export type WSEventType =
   // Swarm hosting events
   | 'swarm_spawned'
   | 'swarm_stopped'
+  // codex `mode: 'rpc'` streaming notifications. Fanned out per-swarm on
+  // channel `codex-rpc:<hosted_swarm_id>`. The data carries the codex
+  // protocol's notification method + params verbatim — chat adapters
+  // pattern-match on `method` (e.g. `item/agentMessage/delta`,
+  // `turn/completed`) to render streaming output.
+  | 'codex.notification'
   // MAP sync events (relayed from swarms)
   | 'memory:sync'
   | 'skill:sync'
