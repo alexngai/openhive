@@ -23,6 +23,7 @@ import { resolveCredentialOverlay } from './credentials.js';
 import { findResourceById, subscribeToResource } from '../db/dal/syncable-resources.js';
 import { resolveClaudeBinary } from './claude-binary.js';
 import { buildClaudeSwarmConfig, writeClaudeSwarmConfig, preTrustClaudeWorkdir } from './claude-code-config.js';
+import { cloneWorkspaceRepos } from './providers/workspace.js';
 import * as os from 'os';
 import { getInbound } from '../map/connection-registry.js';
 // Type-only import — PtyManager is provided at runtime via setPtyManager(),
@@ -723,9 +724,30 @@ export class SwarmManager {
     dal.updateHostedSwarm(hosted.id, { state: 'starting', swarm_id: preRegisteredSwarmId });
 
     try {
-      // Phase 12: write the prelaunch config so cc-swarm's SessionStart hook
-      // finds it when the spawned `claude` boots.
+      // Phase 12: clone any workspace repos FIRST. `git clone <url> <dir>`
+      // requires the target directory to be empty, so we have to do this
+      // before writing the prelaunch config (which would create .swarm/
+      // under data_dir and break the clone). Clones land under dataDir;
+      // claude's cwd is dataDir, so it sees them as subdirectories — or, for
+      // a single-repo clone with no `path`, the repo content lands directly
+      // in dataDir. Reuses the same helper LocalProvider uses for openswarm.
       fs.mkdirSync(dataDir, { recursive: true });
+      if (input.workspace) {
+        try {
+          await cloneWorkspaceRepos(input.workspace, dataDir, process.env as Record<string, string>);
+        } catch (err) {
+          throw new SwarmHostingError(
+            'WORKSPACE_SETUP_FAILED',
+            `Workspace clone failed: ${(err as Error).message}`,
+          );
+        }
+      }
+
+      // Now write the prelaunch config so cc-swarm's SessionStart hook
+      // finds it when the spawned `claude` boots. Lands under .swarm/, which
+      // we create here — won't collide with any cloned repo's existing
+      // .swarm/ entries because writeClaudeSwarmConfig only writes the one
+      // file we own.
       writeClaudeSwarmConfig(dataDir, claudeSwarmConfig);
 
       // Pre-trust the data_dir in the operator's ~/.claude.json so claude
@@ -765,11 +787,21 @@ export class SwarmManager {
       delete env.CLAUDE_CODE_ENTRYPOINT;
       delete env.CLAUDE_CODE_EXECPATH;
 
+      // claude takes the initial prompt as its first positional arg
+      // (`claude [options] [prompt]`). Pass it through verbatim — the TUI
+      // opens with the prompt prefilled so the user can review/edit before
+      // hitting Enter, or claude treats it as the first user turn directly.
+      // Empty/unset → no positional, claude opens at the empty prompt input.
+      const ptyArgs: string[] = [];
+      if (input.initial_prompt && input.initial_prompt.trim().length > 0) {
+        ptyArgs.push(input.initial_prompt);
+      }
+
       let ptyInfo;
       try {
         ptyInfo = this.ptyManager.create({
           command: claudeBinary,
-          args: [],
+          args: ptyArgs,
           cwd: dataDir,
           env,
           cols: 120,

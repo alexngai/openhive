@@ -135,6 +135,11 @@ export function useSpawnSwarm() {
         coordinator?: boolean;
         cwd?: string;
       };
+      /**
+       * Optional first-turn prompt. For claude-code, passed to `claude` as
+       * a positional arg so the TUI opens with the prompt prefilled.
+       */
+      initial_prompt?: string;
     }) => api.post<HostedSwarm>("/map/hosted/spawn", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["hosted-swarms"] });

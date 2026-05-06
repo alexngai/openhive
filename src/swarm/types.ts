@@ -138,6 +138,15 @@ export interface SpawnSwarmInput {
   credential_overrides?: Record<string, string>;
   /** Workspace setup (e.g. repos to clone before the swarm starts) */
   workspace?: WorkspaceConfig;
+  /**
+   * Initial prompt to seed the spawned agent with.
+   *
+   * For `kind: 'claude-code'`, passed to `claude` as a positional arg so the
+   * TUI opens with the prompt prefilled (claude treats it as the first user
+   * turn). For `kind: 'openswarm'`, currently a no-op — the openswarm adapter
+   * has its own prompt-injection path via the bootstrap-coordinator field.
+   */
+  initial_prompt?: string;
   /** Resource IDs to inject into the swarm's bootstrap config */
   inject_resources?: string[];
   /** Boot-time agent provisioning (e.g. auto-spawn coordinator) */

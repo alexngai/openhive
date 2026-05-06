@@ -32,6 +32,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execFileSync } from 'child_process';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyWebsocket from '@fastify/websocket';
 import { WebSocket } from 'ws';
@@ -41,7 +42,7 @@ import * as hivesDAL from '../../db/dal/hives.js';
 import { setLocalAgent } from '../../api/middleware/auth.js';
 import { setupMapWebSocket, stopMapWebSocket } from '../../map/ws-map.js';
 import { initTokenService, _resetTokenService } from '../../map/token-service.js';
-import { getAllInbound, getInbound } from '../../map/connection-registry.js';
+import { getAllInbound, getInbound, getAggregateCapabilities } from '../../map/connection-registry.js';
 import { SwarmManager } from '../../swarm/manager.js';
 import { resolveClaudeBinary } from '../../swarm/claude-binary.js';
 import * as swarmDAL from '../../swarm/dal.js';
@@ -285,6 +286,54 @@ describeIf('Live Agent E2E — kind=claude-code hosted swarm lifecycle', () => {
     expect(allInbound.has(preRegisteredSwarmId!)).toBe(true);
     console.log(
       `[live-claude-code] Sidecar registered: ${conn!.registeredAgents.size} agent(s) on swarm ${preRegisteredSwarmId}`,
+    );
+  }, 15_000);
+
+  // ── 1b. Capability surface — trajectory + mail + messaging are declared ─
+
+  it('cc-swarm sidecar declares trajectory + mail + messaging capabilities and the hub aggregates them', async () => {
+    expect(preRegisteredSwarmId).toBeTruthy();
+
+    // Capabilities are declared during agent.registered. Connection lands
+    // first, registration follows asynchronously — poll briefly until the
+    // hub has aggregated something non-empty.
+    const deadline = Date.now() + 10_000;
+    let agg: ReturnType<typeof getAggregateCapabilities>;
+    while (Date.now() < deadline) {
+      agg = getAggregateCapabilities(preRegisteredSwarmId!);
+      if (agg && Object.keys(agg).length > 0) break;
+      await sleep(250);
+    }
+
+    expect(agg).toBeDefined();
+    const caps = agg as {
+      trajectory?: { canReport?: boolean; canServeContent?: boolean };
+      mail?: { canCreate?: boolean; canJoin?: boolean; canViewHistory?: boolean };
+      messaging?: { canSend?: boolean; canReceive?: boolean };
+    };
+
+    // Trajectory bridging — proves cc-swarm intends to push checkpoints
+    // through the openhive trajectory/checkpoint handler. The hub-side
+    // handler is wired separately and exercised by the existing
+    // trajectory-handler tests; this is the contract on cc-swarm's side.
+    expect(caps.trajectory?.canReport).toBe(true);
+
+    // Mail chat — the chat-mode resolver picks Mail when these are set, so
+    // openhive's Threads UI can open an async conversation against this
+    // claude-code swarm without any kind-specific frontend work.
+    expect(caps.mail?.canCreate).toBe(true);
+    expect(caps.mail?.canJoin).toBe(true);
+
+    // Scope messaging — task bridge events, agent state, etc. flow through
+    // this. cc-swarm needs both directions (sends task.* events, receives
+    // inbox messages on UserPromptSubmit).
+    expect(caps.messaging?.canSend).toBe(true);
+    expect(caps.messaging?.canReceive).toBe(true);
+
+    console.log(
+      `[live-claude-code] aggregate caps: trajectory=${!!caps.trajectory?.canReport}, ` +
+        `mail=${!!caps.mail?.canCreate && !!caps.mail?.canJoin}, ` +
+        `messaging=${!!caps.messaging?.canSend && !!caps.messaging?.canReceive}`,
     );
   }, 15_000);
 
@@ -548,4 +597,95 @@ describeIf('Live Agent E2E — kind=claude-code hosted swarm lifecycle', () => {
     // Mark consumed.
     hostedSwarmId = undefined;
   }, 90_000);
+
+  // ── 8. Initial prompt → claude opens with prompt prefilled ───────────────
+
+  it('initial_prompt is passed to claude as a positional arg', async () => {
+    const initialPrompt = 'Refactor the auth module to use OAuth';
+    const spawnRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/map/hosted/spawn',
+      headers: {
+        authorization: `Bearer ${testAgent.apiKey}`,
+        'content-type': 'application/json',
+      },
+      payload: {
+        kind: 'claude-code',
+        name: 'live-claude-code-with-prompt',
+        initial_prompt: initialPrompt,
+      },
+    });
+    expect(spawnRes.statusCode).toBe(201);
+    const spawned = spawnRes.json() as { id: string; state: string };
+    expect(spawned.state).toBe('running');
+    hostedSwarmId = spawned.id;
+
+    // The PtyManager session for this swarm should have the prompt as its
+    // first positional arg.
+    const sid = swarmManager.getClaudeCodePtySessionId(spawned.id);
+    expect(sid).toBeTruthy();
+    const info = ptyManager.getInfo(sid!);
+    expect(info).toBeTruthy();
+    expect(info!.args).toEqual([initialPrompt]);
+    console.log(`[live-claude-code] initial_prompt → args=${JSON.stringify(info!.args)}`);
+
+    // Cleanup.
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/map/hosted/${spawned.id}/stop`,
+      headers: { authorization: `Bearer ${testAgent.apiKey}` },
+    });
+    hostedSwarmId = undefined;
+  }, 90_000);
+
+  // ── 9. Workspace cloning → repo lands under data_dir ─────────────────────
+
+  it('workspace.repos clones into data_dir before claude launches', async () => {
+    // Build a tiny synthetic git repo locally so we don't depend on network.
+    const fixtureRoot = path.join(TEST_ROOT, 'workspace-fixture');
+    fs.mkdirSync(fixtureRoot, { recursive: true });
+    const fixtureFile = path.join(fixtureRoot, 'README.md');
+    fs.writeFileSync(fixtureFile, '# clone-me\n', 'utf8');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: fixtureRoot });
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=T', 'add', '.'], { cwd: fixtureRoot });
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '-m', 'init'], { cwd: fixtureRoot });
+    const fixtureUrl = `file://${fixtureRoot}`;
+
+    const spawnRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/map/hosted/spawn',
+      headers: {
+        authorization: `Bearer ${testAgent.apiKey}`,
+        'content-type': 'application/json',
+      },
+      payload: {
+        kind: 'claude-code',
+        name: 'live-claude-code-with-workspace',
+        workspace: { repos: [{ url: fixtureUrl, branch: 'main' }] },
+      },
+    });
+    expect(spawnRes.statusCode).toBe(201);
+    const spawned = spawnRes.json() as { id: string; state: string };
+    expect(spawned.state).toBe('running');
+    hostedSwarmId = spawned.id;
+
+    // Repo content should now exist under the data_dir (the clone target,
+    // since no `path` was set on the repo entry — falls back to dataDir
+    // root).
+    const row = swarmDAL.findHostedSwarmById(spawned.id)!;
+    const dataDir = row.config!.data_dir;
+    const clonedReadme = path.join(dataDir, 'README.md');
+    expect(fs.existsSync(clonedReadme)).toBe(true);
+    expect(fs.readFileSync(clonedReadme, 'utf8')).toBe('# clone-me\n');
+    expect(fs.existsSync(path.join(dataDir, '.git'))).toBe(true);
+    console.log(`[live-claude-code] Workspace clone OK at ${dataDir}`);
+
+    // Cleanup.
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/map/hosted/${spawned.id}/stop`,
+      headers: { authorization: `Bearer ${testAgent.apiKey}` },
+    });
+    hostedSwarmId = undefined;
+  }, 120_000);
 });

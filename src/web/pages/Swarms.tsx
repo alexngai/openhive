@@ -186,6 +186,14 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   const [projectDirectory, setProjectDirectory] = useState("");
   const [bootstrapCoordinator, setBootstrapCoordinator] = useState(false);
 
+  // claude-code-specific: optional first-turn prompt + optional single-repo
+  // workspace clone. The clone lands directly under data_dir; claude opens
+  // there. Multi-repo workspaces are accepted by the API but not yet
+  // surfaced in this dialog (single-repo handles the common case).
+  const [ccInitialPrompt, setCcInitialPrompt] = useState("");
+  const [ccRepoUrl, setCcRepoUrl] = useState("");
+  const [ccRepoBranch, setCcRepoBranch] = useState("");
+
   const isSandboxed = provider === "local-sandboxed";
 
   // Auto-expand Advanced when switching to sandboxed provider
@@ -256,6 +264,20 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
       // For claude-code, drop openswarm-specific fields entirely; the
       // server ignores them but sending nothing keeps the audit/log
       // surface honest.
+      const trimmedRepoUrl = ccRepoUrl.trim();
+      const trimmedRepoBranch = ccRepoBranch.trim();
+      const ccWorkspace = trimmedRepoUrl
+        ? {
+            repos: [
+              {
+                url: trimmedRepoUrl,
+                ...(trimmedRepoBranch ? { branch: trimmedRepoBranch } : {}),
+              },
+            ],
+          }
+        : undefined;
+      const trimmedPrompt = ccInitialPrompt.trim();
+
       const payload =
         kind === 'claude-code'
           ? {
@@ -263,6 +285,8 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               name,
               description: description || undefined,
               provider: provider !== 'local' ? provider : undefined,
+              workspace: ccWorkspace,
+              initial_prompt: trimmedPrompt || undefined,
             }
           : {
               kind,
@@ -698,23 +722,67 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
           </>
           )}
 
-          {/* claude-code prerequisite hint */}
+          {/* claude-code-specific fields */}
           {kind === 'claude-code' && (
-            <div
-              className="flex items-start gap-2 px-3 py-2 rounded-md text-xs"
-              style={{
-                backgroundColor: 'rgba(255, 165, 0, 0.06)',
-                border: '1px solid rgba(255, 165, 0, 0.15)',
-              }}
-            >
-              <Zap className="w-3.5 h-3.5 text-honey-500 shrink-0 mt-0.5" />
-              <div style={{ color: 'var(--color-text-secondary)' }}>
-                Requires the <code>claude-code-swarm</code> plugin installed in
-                Claude Code on this host (
-                <code>claude plugin add claude-code-swarm</code>) and{' '}
-                <code>claude</code> on PATH.
+            <>
+              {/* Optional repo to clone before launching claude */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="col-span-2">
+                  <SectionLabel>Clone repo (optional)</SectionLabel>
+                  <input
+                    type="text"
+                    value={ccRepoUrl}
+                    onChange={(e) => setCcRepoUrl(e.target.value)}
+                    className="input w-full font-mono text-2xs"
+                    placeholder="https://github.com/owner/repo.git or git@…"
+                    spellCheck={false}
+                  />
+                  <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                    Cloned into the swarm data dir before claude launches.
+                  </p>
+                </div>
+                <div>
+                  <SectionLabel>Branch</SectionLabel>
+                  <input
+                    type="text"
+                    value={ccRepoBranch}
+                    onChange={(e) => setCcRepoBranch(e.target.value)}
+                    className="input w-full text-2xs"
+                    placeholder="main"
+                    disabled={!ccRepoUrl.trim()}
+                  />
+                </div>
               </div>
-            </div>
+
+              {/* Optional initial prompt */}
+              <div>
+                <SectionLabel>Initial prompt (optional)</SectionLabel>
+                <textarea
+                  value={ccInitialPrompt}
+                  onChange={(e) => setCcInitialPrompt(e.target.value)}
+                  className="input w-full text-xs min-h-[60px] resize-y"
+                  placeholder="What should claude work on first? Leave empty to open the TUI at an empty prompt."
+                  maxLength={8000}
+                />
+              </div>
+
+              {/* Prerequisite hint */}
+              <div
+                className="flex items-start gap-2 px-3 py-2 rounded-md text-xs"
+                style={{
+                  backgroundColor: 'rgba(255, 165, 0, 0.06)',
+                  border: '1px solid rgba(255, 165, 0, 0.15)',
+                }}
+              >
+                <Zap className="w-3.5 h-3.5 text-honey-500 shrink-0 mt-0.5" />
+                <div style={{ color: 'var(--color-text-secondary)' }}>
+                  Requires the <code>claude-code-swarm</code> plugin installed in
+                  Claude Code on this host (
+                  <code>claude plugin add claude-code-swarm</code>) and{' '}
+                  <code>claude</code> on PATH.
+                </div>
+              </div>
+            </>
           )}
 
           {/* Actions */}

@@ -1,7 +1,7 @@
 # Hosted Swarm Kinds: Design
 
-**Status:** Design draft — pre-spike. No code yet.
-**Date:** 2026-05-05
+**Status:** Implemented end-to-end for `kind: 'claude-code'`. Milestone A (spawn pipeline) and Milestone B (lifecycle + UI + terminal attach) both shipped. See `## Implementation status` below for the per-piece breakdown and live-e2e coverage at `src/__tests__/swarm/live-claude-code-e2e.test.ts`.
+**Date:** 2026-05-05 (updated 2026-05-06)
 **Scope:** Generalize the hosted-swarm pipeline so OpenHive can spawn and manage agent processes that aren't OpenSwarm — Claude Code first, with the architecture extending to codex / gemini / other CLIs later. Keep the existing OpenSwarm flow working unchanged.
 
 **Out of scope:**
@@ -317,7 +317,7 @@ Two remaining unknowns we settle by writing code, not by debating:
 - Autonomous-dispatch turn injection.
 - Lifecycle-state polish for clean `/exit` (treat any non-zero or operator-stop as the only outcomes for now).
 
-**Status update — 2026-05-06:** Restart and revive for claude-code are **not implemented** as of milestone-B. Both `restart()` and `reviveHostedSwarms()` would need to go through `PtyManager`, which can't be called from the standard provider.provision() path. New PRs will fix this; documented below under "Lifecycle gaps."
+**Status update — 2026-05-06:** Restart and revive for claude-code are now both wired up. `restart()` branches to `restartClaudeCode` which tears down the PTY+sidecar, rotates the onboard token, re-writes the prelaunch config, and re-spawns through `PtyManager` against the same row. `reviveHostedSwarms()` deliberately marks claude-code rows `stopped` on hub restart (with a "session ended; spawn fresh to resume" diagnostic) — interactive TUIs can't survive a hub restart cleanly, so we don't try, and best-effort SIGTERM the sidecar in case it survived. Both are covered by the live e2e at `src/__tests__/swarm/live-claude-code-e2e.test.ts`.
 
 **Scope of the spike:**
 
@@ -358,3 +358,59 @@ Two remaining unknowns we settle by writing code, not by debating:
 - `src/web/pages/SwarmDetail.tsx` — kind chip, kind-aware labels
 
 Tests: at least one integration test per kind exercising spawn → terminal-info → lifecycle → stop.
+
+---
+
+## Implementation status (2026-05-06)
+
+`kind: 'claude-code'` ships end-to-end. Below is what's actually in the tree and what's deliberately deferred.
+
+### Shipped
+
+| Layer | Component | Notes |
+|---|---|---|
+| DB | `hosted_swarms.kind` (V50) | CHECK constraint `('openswarm', 'claude-code')`, default `'openswarm'` |
+| Manager | `spawn()` dispatcher → `spawnClaudeCode()` / `spawnOpenswarm()` | 13-phase pipeline; routes through `PtyManager`, not `LocalProvider` |
+| Manager | `stopClaudeCode()` | Destroys PTY, signals cc-swarm sidecar via PID file (legacy + per-session layouts), MAP swarm → offline |
+| Manager | `restartClaudeCode()` | Cold-restart only; rotates onboard token, re-writes prelaunch config, re-spawns against same row |
+| Manager | `reviveHostedSwarms()` claude-code branch | Marks rows `stopped` on hub restart with operator-actionable diagnostic |
+| Manager | `getLogs()` claude-code branch | Returns "logs stream live in the embedded terminal" hint instead of misleading `(no tracked instance)` |
+| Manager | Health monitor skip for claude-code | Liveness comes from PTY exit + sidecar registration, not HTTP `port+1/health` |
+| Manager | `handleClaudePtyExit()` | Maps clean exit → `stopped`, non-zero exit OR signal kill → `failed` (signal-kill classification fixed 2026-05-06 — see Deviation 5) |
+| Helpers | `resolveClaudeBinary()` | PATH probe + known install locations; clear error if not found |
+| Helpers | `buildClaudeSwarmConfig()` / `writeClaudeSwarmConfig()` | Writes `<data_dir>/.swarm/claude-swarm/config.json` with `auth.token` + `swarmId` (see Deviation 1) |
+| Helpers | `preTrustClaudeWorkdir()` | Pre-marks data_dir as trusted in `~/.claude.json` so SessionStart fires (see Deviation 4) — load-bearing for the spawn pipeline |
+| API | `POST /map/hosted/spawn` | Accepts `kind: 'claude-code'`; superrefine rejects openswarm-only fields with clear errors |
+| API | `GET /map/hosted/:id/terminal-info?mode=tui` | Returns `binding: 'attach'` with live PtyManager `sessionId` for claude-code |
+| API | `GET /map/hosted/:id/logs` | Surfaces the claude-code hint as plain text |
+| API | `POST /map/hosted/:id/stop` and `/restart` | Branch through manager dispatchers |
+| Terminal | `terminal-ws.ts` `?sessionId=` attach mode | Existing path; unchanged for claude-code (we just attach to a PtyManager session the manager owns) |
+| UI | Spawn dialog kind picker | Two-card chooser; openswarm fields hidden for claude-code; prerequisites hint shown |
+| UI | `KindBadge` chip | Renders "Claude Code" on swarm cards |
+| UI | `TerminalPanel` `binding: 'attach'` handling | Reads `sessionId` from terminal-info, passes through `?sessionId=` query |
+| Config | Sidecar registration timeout | Bumped 15s → 60s (cc-swarm bootstrap installs swarmkit packages on first launch; 15s wasn't enough) |
+| API | `initial_prompt` field on spawn payload | Passed to `claude` as positional arg so the TUI opens with prompt prefilled |
+| API | `workspace.repos` for claude-code | Clones into `data_dir` before PTY spawn (reuses `cloneWorkspaceRepos` helper); claude opens with the cloned tree under cwd |
+| UI | Initial-prompt textarea + single-repo URL/branch inputs | Shown in spawn dialog when kind=claude-code |
+| Tests | `src/__tests__/swarm/live-claude-code-e2e.test.ts` | 11 tests, ~37s, gated on `LIVE_AGENT_E2E=true`. Spawn → register → capability surface → terminal-info → getLogs → browser WS attach → restart → stop → forced-crash → initial_prompt arg → workspace clone. Zero mocks. |
+
+### Deferred / future
+
+- **Codex / gemini kinds.** The `kind` enum is open; a new entry plus its own `spawnX()` method drops in alongside the existing two without re-architecting.
+- **Live mid-session injection** from openhive chat into a running claude TUI. Out per "Limits we're accepting" — codex's RPC may admit this when that kind lands.
+- **`inject_resources` for claude-code.** Currently warned-and-dropped during spawn.
+- **Hot-restart for claude-code.** Always cold-restart; the bootstrap is config-file + plugin-hook, not a long-running daemon. Hot bounce isn't meaningful here.
+- **Multi-tab attach to the same claude PTY.** Mechanically should work via `?sessionId=` (multiple WS clients attaching to one PtyManager session is supported by `terminal-ws.ts`), but not yet asserted by a test.
+- **Strategy-pattern refactor (Approach B from the manager refactor plan).** The duplication between `spawnOpenswarm` and `spawnClaudeCode` is real but bounded; we'll extract when codex lands and three call sites can inform the interface shape.
+
+### Deviations from the original design (cumulative)
+
+1. **Prelaunch config uses `auth.token` instead of `auth.credential`** plus a `swarmId` field. Original design wrote `auth.credential`; cc-swarm's `buildServerUrl` skips appending `?swarm_id=...` to the WS URL when `credential` is set, which would break our open-mode hub's swarm_id-based registration matching. (Already documented above at the prelaunch config section.)
+
+2. **Claude-code spawns route through `PtyManager`, not `LocalProvider.provision()`.** `claude` is interactive and crashes under `child_process.spawn` (no TTY). PtyManager wraps node-pty and gives it a real TTY. Downstream consequence: `instanceToHostedId` and `hostedToInstanceId` mappings are NOT populated for claude-code rows. Anything routing through `getInstanceId()` is a no-op for claude-code; the manager has explicit kind branches for `getLogs`, `stop`, `restart`, `reviveHostedSwarms`, and the health monitor.
+
+3. **`reviveHostedSwarms()` marks claude-code rows `stopped` on hub restart** instead of attempting to revive. Interactive TUIs can't survive a hub restart cleanly — the PTY is gone, the sidecar self-stopped on idle (or we lost track of its PID). Rather than ship a half-working revival path, we mark the row stopped with a clear "spawn fresh to resume" diagnostic and best-effort SIGTERM the sidecar in case it survived. The operator clicks Restart or Spawn fresh as they prefer.
+
+4. **Pre-trust the data_dir in `~/.claude.json` before launching `claude`** (`preTrustClaudeWorkdir()` in `claude-code-config.ts`). Without this, claude shows its "Trust this folder?" gate and SessionStart never fires, which means the cc-swarm plugin never runs and the sidecar never registers. The fix mirrors what claude itself writes when the user clicks "Yes": `projects.<realpath(data_dir)>.hasTrustDialogAccepted = true`. Realpath is required because macOS resolves `/tmp → /private/tmp` (and `/var → /private/var`), and claude looks up the canonical path. Idempotent, atomic write, missing/malformed `~/.claude.json` is a soft no-op (the user just sees the prompt).
+
+5. **Signal-kills classified as crashes in `handleClaudePtyExit`.** node-pty reports `exitCode=0, signal=N` for SIGKILL/SIGSEGV/etc on macOS+Linux (the OS sets the termination signal, not the exit code). The original handler only checked `exitCode === 0`, misclassifying kills as clean stops. Now any `signal > 0` reaching the handler is treated as a crash → `state=failed`. Operator-driven `stop()` is unaffected: `stopClaudeCode` deletes the session-map entry before destroying the PTY, so the handler returns early on its lookup miss for that path.

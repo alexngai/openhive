@@ -1,7 +1,7 @@
 # Hosted Swarm Kinds: Manager Refactor Plan
 
-**Status:** Plan — pre-implementation. Schema migration (V50) already landed.
-**Date:** 2026-05-05
+**Status:** ✅ Approach A shipped (2026-05-06). PRs 1–6 + follow-ons (UI picker, terminal attach, pre-trust workdir, signal-kill classification) all merged. See `docs/HOSTED_SWARM_KINDS_DESIGN.md` `## Implementation status` for the canonical list of what's in the tree, what's deferred, and the cumulative deviations from the original design. Approach B (strategy-pattern extraction) remains deferred until codex/gemini provides a third call site to inform the interface shape — the relevant section below still applies.
+**Date:** 2026-05-05 (completed 2026-05-06)
 **Scope:** Concrete refactor sequence for `src/swarm/manager.ts` + provider layer to support `kind: 'claude-code'` alongside existing `kind: 'openswarm'`. Companion to `docs/HOSTED_SWARM_KINDS_DESIGN.md`.
 
 **Out of scope:**

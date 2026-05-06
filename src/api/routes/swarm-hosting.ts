@@ -59,19 +59,25 @@ const SpawnSwarmSchema = z
     credential_overrides: z.record(z.string(), z.string()).optional(),
     workspace: WorkspaceSchema.optional(),
     bootstrap: BootstrapSchema.optional(),
+    /**
+     * Optional first-turn prompt. For claude-code, passed to `claude` as a
+     * positional arg so the TUI opens with the prompt prefilled. Length cap
+     * is generous — Claude Code itself accepts large prompts.
+     */
+    initial_prompt: z.string().max(8000).optional(),
   })
   .superRefine((data, ctx) => {
     // Reject openswarm-specific fields when kind=claude-code so the user
     // gets a clear error instead of silently dropped values. claude-code
     // routes through PtyManager (no provider config, no adapter, no
-    // workspace cloning, no bootstrap-coordinator) — these fields are
-    // dead for that kind. Keep the schema permissive for openswarm.
+    // bootstrap-coordinator) — these fields are dead for that kind.
+    // Workspace IS supported now (clones land under data_dir before the
+    // PTY spawn). Keep the schema permissive for openswarm.
     if (data.kind !== 'claude-code') return;
     const blocked: Array<[keyof typeof data, string]> = [
       ['adapter', 'cc-swarm plugin handles agent setup; no adapter to pick'],
       ['adapter_config', 'no adapter for claude-code'],
       ['hive', 'hive-bound credentials are openswarm-specific'],
-      ['workspace', 'workspace repos are not yet wired for claude-code'],
       ['bootstrap', 'macro-agent bootstrap-coordinator is openswarm-specific'],
       ['credential_overrides', 'claude-code uses operator local creds; no overrides'],
     ];
