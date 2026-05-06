@@ -109,6 +109,13 @@ export function useSpawnSwarm() {
 
   return useMutation({
     mutationFn: (data: {
+      /**
+       * What kind of agent process to spawn. Defaults server-side to
+       * 'openswarm' for backwards compatibility. 'claude-code' routes to
+       * a different spawn pipeline (claude TUI + cc-swarm plugin sidecar).
+       * See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+       */
+      kind?: 'openswarm' | 'claude-code';
       name: string;
       description?: string;
       adapter?: string;

@@ -115,6 +115,17 @@ export class SwarmManager {
    * Idempotent: replacing the manager rewires the exit listener to the new
    * instance. Safe to call multiple times during startup or test setup.
    */
+  /**
+   * Look up the PtyManager session id for a claude-code hosted swarm. The
+   * embedded terminal uses this to attach to the running `claude` TUI
+   * instead of spawning a fresh PTY. Returns null when there's no live
+   * session — either the row isn't claude-code, or the session has exited
+   * since we registered it.
+   */
+  getClaudeCodePtySessionId(hostedSwarmId: string): string | null {
+    return this.claudeCodeSessions.get(hostedSwarmId) ?? null;
+  }
+
   setPtyManager(ptyManager: PtyManager): void {
     if (this.ptyManager && this.claudeExitHandler) {
       this.ptyManager.removeListener('session.exit', this.claudeExitHandler);
@@ -130,6 +141,13 @@ export class SwarmManager {
    * doesn't fire for these). Exit code 0 → 'stopped' (user typed `/exit`
    * or operator stopped); non-zero → 'failed'. Auto-restart is intentionally
    * NOT applied here (interactive TUIs aren't meant to auto-restart).
+   *
+   * Also signals the cc-swarm sidecar to shut down promptly. cc-swarm
+   * would self-terminate after 30 min of inactivity anyway, but that
+   * leaves a confusing UX gap where the row says stopped but MAP shows the
+   * sidecar registered. SIGTERM hits cc-swarm's existing shutdown handler
+   * (closes WS, removes socket/pid files, exits) — see
+   * references/claude-code-swarm/scripts/map-sidecar.mjs:142-176.
    */
   private handleClaudePtyExit(event: { sessionId: string; exitCode: number; signal?: number }): void {
     let owningHostedId: string | null = null;
@@ -147,6 +165,11 @@ export class SwarmManager {
       state: isClean ? 'stopped' : 'failed',
       error: isClean ? null : `claude exited with code ${event.exitCode}${event.signal ? ` (signal ${event.signal})` : ''}`,
     });
+
+    // Signal the cc-swarm sidecar (best-effort; missing PID file is fine).
+    const hosted = dal.findHostedSwarmById(owningHostedId);
+    if (hosted) this.signalClaudeCodeSidecar(hosted, 'SIGTERM');
+
     broadcastToChannel('map:discovery', {
       type: isClean ? 'swarm_stopped' : 'swarm_offline',
       data: { hosted_swarm_id: owningHostedId },
@@ -154,6 +177,69 @@ export class SwarmManager {
     console.log(
       `[swarm-manager] claude-code session exited: hosted=${owningHostedId} code=${event.exitCode} signal=${event.signal ?? 'none'}`,
     );
+  }
+
+  /**
+   * Send a signal to the cc-swarm sidecar process(es) for a claude-code
+   * row. cc-swarm writes pid files under (per-session paths.mjs):
+   *   <data_dir>/.swarm/claude-swarm/tmp/map/sessions/<hash>/sidecar.pid
+   * For long-lived persistent mode it instead uses the legacy single path:
+   *   <data_dir>/.swarm/claude-swarm/tmp/map/sidecar.pid
+   * We walk both layouts so this works regardless of cc-swarm config.
+   * Returns true if at least one signal landed; false otherwise. Tolerates
+   * missing files (sidecar already exited) and ESRCH (process already gone).
+   * Exposed for testing.
+   */
+  signalClaudeCodeSidecar(hosted: HostedSwarm, signal: NodeJS.Signals | 0 = 'SIGTERM'): boolean {
+    if (hosted.kind !== 'claude-code') return false;
+    const dataDirRaw = hosted.config?.data_dir;
+    if (!dataDirRaw) return false;
+    // dataDir is stored as written by manager.ts (path.join, no resolve), so
+    // it can be relative — absolute-ize against the current process cwd
+    // (same cwd the spawn ran under).
+    const dataDir = path.resolve(dataDirRaw);
+    const mapDir = path.join(dataDir, '.swarm', 'claude-swarm', 'tmp', 'map');
+
+    const pidFiles: string[] = [];
+    // Legacy/persistent layout: single sidecar.pid at the top level.
+    const legacyPid = path.join(mapDir, 'sidecar.pid');
+    if (fs.existsSync(legacyPid)) pidFiles.push(legacyPid);
+    // Per-session layout: sessions/<hash>/sidecar.pid (current default).
+    const sessionsDir = path.join(mapDir, 'sessions');
+    if (fs.existsSync(sessionsDir)) {
+      try {
+        for (const entry of fs.readdirSync(sessionsDir)) {
+          const candidate = path.join(sessionsDir, entry, 'sidecar.pid');
+          if (fs.existsSync(candidate)) pidFiles.push(candidate);
+        }
+      } catch {
+        // Directory listing failed — keep what we have
+      }
+    }
+
+    if (pidFiles.length === 0) return false;
+
+    let signalled = false;
+    for (const pidPath of pidFiles) {
+      let pid: number;
+      try {
+        const raw = fs.readFileSync(pidPath, 'utf-8').trim();
+        pid = parseInt(raw, 10);
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+      } catch {
+        continue;
+      }
+      try {
+        process.kill(pid, signal);
+        console.log(`[swarm-manager] sidecar signal ${signal} → pid=${pid} hosted=${hosted.id}`);
+        signalled = true;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ESRCH') continue;  // process already gone — fine
+        console.warn(`[swarm-manager] sidecar signal failed: pid=${pid} hosted=${hosted.id}: ${(err as Error).message}`);
+      }
+    }
+    return signalled;
   }
 
   /**
@@ -183,6 +269,11 @@ export class SwarmManager {
         console.warn(`[swarm-manager] PTY destroy failed for ${hosted.id}: ${(err as Error).message}`);
       }
     }
+
+    // Politely terminate cc-swarm sidecar so it doesn't linger ~30 min on
+    // its idle timer. Using cc-swarm's own SIGTERM handler — we're not
+    // managing the sidecar, just signalling the existing shutdown path.
+    this.signalClaudeCodeSidecar(hosted, 'SIGTERM');
 
     dal.updateHostedSwarm(hosted.id, { state: 'stopped', error: null });
 
@@ -1157,6 +1248,14 @@ export class SwarmManager {
 
     for (const hosted of active) {
       if (hosted.state === 'stopping' || hosted.state === 'provisioning') continue;
+
+      // claude-code rows live in PtyManager, not LocalProvider. Their
+      // liveness comes from the PTY exit handler (handleClaudePtyExit)
+      // and the cc-swarm sidecar's MAP registration — not an HTTP probe.
+      // The default openswarm probe (port+1/health) doesn't apply: there's
+      // no port and no HTTP server. Skip explicitly so this stays correct
+      // even if instance tracking ever gets populated for claude-code.
+      if (hosted.kind === 'claude-code') continue;
 
       const provider = this.providers.get(hosted.provider);
       if (!provider) continue;

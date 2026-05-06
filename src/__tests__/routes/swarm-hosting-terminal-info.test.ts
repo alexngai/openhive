@@ -189,6 +189,60 @@ describe('GET /map/hosted/:id/terminal-info', () => {
     });
   });
 
+  describe('tui mode for kind=claude-code', () => {
+    it('returns binding=attach when SwarmManager has a live PTY session', async () => {
+      // Need to update the row to kind=claude-code before exercising the
+      // route — DAL helper accepts kind on create.
+      const swarm = makeRunningSwarm({ spawnedBy: agent.id });
+      // Override kind on the row directly (DAL doesn't expose update for kind).
+      const { getDatabase } = await import('../../db/index.js');
+      getDatabase().prepare('UPDATE hosted_swarms SET kind = ? WHERE id = ?').run('claude-code', swarm.id);
+
+      // Stub a swarmManager on the fastify instance with a fake PTY session.
+      const fakeSessionId = 'pty_test_session_id';
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (app as any).swarmManager = {
+        getClaudeCodePtySessionId: (id: string) => (id === swarm.id ? fakeSessionId : null),
+      };
+
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/map/hosted/${swarm.id}/terminal-info`,
+        headers: { Authorization: `Bearer ${agent.apiKey}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.mode).toBe('tui');
+      expect(body.binding).toBe('attach');
+      expect(body.available).toBe(true);
+      expect(body.sessionId).toBe(fakeSessionId);
+      expect(body.command).toBeNull();
+      expect(body.args).toEqual([]);
+    });
+
+    it('returns available=false when there is no live PTY session', async () => {
+      const swarm = makeRunningSwarm({ spawnedBy: agent.id });
+      const { getDatabase } = await import('../../db/index.js');
+      getDatabase().prepare('UPDATE hosted_swarms SET kind = ? WHERE id = ?').run('claude-code', swarm.id);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (app as any).swarmManager = {
+        getClaudeCodePtySessionId: () => null,
+      };
+
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/map/hosted/${swarm.id}/terminal-info`,
+        headers: { Authorization: `Bearer ${agent.apiKey}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.binding).toBe('attach');
+      expect(body.available).toBe(false);
+      expect(body.sessionId).toBeNull();
+    });
+  });
+
   describe('shell mode', () => {
     it('returns $SHELL, absolute cwd, and sandbox=true', async () => {
       const dataDir = path.join(TEST_DATA_DIR, 'swarm-shell-test');

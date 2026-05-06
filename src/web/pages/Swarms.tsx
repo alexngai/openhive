@@ -157,6 +157,10 @@ const emptyRepo = (): WorkspaceRepoEntry => ({
 });
 
 export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
+  // Which kind of swarm to spawn. claude-code uses a different pipeline
+  // (claude TUI + cc-swarm plugin sidecar) and a much smaller config
+  // surface than openswarm. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+  const [kind, setKind] = useState<'openswarm' | 'claude-code'>('openswarm');
   const [name, setName] = useState(() =>
     uniqueNamesGenerator({
       dictionaries: [adjectives, colors, animals],
@@ -248,17 +252,30 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
       : undefined;
 
     try {
-      await spawnMutation.mutateAsync({
-        name,
-        description: description || undefined,
-        adapter: adapter || undefined,
-        hive: hive || undefined,
-        provider: provider !== "local" ? provider : undefined,
-        adapter_config,
-        metadata,
-        workspace: validRepos.length > 0 ? { repos: validRepos } : undefined,
-        bootstrap,
-      });
+      // For claude-code, drop openswarm-specific fields entirely; the
+      // server ignores them but sending nothing keeps the audit/log
+      // surface honest.
+      const payload =
+        kind === 'claude-code'
+          ? {
+              kind,
+              name,
+              description: description || undefined,
+              provider: provider !== 'local' ? provider : undefined,
+            }
+          : {
+              kind,
+              name,
+              description: description || undefined,
+              adapter: adapter || undefined,
+              hive: hive || undefined,
+              provider: provider !== 'local' ? provider : undefined,
+              adapter_config,
+              metadata,
+              workspace: validRepos.length > 0 ? { repos: validRepos } : undefined,
+              bootstrap,
+            };
+      await spawnMutation.mutateAsync(payload);
       toast.success("Swarm spawned", `"${name}" is starting up.`);
       onClose();
     } catch (err) {
@@ -280,6 +297,55 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3">
+          {/* Kind picker — drives the rest of the form's shape */}
+          <div>
+            <SectionLabel>Kind</SectionLabel>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setKind('openswarm')}
+                className={`flex-1 px-3 py-2 rounded-md border text-left transition-colors ${
+                  kind === 'openswarm' ? 'border-honey-500' : 'border-transparent'
+                }`}
+                style={{
+                  backgroundColor:
+                    kind === 'openswarm'
+                      ? 'rgba(255, 165, 0, 0.08)'
+                      : 'var(--color-elevated)',
+                }}
+              >
+                <div className="text-xs font-medium">OpenSwarm</div>
+                <div
+                  className="text-2xs mt-0.5"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
+                  Multi-agent system with adapter (default)
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setKind('claude-code')}
+                className={`flex-1 px-3 py-2 rounded-md border text-left transition-colors ${
+                  kind === 'claude-code' ? 'border-honey-500' : 'border-transparent'
+                }`}
+                style={{
+                  backgroundColor:
+                    kind === 'claude-code'
+                      ? 'rgba(255, 165, 0, 0.08)'
+                      : 'var(--color-elevated)',
+                }}
+              >
+                <div className="text-xs font-medium">Claude Code</div>
+                <div
+                  className="text-2xs mt-0.5"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
+                  Claude Code TUI + cc-swarm plugin sidecar
+                </div>
+              </button>
+            </div>
+          </div>
+
           {/* Row 1: Name + Provider */}
           <div className="flex gap-3">
             <div className="flex-1">
@@ -355,6 +421,11 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
             />
           </div>
 
+          {/* Openswarm-only fields. claude-code spawns are intentionally
+              minimal — the cc-swarm plugin handles bootstrap, no adapter
+              choice or workspace cloning is exposed in v1. */}
+          {kind === 'openswarm' && (
+          <>
           {/* Row 3: Adapter + Hive */}
           <div className="flex gap-3">
             <div className="flex-1">
@@ -620,6 +691,27 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                   className="input w-full font-mono text-2xs min-h-[60px] resize-y"
                   placeholder='{"team": "research", "project": "docs"}'
                 />
+              </div>
+            </div>
+          )}
+          </>
+          )}
+
+          {/* claude-code prerequisite hint */}
+          {kind === 'claude-code' && (
+            <div
+              className="flex items-start gap-2 px-3 py-2 rounded-md text-xs"
+              style={{
+                backgroundColor: 'rgba(255, 165, 0, 0.06)',
+                border: '1px solid rgba(255, 165, 0, 0.15)',
+              }}
+            >
+              <Zap className="w-3.5 h-3.5 text-honey-500 shrink-0 mt-0.5" />
+              <div style={{ color: 'var(--color-text-secondary)' }}>
+                Requires the <code>claude-code-swarm</code> plugin installed in
+                Claude Code on this host (
+                <code>claude plugin add claude-code-swarm</code>) and{' '}
+                <code>claude</code> on PATH.
               </div>
             </div>
           )}

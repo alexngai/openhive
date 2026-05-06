@@ -233,32 +233,51 @@ export function TerminalPanel({
       try {
         const info = await api.get<{
           mode: 'tui' | 'shell';
+          /**
+           * 'attach' means the server already has a running PTY session
+           * for this swarm (e.g. kind=claude-code) and we should attach
+           * by sessionId. Default (absent or 'spawn') means we ask the
+           * WS to spawn a fresh PTY with the returned command/args.
+           */
+          binding?: 'attach' | 'spawn';
           available: boolean;
           command: string | null;
           args: string[];
           cwd?: string;
           sandbox?: boolean;
-          endpoint: string;
+          sessionId?: string | null;
+          endpoint: string | null;
         }>(`/map/hosted/${currentSwarm.swarmId}/terminal-info?mode=${currentSessionMode}`);
 
         if (stale()) { term.dispose(); return; }
 
         console.debug('[terminal] terminal-info response:', info);
 
-        if (!info.available || !info.command) {
-          setStatus('error');
-          setErrorMsg(
-            currentSessionMode === 'shell'
-              ? 'Shell mode unavailable for this swarm'
-              : 'OpenSwarm TUI binary not available on this server',
-          );
-          return;
+        // Attach mode: server already owns the PTY, we just attach by id.
+        if (info.binding === 'attach') {
+          if (!info.available || !info.sessionId) {
+            setStatus('error');
+            setErrorMsg(
+              'No running terminal session for this swarm. The TUI may have exited.',
+            );
+            return;
+          }
+          params.set('sessionId', info.sessionId);
+        } else {
+          if (!info.available || !info.command) {
+            setStatus('error');
+            setErrorMsg(
+              currentSessionMode === 'shell'
+                ? 'Shell mode unavailable for this swarm'
+                : 'OpenSwarm TUI binary not available on this server',
+            );
+            return;
+          }
+          params.set('command', info.command);
+          params.set('args', JSON.stringify(info.args));
+          if (info.cwd) params.set('cwd', info.cwd);
+          if (info.sandbox) params.set('sandbox', '1');
         }
-
-        params.set('command', info.command);
-        params.set('args', JSON.stringify(info.args));
-        if (info.cwd) params.set('cwd', info.cwd);
-        if (info.sandbox) params.set('sandbox', '1');
       } catch (err) {
         if (stale()) { term.dispose(); return; }
         console.error('[terminal] terminal-info fetch failed:', err);

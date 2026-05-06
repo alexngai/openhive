@@ -364,6 +364,8 @@ export async function swarmHostingRoutes(
   // GET /map/hosted/:id/terminal-info — Resolve the terminal session config
   // for a hosted swarm. Two modes:
   //   ?mode=tui   (default) — OpenSwarm TUI tunneled into the browser PTY
+  //                          (or, for kind=claude-code, attach to the
+  //                          existing claude PTY session by sessionId)
   //   ?mode=shell           — User's $SHELL in the swarm's data dir, sandboxed
   fastify.get<{ Params: { id: string }; Querystring: { mode?: string } }>(
     '/map/hosted/:id/terminal-info',
@@ -378,6 +380,34 @@ export async function swarmHostingRoutes(
       }
 
       const mode = request.query.mode === 'shell' ? 'shell' : 'tui';
+
+      // claude-code TUI: don't spawn a fresh PTY — attach to the
+      // existing one SwarmManager already started for this row. Falls
+      // through to shell mode below for ?mode=shell (the swarm's data
+      // dir + sandboxed $SHELL works for any kind).
+      if (mode === 'tui' && hosted.kind === 'claude-code') {
+        let sessionId: string | null = null;
+        try {
+          const manager = getManager(request);
+          sessionId = manager.getClaudeCodePtySessionId(request.params.id);
+        } catch {
+          // Manager not available — surface as unavailable, not 5xx
+        }
+        console.log('[terminal-info] swarm=%s mode=tui kind=claude-code session=%s', request.params.id, sessionId ?? 'NONE');
+        return reply.send({
+          mode: 'tui',
+          binding: 'attach',
+          available: !!sessionId,
+          sessionId,
+          // No command/args — caller attaches by sessionId.
+          command: null,
+          args: [],
+          sandbox: false,
+          // Endpoint isn't meaningful for claude-code (no MAP server on
+          // the swarm); leave the field for shape compatibility.
+          endpoint: null,
+        });
+      }
 
       // Point the TUI at openhive's own MAP hub, not the hosted swarm's
       // assigned port. The openswarm `serve` gateway exposes /health, /metrics,
