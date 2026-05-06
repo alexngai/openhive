@@ -42,6 +42,7 @@ import {
   MIGRATION_V47_DISPATCH_ACP_LIFECYCLE,
   MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE,
   MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
+  MIGRATION_V50_REPOS_AND_WORKSPACES,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -141,6 +142,9 @@ export function initDatabase(
     db.exec(MIGRATION_V19_EVENT_ROUTING);
     // Create coordination tables
     db.exec(MIGRATION_V22_COORDINATION);
+    // Create workspaces table + map_swarms.workspace_policy for fresh installs.
+    // (Existing DBs get this via runMigrations at V50.)
+    db.exec(MIGRATION_V50_REPOS_AND_WORKSPACES);
     // Seed default data
     db.exec(SEED_DATA);
   } else if (versionRow.version < SCHEMA_VERSION) {
@@ -322,6 +326,11 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // detail UI panel and surfaces materialization failures durably, not
   // just over the live WS event.
   49: MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
+  // Version 50: Repos as syncable resources + per-agent workspace bindings.
+  // Extends syncable_resources.resource_type CHECK with 'repo', adds the
+  // local-only workspaces table, and adds map_swarms.workspace_policy JSON
+  // column. See docs/design/repos-as-syncable-resources.md.
+  50: MIGRATION_V50_REPOS_AND_WORKSPACES,
 };
 
 /** Get the SQL for a specific migration version.

@@ -87,6 +87,23 @@ export interface WorkspaceConfig {
   repos: WorkspaceRepo[];
 }
 
+/**
+ * Per-swarm workspace policy. Operators set this at spawn time; runtime
+ * `x-workspace/repo.declare` calls are gated against it.
+ *
+ * - `open` (default): any declare succeeds.
+ * - `allow_listed`: declares must match a canonical_url in `allowed_repos`.
+ * - `pinned`: hub auto-attaches a binding to `pinned_repo` at swarm
+ *   register; further declares are validated against the pin.
+ */
+export interface WorkspacePolicy {
+  mode: 'open' | 'allow_listed' | 'pinned';
+  /** Canonical URLs (used when mode='allow_listed'). */
+  allowed_repos?: string[];
+  /** Canonical URL (used when mode='pinned'). */
+  pinned_repo?: string;
+}
+
 // ============================================================================
 // Spawn Configuration
 // ============================================================================
@@ -131,6 +148,21 @@ export interface SpawnSwarmInput {
   credential_overrides?: Record<string, string>;
   /** Workspace setup (e.g. repos to clone before the swarm starts) */
   workspace?: WorkspaceConfig;
+  /**
+   * Pre-attached repo resource (kinds/repo). When set, the manager looks up
+   * the repo and injects `WORKSPACE_REPO_URL` / `WORKSPACE_LOCAL_PATH` /
+   * `WORKSPACE_BRANCH` env vars so the spawned swarm's sidecar can declare
+   * the repo on connect (per `agent-workspace/docs/design/agent-integration.md`).
+   *
+   * Independent of `workspace.repos` (which clones; this announces).
+   */
+  repo_id?: string;
+  /**
+   * Per-swarm workspace policy gating which repos this swarm's agents may
+   * declare. Persisted on `map_swarms.workspace_policy` so runtime declares
+   * can be gated. See `docs/design/repos-as-syncable-resources.md` D5/D11.
+   */
+  workspace_policy?: WorkspacePolicy;
   /** Resource IDs to inject into the swarm's bootstrap config */
   inject_resources?: string[];
   /** Boot-time agent provisioning (e.g. auto-spawn coordinator) */
@@ -174,6 +206,10 @@ export interface SwarmProvisionConfig {
   credential_resolution?: CredentialResolutionMeta;
   /** Workspace setup (repos to clone before process starts) */
   workspace?: WorkspaceConfig;
+  /** Pre-attached repo resource (echoed from SpawnSwarmInput; passed for audit). */
+  repo_id?: string;
+  /** Per-swarm workspace policy (echoed from SpawnSwarmInput; passed for audit). */
+  workspace_policy?: WorkspacePolicy;
   /** Boot-time agent provisioning (env-var bridged into the runtime) */
   bootstrap?: SwarmBootstrap;
 }

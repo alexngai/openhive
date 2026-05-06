@@ -21,6 +21,8 @@ import { LocalProvider } from './providers/local.js';
 import { SandboxedLocalProvider } from './providers/sandboxed-local.js';
 import { resolveCredentialOverlay } from './credentials.js';
 import { findResourceById, subscribeToResource } from '../db/dal/syncable-resources.js';
+import * as repos from '../db/dal/repos.js';
+import { getDatabase } from '../db/index.js';
 import type {
   SpawnSwarmInput,
   SwarmProvisionConfig,
@@ -321,6 +323,50 @@ export class SwarmManager {
       input.credential_overrides,
     );
 
+    // Inject WORKSPACE_* env vars when a repo_id is supplied. The spawned
+    // swarm's sidecar reads these on connect and emits `x-workspace/repo.declare`
+    // — see `references/agent-workspace/docs/design/agent-integration.md`.
+    if (input.repo_id) {
+      const repo = repos.findRepoById(input.repo_id);
+      if (!repo) {
+        this.releasePorts(port, adapter);
+        throw new SwarmHostingError(
+          'REPO_NOT_FOUND',
+          `Repo resource ${input.repo_id} not found`,
+        );
+      }
+      if (repo.resource_type !== 'repo') {
+        this.releasePorts(port, adapter);
+        throw new SwarmHostingError(
+          'REPO_NOT_FOUND',
+          `Resource ${input.repo_id} is type=${repo.resource_type}, not repo`,
+        );
+      }
+      const meta = (repo.metadata ?? {}) as { default_branch?: string };
+      credentialOverlay.WORKSPACE_REPO_URL = repo.git_remote_url;
+      credentialOverlay.WORKSPACE_BRANCH = meta.default_branch ?? 'main';
+      // Default clone path: `${dataDir}/repo`. Sidecar can override via env
+      // OPENHIVE_WORKSPACE_LOCAL_PATH if pre-cloned outside dataDir.
+      credentialOverlay.WORKSPACE_LOCAL_PATH = path.join(dataDir, 'repo');
+    }
+
+    // Persist per-swarm workspace policy on the pre-registered map_swarms row.
+    // Runtime declares are gated against this in workspace-handler.ts (when
+    // policy gating ships in slice 7+). For now this surfaces the policy via
+    // GET /api/v1/map/swarms/:id and is auditable.
+    if (input.workspace_policy && preRegisteredSwarmId) {
+      try {
+        getDatabase().prepare(
+          'UPDATE map_swarms SET workspace_policy = ? WHERE id = ?',
+        ).run(JSON.stringify(input.workspace_policy), preRegisteredSwarmId);
+      } catch (err) {
+        // Non-fatal — the spawn proceeds without the policy persisted.
+        console.warn(
+          `[swarm-manager] Failed to persist workspace_policy: ${(err as Error).message}`,
+        );
+      }
+    }
+
     const provisionConfig: SwarmProvisionConfig = {
       name,
       adapter,
@@ -337,6 +383,8 @@ export class SwarmManager {
       },
       workspace: input.workspace,
       bootstrap: input.bootstrap,
+      ...(input.repo_id !== undefined && { repo_id: input.repo_id }),
+      ...(input.workspace_policy !== undefined && { workspace_policy: input.workspace_policy }),
     };
 
     // Create DB record — id is pre-generated so data_dir matches.

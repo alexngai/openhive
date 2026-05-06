@@ -180,7 +180,15 @@ export type WSEventType =
   | 'team_template:deleted'
   | 'loadout:created'
   | 'loadout:updated'
-  | 'loadout:deleted';
+  | 'loadout:deleted'
+  // Repo / workspace lifecycle events (see realtime/workspace-events.ts).
+  // `workspace_*` are per-binding (per-agent instance); `repo_*` are at the
+  // federated repo-resource level.
+  | 'workspace_added'
+  | 'workspace_changed'
+  | 'workspace_deactivated'
+  | 'repo_visibility_changed'
+  | 'repo_archived';
 
 export interface WSEvent {
   type: WSEventType;
@@ -275,7 +283,26 @@ export interface MemoryBankSubscriptionWithAgent extends MemoryBankSubscription 
 // Syncable Resources Types (generic resource system)
 // ============================================================================
 
-export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session' | 'playbook' | 'team_template' | 'loadout';
+export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session' | 'playbook' | 'team_template' | 'loadout' | 'repo';
+
+// Workspace bindings — local-only, per-agent instance of a federated repo
+// resource. See `docs/design/repos-as-syncable-resources.md`.
+export interface Workspace {
+  id: string;
+  repo_id: string;       // FK syncable_resources(id) where resource_type='repo'
+  agent_id: string;      // FK map_nodes(id)
+  swarm_id: string;      // FK map_swarms(id)
+  local_path: string;
+  current_branch: string | null;
+  head_sha: string | null;
+  dirty: number;          // 0 | 1 (SQLite-friendly boolean)
+  instance_label: string | null;
+  visibility: 'private' | 'hub_local' | 'federated';
+  is_active: number;      // 0 | 1
+  created_at: string;
+  updated_at: string;
+  last_seen_at: string;
+}
 export type ResourceVisibility = 'private' | 'shared' | 'public';
 export type ResourcePermission = 'read' | 'write' | 'admin';
 export type ResourceScope = 'global' | 'project' | 'agent' | 'manual';
