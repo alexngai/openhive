@@ -147,6 +147,23 @@ export interface SpawnSwarmInput {
    * has its own prompt-injection path via the bootstrap-coordinator field.
    */
   initial_prompt?: string;
+  /**
+   * For `kind: 'codex'` only: which surface to spawn.
+   *
+   *   - `'rpc'` (default): spawn `codex app-server` and let openhive's chat
+   *     UI drive it via JSON-RPC. The canonical interaction model — full
+   *     streaming, mid-turn injection, dispatch hand-off, etc.
+   *   - `'tui'`: spawn `codex` interactive TUI in a node-pty PTY. Operator
+   *     drives it through the embedded terminal, openhive does NOT see the
+   *     conversation programmatically (codex has no plugin sidecar yet).
+   *
+   * `'rpc'` and `'tui'` operate on independent threads — codex's app-server
+   * and `codex resume` don't share live state. See
+   * docs/HOSTED_SWARM_KINDS_DESIGN.md "codex — programmatic mode".
+   *
+   * Ignored for non-codex kinds.
+   */
+  mode?: 'rpc' | 'tui';
   /** Resource IDs to inject into the swarm's bootstrap config */
   inject_resources?: string[];
   /** Boot-time agent provisioning (e.g. auto-spawn coordinator) */
@@ -201,6 +218,13 @@ export interface SwarmProvisionConfig {
    * The override is taken verbatim — provider does NOT append default args.
    */
   spawn_command_override?: string;
+  /**
+   * For `kind: 'codex'` only — which surface this row was spawned with.
+   * `'rpc'` rows route through CodexAppServerManager; `'tui'` (and absent)
+   * rows route through PtyManager. Persisted so restart/revive can pick
+   * the right pipeline. Ignored for non-codex kinds.
+   */
+  mode?: 'rpc' | 'tui';
   /**
    * Args to pair with `spawn_command_override`. When the override is set
    * these REPLACE the provider's default args (not append). When the
@@ -278,7 +302,8 @@ export interface HostingProvider {
  */
 export type HostedSwarmKind =
   | 'openswarm'    // OpenSwarm hosting gateway (current default)
-  | 'claude-code'; // claude TUI + cc-swarm plugin sidecar
+  | 'claude-code'  // claude TUI + cc-swarm plugin sidecar
+  | 'codex';       // codex TUI (no plugin/sidecar in v1; future codex-swarm plugin will add MAP integration)
 
 export interface HostedSwarm {
   id: string;

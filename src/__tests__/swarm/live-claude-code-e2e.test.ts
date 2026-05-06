@@ -359,7 +359,7 @@ describeIf('Live Agent E2E — kind=claude-code hosted swarm lifecycle', () => {
     expect(info.sessionId).toBeTruthy();
 
     // The sessionId should match what SwarmManager registered.
-    const managerSessionId = swarmManager.getClaudeCodePtySessionId(hostedSwarmId!);
+    const managerSessionId = swarmManager.getTuiPtySessionId(hostedSwarmId!);
     expect(info.sessionId).toBe(managerSessionId);
 
     // And PtyManager should know about that session, status 'running'.
@@ -385,7 +385,7 @@ describeIf('Live Agent E2E — kind=claude-code hosted swarm lifecycle', () => {
 
   it('a browser WS connection attaches to the claude-code PTY by sessionId', async () => {
     expect(hostedSwarmId).toBeTruthy();
-    const sid = swarmManager.getClaudeCodePtySessionId(hostedSwarmId!);
+    const sid = swarmManager.getTuiPtySessionId(hostedSwarmId!);
     expect(sid).toBeTruthy();
 
     const url = `ws://127.0.0.1:${SERVER_PORT}/ws/terminal?sessionId=${sid}&cols=120&rows=40`;
@@ -457,7 +457,7 @@ describeIf('Live Agent E2E — kind=claude-code hosted swarm lifecycle', () => {
 
   it('restart() reboots the PTY and re-registers the sidecar against the same row', async () => {
     expect(hostedSwarmId).toBeTruthy();
-    const oldSessionId = swarmManager.getClaudeCodePtySessionId(hostedSwarmId!);
+    const oldSessionId = swarmManager.getTuiPtySessionId(hostedSwarmId!);
     expect(oldSessionId).toBeTruthy();
     const oldRow = swarmDAL.findHostedSwarmById(hostedSwarmId!)!;
 
@@ -471,7 +471,7 @@ describeIf('Live Agent E2E — kind=claude-code hosted swarm lifecycle', () => {
     expect(body.state).toBe('running');
 
     // New PTY session id must differ from the old one.
-    const newSessionId = swarmManager.getClaudeCodePtySessionId(hostedSwarmId!);
+    const newSessionId = swarmManager.getTuiPtySessionId(hostedSwarmId!);
     expect(newSessionId).toBeTruthy();
     expect(newSessionId).not.toBe(oldSessionId);
 
@@ -500,7 +500,7 @@ describeIf('Live Agent E2E — kind=claude-code hosted swarm lifecycle', () => {
 
   it('stop() destroys the PTY and lands the row at state=stopped', async () => {
     expect(hostedSwarmId).toBeTruthy();
-    const sessionIdBefore = swarmManager.getClaudeCodePtySessionId(hostedSwarmId!);
+    const sessionIdBefore = swarmManager.getTuiPtySessionId(hostedSwarmId!);
     expect(sessionIdBefore).toBeTruthy();
 
     const stopRes = await app.inject({
@@ -520,7 +520,7 @@ describeIf('Live Agent E2E — kind=claude-code hosted swarm lifecycle', () => {
     }
 
     // Manager mapping cleared.
-    expect(swarmManager.getClaudeCodePtySessionId(hostedSwarmId!)).toBeNull();
+    expect(swarmManager.getTuiPtySessionId(hostedSwarmId!)).toBeNull();
 
     // Give the sidecar a moment to disconnect on its SIGTERM handler, then
     // confirm it has dropped from the inbound registry. The MAP server's
@@ -565,7 +565,7 @@ describeIf('Live Agent E2E — kind=claude-code hosted swarm lifecycle', () => {
     expect(spawned.state).toBe('running');
     hostedSwarmId = spawned.id; // afterAll will best-effort stop if anything goes sideways
 
-    const sid = swarmManager.getClaudeCodePtySessionId(spawned.id);
+    const sid = swarmManager.getTuiPtySessionId(spawned.id);
     expect(sid).toBeTruthy();
     const ptyInfo = ptyManager.getInfo(sid!);
     expect(ptyInfo?.pid).toBeGreaterThan(0);
@@ -588,8 +588,8 @@ describeIf('Live Agent E2E — kind=claude-code hosted swarm lifecycle', () => {
 
     expect(row).toBeTruthy();
     expect(row!.state).toBe('failed');
-    expect(row!.error).toMatch(/claude exited with/);
-    expect(swarmManager.getClaudeCodePtySessionId(spawned.id)).toBeNull();
+    expect(row!.error).toMatch(/exited with code/);
+    expect(swarmManager.getTuiPtySessionId(spawned.id)).toBeNull();
     console.log(
       `[live-claude-code] Crash test: state=${row!.state}, error="${row!.error}"`,
     );
@@ -622,7 +622,7 @@ describeIf('Live Agent E2E — kind=claude-code hosted swarm lifecycle', () => {
 
     // The PtyManager session for this swarm should have the prompt as its
     // first positional arg.
-    const sid = swarmManager.getClaudeCodePtySessionId(spawned.id);
+    const sid = swarmManager.getTuiPtySessionId(spawned.id);
     expect(sid).toBeTruthy();
     const info = ptyManager.getInfo(sid!);
     expect(info).toBeTruthy();

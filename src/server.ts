@@ -501,6 +501,23 @@ export async function createHive(
       swarmManager.setPtyManager(ptyManager);
     }
 
+    // Wire CodexAppServerManager so kind=codex with mode=rpc can spawn the
+    // app-server child process and drive it via JSON-RPC. No external
+    // native deps — just a child_process + ws client — so this is safe to
+    // construct unconditionally when swarm hosting is enabled.
+    try {
+      const { CodexAppServerManager } = await import('./swarm/codex-app-server-manager.js');
+      const codexAppServerManager = new CodexAppServerManager();
+      swarmManager.setCodexAppServerManager(codexAppServerManager);
+      (fastify as unknown as { codexAppServerManager?: typeof codexAppServerManager })
+        .codexAppServerManager = codexAppServerManager;
+    } catch (err) {
+      console.warn(
+        '[openhive] CodexAppServerManager unavailable — kind=codex+mode=rpc spawns will fail:',
+        (err as Error).message,
+      );
+    }
+
     console.log("[openhive] Swarm hosting enabled");
   }
 

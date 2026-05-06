@@ -456,12 +456,18 @@ function TerminalSection({ hosted }: { hosted: HostedSwarm }) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">
-            {hosted.kind === 'claude-code' ? 'Open Claude Code' : 'Open TUI'}
+            {hosted.kind === 'claude-code'
+              ? 'Open Claude Code'
+              : hosted.kind === 'codex'
+                ? 'Open Codex'
+                : 'Open TUI'}
           </div>
           <div className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
             {hosted.kind === 'claude-code'
               ? 'Attach to the running Claude Code TUI.'
-              : 'OpenSwarm TUI tunneled through this hub.'}
+              : hosted.kind === 'codex'
+                ? 'Attach to the running Codex TUI.'
+                : 'OpenSwarm TUI tunneled through this hub.'}
           </div>
         </div>
         <ChevronRight

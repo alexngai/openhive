@@ -115,7 +115,7 @@ export function useSpawnSwarm() {
        * a different spawn pipeline (claude TUI + cc-swarm plugin sidecar).
        * See docs/HOSTED_SWARM_KINDS_DESIGN.md.
        */
-      kind?: 'openswarm' | 'claude-code';
+      kind?: 'openswarm' | 'claude-code' | 'codex';
       name: string;
       description?: string;
       adapter?: string;

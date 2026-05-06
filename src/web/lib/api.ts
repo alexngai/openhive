@@ -169,7 +169,7 @@ export interface HostedSwarm {
    */
   data_dir?: string;
   /** Kind of hosted swarm. Defaults to 'openswarm' when absent. */
-  kind?: 'openswarm' | 'claude-code';
+  kind?: 'openswarm' | 'claude-code' | 'codex';
 }
 
 export interface MapRegisteredAgent {

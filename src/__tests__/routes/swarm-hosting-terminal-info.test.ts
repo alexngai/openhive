@@ -202,7 +202,7 @@ describe('GET /map/hosted/:id/terminal-info', () => {
       const fakeSessionId = 'pty_test_session_id';
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (app as any).swarmManager = {
-        getClaudeCodePtySessionId: (id: string) => (id === swarm.id ? fakeSessionId : null),
+        getTuiPtySessionId: (id: string) => (id === swarm.id ? fakeSessionId : null),
       };
 
       const res = await app.inject({
@@ -227,7 +227,7 @@ describe('GET /map/hosted/:id/terminal-info', () => {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (app as any).swarmManager = {
-        getClaudeCodePtySessionId: () => null,
+        getTuiPtySessionId: () => null,
       };
 
       const res = await app.inject({

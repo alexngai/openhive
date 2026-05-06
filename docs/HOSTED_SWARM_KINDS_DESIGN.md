@@ -1,6 +1,6 @@
 # Hosted Swarm Kinds: Design
 
-**Status:** Implemented end-to-end for `kind: 'claude-code'`. Milestone A (spawn pipeline) and Milestone B (lifecycle + UI + terminal attach) both shipped. See `## Implementation status` below for the per-piece breakdown and live-e2e coverage at `src/__tests__/swarm/live-claude-code-e2e.test.ts`.
+**Status:** Implemented end-to-end for `kind: 'claude-code'` and `kind: 'codex'` (TUI parity). The strategy-pattern refactor (Approach B from the manager refactor plan) has shipped — the manager has one shared TUI spawn pipeline (`spawnTuiKind`) that both kinds drive via per-kind strategy objects (`src/swarm/tui-strategies.ts`). Adding a third TUI-shaped kind is a single new strategy implementation. Codex's programmatic-mode (`codex app-server`) is documented as the next kind/mode but not yet shipped. See `## Implementation status` below for the per-piece breakdown and live-e2e coverage.
 **Date:** 2026-05-05 (updated 2026-05-06)
 **Scope:** Generalize the hosted-swarm pipeline so OpenHive can spawn and manage agent processes that aren't OpenSwarm — Claude Code first, with the architecture extending to codex / gemini / other CLIs later. Keep the existing OpenSwarm flow working unchanged.
 
@@ -302,8 +302,12 @@ Two remaining unknowns we settle by writing code, not by debating:
 
 ## Future kinds (sketch)
 
-- **`codex`** — codex CLI binary + a codex-side observer (analogous to cc-swarm but speaking codex's `codex-app-server` JSON-RPC). Codex's RPC has cleaner injection semantics than Claude Code's TUI, so `codex` may admit live injection in a way `claude-code` doesn't — design that when we get there.
-- **`gemini`** — gemini CLI; integration shape TBD when the use case arrives.
+- **`codex` — TUI mode (✅ shipped 2026-05-06)** — `codex` CLI in PTY; openhive manages process lifecycle. No openhive-aware plugin yet (a future codex-swarm plugin will add MAP integration analogous to cc-swarm). Mirrors claude-code structurally minus the sidecar; pre-trust uses `~/.codex/config.toml` `[projects."<realpath>"] trust_level = "trusted"`.
+- **`codex` — programmatic mode (next beat, not started)** — spawn `codex app-server --listen ws://127.0.0.1:N` instead of (or alongside) the TUI. Codex's app-server speaks a rich JSON-RPC protocol (`thread/start`, `turn/start`, `turn/steer` with `expectedTurnId` precondition for live mid-turn injection, `turn/interrupt`, streaming `item/agentMessage/delta`, etc.) — covered by the TS bindings under `codex app-server generate-ts`. This unlocks the live mid-session injection that `claude-code`'s TUI architecturally can't offer. Two implementation shapes are on the table:
+  1. **Second mode of `kind: 'codex'`** — a flag on the spawn payload selects TUI vs. app-server. Same kind, different transport.
+  2. **Separate `kind: 'codex-rpc'`** — clean type-level split between "user drives the TUI" and "openhive drives via JSON-RPC".
+  Pick after we've shipped one and felt where the seams want to be.
+- **`gemini`** — gemini CLI; integration shape TBD when the use case arrives. Likely fits `TuiKindStrategy` directly with a new `makeGeminiStrategy()` and minimal changes elsewhere.
 
 ---
 
@@ -369,30 +373,31 @@ Tests: at least one integration test per kind exercising spawn → terminal-info
 
 | Layer | Component | Notes |
 |---|---|---|
-| DB | `hosted_swarms.kind` (V50) | CHECK constraint `('openswarm', 'claude-code')`, default `'openswarm'` |
-| Manager | `spawn()` dispatcher → `spawnClaudeCode()` / `spawnOpenswarm()` | 13-phase pipeline; routes through `PtyManager`, not `LocalProvider` |
-| Manager | `stopClaudeCode()` | Destroys PTY, signals cc-swarm sidecar via PID file (legacy + per-session layouts), MAP swarm → offline |
-| Manager | `restartClaudeCode()` | Cold-restart only; rotates onboard token, re-writes prelaunch config, re-spawns against same row |
-| Manager | `reviveHostedSwarms()` claude-code branch | Marks rows `stopped` on hub restart with operator-actionable diagnostic |
-| Manager | `getLogs()` claude-code branch | Returns "logs stream live in the embedded terminal" hint instead of misleading `(no tracked instance)` |
-| Manager | Health monitor skip for claude-code | Liveness comes from PTY exit + sidecar registration, not HTTP `port+1/health` |
-| Manager | `handleClaudePtyExit()` | Maps clean exit → `stopped`, non-zero exit OR signal kill → `failed` (signal-kill classification fixed 2026-05-06 — see Deviation 5) |
-| Helpers | `resolveClaudeBinary()` | PATH probe + known install locations; clear error if not found |
-| Helpers | `buildClaudeSwarmConfig()` / `writeClaudeSwarmConfig()` | Writes `<data_dir>/.swarm/claude-swarm/config.json` with `auth.token` + `swarmId` (see Deviation 1) |
-| Helpers | `preTrustClaudeWorkdir()` | Pre-marks data_dir as trusted in `~/.claude.json` so SessionStart fires (see Deviation 4) — load-bearing for the spawn pipeline |
-| API | `POST /map/hosted/spawn` | Accepts `kind: 'claude-code'`; superrefine rejects openswarm-only fields with clear errors |
-| API | `GET /map/hosted/:id/terminal-info?mode=tui` | Returns `binding: 'attach'` with live PtyManager `sessionId` for claude-code |
-| API | `GET /map/hosted/:id/logs` | Surfaces the claude-code hint as plain text |
-| API | `POST /map/hosted/:id/stop` and `/restart` | Branch through manager dispatchers |
-| Terminal | `terminal-ws.ts` `?sessionId=` attach mode | Existing path; unchanged for claude-code (we just attach to a PtyManager session the manager owns) |
-| UI | Spawn dialog kind picker | Two-card chooser; openswarm fields hidden for claude-code; prerequisites hint shown |
-| UI | `KindBadge` chip | Renders "Claude Code" on swarm cards |
+| DB | `hosted_swarms.kind` (V50 + V51) | V50 added the column with a CHECK constraint; V51 dropped the constraint so new kinds can be added without a migration. Validation moved to Zod. |
+| Manager | TUI-kind strategy pattern (`src/swarm/tui-strategies.ts`) | Per-kind strategy objects (`makeClaudeCodeStrategy`, `makeCodexStrategy`) implement `TuiKindStrategy`. The manager has ONE shared spawn/stop/restart pipeline (`spawnTuiKind`, `stopTuiKind`, `restartTuiKind`); all kind-specific behavior (binary resolution, prelaunch files, env hygiene, sidecar wait, workdir trust) lives in the strategy. Adding a new TUI kind is a single new strategy. |
+| Manager | `spawn()` dispatcher | `isTuiKind(kind)` → resolve strategy → `spawnTuiKind(agentId, input, strategy)`. Openswarm continues through the original `spawnOpenswarm()`. |
+| Manager | `stopTuiKind()` | Destroys PTY, signals per-kind sidecar (only for kinds with `hasSidecar: true`), MAP swarm → offline |
+| Manager | `restartTuiKind()` | Cold-restart only; rotates onboard token, re-writes prelaunch files via strategy, re-spawns against the same row. Sidecar wait gated on `hasSidecar`. |
+| Manager | `reviveHostedSwarms()` TUI branch | Marks TUI rows `stopped` on hub restart with operator-actionable diagnostic; best-effort sidecar SIGTERM only for kinds with one |
+| Manager | `getLogs()` TUI branch | Returns `({kind} logs stream live in the embedded terminal — no scrollback buffer)` instead of misleading `(no tracked instance)` |
+| Manager | Health monitor skip for TUI kinds | Liveness comes from PTY exit (+ sidecar registration where applicable), not HTTP `port+1/health` |
+| Manager | `handleClaudePtyExit()` | Kind-agnostic; reads kind from row. Maps clean exit → `stopped`, non-zero exit OR signal kill → `failed` (Deviation 5). Sidecar SIGTERM only for kinds with one. |
+| Helpers (claude-code) | `resolveClaudeBinary()`, `buildClaudeSwarmConfig()` / `writeClaudeSwarmConfig()`, `preTrustClaudeWorkdir()` | PATH + known locations probe; cc-swarm prelaunch config writer (`auth.token` + `swarmId` per Deviation 1); pre-mark data_dir trusted in `~/.claude.json` (per Deviation 4) |
+| Helpers (codex) | `resolveCodexBinary()`, `preTrustCodexWorkdir()` | PATH + known locations probe; pre-mark data_dir trusted in `~/.codex/config.toml` via `[projects."<realpath>"] trust_level = "trusted"` stanza |
+| API | `POST /map/hosted/spawn` | Accepts `kind ∈ {openswarm, claude-code, codex}`; superrefine rejects openswarm-only fields for TUI kinds with kind-aware error messages |
+| API | `GET /map/hosted/:id/terminal-info?mode=tui` | Returns `binding: 'attach'` with live PtyManager `sessionId` for any TUI kind |
+| API | `GET /map/hosted/:id/logs` | Surfaces the TUI scrollback hint as plain text |
+| API | `POST /map/hosted/:id/stop` and `/restart` | Branch through manager dispatchers (kind-agnostic) |
+| API | `initial_prompt` field on spawn payload | Passed to the TUI binary as positional arg; both `claude` and `codex` accept this and open with the prompt prefilled |
+| API | `workspace.repos` for TUI kinds | Clones into `data_dir` before PTY spawn (reuses `cloneWorkspaceRepos`); the TUI opens with the cloned tree under cwd |
+| Terminal | `terminal-ws.ts` `?sessionId=` attach mode | Existing path; works for any PtyManager session the manager owns |
+| UI | Spawn dialog kind picker | Three-card chooser (OpenSwarm, Claude Code, Codex); openswarm-only fields hidden for TUI kinds; per-kind prerequisite hint |
+| UI | `KindBadge` chip | Renders "Claude Code" (violet) or "Codex" (emerald) on swarm cards |
 | UI | `TerminalPanel` `binding: 'attach'` handling | Reads `sessionId` from terminal-info, passes through `?sessionId=` query |
-| Config | Sidecar registration timeout | Bumped 15s → 60s (cc-swarm bootstrap installs swarmkit packages on first launch; 15s wasn't enough) |
-| API | `initial_prompt` field on spawn payload | Passed to `claude` as positional arg so the TUI opens with prompt prefilled |
-| API | `workspace.repos` for claude-code | Clones into `data_dir` before PTY spawn (reuses `cloneWorkspaceRepos` helper); claude opens with the cloned tree under cwd |
-| UI | Initial-prompt textarea + single-repo URL/branch inputs | Shown in spawn dialog when kind=claude-code |
+| UI | Initial-prompt textarea + single-repo URL/branch inputs | Shown for TUI kinds (claude-code + codex) |
+| Config | Sidecar registration timeout | Bumped 15s → 60s (only applies to kinds with sidecars; cc-swarm bootstrap installs swarmkit packages on first launch). Codex skips this entirely. |
 | Tests | `src/__tests__/swarm/live-claude-code-e2e.test.ts` | 11 tests, ~37s, gated on `LIVE_AGENT_E2E=true`. Spawn → register → capability surface → terminal-info → getLogs → browser WS attach → restart → stop → forced-crash → initial_prompt arg → workspace clone. Zero mocks. |
+| Tests | `src/__tests__/swarm/live-codex-e2e.test.ts` | 9 tests, ~35s, gated on `LIVE_AGENT_E2E=true`. Spawn (no sidecar wait) → terminal-info → getLogs → browser WS attach → restart → stop → forced-crash → initial_prompt → workspace clone. Zero mocks. |
 
 ### Deferred / future
 

@@ -56,11 +56,18 @@ export function SandboxBadge() {
   );
 }
 
-export function KindBadge({ kind }: { kind?: 'openswarm' | 'claude-code' }) {
+export function KindBadge({ kind }: { kind?: 'openswarm' | 'claude-code' | 'codex' }) {
   if (!kind || kind === 'openswarm') return null;
+  const label = kind === 'claude-code' ? 'Claude Code' : 'Codex';
+  // Codex gets a distinct color so the two TUI kinds aren't visually
+  // identical at a glance on the swarm cards.
+  const colorClass =
+    kind === 'claude-code'
+      ? 'bg-violet-500/10 text-violet-400'
+      : 'bg-emerald-500/10 text-emerald-400';
   return (
-    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-2xs font-medium bg-violet-500/10 text-violet-400">
-      Claude Code
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-2xs font-medium ${colorClass}`}>
+      {label}
     </span>
   );
 }

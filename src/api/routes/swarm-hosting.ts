@@ -48,7 +48,7 @@ const SpawnSwarmSchema = z
   .object({
     // Defaults to 'openswarm' to preserve the existing API contract for clients
     // that don't pass kind. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
-    kind: z.enum(['openswarm', 'claude-code']).optional().default('openswarm'),
+    kind: z.enum(['openswarm', 'claude-code', 'codex']).optional().default('openswarm'),
     name: z.string().min(1).max(100).optional(),
     description: z.string().max(500).optional(),
     adapter: z.string().max(100).optional(),
@@ -65,28 +65,54 @@ const SpawnSwarmSchema = z
      * is generous — Claude Code itself accepts large prompts.
      */
     initial_prompt: z.string().max(8000).optional(),
+    /**
+     * For kind=codex only: which surface to spawn.
+     *   - 'rpc' (default): spawn `codex app-server`, openhive chat drives it
+     *   - 'tui': spawn `codex` TUI in a PTY (operator-driven, no chat path)
+     * Other kinds reject this field.
+     */
+    mode: z.enum(['rpc', 'tui']).optional(),
   })
   .superRefine((data, ctx) => {
-    // Reject openswarm-specific fields when kind=claude-code so the user
-    // gets a clear error instead of silently dropped values. claude-code
-    // routes through PtyManager (no provider config, no adapter, no
-    // bootstrap-coordinator) — these fields are dead for that kind.
-    // Workspace IS supported now (clones land under data_dir before the
-    // PTY spawn). Keep the schema permissive for openswarm.
-    if (data.kind !== 'claude-code') return;
+    // `mode` is codex-only — reject for any other kind so users get a
+    // clear error rather than a silently-ignored field.
+    if (data.mode !== undefined && data.kind !== 'codex') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mode'],
+        message: `mode is only valid when kind="codex"; got kind="${data.kind ?? 'openswarm'}"`,
+      });
+    }
+
+    // Reject openswarm-specific fields for TUI-shaped kinds (claude-code,
+    // codex). They route through PtyManager (no provider config, no
+    // adapter, no bootstrap-coordinator) — these fields are dead. Keep
+    // the schema permissive for openswarm. Workspace IS supported (clones
+    // land under data_dir before the PTY spawn). The error message names
+    // the kind so the operator sees which validation tripped.
+    if (data.kind !== 'claude-code' && data.kind !== 'codex') return;
+    const adapterMsg = data.kind === 'claude-code'
+      ? 'cc-swarm plugin handles agent setup; no adapter to pick'
+      : 'codex spawns its own TUI; no adapter to pick';
+    const adapterConfigMsg = data.kind === 'claude-code'
+      ? 'no adapter for claude-code'
+      : 'no adapter for codex';
+    const hiveMsg = 'hive-bound credentials are openswarm-specific';
+    const bootstrapMsg = 'macro-agent bootstrap-coordinator is openswarm-specific';
+    const credsMsg = `${data.kind} uses operator local creds; no overrides`;
     const blocked: Array<[keyof typeof data, string]> = [
-      ['adapter', 'cc-swarm plugin handles agent setup; no adapter to pick'],
-      ['adapter_config', 'no adapter for claude-code'],
-      ['hive', 'hive-bound credentials are openswarm-specific'],
-      ['bootstrap', 'macro-agent bootstrap-coordinator is openswarm-specific'],
-      ['credential_overrides', 'claude-code uses operator local creds; no overrides'],
+      ['adapter', adapterMsg],
+      ['adapter_config', adapterConfigMsg],
+      ['hive', hiveMsg],
+      ['bootstrap', bootstrapMsg],
+      ['credential_overrides', credsMsg],
     ];
     for (const [field, reason] of blocked) {
       if (data[field] !== undefined) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: [field],
-          message: `kind=claude-code does not support "${field}": ${reason}`,
+          message: `kind=${data.kind} does not support "${field}": ${reason}`,
         });
       }
     }
@@ -417,11 +443,11 @@ export async function swarmHostingRoutes(
       // existing one SwarmManager already started for this row. Falls
       // through to shell mode below for ?mode=shell (the swarm's data
       // dir + sandboxed $SHELL works for any kind).
-      if (mode === 'tui' && hosted.kind === 'claude-code') {
+      if (mode === 'tui' && (hosted.kind === 'claude-code' || hosted.kind === 'codex')) {
         let sessionId: string | null = null;
         try {
           const manager = getManager(request);
-          sessionId = manager.getClaudeCodePtySessionId(request.params.id);
+          sessionId = manager.getTuiPtySessionId(request.params.id);
         } catch {
           // Manager not available — surface as unavailable, not 5xx
         }

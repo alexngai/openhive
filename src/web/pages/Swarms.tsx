@@ -161,7 +161,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   // Which kind of swarm to spawn. claude-code uses a different pipeline
   // (claude TUI + cc-swarm plugin sidecar) and a much smaller config
   // surface than openswarm. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
-  const [kind, setKind] = useState<'openswarm' | 'claude-code'>('openswarm');
+  const [kind, setKind] = useState<'openswarm' | 'claude-code' | 'codex'>('openswarm');
   const [name, setName] = useState(() =>
     uniqueNamesGenerator({
       dictionaries: [adjectives, colors, animals],
@@ -278,8 +278,9 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
         : undefined;
       const trimmedPrompt = ccInitialPrompt.trim();
 
+      const isTuiKind = kind === 'claude-code' || kind === 'codex';
       const payload =
-        kind === 'claude-code'
+        isTuiKind
           ? {
               kind,
               name,
@@ -366,6 +367,27 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                   style={{ color: 'var(--color-text-muted)' }}
                 >
                   Claude Code TUI + cc-swarm plugin sidecar
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setKind('codex')}
+                className={`flex-1 px-3 py-2 rounded-md border text-left transition-colors ${
+                  kind === 'codex' ? 'border-honey-500' : 'border-transparent'
+                }`}
+                style={{
+                  backgroundColor:
+                    kind === 'codex'
+                      ? 'rgba(255, 165, 0, 0.08)'
+                      : 'var(--color-elevated)',
+                }}
+              >
+                <div className="text-xs font-medium">Codex</div>
+                <div
+                  className="text-2xs mt-0.5"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
+                  Codex TUI (no plugin sidecar yet)
                 </div>
               </button>
             </div>
@@ -722,8 +744,8 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
           </>
           )}
 
-          {/* claude-code-specific fields */}
-          {kind === 'claude-code' && (
+          {/* TUI-kind-specific fields (claude-code, codex) */}
+          {(kind === 'claude-code' || kind === 'codex') && (
             <>
               {/* Optional repo to clone before launching claude */}
               <div className="grid grid-cols-3 gap-2">
@@ -766,7 +788,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                 />
               </div>
 
-              {/* Prerequisite hint */}
+              {/* Prerequisite hint — per kind */}
               <div
                 className="flex items-start gap-2 px-3 py-2 rounded-md text-xs"
                 style={{
@@ -776,10 +798,21 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               >
                 <Zap className="w-3.5 h-3.5 text-honey-500 shrink-0 mt-0.5" />
                 <div style={{ color: 'var(--color-text-secondary)' }}>
-                  Requires the <code>claude-code-swarm</code> plugin installed in
-                  Claude Code on this host (
-                  <code>claude plugin add claude-code-swarm</code>) and{' '}
-                  <code>claude</code> on PATH.
+                  {kind === 'claude-code' ? (
+                    <>
+                      Requires the <code>claude-code-swarm</code> plugin installed in
+                      Claude Code on this host (
+                      <code>claude plugin add claude-code-swarm</code>) and{' '}
+                      <code>claude</code> on PATH.
+                    </>
+                  ) : (
+                    <>
+                      Requires <code>codex</code> on PATH and a logged-in account
+                      (<code>codex login</code>). No plugin sidecar yet — openhive
+                      manages the TUI process; codex's MAP integration arrives with
+                      the future codex-swarm plugin.
+                    </>
+                  )}
                 </div>
               </div>
             </>

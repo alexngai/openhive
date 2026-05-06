@@ -43,6 +43,7 @@ import {
   MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE,
   MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
   MIGRATION_V50_HOSTED_SWARM_KIND,
+  MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -327,6 +328,10 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // OpenSwarm. Existing rows default to 'openswarm'. See
   // docs/HOSTED_SWARM_KINDS_DESIGN.md.
   50: MIGRATION_V50_HOSTED_SWARM_KIND,
+  // Version 51: Drop the kind CHECK constraint so new kinds (codex, gemini,
+  // …) can be added without a DB migration. Validation moves to Zod at the
+  // API layer + the HostedSwarmKind union type.
+  51: MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK,
 };
 
 /** Get the SQL for a specific migration version.

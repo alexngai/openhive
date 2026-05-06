@@ -1,6 +1,6 @@
 # Hosted Swarm Kinds — Milestone A Plan
 
-**Status:** ✅ Done (2026-05-06). All PRs in this milestone (PR 2 dispatcher → PR 6 health-monitor branch) shipped, plus the follow-on items originally listed under Milestone B (UI kind picker, terminal attach, restart, exit-code mapping, pre-trust workdir). Spawn-pipeline + lifecycle + UI all covered by `src/__tests__/swarm/live-claude-code-e2e.test.ts` (8 tests, no mocks). See `docs/HOSTED_SWARM_KINDS_DESIGN.md` `## Implementation status` for the canonical list.
+**Status:** ✅ Done and superseded (2026-05-06). All milestone-A PRs shipped, plus follow-ons originally under Milestone B (UI kind picker, terminal attach, restart, exit-code mapping, pre-trust workdir). A second TUI kind (`codex`) followed using the same shape; the duplication this plan accepted has since been collapsed via the strategy-pattern refactor (see `tui-strategies.ts`), so the per-kind copy-paste no longer exists. Live coverage: `src/__tests__/swarm/live-claude-code-e2e.test.ts` (11 tests) + `src/__tests__/swarm/live-codex-e2e.test.ts` (9 tests), both gated on `LIVE_AGENT_E2E=true`. See `docs/HOSTED_SWARM_KINDS_DESIGN.md` `## Implementation status` for the canonical list.
 **Date:** 2026-05-05 (completed 2026-05-06)
 **Scope:** Get the **spawn pipeline** for `kind: 'claude-code'` working end-to-end. Excludes UI, terminal-attach, and lifecycle polish — those are Milestone B.
 
