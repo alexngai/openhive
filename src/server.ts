@@ -279,7 +279,17 @@ export async function createHive(
       fastify.get("/ws/terminal", { websocket: true }, (socket, request) => {
         const ws = socket as unknown as import("ws").WebSocket;
         const query = request.query as Record<string, string>;
-        handleTerminalWebSocket(ws, query, ptyManager);
+        // handleTerminalWebSocket awaits sandbox setup when ?sandbox=1; surface
+        // any rejection here so it doesn't become an unhandled promise.
+        handleTerminalWebSocket(ws, query, ptyManager).catch((err) => {
+          console.error("[openhive] terminal-ws handler failed:", err);
+          try {
+            ws.send(JSON.stringify({ type: "error", message: (err as Error).message }));
+            ws.close();
+          } catch {
+            // socket may already be closed
+          }
+        });
       });
 
       console.log("[openhive] Terminal WebSocket registered at /ws/terminal");

@@ -1,4 +1,4 @@
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Activity, AlertTriangle, Bell, ChevronRight, ChevronDown, ChevronUp, Clock, Cpu, FileText, Globe,
   GitBranch, Link2, Loader2, Megaphone, MessageSquare, Monitor, Network, Play, Plus, Send, Settings2, Share2,
@@ -442,28 +442,53 @@ function TerminalSection({ hosted }: { hosted: HostedSwarm }) {
   if (hosted.state !== 'running') return null;
 
   return (
-    <button
-      onClick={() => navigate(`/terminal/${hosted.id}`)}
-      className="mt-4 w-full card card-hover px-3 py-2.5 flex items-center gap-3 text-left transition-colors group"
-      aria-label="Open TUI in a dedicated view"
-    >
-      <div
-        className="w-7 h-7 rounded flex items-center justify-center shrink-0"
-        style={{ backgroundColor: 'var(--color-elevated)' }}
+    <div className="mt-4 grid gap-2 sm:grid-cols-2">
+      <button
+        onClick={() => navigate(`/terminal/${hosted.id}`)}
+        className="card card-hover px-3 py-2.5 flex items-center gap-3 text-left transition-colors group"
+        aria-label="Open TUI in a dedicated view"
       >
-        <Terminal className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">Open Terminal</div>
-        <div className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-          Attach to the hosted process to tail output and drive the TUI.
+        <div
+          className="w-7 h-7 rounded flex items-center justify-center shrink-0"
+          style={{ backgroundColor: 'var(--color-elevated)' }}
+        >
+          <Terminal className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
         </div>
-      </div>
-      <ChevronRight
-        className="w-3.5 h-3.5 shrink-0 group-hover:text-honey-500 transition-colors"
-        style={{ color: 'var(--color-text-muted)' }}
-      />
-    </button>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">Open TUI</div>
+          <div className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+            OpenSwarm TUI tunneled through this hub.
+          </div>
+        </div>
+        <ChevronRight
+          className="w-3.5 h-3.5 shrink-0 group-hover:text-honey-500 transition-colors"
+          style={{ color: 'var(--color-text-muted)' }}
+        />
+      </button>
+
+      <button
+        onClick={() => navigate(`/terminal/${hosted.id}?mode=shell`)}
+        className="card card-hover px-3 py-2.5 flex items-center gap-3 text-left transition-colors group"
+        aria-label="Open a shell in the swarm's working directory"
+      >
+        <div
+          className="w-7 h-7 rounded flex items-center justify-center shrink-0"
+          style={{ backgroundColor: 'var(--color-elevated)' }}
+        >
+          <Terminal className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">Open Shell</div>
+          <div className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+            $SHELL inside the swarm's data dir, sandboxed.
+          </div>
+        </div>
+        <ChevronRight
+          className="w-3.5 h-3.5 shrink-0 group-hover:text-honey-500 transition-colors"
+          style={{ color: 'var(--color-text-muted)' }}
+        />
+      </button>
+    </div>
   );
 }
 
@@ -1539,7 +1564,7 @@ function SessionsSection({ swarmId }: { swarmId: string }) {
 export function SwarmDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: swarm, isLoading: mapLoading } = useMapSwarm(id!);
-  const { data: hostedSwarms } = useHostedSwarms();
+  const { data: hostedSwarms, isLoading: hostedLoading } = useHostedSwarms();
   useSwarmRealtime();
 
   // Find matching hosted swarm (by swarm_id linking to MAP registration).
@@ -1547,6 +1572,17 @@ export function SwarmDetail() {
   const hosted = hostedSwarms?.find(
     (h) => h.swarm_id === id || h.id === id
   );
+
+  // Detect hosted-swarm-id alias: the route accepts both MAP swarm IDs
+  // (`swarm_*`) and hosted swarm IDs (`hswarm_*`). The page itself is keyed on
+  // the MAP id (every section hook depends on it), so when the user lands on
+  // a hosted id we redirect to the canonical MAP id below — *after* all hooks
+  // run so the early return doesn't break hook order on the redirect render.
+  const hostedAliasMatch = hostedSwarms?.find((h) => h.id === id);
+  const aliasRedirectTarget =
+    hostedAliasMatch?.swarm_id && hostedAliasMatch.swarm_id !== id
+      ? hostedAliasMatch.swarm_id
+      : null;
 
   // Declare chat context items. Unconditional (before early returns) so
   // hook order is stable across loading/missing states.
@@ -1572,7 +1608,16 @@ export function SwarmDetail() {
     [swarm],
   );
 
-  if (mapLoading) return <PageLoader />;
+  // Wait for both queries before declaring not-found. Without hostedLoading,
+  // a deep link to /swarms/<hswarm_*> can flash "Swarm not found" before the
+  // hosted-id alias redirect lands.
+  if (mapLoading || hostedLoading) return <PageLoader />;
+
+  // Redirect hosted-id aliases to the canonical MAP id. Placed after all
+  // hooks have run (loading guard above) so hook order stays stable.
+  if (aliasRedirectTarget) {
+    return <Navigate to={`/swarms/${aliasRedirectTarget}`} replace />;
+  }
 
   if (!swarm) {
     return (

@@ -289,9 +289,12 @@ export class PtyManager extends EventEmitter {
       await SandboxManager.initialize(srtConfig);
       wrappedCommand = await SandboxManager.wrapWithSandbox(fullCommand);
     } catch (err) {
-      console.warn(`[terminal] Sandbox wrapping failed, falling back to unsandboxed: ${(err as Error).message}`);
-      // Fall back to unsandboxed
-      return this.create(config);
+      // Refuse to spawn rather than silently downgrading to unsandboxed —
+      // shell mode hands the caller a real PTY in the swarm's data dir, so a
+      // silent downgrade leaks full host access (filesystem + network). The
+      // caller decides whether to retry without sandbox if appropriate.
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Sandbox unavailable — refusing to spawn unsandboxed shell. ${message}`);
     }
 
     const id = nanoid();

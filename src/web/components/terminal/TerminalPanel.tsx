@@ -46,6 +46,9 @@ export interface SwarmTarget {
   endpoint: string;
 }
 
+/** What kind of session to launch against the swarm. */
+export type TerminalSessionMode = 'tui' | 'shell';
+
 interface TerminalPanelProps {
   /** If provided, attach to an existing session instead of creating one */
   sessionId?: string;
@@ -59,6 +62,8 @@ interface TerminalPanelProps {
   onSessionReady?: (session: TerminalSessionInfo) => void;
   /** Render mode: 'overlay' (floating modal) or 'embedded' (fills parent) */
   mode?: 'overlay' | 'embedded';
+  /** Session kind: 'tui' (OpenSwarm TUI, default) or 'shell' ($SHELL in cwd). */
+  sessionMode?: TerminalSessionMode;
 }
 
 // =============================================================================
@@ -89,6 +94,7 @@ export function TerminalPanel({
   onClose,
   onSessionReady,
   mode = 'overlay',
+  sessionMode = 'tui',
 }: TerminalPanelProps) {
   // Derive WS base URL from current location
   const wsBase = useMemo(() => {
@@ -111,6 +117,8 @@ export function TerminalPanel({
   swarmRef.current = swarm;
   const existingSessionIdRef = useRef(existingSessionId);
   existingSessionIdRef.current = existingSessionId;
+  const sessionModeRef = useRef(sessionMode);
+  sessionModeRef.current = sessionMode;
 
   // Connection version counter: incremented on every connect/cleanup so stale
   // async connect() calls (e.g. from React Strict Mode double-fire) bail out.
@@ -145,6 +153,7 @@ export function TerminalPanel({
     // Read from stable refs
     const currentSwarm = swarmRef.current;
     const currentExistingSessionId = existingSessionIdRef.current;
+    const currentSessionMode = sessionModeRef.current;
 
     // Close previous WebSocket but keep session ID for reconnect
     const previousSessionId = activeSessionIdRef.current;
@@ -214,33 +223,47 @@ export function TerminalPanel({
       console.debug('[terminal] attaching to existing session: %s', attachSessionId);
       params.set('sessionId', attachSessionId);
     } else if (currentSwarm) {
-      // Fetch TUI binary info from the server
-      console.debug('[terminal] fetching terminal-info for swarm: %s', currentSwarm.swarmId);
+      // Fetch session config from the server. The server resolves the binary
+      // / shell path and any sandbox/cwd config; the client just forwards.
+      console.debug(
+        '[terminal] fetching terminal-info for swarm: %s (mode=%s)',
+        currentSwarm.swarmId,
+        currentSessionMode,
+      );
       try {
         const info = await api.get<{
+          mode: 'tui' | 'shell';
           available: boolean;
-          command: string;
+          command: string | null;
           args: string[];
+          cwd?: string;
+          sandbox?: boolean;
           endpoint: string;
-        }>(`/map/hosted/${currentSwarm.swarmId}/terminal-info`);
+        }>(`/map/hosted/${currentSwarm.swarmId}/terminal-info?mode=${currentSessionMode}`);
 
         if (stale()) { term.dispose(); return; }
 
         console.debug('[terminal] terminal-info response:', info);
 
-        if (!info.available) {
+        if (!info.available || !info.command) {
           setStatus('error');
-          setErrorMsg('OpenSwarm TUI binary not available on this server');
+          setErrorMsg(
+            currentSessionMode === 'shell'
+              ? 'Shell mode unavailable for this swarm'
+              : 'OpenSwarm TUI binary not available on this server',
+          );
           return;
         }
 
         params.set('command', info.command);
         params.set('args', JSON.stringify(info.args));
+        if (info.cwd) params.set('cwd', info.cwd);
+        if (info.sandbox) params.set('sandbox', '1');
       } catch (err) {
         if (stale()) { term.dispose(); return; }
         console.error('[terminal] terminal-info fetch failed:', err);
         setStatus('error');
-        setErrorMsg(`Failed to resolve TUI: ${(err as Error).message}`);
+        setErrorMsg(`Failed to resolve session: ${(err as Error).message}`);
         return;
       }
     } else {

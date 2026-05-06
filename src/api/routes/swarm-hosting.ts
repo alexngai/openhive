@@ -15,6 +15,7 @@
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import path from 'node:path';
 import { z } from 'zod';
 import { authMiddleware } from '../middleware/auth.js';
 import { SwarmHostingError } from '../../swarm/manager.js';
@@ -96,7 +97,7 @@ function handleSwarmError(error: unknown, reply: FastifyReply): FastifyReply {
 
 export async function swarmHostingRoutes(
   fastify: FastifyInstance,
-  _opts: { config: Config }
+  opts: { config: Config }
 ): Promise<void> {
   // Helper to get the SwarmManager from the fastify instance
   function getManager(request: FastifyRequest): SwarmManager {
@@ -356,43 +357,92 @@ export async function swarmHostingRoutes(
     }
   });
 
-  // GET /map/hosted/:id/terminal-info — Get terminal command for connecting TUI to a swarm
-  fastify.get<{ Params: { id: string } }>('/map/hosted/:id/terminal-info', {
-    preHandler: [authMiddleware],
-  }, async (request, reply) => {
-    const hosted = dal.findHostedSwarmById(request.params.id);
-    if (!hosted) {
-      return reply.status(404).send({ error: 'NOT_FOUND', message: 'Hosted swarm not found' });
-    }
-    if (hosted.state !== 'running') {
-      return reply.status(409).send({ error: 'NOT_RUNNING', message: 'Swarm is not running' });
-    }
+  // GET /map/hosted/:id/terminal-info — Resolve the terminal session config
+  // for a hosted swarm. Two modes:
+  //   ?mode=tui   (default) — OpenSwarm TUI tunneled into the browser PTY
+  //   ?mode=shell           — User's $SHELL in the swarm's data dir, sandboxed
+  fastify.get<{ Params: { id: string }; Querystring: { mode?: string } }>(
+    '/map/hosted/:id/terminal-info',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const hosted = dal.findHostedSwarmById(request.params.id);
+      if (!hosted) {
+        return reply.status(404).send({ error: 'NOT_FOUND', message: 'Hosted swarm not found' });
+      }
+      if (hosted.state !== 'running') {
+        return reply.status(409).send({ error: 'NOT_RUNNING', message: 'Swarm is not running' });
+      }
 
-    const baseEndpoint = hosted.endpoint || `ws://127.0.0.1:${hosted.assigned_port}`;
-    // The TUI connects to /map for the MAP protocol. It internally derives /acp from /map.
-    // The stored endpoint often omits the path, so ensure it's present.
-    const mapEndpoint = baseEndpoint.endsWith('/map') ? baseEndpoint : `${baseEndpoint}/map`;
+      const mode = request.query.mode === 'shell' ? 'shell' : 'tui';
 
-    try {
-      const { resolveOpenSwarmTuiBinary } = await import('../../terminal/resolve-tui.js');
-      const binaryPath = resolveOpenSwarmTuiBinary();
+      // Point the TUI at openhive's own MAP hub, not the hosted swarm's
+      // assigned port. The openswarm `serve` gateway exposes /health, /metrics,
+      // /api/stats — it has no MAP WebSocket bound to assigned_port. MAP traffic
+      // for hosted swarms flows inbound to this hub via the sidecar pattern, so
+      // the TUI must dial the hub to see anything useful.
+      //
+      // Use 127.0.0.1 because the PTY runs on this host. `config.host` is the
+      // bind address ("0.0.0.0" by default) and isn't a usable connect target.
+      const hubMapEndpoint = `ws://127.0.0.1:${opts.config.port}/ws/map`;
 
-      console.log('[terminal-info] swarm=%s endpoint=%s binary=%s', request.params.id, mapEndpoint, binaryPath ?? 'NOT_FOUND');
+      // Shell mode: drop the user into their $SHELL inside the swarm's data
+      // dir. Sandboxed by default — the PTY ends up with full host access
+      // otherwise. data_dir is stored as written by manager.ts (path.join, no
+      // resolve) so it can be relative; absolute-ize here so the sandbox
+      // allow_write list and the PTY cwd match the directory on disk.
+      if (mode === 'shell') {
+        const shell = process.env.SHELL || '/bin/bash';
+        const rawDataDir = hosted.config?.data_dir;
+        if (!rawDataDir) {
+          return reply.status(409).send({
+            error: 'NO_CWD',
+            message: 'Hosted swarm has no resolved data_dir for shell mode.',
+          });
+        }
+        const cwd = path.resolve(rawDataDir);
+        console.log('[terminal-info] swarm=%s mode=shell shell=%s cwd=%s', request.params.id, shell, cwd);
+        return reply.send({
+          mode: 'shell',
+          available: true,
+          command: shell,
+          args: [],
+          cwd,
+          sandbox: true,
+          endpoint: hubMapEndpoint,
+        });
+      }
 
-      return reply.send({
-        available: !!binaryPath,
-        command: binaryPath,
-        args: binaryPath ? ['--url', mapEndpoint, '--auto-connect'] : [],
-        endpoint: mapEndpoint,
-      });
-    } catch (err) {
-      console.warn('[terminal-info] resolve failed for swarm=%s:', request.params.id, err);
-      return reply.send({
-        available: false,
-        command: null,
-        args: [],
-        endpoint: mapEndpoint,
-      });
-    }
-  });
+      // TUI mode (default).
+      try {
+        const { resolveOpenSwarmTuiBinary } = await import('../../terminal/resolve-tui.js');
+        const binaryPath = resolveOpenSwarmTuiBinary();
+
+        console.log(
+          '[terminal-info] swarm=%s mode=tui hub=%s binary=%s',
+          request.params.id,
+          hubMapEndpoint,
+          binaryPath ?? 'NOT_FOUND',
+        );
+
+        return reply.send({
+          mode: 'tui',
+          available: !!binaryPath,
+          command: binaryPath,
+          args: binaryPath ? ['--url', hubMapEndpoint, '--auto-connect'] : [],
+          sandbox: false,
+          endpoint: hubMapEndpoint,
+        });
+      } catch (err) {
+        console.warn('[terminal-info] resolve failed for swarm=%s:', request.params.id, err);
+        return reply.send({
+          mode: 'tui',
+          available: false,
+          command: null,
+          args: [],
+          sandbox: false,
+          endpoint: hubMapEndpoint,
+        });
+      }
+    },
+  );
 }

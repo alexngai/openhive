@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { AlertTriangle } from 'lucide-react';
 import { api } from '../lib/api';
 import { PageLoader } from '../components/common/LoadingSpinner';
-import { TerminalPanel } from '../components/terminal/TerminalPanel';
+import { TerminalPanel, type TerminalSessionMode } from '../components/terminal/TerminalPanel';
 import type { HostedSwarm } from '../lib/api';
 
 export function Terminal() {
   const { swarmId } = useParams<{ swarmId: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const sessionMode: TerminalSessionMode = searchParams.get('mode') === 'shell' ? 'shell' : 'tui';
   const [swarm, setSwarm] = useState<HostedSwarm | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +59,7 @@ export function Terminal() {
   return (
     <TerminalPanel
       mode="embedded"
+      sessionMode={sessionMode}
       swarm={{
         swarmId: swarm.id,
         swarmName: swarm.name,
