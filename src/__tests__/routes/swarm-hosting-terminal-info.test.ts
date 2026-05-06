@@ -83,7 +83,7 @@ async function makeApp(
 function makeRunningSwarm(opts: {
   spawnedBy: string;
   dataDir?: string;
-}): hostedDal.HostedSwarm {
+}) {
   const config = opts.dataDir
     ? {
         name: 't',

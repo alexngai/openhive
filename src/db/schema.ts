@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 49;
+export const SCHEMA_VERSION = 50;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -994,6 +994,15 @@ ALTER TABLE dispatches ADD COLUMN loadout_ref TEXT;
 ALTER TABLE dispatches ADD COLUMN loadout_status TEXT
   CHECK (loadout_status IS NULL OR loadout_status IN ('materialized', 'failed'));
 ALTER TABLE dispatches ADD COLUMN loadout_error TEXT;
+`;
+
+// Migration V50: Hosted swarm kind — generalize the spawn pipeline beyond
+// OpenSwarm. Existing rows default to 'openswarm' so the current behavior is
+// preserved. New kinds (claude-code, future codex/gemini) carry different
+// spawn-plan resolvers. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+export const MIGRATION_V50_HOSTED_SWARM_KIND = `
+ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'openswarm'
+  CHECK (kind IN ('openswarm', 'claude-code'));
 `;
 
 export const MIGRATION_V45_DISPATCH_LINKED_TASKS = `

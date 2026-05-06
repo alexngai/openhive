@@ -116,6 +116,83 @@ describe('LocalProvider', () => {
         })
       ).rejects.toThrow(/exited immediately/);
     });
+
+    it('honors spawn_command_override + spawn_args_override (replaces openswarm command)', async () => {
+      // Constructor default points at sleep-server; the override should
+      // instead spawn env-dump.js. env-dump only writes env.json when it
+      // actually runs, so file existence proves the override path took.
+      // Args replace (not append) — env-dump receives no --port flag, so
+      // its server never starts; we only care that the env capture runs.
+      provider = new LocalProvider(`node ${SLEEP_SCRIPT}`);
+      const dataDir = path.join(TEST_DATA_DIR, 'override-test');
+      fs.mkdirSync(dataDir, { recursive: true });
+      const dumpPath = path.join(dataDir, 'env.json');
+      const prevDump = process.env.MACRO_TEST_ENV_DUMP;
+      process.env.MACRO_TEST_ENV_DUMP = dumpPath;
+      try {
+        const result = await provider.provision({
+          name: 'override-test',
+          adapter: '',
+          bootstrap_token: 'dGVzdA==',
+          assigned_port: 19004,
+          data_dir: dataDir,
+          spawn_command_override: 'node',
+          spawn_args_override: [ENV_DUMP_SCRIPT],
+        });
+
+        // Wait briefly for env-dump to write the file.
+        const deadline = Date.now() + 2000;
+        while (Date.now() < deadline) {
+          if (fs.existsSync(dumpPath)) break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+
+        expect(fs.existsSync(dumpPath)).toBe(true);
+        expect(result.state).toBe('running');
+        await provider.deprovision(result.instance_id);
+      } finally {
+        if (prevDump === undefined) delete process.env.MACRO_TEST_ENV_DUMP;
+        else process.env.MACRO_TEST_ENV_DUMP = prevDump;
+      }
+    }, 10000);
+
+    it('falls back to openswarm command when override is unset', async () => {
+      // Pure regression guard: omitting the override fields keeps the
+      // existing behavior. We use env-dump as the openswarm command (so
+      // env.json appears unconditionally) and verify the provision call
+      // succeeds + env was captured.
+      provider = new LocalProvider(`node ${ENV_DUMP_SCRIPT}`);
+      const dataDir = path.join(TEST_DATA_DIR, 'no-override-test');
+      fs.mkdirSync(dataDir, { recursive: true });
+      const dumpPath = path.join(dataDir, 'env.json');
+      const prevDump = process.env.MACRO_TEST_ENV_DUMP;
+      process.env.MACRO_TEST_ENV_DUMP = dumpPath;
+      try {
+        const result = await provider.provision({
+          name: 'no-override-test',
+          adapter: '',
+          bootstrap_token: 'dGVzdA==',
+          assigned_port: 19005,
+          data_dir: dataDir,
+          // No override fields set.
+        });
+
+        const deadline = Date.now() + 2000;
+        while (Date.now() < deadline) {
+          if (fs.existsSync(dumpPath)) break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+
+        expect(fs.existsSync(dumpPath)).toBe(true);
+        // Endpoint reflects the openswarm-shaped --port arg the provider
+        // appended when no override was set.
+        expect(result.endpoint).toBe('ws://127.0.0.1:19005');
+        await provider.deprovision(result.instance_id);
+      } finally {
+        if (prevDump === undefined) delete process.env.MACRO_TEST_ENV_DUMP;
+        else process.env.MACRO_TEST_ENV_DUMP = prevDump;
+      }
+    }, 10000);
   });
 
   describe('getStatus', () => {

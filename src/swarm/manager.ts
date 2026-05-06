@@ -21,6 +21,14 @@ import { LocalProvider } from './providers/local.js';
 import { SandboxedLocalProvider } from './providers/sandboxed-local.js';
 import { resolveCredentialOverlay } from './credentials.js';
 import { findResourceById, subscribeToResource } from '../db/dal/syncable-resources.js';
+import { resolveClaudeBinary } from './claude-binary.js';
+import { buildClaudeSwarmConfig, writeClaudeSwarmConfig } from './claude-code-config.js';
+import { getInbound } from '../map/connection-registry.js';
+// Type-only import — PtyManager is provided at runtime via setPtyManager(),
+// not loaded here. This preserves the dynamic-import gating in server.ts
+// (PtyManager only loads when swarmHosting.enabled = true and node-pty is
+// available).
+import type { PtyManager } from '../terminal/pty-manager.js';
 import type {
   SpawnSwarmInput,
   SwarmProvisionConfig,
@@ -45,6 +53,14 @@ export class SwarmManager {
   private restartCounts = new Map<string, number>();
   /** Reverse mapping: hosted swarm DB ID → provider instance ID */
   private hostedToInstanceId = new Map<string, string>();
+
+  // claude-code spawns route through PtyManager (not LocalProvider) because
+  // `claude` is an interactive TUI and crashes without a real TTY. The
+  // PtyManager instance is provided after construction via setPtyManager()
+  // — see server.ts for wiring.
+  private ptyManager: PtyManager | null = null;
+  private claudeCodeSessions = new Map<string, string>();  // hostedSwarmId → ptySessionId
+  private claudeExitHandler: ((event: { sessionId: string; exitCode: number; signal?: number }) => void) | null = null;
 
   constructor(config: SwarmHostingConfig, instanceUrl: string) {
     this.config = config;
@@ -89,6 +105,102 @@ export class SwarmManager {
    */
   setInstanceUrl(instanceUrl: string): void {
     this.instanceUrl = instanceUrl;
+  }
+
+  /**
+   * Inject the PtyManager instance used to spawn claude-code TUIs.
+   * server.ts calls this after both managers are created and PtyManager has
+   * loaded (gated on `swarmHosting.enabled` + node-pty availability).
+   *
+   * Idempotent: replacing the manager rewires the exit listener to the new
+   * instance. Safe to call multiple times during startup or test setup.
+   */
+  setPtyManager(ptyManager: PtyManager): void {
+    if (this.ptyManager && this.claudeExitHandler) {
+      this.ptyManager.removeListener('session.exit', this.claudeExitHandler);
+    }
+    this.ptyManager = ptyManager;
+    this.claudeExitHandler = (event) => this.handleClaudePtyExit(event);
+    ptyManager.on('session.exit', this.claudeExitHandler);
+  }
+
+  /**
+   * Handle PTY exit for claude-code rows. Mirrors handleProcessExit() but
+   * for the PtyManager-managed claude TUIs (LocalProvider's exit handler
+   * doesn't fire for these). Exit code 0 → 'stopped' (user typed `/exit`
+   * or operator stopped); non-zero → 'failed'. Auto-restart is intentionally
+   * NOT applied here (interactive TUIs aren't meant to auto-restart).
+   */
+  private handleClaudePtyExit(event: { sessionId: string; exitCode: number; signal?: number }): void {
+    let owningHostedId: string | null = null;
+    for (const [hostedId, ptySid] of this.claudeCodeSessions) {
+      if (ptySid === event.sessionId) {
+        owningHostedId = hostedId;
+        break;
+      }
+    }
+    if (!owningHostedId) return;  // not one of our claude-code sessions
+
+    this.claudeCodeSessions.delete(owningHostedId);
+    const isClean = event.exitCode === 0;
+    dal.updateHostedSwarm(owningHostedId, {
+      state: isClean ? 'stopped' : 'failed',
+      error: isClean ? null : `claude exited with code ${event.exitCode}${event.signal ? ` (signal ${event.signal})` : ''}`,
+    });
+    broadcastToChannel('map:discovery', {
+      type: isClean ? 'swarm_stopped' : 'swarm_offline',
+      data: { hosted_swarm_id: owningHostedId },
+    });
+    console.log(
+      `[swarm-manager] claude-code session exited: hosted=${owningHostedId} code=${event.exitCode} signal=${event.signal ?? 'none'}`,
+    );
+  }
+
+  /**
+   * stop() branch for claude-code rows. Destroys the PtyManager session;
+   * handleClaudePtyExit observes the exit and updates the row to `stopped`.
+   * Returns the row in its final state.
+   *
+   * Lifecycle subtlety: PtyManager.destroy() sends SIGHUP synchronously and
+   * marks its internal state stopped, but the actual process may take a
+   * tick (or ignore the signal) before its onExit fires. We mark the row
+   * 'stopped' unconditionally after destroy — the user's intent is clear,
+   * and the exit handler running later just becomes a no-op (the
+   * claudeCodeSessions entry is already gone).
+   */
+  private async stopClaudeCode(hosted: HostedSwarm): Promise<HostedSwarm> {
+    dal.updateHostedSwarm(hosted.id, { state: 'stopping' });
+
+    const ptySessionId = this.claudeCodeSessions.get(hosted.id);
+    if (this.ptyManager && ptySessionId) {
+      // Remove from the tracking map BEFORE destroy. If the exit listener
+      // fires from destroy(), it'll find no entry and silently no-op.
+      // We own the state transition here.
+      this.claudeCodeSessions.delete(hosted.id);
+      try {
+        this.ptyManager.destroy(ptySessionId);
+      } catch (err) {
+        console.warn(`[swarm-manager] PTY destroy failed for ${hosted.id}: ${(err as Error).message}`);
+      }
+    }
+
+    dal.updateHostedSwarm(hosted.id, { state: 'stopped', error: null });
+
+    // MAP swarm row → offline (preserves swarm_id for any future linkage).
+    if (hosted.swarm_id) {
+      try {
+        mapDal.updateSwarm(hosted.swarm_id, { status: 'offline' });
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    this.restartCounts.delete(hosted.id);
+    broadcastToChannel('map:discovery', {
+      type: 'swarm_stopped',
+      data: { hosted_swarm_id: hosted.id },
+    });
+    return dal.findHostedSwarmById(hosted.id)!;
   }
 
   /**
@@ -155,7 +267,310 @@ export class SwarmManager {
    * 6. Wait for health, then register in the MAP hub
    * 7. Update the DB record with the swarm_id
    */
+  /**
+   * Public entry point. Dispatches to the per-kind spawn pipeline. Existing
+   * callers that don't pass kind get the openswarm pipeline (preserves the
+   * pre-V50 contract). See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+   */
   async spawn(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
+    const kind = input.kind ?? 'openswarm';
+    if (kind === 'claude-code') {
+      return this.spawnClaudeCode(agentId, input);
+    }
+    return this.spawnOpenswarm(agentId, input);
+  }
+
+  /**
+   * claude-code kind: spawn the `claude` TUI. cc-swarm is a Claude Code
+   * plugin (must be installed on the host); its `SessionStart` hook reads
+   * the prelaunch `.swarm/claude-swarm/config.json` we write into the
+   * swarm's data_dir, detaches the MAP sidecar internally, and the sidecar
+   * registers with the openhive hub. We wait for that registration to
+   * flip the row to `running`.
+   *
+   * Differences from spawnOpenswarm:
+   *   - No port allocation (claude binds nothing)
+   *   - Slim onboard token (no BootstrapToken envelope; cc-swarm reads
+   *     `map.auth.credential` from the prelaunch config directly)
+   *   - Placeholder endpoint `internal:cc:<hostedSwarmId>` since there's
+   *     no inbound MAP server URL on this swarm
+   *   - Wait pattern is `getInbound(swarmId)` rather than HTTP `/health`
+   *
+   * See docs/HOSTED_SWARM_KINDS_DESIGN.md and the milestone-A plan for the
+   * design rationale.
+   */
+  private async spawnClaudeCode(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
+    const name = input.name ?? uniqueNamesGenerator({
+      dictionaries: [adjectives, colors, animals],
+      separator: '-',
+      length: 3,
+    });
+
+    // Phase 1: max-swarms validation (shared semantics with openswarm path).
+    const activeCount = dal.countActiveHostedSwarms();
+    if (activeCount >= this.config.max_swarms) {
+      throw new SwarmHostingError(
+        'MAX_SWARMS_REACHED',
+        `Maximum of ${this.config.max_swarms} hosted swarms reached (${activeCount} active)`,
+      );
+    }
+
+    const providerType = input.provider ?? this.config.default_provider;
+    const provider = this.providers.get(providerType);
+    if (!provider) {
+      throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', `Hosting provider "${providerType}" is not configured`);
+    }
+
+    // Phase 2: skip port allocation — claude-code doesn't bind a server.
+
+    // Phase 3: id + data_dir.
+    const hostedSwarmId = dal.generateHostedSwarmId();
+    const dataDir = path.join(this.config.data_dir, `swarm-${hostedSwarmId}`);
+
+    // Phase 4: hive validation.
+    if (input.hive) {
+      const { findHiveByName } = await import('../db/dal/hives.js');
+      const hive = findHiveByName(input.hive);
+      if (!hive) {
+        throw new SwarmHostingError('HIVE_NOT_FOUND', `Hive "${input.hive}" not found`);
+      }
+    }
+
+    // Phase 5: injected resources NOT YET SUPPORTED for claude-code v1.
+    if (input.inject_resources && input.inject_resources.length > 0) {
+      console.warn(
+        `[swarm-manager] inject_resources is not yet supported for kind=claude-code (ignoring)`,
+      );
+    }
+
+    // Phase 6: resolve the claude binary BEFORE we touch state, so a missing
+    // binary fails fast with a clear error rather than after a half-spawned
+    // row exists.
+    const claudeBinary = resolveClaudeBinary();
+    if (!claudeBinary) {
+      throw new SwarmHostingError(
+        'SPAWN_FAILED',
+        'claude binary not found. Install Claude Code (https://docs.anthropic.com/claude-code) and ensure `claude` is on PATH.',
+      );
+    }
+
+    // Phase 7: MAP pre-registration. We use a placeholder endpoint —
+    // there's no inbound MAP server on this swarm; the sidecar dials OUT
+    // to openhive's hub. The endpoint is just a stable identity tag.
+    let preRegisteredSwarmId: string;
+    try {
+      const placeholder = `internal:cc:${hostedSwarmId}`;
+      const stale = mapDal.findSwarmByEndpoint(placeholder);
+      if (stale) mapDal.deleteSwarm(stale.id);
+      const mapResult = registerSwarm(agentId, {
+        name,
+        description: input.description,
+        map_endpoint: placeholder,
+        map_transport: 'websocket',
+        capabilities: {
+          observation: true,
+          messaging: true,
+          lifecycle: true,
+        },
+        metadata: {
+          ...(input.metadata ?? {}),
+          hosted: true,
+          hosted_swarm_id: hostedSwarmId,
+          provider: providerType,
+          kind: 'claude-code',
+        },
+      });
+      preRegisteredSwarmId = mapResult.swarm.id;
+      console.log(`[swarm-manager] Pre-registered claude-code swarm with stable ID: ${preRegisteredSwarmId}`);
+    } catch (err) {
+      throw new SwarmHostingError(
+        'SPAWN_FAILED',
+        `MAP pre-registration failed: ${(err as Error).message}`,
+      );
+    }
+
+    // Phase 8: mint slim onboard token. No BootstrapToken envelope — cc-swarm
+    // reads the credential directly from the prelaunch config file.
+    let onboardToken: string;
+    try {
+      const delegated = delegateForSpawn({
+        parentAgentId: agentId,
+        parentScopes: ['map:*'],
+        childAgentId: preRegisteredSwarmId,
+        requestedScopes: ['map:*'],
+        ttlMinutes: 24 * 60,
+        childDelegatable: true,
+      });
+      onboardToken = delegated.credentials.token;
+    } catch (err) {
+      throw new SwarmHostingError(
+        'ONBOARD_TOKEN_FAILED',
+        `Failed to mint onboard token: ${(err as Error).message}`,
+      );
+    }
+
+    // Phase 9: build the prelaunch config (in-memory; written after row creation).
+    // Hub URL: openhive listens on /ws/map; the sidecar dials this from the
+    // same host as openhive (PTY runs server-side).
+    const mapServer = this.instanceUrl.replace(/^http/, 'ws').replace(/\/?$/, '/ws/map');
+    const claudeSwarmConfig = buildClaudeSwarmConfig({
+      mapServer,
+      scope: hostedSwarmId,
+      systemId: preRegisteredSwarmId,
+      credential: onboardToken,
+    });
+
+    // Phase 10: build provision config. Most fields are openswarm-meaningful
+    // and have no analog for claude-code; we set them to defensible empties.
+    const inheritEnv = this.config.credentials?.inherit_env !== false;
+    const credentialOverlay = resolveCredentialOverlay(
+      this.config.credentials,
+      input.hive,
+      input.credential_overrides,
+    );
+
+    const provisionConfig: SwarmProvisionConfig = {
+      name,
+      adapter: 'claude-code',
+      adapter_config: input.adapter_config,
+      bootstrap_token: '', // unused for claude-code
+      assigned_port: 0, // unused; provider doesn't append --port when override is set
+      data_dir: dataDir,
+      resolved_credentials: credentialOverlay,
+      inherit_env: inheritEnv,
+      workspace: input.workspace,
+      bootstrap: input.bootstrap,
+      // Force the provider to spawn `claude` with no extra args. cc-swarm's
+      // plugin handles bootstrap from the SessionStart hook.
+      spawn_command_override: claudeBinary,
+      spawn_args_override: [],
+    };
+
+    // Phase 11: persist the row (now that all preconditions have passed).
+    const hosted = dal.createHostedSwarm({
+      id: hostedSwarmId,
+      kind: 'claude-code',
+      provider: providerType,
+      assigned_port: undefined, // null on the row
+      bootstrap_token_hash: createHash('sha256').update(onboardToken).digest('hex'),
+      config: provisionConfig,
+      spawned_by: agentId,
+    });
+
+    dal.updateHostedSwarm(hosted.id, { state: 'starting', swarm_id: preRegisteredSwarmId });
+
+    try {
+      // Phase 12: write the prelaunch config so cc-swarm's SessionStart hook
+      // finds it when the spawned `claude` boots.
+      fs.mkdirSync(dataDir, { recursive: true });
+      writeClaudeSwarmConfig(dataDir, claudeSwarmConfig);
+
+      // Phase 13: spawn `claude` via PtyManager. claude-code is an
+      // interactive TUI and crashes immediately under `child_process.spawn`
+      // (no TTY) — so we deliberately bypass LocalProvider here and use
+      // node-pty via PtyManager. As a bonus, this lines up with the
+      // milestone-B plan: the embedded terminal will eventually attach to
+      // this same PTY session via terminal-info's `attach-to-process`
+      // binding mode (HOSTED_SWARM_KINDS_DESIGN.md §4).
+      if (!this.ptyManager) {
+        throw new SwarmHostingError(
+          'SPAWN_FAILED',
+          'PtyManager is not configured. SwarmManager.setPtyManager() must be called during server bootstrap before spawning kind=claude-code.',
+        );
+      }
+
+      // Build the env for the spawned claude. Mirrors LocalProvider's env
+      // hygiene: inherit operator env, layer credentials, strip Claude
+      // Code self-detection markers so the spawned `claude` doesn't refuse
+      // to start ("cannot launch inside another Claude Code session").
+      const env: Record<string, string> = {};
+      if (inheritEnv) Object.assign(env, process.env as Record<string, string>);
+      if (credentialOverlay) Object.assign(env, credentialOverlay);
+      // cc-swarm requires this in older Claude Code versions; current
+      // Claude Code accepts it as a no-op. Setting unconditionally is safe
+      // and matches cc-swarm's settings.json convention.
+      env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+      // Strip self-detection so the spawned claude doesn't refuse:
+      delete env.CLAUDECODE;
+      delete env.CLAUDE_CODE_ENTRYPOINT;
+      delete env.CLAUDE_CODE_EXECPATH;
+
+      const ptyInfo = this.ptyManager.create({
+        command: claudeBinary,
+        args: [],
+        cwd: dataDir,
+        env,
+        cols: 120,
+        rows: 40,
+      });
+      this.claudeCodeSessions.set(hosted.id, ptyInfo.id);
+
+      dal.updateHostedSwarm(hosted.id, { pid: ptyInfo.pid });
+
+      // Phase 14: wait for cc-swarm's sidecar to register inbound.
+      const ready = await this.waitForSidecarRegistration(preRegisteredSwarmId, 15000);
+      if (!ready) {
+        dal.updateHostedSwarm(hosted.id, {
+          state: 'unhealthy',
+          error:
+            'cc-swarm sidecar did not register within 15s. Is the claude-code-swarm plugin installed (`claude plugin add`)?',
+        });
+        console.warn(`[swarm-manager] claude-code swarm ${hosted.id} sidecar registration timed out`);
+        return dal.findHostedSwarmById(hosted.id)!;
+      }
+
+      dal.updateHostedSwarm(hosted.id, { state: 'running', error: null });
+
+      // Phase 15: broadcast (same shape openswarm uses).
+      broadcastToChannel('map:discovery', {
+        type: 'swarm_spawned',
+        data: {
+          hosted_swarm_id: hosted.id,
+          name,
+          provider: providerType,
+          kind: 'claude-code',
+          swarm_id: preRegisteredSwarmId,
+        },
+      });
+
+      return dal.findHostedSwarmById(hosted.id)!;
+    } catch (err) {
+      dal.updateHostedSwarm(hosted.id, {
+        state: 'failed',
+        error: `claude-code spawn failed: ${(err as Error).message}`,
+      });
+      throw new SwarmHostingError(
+        'SPAWN_FAILED',
+        `claude-code spawn failed: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Polls the inbound connection registry for the cc-swarm sidecar's
+   * registration against the pre-registered swarm id. Returns true when
+   * the sidecar shows up; false on timeout. Polling rather than event-
+   * driven because the registration path is several layers deep
+   * (WS upgrade → MAP server → connection-registry) and an event hook
+   * would be its own refactor — for v1 a 250ms poll with a 15s deadline
+   * is fine.
+   */
+  private async waitForSidecarRegistration(swarmId: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (getInbound(swarmId)) return true;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return false;
+  }
+
+  /**
+   * openswarm kind (existing behavior, unchanged). Was named `spawn()` before
+   * the kind-dispatcher was added; renamed for clarity. All openswarm-specific
+   * logic — bootstrap-token envelopes, port allocation, MAP pre-registration
+   * with `ws://127.0.0.1:<port>` shape — lives here.
+   */
+  private async spawnOpenswarm(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
     // Generate a name if none provided
     const name = input.name ?? uniqueNamesGenerator({
       dictionaries: [adjectives, colors, animals],
@@ -497,6 +912,12 @@ export class SwarmManager {
     }
     if (hosted.spawned_by !== agentId) {
       throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
+    }
+
+    // claude-code rows live in PtyManager, not LocalProvider. Destroy the
+    // PTY; the exit handler (handleClaudePtyExit) flips the row state.
+    if (hosted.kind === 'claude-code') {
+      return this.stopClaudeCode(hosted);
     }
 
     const provider = this.providers.get(hosted.provider);
@@ -1391,7 +1812,8 @@ export type SwarmHostingErrorCode =
   | 'NOT_FOUND'
   | 'NOT_OWNER'
   | 'RESTART_NOT_SUPPORTED'
-  | 'RESTART_FAILED';
+  | 'RESTART_FAILED'
+  | 'NOT_IMPLEMENTED';
 
 export class SwarmHostingError extends Error {
   code: SwarmHostingErrorCode;

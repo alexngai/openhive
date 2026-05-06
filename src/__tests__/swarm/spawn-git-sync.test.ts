@@ -22,6 +22,16 @@ const MANAGER_PATH = path.resolve(__dirname, '../../swarm/manager.ts');
 
 describe('SwarmManager.spawn git_sync wire', () => {
   const source = fs.readFileSync(MANAGER_PATH, 'utf-8');
+  // git_sync only applies to the openswarm spawn path (claude-code skips
+  // it for v1 — see HOSTED_SWARM_KINDS_DESIGN.md). Anchor every assertion
+  // on the spawnOpenswarm function so adding new spawn paths doesn't
+  // perturb these checks.
+  const openswarmStart = source.indexOf('private async spawnOpenswarm(agentId');
+  const openswarmSource = openswarmStart >= 0 ? source.slice(openswarmStart) : '';
+
+  it('has a spawnOpenswarm function (dispatcher seam)', () => {
+    expect(openswarmStart).toBeGreaterThan(-1);
+  });
 
   it('imports applyGitSyncConfig from the swarmkit helper', () => {
     expect(source).toMatch(
@@ -29,21 +39,20 @@ describe('SwarmManager.spawn git_sync wire', () => {
     );
   });
 
-  it('calls applyGitSyncConfig(dataDir, input.git_sync) inside spawn()', () => {
-    expect(source).toMatch(/applyGitSyncConfig\(dataDir,\s*input\.git_sync\)/);
+  it('calls applyGitSyncConfig(dataDir, input.git_sync) inside spawnOpenswarm()', () => {
+    expect(openswarmSource).toMatch(/applyGitSyncConfig\(dataDir,\s*input\.git_sync\)/);
   });
 
   it('gates the call on input.git_sync.enabled', () => {
-    // The guard must be in the same file, before the apply call.
-    const applyIdx = source.indexOf('applyGitSyncConfig(dataDir');
+    const applyIdx = openswarmSource.indexOf('applyGitSyncConfig(dataDir');
     expect(applyIdx).toBeGreaterThan(-1);
-    const prelude = source.slice(0, applyIdx);
+    const prelude = openswarmSource.slice(0, applyIdx);
     expect(prelude).toMatch(/input\.git_sync\?\.enabled/);
   });
 
   it('runs before provider.provision() so the config lands before the subprocess boots', () => {
-    const applyIdx = source.indexOf('applyGitSyncConfig(dataDir');
-    const provisionIdx = source.indexOf('provider.provision(provisionConfig');
+    const applyIdx = openswarmSource.indexOf('applyGitSyncConfig(dataDir');
+    const provisionIdx = openswarmSource.indexOf('provider.provision(provisionConfig');
     expect(applyIdx).toBeGreaterThan(-1);
     expect(provisionIdx).toBeGreaterThan(-1);
     expect(applyIdx).toBeLessThan(provisionIdx);

@@ -45,6 +45,9 @@ const BootstrapSchema = z.object({
 });
 
 const SpawnSwarmSchema = z.object({
+  // Defaults to 'openswarm' to preserve the existing API contract for clients
+  // that don't pass kind. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+  kind: z.enum(['openswarm', 'claude-code']).optional().default('openswarm'),
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
   adapter: z.string().max(100).optional(),
@@ -75,6 +78,7 @@ function handleSwarmError(error: unknown, reply: FastifyReply): FastifyReply {
       NOT_OWNER: 403,
       RESTART_NOT_SUPPORTED: 400,
       RESTART_FAILED: 500,
+      NOT_IMPLEMENTED: 501,
     };
     return reply.status(statusMap[error.code] || 500).send({
       error: error.code,

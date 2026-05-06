@@ -8,6 +8,7 @@ import { nanoid } from 'nanoid';
 import { getDatabase } from '../db/index.js';
 import type {
   HostedSwarm,
+  HostedSwarmKind,
   HostedSwarmState,
   HostingProviderType,
   SwarmProvisionConfig,
@@ -41,6 +42,8 @@ function serializeConfig(config: SwarmProvisionConfig): string {
 export interface CreateHostedSwarmInput {
   provider: HostingProviderType;
   spawned_by: string;
+  /** Defaults to 'openswarm' so existing callers keep working unchanged. */
+  kind?: HostedSwarmKind;
   assigned_port?: number;
   bootstrap_token_hash?: string;
   config?: SwarmProvisionConfig;
@@ -55,12 +58,14 @@ export interface CreateHostedSwarmInput {
 export function createHostedSwarm(input: CreateHostedSwarmInput): HostedSwarm {
   const db = getDatabase();
   const id = input.id ?? generateHostedSwarmId();
+  const kind: HostedSwarmKind = input.kind ?? 'openswarm';
 
   db.prepare(`
-    INSERT INTO hosted_swarms (id, provider, state, assigned_port, bootstrap_token_hash, config, spawned_by)
-    VALUES (?, ?, 'provisioning', ?, ?, ?, ?)
+    INSERT INTO hosted_swarms (id, kind, provider, state, assigned_port, bootstrap_token_hash, config, spawned_by)
+    VALUES (?, ?, ?, 'provisioning', ?, ?, ?, ?)
   `).run(
     id,
+    kind,
     input.provider,
     input.assigned_port ?? null,
     input.bootstrap_token_hash ?? null,

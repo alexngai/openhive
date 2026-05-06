@@ -489,6 +489,18 @@ export async function createHive(
     // Attach to fastify instance so routes can access it
     (fastify as unknown as { swarmManager: SwarmManager }).swarmManager =
       swarmManager;
+
+    // Wire PtyManager into SwarmManager so kind=claude-code spawns can use
+    // it. PtyManager was created earlier in the bootstrap if available; if
+    // it isn't (terminal disabled, node-pty not installed), claude-code
+    // spawns will fail with a clear "PtyManager not configured" error.
+    const ptyManager = (
+      fastify as unknown as { ptyManager?: import('./terminal/pty-manager.js').PtyManager }
+    ).ptyManager;
+    if (ptyManager) {
+      swarmManager.setPtyManager(ptyManager);
+    }
+
     console.log("[openhive] Swarm hosting enabled");
   }
 

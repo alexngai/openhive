@@ -113,6 +113,13 @@ export interface SwarmBootstrap {
 
 /** What the caller provides when requesting a swarm spawn */
 export interface SpawnSwarmInput {
+  /**
+   * What kind of agent process to spawn. Defaults to 'openswarm' (existing
+   * behavior). When set to 'claude-code', the manager routes to a separate
+   * spawn pipeline that launches the Claude Code TUI alongside cc-swarm's
+   * plugin-managed sidecar. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+   */
+  kind?: HostedSwarmKind;
   /** Human-readable name for the swarm (auto-generated if omitted) */
   name?: string;
   /** Optional description */
@@ -176,6 +183,21 @@ export interface SwarmProvisionConfig {
   workspace?: WorkspaceConfig;
   /** Boot-time agent provisioning (env-var bridged into the runtime) */
   bootstrap?: SwarmBootstrap;
+  /**
+   * When set, the provider spawns this command instead of its kind-default
+   * (e.g. the local provider's `openswarm_command`). Used by non-openswarm
+   * kinds (`claude-code`, future codex/gemini) to point the provider at the
+   * right binary without making the provider itself kind-aware.
+   *
+   * The override is taken verbatim — provider does NOT append default args.
+   */
+  spawn_command_override?: string;
+  /**
+   * Args to pair with `spawn_command_override`. When the override is set
+   * these REPLACE the provider's default args (not append). When the
+   * override is unset, this field is ignored.
+   */
+  spawn_args_override?: string[];
 }
 
 // ============================================================================
@@ -240,8 +262,19 @@ export interface HostingProvider {
 // Hosted Swarm Record (DB)
 // ============================================================================
 
+/**
+ * What flavour of agent process this hosted swarm is. Drives the spawn-plan
+ * resolver — see docs/HOSTED_SWARM_KINDS_DESIGN.md. New rows must specify a
+ * kind; legacy rows default to 'openswarm' on read.
+ */
+export type HostedSwarmKind =
+  | 'openswarm'    // OpenSwarm hosting gateway (current default)
+  | 'claude-code'; // claude TUI + cc-swarm plugin sidecar
+
 export interface HostedSwarm {
   id: string;
+  /** What kind of agent process this is. */
+  kind: HostedSwarmKind;
   /** References map_swarms.id — NULL until the swarm registers with the hub */
   swarm_id: string | null;
   /** Which provider is managing this instance */
