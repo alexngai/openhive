@@ -127,9 +127,13 @@ export type LifecyclePolicy =
 
 ### 3. Provider changes
 
-`local.ts` grows the ability to spawn N sibling processes per hosted-swarm record (currently 1). Tracks all PIDs; lifecycle sweep checks all of them; stop sends SIGTERM to all in reverse order (TUI first, sidecar second). Existing single-process behavior is just `processes.length === 1`.
+**Status update — 2026-05-06:** Initial design proposed multi-process spawning through `LocalProvider`. Actual implementation diverges: claude-code spawns route through `PtyManager` directly (see `src/swarm/manager.ts` — `spawnClaudeCode` and `setPtyManager`), NOT through `LocalProvider.provision()`. 
 
-This is the part that touches the most existing code. The DB schema for the hosted-swarms row stays a single row — the per-process state is in-memory in the provider. We don't need a `hosted_processes` child table for v1.
+Reason discovered during PR 4 live-test: `claude` is an interactive TUI and crashes under `child_process.spawn` (no TTY). `PtyManager` wraps node-pty and gives it a real TTY, so the PTY is long-lived and can be attached to by the embedded terminal. OpenHive's existing `LocalProvider` continues to handle OpenSwarm spawning unchanged; `PtyManager` is the separate path for claude-code only.
+
+Downstream consequence: `instanceToHostedId` and `hostedToInstanceId` mappings are NOT populated for claude-code rows, so anything that goes through `getInstanceId()` is a no-op for claude-code. This includes `getLogs`, `restart`, `reviveHostedSwarms` — those need explicit kind branches.
+
+The DB schema for the hosted-swarms row stays a single row. Per-process state is in-memory in the manager. We don't need a `hosted_processes` child table for v1.
 
 ### 4. Terminal binding
 
@@ -159,17 +163,18 @@ export type TerminalBindingHint =
 Concretely:
 
 ```
-claude (started by OpenHive in PTY, cwd = swarm's data_dir)
-  └─ Claude Code plugin runtime fires SessionStart
-     └─ scripts/bootstrap.mjs reads .swarm/claude-swarm/config.json (project-local)
-        └─ spawn-detach scripts/map-sidecar.mjs
-           └─ MAP sidecar registers as <teamName>-sidecar with the hub
+PtyManager.create() ← OpenHive spawns claude in a PTY with node-pty
+  └─ claude TUI (started with cwd = swarm's data_dir)
+     └─ Claude Code plugin runtime fires SessionStart
+        └─ scripts/bootstrap.mjs reads .swarm/claude-swarm/config.json (project-local)
+           └─ spawn-detach scripts/map-sidecar.mjs
+              └─ MAP sidecar registers as <teamName>-sidecar with the hub
 ```
 
-This means the spawn plan for `claude-code` is **one process, not two**, plus one prelaunch file:
+**Status update — 2026-05-06:** The spawn process for claude-code routes through `PtyManager` directly (`src/swarm/manager.ts:spawnClaudeCode` → `ptyManager.create()`), NOT through `LocalProvider.provision()`. The PTY is long-lived and can be attached to by the embedded terminal. This is a **one process** spawn (just the claude TUI) plus one prelaunch file:
 
-- **The process**: `claude` itself, in the swarm's `data_dir`, with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in env (cc-swarm requires it).
-- **The prelaunch file**: `.swarm/claude-swarm/config.json` under `data_dir`, written by OpenHive before `claude` starts, containing the hub MAP URL, scope, system id, and bootstrap credential. cc-swarm's bootstrap reads it without any user-global config touch.
+- **The process**: `claude` itself, spawned via `PtyManager.create()` in the swarm's `data_dir`, with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in env (cc-swarm requires it).
+- **The prelaunch file**: `.swarm/claude-swarm/config.json` under `data_dir`, written by OpenHive before `claude` starts, containing the hub MAP URL, scope, system id, and bootstrap token. cc-swarm's bootstrap reads it without any user-global config touch.
 
 Example `prelaunch` content:
 
@@ -180,12 +185,15 @@ Example `prelaunch` content:
     "server": "ws://127.0.0.1:<hub-port>/ws/map",
     "scope": "<hosted-swarm-id>",
     "systemId": "<hosted-swarm-id>",
-    "auth": { "credential": "<bootstrap-credential>" }
+    "swarmId": "<hosted-swarm-id>",
+    "auth": { "token": "<bootstrap-credential>" }
   },
   "sessionlog": { "enabled": true, "sync": "metrics" },
   "opentasks": { "enabled": false }
 }
 ```
+
+**Status update — 2026-05-06:** Deviation captured in actual implementation (`src/swarm/claude-code-config.ts:71-76`). The design showed `auth.credential`; the implementation uses `auth.token` (not `auth.credential`) and adds a `swarmId` field at the map level. Reason: cc-swarm's `buildServerUrl` skips appending `?swarm_id=...` to the WS URL when `credential` is set (it assumes verified-mode identity comes from the credential). Open-mode openhive *needs* the swarm_id query param so the inbound MAP registration keys against our pre-registered swarm id. Setting `credential` would break registration matching. The `swarmId` field pins cc-swarm's URL-side identity hint to our pre-registered swarm id.
 
 (Template / mesh / inbox config can be added later. The minimum for "spawn and register" is `map.server` + auth.)
 
@@ -308,6 +316,8 @@ Two remaining unknowns we settle by writing code, not by debating:
 - Spawn dialog re-shaping per kind (use a hardcoded button "Spawn Claude Code" alongside the existing OpenSwarm flow).
 - Autonomous-dispatch turn injection.
 - Lifecycle-state polish for clean `/exit` (treat any non-zero or operator-stop as the only outcomes for now).
+
+**Status update — 2026-05-06:** Restart and revive for claude-code are **not implemented** as of milestone-B. Both `restart()` and `reviveHostedSwarms()` would need to go through `PtyManager`, which can't be called from the standard provider.provision() path. New PRs will fix this; documented below under "Lifecycle gaps."
 
 **Scope of the spike:**
 

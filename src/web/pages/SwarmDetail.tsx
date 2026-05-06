@@ -455,9 +455,13 @@ function TerminalSection({ hosted }: { hosted: HostedSwarm }) {
           <Terminal className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">Open TUI</div>
+          <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">
+            {hosted.kind === 'claude-code' ? 'Open Claude Code' : 'Open TUI'}
+          </div>
           <div className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-            OpenSwarm TUI tunneled through this hub.
+            {hosted.kind === 'claude-code'
+              ? 'Attach to the running Claude Code TUI.'
+              : 'OpenSwarm TUI tunneled through this hub.'}
           </div>
         </div>
         <ChevronRight

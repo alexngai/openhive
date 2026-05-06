@@ -99,3 +99,83 @@ export function writeClaudeSwarmConfig(dataDir: string, config: ClaudeSwarmConfi
   fs.writeFileSync(filePath, JSON.stringify(config, null, 2), 'utf8');
   return filePath;
 }
+
+/**
+ * Pre-trust a working directory in Claude Code's user config (`~/.claude.json`).
+ *
+ * Without this, the freshly-created data_dir hits Claude Code's "Trust this
+ * folder?" security prompt on first launch, which blocks SessionStart from
+ * firing. cc-swarm's plugin hooks only run after SessionStart, so the sidecar
+ * never registers and the spawn lands at `unhealthy`. Pre-trusting the dir
+ * does what the user clicking "Yes, I trust" would do — Claude Code stores
+ * trusted directories in `projects.<path>.hasTrustDialogAccepted`.
+ *
+ * Idempotent: skips the rewrite if already trusted. Tolerant of missing or
+ * malformed config (no-op + warn, NOT a hard fail — the spawn proceeds and
+ * the user can dismiss the prompt manually if needed).
+ *
+ * Returns true if the dir is now trusted (either already, or just written).
+ */
+export function preTrustClaudeWorkdir(workdir: string, homeDir: string): boolean {
+  // Claude canonicalizes the cwd via realpath before checking trust, so on
+  // macOS where `/tmp` → `/private/tmp` (and `/var` → `/private/var`) the
+  // unresolved path won't match. Resolve symlinks here so the entry we
+  // write matches what claude looks up.
+  let resolvedWorkdir = workdir;
+  try { resolvedWorkdir = fs.realpathSync(workdir); } catch { /* dir may not exist yet — fall back to as-given */ }
+
+  const claudeConfigPath = path.join(homeDir, '.claude.json');
+  let raw: string;
+  try {
+    raw = fs.readFileSync(claudeConfigPath, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      // No claude.json — likely Claude Code has never run. Skip silently;
+      // claude will create the file on first launch (and prompt for trust).
+      return false;
+    }
+    console.warn(`[claude-code] could not read ${claudeConfigPath}: ${(err as Error).message}`);
+    return false;
+  }
+
+  let parsed: { projects?: Record<string, { hasTrustDialogAccepted?: boolean } & Record<string, unknown>> } & Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.warn(`[claude-code] ${claudeConfigPath} is not valid JSON: ${(err as Error).message}`);
+    return false;
+  }
+
+  const projects = parsed.projects ?? {};
+  const existing = projects[resolvedWorkdir];
+  if (existing?.hasTrustDialogAccepted === true) return true;
+
+  // Mirror the shape claude itself writes when the user clicks Yes.
+  projects[resolvedWorkdir] = {
+    ...(existing ?? {}),
+    allowedTools: (existing?.allowedTools as unknown) ?? [],
+    mcpContextUris: (existing?.mcpContextUris as unknown) ?? [],
+    mcpServers: (existing?.mcpServers as unknown) ?? {},
+    enabledMcpjsonServers: (existing?.enabledMcpjsonServers as unknown) ?? [],
+    disabledMcpjsonServers: (existing?.disabledMcpjsonServers as unknown) ?? [],
+    hasTrustDialogAccepted: true,
+    projectOnboardingSeenCount: (existing?.projectOnboardingSeenCount as unknown) ?? 0,
+    hasClaudeMdExternalIncludesApproved: (existing?.hasClaudeMdExternalIncludesApproved as unknown) ?? false,
+    hasClaudeMdExternalIncludesWarningShown: (existing?.hasClaudeMdExternalIncludesWarningShown as unknown) ?? false,
+  };
+  parsed.projects = projects;
+
+  // Atomic write: temp + rename so a crash mid-write doesn't truncate the
+  // user's claude config. The temp file lands in the same dir so rename is
+  // atomic (same filesystem).
+  const tmp = claudeConfigPath + '.openhive.tmp';
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(parsed, null, 2), 'utf8');
+    fs.renameSync(tmp, claudeConfigPath);
+    return true;
+  } catch (err) {
+    console.warn(`[claude-code] could not pre-trust ${resolvedWorkdir} in ${claudeConfigPath}: ${(err as Error).message}`);
+    try { fs.unlinkSync(tmp); } catch { /* may not exist */ }
+    return false;
+  }
+}

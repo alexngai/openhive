@@ -103,13 +103,19 @@ No UI. No embedded terminal attach. No SIGTERM-on-stop UX polish. Just **the spa
       "server": "ws://127.0.0.1:<openhive-port>/ws/map",
       "scope": "<hostedSwarmId>",
       "systemId": "<preRegisteredSwarmId>",
-      "auth": { "credential": "<onboardToken>" }
+      "swarmId": "<preRegisteredSwarmId>",
+      "auth": { "token": "<onboardToken>" }
     },
     "sessionlog": { "enabled": true, "sync": "metrics" },
     "opentasks": { "enabled": false }
   }
   ```
-- **(11) Provider.provision()** with `SwarmProvisionConfig` carrying `spawn_command_override = '/path/to/claude'`, `spawn_args_override = []`, `data_dir`, `inherit_env: true`. Resolve `claude` via a new `resolveClaudeBinary()` helper (mirrors `resolveOpenSwarmTuiBinary` from terminal/)
+
+  **Status update — 2026-05-06:** Shipped with `auth.token` (not `auth.credential`) and added `swarmId` field. See HOSTED_SWARM_KINDS_DESIGN.md Deviation 1 for reasoning.
+
+- **(11) PtyManager spawn** (NOT Provider.provision()): Resolve `claude` via `resolveClaudeBinary()` helper; call `ptyManager.create({ command: 'claude', args: [], cwd: dataDir, env })` directly to get a long-lived PTY handle. The PTY is registered in `claudeCodeSessions` keyed by `hostedSwarmId` for terminal attach.
+
+  **Status update — 2026-05-06:** Deviation from design: claude-code spawns route through `PtyManager`, NOT `LocalProvider.provision()`, because `claude` is an interactive TUI and crashes without a real TTY. See HOSTED_SWARM_KINDS_DESIGN.md Deviation 2 for full context.
 - **(12) Wait for cc-swarm sidecar registration** — listen for inbound MAP registration with `swarm_id === preRegisteredSwarmId`; resolve when it arrives, reject after 15s. Use existing `mapHubEvents` if available; fall back to polling `findSwarmByEndpoint` or similar
 - **(13) Update DB** state to `'running'`; broadcast event; return row
 
@@ -144,7 +150,7 @@ These are 30-min spikes per the refactor plan; commit answers as comments in cod
 
 - **SIGTERM the cc-swarm sidecar PID file** on stop/exit — without this, the sidecar lingers ~30 min on cc-swarm's idle timer. Functionally fine, UX-confusing. (Refactor plan §6, §7.)
 - **Skip HTTP health monitor for claude-code** — without this, the monitor probes a non-existent `port+1/health` and may falsely mark rows unhealthy. (Refactor plan §8.) Mandatory before the kind is usable in steady-state, but not blocking the milestone-A demo.
-- **Cold-restart only** for claude-code in `restart()`. (Refactor plan §9.)
+- **Restart and revive for claude-code** — both `restart()` and `reviveHostedSwarms()` are **not implemented** for claude-code. Hot-restart doesn't apply (bootstrap is config file + plugin hook chain). Cold-restart would require `PtyManager` routing, which doesn't fit the provider.provision() path. New PRs will add kind-branching to these methods.
 - **UI kind picker** in the spawn dialog. PR 7.
 - **Terminal-info attach mode** + WS attach-by-processId. PR 8.
 - **Live e2e UI test** (spawn from UI → embedded terminal → /exit cleanly). PR 9.

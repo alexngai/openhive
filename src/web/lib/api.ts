@@ -168,6 +168,8 @@ export interface HostedSwarm {
    * runtime fallback cwd for any spawn call that doesn't specify one.
    */
   data_dir?: string;
+  /** Kind of hosted swarm. Defaults to 'openswarm' when absent. */
+  kind?: 'openswarm' | 'claude-code';
 }
 
 export interface MapRegisteredAgent {

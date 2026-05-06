@@ -51,6 +51,7 @@ import { Dialog } from "../components/common/Dialog";
 import { TimeAgo } from "../components/common/TimeAgo";
 import {
   HostedStateBadge,
+  KindBadge,
   MapStatusBadge,
   SandboxBadge,
   SectionLabel,
@@ -1222,6 +1223,7 @@ function HostedSwarmCard({
             </span>
             <HostedStateBadge state={swarm.state} />
             {mapStatus && <MapStatusBadge status={mapStatus} />}
+            <KindBadge kind={swarm.kind} />
             <span
               className="text-2xs px-1.5 py-0.5 rounded"
               style={{

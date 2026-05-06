@@ -22,7 +22,8 @@ import { SandboxedLocalProvider } from './providers/sandboxed-local.js';
 import { resolveCredentialOverlay } from './credentials.js';
 import { findResourceById, subscribeToResource } from '../db/dal/syncable-resources.js';
 import { resolveClaudeBinary } from './claude-binary.js';
-import { buildClaudeSwarmConfig, writeClaudeSwarmConfig } from './claude-code-config.js';
+import { buildClaudeSwarmConfig, writeClaudeSwarmConfig, preTrustClaudeWorkdir } from './claude-code-config.js';
+import * as os from 'os';
 import { getInbound } from '../map/connection-registry.js';
 // Type-only import — PtyManager is provided at runtime via setPtyManager(),
 // not loaded here. This preserves the dynamic-import gating in server.ts
@@ -160,10 +161,21 @@ export class SwarmManager {
     if (!owningHostedId) return;  // not one of our claude-code sessions
 
     this.claudeCodeSessions.delete(owningHostedId);
-    const isClean = event.exitCode === 0;
+    // A signal-kill is always a crash, even when node-pty reports exitCode=0
+    // (which it does for SIGKILL/SIGSEGV/etc on macOS+Linux — the OS sets the
+    // termination signal, not the exit code). Operator-driven stop() routes
+    // through stopClaudeCode which deletes the session-map entry BEFORE
+    // destroy(), so by the time this handler fires on that path, the
+    // owningHostedId lookup misses and we returned earlier — no risk of a
+    // legitimate stop landing here. Anything reaching this point with a
+    // non-zero signal was killed externally.
+    const wasSignalled = typeof event.signal === 'number' && event.signal > 0;
+    const isClean = !wasSignalled && event.exitCode === 0;
     dal.updateHostedSwarm(owningHostedId, {
       state: isClean ? 'stopped' : 'failed',
-      error: isClean ? null : `claude exited with code ${event.exitCode}${event.signal ? ` (signal ${event.signal})` : ''}`,
+      error: isClean
+        ? null
+        : `claude exited with code ${event.exitCode}${wasSignalled ? ` (signal ${event.signal})` : ''}`,
     });
 
     // Signal the cc-swarm sidecar (best-effort; missing PID file is fine).
@@ -291,6 +303,166 @@ export class SwarmManager {
       type: 'swarm_stopped',
       data: { hosted_swarm_id: hosted.id },
     });
+    return dal.findHostedSwarmById(hosted.id)!;
+  }
+
+  /**
+   * restart() branch for claude-code rows. Tear down the existing PTY +
+   * sidecar, re-mint a fresh onboard token (the previous one's TTL may have
+   * lapsed), re-write the prelaunch config, and spawn a new claude PTY
+   * against the SAME row (preserves hosted_swarm_id, swarm_id, data_dir).
+   *
+   * Note: this duplicates the boot phases of spawnClaudeCode rather than
+   * extracting a helper. The duplication is bounded (~80 lines) and clearer
+   * than threading a "fresh-vs-restart" flag through one method. Refactor
+   * to a shared `bootClaudeCodeProcess(hosted)` when the strategy-pattern
+   * pass lands (refactor plan §"Approach B preview").
+   */
+  private async restartClaudeCode(hosted: HostedSwarm): Promise<HostedSwarm> {
+    if (!hosted.swarm_id) {
+      throw new SwarmHostingError(
+        'RESTART_FAILED',
+        'claude-code row is missing swarm_id; cannot restart in place. Stop and spawn fresh.',
+      );
+    }
+    if (!hosted.config?.data_dir) {
+      throw new SwarmHostingError(
+        'RESTART_FAILED',
+        'claude-code row is missing data_dir; cannot restart in place. Stop and spawn fresh.',
+      );
+    }
+    if (!this.ptyManager) {
+      throw new SwarmHostingError(
+        'RESTART_NOT_SUPPORTED',
+        'PtyManager is not configured. Cannot restart claude-code rows without it.',
+      );
+    }
+
+    // Resolve the binary BEFORE touching state.
+    const claudeBinary = resolveClaudeBinary();
+    if (!claudeBinary) {
+      throw new SwarmHostingError(
+        'RESTART_FAILED',
+        'claude binary not found on PATH. Install Claude Code and retry.',
+      );
+    }
+
+    dal.updateHostedSwarm(hosted.id, { state: 'starting', error: null });
+
+    // 1. Tear down the existing PTY (if any) + sidecar.
+    const oldPtySid = this.claudeCodeSessions.get(hosted.id);
+    if (oldPtySid) {
+      this.claudeCodeSessions.delete(hosted.id);
+      try { this.ptyManager.destroy(oldPtySid); } catch { /* already gone */ }
+    }
+    this.signalClaudeCodeSidecar(hosted, 'SIGTERM');
+
+    // 2. Re-mint the onboard token. Restart may run after the original
+    // 24h TTL lapsed, so always rotate.
+    let onboardToken: string;
+    try {
+      const delegated = delegateForSpawn({
+        parentAgentId: hosted.spawned_by,
+        parentScopes: ['map:*'],
+        childAgentId: hosted.swarm_id,
+        requestedScopes: ['map:*'],
+        ttlMinutes: 24 * 60,
+        childDelegatable: true,
+      });
+      onboardToken = delegated.credentials.token;
+    } catch (err) {
+      dal.updateHostedSwarm(hosted.id, {
+        state: 'failed',
+        error: `Failed to mint onboard token: ${(err as Error).message}`,
+      });
+      throw new SwarmHostingError(
+        'ONBOARD_TOKEN_FAILED',
+        `Failed to mint onboard token: ${(err as Error).message}`,
+      );
+    }
+
+    // 3. Re-write the prelaunch config with the rotated token.
+    const dataDir = path.resolve(hosted.config.data_dir);
+    const mapServer = this.instanceUrl.replace(/^http/, 'ws').replace(/\/?$/, '/ws/map');
+    const claudeSwarmConfig = buildClaudeSwarmConfig({
+      mapServer,
+      scope: hosted.id,
+      systemId: hosted.swarm_id,
+      credential: onboardToken,
+    });
+    fs.mkdirSync(dataDir, { recursive: true });
+    writeClaudeSwarmConfig(dataDir, claudeSwarmConfig);
+    preTrustClaudeWorkdir(dataDir, os.homedir());
+
+    // 4. Build env (mirrors spawnClaudeCode).
+    const inheritEnv = this.config.credentials?.inherit_env !== false;
+    const env: Record<string, string> = {};
+    if (inheritEnv) Object.assign(env, process.env as Record<string, string>);
+    env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+    delete env.CLAUDECODE;
+    delete env.CLAUDE_CODE_ENTRYPOINT;
+    delete env.CLAUDE_CODE_EXECPATH;
+
+    // 5. Spawn the new PTY.
+    let ptyInfo;
+    try {
+      ptyInfo = this.ptyManager.create({
+        command: claudeBinary,
+        args: [],
+        cwd: dataDir,
+        env,
+        cols: 120,
+        rows: 40,
+      });
+    } catch (err) {
+      const msg = (err as Error).message;
+      dal.updateHostedSwarm(hosted.id, {
+        state: 'failed',
+        error: `Restart failed: ${msg}`,
+      });
+      if (msg.includes('Maximum number of terminal sessions')) {
+        throw new SwarmHostingError(
+          'MAX_SWARMS_REACHED',
+          'Cannot restart claude-code — the embedded terminal pool is full.',
+        );
+      }
+      throw new SwarmHostingError('RESTART_FAILED', `Restart failed: ${msg}`);
+    }
+    this.claudeCodeSessions.set(hosted.id, ptyInfo.id);
+    dal.updateHostedSwarm(hosted.id, { pid: ptyInfo.pid });
+
+    // 6. Wait for the (new) sidecar to register against our existing
+    // pre-registered swarm_id. Bring MAP swarm row back online if it was
+    // marked offline by a prior stop.
+    try {
+      mapDal.updateSwarm(hosted.swarm_id, { status: 'online' });
+    } catch { /* best-effort */ }
+
+    const ready = await this.waitForSidecarRegistration(hosted.swarm_id, 60000);
+    if (!ready) {
+      this.claudeCodeSessions.delete(hosted.id);
+      try { this.ptyManager.destroy(ptyInfo.id); } catch { /* gone */ }
+      this.signalClaudeCodeSidecar(hosted, 'SIGTERM');
+      dal.updateHostedSwarm(hosted.id, {
+        state: 'unhealthy',
+        error:
+          'Restart: cc-swarm sidecar did not register within 60s.',
+      });
+      return dal.findHostedSwarmById(hosted.id)!;
+    }
+
+    dal.updateHostedSwarm(hosted.id, { state: 'running', error: null });
+    broadcastToChannel('map:discovery', {
+      type: 'swarm_spawned',
+      data: {
+        hosted_swarm_id: hosted.id,
+        name: hosted.config?.name ?? hosted.id,
+        provider: hosted.provider,
+        kind: 'claude-code',
+        swarm_id: hosted.swarm_id,
+      },
+    });
+
     return dal.findHostedSwarmById(hosted.id)!;
   }
 
@@ -556,6 +728,13 @@ export class SwarmManager {
       fs.mkdirSync(dataDir, { recursive: true });
       writeClaudeSwarmConfig(dataDir, claudeSwarmConfig);
 
+      // Pre-trust the data_dir in the operator's ~/.claude.json so claude
+      // skips its "Trust this folder?" gate. Without this, the freshly-
+      // created data_dir blocks at the trust prompt and SessionStart never
+      // fires — sidecar registration would then time out. Best-effort:
+      // missing/invalid claude.json just means the user gets the prompt.
+      preTrustClaudeWorkdir(dataDir, os.homedir());
+
       // Phase 13: spawn `claude` via PtyManager. claude-code is an
       // interactive TUI and crashes immediately under `child_process.spawn`
       // (no TTY) — so we deliberately bypass LocalProvider here and use
@@ -586,25 +765,49 @@ export class SwarmManager {
       delete env.CLAUDE_CODE_ENTRYPOINT;
       delete env.CLAUDE_CODE_EXECPATH;
 
-      const ptyInfo = this.ptyManager.create({
-        command: claudeBinary,
-        args: [],
-        cwd: dataDir,
-        env,
-        cols: 120,
-        rows: 40,
-      });
+      let ptyInfo;
+      try {
+        ptyInfo = this.ptyManager.create({
+          command: claudeBinary,
+          args: [],
+          cwd: dataDir,
+          env,
+          cols: 120,
+          rows: 40,
+        });
+      } catch (err) {
+        // PtyManager throws "Maximum number of terminal sessions (N) reached"
+        // when its global pool is full. That pool is shared with operator
+        // shell tabs and other claude-code sessions — translate to a
+        // hosting-shaped error so the user sees something actionable.
+        const msg = (err as Error).message;
+        if (msg.includes('Maximum number of terminal sessions')) {
+          throw new SwarmHostingError(
+            'MAX_SWARMS_REACHED',
+            'Cannot spawn claude-code — the embedded terminal pool is full. Close some terminal tabs or stop other claude-code swarms and try again.',
+          );
+        }
+        throw err;
+      }
       this.claudeCodeSessions.set(hosted.id, ptyInfo.id);
 
       dal.updateHostedSwarm(hosted.id, { pid: ptyInfo.pid });
 
       // Phase 14: wait for cc-swarm's sidecar to register inbound.
-      const ready = await this.waitForSidecarRegistration(preRegisteredSwarmId, 15000);
+      const ready = await this.waitForSidecarRegistration(preRegisteredSwarmId, 60000);
       if (!ready) {
+        // Tear down the orphan PTY so the operator's view stays consistent.
+        // Without this, the row says 'unhealthy' but `claude` keeps running
+        // until the user finds and SIGKILLs it manually. signalClaudeCodeSidecar
+        // is also called best-effort in case the sidecar started but the
+        // registration never propagated.
+        this.claudeCodeSessions.delete(hosted.id);
+        try { this.ptyManager.destroy(ptyInfo.id); } catch { /* already gone */ }
+        this.signalClaudeCodeSidecar(hosted, 'SIGTERM');
         dal.updateHostedSwarm(hosted.id, {
           state: 'unhealthy',
           error:
-            'cc-swarm sidecar did not register within 15s. Is the claude-code-swarm plugin installed (`claude plugin add`)?',
+            'cc-swarm sidecar did not register within 60s. Is the claude-code-swarm plugin installed (`claude plugin add`)?',
         });
         console.warn(`[swarm-manager] claude-code swarm ${hosted.id} sidecar registration timed out`);
         return dal.findHostedSwarmById(hosted.id)!;
@@ -1083,6 +1286,15 @@ export class SwarmManager {
       throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
     }
 
+    // claude-code rows route through PtyManager, not LocalProvider — the
+    // openswarm restart machinery (port reuse, provider.restart, autoRestart)
+    // doesn't apply. Branch early to a dedicated cold-restart path that
+    // tears down the existing PTY/sidecar and re-boots `claude` against the
+    // SAME row (preserves hosted_swarm_id, swarm_id, data_dir).
+    if (hostedInitial.kind === 'claude-code') {
+      return this.restartClaudeCode(hostedInitial);
+    }
+
     // Heal orphaned swarm_id if a prior stop nulled it via the old FK cascade.
     // Repair is idempotent — if swarm_id is already set, this is a no-op.
     // Re-read after repair so downstream sees the healed row.
@@ -1210,6 +1422,14 @@ export class SwarmManager {
     }
     if (hosted.spawned_by !== agentId) {
       throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
+    }
+
+    // claude-code rows live in PtyManager. Output is streamed live to the
+    // embedded terminal via WS attach; PtyManager doesn't keep a scrollback
+    // buffer that we could replay here. Return a clear hint instead of the
+    // misleading "(no tracked instance)" the provider fallback emits.
+    if (hosted.kind === 'claude-code') {
+      return '(claude-code logs stream live in the embedded terminal — no scrollback buffer)';
     }
 
     const provider = this.providers.get(hosted.provider);
@@ -1366,6 +1586,29 @@ export class SwarmManager {
     let failed = 0;
 
     for (const hosted of active) {
+      // claude-code rows can't be revived: the PTY is gone (PtyManager
+      // was a per-process map), the sidecar exited with claude (or
+      // self-stopped on idle), and no auto-restart logic applies to
+      // interactive TUIs anyway. Mark them stopped with a clear error
+      // so the operator knows to spawn fresh; don't try to provision()
+      // through LocalProvider (which would crash without a TTY).
+      if (hosted.kind === 'claude-code') {
+        console.log(
+          `[swarm-manager] claude-code row ${hosted.id} cannot survive hub restart — marking stopped`,
+        );
+        dal.updateHostedSwarm(hosted.id, {
+          state: 'stopped',
+          error: 'claude-code session ended with hub restart; spawn fresh to resume',
+          pid: null,
+        });
+        if (hosted.swarm_id) {
+          try { mapDal.updateSwarm(hosted.swarm_id, { status: 'offline' }); } catch { /* best-effort */ }
+        }
+        // Best-effort sidecar cleanup in case it survived
+        this.signalClaudeCodeSidecar(hosted, 'SIGTERM');
+        continue;
+      }
+
       const pid = hosted.pid;
       const alive = pid ? isPidAlive(pid) : false;
 

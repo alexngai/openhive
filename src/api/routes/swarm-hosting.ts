@@ -44,21 +44,47 @@ const BootstrapSchema = z.object({
   cwd: z.string().max(2000).optional(),
 });
 
-const SpawnSwarmSchema = z.object({
-  // Defaults to 'openswarm' to preserve the existing API contract for clients
-  // that don't pass kind. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
-  kind: z.enum(['openswarm', 'claude-code']).optional().default('openswarm'),
-  name: z.string().min(1).max(100).optional(),
-  description: z.string().max(500).optional(),
-  adapter: z.string().max(100).optional(),
-  adapter_config: z.record(z.unknown()).optional(),
-  hive: z.string().max(100).optional(),
-  provider: z.enum(['local', 'local-sandboxed', 'docker', 'fly', 'ssh', 'k8s']).optional(),
-  metadata: z.record(z.unknown()).optional(),
-  credential_overrides: z.record(z.string(), z.string()).optional(),
-  workspace: WorkspaceSchema.optional(),
-  bootstrap: BootstrapSchema.optional(),
-});
+const SpawnSwarmSchema = z
+  .object({
+    // Defaults to 'openswarm' to preserve the existing API contract for clients
+    // that don't pass kind. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+    kind: z.enum(['openswarm', 'claude-code']).optional().default('openswarm'),
+    name: z.string().min(1).max(100).optional(),
+    description: z.string().max(500).optional(),
+    adapter: z.string().max(100).optional(),
+    adapter_config: z.record(z.unknown()).optional(),
+    hive: z.string().max(100).optional(),
+    provider: z.enum(['local', 'local-sandboxed', 'docker', 'fly', 'ssh', 'k8s']).optional(),
+    metadata: z.record(z.unknown()).optional(),
+    credential_overrides: z.record(z.string(), z.string()).optional(),
+    workspace: WorkspaceSchema.optional(),
+    bootstrap: BootstrapSchema.optional(),
+  })
+  .superRefine((data, ctx) => {
+    // Reject openswarm-specific fields when kind=claude-code so the user
+    // gets a clear error instead of silently dropped values. claude-code
+    // routes through PtyManager (no provider config, no adapter, no
+    // workspace cloning, no bootstrap-coordinator) — these fields are
+    // dead for that kind. Keep the schema permissive for openswarm.
+    if (data.kind !== 'claude-code') return;
+    const blocked: Array<[keyof typeof data, string]> = [
+      ['adapter', 'cc-swarm plugin handles agent setup; no adapter to pick'],
+      ['adapter_config', 'no adapter for claude-code'],
+      ['hive', 'hive-bound credentials are openswarm-specific'],
+      ['workspace', 'workspace repos are not yet wired for claude-code'],
+      ['bootstrap', 'macro-agent bootstrap-coordinator is openswarm-specific'],
+      ['credential_overrides', 'claude-code uses operator local creds; no overrides'],
+    ];
+    for (const [field, reason] of blocked) {
+      if (data[field] !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message: `kind=claude-code does not support "${field}": ${reason}`,
+        });
+      }
+    }
+  });
 
 // ============================================================================
 // Error Handler

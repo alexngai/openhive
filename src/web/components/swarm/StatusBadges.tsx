@@ -56,6 +56,15 @@ export function SandboxBadge() {
   );
 }
 
+export function KindBadge({ kind }: { kind?: 'openswarm' | 'claude-code' }) {
+  if (!kind || kind === 'openswarm') return null;
+  return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-2xs font-medium bg-violet-500/10 text-violet-400">
+      Claude Code
+    </span>
+  );
+}
+
 export function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <label className="block text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
