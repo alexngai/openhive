@@ -22,7 +22,12 @@ import { resolveLocalPath } from '../api/routes/_resource-helpers.js';
 import { daemonAppendTaskFiles, resolveDaemonSocket } from './task-daemon-client.js';
 import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
 import { broadcastToChannel } from '../realtime/index.js';
-import { updateSwarm, findNodeBySwarmAndAgentId } from '../db/dal/map.js';
+import { updateSwarm, findNodeBySwarmAndAgentId, ensureNodeWithId } from '../db/dal/map.js';
+import * as repos from '../db/dal/repos.js';
+import * as workspaces from '../db/dal/workspaces.js';
+import { getDatabase } from '../db/index.js';
+import { broadcastWorkspaceLifecycleEvent } from '../realtime/workspace-events.js';
+import { getAggregateCapabilities } from './connection-registry.js';
 import { mapHubEvents } from './service.js';
 import { fetchTranscriptFromSwarm } from './trajectory-content.js';
 import { isSessionStorageInitialized, getSessionStorage } from '../sessions/storage/index.js';
@@ -124,6 +129,27 @@ function handleCheckpoint(
     } catch { /* non-critical */ }
   }
 
+  // ── Repo bootstrap (capability-gated) ────────────────────────────────
+  // Capability-gated lazy upsert: agents that declared workspace.declare
+  // but never explicitly called RepoClient.declare still appear in the
+  // repo list once they start sending checkpoints. See
+  // `agent-workspace/docs/design/agent-integration.md` "Trajectory-
+  // bootstrap interaction" — and the Build-Order step 5 in
+  // `docs/design/repos-as-syncable-resources.md`.
+  // Fire-and-forget: never blocks checkpoint persistence.
+  if (gitRemoteUrl && projectPath) {
+    try {
+      bootstrapRepoFromCheckpoint({
+        swarmId,
+        agentId,
+        gitRemoteUrl,
+        projectPath,
+        branch: checkpoint.branch as string | undefined,
+        gitCommitHash,
+      });
+    } catch { /* non-critical — checkpoint succeeds regardless */ }
+  }
+
   // Emit for SwarmCraft bridge (after enrichment so projectPath is available)
   mapHubEvents.emit('trajectory_checkpoint', {
     session_resource_id: resourceId,
@@ -221,6 +247,75 @@ function handleCheckpoint(
     created,
     checkpoint_id: checkpointId,
   };
+}
+
+// ============================================================================
+// Repo Bootstrap (capability-gated)
+// ============================================================================
+
+interface BootstrapInput {
+  swarmId: string;
+  agentId: string;
+  gitRemoteUrl: string;
+  projectPath: string;
+  branch?: string;
+  gitCommitHash?: string;
+}
+
+/**
+ * Lazily upsert a repo + workspace binding from a trajectory checkpoint.
+ *
+ * Gated on `workspace.declare.enabled === true` in the connection's
+ * aggregated capabilities. Idempotent at every step: repeat checkpoints
+ * for the same (agent, repo, projectPath) just refresh branch/HEAD on
+ * the existing binding rather than creating duplicates.
+ *
+ * Owner-agent resolution mirrors `OpenHiveRepoHandler`: `map_swarms.
+ * owner_agent_id` is the source of truth for repo ownership; the
+ * connection's agentId can't own an `agents`-table-backed resource.
+ */
+function bootstrapRepoFromCheckpoint(input: BootstrapInput): void {
+  const { swarmId, agentId, gitRemoteUrl, projectPath, branch, gitCommitHash } = input;
+
+  // Capability check — aggregate across all registered agents on the swarm.
+  const caps = getAggregateCapabilities(swarmId) ?? {};
+  const ws = caps.workspace as { declare?: { enabled?: boolean } } | undefined;
+  if (ws?.declare?.enabled !== true) return;
+
+  // Resolve repo owner from the swarm record (same pattern as workspace-handler).
+  const db = getDatabase();
+  const ownerRow = db.prepare(
+    'SELECT owner_agent_id FROM map_swarms WHERE id = ?',
+  ).get(swarmId) as { owner_agent_id: string } | undefined;
+  if (!ownerRow) return; // swarm not in DB — nothing to attribute the repo to
+
+  // Upsert the repo. `trajectory_inferred` origin distinguishes from agents
+  // that explicitly call declare; future paths can prefer explicit declares.
+  const repo = repos.upsertRepoFromRemoteUrl(gitRemoteUrl, {
+    origin: 'trajectory_inferred',
+    visibility: 'hub_local',
+    owner_agent_id: ownerRow.owner_agent_id,
+  });
+
+  // Workspace FK requires a map_nodes row keyed on agentId.
+  ensureNodeWithId({ id: agentId, swarm_id: swarmId, map_agent_id: agentId });
+
+  // Upsert the per-agent binding. Branch + HEAD refresh on subsequent
+  // checkpoints for the same (agent, repo, path) triple.
+  const binding = workspaces.upsertWorkspace({
+    repo_id: repo.id,
+    agent_id: agentId,
+    swarm_id: swarmId,
+    local_path: projectPath,
+    visibility: 'hub_local',
+    ...(branch !== undefined && { current_branch: branch }),
+    ...(gitCommitHash !== undefined && { head_sha: gitCommitHash }),
+  });
+
+  broadcastWorkspaceLifecycleEvent(repo.id, {
+    type: 'workspace_added',
+    data: { workspace: binding },
+  });
 }
 
 // ============================================================================

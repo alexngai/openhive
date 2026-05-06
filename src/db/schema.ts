@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 50;
+export const SCHEMA_VERSION = 51;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -1077,6 +1077,20 @@ CREATE INDEX IF NOT EXISTS idx_workspaces_swarm         ON workspaces(swarm_id);
 
 -- 3. Per-swarm workspace policy (operator-set; JSON shape).
 ALTER TABLE map_swarms ADD COLUMN workspace_policy TEXT;
+`;
+
+// V51 — Resource lifecycle status column.
+// Adds `status` to `syncable_resources` for the new mesh-level lifecycle
+// events (`resource.redacted`, `.archived`, `.merged`) shipped by
+// agent-workspace's `RESOURCE_MESH_EVENTS`. See
+// docs/design/repos-as-syncable-resources.md slice 5b.
+//
+// SQLite ALTER TABLE ADD COLUMN doesn't support CHECK constraints, so
+// allowed values ('active' | 'redacted_remote' | 'archived' | 'merged_into')
+// are enforced by the materializer + DAL rather than the column.
+export const MIGRATION_V51_RESOURCE_STATUS = `
+ALTER TABLE syncable_resources ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_status ON syncable_resources(status);
 `;
 
 export const MIGRATION_V45_DISPATCH_LINKED_TASKS = `

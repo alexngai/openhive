@@ -43,6 +43,7 @@ import {
   MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE,
   MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
   MIGRATION_V50_REPOS_AND_WORKSPACES,
+  MIGRATION_V51_RESOURCE_STATUS,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -331,6 +332,9 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // local-only workspaces table, and adds map_swarms.workspace_policy JSON
   // column. See docs/design/repos-as-syncable-resources.md.
   50: MIGRATION_V50_REPOS_AND_WORKSPACES,
+  // Version 51: syncable_resources.status column for mesh-level lifecycle
+  // events (resource.redacted / .archived / .merged) per slice 5b.
+  51: MIGRATION_V51_RESOURCE_STATUS,
 };
 
 /** Get the SQL for a specific migration version.
@@ -416,6 +420,8 @@ function repairSchema(database: Database.Database): void {
     "CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence)",
     "ALTER TABLE agents ADD COLUMN capabilities TEXT",
     "ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0",
+    "ALTER TABLE syncable_resources ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+    "CREATE INDEX IF NOT EXISTS idx_syncable_resources_status ON syncable_resources(status)",
   ];
   for (const sql of repairs) {
     try {

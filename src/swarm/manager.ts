@@ -1439,7 +1439,8 @@ export type SwarmHostingErrorCode =
   | 'NOT_FOUND'
   | 'NOT_OWNER'
   | 'RESTART_NOT_SUPPORTED'
-  | 'RESTART_FAILED';
+  | 'RESTART_FAILED'
+  | 'REPO_NOT_FOUND';
 
 export class SwarmHostingError extends Error {
   code: SwarmHostingErrorCode;

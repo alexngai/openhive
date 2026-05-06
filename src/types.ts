@@ -134,6 +134,10 @@ export type WSEventType =
   | 'resource_unpublished'
   | 'resource_replicated'
   | 'resource_synced'
+  // Mesh-level lifecycle events (slice 5b — RESOURCE_MESH_EVENTS receivers)
+  | 'resource_redacted'
+  | 'resource_archived'
+  | 'resource_merged'
   // Coordination events
   | 'task_assigned'
   | 'task_status_updated'

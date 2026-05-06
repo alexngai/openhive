@@ -37,6 +37,7 @@ import type {
 
 import * as repos from '../db/dal/repos.js';
 import * as workspaces from '../db/dal/workspaces.js';
+import { ensureNodeWithId } from '../db/dal/map.js';
 import { getDatabase } from '../db/index.js';
 import { broadcastWorkspaceLifecycleEvent } from '../realtime/workspace-events.js';
 import type { Workspace } from '../types.js';
@@ -115,6 +116,17 @@ export class OpenHiveRepoHandler implements RepoProtocolHandler {
         origin: 'agent_declared',
         visibility: 'hub_local',
         owner_agent_id: this.resolveOwnerAgentId(ctx.swarmId),
+      });
+
+      // Ensure a map_nodes row exists for ctx.agentId before inserting the
+      // workspace binding (workspaces.agent_id REFERENCES map_nodes.id).
+      // The MAP-protocol agent.registered path doesn't currently project
+      // into map_nodes (only the explicit REST /map/nodes endpoint does),
+      // so without this defensive upsert any sidecar declare would FK-fail.
+      ensureNodeWithId({
+        id: ctx.agentId,
+        swarm_id: ctx.swarmId,
+        map_agent_id: ctx.agentId,
       });
 
       // Upsert the per-agent binding (idempotent on the (agent, repo, path)

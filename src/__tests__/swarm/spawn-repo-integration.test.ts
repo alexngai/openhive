@@ -56,7 +56,10 @@ class StubProvider implements HostingProvider {
   }
 
   async stop(_instanceId: string): Promise<void> {}
-  async restart(_instanceId: string): Promise<void> {}
+  async deprovision(_instanceId: string): Promise<void> {}
+  async restart(instanceId: string): Promise<ProvisionResult> {
+    return { instance_id: instanceId, state: 'running', pid: 12345, endpoint: '' };
+  }
   async getStatus(_instanceId: string): Promise<InstanceStatus> {
     return { state: 'running' };
   }

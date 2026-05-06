@@ -26,6 +26,9 @@ import type {
   ResourceUpdatedPayload,
   ResourceUnpublishedPayload,
   ResourceSyncedPayload,
+  ResourceRedactedPayload,
+  ResourceArchivedPayload,
+  ResourceMergedPayload,
   CoordinationMessagePayload,
   AgentSnapshot,
 } from './types.js';
@@ -93,6 +96,15 @@ export function materializeEvent(event: HiveEvent, _hiveId: string, _hiveName: s
       break;
     case 'resource_synced':
       materializeResourceSynced(event, payload as ResourceSyncedPayload);
+      break;
+    case 'resource_redacted':
+      materializeResourceRedacted(event, payload as ResourceRedactedPayload);
+      break;
+    case 'resource_archived':
+      materializeResourceArchived(event, payload as ResourceArchivedPayload);
+      break;
+    case 'resource_merged':
+      materializeResourceMerged(event, payload as ResourceMergedPayload);
       break;
     case 'coordination_message':
       materializeCoordinationMessage(event, payload as CoordinationMessagePayload);
@@ -349,4 +361,132 @@ export function processPendingQueue(syncGroupId: string, hiveId: string, hiveNam
   }
 
   return processed;
+}
+
+// ── Mesh Lifecycle Materializers (slice 5b) ────────────────────────────────
+
+/**
+ * Mark a resource as redacted from federation. Doesn't delete the row —
+ * peers retain it as a tombstone (with new_visibility recorded in
+ * metadata) so cross-mesh queries can filter rather than 404.
+ *
+ * Local workspace bindings are NOT touched: bindings are local state and
+ * a federation-tier change on the abstract repo doesn't invalidate
+ * already-attached working copies. The agent's own retract path is the
+ * right place for that.
+ */
+function materializeResourceRedacted(event: HiveEvent, payload: ResourceRedactedPayload): void {
+  const repo = getMaterializerRepo();
+  const resource = repo.findResourceByCanonicalUrl(payload.resource_type, payload.canonical_url);
+  if (!resource) {
+    syncLogger.info('resource_redacted for unknown resource — ignoring', {
+      resource_type: payload.resource_type,
+      canonical_url: payload.canonical_url,
+      origin: event.origin_instance_id,
+    });
+    return;
+  }
+
+  const meta = resource.metadata ? JSON.parse(resource.metadata) : {};
+  meta.visibility = payload.new_visibility;
+  meta.redacted_at = payload.redacted_at;
+  meta.redacted_by = payload.origin_hub_id;
+
+  repo.updateResourceStatus(resource.id, 'redacted_remote', JSON.stringify(meta));
+
+  broadcastToChannel(`resource:${resource.resource_type}:${resource.id}`, {
+    type: 'resource_redacted' as const,
+    data: {
+      resource_id: resource.id,
+      resource_type: resource.resource_type,
+      canonical_url: payload.canonical_url,
+      new_visibility: payload.new_visibility,
+      origin_hub_id: payload.origin_hub_id,
+    },
+  });
+
+  syncLogger.info('Materialized resource_redacted', {
+    resource_id: resource.id,
+    new_visibility: payload.new_visibility,
+  });
+}
+
+/**
+ * Mark a resource as archived. Resources are never hard-deleted — peers
+ * retain the row so links from other resources (cascade artifacts,
+ * dispatches, etc.) don't dangle.
+ */
+function materializeResourceArchived(_event: HiveEvent, payload: ResourceArchivedPayload): void {
+  const repo = getMaterializerRepo();
+  const resource = repo.findResourceByCanonicalUrl(payload.resource_type, payload.canonical_url);
+  if (!resource) {
+    syncLogger.info('resource_archived for unknown resource — ignoring', {
+      resource_type: payload.resource_type,
+      canonical_url: payload.canonical_url,
+    });
+    return;
+  }
+
+  const meta = resource.metadata ? JSON.parse(resource.metadata) : {};
+  meta.archived_at = payload.archived_at;
+  meta.archived_by = payload.origin_hub_id;
+
+  repo.updateResourceStatus(resource.id, 'archived', JSON.stringify(meta));
+
+  broadcastToChannel(`resource:${resource.resource_type}:${resource.id}`, {
+    type: 'resource_archived' as const,
+    data: {
+      resource_id: resource.id,
+      resource_type: resource.resource_type,
+      canonical_url: payload.canonical_url,
+      origin_hub_id: payload.origin_hub_id,
+    },
+  });
+
+  syncLogger.info('Materialized resource_archived', { resource_id: resource.id });
+}
+
+/**
+ * Mark a source resource as merged into a target. Stores the target
+ * canonical URL in metadata as a forwarding pointer; references to the
+ * source can transparently follow it. The source row stays as a
+ * tombstone — chains terminate because merges are write-once.
+ *
+ * Race resolution between conflicting merges from two hubs is the
+ * caller's responsibility (see `compareMergeEvents` in the package's
+ * `protocol/resource-events.ts`).
+ */
+function materializeResourceMerged(_event: HiveEvent, payload: ResourceMergedPayload): void {
+  const repo = getMaterializerRepo();
+  const source = repo.findResourceByCanonicalUrl(payload.resource_type, payload.source_canonical_url);
+  if (!source) {
+    syncLogger.info('resource_merged for unknown source — ignoring', {
+      resource_type: payload.resource_type,
+      source: payload.source_canonical_url,
+    });
+    return;
+  }
+
+  const meta = source.metadata ? JSON.parse(source.metadata) : {};
+  meta.merged_into_canonical_url = payload.target_canonical_url;
+  meta.merged_at = payload.merged_at;
+  meta.merged_by = payload.origin_hub_id;
+
+  repo.updateResourceStatus(source.id, 'merged_into', JSON.stringify(meta));
+
+  broadcastToChannel(`resource:${source.resource_type}:${source.id}`, {
+    type: 'resource_merged' as const,
+    data: {
+      resource_id: source.id,
+      resource_type: source.resource_type,
+      source_canonical_url: payload.source_canonical_url,
+      target_canonical_url: payload.target_canonical_url,
+      origin_hub_id: payload.origin_hub_id,
+    },
+  });
+
+  syncLogger.info('Materialized resource_merged', {
+    resource_id: source.id,
+    target: payload.target_canonical_url,
+  });
 }

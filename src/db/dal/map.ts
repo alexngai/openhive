@@ -424,6 +424,33 @@ export function createNode(input: RegisterNodeInput): MapNode {
   return findNodeById(id)!;
 }
 
+/**
+ * Idempotently ensure a `map_nodes` row exists with the given id. Used by
+ * paths (like the workspace handler) where `ctx.agentId` is treated as the
+ * projected node id but no prior REST-style `createNode` registered the
+ * row. Returns silently if a row already exists for this id.
+ *
+ * Uses `INSERT OR IGNORE` so concurrent callers don't race; the swarm FK
+ * still enforces that `swarm_id` is valid.
+ */
+export function ensureNodeWithId(input: {
+  id: string;
+  swarm_id: string;
+  map_agent_id?: string;
+  name?: string;
+}): void {
+  const db = getDatabase();
+  db.prepare(`
+    INSERT OR IGNORE INTO map_nodes (id, swarm_id, map_agent_id, name, state, presence)
+    VALUES (?, ?, ?, ?, 'registered', 'online')
+  `).run(
+    input.id,
+    input.swarm_id,
+    input.map_agent_id ?? input.id,
+    input.name ?? null,
+  );
+}
+
 export function findNodeById(id: string): MapNode | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM map_nodes WHERE id = ?').get(id) as Record<string, unknown> | undefined;
