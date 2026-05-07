@@ -82,6 +82,11 @@ export default function App() {
               <Route path="threads" element={<Sessions />} />
               <Route path="threads/:id" element={<Sessions />} />
               <Route path="threads/mail/:mailId" element={<Sessions />} />
+              {/* Programmatic-mode hosted swarms (codex-rpc today) live on
+                  the Threads page like sessions/mail. Sessions reads
+                  `hostedId` from params and renders <HostedChat /> in the
+                  detail pane — same chrome as SessionDetail/MailThreadView. */}
+              <Route path="threads/hosted-chat/:hostedId" element={<Sessions />} />
               <Route path="events" element={<Events />} />
               <Route path="terminal/:swarmId" element={<Terminal />} />
               {/* Redirects from legacy routes */}

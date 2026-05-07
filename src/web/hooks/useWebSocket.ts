@@ -241,6 +241,28 @@ export function useWebSocket() {
   };
 }
 
+/**
+ * Imperative channel subscribe — sends a `{type:'subscribe'}` message via
+ * the live socket and registers the channel in the store. Returns an
+ * unsubscribe function. Use from non-React contexts (e.g. service
+ * singletons) where `useSubscribe` doesn't fit. Refcounted just like
+ * `useSubscribe`, so it interleaves safely with hook-driven subscriptions.
+ */
+export function subscribeChannelImperatively(channel: string): () => void {
+  const store = useWSStore.getState();
+  store.addChannel(channel);
+  if (globalWs?.readyState === WebSocket.OPEN) {
+    globalWs.send(JSON.stringify({ type: 'subscribe', channels: [channel] }));
+  }
+  return () => {
+    useWSStore.getState().removeChannel(channel);
+    const { channelRefs } = useWSStore.getState();
+    if (!channelRefs.has(channel) && globalWs?.readyState === WebSocket.OPEN) {
+      globalWs.send(JSON.stringify({ type: 'unsubscribe', channels: [channel] }));
+    }
+  };
+}
+
 export function useSubscribe(channels: string[]) {
   const addChannel = useWSStore((s) => s.addChannel);
   const removeChannel = useWSStore((s) => s.removeChannel);

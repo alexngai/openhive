@@ -164,6 +164,12 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   // (claude TUI + cc-swarm plugin sidecar) and a much smaller config
   // surface than openswarm. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
   const [kind, setKind] = useState<'openswarm' | 'claude-code' | 'codex'>('openswarm');
+  // codex-only: which surface to spawn. 'rpc' (default) opens openhive's
+  // chat as the canonical driver; 'tui' attaches the embedded terminal
+  // to a real codex TUI process. The two modes operate on independent
+  // threads — see docs/HOSTED_SWARM_KINDS_DESIGN.md "codex — programmatic
+  // mode" for the why. Field is ignored when kind !== 'codex'.
+  const [codexMode, setCodexMode] = useState<'rpc' | 'tui'>('rpc');
   const [name, setName] = useState(() =>
     uniqueNamesGenerator({
       dictionaries: [adjectives, colors, animals],
@@ -281,6 +287,12 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
       const trimmedPrompt = ccInitialPrompt.trim();
 
       const isTuiKind = kind === 'claude-code' || kind === 'codex';
+      // mode is codex-only and the backend defaults to 'rpc' — emit it
+      // only when the user picked TUI explicitly so the wire stays clean
+      // for the common case.
+      const codexModeOverride = kind === 'codex' && codexMode === 'tui'
+        ? { mode: 'tui' as const }
+        : {};
       const payload =
         isTuiKind
           ? {
@@ -290,6 +302,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               provider: provider !== 'local' ? provider : undefined,
               workspace: ccWorkspace,
               initial_prompt: trimmedPrompt || undefined,
+              ...codexModeOverride,
             }
           : {
               kind,
@@ -394,6 +407,64 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               </button>
             </div>
           </div>
+
+          {/* Codex-only: choose between chat (RPC) and TUI mode. The two
+              modes spawn independent threads — see Deviation 6 in the
+              design doc. Default RPC matches the backend default. */}
+          {kind === 'codex' && (
+            <div>
+              <SectionLabel>Mode</SectionLabel>
+              <div
+                className="inline-flex p-0.5 rounded-md"
+                style={{ backgroundColor: 'var(--color-elevated)' }}
+                role="radiogroup"
+                aria-label="Codex mode"
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={codexMode === 'rpc'}
+                  onClick={() => setCodexMode('rpc')}
+                  className="px-3 py-1 rounded text-2xs font-medium transition-colors"
+                  style={{
+                    backgroundColor:
+                      codexMode === 'rpc' ? 'var(--color-bg)' : 'transparent',
+                    color:
+                      codexMode === 'rpc'
+                        ? 'var(--color-text-primary)'
+                        : 'var(--color-text-muted)',
+                  }}
+                >
+                  Chat (RPC)
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={codexMode === 'tui'}
+                  onClick={() => setCodexMode('tui')}
+                  className="px-3 py-1 rounded text-2xs font-medium transition-colors"
+                  style={{
+                    backgroundColor:
+                      codexMode === 'tui' ? 'var(--color-bg)' : 'transparent',
+                    color:
+                      codexMode === 'tui'
+                        ? 'var(--color-text-primary)'
+                        : 'var(--color-text-muted)',
+                  }}
+                >
+                  TUI
+                </button>
+              </div>
+              <p
+                className="text-2xs mt-1"
+                style={{ color: 'var(--color-text-muted)' }}
+              >
+                {codexMode === 'rpc'
+                  ? 'Drive codex from openhive chat. Streaming output, mid-turn injection, no terminal needed.'
+                  : 'Attach the embedded terminal to a codex TUI. Operator drives directly; openhive observes only the lifecycle.'}
+              </p>
+            </div>
+          )}
 
           {/* Row 1: Name + Provider */}
           <div className="flex gap-3">
@@ -1259,7 +1330,7 @@ function HostedSwarmCard({
       : isRunning && swarm.kind === "codex" && swarm.mode !== "rpc"
         ? { label: "Open Codex TUI", href: `/terminal/${swarm.id}`, icon: Terminal }
         : isRunning && swarm.kind === "codex" && swarm.mode === "rpc"
-          ? { label: "Open codex chat", href: `/swarms/${targetSwarmId}`, icon: MessageSquare }
+          ? { label: "Open codex chat", href: `/threads/hosted-chat/${swarm.id}`, icon: MessageSquare }
           : null;
 
   // Synchronous gate against fast double-clicks. React Query's isPending

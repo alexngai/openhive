@@ -15,7 +15,7 @@
  * is wired below.
  */
 
-/** Normalized event the frontend `useHostedChatChannel` hook consumes. */
+/** Normalized event the frontend hosted-chat adapter consumes. */
 export type HostedChatEvent =
   | { kind: 'message.start'; itemId: string; role: 'assistant' | 'user' | 'system' }
   | { kind: 'message.delta'; itemId: string; delta: string }

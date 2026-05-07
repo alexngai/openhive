@@ -1,45 +1,56 @@
 /**
- * HostedChat / useHostedChatChannel — component & hook coverage.
+ * HostedChat — component coverage.
  *
- * Validates the React side of the codex-rpc → openhive-chat path:
- *   - Subscription wired to the per-swarm channel
- *   - Streaming deltas accumulate into the rendered message
- *   - Optimistic user echo on send + the right URL is hit
- *   - Error events surface as status detail
- *   - Events for a different swarm id are ignored
+ * Validates the React side of the codex-rpc → openhive-chat path now that
+ * HostedChat is driven by swarmcraft's `useChatChannel` + the
+ * `createHostedChatAdapter` factory backed by openhive's host service.
  *
- * Drives synthetic `hosted-chat.event` notifications through a captured
- * `useWSEvent` callback. The DOM assertions use `container.textContent`
- * substring checks (rather than RTL `getByText` / jest-dom matchers,
- * neither of which is configured here).
+ * Strategy: mock `useOpenHiveAdapters` to return a single hosted-chat
+ * adapter wired against a controllable test service that captures the
+ * subscription handlers, then drive synthetic events through those
+ * handlers. The capability resolver is mocked to grant `hostedChat.canSend`.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, act } from '@testing-library/react';
+import { render, act, waitFor } from '@testing-library/react';
+import {
+  createHostedChatAdapter,
+  type HostedChatServiceLike,
+  type HostedChatSubscriptionHandlers,
+} from 'swarmcraft/ui/embed';
 
-const mockApiPost = vi.fn();
-let capturedWSHandler:
-  | ((event: { type: string; channel?: string; data: unknown }) => void)
-  | null = null;
-const mockUseSubscribe = vi.fn();
+const sendTurn = vi.fn().mockResolvedValue({ turnId: 't-1' });
+let capturedHandlers: HostedChatSubscriptionHandlers | null = null;
+let lastSubscribedId: string | null = null;
 
-vi.mock('../../../lib/api', () => ({
-  api: {
-    post: (...args: unknown[]) => mockApiPost(...args),
+const testService: HostedChatServiceLike = {
+  sendTurn: (...args) => sendTurn(...args),
+  subscribe: (id, handlers) => {
+    lastSubscribedId = id;
+    capturedHandlers = handlers;
+    return () => {
+      capturedHandlers = null;
+      lastSubscribedId = null;
+    };
   },
+};
+
+vi.mock('../../../adapters/openhive-adapters', () => ({
+  useOpenHiveAdapters: () => [createHostedChatAdapter({ service: testService })],
 }));
 
-vi.mock('../../../hooks/useWebSocket', () => ({
-  useSubscribe: (...args: unknown[]) => mockUseSubscribe(...args),
-  useWSEvent: (event: string, callback: (...args: unknown[]) => void) => {
-    if (event === 'hosted-chat.event') {
-      capturedWSHandler = callback as typeof capturedWSHandler;
-    }
-  },
-}));
+vi.mock('../../../lib/chat/resolvers', async (orig) => {
+  const real = (await orig()) as Record<string, unknown>;
+  return {
+    ...real,
+    useHostedChatCapabilityResolver: () => () => ({
+      available: true,
+      connected: true,
+      hostedChat: { canSend: true },
+    }),
+  };
+});
 
-// jsdom doesn't implement scrollIntoView; ChatMessageList uses it for
-// auto-scroll-to-bottom. No-op stub keeps the render path clean.
 if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = vi.fn();
 }
@@ -47,35 +58,41 @@ if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
 import { HostedChat } from '../../../components/hosted-chat/HostedChat';
 
 const HOSTED_ID = 'hsw_test_1';
-const CHANNEL = `hosted-chat:${HOSTED_ID}`;
 
-function emit(eventKind: string, params: Record<string, unknown>): void {
-  if (!capturedWSHandler) throw new Error('useWSEvent handler not captured');
-  act(() => {
-    capturedWSHandler!({
-      type: 'hosted-chat.event',
-      channel: CHANNEL,
-      data: {
-        hosted_swarm_id: HOSTED_ID,
-        provider: 'codex',
-        event: { kind: eventKind, ...params },
-      },
-    });
+async function awaitHandlers(): Promise<HostedChatSubscriptionHandlers> {
+  await waitFor(() => {
+    if (!capturedHandlers) throw new Error('subscribe handlers not captured');
   });
+  return capturedHandlers!;
+}
+async function emitMessage(itemId: string, role: 'assistant' | 'user' | 'system'): Promise<void> {
+  const h = await awaitHandlers();
+  await act(async () => { h.onMessageStart(itemId, role); });
+}
+async function emitDelta(itemId: string, delta: string): Promise<void> {
+  const h = await awaitHandlers();
+  await act(async () => { h.onMessageDelta(itemId, delta); });
+}
+async function emitComplete(itemId: string, finalText?: string): Promise<void> {
+  const h = await awaitHandlers();
+  await act(async () => { h.onMessageComplete(itemId, finalText); });
+}
+async function emitError(message: string): Promise<void> {
+  const h = await awaitHandlers();
+  await act(async () => { h.onError(message); });
 }
 
 beforeEach(() => {
-  capturedWSHandler = null;
-  mockApiPost.mockReset();
-  mockUseSubscribe.mockReset();
+  capturedHandlers = null;
+  lastSubscribedId = null;
+  sendTurn.mockClear();
 });
 
-describe('HostedChat / useHostedChatChannel', () => {
-  it('subscribes to the per-swarm channel on mount', () => {
+describe('HostedChat (unified channel)', () => {
+  it('subscribes to the hosted swarm via the host service on mount', async () => {
     render(<HostedChat hostedSwarmId={HOSTED_ID} label="my-swarm" providerLabel="codex" />);
-    expect(mockUseSubscribe).toHaveBeenCalled();
-    const lastCall = mockUseSubscribe.mock.calls[mockUseSubscribe.mock.calls.length - 1];
-    expect(lastCall[0]).toEqual([CHANNEL]);
+    await waitFor(() => expect(lastSubscribedId).toBe(HOSTED_ID));
+    expect(capturedHandlers).not.toBeNull();
   });
 
   it('renders an input field once the chat surface mounts', () => {
@@ -84,57 +101,31 @@ describe('HostedChat / useHostedChatChannel', () => {
     expect(textarea).not.toBeNull();
   });
 
-  it('accumulates streaming agent message across deltas and finalizes on complete', () => {
+  it('accumulates streaming agent message across deltas and finalizes on complete', async () => {
     const { container } = render(<HostedChat hostedSwarmId={HOSTED_ID} label="t" />);
 
-    emit('turn.started', { turnId: 'turn-1' });
-    emit('message.start', { itemId: 'item-1', role: 'assistant' });
-    emit('message.delta', { itemId: 'item-1', delta: 'Hello' });
-    emit('message.delta', { itemId: 'item-1', delta: ', ' });
-    emit('message.delta', { itemId: 'item-1', delta: 'world!' });
+    await emitMessage('item-1', 'assistant');
+    await emitDelta('item-1', 'Hello');
+    await emitDelta('item-1', ', ');
+    await emitDelta('item-1', 'world!');
 
-    expect(container.textContent ?? '').toContain('Hello, world!');
+    await waitFor(() => expect(container.textContent ?? '').toContain('Hello, world!'));
 
-    emit('message.complete', { itemId: 'item-1', finalText: 'Hello, world!' });
-    emit('turn.completed', { turnId: 'turn-1' });
-
-    // Content survives finalization.
+    await emitComplete('item-1', 'Hello, world!');
     expect(container.textContent ?? '').toContain('Hello, world!');
   });
 
-  it('suppresses provider-emitted user message echoes (we echo locally on send)', () => {
+  it('suppresses provider-emitted user message echoes', async () => {
     const { container } = render(<HostedChat hostedSwarmId={HOSTED_ID} label="t" />);
-
-    // Provider says "user said this" — we should NOT render it (the local
-    // echo on send() is the canonical user message).
-    emit('message.start', { itemId: 'item-u1', role: 'user' });
-    emit('message.delta', { itemId: 'item-u1', delta: 'should-not-render' });
-
+    await emitMessage('item-u1', 'user');
+    await emitDelta('item-u1', 'should-not-render');
     expect(container.textContent ?? '').not.toContain('should-not-render');
   });
 
-  it('ignores events for a different hosted swarm id', () => {
+  it('surfaces error events in the channel status', async () => {
     const { container } = render(<HostedChat hostedSwarmId={HOSTED_ID} label="t" />);
-    if (!capturedWSHandler) throw new Error('handler not captured');
-    act(() => {
-      capturedWSHandler!({
-        type: 'hosted-chat.event',
-        channel: 'hosted-chat:other-swarm',
-        data: {
-          hosted_swarm_id: 'other-swarm',
-          provider: 'codex',
-          event: { kind: 'message.delta', itemId: 'x', delta: 'wrong-swarm-payload' },
-        },
-      });
-    });
-    expect(container.textContent ?? '').not.toContain('wrong-swarm-payload');
-  });
-
-  it('surfaces error events in the status header', () => {
-    const { container } = render(<HostedChat hostedSwarmId={HOSTED_ID} label="t" />);
-    emit('error', { message: 'rate-limit-marker' });
-    // The error message lands in the header status-detail span.
-    expect(container.textContent ?? '').toContain('rate-limit-marker');
+    await emitError('rate-limit-marker');
+    await waitFor(() => expect(container.textContent ?? '').toContain('rate-limit-marker'));
   });
 
   it('renders the provided label and providerLabel in the header', () => {
@@ -151,9 +142,11 @@ describe('HostedChat / useHostedChatChannel', () => {
     expect(header?.textContent ?? '').toContain('codex');
   });
 
-  it('disconnects (no subscribe) when enabled=false', () => {
+  it('does not subscribe when enabled=false', async () => {
     render(<HostedChat hostedSwarmId={HOSTED_ID} label="t" enabled={false} />);
-    const lastCall = mockUseSubscribe.mock.calls[mockUseSubscribe.mock.calls.length - 1];
-    expect(lastCall[0]).toEqual([]);
+    // Give effects a chance to settle without subscribing.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(lastSubscribedId).toBeNull();
+    expect(capturedHandlers).toBeNull();
   });
 });

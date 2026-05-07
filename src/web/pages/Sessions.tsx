@@ -14,7 +14,9 @@ import { AgentAvatar } from '../components/common/AgentAvatar';
 import { useSessionAttentionStore } from '../stores/session-attention';
 import { SessionDetail } from './SessionDetail';
 import { MailThreadView } from '../components/sessions/MailThreadView';
-import type { SessionListItem, MapSwarm, MailConversation } from '../lib/api';
+import { HostedChat } from '../components/hosted-chat/HostedChat';
+import { Link } from 'react-router-dom';
+import type { SessionListItem, MapSwarm, MailConversation, HostedSwarm } from '../lib/api';
 
 // ============================================================================
 // Constants
@@ -502,7 +504,7 @@ function InactiveSection({
 // ============================================================================
 
 export function Sessions() {
-  const params = useParams<{ id?: string; mailId?: string }>();
+  const params = useParams<{ id?: string; mailId?: string; hostedId?: string }>();
   const navigate = useNavigate();
   const { data: sessionsData, isLoading: sessionsLoading } = useSessionsList();
   const { data: mailConvs } = useMailConversations();
@@ -524,10 +526,13 @@ export function Sessions() {
 
   const selectedSessionId = params.id ?? null;
   const selectedMailId = params.mailId ?? null;
+  const selectedHostedId = params.hostedId ?? null;
   const selectedKey = selectedSessionId
     ? `session:${selectedSessionId}`
     : selectedMailId
       ? `mail:${selectedMailId}`
+      : selectedHostedId
+        ? `hosted-chat:${selectedHostedId}`
       : null;
 
   const [filter, setFilter] = useState<FilterKey>('all');
@@ -561,7 +566,7 @@ export function Sessions() {
       .map((h) => ({
         id: `hosted-chat:${h.id}`,
         flavor: 'hosted-chat' as ThreadFlavor,
-        to: `/swarms/${h.id}`,
+        to: `/threads/hosted-chat/${h.id}`,
         title: h.name ?? h.id,
         description: `${h.kind ?? 'hosted'} · openhive chat`,
         status: 'hosted-running' as ThreadStatus,
@@ -705,6 +710,8 @@ export function Sessions() {
           <MailThreadView conversationId={selectedMailId} />
         ) : selectedSessionId ? (
           <SessionDetail />
+        ) : selectedHostedId ? (
+          <HostedChatThreadDetail hostedSwarmId={selectedHostedId} hostedSwarms={hostedSwarms ?? []} />
         ) : activeThreads.length > 0 ? (
           <EmptyDetail />
         ) : (sessionsData?.data ?? []).length > 0 || (mailConvs ?? []).length > 0 ? (
@@ -721,6 +728,76 @@ export function Sessions() {
           <EmptyDetail />
         )}
       </main>
+    </div>
+  );
+}
+
+// ============================================================================
+// Hosted-chat detail (codex-rpc and any future programmatic-mode kind)
+// ============================================================================
+
+/**
+ * Right-pane view for `/threads/hosted-chat/:hostedId`. Composes the same
+ * `<HostedChat>` widget the rest of openhive uses (swarmcraft's
+ * `ChatMessageList` + `ChatInput` underneath). The list of running hosted
+ * swarms is already loaded in Sessions; we just look up this row to drive
+ * the header label + a "back to swarm" affordance.
+ */
+function HostedChatThreadDetail({
+  hostedSwarmId,
+  hostedSwarms,
+}: {
+  hostedSwarmId: string;
+  hostedSwarms: HostedSwarm[];
+}) {
+  const hosted = hostedSwarms.find((h) => h.id === hostedSwarmId);
+  if (!hosted) {
+    return (
+      <div className="p-6">
+        <div
+          className="card p-4 text-center text-xs"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          No running hosted swarm with id <code>{hostedSwarmId}</code>. It may
+          have stopped — return to{' '}
+          <Link to="/threads" className="text-honey-500 hover:underline">
+            Threads
+          </Link>
+          .
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col min-h-0">
+      <div
+        className="px-4 py-2 border-b text-xs flex items-center justify-between"
+        style={{ borderColor: 'var(--color-border-subtle)' }}
+      >
+        <div>
+          <span className="font-medium">{hosted.name ?? hosted.id}</span>
+          <span
+            className="ml-2 text-2xs"
+            style={{ color: 'var(--color-text-muted)' }}
+          >
+            {hosted.kind ?? 'hosted'} · {hosted.mode ?? 'rpc'}
+          </span>
+        </div>
+        <Link
+          to={`/swarms/${hosted.swarm_id ?? hosted.id}`}
+          className="text-2xs hover:underline"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          View swarm details →
+        </Link>
+      </div>
+      <div className="flex-1 min-h-0">
+        <HostedChat
+          hostedSwarmId={hostedSwarmId}
+          providerLabel={hosted.kind}
+        />
+      </div>
     </div>
   );
 }

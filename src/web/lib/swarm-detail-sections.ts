@@ -23,7 +23,6 @@
 export type SwarmDetailSectionId =
   | 'active-work'
   | 'terminal'
-  | 'hosted-chat'
   | 'logs'
   | 'nodes'
   | 'registered-agents'
@@ -102,10 +101,12 @@ export function getSwarmDetailSections(
     return ids;
   }
 
-  // codex (RPC): chat IS the surface. No MAP agents, no fleet. The
-  // HostedChatSection renders inline and replaces the terminal entirely.
+  // codex (RPC): chat lives on the Threads page (`/threads/hosted-chat/:id`)
+  // alongside session/mail threads, NOT inline on this page. SwarmDetail
+  // for an rpc-mode swarm is just the SwarmHeader (process status,
+  // controls); the operator goes to Threads to actually drive the chat.
   if (kind === 'codex' && mode === 'rpc') {
-    return new Set<SwarmDetailSectionId>(['hosted-chat']);
+    return new Set<SwarmDetailSectionId>();
   }
 
   // codex (TUI, default): minimal — operator drives the embedded terminal,

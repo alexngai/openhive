@@ -43,7 +43,6 @@ import {
   type ChatTarget,
 } from 'swarmcraft/ui/embed';
 import { createCoordinationChatAdapter } from '../adapters/coordination-chat-adapter';
-import { HostedChat } from '../components/hosted-chat/HostedChat';
 import { getSwarmDetailSections } from '../lib/swarm-detail-sections';
 import { SpawnAgentDialog } from '../components/swarm/SpawnAgentDialog';
 import { getPeerMapId } from '../lib/map';
@@ -436,39 +435,6 @@ function useSwarmActions({
   return { button, error, dialog };
 }
 
-
-// ─── Hosted Chat Section ─────────────────────────────────────────────────────
-//
-// Inline chat surface for any programmatic-mode (mode='rpc') hosted
-// swarm. Routes through openhive's REST endpoint POST
-// /map/hosted/:id/chat/turn and listens for normalized
-// `hosted-chat.event` notifications on `/ws`. Provider-agnostic: codex
-// today, future providers slot in via the manager-side translator (see
-// `src/swarm/hosted-chat-events.ts`). Sits where TerminalSection would
-// for TUI-mode swarms — they're mutually exclusive (TerminalSection
-// bails for any rpc-mode kind).
-
-function HostedChatSection({ hosted }: { hosted: HostedSwarm }) {
-  if (hosted.state !== 'running') return null;
-  if (hosted.mode !== 'rpc') return null;
-  return (
-    <div className="mt-4">
-      <h3 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: 'var(--color-text-muted)' }}>
-        Chat
-      </h3>
-      <div
-        className="card overflow-hidden"
-        style={{ height: 480 }}
-      >
-        <HostedChat
-          hostedSwarmId={hosted.id}
-          label={hosted.name ?? hosted.id}
-          providerLabel={hosted.kind}
-        />
-      </div>
-    </div>
-  );
-}
 
 // ─── Terminal Section ────────────────────────────────────────────────────────
 
@@ -1773,8 +1739,6 @@ export function SwarmDetail() {
       {sections.has('active-work') && <ActiveWorkSection swarmId={id!} />}
 
       {hosted && sections.has('terminal') && <TerminalSection hosted={hosted} />}
-
-      {hosted && sections.has('hosted-chat') && <HostedChatSection hosted={hosted} />}
 
       {hosted && sections.has('logs') && <LogsSection hosted={hosted} />}
 

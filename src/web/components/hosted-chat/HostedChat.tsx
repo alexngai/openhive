@@ -4,14 +4,18 @@
  * providers slot in by adding a translator on the backend (the wire
  * format is normalized — see `src/swarm/hosted-chat-events.ts`).
  *
- * Composes `useHostedChatChannel` with swarmcraft's `ChatMessageList` +
- * `ChatInput` (the same primitives every other openhive chat surface
- * uses). Embed inline (e.g. in SwarmDetail) or open as overlay (e.g. via
- * ChatFab).
+ * Driven by swarmcraft's unified `useChatChannel`, with the host-managed
+ * adapter picked up from `useOpenHiveAdapters`. Same primitives every
+ * other openhive chat surface uses.
  */
 
-import { ChatMessageList, ChatInput } from 'swarmcraft/ui/embed';
-import { useHostedChatChannel } from '../../hooks/useHostedChatChannel';
+import { useMemo } from 'react';
+import { ChatMessageList, ChatInput, useChatChannel } from 'swarmcraft/ui/embed';
+import { useOpenHiveAdapters } from '../../adapters/openhive-adapters';
+import {
+  hostedChatTarget,
+  useHostedChatCapabilityResolver,
+} from '../../lib/chat/resolvers';
 
 interface HostedChatProps {
   hostedSwarmId: string;
@@ -24,7 +28,16 @@ interface HostedChatProps {
 }
 
 export function HostedChat({ hostedSwarmId, label, providerLabel, enabled = true }: HostedChatProps) {
-  const channel = useHostedChatChannel({ hostedSwarmId, enabled });
+  const adapters = useOpenHiveAdapters();
+  const resolveCapabilities = useHostedChatCapabilityResolver(hostedSwarmId);
+  const target = useMemo(() => hostedChatTarget(hostedSwarmId), [hostedSwarmId]);
+
+  const channel = useChatChannel({
+    target,
+    adapters,
+    resolveCapabilities,
+    enabled,
+  });
 
   return (
     <div className="flex flex-col h-full min-h-0">

@@ -84,9 +84,9 @@ describe('getSwarmDetailSections', () => {
   });
 
   describe('codex (RPC)', () => {
-    it('exposes only HostedChat — chat is the surface', () => {
+    it('exposes no inline sections — chat lives on the Threads page now', () => {
       const ids = getSwarmDetailSections({ kind: 'codex', mode: 'rpc' }, noAgents);
-      expect([...ids].sort()).toEqual(['hosted-chat']);
+      expect([...ids]).toEqual([]);
     });
 
     it('does NOT expose Terminal (no PTY to attach to)', () => {
