@@ -26,6 +26,11 @@ vi.mock('../../hooks/useApi', () => ({
   useSessionsInfinite: (...args: unknown[]) => mockUseSessionsInfinite(...args),
   useMapSwarms: () => mockUseMapSwarms(),
   useMailConversations: (...args: unknown[]) => mockUseMailConversations(...args),
+  // Sessions.tsx uses useHostedSwarms to surface programmatic-mode
+  // (mode='rpc') swarms as live threads. Default to an empty list so
+  // existing test cases (none of which set hosted-chat fixtures) get
+  // the same threads list they did before the integration.
+  useHostedSwarms: () => ({ data: [], isLoading: false }),
   useResource: (...args: unknown[]) => mockUseResource(...args),
   useSessionCheckpoints: (...args: unknown[]) => mockUseSessionCheckpoints(...args),
   useSessionStats: (...args: unknown[]) => mockUseSessionStats(...args),

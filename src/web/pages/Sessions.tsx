@@ -4,7 +4,7 @@ import {
   Activity, ChevronDown, ChevronRight, Clock, Cpu, FileText, Loader2, Mail,
   Search, User, Users,
 } from 'lucide-react';
-import { useSessionsList, useSessionsInfinite, useMapSwarms, useMailConversations } from '../hooks/useApi';
+import { useSessionsList, useSessionsInfinite, useMapSwarms, useMailConversations, useHostedSwarms } from '../hooks/useApi';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { useSubscribe, useWSEvent } from '../hooks/useWebSocket';
 import { useQueryClient } from '@tanstack/react-query';
@@ -27,9 +27,9 @@ const STALE_MARGIN_MS = 10 * 60 * 1000; // 10 minutes
 // Thread model — unifies sessions + mail conversations
 // ============================================================================
 
-type ThreadFlavor = 'session' | 'mail';
+type ThreadFlavor = 'session' | 'mail' | 'hosted-chat';
 
-type ThreadStatus = 'live' | 'recent' | 'idle' | 'mail-active' | 'mail-completed';
+type ThreadStatus = 'live' | 'recent' | 'idle' | 'mail-active' | 'mail-completed' | 'hosted-running';
 
 interface Thread {
   /** Underlying data id (session resource id or mail conversation id) */
@@ -507,6 +507,11 @@ export function Sessions() {
   const { data: sessionsData, isLoading: sessionsLoading } = useSessionsList();
   const { data: mailConvs } = useMailConversations();
   const { data: swarms } = useMapSwarms();
+  // Pull running hosted swarms so codex-rpc rows surface as Threads. We
+  // filter client-side; the list is small (capped by max_swarms), and
+  // useHostedSwarms already drives query invalidation on swarm-lifecycle
+  // events.
+  const { data: hostedSwarms } = useHostedSwarms({ state: 'running' });
   useSessionsRealtime();
 
   // Keep mail list fresh via WebSocket
@@ -546,19 +551,40 @@ export function Sessions() {
     const mailThreads = (mailConvs ?? [])
       .filter((c) => c.status !== 'archived')
       .map(mailToThread);
-    return [...sessionThreads, ...mailThreads].sort(
+    // Programmatic-mode hosted swarms (mode='rpc', any kind) surface as
+    // live threads — clicking routes to the swarm detail page where the
+    // inline chat lives. Each running rpc-mode swarm gets one thread row.
+    // Provider-agnostic — codex today, future kinds drop in without
+    // changes here.
+    const hostedChatThreads: Thread[] = (hostedSwarms ?? [])
+      .filter((h) => h.mode === 'rpc' && h.state === 'running')
+      .map((h) => ({
+        id: `hosted-chat:${h.id}`,
+        flavor: 'hosted-chat' as ThreadFlavor,
+        to: `/swarms/${h.id}`,
+        title: h.name ?? h.id,
+        description: `${h.kind ?? 'hosted'} · openhive chat`,
+        status: 'hosted-running' as ThreadStatus,
+        lastActivityAt: h.updated_at ?? h.created_at ?? new Date().toISOString(),
+        participantCount: 1,
+      }));
+    return [...sessionThreads, ...mailThreads, ...hostedChatThreads].sort(
       (a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
     );
-  }, [sessionsData, mailConvs, swarmStatusMap]);
+  }, [sessionsData, mailConvs, swarmStatusMap, hostedSwarms]);
 
   const liveThreads = useMemo(
-    () => activeThreads.filter((t) => t.status === 'live' || t.status === 'mail-active'),
+    () => activeThreads.filter(
+      (t) => t.status === 'live' || t.status === 'mail-active' || t.status === 'hosted-running',
+    ),
     [activeThreads],
   );
 
   const visibleActive = useMemo(() => {
     switch (filter) {
-      case 'live': return activeThreads.filter((t) => t.status === 'live' || t.status === 'mail-active');
+      case 'live': return activeThreads.filter(
+        (t) => t.status === 'live' || t.status === 'mail-active' || t.status === 'hosted-running',
+      );
       case 'mail': return activeThreads.filter((t) => t.flavor === 'mail');
       default:     return activeThreads;
     }

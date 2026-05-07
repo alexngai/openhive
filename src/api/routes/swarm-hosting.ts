@@ -250,6 +250,8 @@ export async function swarmHostingRoutes(
     const data = result.data.map((h) => ({
       id: h.id,
       name: h.config?.name ?? h.id,
+      kind: h.kind,
+      mode: h.config?.mode,
       swarm_id: h.swarm_id,
       provider: h.provider,
       state: h.state,
@@ -279,6 +281,8 @@ export async function swarmHostingRoutes(
     return reply.send({
       id: hosted.id,
       name: hosted.config?.name ?? hosted.id,
+      kind: hosted.kind,
+      mode: hosted.config?.mode,
       swarm_id: hosted.swarm_id,
       provider: hosted.provider,
       state: hosted.state,
@@ -401,12 +405,14 @@ export async function swarmHostingRoutes(
     return reply.status(204).send();
   });
 
-  // POST /map/hosted/:id/codex/turn — Send a user turn to a codex-rpc swarm.
-  // Streaming output (item/agentMessage/delta, turn/completed, etc.) fans
-  // out to the WS channel `codex-rpc:<hostedSwarmId>` — subscribe there
-  // before posting if you want to capture the stream. Body: { text }.
+  // POST /map/hosted/:id/chat/turn — Send a user turn to a programmatic-mode
+  // hosted swarm. Provider-agnostic — manager dispatches based on the
+  // row's kind+mode. Streaming output fans out as normalized
+  // `hosted-chat.event` notifications on the WS channel
+  // `hosted-chat:<hostedSwarmId>` — subscribe there before posting if you
+  // want to capture the stream. Body: { text }.
   fastify.post<{ Params: { id: string }; Body: { text?: string } }>(
-    '/map/hosted/:id/codex/turn',
+    '/map/hosted/:id/chat/turn',
     { preHandler: [authMiddleware] },
     async (request, reply) => {
       try {
@@ -415,19 +421,19 @@ export async function swarmHostingRoutes(
         if (!text.trim()) {
           return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'text is required' });
         }
-        const ack = await manager.sendCodexTurn(request.params.id, request.agent!.id, text);
-        return reply.send({ turn_id: ack.turn.id });
+        const ack = await manager.sendChatTurn(request.params.id, request.agent!.id, text);
+        return reply.send(ack);
       } catch (error) {
         return handleSwarmError(error, reply);
       }
     },
   );
 
-  // POST /map/hosted/:id/codex/interrupt — Clean cancel of the active turn.
-  // Body: { turn_id }. The thread stays usable; only the in-flight turn
-  // stops. No-op (404 NOT_FOUND) if the swarm isn't a live codex-rpc.
+  // POST /map/hosted/:id/chat/interrupt — Clean cancel of the active turn.
+  // Body: { turn_id }. The session stays usable; only the in-flight turn
+  // stops. Provider-agnostic — manager dispatches.
   fastify.post<{ Params: { id: string }; Body: { turn_id?: string } }>(
-    '/map/hosted/:id/codex/interrupt',
+    '/map/hosted/:id/chat/interrupt',
     { preHandler: [authMiddleware] },
     async (request, reply) => {
       try {
@@ -436,7 +442,7 @@ export async function swarmHostingRoutes(
         if (!turnId.trim()) {
           return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'turn_id is required' });
         }
-        await manager.interruptCodexTurn(request.params.id, request.agent!.id, turnId);
+        await manager.interruptChatTurn(request.params.id, request.agent!.id, turnId);
         return reply.status(204).send();
       } catch (error) {
         return handleSwarmError(error, reply);

@@ -35,6 +35,7 @@ import type { PtyManager } from '../terminal/pty-manager.js';
 import type { CodexAppServerManager } from './codex-app-server-manager.js';
 import { resolveCodexBinary } from './codex-binary.js';
 import { preTrustCodexWorkdir } from './codex-config.js';
+import { translateCodexNotification } from './hosted-chat-events.js';
 import type {
   SpawnSwarmInput,
   SwarmProvisionConfig,
@@ -165,19 +166,22 @@ export class SwarmManager {
     this.codexRpcExitHandler = (event) => this.handleCodexRpcExit(event);
     mgr.on('session.exit', this.codexRpcExitHandler);
 
-    // Fan codex protocol notifications out to per-swarm WS channels so
-    // openhive's chat surface can render streaming output. The channel
-    // shape (`codex-rpc:<hostedSwarmId>`) keeps each session's stream
-    // isolated; subscribers attach via the existing realtime/ WS layer.
+    // Translate codex's native JSON-RPC notifications to the normalized
+    // `HostedChatEvent` shape and fan out per-swarm on
+    // `hosted-chat:<hostedId>`. Frontend hooks consume the normalized
+    // shape and don't need to know it's codex underneath — adding a new
+    // programmatic-mode provider is a translator + the same bridge call.
     mgr.on('notification', (event: { sessionId: string; method: string; params?: unknown }) => {
       const hostedId = this.findHostedIdByCodexSessionId(event.sessionId);
       if (!hostedId) return;
-      broadcastToChannel(`codex-rpc:${hostedId}`, {
-        type: 'codex.notification',
+      const normalized = translateCodexNotification(event.method, event.params);
+      if (!normalized) return;
+      broadcastToChannel(`hosted-chat:${hostedId}`, {
+        type: 'hosted-chat.event',
         data: {
           hosted_swarm_id: hostedId,
-          method: event.method,
-          params: event.params,
+          provider: 'codex',
+          event: normalized,
         },
       });
     });
@@ -203,37 +207,42 @@ export class SwarmManager {
   }
 
   /**
-   * Submit a user turn against a codex `mode: 'rpc'` hosted swarm.
-   * Auth-gated (only the spawn owner can drive). Returns the codex
-   * `turn/start` ack — streaming output arrives as notifications on the
-   * per-swarm WS channel (`codex-rpc:<hostedSwarmId>`).
+   * Submit a user turn against a programmatic-mode (`mode: 'rpc'`) hosted
+   * swarm. Auth-gated (only the spawn owner can drive). Dispatches to the
+   * underlying provider based on `hosted.kind` — codex today, future
+   * providers slot in by adding a branch here. Streaming output arrives as
+   * normalized `HostedChatEvent`s on the per-swarm WS channel
+   * `hosted-chat:<hostedSwarmId>`.
    */
-  async sendCodexTurn(
+  async sendChatTurn(
     hostedSwarmId: string,
     agentId: string,
     text: string,
-  ): Promise<{ turn: { id: string } }> {
+  ): Promise<{ turn_id: string }> {
     const hosted = dal.findHostedSwarmById(hostedSwarmId);
     if (!hosted) throw new SwarmHostingError('NOT_FOUND', 'Hosted swarm not found');
     if (hosted.spawned_by !== agentId) throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
-    if (hosted.kind !== 'codex' || hosted.config?.mode !== 'rpc') {
-      throw new SwarmHostingError('NOT_IMPLEMENTED', 'Hosted swarm is not a codex-rpc session');
+    if (hosted.config?.mode !== 'rpc') {
+      throw new SwarmHostingError('NOT_IMPLEMENTED', 'Hosted swarm is not in mode=rpc');
     }
-    if (!this.codexAppServerManager) {
-      throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', 'CodexAppServerManager is not configured');
+    if (hosted.kind === 'codex') {
+      if (!this.codexAppServerManager) {
+        throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', 'CodexAppServerManager is not configured');
+      }
+      const sid = this.codexRpcSessions.get(hostedSwarmId);
+      if (!sid) throw new SwarmHostingError('NOT_FOUND', 'No live rpc session for this swarm');
+      const ack = await this.codexAppServerManager.sendTurn(sid, text);
+      return { turn_id: ack.turn.id };
     }
-    const sid = this.codexRpcSessions.get(hostedSwarmId);
-    if (!sid) throw new SwarmHostingError('NOT_FOUND', 'No live codex-rpc session for this swarm');
-    return this.codexAppServerManager.sendTurn(sid, text);
+    throw new SwarmHostingError('NOT_IMPLEMENTED', `kind="${hosted.kind}" has no mode=rpc provider`);
   }
 
   /**
-   * Interrupt the in-flight turn for a codex `mode: 'rpc'` swarm.
-   * Auth-gated. The codex protocol's `turn/interrupt` is a clean cancel,
-   * not a kill — the agent stops the current turn but the thread stays
-   * usable. No-op if there's no active turn.
+   * Interrupt the in-flight turn for a programmatic-mode hosted swarm.
+   * Clean cancel — the agent stops the current turn but the session
+   * stays usable. No-op if there's no active turn.
    */
-  async interruptCodexTurn(
+  async interruptChatTurn(
     hostedSwarmId: string,
     agentId: string,
     turnId: string,
@@ -241,15 +250,19 @@ export class SwarmManager {
     const hosted = dal.findHostedSwarmById(hostedSwarmId);
     if (!hosted) throw new SwarmHostingError('NOT_FOUND', 'Hosted swarm not found');
     if (hosted.spawned_by !== agentId) throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
-    if (hosted.kind !== 'codex' || hosted.config?.mode !== 'rpc') {
-      throw new SwarmHostingError('NOT_IMPLEMENTED', 'Hosted swarm is not a codex-rpc session');
+    if (hosted.config?.mode !== 'rpc') {
+      throw new SwarmHostingError('NOT_IMPLEMENTED', 'Hosted swarm is not in mode=rpc');
     }
-    if (!this.codexAppServerManager) {
-      throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', 'CodexAppServerManager is not configured');
+    if (hosted.kind === 'codex') {
+      if (!this.codexAppServerManager) {
+        throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', 'CodexAppServerManager is not configured');
+      }
+      const sid = this.codexRpcSessions.get(hostedSwarmId);
+      if (!sid) throw new SwarmHostingError('NOT_FOUND', 'No live rpc session for this swarm');
+      await this.codexAppServerManager.interrupt(sid, turnId);
+      return;
     }
-    const sid = this.codexRpcSessions.get(hostedSwarmId);
-    if (!sid) throw new SwarmHostingError('NOT_FOUND', 'No live codex-rpc session for this swarm');
-    await this.codexAppServerManager.interrupt(sid, turnId);
+    throw new SwarmHostingError('NOT_IMPLEMENTED', `kind="${hosted.kind}" has no mode=rpc provider`);
   }
 
   /**

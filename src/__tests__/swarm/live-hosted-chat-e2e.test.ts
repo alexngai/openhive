@@ -8,7 +8,7 @@
  *   1. Spawn `kind: 'codex'` `mode: 'rpc'` via REST
  *   2. Open openhive's `/ws` WebSocket and subscribe to
  *      `codex-rpc:<hostedSwarmId>`
- *   3. POST a turn to `/api/v1/map/hosted/:id/codex/turn`
+ *   3. POST a turn to `/api/v1/map/hosted/:id/chat/turn`
  *   4. Observe streaming `item/agentMessage/delta` and `turn/completed`
  *      arrive on the WS channel
  *   5. Assert the assembled agent message is non-empty
@@ -89,7 +89,7 @@ function createTestConfig(): Config {
   });
 }
 
-describeIf('Live Agent E2E — codex-rpc through openhive chat plumbing', () => {
+describeIf('Live Agent E2E — programmatic-mode swarms via openhive hosted-chat plumbing', () => {
   let app: FastifyInstance;
   let config: Config;
   let swarmManager: SwarmManager;
@@ -186,7 +186,7 @@ describeIf('Live Agent E2E — codex-rpc through openhive chat plumbing', () => 
     else delete process.env.OPENHIVE_HOME;
   }, 30_000);
 
-  it('REST POST /codex/turn streams notifications back through openhive `/ws` codex-rpc channel', async () => {
+  it('REST POST /chat/turn streams normalized hosted-chat events through openhive `/ws`', async () => {
     // 1. Spawn the swarm.
     const spawnRes = await app.inject({
       method: 'POST',
@@ -199,8 +199,9 @@ describeIf('Live Agent E2E — codex-rpc through openhive chat plumbing', () => 
     expect(spawned.state).toBe('running');
     hostedSwarmId = spawned.id;
 
-    // 2. Connect to `/ws` and subscribe to the codex-rpc channel for this swarm.
-    const channel = `codex-rpc:${hostedSwarmId}`;
+    // 2. Connect to `/ws` and subscribe to the hosted-chat channel for
+    //    this swarm. Normalized event shape — provider-agnostic.
+    const channel = `hosted-chat:${hostedSwarmId}`;
     const ws = new WebSocket(`ws://127.0.0.1:${SERVER_PORT}/ws`);
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('ws open timed out')), 5_000);
@@ -211,18 +212,34 @@ describeIf('Live Agent E2E — codex-rpc through openhive chat plumbing', () => 
     const deltas: string[] = [];
     let turnCompleted = false;
     let turnId: string | null = null;
+    let providerLabel: string | null = null;
+
+    type WsHostedChatMsg = {
+      type?: string;
+      channel?: string;
+      data?: {
+        provider?: string;
+        event?:
+          | { kind: 'message.delta'; itemId: string; delta: string }
+          | { kind: 'turn.started'; turnId: string }
+          | { kind: 'turn.completed'; turnId: string }
+          | { kind: 'message.start' | 'message.complete' | 'error' | 'raw'; [k: string]: unknown };
+      };
+    };
 
     ws.on('message', (raw) => {
-      let msg: { type?: string; channel?: string; data?: { method?: string; params?: { delta?: string; turnId?: string } } };
+      let msg: WsHostedChatMsg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
-      if (msg.type !== 'codex.notification' || msg.channel !== channel) return;
-      const method = msg.data?.method;
-      if (method === 'item/agentMessage/delta' && typeof msg.data?.params?.delta === 'string') {
-        deltas.push(msg.data.params.delta);
-      } else if (method === 'turn/completed') {
+      if (msg.type !== 'hosted-chat.event' || msg.channel !== channel) return;
+      if (msg.data?.provider) providerLabel = msg.data.provider;
+      const ev = msg.data?.event;
+      if (!ev) return;
+      if (ev.kind === 'message.delta' && typeof (ev as { delta?: unknown }).delta === 'string') {
+        deltas.push((ev as { delta: string }).delta);
+      } else if (ev.kind === 'turn.completed') {
         turnCompleted = true;
-      } else if (method === 'turn/started' && typeof msg.data?.params?.turnId === 'string') {
-        turnId = msg.data.params.turnId;
+      } else if (ev.kind === 'turn.started' && typeof (ev as { turnId?: unknown }).turnId === 'string') {
+        turnId = (ev as { turnId: string }).turnId;
       }
     });
 
@@ -232,10 +249,10 @@ describeIf('Live Agent E2E — codex-rpc through openhive chat plumbing', () => 
     // place.
     await sleep(150);
 
-    // 3. POST the turn.
+    // 3. POST the turn through the provider-agnostic chat endpoint.
     const turnRes = await app.inject({
       method: 'POST',
-      url: `/api/v1/map/hosted/${hostedSwarmId}/codex/turn`,
+      url: `/api/v1/map/hosted/${hostedSwarmId}/chat/turn`,
       headers: { authorization: `Bearer ${testAgent.apiKey}`, 'content-type': 'application/json' },
       payload: { text: 'reply with exactly: HELLO-FROM-OPENHIVE-CHAT' },
     });
@@ -253,10 +270,11 @@ describeIf('Live Agent E2E — codex-rpc through openhive chat plumbing', () => 
     expect(deltas.length).toBeGreaterThan(0);
     const assembled = deltas.join('');
     expect(assembled.length).toBeGreaterThan(0);
+    expect(providerLabel).toBe('codex');
     console.log(
-      `[live-codex-rpc-chat] streamed ${deltas.length} deltas through /ws: ${JSON.stringify(assembled.slice(0, 80))}`,
+      `[live-hosted-chat] streamed ${deltas.length} deltas through /ws (provider=${providerLabel ?? '?'}): ${JSON.stringify(assembled.slice(0, 80))}`,
     );
-    if (turnId) console.log(`[live-codex-rpc-chat] turn id observed via WS: ${turnId}`);
+    if (turnId) console.log(`[live-hosted-chat] turn id observed via WS: ${turnId}`);
 
     ws.close();
     await sleep(100);
@@ -271,7 +289,7 @@ describeIf('Live Agent E2E — codex-rpc through openhive chat plumbing', () => 
     hostedSwarmId = undefined;
   }, 150_000);
 
-  it('REST POST /codex/turn rejects with 422 when text is missing', async () => {
+  it('REST POST /map/hosted/:id/chat/turn rejects with 422 when text is missing', async () => {
     const spawnRes = await app.inject({
       method: 'POST',
       url: '/api/v1/map/hosted/spawn',
@@ -284,7 +302,7 @@ describeIf('Live Agent E2E — codex-rpc through openhive chat plumbing', () => 
 
     const empty = await app.inject({
       method: 'POST',
-      url: `/api/v1/map/hosted/${hostedSwarmId}/codex/turn`,
+      url: `/api/v1/map/hosted/${hostedSwarmId}/chat/turn`,
       headers: { authorization: `Bearer ${testAgent.apiKey}`, 'content-type': 'application/json' },
       payload: { text: '   ' },
     });
@@ -298,14 +316,14 @@ describeIf('Live Agent E2E — codex-rpc through openhive chat plumbing', () => 
     hostedSwarmId = undefined;
   }, 60_000);
 
-  it('REST POST /codex/turn refuses non-codex-rpc swarms with 501', async () => {
+  it('REST POST /map/hosted/:id/chat/turn refuses unknown swarms with 404', async () => {
     // No swarm to spawn — just hit the route with a non-existent id and
     // verify the kind/mode check fires (NOT_FOUND ahead of NOT_IMPLEMENTED
     // is fine for this path; we're verifying the validation chain
     // surfaces, not the exact code).
     const res = await app.inject({
       method: 'POST',
-      url: '/api/v1/map/hosted/hswarm_does_not_exist/codex/turn',
+      url: '/api/v1/map/hosted/hswarm_does_not_exist/chat/turn',
       headers: { authorization: `Bearer ${testAgent.apiKey}`, 'content-type': 'application/json' },
       payload: { text: 'hi' },
     });

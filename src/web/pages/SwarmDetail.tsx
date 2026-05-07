@@ -43,6 +43,7 @@ import {
   type ChatTarget,
 } from 'swarmcraft/ui/embed';
 import { createCoordinationChatAdapter } from '../adapters/coordination-chat-adapter';
+import { HostedChat } from '../components/hosted-chat/HostedChat';
 import { SpawnAgentDialog } from '../components/swarm/SpawnAgentDialog';
 import { getPeerMapId } from '../lib/map';
 import { usePageContext } from '../components/chat-fab/usePageContext';
@@ -435,11 +436,49 @@ function useSwarmActions({
 }
 
 
+// ─── Hosted Chat Section ─────────────────────────────────────────────────────
+//
+// Inline chat surface for any programmatic-mode (mode='rpc') hosted
+// swarm. Routes through openhive's REST endpoint POST
+// /map/hosted/:id/chat/turn and listens for normalized
+// `hosted-chat.event` notifications on `/ws`. Provider-agnostic: codex
+// today, future providers slot in via the manager-side translator (see
+// `src/swarm/hosted-chat-events.ts`). Sits where TerminalSection would
+// for TUI-mode swarms — they're mutually exclusive (TerminalSection
+// bails for any rpc-mode kind).
+
+function HostedChatSection({ hosted }: { hosted: HostedSwarm }) {
+  if (hosted.state !== 'running') return null;
+  if (hosted.mode !== 'rpc') return null;
+  return (
+    <div className="mt-4">
+      <h3 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: 'var(--color-text-muted)' }}>
+        Chat
+      </h3>
+      <div
+        className="card overflow-hidden"
+        style={{ height: 480 }}
+      >
+        <HostedChat
+          hostedSwarmId={hosted.id}
+          label={hosted.name ?? hosted.id}
+          providerLabel={hosted.kind}
+        />
+      </div>
+    </div>
+  );
+}
+
 // ─── Terminal Section ────────────────────────────────────────────────────────
 
 function TerminalSection({ hosted }: { hosted: HostedSwarm }) {
   const navigate = useNavigate();
   if (hosted.state !== 'running') return null;
+  // Programmatic-mode (mode='rpc') swarms have no embedded TUI — the
+  // chat surface (HostedChatSection) handles these. Bail to keep the
+  // page clean. Provider-agnostic check: any rpc-mode kind, not just
+  // codex.
+  if (hosted.mode === 'rpc') return null;
 
   return (
     <div className="mt-4 grid gap-2 sm:grid-cols-2">
@@ -1677,6 +1716,8 @@ export function SwarmDetail() {
       <ActiveWorkSection swarmId={id!} />
 
       {hosted && <TerminalSection hosted={hosted} />}
+
+      {hosted && <HostedChatSection hosted={hosted} />}
 
       {hosted && <LogsSection hosted={hosted} />}
 
