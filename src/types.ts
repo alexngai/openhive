@@ -330,6 +330,12 @@ export interface SyncableResource {
   metadata: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
+  /**
+   * Lifecycle status (V51). `'active'` is the default; the other values
+   * are set by the slice 5b mesh lifecycle handlers + the corresponding
+   * REST surface.
+   */
+  status: 'active' | 'redacted_remote' | 'archived' | 'merged_into';
 }
 
 export interface ResourceSubscription {

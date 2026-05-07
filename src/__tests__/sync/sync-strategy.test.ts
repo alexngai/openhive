@@ -59,6 +59,7 @@ function makeResource(overrides: Partial<SyncableResource> = {}): SyncableResour
     metadata: { opentasks: true },
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
+    status: 'active',
     ...overrides,
   };
 }

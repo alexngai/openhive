@@ -46,6 +46,8 @@ const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memor
 const MemoryDetail = lazy(() => import('./pages/MemoryDetail').then(m => ({ default: m.MemoryDetail })));
 const Skills = lazy(() => import('./pages/Skills').then(m => ({ default: m.Skills })));
 const SkillDetail = lazy(() => import('./pages/SkillDetail').then(m => ({ default: m.SkillDetail })));
+const Repos = lazy(() => import('./pages/Repos').then(m => ({ default: m.Repos })));
+const RepoDetail = lazy(() => import('./pages/RepoDetail').then(m => ({ default: m.RepoDetail })));
 const Learning = lazy(() => import('./pages/Learning').then(m => ({ default: m.Learning })));
 const LearningPlaybookDetail = lazy(() => import('./pages/LearningPlaybookDetail').then(m => ({ default: m.LearningPlaybookDetail })));
 const Changes = lazy(() => import('./pages/Changes').then(m => ({ default: m.Changes })));
@@ -93,6 +95,8 @@ export default function App() {
               <Route path="memory/:resourceId" element={<MemoryDetail />} />
               <Route path="skills" element={<Skills />} />
               <Route path="skills/:resourceId" element={<SkillDetail />} />
+              <Route path="repos" element={<Repos />} />
+              <Route path="repos/:id" element={<RepoDetail />} />
               <Route path="learning" element={<Learning />} />
               <Route path="learning/playbooks/:id" element={<LearningPlaybookDetail />} />
               <Route path="changes" element={<Changes />} />

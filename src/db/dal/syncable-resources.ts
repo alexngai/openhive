@@ -601,6 +601,7 @@ export function getResourceWithMeta(id: string, viewerAgentId?: string): Syncabl
     metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
+    status: (row.status as SyncableResource['status']) ?? 'active',
     owner: {
       id: row.owner_id as string,
       name: row.owner_name as string,
@@ -718,6 +719,7 @@ export function listAccessibleResources(options: ListResourcesOptions): {
       metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
       created_at: row.created_at as string,
       updated_at: row.updated_at as string,
+    status: (row.status as SyncableResource['status']) ?? 'active',
       owner: {
         id: row.owner_id as string,
         name: row.owner_name as string,
@@ -827,6 +829,7 @@ export function discoverPublicResources(options: DiscoverResourcesOptions): {
       metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
       created_at: row.created_at as string,
       updated_at: row.updated_at as string,
+    status: (row.status as SyncableResource['status']) ?? 'active',
       owner: {
         id: row.owner_id as string,
         name: row.owner_name as string,

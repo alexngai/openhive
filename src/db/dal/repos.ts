@@ -82,6 +82,7 @@ interface SyncableResourceRow {
   metadata: string | null;
   created_at: string;
   updated_at: string;
+  status: string | null;
 }
 
 function rowToResource(row: SyncableResourceRow): SyncableResource {
@@ -103,6 +104,7 @@ function rowToResource(row: SyncableResourceRow): SyncableResource {
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    status: (row.status as SyncableResource['status']) ?? 'active',
   };
 }
 

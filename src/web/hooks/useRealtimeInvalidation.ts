@@ -292,3 +292,47 @@ export function useCascadeStreamsRealtime() {
   useWSEvent('cascade:stream_resumed', invalidate);
   useWSEvent('cascade:stream_rolled_back', invalidate);
 }
+
+// ── Repos / Workspaces (slice 4) ──
+
+/**
+ * Invalidates repo + repo-workspaces queries on workspace lifecycle events.
+ * Subscribes to the fleet-wide `map:repos` channel for cross-repo events.
+ */
+export function useReposRealtime() {
+  const queryClient = useQueryClient();
+
+  useSubscribe(['map:repos']);
+
+  const invalidate = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['repos'] });
+  }, [queryClient]);
+
+  useWSEvent('workspace_added', invalidate);
+  useWSEvent('workspace_changed', invalidate);
+  useWSEvent('workspace_deactivated', invalidate);
+  useWSEvent('repo_visibility_changed', invalidate);
+  useWSEvent('repo_archived', invalidate);
+}
+
+/**
+ * Per-repo realtime — subscribes to `map:repo:<id>` and refreshes the
+ * single-repo view + bindings list on lifecycle events.
+ */
+export function useRepoRealtime(repoId: string | undefined) {
+  const queryClient = useQueryClient();
+
+  useSubscribe(repoId ? [`map:repo:${repoId}`] : []);
+
+  const invalidate = useCallback(() => {
+    if (!repoId) return;
+    queryClient.invalidateQueries({ queryKey: ['repo', repoId] });
+    queryClient.invalidateQueries({ queryKey: ['repo-workspaces', repoId] });
+  }, [queryClient, repoId]);
+
+  useWSEvent('workspace_added', invalidate);
+  useWSEvent('workspace_changed', invalidate);
+  useWSEvent('workspace_deactivated', invalidate);
+  useWSEvent('repo_visibility_changed', invalidate);
+  useWSEvent('repo_archived', invalidate);
+}

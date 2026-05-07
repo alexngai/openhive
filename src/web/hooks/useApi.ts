@@ -2291,3 +2291,159 @@ export function useStopAgent() {
     },
   });
 }
+
+// ── Repos (slice 4) ────────────────────────────────────────────────────────
+
+export interface RepoMetadata {
+  name?: string;
+  default_branch?: string;
+  description?: string;
+  origin?: 'user_defined' | 'agent_declared' | 'trajectory_inferred';
+  visibility?: 'private' | 'hub_local' | 'federated';
+  binding_policy?: 'open' | 'closed';
+  branches?: Array<{ name: string; head_sha: string; last_seen: string }>;
+  merged_into_canonical_url?: string;
+  archived_at?: string;
+  redacted_at?: string;
+}
+
+export interface Workspace {
+  id: string;
+  repo_id: string;
+  agent_id: string;
+  swarm_id: string;
+  local_path: string;
+  current_branch: string | null;
+  head_sha: string | null;
+  dirty: number;
+  instance_label: string | null;
+  visibility: 'private' | 'hub_local' | 'federated';
+  is_active: number;
+  created_at: string;
+  updated_at: string;
+  last_seen_at: string;
+}
+
+export interface ReposListFilters {
+  origin?: 'user_defined' | 'agent_declared' | 'trajectory_inferred';
+  visibility?: 'private' | 'hub_local' | 'federated';
+  status?: 'active' | 'redacted_remote' | 'archived' | 'merged_into';
+  limit?: number;
+  offset?: number;
+}
+
+function reposQueryString(filters: ReposListFilters | undefined): string {
+  if (!filters) return '';
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== null) params.set(k, String(v));
+  }
+  const s = params.toString();
+  return s ? `?${s}` : '';
+}
+
+export function useRepos(filters?: ReposListFilters) {
+  return useQuery({
+    queryKey: ['repos', filters ?? {}],
+    queryFn: () =>
+      api.get<PaginatedResponse<SyncableResource>>(`/repos${reposQueryString(filters)}`),
+    staleTime: 10_000,
+  });
+}
+
+export function useRepo(id: string | undefined) {
+  return useQuery({
+    queryKey: ['repo', id],
+    queryFn: () => api.get<{ repo: SyncableResource }>(`/repos/${id}`),
+    enabled: !!id,
+    staleTime: 10_000,
+  });
+}
+
+export function useRepoWorkspaces(id: string | undefined, opts?: { activeOnly?: boolean }) {
+  const activeOnly = opts?.activeOnly ?? true;
+  return useQuery({
+    queryKey: ['repo-workspaces', id, activeOnly],
+    queryFn: () =>
+      api.get<{ data: Workspace[]; total: number }>(
+        `/repos/${id}/workspaces?active_only=${activeOnly}`,
+      ),
+    enabled: !!id,
+    staleTime: 10_000,
+  });
+}
+
+export function useCreateRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      remote_url: string;
+      name?: string;
+      default_branch?: string;
+      description?: string;
+      visibility?: 'private' | 'hub_local' | 'federated';
+      binding_policy?: 'open' | 'closed';
+    }) => api.post<{ repo: SyncableResource }>('/repos', input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+    },
+  });
+}
+
+export function useUpdateRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: {
+      id: string;
+      name?: string;
+      default_branch?: string;
+      description?: string;
+      visibility?: 'private' | 'hub_local' | 'federated';
+      binding_policy?: 'open' | 'closed';
+    }) => api.patch<{ repo: SyncableResource }>(`/repos/${id}`, input),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+      queryClient.invalidateQueries({ queryKey: ['repo', vars.id] });
+    },
+  });
+}
+
+export function useArchiveRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<{ repo: SyncableResource }>(`/repos/${id}/archive`, {}),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+      queryClient.invalidateQueries({ queryKey: ['repo', id] });
+    },
+  });
+}
+
+export function useUnarchiveRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<{ repo: SyncableResource }>(`/repos/${id}/unarchive`, {}),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+      queryClient.invalidateQueries({ queryKey: ['repo', id] });
+    },
+  });
+}
+
+export function useMergeRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sourceId, into }: { sourceId: string; into: string }) =>
+      api.post<{ source: SyncableResource; target: SyncableResource }>(
+        `/repos/${sourceId}/merge`,
+        { into },
+      ),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+      queryClient.invalidateQueries({ queryKey: ['repo', vars.sourceId] });
+      queryClient.invalidateQueries({ queryKey: ['repo', vars.into] });
+    },
+  });
+}
