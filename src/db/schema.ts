@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 49;
+export const SCHEMA_VERSION = 51;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -994,6 +994,57 @@ ALTER TABLE dispatches ADD COLUMN loadout_ref TEXT;
 ALTER TABLE dispatches ADD COLUMN loadout_status TEXT
   CHECK (loadout_status IS NULL OR loadout_status IN ('materialized', 'failed'));
 ALTER TABLE dispatches ADD COLUMN loadout_error TEXT;
+`;
+
+// Migration V50: Hosted swarm kind — generalize the spawn pipeline beyond
+// OpenSwarm. Existing rows default to 'openswarm' so the current behavior is
+// preserved. New kinds (claude-code, future codex/gemini) carry different
+// spawn-plan resolvers. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+export const MIGRATION_V50_HOSTED_SWARM_KIND = `
+ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'openswarm'
+  CHECK (kind IN ('openswarm', 'claude-code'));
+`;
+
+// Migration V51: Open up the hosted_swarms.kind CHECK constraint so new
+// kinds can be added without a DB migration each time. Validation moves to
+// the application layer (Zod schema in the spawn route + the
+// HostedSwarmKind union type). SQLite can't drop a column-level CHECK in
+// place, so we rebuild the table — this preserves all data, indexes, and
+// the FK to map_swarms.
+export const MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK = `
+CREATE TABLE hosted_swarms_v51 (
+  id TEXT PRIMARY KEY,
+  swarm_id TEXT REFERENCES map_swarms(id) ON DELETE SET NULL,
+  provider TEXT NOT NULL CHECK (provider IN ('local', 'docker', 'fly', 'ssh', 'k8s')),
+  state TEXT NOT NULL DEFAULT 'provisioning'
+    CHECK (state IN ('provisioning', 'starting', 'running', 'unhealthy', 'stopping', 'stopped', 'failed')),
+  pid INTEGER,
+  container_id TEXT,
+  deployment_id TEXT,
+  bootstrap_token_hash TEXT,
+  assigned_port INTEGER,
+  endpoint TEXT,
+  config TEXT,
+  error TEXT,
+  spawned_by TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  kind TEXT NOT NULL DEFAULT 'openswarm'
+);
+INSERT INTO hosted_swarms_v51
+  (id, swarm_id, provider, state, pid, container_id, deployment_id,
+   bootstrap_token_hash, assigned_port, endpoint, config, error,
+   spawned_by, created_at, updated_at, kind)
+  SELECT id, swarm_id, provider, state, pid, container_id, deployment_id,
+         bootstrap_token_hash, assigned_port, endpoint, config, error,
+         spawned_by, created_at, updated_at, kind
+  FROM hosted_swarms;
+DROP TABLE hosted_swarms;
+ALTER TABLE hosted_swarms_v51 RENAME TO hosted_swarms;
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_swarm_id ON hosted_swarms(swarm_id);
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_state ON hosted_swarms(state);
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_spawned_by ON hosted_swarms(spawned_by);
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_bootstrap ON hosted_swarms(bootstrap_token_hash);
 `;
 
 export const MIGRATION_V45_DISPATCH_LINKED_TASKS = `

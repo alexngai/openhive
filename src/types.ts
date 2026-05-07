@@ -125,6 +125,14 @@ export type WSEventType =
   // Swarm hosting events
   | 'swarm_spawned'
   | 'swarm_stopped'
+  // Programmatic-mode hosted-swarm chat events. Fanned out per-swarm on
+  // channel `hosted-chat:<hosted_swarm_id>`. The data carries a
+  // NORMALIZED event shape (kind: 'message.start' | 'message.delta' |
+  // 'message.complete' | 'turn.started' | 'turn.completed' | 'error' |
+  // 'raw') so the frontend chat adapter is provider-agnostic.
+  // Provider-specific protocol details (codex JSON-RPC, future
+  // alternatives) get translated to this shape inside the manager bridge.
+  | 'hosted-chat.event'
   // MAP sync events (relayed from swarms)
   | 'memory:sync'
   | 'skill:sync'

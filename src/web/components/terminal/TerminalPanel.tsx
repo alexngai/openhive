@@ -42,9 +42,16 @@ export interface SwarmTarget {
   swarmId: string;
   /** Display name */
   swarmName?: string;
-  /** MAP endpoint (e.g., ws://127.0.0.1:3100) */
-  endpoint: string;
+  /**
+   * MAP endpoint (e.g., ws://127.0.0.1:3100). Optional — TUI kinds
+   * (claude-code, codex) attach by sessionId and don't have a meaningful
+   * endpoint to display, so callers pass undefined / empty string.
+   */
+  endpoint?: string;
 }
+
+/** What kind of session to launch against the swarm. */
+export type TerminalSessionMode = 'tui' | 'shell';
 
 interface TerminalPanelProps {
   /** If provided, attach to an existing session instead of creating one */
@@ -59,6 +66,8 @@ interface TerminalPanelProps {
   onSessionReady?: (session: TerminalSessionInfo) => void;
   /** Render mode: 'overlay' (floating modal) or 'embedded' (fills parent) */
   mode?: 'overlay' | 'embedded';
+  /** Session kind: 'tui' (OpenSwarm TUI, default) or 'shell' ($SHELL in cwd). */
+  sessionMode?: TerminalSessionMode;
 }
 
 // =============================================================================
@@ -89,6 +98,7 @@ export function TerminalPanel({
   onClose,
   onSessionReady,
   mode = 'overlay',
+  sessionMode = 'tui',
 }: TerminalPanelProps) {
   // Derive WS base URL from current location
   const wsBase = useMemo(() => {
@@ -111,6 +121,8 @@ export function TerminalPanel({
   swarmRef.current = swarm;
   const existingSessionIdRef = useRef(existingSessionId);
   existingSessionIdRef.current = existingSessionId;
+  const sessionModeRef = useRef(sessionMode);
+  sessionModeRef.current = sessionMode;
 
   // Connection version counter: incremented on every connect/cleanup so stale
   // async connect() calls (e.g. from React Strict Mode double-fire) bail out.
@@ -145,6 +157,7 @@ export function TerminalPanel({
     // Read from stable refs
     const currentSwarm = swarmRef.current;
     const currentExistingSessionId = existingSessionIdRef.current;
+    const currentSessionMode = sessionModeRef.current;
 
     // Close previous WebSocket but keep session ID for reconnect
     const previousSessionId = activeSessionIdRef.current;
@@ -214,33 +227,66 @@ export function TerminalPanel({
       console.debug('[terminal] attaching to existing session: %s', attachSessionId);
       params.set('sessionId', attachSessionId);
     } else if (currentSwarm) {
-      // Fetch TUI binary info from the server
-      console.debug('[terminal] fetching terminal-info for swarm: %s', currentSwarm.swarmId);
+      // Fetch session config from the server. The server resolves the binary
+      // / shell path and any sandbox/cwd config; the client just forwards.
+      console.debug(
+        '[terminal] fetching terminal-info for swarm: %s (mode=%s)',
+        currentSwarm.swarmId,
+        currentSessionMode,
+      );
       try {
         const info = await api.get<{
+          mode: 'tui' | 'shell';
+          /**
+           * 'attach' means the server already has a running PTY session
+           * for this swarm (e.g. kind=claude-code) and we should attach
+           * by sessionId. Default (absent or 'spawn') means we ask the
+           * WS to spawn a fresh PTY with the returned command/args.
+           */
+          binding?: 'attach' | 'spawn';
           available: boolean;
-          command: string;
+          command: string | null;
           args: string[];
-          endpoint: string;
-        }>(`/map/hosted/${currentSwarm.swarmId}/terminal-info`);
+          cwd?: string;
+          sandbox?: boolean;
+          sessionId?: string | null;
+          endpoint: string | null;
+        }>(`/map/hosted/${currentSwarm.swarmId}/terminal-info?mode=${currentSessionMode}`);
 
         if (stale()) { term.dispose(); return; }
 
         console.debug('[terminal] terminal-info response:', info);
 
-        if (!info.available) {
-          setStatus('error');
-          setErrorMsg('OpenSwarm TUI binary not available on this server');
-          return;
+        // Attach mode: server already owns the PTY, we just attach by id.
+        if (info.binding === 'attach') {
+          if (!info.available || !info.sessionId) {
+            setStatus('error');
+            setErrorMsg(
+              'No running terminal session for this swarm. The TUI may have exited.',
+            );
+            return;
+          }
+          params.set('sessionId', info.sessionId);
+        } else {
+          if (!info.available || !info.command) {
+            setStatus('error');
+            setErrorMsg(
+              currentSessionMode === 'shell'
+                ? 'Shell mode unavailable for this swarm'
+                : 'OpenSwarm TUI binary not available on this server',
+            );
+            return;
+          }
+          params.set('command', info.command);
+          params.set('args', JSON.stringify(info.args));
+          if (info.cwd) params.set('cwd', info.cwd);
+          if (info.sandbox) params.set('sandbox', '1');
         }
-
-        params.set('command', info.command);
-        params.set('args', JSON.stringify(info.args));
       } catch (err) {
         if (stale()) { term.dispose(); return; }
         console.error('[terminal] terminal-info fetch failed:', err);
         setStatus('error');
-        setErrorMsg(`Failed to resolve TUI: ${(err as Error).message}`);
+        setErrorMsg(`Failed to resolve session: ${(err as Error).message}`);
         return;
       }
     } else {
@@ -279,6 +325,27 @@ export function TerminalPanel({
             console.debug('[terminal] connected to session: %s', msg.sessionId);
             activeSessionIdRef.current = msg.sessionId;
             setStatus('connected');
+            const wsRef2 = wsRef.current;
+            const term2 = terminalRef.current;
+            if (term2) {
+              // Erase scrollback + visible screen + home cursor before the
+              // server's replay buffer arrives. \x1b[3J nukes saved
+              // buffer, \x1b[2J clears visible screen, \x1b[H homes the
+              // cursor. The server then sends the per-session output
+              // ring buffer (PtyManager.getRecentOutput) which renders
+              // claude/codex's last alt-screen frame onto the cleared
+              // xterm — no SIGWINCH dance needed.
+              term2.write('\x1b[3J\x1b[2J\x1b[H');
+            }
+            // Single resize-to-current. If the PTY is already at this
+            // size (common: same-tab reattach without browser resize),
+            // node-pty short-circuits — harmless no-op. If the browser
+            // was resized between detach and reattach, this triggers a
+            // real SIGWINCH and claude/codex redraws at the new size,
+            // overwriting the replayed historical frame.
+            if (wsRef2 && wsRef2.readyState === WebSocket.OPEN && term2) {
+              wsRef2.send(JSON.stringify({ type: 'resize', cols: term2.cols, rows: term2.rows }));
+            }
             return;
           }
           if (msg.type === 'exit') {

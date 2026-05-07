@@ -7,6 +7,9 @@
 
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
 
 /**
  * Resolve the OpenSwarm TUI binary path for the current platform.

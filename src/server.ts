@@ -279,7 +279,17 @@ export async function createHive(
       fastify.get("/ws/terminal", { websocket: true }, (socket, request) => {
         const ws = socket as unknown as import("ws").WebSocket;
         const query = request.query as Record<string, string>;
-        handleTerminalWebSocket(ws, query, ptyManager);
+        // handleTerminalWebSocket awaits sandbox setup when ?sandbox=1; surface
+        // any rejection here so it doesn't become an unhandled promise.
+        handleTerminalWebSocket(ws, query, ptyManager).catch((err) => {
+          console.error("[openhive] terminal-ws handler failed:", err);
+          try {
+            ws.send(JSON.stringify({ type: "error", message: (err as Error).message }));
+            ws.close();
+          } catch {
+            // socket may already be closed
+          }
+        });
       });
 
       console.log("[openhive] Terminal WebSocket registered at /ws/terminal");
@@ -479,6 +489,35 @@ export async function createHive(
     // Attach to fastify instance so routes can access it
     (fastify as unknown as { swarmManager: SwarmManager }).swarmManager =
       swarmManager;
+
+    // Wire PtyManager into SwarmManager so kind=claude-code spawns can use
+    // it. PtyManager was created earlier in the bootstrap if available; if
+    // it isn't (terminal disabled, node-pty not installed), claude-code
+    // spawns will fail with a clear "PtyManager not configured" error.
+    const ptyManager = (
+      fastify as unknown as { ptyManager?: import('./terminal/pty-manager.js').PtyManager }
+    ).ptyManager;
+    if (ptyManager) {
+      swarmManager.setPtyManager(ptyManager);
+    }
+
+    // Wire CodexAppServerManager so kind=codex with mode=rpc can spawn the
+    // app-server child process and drive it via JSON-RPC. No external
+    // native deps — just a child_process + ws client — so this is safe to
+    // construct unconditionally when swarm hosting is enabled.
+    try {
+      const { CodexAppServerManager } = await import('./swarm/codex-app-server-manager.js');
+      const codexAppServerManager = new CodexAppServerManager();
+      swarmManager.setCodexAppServerManager(codexAppServerManager);
+      (fastify as unknown as { codexAppServerManager?: typeof codexAppServerManager })
+        .codexAppServerManager = codexAppServerManager;
+    } catch (err) {
+      console.warn(
+        '[openhive] CodexAppServerManager unavailable — kind=codex+mode=rpc spawns will fail:',
+        (err as Error).message,
+      );
+    }
+
     console.log("[openhive] Swarm hosting enabled");
   }
 

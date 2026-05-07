@@ -151,20 +151,34 @@ export class LocalProvider implements HostingProvider {
       await cloneWorkspaceRepos(config.workspace, dataDir, process.env as Record<string, string>);
     }
 
-    // Parse the command (could be 'npx openswarm', 'node /path/to/bin', etc.)
-    const parts = this.openswarmCommand.split(/\s+/);
-    let bin = parts[0];
-    const baseArgs = parts.slice(1);
+    // Resolve the binary + args. Two paths:
+    //   1. spawn_command_override set → take the override + override_args
+    //      verbatim; no openswarm-specific flags appended. Used by
+    //      non-openswarm kinds (claude-code, future codex/gemini) so the
+    //      provider stays kind-agnostic.
+    //   2. Default → split this.openswarmCommand and append openswarm's
+    //      hosting-server flags (--port, --host, --adapter).
+    let bin: string;
+    let args: string[];
+    if (config.spawn_command_override) {
+      bin = config.spawn_command_override;
+      args = config.spawn_args_override ?? [];
+    } else {
+      // Parse the command (could be 'npx openswarm', 'node /path/to/bin', etc.)
+      const parts = this.openswarmCommand.split(/\s+/);
+      bin = parts[0];
+      const baseArgs = parts.slice(1);
 
-    // Build args for OpenSwarm's hosting server
-    const args = [
-      ...baseArgs,
-      '--port', String(config.assigned_port),
-      '--host', '127.0.0.1',
-    ];
+      // Build args for OpenSwarm's hosting server
+      args = [
+        ...baseArgs,
+        '--port', String(config.assigned_port),
+        '--host', '127.0.0.1',
+      ];
 
-    if (config.adapter) {
-      args.push('--adapter', config.adapter);
+      if (config.adapter) {
+        args.push('--adapter', config.adapter);
+      }
     }
 
     // Build environment for child process
