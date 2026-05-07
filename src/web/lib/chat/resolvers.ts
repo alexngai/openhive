@@ -12,9 +12,10 @@ import type {
   ChatCapabilities,
   ChatTarget,
   ConversationTarget,
+  HostedChatTarget,
   SessionTarget,
 } from 'swarmcraft/ui/embed';
-import { useMapSwarm, useMailConversation } from '../../hooks/useApi';
+import { useMapSwarm, useMailConversation, useHostedSwarms } from '../../hooks/useApi';
 import { getPeerMapId } from '../map';
 
 // ---------------------------------------------------------------------------
@@ -139,6 +140,37 @@ export function useConversationCapabilityResolver(conversationId: string | undef
 }
 
 // ---------------------------------------------------------------------------
+// Hosted-chat capability resolver
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolver for hosted-chat (programmatic-mode) targets. Available when
+ * the hosted swarm is running and exposes mode 'rpc'.
+ */
+export function useHostedChatCapabilityResolver(hostedSwarmId: string | undefined): CapabilityResolver {
+  const { data: hosted } = useHostedSwarms();
+
+  return useCallback(
+    (target: ChatTarget): ChatCapabilities | undefined => {
+      if (target.kind !== 'hosted-chat') return undefined;
+      if (target.hostedSwarmId !== hostedSwarmId) return undefined;
+      const row = (hosted ?? []).find((h) => h.id === hostedSwarmId);
+      if (!row) return { available: false, connected: false };
+
+      const isRpc = (row as { mode?: string }).mode === 'rpc';
+      const running = row.state === 'running';
+      const available = isRpc && running;
+      return {
+        available,
+        connected: running,
+        hostedChat: { canSend: available },
+      };
+    },
+    [hostedSwarmId, hosted],
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Convenience: target constructors
 // ---------------------------------------------------------------------------
 
@@ -155,4 +187,8 @@ export function conversationTarget(
   addressee?: string,
 ): ConversationTarget {
   return { kind: 'conversation', conversationId, addressee };
+}
+
+export function hostedChatTarget(hostedSwarmId: string): HostedChatTarget {
+  return { kind: 'hosted-chat', hostedSwarmId };
 }

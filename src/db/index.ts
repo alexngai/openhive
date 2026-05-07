@@ -42,8 +42,10 @@ import {
   MIGRATION_V47_DISPATCH_ACP_LIFECYCLE,
   MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE,
   MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
-  MIGRATION_V50_REPOS_AND_WORKSPACES,
-  MIGRATION_V51_RESOURCE_STATUS,
+  MIGRATION_V50_HOSTED_SWARM_KIND,
+  MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK,
+  MIGRATION_V52_REPOS_AND_WORKSPACES,
+  MIGRATION_V53_RESOURCE_STATUS,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -144,8 +146,8 @@ export function initDatabase(
     // Create coordination tables
     db.exec(MIGRATION_V22_COORDINATION);
     // Create workspaces table + map_swarms.workspace_policy for fresh installs.
-    // (Existing DBs get this via runMigrations at V50.)
-    db.exec(MIGRATION_V50_REPOS_AND_WORKSPACES);
+    // (Existing DBs get this via runMigrations at V52.)
+    db.exec(MIGRATION_V52_REPOS_AND_WORKSPACES);
     // Seed default data
     db.exec(SEED_DATA);
   } else if (versionRow.version < SCHEMA_VERSION) {
@@ -327,14 +329,24 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // detail UI panel and surfaces materialization failures durably, not
   // just over the live WS event.
   49: MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
-  // Version 50: Repos as syncable resources + per-agent workspace bindings.
-  // Extends syncable_resources.resource_type CHECK with 'repo', adds the
-  // local-only workspaces table, and adds map_swarms.workspace_policy JSON
-  // column. See CLAUDE.md "Repos and Workspaces".
-  50: MIGRATION_V50_REPOS_AND_WORKSPACES,
-  // Version 51: syncable_resources.status column for mesh-level lifecycle
+  // Version 50: hosted_swarms.kind — generalize the spawn pipeline beyond
+  // OpenSwarm. Existing rows default to 'openswarm'. See
+  // docs/HOSTED_SWARM_KINDS_DESIGN.md.
+  50: MIGRATION_V50_HOSTED_SWARM_KIND,
+  // Version 51: Drop the kind CHECK constraint so new kinds (codex, gemini,
+  // …) can be added without a DB migration. Validation moves to Zod at the
+  // API layer + the HostedSwarmKind union type.
+  51: MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK,
+  // Version 52: Repos as syncable resources + per-agent workspace bindings.
+  // (Renumbered from V50 due to merge collision.) Extends
+  // syncable_resources.resource_type CHECK with 'repo', adds the local-only
+  // workspaces table, and adds map_swarms.workspace_policy JSON column. See
+  // CLAUDE.md "Repos and Workspaces".
+  52: MIGRATION_V52_REPOS_AND_WORKSPACES,
+  // Version 53: syncable_resources.status column for mesh-level lifecycle
   // events (resource.redacted / .archived / .merged) per slice 5b.
-  51: MIGRATION_V51_RESOURCE_STATUS,
+  // (Renumbered from V51.)
+  53: MIGRATION_V53_RESOURCE_STATUS,
 };
 
 /** Get the SQL for a specific migration version.
@@ -420,6 +432,7 @@ function repairSchema(database: Database.Database): void {
     "CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence)",
     "ALTER TABLE agents ADD COLUMN capabilities TEXT",
     "ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0",
+    "ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'openswarm'",
     "ALTER TABLE syncable_resources ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
     "CREATE INDEX IF NOT EXISTS idx_syncable_resources_status ON syncable_resources(status)",
   ];

@@ -109,6 +109,13 @@ export function useSpawnSwarm() {
 
   return useMutation({
     mutationFn: (data: {
+      /**
+       * What kind of agent process to spawn. Defaults server-side to
+       * 'openswarm' for backwards compatibility. 'claude-code' routes to
+       * a different spawn pipeline (claude TUI + cc-swarm plugin sidecar).
+       * See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+       */
+      kind?: 'openswarm' | 'claude-code' | 'codex';
       name: string;
       description?: string;
       adapter?: string;
@@ -128,6 +135,11 @@ export function useSpawnSwarm() {
         coordinator?: boolean;
         cwd?: string;
       };
+      /**
+       * Optional first-turn prompt. For claude-code, passed to `claude` as
+       * a positional arg so the TUI opens with the prompt prefilled.
+       */
+      initial_prompt?: string;
     }) => api.post<HostedSwarm>("/map/hosted/spawn", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["hosted-swarms"] });

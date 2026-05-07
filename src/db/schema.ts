@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 51;
+export const SCHEMA_VERSION = 53;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -996,7 +996,59 @@ ALTER TABLE dispatches ADD COLUMN loadout_status TEXT
 ALTER TABLE dispatches ADD COLUMN loadout_error TEXT;
 `;
 
-// Migration V50: Repos as syncable resources + per-agent workspace bindings.
+// Migration V50: Hosted swarm kind — generalize the spawn pipeline beyond
+// OpenSwarm. Existing rows default to 'openswarm' so the current behavior is
+// preserved. New kinds (claude-code, future codex/gemini) carry different
+// spawn-plan resolvers. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+export const MIGRATION_V50_HOSTED_SWARM_KIND = `
+ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'openswarm'
+  CHECK (kind IN ('openswarm', 'claude-code'));
+`;
+
+// Migration V51: Open up the hosted_swarms.kind CHECK constraint so new
+// kinds can be added without a DB migration each time. Validation moves to
+// the application layer (Zod schema in the spawn route + the
+// HostedSwarmKind union type). SQLite can't drop a column-level CHECK in
+// place, so we rebuild the table — this preserves all data, indexes, and
+// the FK to map_swarms.
+export const MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK = `
+CREATE TABLE hosted_swarms_v51 (
+  id TEXT PRIMARY KEY,
+  swarm_id TEXT REFERENCES map_swarms(id) ON DELETE SET NULL,
+  provider TEXT NOT NULL CHECK (provider IN ('local', 'docker', 'fly', 'ssh', 'k8s')),
+  state TEXT NOT NULL DEFAULT 'provisioning'
+    CHECK (state IN ('provisioning', 'starting', 'running', 'unhealthy', 'stopping', 'stopped', 'failed')),
+  pid INTEGER,
+  container_id TEXT,
+  deployment_id TEXT,
+  bootstrap_token_hash TEXT,
+  assigned_port INTEGER,
+  endpoint TEXT,
+  config TEXT,
+  error TEXT,
+  spawned_by TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  kind TEXT NOT NULL DEFAULT 'openswarm'
+);
+INSERT INTO hosted_swarms_v51
+  (id, swarm_id, provider, state, pid, container_id, deployment_id,
+   bootstrap_token_hash, assigned_port, endpoint, config, error,
+   spawned_by, created_at, updated_at, kind)
+  SELECT id, swarm_id, provider, state, pid, container_id, deployment_id,
+         bootstrap_token_hash, assigned_port, endpoint, config, error,
+         spawned_by, created_at, updated_at, kind
+  FROM hosted_swarms;
+DROP TABLE hosted_swarms;
+ALTER TABLE hosted_swarms_v51 RENAME TO hosted_swarms;
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_swarm_id ON hosted_swarms(swarm_id);
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_state ON hosted_swarms(state);
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_spawned_by ON hosted_swarms(spawned_by);
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_bootstrap ON hosted_swarms(bootstrap_token_hash);
+`;
+
+// Migration V52: Repos as syncable resources + per-agent workspace bindings.
+// (Renumbered from V50 due to merge collision with hosted-swarm-kind work.)
 // Three changes in one migration:
 //   1. Extend syncable_resources.resource_type CHECK to admit 'repo'
 //      (V46-style recreate-and-rename, since SQLite can't ALTER a CHECK).
@@ -1005,9 +1057,9 @@ ALTER TABLE dispatches ADD COLUMN loadout_error TEXT;
 //      resource; bindings stay local. See CLAUDE.md "Repos and Workspaces".
 //   3. Add `map_swarms.workspace_policy` JSON column — swarm-operator-set
 //      policy ({ mode: 'open' | 'allow_listed' | 'pinned', ...}).
-export const MIGRATION_V50_REPOS_AND_WORKSPACES = `
+export const MIGRATION_V52_REPOS_AND_WORKSPACES = `
 -- 1. Extend syncable_resources resource_type CHECK to admit 'repo'.
-CREATE TABLE IF NOT EXISTS syncable_resources_v50 (
+CREATE TABLE IF NOT EXISTS syncable_resources_v52 (
   id TEXT PRIMARY KEY,
   resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout', 'repo')),
   name TEXT NOT NULL,
@@ -1033,10 +1085,10 @@ CREATE TABLE IF NOT EXISTS syncable_resources_v50 (
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
-INSERT OR IGNORE INTO syncable_resources_v50 SELECT * FROM syncable_resources;
+INSERT OR IGNORE INTO syncable_resources_v52 SELECT * FROM syncable_resources;
 
 DROP TABLE IF EXISTS syncable_resources;
-ALTER TABLE syncable_resources_v50 RENAME TO syncable_resources;
+ALTER TABLE syncable_resources_v52 RENAME TO syncable_resources;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_syncable_resources_git_url
   ON syncable_resources(owner_agent_id, resource_type, git_remote_url)
@@ -1079,7 +1131,8 @@ CREATE INDEX IF NOT EXISTS idx_workspaces_swarm         ON workspaces(swarm_id);
 ALTER TABLE map_swarms ADD COLUMN workspace_policy TEXT;
 `;
 
-// V51 — Resource lifecycle status column.
+// V53 — Resource lifecycle status column.
+// (Renumbered from V51 due to merge collision with hosted-swarm-kind work.)
 // Adds `status` to `syncable_resources` for the new mesh-level lifecycle
 // events (`resource.redacted`, `.archived`, `.merged`) shipped by
 // agent-workspace's `RESOURCE_MESH_EVENTS`. See
@@ -1088,7 +1141,7 @@ ALTER TABLE map_swarms ADD COLUMN workspace_policy TEXT;
 // SQLite ALTER TABLE ADD COLUMN doesn't support CHECK constraints, so
 // allowed values ('active' | 'redacted_remote' | 'archived' | 'merged_into')
 // are enforced by the materializer + DAL rather than the column.
-export const MIGRATION_V51_RESOURCE_STATUS = `
+export const MIGRATION_V53_RESOURCE_STATUS = `
 ALTER TABLE syncable_resources ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_status ON syncable_resources(status);
 `;

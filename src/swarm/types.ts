@@ -130,6 +130,13 @@ export interface SwarmBootstrap {
 
 /** What the caller provides when requesting a swarm spawn */
 export interface SpawnSwarmInput {
+  /**
+   * What kind of agent process to spawn. Defaults to 'openswarm' (existing
+   * behavior). When set to 'claude-code', the manager routes to a separate
+   * spawn pipeline that launches the Claude Code TUI alongside cc-swarm's
+   * plugin-managed sidecar. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+   */
+  kind?: HostedSwarmKind;
   /** Human-readable name for the swarm (auto-generated if omitted) */
   name?: string;
   /** Optional description */
@@ -163,6 +170,32 @@ export interface SpawnSwarmInput {
    * can be gated. See CLAUDE.md "Repos and Workspaces" enforcement layers.
    */
   workspace_policy?: WorkspacePolicy;
+  /**
+   * Initial prompt to seed the spawned agent with.
+   *
+   * For `kind: 'claude-code'`, passed to `claude` as a positional arg so the
+   * TUI opens with the prompt prefilled (claude treats it as the first user
+   * turn). For `kind: 'openswarm'`, currently a no-op — the openswarm adapter
+   * has its own prompt-injection path via the bootstrap-coordinator field.
+   */
+  initial_prompt?: string;
+  /**
+   * For `kind: 'codex'` only: which surface to spawn.
+   *
+   *   - `'rpc'` (default): spawn `codex app-server` and let openhive's chat
+   *     UI drive it via JSON-RPC. The canonical interaction model — full
+   *     streaming, mid-turn injection, dispatch hand-off, etc.
+   *   - `'tui'`: spawn `codex` interactive TUI in a node-pty PTY. Operator
+   *     drives it through the embedded terminal, openhive does NOT see the
+   *     conversation programmatically (codex has no plugin sidecar yet).
+   *
+   * `'rpc'` and `'tui'` operate on independent threads — codex's app-server
+   * and `codex resume` don't share live state. See
+   * docs/HOSTED_SWARM_KINDS_DESIGN.md "codex — programmatic mode".
+   *
+   * Ignored for non-codex kinds.
+   */
+  mode?: 'rpc' | 'tui';
   /** Resource IDs to inject into the swarm's bootstrap config */
   inject_resources?: string[];
   /** Boot-time agent provisioning (e.g. auto-spawn coordinator) */
@@ -212,6 +245,28 @@ export interface SwarmProvisionConfig {
   workspace_policy?: WorkspacePolicy;
   /** Boot-time agent provisioning (env-var bridged into the runtime) */
   bootstrap?: SwarmBootstrap;
+  /**
+   * When set, the provider spawns this command instead of its kind-default
+   * (e.g. the local provider's `openswarm_command`). Used by non-openswarm
+   * kinds (`claude-code`, future codex/gemini) to point the provider at the
+   * right binary without making the provider itself kind-aware.
+   *
+   * The override is taken verbatim — provider does NOT append default args.
+   */
+  spawn_command_override?: string;
+  /**
+   * For `kind: 'codex'` only — which surface this row was spawned with.
+   * `'rpc'` rows route through CodexAppServerManager; `'tui'` (and absent)
+   * rows route through PtyManager. Persisted so restart/revive can pick
+   * the right pipeline. Ignored for non-codex kinds.
+   */
+  mode?: 'rpc' | 'tui';
+  /**
+   * Args to pair with `spawn_command_override`. When the override is set
+   * these REPLACE the provider's default args (not append). When the
+   * override is unset, this field is ignored.
+   */
+  spawn_args_override?: string[];
 }
 
 // ============================================================================
@@ -276,8 +331,20 @@ export interface HostingProvider {
 // Hosted Swarm Record (DB)
 // ============================================================================
 
+/**
+ * What flavour of agent process this hosted swarm is. Drives the spawn-plan
+ * resolver — see docs/HOSTED_SWARM_KINDS_DESIGN.md. New rows must specify a
+ * kind; legacy rows default to 'openswarm' on read.
+ */
+export type HostedSwarmKind =
+  | 'openswarm'    // OpenSwarm hosting gateway (current default)
+  | 'claude-code'  // claude TUI + cc-swarm plugin sidecar
+  | 'codex';       // codex TUI (no plugin/sidecar in v1; future codex-swarm plugin will add MAP integration)
+
 export interface HostedSwarm {
   id: string;
+  /** What kind of agent process this is. */
+  kind: HostedSwarmKind;
   /** References map_swarms.id — NULL until the swarm registers with the hub */
   swarm_id: string | null;
   /** Which provider is managing this instance */

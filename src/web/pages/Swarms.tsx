@@ -21,6 +21,8 @@ import {
   Monitor,
   User,
   UserRoundPlus,
+  Terminal,
+  MessageSquare,
 } from "lucide-react";
 import {
   uniqueNamesGenerator,
@@ -51,6 +53,7 @@ import { Dialog } from "../components/common/Dialog";
 import { TimeAgo } from "../components/common/TimeAgo";
 import {
   HostedStateBadge,
+  KindBadge,
   MapStatusBadge,
   SandboxBadge,
   SectionLabel,
@@ -157,6 +160,16 @@ const emptyRepo = (): WorkspaceRepoEntry => ({
 });
 
 export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
+  // Which kind of swarm to spawn. claude-code uses a different pipeline
+  // (claude TUI + cc-swarm plugin sidecar) and a much smaller config
+  // surface than openswarm. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+  const [kind, setKind] = useState<'openswarm' | 'claude-code' | 'codex'>('openswarm');
+  // codex-only: which surface to spawn. 'rpc' (default) opens openhive's
+  // chat as the canonical driver; 'tui' attaches the embedded terminal
+  // to a real codex TUI process. The two modes operate on independent
+  // threads — see docs/HOSTED_SWARM_KINDS_DESIGN.md "codex — programmatic
+  // mode" for the why. Field is ignored when kind !== 'codex'.
+  const [codexMode, setCodexMode] = useState<'rpc' | 'tui'>('rpc');
   const [name, setName] = useState(() =>
     uniqueNamesGenerator({
       dictionaries: [adjectives, colors, animals],
@@ -180,6 +193,14 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   // coordinator at `projectDirectory` — no separate _macro/spawnAgent call.
   const [projectDirectory, setProjectDirectory] = useState("");
   const [bootstrapCoordinator, setBootstrapCoordinator] = useState(false);
+
+  // claude-code-specific: optional first-turn prompt + optional single-repo
+  // workspace clone. The clone lands directly under data_dir; claude opens
+  // there. Multi-repo workspaces are accepted by the API but not yet
+  // surfaced in this dialog (single-repo handles the common case).
+  const [ccInitialPrompt, setCcInitialPrompt] = useState("");
+  const [ccRepoUrl, setCcRepoUrl] = useState("");
+  const [ccRepoBranch, setCcRepoBranch] = useState("");
 
   const isSandboxed = provider === "local-sandboxed";
 
@@ -248,17 +269,54 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
       : undefined;
 
     try {
-      await spawnMutation.mutateAsync({
-        name,
-        description: description || undefined,
-        adapter: adapter || undefined,
-        hive: hive || undefined,
-        provider: provider !== "local" ? provider : undefined,
-        adapter_config,
-        metadata,
-        workspace: validRepos.length > 0 ? { repos: validRepos } : undefined,
-        bootstrap,
-      });
+      // For claude-code, drop openswarm-specific fields entirely; the
+      // server ignores them but sending nothing keeps the audit/log
+      // surface honest.
+      const trimmedRepoUrl = ccRepoUrl.trim();
+      const trimmedRepoBranch = ccRepoBranch.trim();
+      const ccWorkspace = trimmedRepoUrl
+        ? {
+            repos: [
+              {
+                url: trimmedRepoUrl,
+                ...(trimmedRepoBranch ? { branch: trimmedRepoBranch } : {}),
+              },
+            ],
+          }
+        : undefined;
+      const trimmedPrompt = ccInitialPrompt.trim();
+
+      const isTuiKind = kind === 'claude-code' || kind === 'codex';
+      // mode is codex-only and the backend defaults to 'rpc' — emit it
+      // only when the user picked TUI explicitly so the wire stays clean
+      // for the common case.
+      const codexModeOverride = kind === 'codex' && codexMode === 'tui'
+        ? { mode: 'tui' as const }
+        : {};
+      const payload =
+        isTuiKind
+          ? {
+              kind,
+              name,
+              description: description || undefined,
+              provider: provider !== 'local' ? provider : undefined,
+              workspace: ccWorkspace,
+              initial_prompt: trimmedPrompt || undefined,
+              ...codexModeOverride,
+            }
+          : {
+              kind,
+              name,
+              description: description || undefined,
+              adapter: adapter || undefined,
+              hive: hive || undefined,
+              provider: provider !== 'local' ? provider : undefined,
+              adapter_config,
+              metadata,
+              workspace: validRepos.length > 0 ? { repos: validRepos } : undefined,
+              bootstrap,
+            };
+      await spawnMutation.mutateAsync(payload);
       toast.success("Swarm spawned", `"${name}" is starting up.`);
       onClose();
     } catch (err) {
@@ -280,6 +338,134 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3">
+          {/* Kind picker — drives the rest of the form's shape */}
+          <div>
+            <SectionLabel>Kind</SectionLabel>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setKind('openswarm')}
+                className={`flex-1 px-3 py-2 rounded-md border text-left transition-colors ${
+                  kind === 'openswarm' ? 'border-honey-500' : 'border-transparent'
+                }`}
+                style={{
+                  backgroundColor:
+                    kind === 'openswarm'
+                      ? 'rgba(255, 165, 0, 0.08)'
+                      : 'var(--color-elevated)',
+                }}
+              >
+                <div className="text-xs font-medium">OpenSwarm</div>
+                <div
+                  className="text-2xs mt-0.5"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
+                  Multi-agent system with adapter (default)
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setKind('claude-code')}
+                className={`flex-1 px-3 py-2 rounded-md border text-left transition-colors ${
+                  kind === 'claude-code' ? 'border-honey-500' : 'border-transparent'
+                }`}
+                style={{
+                  backgroundColor:
+                    kind === 'claude-code'
+                      ? 'rgba(255, 165, 0, 0.08)'
+                      : 'var(--color-elevated)',
+                }}
+              >
+                <div className="text-xs font-medium">Claude Code</div>
+                <div
+                  className="text-2xs mt-0.5"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
+                  Claude Code TUI + cc-swarm plugin sidecar
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setKind('codex')}
+                className={`flex-1 px-3 py-2 rounded-md border text-left transition-colors ${
+                  kind === 'codex' ? 'border-honey-500' : 'border-transparent'
+                }`}
+                style={{
+                  backgroundColor:
+                    kind === 'codex'
+                      ? 'rgba(255, 165, 0, 0.08)'
+                      : 'var(--color-elevated)',
+                }}
+              >
+                <div className="text-xs font-medium">Codex</div>
+                <div
+                  className="text-2xs mt-0.5"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
+                  Codex TUI (no plugin sidecar yet)
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Codex-only: choose between chat (RPC) and TUI mode. The two
+              modes spawn independent threads — see Deviation 6 in the
+              design doc. Default RPC matches the backend default. */}
+          {kind === 'codex' && (
+            <div>
+              <SectionLabel>Mode</SectionLabel>
+              <div
+                className="inline-flex p-0.5 rounded-md"
+                style={{ backgroundColor: 'var(--color-elevated)' }}
+                role="radiogroup"
+                aria-label="Codex mode"
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={codexMode === 'rpc'}
+                  onClick={() => setCodexMode('rpc')}
+                  className="px-3 py-1 rounded text-2xs font-medium transition-colors"
+                  style={{
+                    backgroundColor:
+                      codexMode === 'rpc' ? 'var(--color-bg)' : 'transparent',
+                    color:
+                      codexMode === 'rpc'
+                        ? 'var(--color-text-primary)'
+                        : 'var(--color-text-muted)',
+                  }}
+                >
+                  Chat (RPC)
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={codexMode === 'tui'}
+                  onClick={() => setCodexMode('tui')}
+                  className="px-3 py-1 rounded text-2xs font-medium transition-colors"
+                  style={{
+                    backgroundColor:
+                      codexMode === 'tui' ? 'var(--color-bg)' : 'transparent',
+                    color:
+                      codexMode === 'tui'
+                        ? 'var(--color-text-primary)'
+                        : 'var(--color-text-muted)',
+                  }}
+                >
+                  TUI
+                </button>
+              </div>
+              <p
+                className="text-2xs mt-1"
+                style={{ color: 'var(--color-text-muted)' }}
+              >
+                {codexMode === 'rpc'
+                  ? 'Drive codex from openhive chat. Streaming output, mid-turn injection, no terminal needed.'
+                  : 'Attach the embedded terminal to a codex TUI. Operator drives directly; openhive observes only the lifecycle.'}
+              </p>
+            </div>
+          )}
+
           {/* Row 1: Name + Provider */}
           <div className="flex gap-3">
             <div className="flex-1">
@@ -355,6 +541,11 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
             />
           </div>
 
+          {/* Openswarm-only fields. claude-code spawns are intentionally
+              minimal — the cc-swarm plugin handles bootstrap, no adapter
+              choice or workspace cloning is exposed in v1. */}
+          {kind === 'openswarm' && (
+          <>
           {/* Row 3: Adapter + Hive */}
           <div className="flex gap-3">
             <div className="flex-1">
@@ -622,6 +813,82 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                 />
               </div>
             </div>
+          )}
+          </>
+          )}
+
+          {/* TUI-kind-specific fields (claude-code, codex) */}
+          {(kind === 'claude-code' || kind === 'codex') && (
+            <>
+              {/* Optional repo to clone before launching claude */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="col-span-2">
+                  <SectionLabel>Clone repo (optional)</SectionLabel>
+                  <input
+                    type="text"
+                    value={ccRepoUrl}
+                    onChange={(e) => setCcRepoUrl(e.target.value)}
+                    className="input w-full font-mono text-2xs"
+                    placeholder="https://github.com/owner/repo.git or git@…"
+                    spellCheck={false}
+                  />
+                  <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                    Cloned into the swarm data dir before claude launches.
+                  </p>
+                </div>
+                <div>
+                  <SectionLabel>Branch</SectionLabel>
+                  <input
+                    type="text"
+                    value={ccRepoBranch}
+                    onChange={(e) => setCcRepoBranch(e.target.value)}
+                    className="input w-full text-2xs"
+                    placeholder="main"
+                    disabled={!ccRepoUrl.trim()}
+                  />
+                </div>
+              </div>
+
+              {/* Optional initial prompt */}
+              <div>
+                <SectionLabel>Initial prompt (optional)</SectionLabel>
+                <textarea
+                  value={ccInitialPrompt}
+                  onChange={(e) => setCcInitialPrompt(e.target.value)}
+                  className="input w-full text-xs min-h-[60px] resize-y"
+                  placeholder="What should claude work on first? Leave empty to open the TUI at an empty prompt."
+                  maxLength={8000}
+                />
+              </div>
+
+              {/* Prerequisite hint — per kind */}
+              <div
+                className="flex items-start gap-2 px-3 py-2 rounded-md text-xs"
+                style={{
+                  backgroundColor: 'rgba(255, 165, 0, 0.06)',
+                  border: '1px solid rgba(255, 165, 0, 0.15)',
+                }}
+              >
+                <Zap className="w-3.5 h-3.5 text-honey-500 shrink-0 mt-0.5" />
+                <div style={{ color: 'var(--color-text-secondary)' }}>
+                  {kind === 'claude-code' ? (
+                    <>
+                      Requires the <code>claude-code-swarm</code> plugin installed in
+                      Claude Code on this host (
+                      <code>claude plugin add claude-code-swarm</code>) and{' '}
+                      <code>claude</code> on PATH.
+                    </>
+                  ) : (
+                    <>
+                      Requires <code>codex</code> on PATH and a logged-in account
+                      (<code>codex login</code>). No plugin sidecar yet — openhive
+                      manages the TUI process; codex's MAP integration arrives with
+                      the future codex-swarm plugin.
+                    </>
+                  )}
+                </div>
+              </div>
+            </>
           )}
 
           {/* Actions */}
@@ -1052,6 +1319,20 @@ function HostedSwarmCard({
     ((linkedMapSwarm?.metadata as any)?.projectPath as string | undefined) ??
     ((linkedMapSwarm?.metadata as any)?.cwd as string | undefined);
 
+  // Quick-access shortcut for hosted-swarm kinds where the user's primary
+  // intent is to open the agent surface — claude-code TUI, codex TUI,
+  // or codex-rpc chat. Skips the swarm-detail page when the user already
+  // knows what they want. Only shown while running.
+  const isRunning = swarm.state === "running";
+  const quickOpen: { label: string; href: string; icon: typeof Terminal } | null =
+    isRunning && swarm.kind === "claude-code"
+      ? { label: "Open Claude Code TUI", href: `/terminal/${swarm.id}`, icon: Terminal }
+      : isRunning && swarm.kind === "codex" && swarm.mode !== "rpc"
+        ? { label: "Open Codex TUI", href: `/terminal/${swarm.id}`, icon: Terminal }
+        : isRunning && swarm.kind === "codex" && swarm.mode === "rpc"
+          ? { label: "Open codex chat", href: `/threads/hosted-chat/${swarm.id}`, icon: MessageSquare }
+          : null;
+
   // Synchronous gate against fast double-clicks. React Query's isPending
   // flips after the state commit, so a tight click-twice can fire two
   // requests before the disabled attribute lands.
@@ -1130,6 +1411,7 @@ function HostedSwarmCard({
             </span>
             <HostedStateBadge state={swarm.state} />
             {mapStatus && <MapStatusBadge status={mapStatus} />}
+            <KindBadge kind={swarm.kind} />
             <span
               className="text-2xs px-1.5 py-0.5 rounded"
               style={{
@@ -1192,6 +1474,21 @@ function HostedSwarmCard({
           className="flex items-center gap-1 shrink-0"
           onClick={(e) => e.stopPropagation()}
         >
+          {quickOpen && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate(quickOpen.href);
+              }}
+              disabled={isTransitioning}
+              className="btn btn-ghost p-1.5 hover:bg-honey-500/10 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              style={{ color: "var(--color-accent)" }}
+              title={quickOpen.label}
+              aria-label={quickOpen.label}
+            >
+              <quickOpen.icon className="w-3 h-3" />
+            </button>
+          )}
           {canStartAgentSession && (
             <button
               onClick={handleNewAgentSession}
