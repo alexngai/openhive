@@ -2,7 +2,7 @@
  * Zod schemas for repo REST routes (slice 4).
  *
  * Repos are syncable resources with a federation tier separate from the
- * column-level visibility — see docs/design/repos-as-syncable-resources.md.
+ * column-level visibility — see CLAUDE.md "Repos and Workspaces".
  */
 
 import { z } from 'zod';

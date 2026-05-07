@@ -9,7 +9,7 @@
  * column-level visibility is set to 'private' on insert and is not consulted
  * by the repo kind; it stays for back-compat with shared infrastructure.
  *
- * See `docs/design/repos-as-syncable-resources.md` for the consumer-side
+ * See CLAUDE.md "Repos and Workspaces" for the consumer-side
  * design and `repo-kind.md` for the package-side protocol.
  */
 

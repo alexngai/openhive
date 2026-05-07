@@ -3,7 +3,7 @@
  *
  * Bindings live in their own table (NOT a syncable resource) because they're
  * machine-specific runtime state. The `(agent_id, repo_id, local_path)` triple
- * is the natural key — see `docs/design/repos-as-syncable-resources.md` for
+ * is the natural key — see CLAUDE.md "Repos and Workspaces" for
  * how this handles multiple clones, multi-remote per-clone, and worktrees.
  */
 

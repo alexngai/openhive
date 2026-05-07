@@ -290,7 +290,7 @@ export interface MemoryBankSubscriptionWithAgent extends MemoryBankSubscription 
 export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session' | 'playbook' | 'team_template' | 'loadout' | 'repo';
 
 // Workspace bindings — local-only, per-agent instance of a federated repo
-// resource. See `docs/design/repos-as-syncable-resources.md`.
+// resource. See CLAUDE.md "Repos and Workspaces".
 export interface Workspace {
   id: string;
   repo_id: string;       // FK syncable_resources(id) where resource_type='repo'

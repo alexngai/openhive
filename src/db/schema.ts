@@ -1002,7 +1002,7 @@ ALTER TABLE dispatches ADD COLUMN loadout_error TEXT;
 //      (V46-style recreate-and-rename, since SQLite can't ALTER a CHECK).
 //   2. Add `workspaces` table — per-agent local-only bindings keyed by
 //      (agent_id, repo_id, local_path). Federates the abstract repo
-//      resource; bindings stay local. See docs/design/repos-as-syncable-resources.md.
+//      resource; bindings stay local. See CLAUDE.md "Repos and Workspaces".
 //   3. Add `map_swarms.workspace_policy` JSON column — swarm-operator-set
 //      policy ({ mode: 'open' | 'allow_listed' | 'pinned', ...}).
 export const MIGRATION_V50_REPOS_AND_WORKSPACES = `
@@ -1083,7 +1083,7 @@ ALTER TABLE map_swarms ADD COLUMN workspace_policy TEXT;
 // Adds `status` to `syncable_resources` for the new mesh-level lifecycle
 // events (`resource.redacted`, `.archived`, `.merged`) shipped by
 // agent-workspace's `RESOURCE_MESH_EVENTS`. See
-// docs/design/repos-as-syncable-resources.md slice 5b.
+// CLAUDE.md "Repos and Workspaces" — federation lifecycle events.
 //
 // SQLite ALTER TABLE ADD COLUMN doesn't support CHECK constraints, so
 // allowed values ('active' | 'redacted_remote' | 'archived' | 'merged_into')

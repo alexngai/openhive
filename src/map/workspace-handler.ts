@@ -6,7 +6,7 @@
  * openhive's persistence (repos + workspaces DALs) and broadcasts lifecycle
  * events on the realtime channels (`map:repos` + `map:repo:${repoId}`).
  *
- * Per the design doc (`docs/design/repos-as-syncable-resources.md`):
+ * Per CLAUDE.md "Repos and Workspaces":
  * - `agent-workspace/kinds/repo` owns the wire format and protocol semantics.
  * - OpenHive owns persistence, federation, REST/UI, and policy enforcement.
  *

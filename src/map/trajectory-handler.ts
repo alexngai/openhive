@@ -135,7 +135,7 @@ function handleCheckpoint(
   // repo list once they start sending checkpoints. See
   // `agent-workspace/docs/design/agent-integration.md` "Trajectory-
   // bootstrap interaction" — and the Build-Order step 5 in
-  // `docs/design/repos-as-syncable-resources.md`.
+  // CLAUDE.md "Repos and Workspaces".
   // Fire-and-forget: never blocks checkpoint persistence.
   if (gitRemoteUrl && projectPath) {
     try {

@@ -160,7 +160,7 @@ export interface SpawnSwarmInput {
   /**
    * Per-swarm workspace policy gating which repos this swarm's agents may
    * declare. Persisted on `map_swarms.workspace_policy` so runtime declares
-   * can be gated. See `docs/design/repos-as-syncable-resources.md` D5/D11.
+   * can be gated. See CLAUDE.md "Repos and Workspaces" enforcement layers.
    */
   workspace_policy?: WorkspacePolicy;
   /** Resource IDs to inject into the swarm's bootstrap config */

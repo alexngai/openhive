@@ -330,7 +330,7 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 50: Repos as syncable resources + per-agent workspace bindings.
   // Extends syncable_resources.resource_type CHECK with 'repo', adds the
   // local-only workspaces table, and adds map_swarms.workspace_policy JSON
-  // column. See docs/design/repos-as-syncable-resources.md.
+  // column. See CLAUDE.md "Repos and Workspaces".
   50: MIGRATION_V50_REPOS_AND_WORKSPACES,
   // Version 51: syncable_resources.status column for mesh-level lifecycle
   // events (resource.redacted / .archived / .merged) per slice 5b.
