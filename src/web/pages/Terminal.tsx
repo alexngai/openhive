@@ -58,12 +58,27 @@ export function Terminal() {
 
   return (
     <TerminalPanel
+      // Force a clean unmount+remount when sessionMode changes. Without
+      // this, navigating from `/terminal/<id>` (mode=tui) to
+      // `/terminal/<id>?mode=shell` (or vice versa) leaves the old WS +
+      // PTY attached because React Router doesn't remount on search-param
+      // changes alone — the user would keep seeing the previous TUI.
+      key={`${swarm.id}:${sessionMode}`}
       mode="embedded"
       sessionMode={sessionMode}
       swarm={{
         swarmId: swarm.id,
         swarmName: swarm.name,
-        endpoint: swarm.endpoint || `ws://127.0.0.1:${swarm.assigned_port}`,
+        // TUI kinds (claude-code, codex) have no MAP endpoint and no port
+        // — the embedded terminal attaches by sessionId, not by URL. Only
+        // synthesize the ws://127.0.0.1:<port> fallback when we actually
+        // have a port (openswarm). Without this guard we'd display
+        // "ws://127.0.0.1:null" in the header for TUI kinds.
+        endpoint:
+          swarm.endpoint
+            ?? (typeof swarm.assigned_port === 'number'
+              ? `ws://127.0.0.1:${swarm.assigned_port}`
+              : undefined),
       }}
       isOpen
       onClose={() => navigate('/swarms')}

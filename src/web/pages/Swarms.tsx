@@ -21,6 +21,8 @@ import {
   Monitor,
   User,
   UserRoundPlus,
+  Terminal,
+  MessageSquare,
 } from "lucide-react";
 import {
   uniqueNamesGenerator,
@@ -1246,6 +1248,20 @@ function HostedSwarmCard({
     ((linkedMapSwarm?.metadata as any)?.projectPath as string | undefined) ??
     ((linkedMapSwarm?.metadata as any)?.cwd as string | undefined);
 
+  // Quick-access shortcut for hosted-swarm kinds where the user's primary
+  // intent is to open the agent surface — claude-code TUI, codex TUI,
+  // or codex-rpc chat. Skips the swarm-detail page when the user already
+  // knows what they want. Only shown while running.
+  const isRunning = swarm.state === "running";
+  const quickOpen: { label: string; href: string; icon: typeof Terminal } | null =
+    isRunning && swarm.kind === "claude-code"
+      ? { label: "Open Claude Code TUI", href: `/terminal/${swarm.id}`, icon: Terminal }
+      : isRunning && swarm.kind === "codex" && swarm.mode !== "rpc"
+        ? { label: "Open Codex TUI", href: `/terminal/${swarm.id}`, icon: Terminal }
+        : isRunning && swarm.kind === "codex" && swarm.mode === "rpc"
+          ? { label: "Open codex chat", href: `/swarms/${targetSwarmId}`, icon: MessageSquare }
+          : null;
+
   // Synchronous gate against fast double-clicks. React Query's isPending
   // flips after the state commit, so a tight click-twice can fire two
   // requests before the disabled attribute lands.
@@ -1387,6 +1403,21 @@ function HostedSwarmCard({
           className="flex items-center gap-1 shrink-0"
           onClick={(e) => e.stopPropagation()}
         >
+          {quickOpen && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate(quickOpen.href);
+              }}
+              disabled={isTransitioning}
+              className="btn btn-ghost p-1.5 hover:bg-honey-500/10 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              style={{ color: "var(--color-accent)" }}
+              title={quickOpen.label}
+              aria-label={quickOpen.label}
+            >
+              <quickOpen.icon className="w-3 h-3" />
+            </button>
+          )}
           {canStartAgentSession && (
             <button
               onClick={handleNewAgentSession}

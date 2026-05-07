@@ -201,15 +201,35 @@ export async function handleTerminalWebSocket(
     }
   };
 
+  // Attach mode: replay the per-session output buffer FIRST, before
+  // wiring up the live listener. Without replay, a reattach lands on a
+  // freshly-cleared xterm with no way to know what the running TUI is
+  // currently rendering — claude/codex sit waiting for input and don't
+  // redraw until the user types, leaving a blank or jumbled view.
+  // Replay → connected → live in this order means: the client clears the
+  // xterm on `connected`, renders the historical bytes (which culminate
+  // in claude's last alt-screen frame), then live updates start streaming
+  // and overwrite as new frames arrive.
+  //
+  // Order matters: capture the buffer + send `connected` + send replay
+  // BEFORE `ptyManager.on('session.data', ...)`. If we attached the
+  // listener first, any in-flight 'session.data' could race ahead of the
+  // replay onto the wire and mis-order the rendered state.
+  const replay = existingSessionId
+    ? ptyManager.getRecentOutput(existingSessionId)
+    : '';
+
+  console.log('[terminal-ws] sending connected message for session %s (replay bytes=%d)', sessionId, replay.length);
+  socket.send(JSON.stringify({ type: 'connected', sessionId }));
+  if (replay.length > 0) {
+    socket.send(replay);
+  }
+
   ptyManager.on('session.data', dataListener);
   ptyManager.on('session.exit', exitListener);
 
   const clientId = sessionId + '-' + Date.now();
   activeClients.set(clientId, { socket, sessionId, dataListener, exitListener });
-
-  // Send session info to client
-  console.log('[terminal-ws] sending connected message for session %s', sessionId);
-  socket.send(JSON.stringify({ type: 'connected', sessionId }));
 
   // Handle incoming messages from the client
   socket.on('message', (rawData) => {

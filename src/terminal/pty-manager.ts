@@ -66,10 +66,25 @@ interface TerminalSessionState {
   createdAt: number;
   stoppedAt: number | null;
   exitCode: number | null;
+  /**
+   * Ring buffer of recent stdout/stderr bytes from the PTY. On reattach
+   * (a second WS opens against an existing session), the WS handler
+   * replays this buffer to the new client BEFORE wiring up the live data
+   * listener. Without it, claude/codex's alternate-screen TUIs render
+   * whatever they've previously emitted up to the cap, so reattach lands
+   * the new client on the agent's actual current frame instead of a
+   * blank/jumbled buffer.
+   *
+   * Sized at 1 MiB — enough to hold ~hundreds of full alt-screen redraws
+   * for typical 120x40 viewports. Capped via `slice(-MAX)`.
+   */
+  outputBuffer: string;
 }
 
 /** Maximum number of concurrent terminal sessions */
 const MAX_SESSIONS = 20;
+/** Per-session output ring-buffer cap (bytes). */
+const OUTPUT_BUFFER_BYTES = 1024 * 1024;
 
 // =============================================================================
 // PTY Manager
@@ -118,12 +133,17 @@ export class PtyManager extends EventEmitter {
       createdAt: Date.now(),
       stoppedAt: null,
       exitCode: null,
+      outputBuffer: '',
     };
 
     this.sessions.set(id, state);
 
-    // Forward PTY data
+    // Forward PTY data + retain a ring buffer for reattach replay.
     ptyProcess.onData((data: string) => {
+      const next = state.outputBuffer + data;
+      state.outputBuffer = next.length > OUTPUT_BUFFER_BYTES
+        ? next.slice(-OUTPUT_BUFFER_BYTES)
+        : next;
       this.emit('session.data', { sessionId: id, data });
     });
 
@@ -202,6 +222,16 @@ export class PtyManager extends EventEmitter {
     return Array.from(this.sessions.keys())
       .map((id) => this.getInfo(id))
       .filter((info): info is TerminalSessionInfo => info !== null);
+  }
+
+  /**
+   * Return the recent stdout/stderr ring buffer for a session — used by
+   * the WS handler to replay history when a new client attaches mid-
+   * session. Returns an empty string when the session is unknown or
+   * hasn't emitted yet.
+   */
+  getRecentOutput(sessionId: string): string {
+    return this.sessions.get(sessionId)?.outputBuffer ?? '';
   }
 
   /**
@@ -316,11 +346,16 @@ export class PtyManager extends EventEmitter {
       createdAt: Date.now(),
       stoppedAt: null,
       exitCode: null,
+      outputBuffer: '',
     };
 
     this.sessions.set(id, state);
 
     ptyProcess.onData((data: string) => {
+      const next = state.outputBuffer + data;
+      state.outputBuffer = next.length > OUTPUT_BUFFER_BYTES
+        ? next.slice(-OUTPUT_BUFFER_BYTES)
+        : next;
       this.emit('session.data', { sessionId: id, data });
     });
 
