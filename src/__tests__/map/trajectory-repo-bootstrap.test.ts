@@ -295,6 +295,79 @@ describe('Trajectory handler — repo bootstrap', () => {
     unregisterInbound(swarmId);
   });
 
+  // ── metadata.repo_id linking on tasks (slice 8 path A) ────────────────
+
+  it('stamps metadata.repo_id on the task resource referenced by checkpoint.task_ref', () => {
+    const swarmId = `bootstrap-tasklink-${Date.now()}`;
+    seedSwarm(swarmId, ownerAgentId);
+    setCapability(swarmId, ownerAgentId, { declare: { enabled: true } });
+
+    // Pre-create a task resource that the checkpoint will reference.
+    const db = getDatabase();
+    const taskId = `task_test_${Date.now()}`;
+    db.prepare(`
+      INSERT INTO syncable_resources (
+        id, resource_type, name, git_remote_url, owner_agent_id, metadata
+      ) VALUES (?, 'task', ?, ?, ?, ?)
+    `).run(taskId, 'test-task', '/tmp/fake-opentasks', ownerAgentId, JSON.stringify({ opentasks: true }));
+
+    handleTrajectoryRequest(
+      'trajectory/checkpoint',
+      {
+        checkpoint: {
+          id: 'cp-tasklink-1',
+          agent: 'sidecar',
+          metadata: {
+            gitRemoteUrl: REMOTE_URL,
+            projectPath: PROJECT_PATH,
+            task_ref: { resource_id: taskId, node_id: 'node-1' },
+          },
+        },
+      },
+      { swarmId, agentId: ownerAgentId },
+    );
+
+    const repo = repos.findRepoByCanonicalUrl(REMOTE_URL)!;
+    const taskRow = db.prepare(`SELECT metadata FROM syncable_resources WHERE id = ?`).get(taskId) as { metadata: string };
+    const taskMeta = JSON.parse(taskRow.metadata);
+    expect(taskMeta.repo_id).toBe(repo.id);
+
+    unregisterInbound(swarmId);
+  });
+
+  it('does NOT stamp metadata.repo_id on tasks when checkpoint has no task_ref', () => {
+    const swarmId = `bootstrap-notaskref-${Date.now()}`;
+    seedSwarm(swarmId, ownerAgentId);
+    setCapability(swarmId, ownerAgentId, { declare: { enabled: true } });
+
+    const db = getDatabase();
+    const taskId = `task_unlinked_${Date.now()}`;
+    db.prepare(`
+      INSERT INTO syncable_resources (
+        id, resource_type, name, git_remote_url, owner_agent_id, metadata
+      ) VALUES (?, 'task', ?, ?, ?, ?)
+    `).run(taskId, 'unlinked', '/tmp/fake', ownerAgentId, JSON.stringify({ opentasks: true }));
+
+    handleTrajectoryRequest(
+      'trajectory/checkpoint',
+      {
+        checkpoint: {
+          id: 'cp-notaskref-1',
+          agent: 'sidecar',
+          metadata: { gitRemoteUrl: REMOTE_URL, projectPath: PROJECT_PATH },
+        },
+      },
+      { swarmId, agentId: ownerAgentId },
+    );
+
+    // The unrelated task we created shouldn't be touched.
+    const taskRow = db.prepare(`SELECT metadata FROM syncable_resources WHERE id = ?`).get(taskId) as { metadata: string };
+    const taskMeta = JSON.parse(taskRow.metadata);
+    expect(taskMeta.repo_id).toBeUndefined();
+
+    unregisterInbound(swarmId);
+  });
+
   it('does NOT stamp metadata.repo_id when bootstrap is capability-gated off', () => {
     const swarmId = `bootstrap-nolink-${Date.now()}`;
     seedSwarm(swarmId, ownerAgentId);

@@ -154,6 +154,7 @@ function handleCheckpoint(
       // on every checkpoint. Skipped if bootstrap was capability-gated
       // off or the swarm row is missing.
       if (bootstrap) {
+        // Stamp metadata.repo_id on the session resource (slice 8 prereq).
         try {
           const sessionMeta = (findResourceById(resourceId)?.metadata as Record<string, unknown>) || {};
           if (sessionMeta.repo_id !== bootstrap.repoId) {
@@ -162,6 +163,25 @@ function handleCheckpoint(
             });
           }
         } catch { /* non-critical — repo_id linkage is advisory */ }
+
+        // Path A — when the same checkpoint also carries `task_ref`, stamp
+        // metadata.repo_id on that task resource too. Idempotent: skipped
+        // if the task already has the same repo_id, and silently no-ops if
+        // the task resource doesn't exist or isn't a task.
+        const taskRef = meta?.task_ref as { resource_id?: string; node_id?: string } | undefined;
+        if (taskRef?.resource_id) {
+          try {
+            const taskResource = findResourceById(taskRef.resource_id);
+            if (taskResource && taskResource.resource_type === 'task') {
+              const taskMeta = (taskResource.metadata as Record<string, unknown>) || {};
+              if (taskMeta.repo_id !== bootstrap.repoId) {
+                updateResource(taskRef.resource_id, {
+                  metadata: { ...taskMeta, repo_id: bootstrap.repoId },
+                });
+              }
+            }
+          } catch { /* non-critical — repo_id linkage is advisory */ }
+        }
       }
     } catch { /* non-critical — checkpoint succeeds regardless */ }
   }
