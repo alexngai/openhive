@@ -139,14 +139,30 @@ function handleCheckpoint(
   // Fire-and-forget: never blocks checkpoint persistence.
   if (gitRemoteUrl && projectPath) {
     try {
-      bootstrapRepoFromCheckpoint({
+      const bootstrap = bootstrapRepoFromCheckpoint({
         swarmId,
         agentId,
         gitRemoteUrl,
         projectPath,
         branch: checkpoint.branch as string | undefined,
         gitCommitHash,
+        agentName: (checkpoint.agent as string | undefined) ?? undefined,
       });
+      // Slice 8 prerequisite: stamp `metadata.repo_id` on the session
+      // resource so future "show all sessions for this repo" queries are
+      // a one-line FK lookup. Idempotent — overwrites with the same value
+      // on every checkpoint. Skipped if bootstrap was capability-gated
+      // off or the swarm row is missing.
+      if (bootstrap) {
+        try {
+          const sessionMeta = (findResourceById(resourceId)?.metadata as Record<string, unknown>) || {};
+          if (sessionMeta.repo_id !== bootstrap.repoId) {
+            updateResource(resourceId, {
+              metadata: { ...sessionMeta, repo_id: bootstrap.repoId },
+            });
+          }
+        } catch { /* non-critical — repo_id linkage is advisory */ }
+      }
     } catch { /* non-critical — checkpoint succeeds regardless */ }
   }
 
@@ -260,6 +276,9 @@ interface BootstrapInput {
   projectPath: string;
   branch?: string;
   gitCommitHash?: string;
+  /** Agent self-reported name from the checkpoint, surfaced into the
+   *  shim-inserted `map_nodes` row so UI panels don't render "Unknown". */
+  agentName?: string;
 }
 
 /**
@@ -274,20 +293,20 @@ interface BootstrapInput {
  * owner_agent_id` is the source of truth for repo ownership; the
  * connection's agentId can't own an `agents`-table-backed resource.
  */
-function bootstrapRepoFromCheckpoint(input: BootstrapInput): void {
-  const { swarmId, agentId, gitRemoteUrl, projectPath, branch, gitCommitHash } = input;
+function bootstrapRepoFromCheckpoint(input: BootstrapInput): { repoId: string } | null {
+  const { swarmId, agentId, gitRemoteUrl, projectPath, branch, gitCommitHash, agentName } = input;
 
   // Capability check — aggregate across all registered agents on the swarm.
   const caps = getAggregateCapabilities(swarmId) ?? {};
   const ws = caps.workspace as { declare?: { enabled?: boolean } } | undefined;
-  if (ws?.declare?.enabled !== true) return;
+  if (ws?.declare?.enabled !== true) return null;
 
   // Resolve repo owner from the swarm record (same pattern as workspace-handler).
   const db = getDatabase();
   const ownerRow = db.prepare(
     'SELECT owner_agent_id FROM map_swarms WHERE id = ?',
   ).get(swarmId) as { owner_agent_id: string } | undefined;
-  if (!ownerRow) return; // swarm not in DB — nothing to attribute the repo to
+  if (!ownerRow) return null; // swarm not in DB — nothing to attribute the repo to
 
   // Upsert the repo. `trajectory_inferred` origin distinguishes from agents
   // that explicitly call declare; future paths can prefer explicit declares.
@@ -297,8 +316,15 @@ function bootstrapRepoFromCheckpoint(input: BootstrapInput): void {
     owner_agent_id: ownerRow.owner_agent_id,
   });
 
-  // Workspace FK requires a map_nodes row keyed on agentId.
-  ensureNodeWithId({ id: agentId, swarm_id: swarmId, map_agent_id: agentId });
+  // Workspace FK requires a map_nodes row keyed on agentId. Forward the
+  // checkpoint's agent name so UI agent panels don't render "Unknown" for
+  // shim-inserted rows.
+  ensureNodeWithId({
+    id: agentId,
+    swarm_id: swarmId,
+    map_agent_id: agentId,
+    ...(agentName !== undefined && { name: agentName }),
+  });
 
   // Upsert the per-agent binding. Branch + HEAD refresh on subsequent
   // checkpoints for the same (agent, repo, path) triple.
@@ -316,6 +342,8 @@ function bootstrapRepoFromCheckpoint(input: BootstrapInput): void {
     type: 'workspace_added',
     data: { workspace: binding },
   });
+
+  return { repoId: repo.id };
 }
 
 // ============================================================================

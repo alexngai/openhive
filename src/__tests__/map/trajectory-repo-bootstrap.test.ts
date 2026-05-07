@@ -260,4 +260,64 @@ describe('Trajectory handler — repo bootstrap', () => {
     expect(repos.findRepoByCanonicalUrl(REMOTE_URL)).toBeNull();
     unregisterInbound(swarmId);
   });
+
+  // ── metadata.repo_id linking (slice 8 prerequisite) ─────────────────────
+
+  it('stamps metadata.repo_id on the session resource when bootstrap fires', () => {
+    const swarmId = `bootstrap-repolink-${Date.now()}`;
+    seedSwarm(swarmId, ownerAgentId);
+    setCapability(swarmId, ownerAgentId, { declare: { enabled: true } });
+
+    const result = handleTrajectoryRequest(
+      'trajectory/checkpoint',
+      {
+        checkpoint: {
+          id: 'cp-link-1',
+          agent: 'sidecar',
+          metadata: { gitRemoteUrl: REMOTE_URL, projectPath: PROJECT_PATH },
+        },
+      },
+      { swarmId, agentId: ownerAgentId },
+    );
+
+    const repo = repos.findRepoByCanonicalUrl(REMOTE_URL)!;
+    expect(repo).not.toBeNull();
+
+    // Session resource should now carry metadata.repo_id pointing at the
+    // upserted repo — the slice 8 FK that "show all sessions for this
+    // repo" queries will use.
+    const session = getDatabase()
+      .prepare(`SELECT metadata FROM syncable_resources WHERE id = ?`)
+      .get(result.resource_id) as { metadata: string };
+    const meta = JSON.parse(session.metadata);
+    expect(meta.repo_id).toBe(repo.id);
+
+    unregisterInbound(swarmId);
+  });
+
+  it('does NOT stamp metadata.repo_id when bootstrap is capability-gated off', () => {
+    const swarmId = `bootstrap-nolink-${Date.now()}`;
+    seedSwarm(swarmId, ownerAgentId);
+    setCapability(swarmId, ownerAgentId, { declare: { enabled: false } });
+
+    const result = handleTrajectoryRequest(
+      'trajectory/checkpoint',
+      {
+        checkpoint: {
+          id: 'cp-nolink-1',
+          agent: 'sidecar',
+          metadata: { gitRemoteUrl: REMOTE_URL, projectPath: PROJECT_PATH },
+        },
+      },
+      { swarmId, agentId: ownerAgentId },
+    );
+
+    const session = getDatabase()
+      .prepare(`SELECT metadata FROM syncable_resources WHERE id = ?`)
+      .get(result.resource_id) as { metadata: string };
+    const meta = JSON.parse(session.metadata);
+    expect(meta.repo_id).toBeUndefined();
+
+    unregisterInbound(swarmId);
+  });
 });

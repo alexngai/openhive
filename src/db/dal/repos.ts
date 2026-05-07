@@ -124,11 +124,26 @@ export function upsertRepoByCanonicalUrl(
   const db = getDatabase();
   const existing = findRepoByCanonicalUrl(identity.canonicalUrl);
   if (existing) {
-    // Merge defaults into metadata if missing — never overwrite `origin`.
+    // Merge defaults into metadata if missing.
     const meta = (existing.metadata ?? {}) as Partial<RepoMetadata>;
+    // Origin upgrade rules: explicit declarations strengthen weak ones.
+    // Hierarchy: user_defined > agent_declared > trajectory_inferred.
+    // The reverse direction (e.g., agent_declared → trajectory_inferred)
+    // is suppressed so a later trajectory checkpoint doesn't downgrade an
+    // explicitly-declared repo.
+    const ORIGIN_RANK: Record<RepoMetadata['origin'], number> = {
+      trajectory_inferred: 0,
+      agent_declared: 1,
+      user_defined: 2,
+    };
+    const existingRank = meta.origin ? ORIGIN_RANK[meta.origin] : -1;
+    const incomingRank = ORIGIN_RANK[defaults.origin];
+    const resolvedOrigin: RepoMetadata['origin'] = incomingRank > existingRank
+      ? defaults.origin
+      : (meta.origin ?? defaults.origin);
     const merged: RepoMetadata = {
       name: meta.name ?? defaults.name ?? identity.name,
-      origin: meta.origin ?? defaults.origin,
+      origin: resolvedOrigin,
       visibility: meta.visibility ?? defaults.visibility ?? 'hub_local',
       ...(meta.default_branch !== undefined || defaults.default_branch !== undefined
         ? { default_branch: meta.default_branch ?? defaults.default_branch }
@@ -235,10 +250,21 @@ export function updateRepoVisibility(
     return { requires_redaction: false };
   }
 
+  // Required-field guards. These should never trip in practice — every
+  // repo created via `upsertRepoByCanonicalUrl` has both fields set —
+  // but a silent coercion here masked the real problem (DB corruption,
+  // partial migration, manual SQL edit) by writing `name=''` to the row.
+  if (!meta.name) {
+    throw new Error(`Repo ${id} metadata missing required 'name' field`);
+  }
+  if (!meta.origin) {
+    throw new Error(`Repo ${id} metadata missing required 'origin' field`);
+  }
+
   const updated: RepoMetadata = {
     ...meta,
-    name: meta.name ?? '',
-    origin: meta.origin ?? 'agent_declared',
+    name: meta.name,
+    origin: meta.origin,
     visibility: newVisibility,
   } as RepoMetadata;
 
@@ -261,4 +287,52 @@ export function upsertRepoFromRemoteUrl(
 ): SyncableResource {
   const identity = canonicalizeRepoUrl(remoteUrl);
   return upsertRepoByCanonicalUrl(identity, defaults);
+}
+
+/**
+ * Update top-level columns (name, description) and merge a metadata patch
+ * onto the existing JSON. Used by the REST PATCH path so the route layer
+ * doesn't construct ad-hoc SQL with conditional commas.
+ *
+ * Returns the updated resource (or `null` if not found / wrong type).
+ * No-ops if all three patches are empty.
+ */
+export function updateRepoFields(
+  id: string,
+  patch: {
+    name?: string;
+    description?: string | null;
+    metadataPatch?: Partial<RepoMetadata>;
+  },
+): SyncableResource | null {
+  const db = getDatabase();
+  const existing = findRepoById(id);
+  if (!existing) return null;
+
+  const sets: string[] = [];
+  const values: unknown[] = [];
+
+  if (patch.metadataPatch !== undefined) {
+    const merged = {
+      ...((existing.metadata ?? {}) as Partial<RepoMetadata>),
+      ...patch.metadataPatch,
+    };
+    sets.push('metadata = ?');
+    values.push(JSON.stringify(merged));
+  }
+  if (patch.name !== undefined) {
+    sets.push('name = ?');
+    values.push(patch.name);
+  }
+  if (patch.description !== undefined) {
+    sets.push('description = ?');
+    values.push(patch.description);
+  }
+
+  if (sets.length === 0) return existing;
+
+  sets.push("updated_at = datetime('now')");
+  values.push(id);
+  db.prepare(`UPDATE syncable_resources SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  return findRepoById(id);
 }

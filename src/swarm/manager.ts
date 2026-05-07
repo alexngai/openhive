@@ -360,9 +360,13 @@ export class SwarmManager {
           'UPDATE map_swarms SET workspace_policy = ? WHERE id = ?',
         ).run(JSON.stringify(input.workspace_policy), preRegisteredSwarmId);
       } catch (err) {
-        // Non-fatal — the spawn proceeds without the policy persisted.
-        console.warn(
-          `[swarm-manager] Failed to persist workspace_policy: ${(err as Error).message}`,
+        // Fail loud, like `repo_id` does. An operator who explicitly asked
+        // for a policy at spawn-time deserves to know if persistence
+        // failed — silently continuing means the swarm runs with no
+        // enforcement when the operator believed it had one.
+        throw new SwarmHostingError(
+          'WORKSPACE_POLICY_PERSIST_FAILED',
+          `Failed to persist workspace_policy: ${(err as Error).message}`,
         );
       }
     }
@@ -1428,6 +1432,17 @@ function isPidAlive(pid: number): boolean {
 // Error Type
 // ============================================================================
 
+/**
+ * Failure modes that can surface during a `SwarmManager.spawn` call. The
+ * union mixes pure swarm-hosting concerns with two repo-domain codes
+ * (`REPO_NOT_FOUND`, `WORKSPACE_POLICY_PERSIST_FAILED`) that arise inside
+ * the spawn flow when an `input.repo_id` or `input.workspace_policy`
+ * argument is supplied. They live here rather than in a separate
+ * `RepoSpawnErrorCode` because the caller of `spawn()` only ever sees
+ * one error type — a single union surfaces every reason a single call
+ * can fail. If repo-related concerns ever move out of the spawn
+ * critical path, split them out then.
+ */
 export type SwarmHostingErrorCode =
   | 'MAX_SWARMS_REACHED'
   | 'PROVIDER_NOT_AVAILABLE'
@@ -1440,7 +1455,8 @@ export type SwarmHostingErrorCode =
   | 'NOT_OWNER'
   | 'RESTART_NOT_SUPPORTED'
   | 'RESTART_FAILED'
-  | 'REPO_NOT_FOUND';
+  | 'REPO_NOT_FOUND'
+  | 'WORKSPACE_POLICY_PERSIST_FAILED';
 
 export class SwarmHostingError extends Error {
   code: SwarmHostingErrorCode;

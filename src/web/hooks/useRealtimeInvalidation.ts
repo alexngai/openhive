@@ -313,6 +313,7 @@ export function useReposRealtime() {
   useWSEvent('workspace_deactivated', invalidate);
   useWSEvent('repo_visibility_changed', invalidate);
   useWSEvent('repo_archived', invalidate);
+  useWSEvent('repo_updated', invalidate);
 }
 
 /**
@@ -335,4 +336,5 @@ export function useRepoRealtime(repoId: string | undefined) {
   useWSEvent('workspace_deactivated', invalidate);
   useWSEvent('repo_visibility_changed', invalidate);
   useWSEvent('repo_archived', invalidate);
+  useWSEvent('repo_updated', invalidate);
 }

@@ -92,12 +92,21 @@ export function RepoDetail() {
   const mergeRepo = useMergeRepo();
 
   const [editing, setEditing] = useState(false);
-  const [editVisibility, setEditVisibility] = useState<RepoVisibility>('hub_local');
+  // Seed from the loaded repo's current visibility when available; falls
+  // through to 'hub_local' only if the repo hasn't loaded yet (which can't
+  // actually happen while the edit form is visible — `startEdit` reseeds
+  // before flipping `editing` true — but the lazy init is tidier than
+  // a hardcoded literal that's stale until first edit).
+  const [editVisibility, setEditVisibility] = useState<RepoVisibility>(
+    () => ((repoData?.repo?.metadata as RepoMetadata | undefined)?.visibility as RepoVisibility | undefined) ?? 'hub_local',
+  );
   const [editBranch, setEditBranch] = useState('');
   const [editDescription, setEditDescription] = useState('');
   const [mergeTargetId, setMergeTargetId] = useState('');
   const [showMerge, setShowMerge] = useState(false);
   const [mergeError, setMergeError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
 
   if (isLoading) return <PageLoader />;
   if (!repoData?.repo) {
@@ -120,17 +129,41 @@ export function RepoDetail() {
     setEditVisibility(visibility);
     setEditBranch(meta.default_branch ?? '');
     setEditDescription(meta.description ?? '');
+    setSaveError(null);
     setEditing(true);
   }
 
   async function saveEdit() {
-    await updateRepo.mutateAsync({
-      id: repo.id,
-      visibility: editVisibility,
-      ...(editBranch && editBranch !== meta.default_branch && { default_branch: editBranch }),
-      ...(editDescription !== (meta.description ?? '') && { description: editDescription }),
-    });
-    setEditing(false);
+    setSaveError(null);
+    try {
+      await updateRepo.mutateAsync({
+        id: repo.id,
+        visibility: editVisibility,
+        ...(editBranch && editBranch !== meta.default_branch && { default_branch: editBranch }),
+        ...(editDescription !== (meta.description ?? '') && { description: editDescription }),
+      });
+      setEditing(false);
+    } catch (err) {
+      setSaveError((err as Error).message || 'Failed to save changes');
+    }
+  }
+
+  async function handleArchive() {
+    setLifecycleError(null);
+    try {
+      await archiveRepo.mutateAsync(repo.id);
+    } catch (err) {
+      setLifecycleError((err as Error).message || 'Failed to archive repo');
+    }
+  }
+
+  async function handleUnarchive() {
+    setLifecycleError(null);
+    try {
+      await unarchiveRepo.mutateAsync(repo.id);
+    } catch (err) {
+      setLifecycleError((err as Error).message || 'Failed to unarchive repo');
+    }
   }
 
   return (
@@ -273,9 +306,18 @@ export function RepoDetail() {
                 className="input text-sm py-1.5 w-full"
               />
             </div>
+            {saveError && (
+              <div
+                className="flex items-start gap-2 p-2 rounded text-2xs"
+                style={{ backgroundColor: 'rgba(244, 63, 94, 0.1)', color: 'var(--color-text)' }}
+              >
+                <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0 mt-0.5" />
+                <span>{saveError}</span>
+              </div>
+            )}
             <div className="flex items-center justify-end gap-2">
               <button
-                onClick={() => setEditing(false)}
+                onClick={() => { setEditing(false); setSaveError(null); }}
                 className="btn btn-ghost text-xs"
                 disabled={updateRepo.isPending}
               >
@@ -315,9 +357,18 @@ export function RepoDetail() {
       {status === 'active' && (
         <section className="pt-4 border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
           <h2 className="text-sm font-semibold mb-3">Lifecycle</h2>
+          {lifecycleError && (
+            <div
+              className="flex items-start gap-2 p-2 rounded text-2xs mb-2"
+              style={{ backgroundColor: 'rgba(244, 63, 94, 0.1)', color: 'var(--color-text)' }}
+            >
+              <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0 mt-0.5" />
+              <span>{lifecycleError}</span>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2">
             <button
-              onClick={() => archiveRepo.mutate(repo.id)}
+              onClick={handleArchive}
               disabled={archiveRepo.isPending}
               className="btn btn-ghost text-xs flex items-center gap-1"
             >
@@ -388,13 +439,22 @@ export function RepoDetail() {
       {status === 'archived' && (
         <section className="pt-4 border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
           <button
-            onClick={() => unarchiveRepo.mutate(repo.id)}
+            onClick={handleUnarchive}
             disabled={unarchiveRepo.isPending}
             className="btn btn-ghost text-xs flex items-center gap-1"
           >
             <ArchiveRestore className="w-3 h-3" />
             {unarchiveRepo.isPending ? 'Unarchiving…' : 'Unarchive'}
           </button>
+          {lifecycleError && (
+            <div
+              className="flex items-start gap-2 p-2 rounded text-2xs mt-2"
+              style={{ backgroundColor: 'rgba(244, 63, 94, 0.1)', color: 'var(--color-text)' }}
+            >
+              <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0 mt-0.5" />
+              <span>{lifecycleError}</span>
+            </div>
+          )}
         </section>
       )}
     </div>

@@ -109,6 +109,55 @@ describe('repos + workspaces DAL (slice 1)', () => {
       expect(b.id).toBe(a.id);
     });
 
+    it('origin upgrades trajectory_inferred → agent_declared on subsequent declare', () => {
+      // Trajectory bootstrap fires first (weakest origin); then an explicit
+      // RepoClient.declare arrives. The latter SHOULD upgrade origin so the
+      // repo isn't permanently stamped as inferred.
+      const identity = canonicalizeRepoUrl('https://github.com/foo/upgrade-1');
+      const inferred = repos.upsertRepoByCanonicalUrl(identity, {
+        origin: 'trajectory_inferred',
+        owner_agent_id: OWNER_ID,
+      });
+      expect((inferred.metadata as { origin: string }).origin).toBe('trajectory_inferred');
+
+      const declared = repos.upsertRepoByCanonicalUrl(identity, {
+        origin: 'agent_declared',
+        owner_agent_id: OWNER_ID,
+      });
+      expect(declared.id).toBe(inferred.id);
+      expect((declared.metadata as { origin: string }).origin).toBe('agent_declared');
+    });
+
+    it('origin upgrades agent_declared → user_defined when user takes ownership', () => {
+      const identity = canonicalizeRepoUrl('https://github.com/foo/upgrade-2');
+      const declared = repos.upsertRepoByCanonicalUrl(identity, {
+        origin: 'agent_declared',
+        owner_agent_id: OWNER_ID,
+      });
+
+      const userDefined = repos.upsertRepoByCanonicalUrl(identity, {
+        origin: 'user_defined',
+        owner_agent_id: OWNER_ID,
+      });
+      expect(userDefined.id).toBe(declared.id);
+      expect((userDefined.metadata as { origin: string }).origin).toBe('user_defined');
+    });
+
+    it('origin does NOT downgrade (trajectory after explicit declare)', () => {
+      // Inverse of the upgrade tests: a later trajectory checkpoint must
+      // not relax the origin of an explicitly-declared or user-defined repo.
+      const identity = canonicalizeRepoUrl('https://github.com/foo/upgrade-3');
+      repos.upsertRepoByCanonicalUrl(identity, {
+        origin: 'agent_declared',
+        owner_agent_id: OWNER_ID,
+      });
+      const after = repos.upsertRepoByCanonicalUrl(identity, {
+        origin: 'trajectory_inferred',
+        owner_agent_id: OWNER_ID,
+      });
+      expect((after.metadata as { origin: string }).origin).toBe('agent_declared');
+    });
+
     it('honors visibility default and explicit value', () => {
       const a = repos.upsertRepoByCanonicalUrl(
         canonicalizeRepoUrl('https://github.com/foo/a'),

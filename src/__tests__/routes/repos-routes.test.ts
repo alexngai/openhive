@@ -26,6 +26,7 @@ import * as hivesDAL from '../../db/dal/hives.js';
 import * as syncGroupsDAL from '../../db/dal/sync-groups.js';
 import * as syncEventsDAL from '../../db/dal/sync-events.js';
 import * as repos from '../../db/dal/repos.js';
+import { broadcastToChannel } from '../../realtime/index.js';
 import { canonicalizeRepoUrl } from 'agent-workspace/kinds/repo';
 import { reposRoutes } from '../../api/routes/repos.js';
 import { ConfigSchema, type Config } from '../../config.js';
@@ -58,10 +59,13 @@ function authHeader(apiKey: string): { Authorization: string } {
   return { Authorization: `Bearer ${apiKey}` };
 }
 
+const mockBroadcast = vi.mocked(broadcastToChannel);
+
 describe('Repos REST routes', () => {
   let app: FastifyInstance;
   let owner: { id: string; apiKey: string };
   let other: { id: string; apiKey: string };
+  let admin: { id: string; apiKey: string };
   let syncGroupId: string;
 
   beforeAll(async () => {
@@ -73,6 +77,8 @@ describe('Repos REST routes', () => {
     owner = { id: a.agent.id, apiKey: a.apiKey };
     const b = await agentsDAL.createAgent({ name: 'other' });
     other = { id: b.agent.id, apiKey: b.apiKey };
+    const c = await agentsDAL.createAgent({ name: 'site-admin', is_admin: true });
+    admin = { id: c.agent.id, apiKey: c.apiKey };
 
     // Sync group for federation hooks to record events into.
     const hive = hivesDAL.createHive({ name: 'route-hive', description: 't', owner_id: owner.id });
@@ -90,6 +96,7 @@ describe('Repos REST routes', () => {
     const db = getDatabase();
     db.prepare(`DELETE FROM syncable_resources WHERE resource_type = 'repo'`).run();
     db.prepare('DELETE FROM hive_events').run();
+    mockBroadcast.mockClear();
   });
 
   // ── POST /repos ──────────────────────────────────────────────────────────
@@ -319,5 +326,127 @@ describe('Repos REST routes', () => {
       payload: { into: repo.id },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  // ── Existence-leak guard: 404 for non-owner private repos ───────────────
+
+  it('PATCH on a private repo by non-owner returns 404 (not 403, to hide existence)', async () => {
+    const repo = repos.upsertRepoByCanonicalUrl(canonicalizeRepoUrl('https://github.com/foo/private'), {
+      origin: 'user_defined', visibility: 'private', owner_agent_id: owner.id,
+    });
+    const res = await app.inject({
+      method: 'PATCH', url: `/api/v1/repos/${repo.id}`,
+      headers: authHeader(other.apiKey),
+      payload: { default_branch: 'main' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('Archive on a private repo by non-owner returns 404', async () => {
+    const repo = repos.upsertRepoByCanonicalUrl(canonicalizeRepoUrl('https://github.com/foo/private-archive'), {
+      origin: 'user_defined', visibility: 'private', owner_agent_id: owner.id,
+    });
+    const res = await app.inject({
+      method: 'POST', url: `/api/v1/repos/${repo.id}/archive`,
+      headers: authHeader(other.apiKey),
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('PATCH on a hub_local repo by non-owner still returns 403 (visible but unauthorized)', async () => {
+    const repo = repos.upsertRepoByCanonicalUrl(canonicalizeRepoUrl('https://github.com/foo/hub-only'), {
+      origin: 'user_defined', visibility: 'hub_local', owner_agent_id: owner.id,
+    });
+    const res = await app.inject({
+      method: 'PATCH', url: `/api/v1/repos/${repo.id}`,
+      headers: authHeader(other.apiKey),
+      payload: { default_branch: 'main' },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  // ── Admin override ──────────────────────────────────────────────────────
+
+  it('Admin can PATCH a repo owned by someone else', async () => {
+    const repo = repos.upsertRepoByCanonicalUrl(canonicalizeRepoUrl('https://github.com/foo/admin-override'), {
+      origin: 'user_defined', visibility: 'hub_local', owner_agent_id: owner.id,
+    });
+    const res = await app.inject({
+      method: 'PATCH', url: `/api/v1/repos/${repo.id}`,
+      headers: authHeader(admin.apiKey),
+      payload: { description: 'admin edit' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().repo.description).toBe('admin edit');
+  });
+
+  it('Admin can archive a repo owned by someone else', async () => {
+    const repo = repos.upsertRepoByCanonicalUrl(canonicalizeRepoUrl('https://github.com/foo/admin-archive'), {
+      origin: 'user_defined', visibility: 'hub_local', owner_agent_id: owner.id,
+    });
+    const res = await app.inject({
+      method: 'POST', url: `/api/v1/repos/${repo.id}/archive`,
+      headers: authHeader(admin.apiKey),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().repo.status).toBe('archived');
+  });
+
+  it('Admin can see and edit a private repo they do not own', async () => {
+    const repo = repos.upsertRepoByCanonicalUrl(canonicalizeRepoUrl('https://github.com/foo/admin-private'), {
+      origin: 'user_defined', visibility: 'private', owner_agent_id: owner.id,
+    });
+    const get = await app.inject({
+      method: 'GET', url: `/api/v1/repos/${repo.id}`,
+      headers: authHeader(admin.apiKey),
+    });
+    expect(get.statusCode).toBe(200);
+
+    const patch = await app.inject({
+      method: 'PATCH', url: `/api/v1/repos/${repo.id}`,
+      headers: authHeader(admin.apiKey),
+      payload: { description: 'admin moderation' },
+    });
+    expect(patch.statusCode).toBe(200);
+  });
+
+  // ── repo_updated broadcast (UI invalidation) ────────────────────────────
+
+  it('PATCH /repos/:id always broadcasts repo_updated to map:repos and map:repo:<id>', async () => {
+    const repo = repos.upsertRepoByCanonicalUrl(canonicalizeRepoUrl('https://github.com/foo/broadcast-test'), {
+      origin: 'user_defined', visibility: 'hub_local', owner_agent_id: owner.id,
+    });
+    mockBroadcast.mockClear();
+
+    const res = await app.inject({
+      method: 'PATCH', url: `/api/v1/repos/${repo.id}`,
+      headers: authHeader(owner.apiKey),
+      payload: { description: 'just metadata' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const updated = mockBroadcast.mock.calls.filter(
+      (c) => (c[1] as { type: string }).type === 'repo_updated',
+    );
+    // Fanned out to BOTH the fleet and per-repo channel.
+    expect(updated.map((c) => c[0]).sort()).toEqual([`map:repo:${repo.id}`, 'map:repos'].sort());
+  });
+
+  it('Unarchive broadcasts repo_updated', async () => {
+    const repo = repos.upsertRepoByCanonicalUrl(canonicalizeRepoUrl('https://github.com/foo/unarchive-broadcast'), {
+      origin: 'user_defined', visibility: 'hub_local', owner_agent_id: owner.id,
+    });
+    getDatabase().prepare(`UPDATE syncable_resources SET status = 'archived' WHERE id = ?`).run(repo.id);
+    mockBroadcast.mockClear();
+
+    await app.inject({
+      method: 'POST', url: `/api/v1/repos/${repo.id}/unarchive`,
+      headers: authHeader(owner.apiKey),
+    });
+
+    const updated = mockBroadcast.mock.calls.filter(
+      (c) => (c[1] as { type: string }).type === 'repo_updated',
+    );
+    expect(updated).toHaveLength(2);
   });
 });

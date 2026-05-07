@@ -50,12 +50,25 @@ export interface RepoArchivedEvent {
   data: { repo_id: string };
 }
 
+/**
+ * Top-level repo metadata changed (name, description, default_branch,
+ * binding_policy, status transitions other than archive). UI subscribers
+ * use this to invalidate the repo detail view + the list page when the
+ * row mutated but visibility/archive flags didn't (those have their own
+ * dedicated event types above).
+ */
+export interface RepoUpdatedEvent {
+  type: 'repo_updated';
+  data: { repo_id: string };
+}
+
 export type WorkspaceLifecycleEvent =
   | WorkspaceAddedEvent
   | WorkspaceChangedEvent
   | WorkspaceDeactivatedEvent
   | RepoVisibilityChangedEvent
-  | RepoArchivedEvent;
+  | RepoArchivedEvent
+  | RepoUpdatedEvent;
 
 // ── Fan-out helper ────────────────────────────────────────────────────────────
 

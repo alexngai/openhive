@@ -426,28 +426,47 @@ export function createNode(input: RegisterNodeInput): MapNode {
 
 /**
  * Idempotently ensure a `map_nodes` row exists with the given id. Used by
- * paths (like the workspace handler) where `ctx.agentId` is treated as the
- * projected node id but no prior REST-style `createNode` registered the
- * row. Returns silently if a row already exists for this id.
+ * paths (like the workspace handler + trajectory bootstrap) where
+ * `ctx.agentId` is treated as the projected node id but no prior REST-style
+ * `createNode` registered the row. Returns silently if a row already
+ * exists for this id.
  *
  * Uses `INSERT OR IGNORE` so concurrent callers don't race; the swarm FK
  * still enforces that `swarm_id` is valid.
+ *
+ * **Partial row caveat.** Rows inserted via this shim populate only:
+ * `id`, `swarm_id`, `map_agent_id`, `state='registered'`, `presence='online'`,
+ * and (if provided) `name` / `role`. Other columns —
+ * `capabilities`, `scopes`, `visibility`, `metadata`, `tags`, `description` —
+ * are NULL because the shim doesn't have the registration payload that
+ * the explicit `createNode` path receives.
+ *
+ * Consumers that need the richer fields (e.g. UI agent panels) should
+ * fall back to `connection-registry`'s `RegisteredAgent` map for
+ * authoritative per-agent capabilities. The shim's job is FK satisfaction,
+ * not full projection.
+ *
+ * If the broader `map/agents/register` path ever projects into `map_nodes`
+ * directly, this shim becomes a no-op — see CLAUDE.md "Repos and Workspaces"
+ * pending follow-ups.
  */
 export function ensureNodeWithId(input: {
   id: string;
   swarm_id: string;
   map_agent_id?: string;
   name?: string;
+  role?: string;
 }): void {
   const db = getDatabase();
   db.prepare(`
-    INSERT OR IGNORE INTO map_nodes (id, swarm_id, map_agent_id, name, state, presence)
-    VALUES (?, ?, ?, ?, 'registered', 'online')
+    INSERT OR IGNORE INTO map_nodes (id, swarm_id, map_agent_id, name, role, state, presence)
+    VALUES (?, ?, ?, ?, ?, 'registered', 'online')
   `).run(
     input.id,
     input.swarm_id,
     input.map_agent_id ?? input.id,
     input.name ?? null,
+    input.role ?? null,
   );
 }
 

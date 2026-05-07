@@ -192,7 +192,8 @@ export type WSEventType =
   | 'workspace_changed'
   | 'workspace_deactivated'
   | 'repo_visibility_changed'
-  | 'repo_archived';
+  | 'repo_archived'
+  | 'repo_updated';
 
 export interface WSEvent {
   type: WSEventType;

@@ -240,6 +240,21 @@ export function onRepoUpdated(repo: SyncableResource): void {
 // ── Mesh lifecycle hooks (slice 5b) ─────────────────────────────────────────
 
 /**
+ * A repo is "ever federated" if it currently is OR was redacted from a
+ * prior federated state (the `redacted_at` audit field is the witness).
+ * Peers retain rows for ever-federated repos as tombstones, so lifecycle
+ * events (archive / merge) MUST still fire even after a redaction so peers
+ * can update their tombstones — otherwise the target row drifts forever.
+ */
+function wasEverFederated(repo: SyncableResource): boolean {
+  const meta = (repo.metadata ?? {}) as {
+    visibility?: string;
+    redacted_at?: string;
+  };
+  return meta.visibility === 'federated' || meta.redacted_at !== undefined;
+}
+
+/**
  * Fire `resource_redacted` when a federated resource's federation tier
  * narrows (e.g. `'federated' → 'hub_local'`). Peers mark the local row
  * `status='redacted_remote'`. No-op for already-private resources.
@@ -280,8 +295,7 @@ export function onRepoRedacted(
  */
 export function onRepoArchived(repo: SyncableResource): void {
   try {
-    const meta = (repo.metadata ?? {}) as { visibility?: string };
-    if (meta.visibility !== 'federated') return;
+    if (!wasEverFederated(repo)) return;
 
     const groups = listSyncGroups();
     if (groups.length === 0) return;
@@ -313,8 +327,7 @@ export function onRepoMerged(
   targetCanonicalUrl: string,
 ): void {
   try {
-    const meta = (source.metadata ?? {}) as { visibility?: string };
-    if (meta.visibility !== 'federated') return;
+    if (!wasEverFederated(source)) return;
 
     const groups = listSyncGroups();
     if (groups.length === 0) return;

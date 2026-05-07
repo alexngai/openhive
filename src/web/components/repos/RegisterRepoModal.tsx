@@ -59,6 +59,8 @@ export function RegisterRepoModal({ open, onClose }: Props) {
   const [defaultBranch, setDefaultBranch] = useState('');
   const [description, setDescription] = useState('');
   const [visibility, setVisibility] = useState<RepoVisibility>('hub_local');
+  const [bindingPolicy, setBindingPolicy] = useState<'open' | 'closed'>('open');
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function reset() {
@@ -67,6 +69,8 @@ export function RegisterRepoModal({ open, onClose }: Props) {
     setDefaultBranch('');
     setDescription('');
     setVisibility('hub_local');
+    setBindingPolicy('open');
+    setShowAdvanced(false);
     setError(null);
     createRepo.reset();
   }
@@ -91,6 +95,9 @@ export function RegisterRepoModal({ open, onClose }: Props) {
         ...(defaultBranch.trim() && { default_branch: defaultBranch.trim() }),
         ...(description.trim() && { description: description.trim() }),
         visibility,
+        // Only send `binding_policy` when user explicitly opened Advanced
+        // and chose 'closed' — server default is 'open'.
+        ...(showAdvanced && bindingPolicy === 'closed' && { binding_policy: bindingPolicy }),
       });
       reset();
       onClose();
@@ -224,6 +231,56 @@ export function RegisterRepoModal({ open, onClose }: Props) {
               })}
             </div>
           </fieldset>
+
+          {/* Advanced */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="text-2xs hover:underline"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              {showAdvanced ? '− Hide advanced' : '+ Advanced settings'}
+            </button>
+            {showAdvanced && (
+              <fieldset className="mt-2">
+                <legend className="text-xs font-medium mb-1.5">Binding policy</legend>
+                <div className="space-y-1.5">
+                  {([
+                    { value: 'open' as const, label: 'Open', hint: 'Any agent that finds this canonical URL can attach a workspace binding.' },
+                    { value: 'closed' as const, label: 'Closed', hint: 'New bindings are rejected. Use after migration / rename when you want to freeze the repo from new attachments.' },
+                  ]).map((opt) => {
+                    const checked = bindingPolicy === opt.value;
+                    return (
+                      <label
+                        key={opt.value}
+                        className="flex items-start gap-3 p-2 rounded cursor-pointer transition-colors"
+                        style={{
+                          backgroundColor: checked ? 'var(--color-hover)' : 'transparent',
+                          border: '1px solid',
+                          borderColor: checked ? 'var(--color-honey-500)' : 'var(--color-border-subtle)',
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="binding_policy"
+                          checked={checked}
+                          onChange={() => setBindingPolicy(opt.value)}
+                          className="mt-1"
+                        />
+                        <div className="flex-1">
+                          <div className="text-xs font-medium">{opt.label}</div>
+                          <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                            {opt.hint}
+                          </p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            )}
+          </div>
 
           {/* Error */}
           {error && (

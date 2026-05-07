@@ -11,7 +11,7 @@
  * `'hub_local'` and `'federated'` are public-on-hub.
  */
 
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { canonicalizeRepoUrl } from 'agent-workspace/kinds/repo';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
 import * as repos from '../../db/dal/repos.js';
@@ -32,7 +32,7 @@ import {
   MergeRepoSchema,
 } from '../schemas/repos.js';
 import type { Config } from '../../config.js';
-import type { SyncableResource } from '../../types.js';
+import type { Agent, SyncableResource } from '../../types.js';
 import type { RepoVisibility } from 'agent-workspace/kinds/repo';
 
 interface RepoMetadataView {
@@ -49,10 +49,43 @@ function getMeta(repo: SyncableResource): RepoMetadataView {
 }
 
 /** Visibility check: private repos are owner-only. */
-function canSee(repo: SyncableResource, viewerAgentId: string | undefined): boolean {
+function canSee(repo: SyncableResource, viewer: Agent | undefined): boolean {
   const vis = getMeta(repo).visibility ?? 'hub_local';
-  if (vis === 'private') return repo.owner_agent_id === viewerAgentId;
+  if (vis === 'private') {
+    if (!viewer) return false;
+    return repo.owner_agent_id === viewer.id || viewer.is_admin;
+  }
   return true;
+}
+
+/**
+ * Resolve a repo for a mutation route. Returns the repo if the caller may
+ * mutate it; otherwise sends the right status to `reply` and returns null.
+ *
+ * Decision matrix (existence-leak guard):
+ *   - repo missing                       → 404
+ *   - repo private + caller can't see it → 404 (hide existence)
+ *   - repo visible but caller not owner  → 403 (admin override allowed)
+ *   - caller is owner OR admin           → return repo
+ */
+function authorizeMutation(
+  reply: FastifyReply,
+  repo: SyncableResource | null,
+  viewer: Agent,
+): SyncableResource | null {
+  if (!repo) {
+    reply.status(404).send({ error: 'Not Found' });
+    return null;
+  }
+  if (!canSee(repo, viewer)) {
+    reply.status(404).send({ error: 'Not Found' });
+    return null;
+  }
+  if (repo.owner_agent_id !== viewer.id && !viewer.is_admin) {
+    reply.status(403).send({ error: 'Forbidden', message: 'Not the owner' });
+    return null;
+  }
+  return repo;
 }
 
 export async function reposRoutes(
@@ -80,8 +113,7 @@ export async function reposRoutes(
     }
 
     // Visibility scoping for unauthenticated / non-owner viewers.
-    const viewer = request.agent?.id;
-    const visible = all.filter((r) => canSee(r, viewer));
+    const visible = all.filter((r) => canSee(r, request.agent));
 
     const slice = visible.slice(offset, offset + limit);
     return reply.send({ data: slice, total: visible.length, limit, offset });
@@ -131,7 +163,7 @@ export async function reposRoutes(
       if (!repo) {
         return reply.status(404).send({ error: 'Not Found', message: 'Repo not found' });
       }
-      if (!canSee(repo, request.agent?.id)) {
+      if (!canSee(repo, request.agent)) {
         return reply.status(404).send({ error: 'Not Found', message: 'Repo not found' });
       }
       return reply.send({ repo });
@@ -149,44 +181,26 @@ export async function reposRoutes(
         return reply.status(400).send({ error: 'Validation Error', details: parsed.error.issues });
       }
 
-      const existing = repos.findRepoById(request.params.id);
-      if (!existing) {
-        return reply.status(404).send({ error: 'Not Found' });
-      }
-      if (existing.owner_agent_id !== request.agent!.id) {
-        return reply.status(403).send({ error: 'Forbidden', message: 'Not the owner' });
-      }
+      const existing = authorizeMutation(reply, repos.findRepoById(request.params.id), request.agent!);
+      if (!existing) return reply;
 
       const oldMeta = getMeta(existing);
       const oldVisibility = oldMeta.visibility ?? 'hub_local';
-      const newMeta: RepoMetadataView = {
-        ...oldMeta,
+
+      // Build a metadata patch — only the keys actually present.
+      const metadataPatch: Partial<RepoMetadataView> = {};
+      if (parsed.data.default_branch !== undefined) metadataPatch.default_branch = parsed.data.default_branch;
+      if (parsed.data.description !== undefined) metadataPatch.description = parsed.data.description;
+      if (parsed.data.visibility !== undefined) metadataPatch.visibility = parsed.data.visibility;
+      if (parsed.data.binding_policy !== undefined) metadataPatch.binding_policy = parsed.data.binding_policy;
+      if (parsed.data.name !== undefined) metadataPatch.name = parsed.data.name;
+
+      const updated = repos.updateRepoFields(existing.id, {
         ...(parsed.data.name !== undefined && { name: parsed.data.name }),
-        ...(parsed.data.default_branch !== undefined && { default_branch: parsed.data.default_branch }),
         ...(parsed.data.description !== undefined && { description: parsed.data.description }),
-        ...(parsed.data.visibility !== undefined && { visibility: parsed.data.visibility }),
-        ...(parsed.data.binding_policy !== undefined && { binding_policy: parsed.data.binding_policy }),
-      };
-
-      const db = getDatabase();
-      db.prepare(
-        `UPDATE syncable_resources
-            SET metadata = ?,
-                ${parsed.data.name !== undefined ? 'name = ?,' : ''}
-                ${parsed.data.description !== undefined ? 'description = ?,' : ''}
-                updated_at = datetime('now')
-          WHERE id = ?`,
-      ).run(
-        ...[
-          JSON.stringify(newMeta),
-          ...(parsed.data.name !== undefined ? [parsed.data.name] : []),
-          ...(parsed.data.description !== undefined ? [parsed.data.description] : []),
-          existing.id,
-        ],
-      );
-
-      const updated = repos.findRepoById(existing.id)!;
-      const newVisibility = newMeta.visibility ?? 'hub_local';
+        ...(Object.keys(metadataPatch).length > 0 && { metadataPatch }),
+      })!;
+      const newVisibility = (parsed.data.visibility ?? oldVisibility) as RepoVisibility;
 
       // Visibility-transition hooks. The package owns the semantics — we
       // just dispatch the right hook for each transition.
@@ -207,6 +221,14 @@ export async function reposRoutes(
         onRepoUpdated(updated);
       }
 
+      // Always broadcast `repo_updated` so UI subscribers invalidate even
+      // for non-visibility, non-federated metadata edits (description,
+      // default_branch, binding_policy on a hub_local repo).
+      broadcastWorkspaceLifecycleEvent(updated.id, {
+        type: 'repo_updated',
+        data: { repo_id: updated.id },
+      });
+
       return reply.send({ repo: updated });
     },
   );
@@ -217,11 +239,8 @@ export async function reposRoutes(
     '/repos/:id/archive',
     { preHandler: authMiddleware },
     async (request, reply) => {
-      const repo = repos.findRepoById(request.params.id);
-      if (!repo) return reply.status(404).send({ error: 'Not Found' });
-      if (repo.owner_agent_id !== request.agent!.id) {
-        return reply.status(403).send({ error: 'Forbidden' });
-      }
+      const repo = authorizeMutation(reply, repos.findRepoById(request.params.id), request.agent!);
+      if (!repo) return reply;
 
       const db = getDatabase();
       db.prepare(
@@ -242,11 +261,8 @@ export async function reposRoutes(
     '/repos/:id/unarchive',
     { preHandler: authMiddleware },
     async (request, reply) => {
-      const repo = repos.findRepoById(request.params.id);
-      if (!repo) return reply.status(404).send({ error: 'Not Found' });
-      if (repo.owner_agent_id !== request.agent!.id) {
-        return reply.status(403).send({ error: 'Forbidden' });
-      }
+      const repo = authorizeMutation(reply, repos.findRepoById(request.params.id), request.agent!);
+      if (!repo) return reply;
 
       const db = getDatabase();
       db.prepare(
@@ -254,6 +270,10 @@ export async function reposRoutes(
       ).run(repo.id);
 
       const updated = repos.findRepoById(repo.id)!;
+      broadcastWorkspaceLifecycleEvent(updated.id, {
+        type: 'repo_updated',
+        data: { repo_id: updated.id },
+      });
       return reply.send({ repo: updated });
     },
   );
@@ -266,7 +286,7 @@ export async function reposRoutes(
     async (request, reply) => {
       const repo = repos.findRepoById(request.params.id);
       if (!repo) return reply.status(404).send({ error: 'Not Found' });
-      if (!canSee(repo, request.agent?.id)) {
+      if (!canSee(repo, request.agent)) {
         return reply.status(404).send({ error: 'Not Found' });
       }
 
@@ -286,13 +306,14 @@ export async function reposRoutes(
       if (!parsed.success) {
         return reply.status(400).send({ error: 'Validation Error', details: parsed.error.issues });
       }
-      const source = repos.findRepoById(request.params.source_id);
-      if (!source) return reply.status(404).send({ error: 'Not Found', message: 'Source repo not found' });
-      if (source.owner_agent_id !== request.agent!.id) {
-        return reply.status(403).send({ error: 'Forbidden' });
-      }
+      const source = authorizeMutation(reply, repos.findRepoById(request.params.source_id), request.agent!);
+      if (!source) return reply;
       const target = repos.findRepoById(parsed.data.into);
       if (!target) return reply.status(404).send({ error: 'Not Found', message: 'Target repo not found' });
+      // Don't leak the existence of a private target the caller can't see.
+      if (!canSee(target, request.agent)) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Target repo not found' });
+      }
       if (source.id === target.id) {
         return reply.status(400).send({ error: 'Bad Request', message: 'Cannot merge a repo into itself' });
       }

@@ -268,4 +268,117 @@ describe('Slice 5b — repo lifecycle events', () => {
     expect(payload.source_canonical_url).toBe('https://github.com/local/source');
     expect(payload.target_canonical_url).toBe(targetUrl);
   });
+
+  // ── was_ever_federated: redacted-then-archived/merged ────────────────────
+  // Once a repo was federated, peers retain a tombstone. Subsequent archive
+  // or merge events MUST still fire so peers can update their tombstones,
+  // even if the local visibility has since narrowed to hub_local/private.
+
+  it('onRepoArchived fires for a previously-federated repo that was redacted', () => {
+    // Create as federated, then locally redact (simulate prior PATCH +
+    // metadata patch that downgraded + stamped redacted_at).
+    const repo = seedFederatedRepo('https://github.com/local/redacted-archive');
+    const meta = (repo.metadata ?? {}) as Record<string, unknown>;
+    meta.visibility = 'hub_local';
+    meta.redacted_at = '2026-05-06T10:00:00Z';
+    getDatabase().prepare(
+      `UPDATE syncable_resources SET metadata = ? WHERE id = ?`,
+    ).run(JSON.stringify(meta), repo.id);
+
+    const refreshed = repos.findRepoById(repo.id)!;
+    onRepoArchived(refreshed);
+
+    const events = syncEventsDAL.listEvents(syncGroupId)
+      .filter((e) => e.event_type === 'resource_archived');
+    expect(events).toHaveLength(1);
+  });
+
+  it('onRepoMerged fires for a previously-federated repo that was redacted', () => {
+    const repo = seedFederatedRepo('https://github.com/local/redacted-merge');
+    const meta = (repo.metadata ?? {}) as Record<string, unknown>;
+    meta.visibility = 'hub_local';
+    meta.redacted_at = '2026-05-06T10:00:00Z';
+    getDatabase().prepare(
+      `UPDATE syncable_resources SET metadata = ? WHERE id = ?`,
+    ).run(JSON.stringify(meta), repo.id);
+
+    const refreshed = repos.findRepoById(repo.id)!;
+    onRepoMerged(refreshed, 'https://github.com/local/target-after-redact');
+
+    const events = syncEventsDAL.listEvents(syncGroupId)
+      .filter((e) => e.event_type === 'resource_merged');
+    expect(events).toHaveLength(1);
+  });
+
+  it('onRepoArchived still skips repos that were never federated', () => {
+    // Sanity: gating on "ever federated" should not relax to firing on
+    // private-only repos.
+    const url = 'https://github.com/local/always-private';
+    const repo = repos.upsertRepoByCanonicalUrl(canonicalizeRepoUrl(url), {
+      origin: 'agent_declared',
+      visibility: 'private',
+      owner_agent_id: ownerId,
+    });
+
+    onRepoArchived(repo);
+
+    const events = syncEventsDAL.listEvents(syncGroupId)
+      .filter((e) => e.event_type === 'resource_archived');
+    expect(events).toHaveLength(0);
+  });
+
+  // ── Receiver canonicalization (CRITICAL guard) ───────────────────────────
+  // Producer + receiver must agree on canonical URL even if a peer ships a
+  // non-canonical form (e.g. with `.git` suffix, mixed case, trailing slash).
+
+  it('materializeResourcePublished re-canonicalizes the URL on the receiver for repos', () => {
+    const denormalizedUrl = 'git@github.com:Peer/Skewed.git'; // mixed case + .git
+    const expectedCanonical = canonicalizeRepoUrl(denormalizedUrl).canonicalUrl;
+
+    materializeEvent(
+      {
+        id: `evt_canon_${Date.now()}`,
+        sync_group_id: syncGroupId,
+        seq: 99,
+        event_type: 'resource_published',
+        origin_instance_id: REMOTE_INSTANCE,
+        origin_ts: Date.now(),
+        payload: JSON.stringify({
+          resource_id: 'rr_peer_skewed',
+          resource_type: 'repo',
+          name: 'skewed',
+          description: null,
+          git_remote_url: denormalizedUrl,
+          visibility: 'shared',
+          owner: { instance_id: REMOTE_INSTANCE, agent_id: ownerId, name: 'p', avatar_url: null },
+          tags: [],
+          metadata: { name: 'skewed', origin: 'user_defined', visibility: 'federated' },
+        }),
+        signature: 'unverified',
+        received_at: new Date().toISOString(),
+        is_local: 0,
+      } as HiveEvent,
+      hiveId, 'lifecycle-hive', false,
+    );
+
+    // Local row is stored with the canonical URL, not the wire form.
+    const row = repos.findRepoByCanonicalUrl(expectedCanonical);
+    expect(row).not.toBeNull();
+    expect(row!.git_remote_url).toBe(expectedCanonical);
+
+    // A subsequent lifecycle event keyed on the canonical URL hits the row.
+    materializeEvent(
+      makeLifecycleEvent('resource_archived', {
+        resource_type: 'repo',
+        canonical_url: expectedCanonical,
+        archived_at: '2026-05-06T16:00:00Z',
+        origin_hub_id: REMOTE_INSTANCE,
+      }),
+      hiveId, 'lifecycle-hive', false,
+    );
+
+    const db = getDatabase();
+    const after = db.prepare(`SELECT status FROM syncable_resources WHERE id = ?`).get(row!.id) as { status: string };
+    expect(after.status).toBe('archived');
+  });
 });

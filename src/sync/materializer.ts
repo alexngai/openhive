@@ -11,6 +11,7 @@
 
 import { getDatabase } from '../db/index.js';
 import { nanoid } from 'nanoid';
+import { canonicalizeRepoUrl } from 'agent-workspace/kinds/repo';
 import { upsertRemoteAgent } from '../db/dal/remote-agents.js';
 import {
   countPendingEvents, trimPendingEvents,
@@ -141,9 +142,18 @@ function materializeResourcePublished(event: HiveEvent, payload: ResourcePublish
   const id = `rr_${nanoid()}`;
   const createdAt = new Date(event.origin_ts).toISOString();
 
+  // For repos, re-canonicalize the URL on the receiver so peers that disagree
+  // on canonicalization (trailing-slash, .git suffix, etc.) converge to the
+  // same identity. Without this, a later mesh lifecycle event (redacted /
+  // archived / merged) looks up by canonical URL and silently drops if peer A
+  // and peer B persist the URL in different forms.
+  const persistedUrl = payload.resource_type === 'repo'
+    ? canonicalizeRepoUrl(payload.git_remote_url).canonicalUrl
+    : payload.git_remote_url;
+
   repo.upsertRemoteResource({
     id, resource_type: payload.resource_type, name: payload.name,
-    description: payload.description, git_remote_url: payload.git_remote_url,
+    description: payload.description, git_remote_url: persistedUrl,
     visibility: payload.visibility, owner_agent_id: authorId,
     sync_event_id: event.id, origin_instance_id: event.origin_instance_id,
     origin_resource_id: payload.resource_id,

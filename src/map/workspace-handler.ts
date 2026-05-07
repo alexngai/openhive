@@ -45,10 +45,16 @@ import type { Workspace } from '../types.js';
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /** `RepoMetadata.visibility` is what the package cares about; column-level
- * `syncable_resources.visibility` is unused for repos. */
+ * `syncable_resources.visibility` is unused for repos.
+ *
+ * Fails closed to `'private'` for repos with missing metadata visibility —
+ * corrupt rows / partial migrations should be invisible to non-owners
+ * rather than defaulting to a permissive tier. Repos created via the
+ * production path always carry `metadata.visibility`, so the fallback
+ * only triggers on schema drift. */
 function repoVisibility(repo: { metadata: unknown }): RepoVisibility {
   const meta = repo.metadata as { visibility?: RepoVisibility } | null;
-  return meta?.visibility ?? 'hub_local';
+  return meta?.visibility ?? 'private';
 }
 
 /** Convert a stored Workspace row to the wire shape the package expects. */
@@ -101,6 +107,14 @@ export class OpenHiveRepoHandler implements RepoProtocolHandler {
   // ── declare ───────────────────────────────────────────────────────────────
 
   async onDeclare(params: RepoDeclareParams, ctx: RepoHandlerContext): Promise<void> {
+    // Capability gate: agents that haven't declared `declare.enabled = true`
+    // shouldn't be able to push declarations. Mirrors the `onList` guard.
+    // Also covers the `onChanged → onDeclare` re-entry for `added` bindings
+    // since that path doesn't gate independently.
+    if (ctx.capabilities && !ctx.capabilities.declare.enabled) {
+      throw new CapabilityError(['workspace.declare']);
+    }
+
     for (const w of params.workspaces) {
       const identity = canonicalizeRepoUrl(w.remote_url);
       const bindingVisibility: RepoVisibility = w.visibility ?? 'hub_local';
@@ -202,8 +216,15 @@ export class OpenHiveRepoHandler implements RepoProtocolHandler {
 
       for (const ws of bindings) {
         const eff = effectiveVisibility(repoVis, ws.visibility);
-        // Private bindings are visible only to their owner agent.
+        // Workspace bindings expose `local_path` which is per-machine info.
+        // Scope by visibility tier — anything broader than the caller's
+        // immediate context leaks file paths the caller shouldn't see:
+        //   - private  → owner agent only
+        //   - hub_local → same swarm only (per-machine, per-swarm scope)
+        //   - federated → caller hub (broader cross-hub federation flows
+        //                 through the mesh-sync materializer, not onList)
         if (eff === 'private' && ws.agent_id !== ctx.agentId) continue;
+        if (eff === 'hub_local' && ws.swarm_id !== ctx.swarmId) continue;
         result.push(workspaceToWire(ws, repo.git_remote_url));
       }
     }
@@ -247,12 +268,20 @@ export class OpenHiveRepoHandler implements RepoProtocolHandler {
         target,
       );
       if (count > 0) {
-        // Broadcast a single repo-level event rather than N per-binding
-        // workspace_changed events. Subscribers refetch.
-        broadcastWorkspaceLifecycleEvent(repo.id, {
-          type: 'repo_visibility_changed',
-          data: { repo_id: repo.id, new_visibility: target },
-        });
+        // Bulk retract narrows per-binding visibility for one (agent, repo)
+        // pair. The repo's own metadata.visibility is unchanged, so we
+        // emit per-binding `workspace_changed` events — the previous
+        // `repo_visibility_changed` event was a misnomer that lied to the
+        // UI about what mutated.
+        const affected = workspaces
+          .listWorkspacesForRepo(repo.id, { activeOnly: false })
+          .filter((ws) => ws.agent_id === ctx.agentId);
+        for (const ws of affected) {
+          broadcastWorkspaceLifecycleEvent(repo.id, {
+            type: 'workspace_changed',
+            data: { workspace: ws },
+          });
+        }
       }
     }
   }
