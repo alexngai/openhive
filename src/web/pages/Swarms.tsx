@@ -43,6 +43,7 @@ import {
   useSpawnAgent,
   useConnectAcp,
   useKnownProjectPaths,
+  useRepos,
 } from "../hooks/useApi";
 import { useSwarmRealtime } from "../hooks/useRealtimeInvalidation";
 import {
@@ -201,6 +202,15 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   const [ccInitialPrompt, setCcInitialPrompt] = useState("");
   const [ccRepoUrl, setCcRepoUrl] = useState("");
   const [ccRepoBranch, setCcRepoBranch] = useState("");
+  const [repoId, setRepoId] = useState("");
+
+  // Per-swarm workspace policy (Advanced). Defaults to 'open' (omitted
+  // from the payload). When mode === 'allow_listed' the user picks one
+  // or more repo resources from `reposPage`; canonical URLs are pulled
+  // from those resources. When mode === 'pinned' a single repo is picked.
+  const [policyMode, setPolicyMode] = useState<'open' | 'allow_listed' | 'pinned'>('open');
+  const [policyAllowedRepoIds, setPolicyAllowedRepoIds] = useState<string[]>([]);
+  const [policyPinnedRepoId, setPolicyPinnedRepoId] = useState("");
 
   const isSandboxed = provider === "local-sandboxed";
 
@@ -215,6 +225,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   const spawnMutation = useSpawnSwarm();
   const { data: hives } = useHives({ sort: "popular", limit: 50 });
   const { data: knownProjectPaths } = useKnownProjectPaths();
+  const { data: reposPage } = useRepos({ limit: 100 });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -293,6 +304,33 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
       const codexModeOverride = kind === 'codex' && codexMode === 'tui'
         ? { mode: 'tui' as const }
         : {};
+
+      // Build the workspace_policy payload from form state. The form
+      // tracks repo IDs; the wire format wants canonical URLs, which we
+      // pull from the loaded repo list. Omit the field entirely for
+      // mode='open' so we don't write a no-op row.
+      const reposById = new Map((reposPage?.data ?? []).map((r) => [r.id, r]));
+      let workspace_policy:
+        | { mode: 'open' | 'allow_listed' | 'pinned'; allowed_repos?: string[]; pinned_repo?: string }
+        | undefined;
+      if (policyMode === 'allow_listed') {
+        const urls = policyAllowedRepoIds
+          .map((id) => reposById.get(id)?.git_remote_url)
+          .filter((u): u is string => !!u);
+        if (urls.length === 0) {
+          toast.error('Workspace policy', "Pick at least one allow-listed repo or switch mode to 'open'.");
+          return;
+        }
+        workspace_policy = { mode: 'allow_listed', allowed_repos: urls };
+      } else if (policyMode === 'pinned') {
+        const url = policyPinnedRepoId ? reposById.get(policyPinnedRepoId)?.git_remote_url : undefined;
+        if (!url) {
+          toast.error('Workspace policy', "Pick a repo to pin or switch mode to 'open'.");
+          return;
+        }
+        workspace_policy = { mode: 'pinned', pinned_repo: url };
+      }
+
       const payload =
         isTuiKind
           ? {
@@ -302,6 +340,8 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               provider: provider !== 'local' ? provider : undefined,
               workspace: ccWorkspace,
               initial_prompt: trimmedPrompt || undefined,
+              repo_id: repoId || undefined,
+              workspace_policy,
               ...codexModeOverride,
             }
           : {
@@ -315,6 +355,8 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               metadata,
               workspace: validRepos.length > 0 ? { repos: validRepos } : undefined,
               bootstrap,
+              repo_id: repoId || undefined,
+              workspace_policy,
             };
       await spawnMutation.mutateAsync(payload);
       toast.success("Swarm spawned", `"${name}" is starting up.`);
@@ -817,10 +859,118 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
           </>
           )}
 
+          {/* Repo resource selector — applies to all kinds. For openswarm
+              the manager only injects WORKSPACE_* env vars (the sidecar is
+              expected to clone). For claude-code/codex the provider does
+              the mount-or-clone and overrides cwd. */}
+          {reposPage && reposPage.data.length > 0 && (
+            <div>
+              <SectionLabel>
+                <span className="flex items-center gap-1">
+                  <GitBranch className="w-3 h-3" />
+                  Repo resource
+                </span>
+              </SectionLabel>
+              <select
+                value={repoId}
+                onChange={(e) => setRepoId(e.target.value)}
+                className="input w-full text-xs"
+              >
+                <option value="">None — use data directory</option>
+                {reposPage.data.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}{r.git_remote_url ? ` (${r.git_remote_url})` : ''}{r.local_path ? ' — local' : ''}
+                  </option>
+                ))}
+              </select>
+              <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                {kind === 'openswarm'
+                  ? 'Sets WORKSPACE_* env vars on the swarm process; the sidecar handles the actual clone.'
+                  : 'Mount an existing local checkout or clone from the repo’s remote URL.'}
+              </p>
+            </div>
+          )}
+
+          {/* Workspace policy — gates which repos this swarm's agents may
+              declare workspaces against. Only shown when the operator
+              has at least one repo resource (the policy modes need
+              concrete URLs to allow). */}
+          {reposPage && reposPage.data.length > 0 && (
+            <div>
+              <SectionLabel>
+                <span className="flex items-center gap-1">
+                  <Shield className="w-3 h-3" />
+                  Workspace policy
+                </span>
+              </SectionLabel>
+              <select
+                value={policyMode}
+                onChange={(e) =>
+                  setPolicyMode(e.target.value as 'open' | 'allow_listed' | 'pinned')
+                }
+                className="input w-full text-xs"
+              >
+                <option value="open">Open — any repo may be declared (default)</option>
+                <option value="allow_listed">Allow-listed — only the picked repos may be declared</option>
+                <option value="pinned">Pinned — only the picked repo may be declared</option>
+              </select>
+              <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                Validates `repo.declare`, `repo.retract`, and trajectory bootstrap from this swarm.
+              </p>
+
+              {policyMode === 'allow_listed' && (
+                <div className="mt-2">
+                  <SectionLabel>Allowed repos</SectionLabel>
+                  <select
+                    multiple
+                    value={policyAllowedRepoIds}
+                    onChange={(e) =>
+                      setPolicyAllowedRepoIds(
+                        Array.from(e.target.selectedOptions).map((o) => o.value),
+                      )
+                    }
+                    className="input w-full text-xs min-h-[80px]"
+                  >
+                    {reposPage.data.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}{r.git_remote_url ? ` (${r.git_remote_url})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                    Hold cmd/ctrl to pick multiple. Canonical URLs are pulled from each repo resource.
+                  </p>
+                </div>
+              )}
+
+              {policyMode === 'pinned' && (
+                <div className="mt-2">
+                  <SectionLabel>Pinned repo</SectionLabel>
+                  <select
+                    value={policyPinnedRepoId}
+                    onChange={(e) => setPolicyPinnedRepoId(e.target.value)}
+                    className="input w-full text-xs"
+                  >
+                    <option value="">— pick a repo —</option>
+                    {reposPage.data.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}{r.git_remote_url ? ` (${r.git_remote_url})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                    Auto-bind on register is not yet implemented; today this gate is validation-only.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* TUI-kind-specific fields (claude-code, codex) */}
           {(kind === 'claude-code' || kind === 'codex') && (
             <>
-              {/* Optional repo to clone before launching claude */}
+              {/* Manual repo URL — fallback when no repo resource is selected */}
+              {!repoId && (
               <div className="grid grid-cols-3 gap-2">
                 <div className="col-span-2">
                   <SectionLabel>Clone repo (optional)</SectionLabel>
@@ -848,6 +998,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                   />
                 </div>
               </div>
+              )}
 
               {/* Optional initial prompt */}
               <div>

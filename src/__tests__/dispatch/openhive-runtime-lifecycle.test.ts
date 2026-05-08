@@ -46,6 +46,12 @@ function fakeDispatch(): Dispatch {
     loadout_ref: null,
     loadout_status: null,
     loadout_error: null,
+    repo_id: null,
+    canonical_url: null,
+    branch: null,
+    commit_sha: null,
+    clone_policy: 'none',
+    clone_path: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };

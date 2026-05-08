@@ -44,6 +44,9 @@ import {
   MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
   MIGRATION_V50_HOSTED_SWARM_KIND,
   MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK,
+  MIGRATION_V52_REPOS_AND_WORKSPACES,
+  MIGRATION_V53_RESOURCE_STATUS,
+  MIGRATION_V54_DISPATCH_REPO,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -143,6 +146,9 @@ export function initDatabase(
     db.exec(MIGRATION_V19_EVENT_ROUTING);
     // Create coordination tables
     db.exec(MIGRATION_V22_COORDINATION);
+    // Create workspaces table + map_swarms.workspace_policy for fresh installs.
+    // (Existing DBs get this via runMigrations at V52.)
+    db.exec(MIGRATION_V52_REPOS_AND_WORKSPACES);
     // Seed default data
     db.exec(SEED_DATA);
   } else if (versionRow.version < SCHEMA_VERSION) {
@@ -332,6 +338,20 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // …) can be added without a DB migration. Validation moves to Zod at the
   // API layer + the HostedSwarmKind union type.
   51: MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK,
+  // Version 52: Repos as syncable resources + per-agent workspace bindings.
+  // (Renumbered from V50 due to merge collision.) Extends
+  // syncable_resources.resource_type CHECK with 'repo', adds the local-only
+  // workspaces table, and adds map_swarms.workspace_policy JSON column. See
+  // CLAUDE.md "Repos and Workspaces".
+  52: MIGRATION_V52_REPOS_AND_WORKSPACES,
+  // Version 53: syncable_resources.status column for mesh-level lifecycle
+  // events (resource.redacted / .archived / .merged) per slice 5b.
+  // (Renumbered from V51.)
+  53: MIGRATION_V53_RESOURCE_STATUS,
+  // Version 54: Per-dispatch repo targeting columns (repo_id, canonical_url,
+  // branch, commit_sha, clone_policy, clone_path). Dispatch body is the
+  // primary source; spec metadata is a fallback for repo_id only.
+  54: MIGRATION_V54_DISPATCH_REPO,
 };
 
 /** Get the SQL for a specific migration version.
@@ -418,6 +438,15 @@ function repairSchema(database: Database.Database): void {
     "ALTER TABLE agents ADD COLUMN capabilities TEXT",
     "ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0",
     "ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'openswarm'",
+    "ALTER TABLE syncable_resources ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+    "CREATE INDEX IF NOT EXISTS idx_syncable_resources_status ON syncable_resources(status)",
+    "ALTER TABLE dispatches ADD COLUMN repo_id TEXT",
+    "ALTER TABLE dispatches ADD COLUMN canonical_url TEXT",
+    "ALTER TABLE dispatches ADD COLUMN branch TEXT",
+    "ALTER TABLE dispatches ADD COLUMN commit_sha TEXT",
+    "ALTER TABLE dispatches ADD COLUMN clone_policy TEXT DEFAULT 'none'",
+    "ALTER TABLE dispatches ADD COLUMN clone_path TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_dispatches_repo ON dispatches(repo_id)",
   ];
   for (const sql of repairs) {
     try {

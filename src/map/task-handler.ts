@@ -12,8 +12,11 @@
  */
 
 import { existsSync, statSync, readFileSync, realpathSync } from 'node:fs';
-import { resolve, normalize, join } from 'node:path';
+import { resolve, normalize, join, dirname } from 'node:path';
+import { execSync } from 'node:child_process';
+import { canonicalizeRepoUrl } from 'agent-workspace/kinds/repo';
 import { getDefaultTaskGraph } from './connection-registry.js';
+import * as repos from '../db/dal/repos.js';
 import {
   daemonCreateTask,
   daemonUpdateTask,
@@ -118,8 +121,50 @@ function readOpenTasksMeta(opentasksDir: string): Record<string, unknown> {
   return meta;
 }
 
-function autoRegisterResource(opentasksPath: string, agentId: string): SyncableResource {
+/**
+ * Best-effort: if `opentasksPath` lives inside a git working tree with an
+ * `origin` remote, return the canonical repo URL. Mirrors the helper in
+ * `task-daemon-lifecycle.ts:generateLocationHash` (sync stdio with all
+ * channels piped so failures don't print to the console).
+ *
+ * Exported for testing.
+ */
+export function readGitOriginCanonical(opentasksPath: string): string | null {
+  try {
+    const parentDir = dirname(resolve(opentasksPath));
+    const gitRoot = execSync('git rev-parse --show-toplevel', {
+      cwd: parentDir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).toString().trim();
+    const remoteUrl = execSync('git remote get-url origin', {
+      cwd: gitRoot,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).toString().trim();
+    if (!remoteUrl) return null;
+    return canonicalizeRepoUrl(remoteUrl).canonicalUrl;
+  } catch {
+    // No git, no `origin` remote, no `git` binary, or path doesn't exist —
+    // all are "no canonical URL available", silent skip.
+    return null;
+  }
+}
+
+/** Exported for testing. */
+export function autoRegisterResource(opentasksPath: string, agentId: string): SyncableResource {
   const meta = readOpenTasksMeta(opentasksPath);
+
+  // Path B (slice 8): if the opentasks dir lives inside a git working tree
+  // whose origin remote matches a federated repo we already know about,
+  // stamp `metadata.repo_id` on the new task resource so future "show all
+  // tasks for this repo" queries are a one-line FK lookup.
+  const canonical = readGitOriginCanonical(opentasksPath);
+  if (canonical) {
+    try {
+      const repo = repos.findRepoByCanonicalUrl(canonical);
+      if (repo) meta.repo_id = repo.id;
+    } catch { /* non-critical */ }
+  }
+
   const { resource } = resourcesDAL.upsertDiscoveredResource({
     resource_type: 'task',
     name: `auto/${opentasksPath.replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').slice(0, 60)}`,

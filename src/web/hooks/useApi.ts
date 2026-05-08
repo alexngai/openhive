@@ -140,6 +140,23 @@ export function useSpawnSwarm() {
        * a positional arg so the TUI opens with the prompt prefilled.
        */
       initial_prompt?: string;
+      /**
+       * Optional repo resource id. For TUI kinds, the provider mounts the
+       * repo's local_path (or clones from git_remote_url) and sets cwd to
+       * the repo directory.
+       */
+      repo_id?: string;
+      /**
+       * Per-swarm workspace policy. Persisted at spawn time and consulted
+       * by the hub on every `repo.declare` / `repo.retract` /
+       * trajectory-bootstrap binding from this swarm. Omit for the
+       * default `mode: 'open'` (any declare allowed).
+       */
+      workspace_policy?: {
+        mode: 'open' | 'allow_listed' | 'pinned';
+        allowed_repos?: string[];
+        pinned_repo?: string;
+      };
     }) => api.post<HostedSwarm>("/map/hosted/spawn", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["hosted-swarms"] });
@@ -2300,6 +2317,162 @@ export function useStopAgent() {
       queryClient.invalidateQueries({ queryKey: ['map-swarm', vars.swarmId] });
       queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
       queryClient.invalidateQueries({ queryKey: ['map-swarms-picker'] });
+    },
+  });
+}
+
+// ── Repos (slice 4) ────────────────────────────────────────────────────────
+
+export interface RepoMetadata {
+  name?: string;
+  default_branch?: string;
+  description?: string;
+  origin?: 'user_defined' | 'agent_declared' | 'trajectory_inferred';
+  visibility?: 'private' | 'hub_local' | 'federated';
+  binding_policy?: 'open' | 'closed';
+  branches?: Array<{ name: string; head_sha: string; last_seen: string }>;
+  merged_into_canonical_url?: string;
+  archived_at?: string;
+  redacted_at?: string;
+}
+
+export interface Workspace {
+  id: string;
+  repo_id: string;
+  agent_id: string;
+  swarm_id: string;
+  local_path: string;
+  current_branch: string | null;
+  head_sha: string | null;
+  dirty: number;
+  instance_label: string | null;
+  visibility: 'private' | 'hub_local' | 'federated';
+  is_active: number;
+  created_at: string;
+  updated_at: string;
+  last_seen_at: string;
+}
+
+export interface ReposListFilters {
+  origin?: 'user_defined' | 'agent_declared' | 'trajectory_inferred';
+  visibility?: 'private' | 'hub_local' | 'federated';
+  status?: 'active' | 'redacted_remote' | 'archived' | 'merged_into';
+  limit?: number;
+  offset?: number;
+}
+
+function reposQueryString(filters: ReposListFilters | undefined): string {
+  if (!filters) return '';
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== null) params.set(k, String(v));
+  }
+  const s = params.toString();
+  return s ? `?${s}` : '';
+}
+
+export function useRepos(filters?: ReposListFilters) {
+  return useQuery({
+    queryKey: ['repos', filters ?? {}],
+    queryFn: () =>
+      api.get<PaginatedResponse<SyncableResource>>(`/repos${reposQueryString(filters)}`),
+    staleTime: 10_000,
+  });
+}
+
+export function useRepo(id: string | undefined) {
+  return useQuery({
+    queryKey: ['repo', id],
+    queryFn: () => api.get<{ repo: SyncableResource }>(`/repos/${id}`),
+    enabled: !!id,
+    staleTime: 10_000,
+  });
+}
+
+export function useRepoWorkspaces(id: string | undefined, opts?: { activeOnly?: boolean }) {
+  const activeOnly = opts?.activeOnly ?? true;
+  return useQuery({
+    queryKey: ['repo-workspaces', id, activeOnly],
+    queryFn: () =>
+      api.get<{ data: Workspace[]; total: number }>(
+        `/repos/${id}/workspaces?active_only=${activeOnly}`,
+      ),
+    enabled: !!id,
+    staleTime: 10_000,
+  });
+}
+
+export function useCreateRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      remote_url: string;
+      name?: string;
+      default_branch?: string;
+      description?: string;
+      visibility?: 'private' | 'hub_local' | 'federated';
+      binding_policy?: 'open' | 'closed';
+    }) => api.post<{ repo: SyncableResource }>('/repos', input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+    },
+  });
+}
+
+export function useUpdateRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: {
+      id: string;
+      name?: string;
+      default_branch?: string;
+      description?: string;
+      visibility?: 'private' | 'hub_local' | 'federated';
+      binding_policy?: 'open' | 'closed';
+    }) => api.patch<{ repo: SyncableResource }>(`/repos/${id}`, input),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+      queryClient.invalidateQueries({ queryKey: ['repo', vars.id] });
+    },
+  });
+}
+
+export function useArchiveRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<{ repo: SyncableResource }>(`/repos/${id}/archive`, {}),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+      queryClient.invalidateQueries({ queryKey: ['repo', id] });
+    },
+  });
+}
+
+export function useUnarchiveRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<{ repo: SyncableResource }>(`/repos/${id}/unarchive`, {}),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+      queryClient.invalidateQueries({ queryKey: ['repo', id] });
+    },
+  });
+}
+
+export function useMergeRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sourceId, into }: { sourceId: string; into: string }) =>
+      api.post<{ source: SyncableResource; target: SyncableResource }>(
+        `/repos/${sourceId}/merge`,
+        { into },
+      ),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+      queryClient.invalidateQueries({ queryKey: ['repo', vars.sourceId] });
+      queryClient.invalidateQueries({ queryKey: ['repo', vars.into] });
     },
   });
 }

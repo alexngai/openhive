@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 51;
+export const SCHEMA_VERSION = 54;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 -- Syncable resources registry (git repos backing various resource types)
 CREATE TABLE IF NOT EXISTS syncable_resources (
   id TEXT PRIMARY KEY,
-  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout')),
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout', 'repo')),
   name TEXT NOT NULL,
   description TEXT,
   git_remote_url TEXT NOT NULL,
@@ -1045,6 +1045,121 @@ CREATE INDEX IF NOT EXISTS idx_hosted_swarms_swarm_id ON hosted_swarms(swarm_id)
 CREATE INDEX IF NOT EXISTS idx_hosted_swarms_state ON hosted_swarms(state);
 CREATE INDEX IF NOT EXISTS idx_hosted_swarms_spawned_by ON hosted_swarms(spawned_by);
 CREATE INDEX IF NOT EXISTS idx_hosted_swarms_bootstrap ON hosted_swarms(bootstrap_token_hash);
+`;
+
+// Migration V52: Repos as syncable resources + per-agent workspace bindings.
+// (Renumbered from V50 due to merge collision with hosted-swarm-kind work.)
+// Three changes in one migration:
+//   1. Extend syncable_resources.resource_type CHECK to admit 'repo'
+//      (V46-style recreate-and-rename, since SQLite can't ALTER a CHECK).
+//   2. Add `workspaces` table — per-agent local-only bindings keyed by
+//      (agent_id, repo_id, local_path). Federates the abstract repo
+//      resource; bindings stay local. See CLAUDE.md "Repos and Workspaces".
+//   3. Add `map_swarms.workspace_policy` JSON column — swarm-operator-set
+//      policy ({ mode: 'open' | 'allow_listed' | 'pinned', ...}).
+export const MIGRATION_V52_REPOS_AND_WORKSPACES = `
+-- 1. Extend syncable_resources resource_type CHECK to admit 'repo'.
+CREATE TABLE IF NOT EXISTS syncable_resources_v52 (
+  id TEXT PRIMARY KEY,
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout', 'repo')),
+  name TEXT NOT NULL,
+  description TEXT,
+  git_remote_url TEXT NOT NULL,
+  webhook_secret TEXT,
+  visibility TEXT DEFAULT 'private'
+    CHECK (visibility IN ('private', 'shared', 'public')),
+  last_commit_hash TEXT,
+  last_push_by TEXT,
+  last_push_at TEXT,
+  owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  scope TEXT DEFAULT 'manual'
+    CHECK (scope IN ('global', 'project', 'agent', 'manual')),
+  sync_strategy TEXT DEFAULT 'metadata'
+    CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle', 'federated')),
+  local_path TEXT,
+  metadata TEXT,
+  origin_instance_id TEXT,
+  origin_resource_id TEXT,
+  sync_event_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+INSERT OR IGNORE INTO syncable_resources_v52 SELECT * FROM syncable_resources;
+
+DROP TABLE IF EXISTS syncable_resources;
+ALTER TABLE syncable_resources_v52 RENAME TO syncable_resources;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_syncable_resources_git_url
+  ON syncable_resources(owner_agent_id, resource_type, git_remote_url)
+  WHERE git_remote_url IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_name_lookup
+  ON syncable_resources(owner_agent_id, resource_type, name);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_owner ON syncable_resources(owner_agent_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type ON syncable_resources(resource_type);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_visibility ON syncable_resources(visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_resources(resource_type, visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
+
+-- 2. Workspaces table — local-only bindings of agents to repo resources.
+CREATE TABLE IF NOT EXISTS workspaces (
+  id              TEXT PRIMARY KEY,
+  repo_id         TEXT NOT NULL REFERENCES syncable_resources(id) ON DELETE CASCADE,
+  agent_id        TEXT NOT NULL REFERENCES map_nodes(id) ON DELETE CASCADE,
+  swarm_id        TEXT NOT NULL REFERENCES map_swarms(id) ON DELETE CASCADE,
+  local_path      TEXT NOT NULL,
+  current_branch  TEXT,
+  head_sha        TEXT,
+  dirty           INTEGER NOT NULL DEFAULT 0,
+  instance_label  TEXT,
+  visibility      TEXT NOT NULL DEFAULT 'hub_local'
+    CHECK (visibility IN ('private', 'hub_local', 'federated')),
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (agent_id, repo_id, local_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspaces_repo_active   ON workspaces(repo_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_workspaces_agent_active  ON workspaces(agent_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_workspaces_swarm         ON workspaces(swarm_id);
+
+-- 3. Per-swarm workspace policy (operator-set; JSON shape).
+ALTER TABLE map_swarms ADD COLUMN workspace_policy TEXT;
+`;
+
+// V53 — Resource lifecycle status column.
+// (Renumbered from V51 due to merge collision with hosted-swarm-kind work.)
+// Adds `status` to `syncable_resources` for the new mesh-level lifecycle
+// events (`resource.redacted`, `.archived`, `.merged`) shipped by
+// agent-workspace's `RESOURCE_MESH_EVENTS`. See
+// CLAUDE.md "Repos and Workspaces" — federation lifecycle events.
+//
+// SQLite ALTER TABLE ADD COLUMN doesn't support CHECK constraints, so
+// allowed values ('active' | 'redacted_remote' | 'archived' | 'merged_into')
+// are enforced by the materializer + DAL rather than the column.
+export const MIGRATION_V53_RESOURCE_STATUS = `
+ALTER TABLE syncable_resources ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_status ON syncable_resources(status);
+`;
+
+// Migration V54: Per-dispatch repo targeting columns.
+// repo_id is the primary source for repo-scoped dispatches (dispatch body).
+// canonical_url is resolved at enrichment time so the receiving sidecar can
+// clone without a round-trip. branch/commit_sha are optional version pins.
+// clone_policy controls whether the sidecar may clone when the repo is absent.
+export const MIGRATION_V54_DISPATCH_REPO = `
+ALTER TABLE dispatches ADD COLUMN repo_id TEXT;
+ALTER TABLE dispatches ADD COLUMN canonical_url TEXT;
+ALTER TABLE dispatches ADD COLUMN branch TEXT;
+ALTER TABLE dispatches ADD COLUMN commit_sha TEXT;
+ALTER TABLE dispatches ADD COLUMN clone_policy TEXT DEFAULT 'none'
+  CHECK (clone_policy IN ('none', 'allowed'));
+ALTER TABLE dispatches ADD COLUMN clone_path TEXT;
+CREATE INDEX IF NOT EXISTS idx_dispatches_repo ON dispatches(repo_id);
 `;
 
 export const MIGRATION_V45_DISPATCH_LINKED_TASKS = `

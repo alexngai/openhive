@@ -24,12 +24,14 @@
     "bin"
   ],
   "workspaces": [
-    "electron-app"
+    "electron-app",
+    "packages/openhive-headless"
   ],
   "scripts": {
     "build": "npm run build:server && npm run build:web",
     "build:server": "tsup",
     "build:web": "node src/web/ensure-wasm.mjs && vite build --config src/web/vite.config.ts",
+    "build:headless": "npm run build:server && npm -w openhive-headless run build",
     "dev": "tsx watch --exclude '.git/**' --exclude '.swarm/**' --exclude '.openhive/**' --exclude '.sessionlog/**' --exclude 'references/**' src/cli.ts serve",
     "dev:web": "vite --config src/web/vite.config.ts",
     "start": "node dist/cli.js serve",
@@ -81,7 +83,7 @@
     "@tiptap/starter-kit": "^3.22.3",
     "agent-iam": "^0.0.2",
     "agent-inbox": "^0.2.2",
-    "agent-workspace": "^0.1.5",
+    "agent-workspace": "^0.1.6",
     "bcrypt": "^5.1.1",
     "better-sqlite3": "^12.8.0",
     "boring-avatars": "^2.0.4",
@@ -92,6 +94,7 @@
     "fastify": "^5.0.0",
     "ghostty-web": "^0.4.0",
     "git-cascade": "^0.0.7",
+    "git-url-parse": "^16.1.0",
     "graphology": "^0.26.0",
     "graphology-layout": "^0.6.1",
     "graphology-layout-forceatlas2": "^0.10.1",

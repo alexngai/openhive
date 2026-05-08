@@ -48,6 +48,7 @@ import { broadcastToChannel } from '../../realtime/index.js';
 import { broadcastSwarmLifecycleEvent } from '../../realtime/swarm-events.js';
 import { getAllConnectionHealth, getConnectionHealth, getInbound, getPeerMapId } from '../../map/connection-registry.js';
 import { getSyncListenerStatus } from '../../map/sync-listener.js';
+import { WorkspacePolicySchema } from './swarm-hosting.js';
 
 // ============================================================================
 // Zod Schemas
@@ -618,6 +619,100 @@ export async function mapRoutes(
         message: `Swarm left hive "${request.params.hiveName}"`,
         hives: mapDal.getSwarmHiveNames(request.params.id),
       });
+    } catch (error) {
+      return handleMapError(error, reply);
+    }
+  });
+
+  // ==========================================================================
+  // Workspace Policy Routes
+  //
+  // The policy is set at spawn time via `POST /map/hosted/spawn`'s
+  // `workspace_policy` field. These endpoints let operators inspect and
+  // amend the policy after spawn without needing a respawn or SQL.
+  //
+  // Read access mirrors `GET /map/swarms/:id` (authenticated). Write
+  // access is owner-only — the same gate as hive membership and token
+  // rotation. Validation reuses `WorkspacePolicySchema` from
+  // `swarm-hosting.ts` so the spawn-time and post-spawn surfaces stay
+  // shape-locked.
+  // ==========================================================================
+
+  // GET /map/swarms/:id/workspace-policy -- Read the policy (null if unset)
+  fastify.get<{ Params: { id: string } }>('/map/swarms/:id/workspace-policy', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
+    try {
+      const swarm = mapDal.findSwarmById(request.params.id);
+      if (!swarm) {
+        throw new MapHubError('SWARM_NOT_FOUND', 'Swarm not found');
+      }
+      const policy = mapDal.findSwarmWorkspacePolicy(request.params.id);
+      return reply.send({ workspace_policy: policy });
+    } catch (error) {
+      return handleMapError(error, reply);
+    }
+  });
+
+  // PATCH /map/swarms/:id/workspace-policy -- Update the policy. Body is
+  // either a `WorkspacePolicy` (sets it) or `{ workspace_policy: null }`
+  // to clear it (revert to mode='open' by absence).
+  fastify.patch<{ Params: { id: string }; Body: unknown }>('/map/swarms/:id/workspace-policy', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
+    try {
+      if (!mapDal.isSwarmOwner(request.params.id, request.agent!.id)) {
+        throw new MapHubError('NOT_SWARM_OWNER', 'You do not own this swarm');
+      }
+
+      // Two acceptable body shapes:
+      //   1. A `WorkspacePolicy` object directly — sets it.
+      //   2. A wrapper `{ workspace_policy: <policy | null> }` — sets or
+      //      clears (null clears). The wrapper is the only way to clear.
+      //
+      // An empty body, bare `null`, or anything else is a 400. Without
+      // this guard, a stray `curl -X PATCH …` (no body) would silently
+      // clear the policy because Fastify parses missing body to `null`.
+      const body = request.body;
+      let policyInput: unknown;
+      let isClearRequest = false;
+      if (body && typeof body === 'object' && !Array.isArray(body) && 'workspace_policy' in body) {
+        const wrapped = (body as Record<string, unknown>).workspace_policy;
+        if (wrapped === null) {
+          isClearRequest = true;
+        } else {
+          policyInput = wrapped;
+        }
+      } else if (body && typeof body === 'object' && !Array.isArray(body)) {
+        policyInput = body;
+      } else {
+        return reply.status(400).send({
+          error: 'Validation Error',
+          message:
+            'Body must be a WorkspacePolicy object, or { workspace_policy: <policy | null> } to clear.',
+        });
+      }
+
+      let policy: import('../../swarm/types.js').WorkspacePolicy | null;
+      if (isClearRequest) {
+        policy = null;
+      } else {
+        const parsed = WorkspacePolicySchema.safeParse(policyInput);
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'Validation Error',
+            details: parsed.error.issues,
+          });
+        }
+        policy = parsed.data;
+      }
+
+      const updated = mapDal.updateSwarmWorkspacePolicy(request.params.id, policy);
+      if (!updated) {
+        throw new MapHubError('SWARM_NOT_FOUND', 'Swarm not found');
+      }
+
+      return reply.send({ workspace_policy: policy });
     } catch (error) {
       return handleMapError(error, reply);
     }

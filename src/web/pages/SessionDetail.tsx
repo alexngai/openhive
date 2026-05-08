@@ -5,7 +5,7 @@ import {
   Clock, Cpu, FileText, GitBranch, GitCommit, Hash,
   Info, MessageSquare, Send, User,
 } from 'lucide-react';
-import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants, useResumeSession } from '../hooks/useApi';
+import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants, useResumeSession, useRepo } from '../hooks/useApi';
 import { useDispatchList } from '../hooks/useDispatch';
 import { useSpec } from '../hooks/useSpecs';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
@@ -637,6 +637,7 @@ export function SessionDetail() {
                   Awaiting input
                 </span>
               )}
+              <LinkedRepoChip resource={resource} />
             </div>
             {stats && (
               <div className="flex items-center gap-2.5 mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
@@ -816,5 +817,31 @@ function SessionLearningTab({ sessionId }: { sessionId: string }) {
         </Link>
       </div>
     </div>
+  );
+}
+
+/**
+ * Inline chip linking a session to the repo it was opportunistically
+ * stamped against (slice 8 — `metadata.repo_id` set by trajectory bootstrap
+ * when the session's checkpoints carry `gitRemoteUrl + projectPath`).
+ * Renders nothing if the session has no `repo_id` or the repo isn't
+ * visible to the viewer.
+ */
+function LinkedRepoChip({ resource }: { resource: { metadata: unknown } }) {
+  const meta = (resource.metadata ?? {}) as { repo_id?: string };
+  const { data } = useRepo(meta.repo_id);
+  if (!meta.repo_id || !data?.repo) return null;
+  const repoMeta = (data.repo.metadata ?? {}) as { name?: string };
+  const label = repoMeta.name ?? data.repo.name;
+  return (
+    <Link
+      to={`/repos/${meta.repo_id}`}
+      className="text-2xs px-1.5 py-0.5 rounded inline-flex items-center gap-1 hover:bg-honey-500/20 transition-colors"
+      style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+      title="Repo this session is linked to"
+    >
+      <GitBranch className="w-2.5 h-2.5" />
+      {label}
+    </Link>
   );
 }

@@ -92,6 +92,7 @@ export function Sidebar() {
       items: [
         { to: '/memory', icon: Brain, label: 'Memory' },
         { to: '/skills', icon: Wrench, label: 'Skills' },
+        { to: '/repos', icon: GitBranch, label: 'Repos' },
         { to: '/learning', icon: GraduationCap, label: 'Learning' },
       ],
     },
