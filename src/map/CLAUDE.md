@@ -59,8 +59,10 @@ Bindings live in `workspaces (id, repo_id, agent_id → map_nodes, swarm_id → 
 |---|---|---|
 | **Hub policy** (`canonical_url_allow_pattern`) | hub admin | hook only — not yet validating |
 | **Repo policy** (`metadata.binding_policy: open\|closed`) | repo creator | hook only — not yet validating |
-| **Swarm policy** (`map_swarms.workspace_policy: { mode: open\|allow_listed\|pinned }`) | swarm operator at spawn | persisted but not yet runtime-enforced |
+| **Swarm policy** (`map_swarms.workspace_policy: { mode: open\|allow_listed\|pinned }`) | swarm operator at spawn | active for `declare`/`retract`/trajectory-bootstrap; `pinned` mode validates only (auto-bind not yet implemented) |
 | **Agent privacy** (`OPENHIVE_WORKSPACE_DECLARE=off`) | agent itself | active — gates both explicit declare and trajectory bootstrap |
+
+**Swarm policy scope**: `workspace_policy` is a *binding-time* gate. It rejects off-policy `repo.declare`, `repo.retract`, and trajectory-bootstrap-driven bindings. It does **not** scope discovery — `onList` / `onBindings` / `GET /api/v1/repos` still surface repos outside the policy if the caller has visibility under the standard rules (per RD7: visibility is reach, not ACL). Layer a separate filter if discovery confinement is needed.
 
 ### Federation flow
 
@@ -106,6 +108,12 @@ The MAP SDK splits dispatch by id presence: `id` → `additionalHandlers`, no-id
 - **`repo_id` cascade rules** for archived/merged repos — keep links + surface badges in UI; no data destruction.
 - **cc-swarm sidecar wire-up** — parallels the macro-agent recipe; not yet shipped.
 - **map_nodes projection from MAP-protocol registration** — make D12's shim a no-op by projecting on `agent.registered`, or retire `map_nodes` in favor of inline FK targets.
+- **`workspace_policy` `mode='pinned'` auto-bind at swarm register** — currently only the validation half ships; the docstring promises hub-side auto-attach of a binding to `pinned_repo` when the swarm registers, but no code creates that binding (open question: which `local_path` and `agent_id` to use, since neither is known at swarm-register time).
+
+**Landed surfaces** (not pending — listed for navigation):
+- Audit log: hub-side `console.warn` via `logPolicyRejection` in `src/map/workspace-policy.ts`. Grep `[workspace-policy]` in hub stdout.
+- REST: `GET /api/v1/map/swarms/:id/workspace-policy` (any authenticated agent), `PATCH /api/v1/map/swarms/:id/workspace-policy` (owner-only). Defined in `src/api/routes/map.ts`.
+- UI: spawn dialog policy form section (mode dropdown + repo selectors) in `src/web/pages/Swarms.tsx`.
 
 ## Related subsystems
 

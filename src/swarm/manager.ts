@@ -1200,7 +1200,7 @@ export class SwarmManager {
     let repoCloneTarget: { url: string; branch: string; localPath: string; existsLocally: boolean } | undefined;
     if (input.repo_id) {
       try {
-        const resolved = resolveRepoForSpawn(input.repo_id, dataDir);
+        const resolved = resolveRepoForSpawn(input.repo_id, dataDir, agentId);
         applyRepoEnvVars(credentialOverlay, resolved);
         repoCloneTarget = resolved;
       } catch (err) {
@@ -1598,7 +1598,7 @@ export class SwarmManager {
     // — see `references/agent-workspace/docs/design/agent-integration.md`.
     if (input.repo_id) {
       try {
-        const resolved = resolveRepoForSpawn(input.repo_id, dataDir);
+        const resolved = resolveRepoForSpawn(input.repo_id, dataDir, agentId);
         applyRepoEnvVars(credentialOverlay, resolved);
       } catch (err) {
         this.releasePorts(port, adapter);
@@ -1609,15 +1609,15 @@ export class SwarmManager {
       }
     }
 
-    // Persist per-swarm workspace policy on the pre-registered map_swarms row.
-    // Runtime declares are gated against this in workspace-handler.ts (when
-    // policy gating ships in slice 7+). For now this surfaces the policy via
-    // GET /api/v1/map/swarms/:id and is auditable.
+    // Persist per-swarm workspace policy on the pre-registered map_swarms
+    // row. Runtime `repo.declare`/`repo.retract`/trajectory-bootstrap
+    // calls are gated against this column in `OpenHiveRepoHandler` and
+    // `bootstrapRepoFromCheckpoint` via `findSwarmWorkspacePolicy`. The
+    // column is also exposed via `GET /api/v1/map/swarms/:id/workspace-policy`
+    // and editable via `PATCH` on the same path.
     if (input.workspace_policy && preRegisteredSwarmId) {
       try {
-        getDatabase().prepare(
-          'UPDATE map_swarms SET workspace_policy = ? WHERE id = ?',
-        ).run(JSON.stringify(input.workspace_policy), preRegisteredSwarmId);
+        mapDal.updateSwarmWorkspacePolicy(preRegisteredSwarmId, input.workspace_policy);
       } catch (err) {
         // Fail loud, like `repo_id` does. An operator who explicitly asked
         // for a policy at spawn-time deserves to know if persistence

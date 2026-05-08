@@ -22,11 +22,13 @@ import { resolveLocalPath } from '../api/routes/_resource-helpers.js';
 import { daemonAppendTaskFiles, resolveDaemonSocket } from './task-daemon-client.js';
 import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
 import { broadcastToChannel } from '../realtime/index.js';
-import { updateSwarm, findNodeBySwarmAndAgentId, ensureNodeWithId } from '../db/dal/map.js';
+import { updateSwarm, findNodeBySwarmAndAgentId, ensureNodeWithId, findSwarmWorkspacePolicy } from '../db/dal/map.js';
 import * as repos from '../db/dal/repos.js';
 import * as workspaces from '../db/dal/workspaces.js';
 import { getDatabase } from '../db/index.js';
 import { broadcastWorkspaceLifecycleEvent } from '../realtime/workspace-events.js';
+import { enforceSwarmWorkspacePolicyForUrls } from './workspace-policy.js';
+import { PolicyViolationError } from 'agent-workspace/kinds/repo';
 import { getAggregateCapabilities } from './connection-registry.js';
 import { mapHubEvents } from './service.js';
 import { fetchTranscriptFromSwarm } from './trajectory-content.js';
@@ -186,7 +188,17 @@ function handleCheckpoint(
     } catch { /* non-critical — checkpoint succeeds regardless */ }
   }
 
-  // Emit for SwarmCraft bridge (after enrichment so projectPath is available)
+  // Emit for SwarmCraft bridge (after enrichment so projectPath is available).
+  //
+  // CONTRACT: `gitRemoteUrl` on this payload is the raw value from the
+  // checkpoint, NOT gated by `workspace_policy`. Subscribers MUST NOT
+  // create workspace bindings (or any other repo-resource side effect)
+  // from this field — the canonical binding-creation path is
+  // `bootstrapRepoFromCheckpoint` above, which is policy-gated. Using
+  // `gitRemoteUrl` for read-only display (agent panels, cards) is fine.
+  // If a future consumer needs binding creation, route it back through
+  // `bootstrapRepoFromCheckpoint` so the policy gate stays the only
+  // declare/bootstrap codepath.
   mapHubEvents.emit('trajectory_checkpoint', {
     session_resource_id: resourceId,
     checkpoint_id: checkpointId,
@@ -313,13 +325,36 @@ interface BootstrapInput {
  * owner_agent_id` is the source of truth for repo ownership; the
  * connection's agentId can't own an `agents`-table-backed resource.
  */
-function bootstrapRepoFromCheckpoint(input: BootstrapInput): { repoId: string } | null {
+// Exported so the policy gate can be unit-tested in isolation. The
+// production caller is `handleTrajectoryRequest` below; tests should
+// import from this exported seam rather than going through the full
+// trajectory-checkpoint flow.
+export function bootstrapRepoFromCheckpoint(input: BootstrapInput): { repoId: string } | null {
   const { swarmId, agentId, gitRemoteUrl, projectPath, branch, gitCommitHash, agentName } = input;
 
   // Capability check — aggregate across all registered agents on the swarm.
   const caps = getAggregateCapabilities(swarmId) ?? {};
   const ws = caps.workspace as { declare?: { enabled?: boolean } } | undefined;
   if (ws?.declare?.enabled !== true) return null;
+
+  // Swarm policy gate. The bootstrap path creates a workspace binding from
+  // checkpoint metadata — the same effect as an explicit `repo.declare`
+  // call — so the same `workspace_policy` must apply. Without this gate,
+  // a pinned-mode swarm could exfiltrate the binding via checkpoint
+  // metadata (`gitRemoteUrl` field) bypassing the explicit-declare
+  // gate in `OpenHiveRepoHandler.onDeclare`.
+  //
+  // Silently skip on policy violation rather than throwing — this code
+  // path runs on every checkpoint and a noisy throw would surface as a
+  // checkpoint-write failure to the agent. The cap-disabled branch above
+  // uses the same silent-skip shape.
+  try {
+    const policy = findSwarmWorkspacePolicy(swarmId);
+    enforceSwarmWorkspacePolicyForUrls(policy, [gitRemoteUrl]);
+  } catch (err) {
+    if (err instanceof PolicyViolationError) return null;
+    throw err;
+  }
 
   // Resolve repo owner from the swarm record (same pattern as workspace-handler).
   const db = getDatabase();

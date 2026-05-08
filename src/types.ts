@@ -489,6 +489,21 @@ export interface SessionCheckpoint {
   created_by_agent_id: string;
 }
 
+// Per-swarm workspace policy. Lives here (not in `src/swarm/types.ts`)
+// because it's read by `src/db/dal/map.ts` and `src/map/workspace-policy.ts`,
+// neither of which should import upward from the swarm hosting layer.
+//
+// Persisted as JSON in `map_swarms.workspace_policy`. See
+// `src/map/CLAUDE.md` "Repos and Workspaces" for the four-gate
+// enforcement model.
+export interface WorkspacePolicy {
+  mode: 'open' | 'allow_listed' | 'pinned';
+  /** Canonical URLs (used when mode='allow_listed'). */
+  allowed_repos?: string[];
+  /** Canonical URL (used when mode='pinned'). */
+  pinned_repo?: string;
+}
+
 // Session format registry entry
 export interface SessionFormatEntry {
   id: string;

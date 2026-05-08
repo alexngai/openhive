@@ -38,7 +38,7 @@ describe('resolveRepoForSpawn', () => {
   });
 
   it('resolves a valid repo_id to url, branch, and localPath', () => {
-    const resolved = resolveRepoForSpawn(repoId, '/tmp/swarm-data');
+    const resolved = resolveRepoForSpawn(repoId, '/tmp/swarm-data', agentId);
     expect(resolved.url).toBe('https://github.com/org/myrepo');
     expect(resolved.branch).toBe('main');
     expect(resolved.localPath).toBe('/tmp/swarm-data/repo');
@@ -46,7 +46,7 @@ describe('resolveRepoForSpawn', () => {
   });
 
   it('throws RepoResolutionError for unknown repo_id', () => {
-    expect(() => resolveRepoForSpawn('nonexistent-id', '/tmp/data')).toThrow(
+    expect(() => resolveRepoForSpawn('nonexistent-id', '/tmp/data', agentId)).toThrow(
       RepoResolutionError,
     );
   });
@@ -61,7 +61,7 @@ describe('resolveRepoForSpawn', () => {
         default_branch: 'develop',
       },
     );
-    const resolved = resolveRepoForSpawn(repo.id, '/data');
+    const resolved = resolveRepoForSpawn(repo.id, '/data', agentId);
     expect(resolved.branch).toBe('develop');
   });
 
@@ -78,9 +78,21 @@ describe('resolveRepoForSpawn', () => {
       'UPDATE syncable_resources SET local_path = ? WHERE id = ?',
     ).run(localDir, repo.id);
 
-    const resolved = resolveRepoForSpawn(repo.id, '/tmp/swarm-data');
+    const resolved = resolveRepoForSpawn(repo.id, '/tmp/swarm-data', agentId);
     expect(resolved.localPath).toBe(localDir);
     expect(resolved.existsLocally).toBe(true);
+  });
+
+  // ── Authorization gate ───────────────────────────────────────────────────
+
+  it('throws RepoResolutionError when the spawning agent has no access to a private repo', async () => {
+    // Owner agent owns the repo; second agent is unrelated and unsubscribed.
+    const { agent: stranger } = await agentsDAL.createAgent({
+      name: 'resolve-repo-stranger',
+    });
+    expect(() => resolveRepoForSpawn(repoId, '/tmp/swarm-data', stranger.id)).toThrow(
+      RepoResolutionError,
+    );
   });
 
   it('falls back to dataDir/repo when local_path does not exist on disk', () => {
@@ -92,7 +104,7 @@ describe('resolveRepoForSpawn', () => {
       'UPDATE syncable_resources SET local_path = ? WHERE id = ?',
     ).run('/nonexistent/path/that/does/not/exist', repo.id);
 
-    const resolved = resolveRepoForSpawn(repo.id, '/tmp/swarm-data');
+    const resolved = resolveRepoForSpawn(repo.id, '/tmp/swarm-data', agentId);
     expect(resolved.localPath).toBe('/tmp/swarm-data/repo');
     expect(resolved.existsLocally).toBe(false);
   });

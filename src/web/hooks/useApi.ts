@@ -146,6 +146,17 @@ export function useSpawnSwarm() {
        * the repo directory.
        */
       repo_id?: string;
+      /**
+       * Per-swarm workspace policy. Persisted at spawn time and consulted
+       * by the hub on every `repo.declare` / `repo.retract` /
+       * trajectory-bootstrap binding from this swarm. Omit for the
+       * default `mode: 'open'` (any declare allowed).
+       */
+      workspace_policy?: {
+        mode: 'open' | 'allow_listed' | 'pinned';
+        allowed_repos?: string[];
+        pinned_repo?: string;
+      };
     }) => api.post<HostedSwarm>("/map/hosted/spawn", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["hosted-swarms"] });

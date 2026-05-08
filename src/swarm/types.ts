@@ -89,20 +89,24 @@ export interface WorkspaceConfig {
 
 /**
  * Per-swarm workspace policy. Operators set this at spawn time; runtime
- * `x-workspace/repo.declare` calls are gated against it.
+ * `x-workspace/repo.declare` (and trajectory-bootstrap and `repo.retract`)
+ * calls are gated against it. Persisted on `map_swarms.workspace_policy`
+ * and read by `findSwarmWorkspacePolicy`.
  *
  * - `open` (default): any declare succeeds.
  * - `allow_listed`: declares must match a canonical_url in `allowed_repos`.
- * - `pinned`: hub auto-attaches a binding to `pinned_repo` at swarm
- *   register; further declares are validated against the pin.
+ * - `pinned`: declares must match `pinned_repo`. NOTE: the hub-side
+ *   "auto-attach a binding to `pinned_repo` at swarm register" half is
+ *   not yet implemented (tracked under "Pending follow-ups" in
+ *   src/map/CLAUDE.md). Today this mode behaves like a single-entry
+ *   allow_list — it validates declares but doesn't pre-create a binding.
+ *
+ * Re-exported from `src/types.ts` (the canonical home) so existing
+ * imports from `swarm/types.ts` keep working without dragging the type
+ * back into the upward-import-only layer.
  */
-export interface WorkspacePolicy {
-  mode: 'open' | 'allow_listed' | 'pinned';
-  /** Canonical URLs (used when mode='allow_listed'). */
-  allowed_repos?: string[];
-  /** Canonical URL (used when mode='pinned'). */
-  pinned_repo?: string;
-}
+export type { WorkspacePolicy } from '../types.js';
+import type { WorkspacePolicy } from '../types.js';
 
 // ============================================================================
 // Spawn Configuration

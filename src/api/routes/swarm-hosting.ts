@@ -44,7 +44,48 @@ const BootstrapSchema = z.object({
   cwd: z.string().max(2000).optional(),
 });
 
-const SpawnSwarmSchema = z
+/**
+ * Per-swarm workspace policy. Mirrors `WorkspacePolicy` in `src/swarm/types.ts`.
+ *
+ *   - `open` (default if omitted): any agent declare is accepted.
+ *   - `allow_listed`: declares must canonicalize to one of `allowed_repos`.
+ *     `allowed_repos` is required + non-empty when this mode is set.
+ *   - `pinned`: declares must canonicalize to `pinned_repo`. Required when
+ *     this mode is set. Auto-bind on swarm-register is not yet implemented;
+ *     this gate currently behaves like a single-entry allow_list.
+ */
+// Exported so the PATCH endpoint in `map.ts` can reuse the same shape +
+// `superRefine` rules. Both endpoints write to the same column; sharing
+// the validator means a typo in one place doesn't drift the other.
+export const WorkspacePolicySchema = z
+  .object({
+    mode: z.enum(['open', 'allow_listed', 'pinned']),
+    allowed_repos: z.array(z.string().min(1).max(2000)).max(50).optional(),
+    pinned_repo: z.string().min(1).max(2000).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.mode === 'allow_listed') {
+      if (!data.allowed_repos || data.allowed_repos.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['allowed_repos'],
+          message: 'allowed_repos must be a non-empty array when mode="allow_listed"',
+        });
+      }
+    }
+    if (data.mode === 'pinned' && !data.pinned_repo) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pinned_repo'],
+        message: 'pinned_repo is required when mode="pinned"',
+      });
+    }
+  });
+
+// Exported so it can be unit-tested in isolation. Importing test code
+// should treat this as the source of truth for the request shape — the
+// route's HTTP plumbing (auth, manager lookup) is deliberately separate.
+export const SpawnSwarmSchema = z
   .object({
     // Defaults to 'openswarm' to preserve the existing API contract for clients
     // that don't pass kind. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
@@ -72,6 +113,13 @@ const SpawnSwarmSchema = z
      * TUI's cwd to the repo directory.
      */
     repo_id: z.string().max(200).optional(),
+    /**
+     * Per-swarm workspace policy. Persisted on `map_swarms.workspace_policy`
+     * and consulted by `OpenHiveRepoHandler.onDeclare` to validate every
+     * `x-workspace/repo.declare` from this swarm. See `WorkspacePolicy` in
+     * `src/swarm/types.ts` for semantics. Omitted = `open`.
+     */
+    workspace_policy: WorkspacePolicySchema.optional(),
     /**
      * For kind=codex only: which surface to spawn.
      *   - 'rpc' (default): spawn `codex app-server`, openhive chat drives it

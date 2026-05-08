@@ -23,6 +23,7 @@ import {
   CapabilityError,
   PolicyViolationError,
 } from 'agent-workspace/kinds/repo';
+import { enforceSwarmWorkspacePolicy, enforceSwarmWorkspacePolicyForUrls } from './workspace-policy.js';
 import type {
   RepoProtocolHandler,
   RepoHandlerContext,
@@ -41,7 +42,7 @@ import type {
 
 import * as repos from '../db/dal/repos.js';
 import * as workspaces from '../db/dal/workspaces.js';
-import { ensureNodeWithId } from '../db/dal/map.js';
+import { ensureNodeWithId, findSwarmWorkspacePolicy } from '../db/dal/map.js';
 import { getDatabase } from '../db/index.js';
 import { broadcastWorkspaceLifecycleEvent } from '../realtime/workspace-events.js';
 import type { Workspace } from '../types.js';
@@ -119,51 +120,76 @@ export class OpenHiveRepoHandler implements RepoProtocolHandler {
       throw new CapabilityError(['workspace.declare']);
     }
 
-    for (const w of params.workspaces) {
-      const identity = canonicalizeRepoUrl(w.remote_url);
-      const bindingVisibility: RepoVisibility = w.visibility ?? 'hub_local';
+    // Pre-canonicalize once so we can validate the entire batch against the
+    // swarm's policy before any upsert lands.
+    const identities = params.workspaces.map((w) => canonicalizeRepoUrl(w.remote_url));
+    const policy = findSwarmWorkspacePolicy(ctx.swarmId);
+    enforceSwarmWorkspacePolicy(policy, identities.map((i) => i.canonicalUrl));
 
-      // Upsert the federated repo resource. Owner = swarm owner (or explicit
-      // override). Repo visibility defaults to 'hub_local' regardless of the
-      // declaring binding's visibility — they're independent dimensions per
-      // the package's `effectiveVisibility = min(repo, binding)` rule.
-      // `origin: 'agent_declared'` is only used on first creation; the upsert
-      // preserves origin/visibility for existing repos (those settings are
-      // owned by whoever first created the repo, typically a user via REST).
-      const repo = repos.upsertRepoByCanonicalUrl(identity, {
-        origin: 'agent_declared',
-        visibility: 'hub_local',
-        owner_agent_id: this.resolveOwnerAgentId(ctx.swarmId),
-      });
+    // Persist the whole batch atomically. Without the transaction, a
+    // mid-batch failure (FK violation, disk error) leaves earlier items
+    // committed and broadcast — the policy gate above prevents the policy
+    // class of partial commit, but not the persistence class.
+    //
+    // Broadcasts are deferred until after commit so subscribers don't see
+    // events that get rolled back if the transaction aborts.
+    const broadcasts: Array<{ repoId: string; workspace: Workspace }> = [];
+    const ownerAgentId = this.resolveOwnerAgentId(ctx.swarmId);
 
-      // Ensure a map_nodes row exists for ctx.agentId before inserting the
-      // workspace binding (workspaces.agent_id REFERENCES map_nodes.id).
-      // The MAP-protocol agent.registered path doesn't currently project
-      // into map_nodes (only the explicit REST /map/nodes endpoint does),
-      // so without this defensive upsert any sidecar declare would FK-fail.
-      ensureNodeWithId({
-        id: ctx.agentId,
-        swarm_id: ctx.swarmId,
-        map_agent_id: ctx.agentId,
-      });
+    getDatabase().transaction(() => {
+      for (let i = 0; i < params.workspaces.length; i++) {
+        const w = params.workspaces[i];
+        const identity = identities[i];
+        const bindingVisibility: RepoVisibility = w.visibility ?? 'hub_local';
 
-      // Upsert the per-agent binding (idempotent on the (agent, repo, path)
-      // triple; reactivates if previously deactivated).
-      const ws = workspaces.upsertWorkspace({
-        repo_id: repo.id,
-        agent_id: ctx.agentId,
-        swarm_id: ctx.swarmId,
-        local_path: w.local_path,
-        ...(w.current_branch !== undefined && { current_branch: w.current_branch }),
-        ...(w.head_sha !== undefined && { head_sha: w.head_sha }),
-        ...(w.dirty !== undefined && { dirty: w.dirty }),
-        ...(w.instance_label !== undefined && { instance_label: w.instance_label }),
-        visibility: bindingVisibility,
-      });
+        // Upsert the federated repo resource. Owner = swarm owner (or
+        // explicit override). Repo visibility defaults to 'hub_local'
+        // regardless of the declaring binding's visibility — they're
+        // independent dimensions per the package's
+        // `effectiveVisibility = min(repo, binding)` rule.
+        // `origin: 'agent_declared'` is only used on first creation;
+        // the upsert preserves origin/visibility for existing repos.
+        const repo = repos.upsertRepoByCanonicalUrl(identity, {
+          origin: 'agent_declared',
+          visibility: 'hub_local',
+          owner_agent_id: ownerAgentId,
+        });
 
-      broadcastWorkspaceLifecycleEvent(repo.id, {
+        // Ensure a map_nodes row exists for ctx.agentId before inserting
+        // the workspace binding (workspaces.agent_id REFERENCES
+        // map_nodes.id). The MAP-protocol agent.registered path doesn't
+        // currently project into map_nodes (only the explicit REST
+        // /map/nodes endpoint does), so without this defensive upsert
+        // any sidecar declare would FK-fail.
+        ensureNodeWithId({
+          id: ctx.agentId,
+          swarm_id: ctx.swarmId,
+          map_agent_id: ctx.agentId,
+        });
+
+        // Upsert the per-agent binding (idempotent on the
+        // (agent, repo, path) triple; reactivates if previously
+        // deactivated).
+        const ws = workspaces.upsertWorkspace({
+          repo_id: repo.id,
+          agent_id: ctx.agentId,
+          swarm_id: ctx.swarmId,
+          local_path: w.local_path,
+          ...(w.current_branch !== undefined && { current_branch: w.current_branch }),
+          ...(w.head_sha !== undefined && { head_sha: w.head_sha }),
+          ...(w.dirty !== undefined && { dirty: w.dirty }),
+          ...(w.instance_label !== undefined && { instance_label: w.instance_label }),
+          visibility: bindingVisibility,
+        });
+
+        broadcasts.push({ repoId: repo.id, workspace: ws });
+      }
+    })();
+
+    for (const b of broadcasts) {
+      broadcastWorkspaceLifecycleEvent(b.repoId, {
         type: 'workspace_added',
-        data: { workspace: ws },
+        data: { workspace: b.workspace },
       });
     }
   }
@@ -239,6 +265,15 @@ export class OpenHiveRepoHandler implements RepoProtocolHandler {
   // ── retract ───────────────────────────────────────────────────────────────
 
   async onRetract(params: RepoRetractParams, ctx: RepoHandlerContext): Promise<void> {
+    // Policy gate: even though retract only narrows existing same-agent
+    // bindings, the realtime broadcast it emits leaks repo existence to
+    // a swarm whose policy is meant to keep it siloed. Rejecting
+    // off-policy retracts at the top closes that probe path. The
+    // ForUrls helper canonicalizes for us and short-circuits the
+    // open/null case so the cost is zero on the common path.
+    const policy = findSwarmWorkspacePolicy(ctx.swarmId);
+    enforceSwarmWorkspacePolicyForUrls(policy, [params.canonical_url]);
+
     const repo = repos.findRepoByCanonicalUrl(params.canonical_url);
     if (!repo) return; // nothing to retract; treat as no-op
 

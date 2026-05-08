@@ -23,6 +23,7 @@ import type {
   MapNodePublic,
   FederationConnectionStatus,
 } from '../../map/types.js';
+import type { WorkspacePolicy } from '../../types.js';
 
 // ============================================================================
 // Helpers
@@ -128,6 +129,54 @@ export function findSwarmByEndpoint(endpoint: string): MapSwarm | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM map_swarms WHERE map_endpoint = ?').get(endpoint) as Record<string, unknown> | undefined;
   return row ? rowToSwarm(row) : null;
+}
+
+/**
+ * Read just the workspace_policy JSON for a swarm.
+ *
+ * Returns `null` for swarms with no policy set (legacy rows or operators
+ * who didn't pass `workspace_policy` at spawn). The handler treats `null`
+ * as `mode: 'open'` for backwards compatibility.
+ *
+ * Kept as a separate helper from `findSwarmById` so the policy gate doesn't
+ * load the whole MapSwarm row (and so the handler doesn't need to know
+ * about MapSwarm at all).
+ */
+export function findSwarmWorkspacePolicy(swarmId: string): WorkspacePolicy | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    'SELECT workspace_policy FROM map_swarms WHERE id = ?',
+  ).get(swarmId) as { workspace_policy: string | null } | undefined;
+  if (!row?.workspace_policy) return null;
+  try {
+    // Trust the schema validator that wrote the row — `superRefine` in
+    // SpawnSwarmSchema rejects malformed policies before they land here.
+    return JSON.parse(row.workspace_policy) as WorkspacePolicy;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Update the workspace_policy for a swarm. Pass `null` to clear (revert
+ * to "open" by absence of a row). Returns true if the row was found and
+ * updated, false if the swarm doesn't exist.
+ *
+ * Caller is expected to have validated the policy shape with
+ * `WorkspacePolicySchema` from `src/api/routes/swarm-hosting.ts` so the
+ * mode-specific `superRefine` rules apply uniformly across the
+ * spawn-time path and the post-spawn PATCH path.
+ */
+export function updateSwarmWorkspacePolicy(
+  swarmId: string,
+  policy: WorkspacePolicy | null,
+): boolean {
+  const db = getDatabase();
+  const json = policy === null ? null : JSON.stringify(policy);
+  const result = db.prepare(
+    "UPDATE map_swarms SET workspace_policy = ?, updated_at = datetime('now') WHERE id = ?",
+  ).run(json, swarmId);
+  return result.changes > 0;
 }
 
 export function updateSwarm(id: string, input: UpdateSwarmInput): MapSwarm | null {
