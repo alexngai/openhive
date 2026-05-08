@@ -17,6 +17,7 @@ import {
 } from '../openteams/resolver.js';
 import { emptyMaterialization, type MaterializedLoadout } from '../openteams/types.js';
 import { registerLoadoutForDispatch } from './loadout-side-channel.js';
+import { registerRepoForDispatch, setActiveDispatchRepoId } from './repo-side-channel.js';
 import { broadcastToChannel } from '../realtime/index.js';
 
 export interface SpecContentFetcher {
@@ -282,13 +283,33 @@ export async function enrichWithLoadout(
   }
 }
 
+function enrichWithRepo(task: DispatchTask): DispatchTask {
+  const meta = task.metadata ?? {};
+  const specMeta = (meta.spec_metadata as Record<string, unknown> | undefined) ?? {};
+  const repoId =
+    typeof meta.repo_id === 'string'
+      ? meta.repo_id
+      : typeof specMeta.repo_id === 'string'
+        ? specMeta.repo_id
+        : undefined;
+
+  if (!repoId) return task;
+
+  registerRepoForDispatch(task.id, repoId);
+  setActiveDispatchRepoId(repoId);
+
+  if (meta.repo_id === repoId) return task;
+  return { ...task, metadata: { ...meta, repo_id: repoId } };
+}
+
 export function createOpenHiveDispatchSource(
   specFetcher: SpecContentFetcher,
   claimantId: string,
 ): DispatchTaskSource {
   async function enrich(task: DispatchTask): Promise<DispatchTask> {
     const withSpec = await enrichWithSpec(task, specFetcher);
-    return enrichWithLoadout(withSpec);
+    const withLoadout = await enrichWithLoadout(withSpec);
+    return enrichWithRepo(withLoadout);
   }
 
   const source = createSqlSource<Dispatch>({

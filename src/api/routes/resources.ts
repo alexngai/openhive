@@ -22,7 +22,7 @@ import {
 import type { Config } from '../../config.js';
 
 // Valid resource types
-const RESOURCE_TYPES = ['memory_bank', 'task', 'skill', 'session'] as const;
+const RESOURCE_TYPES = ['memory_bank', 'task', 'skill', 'session', 'repo'] as const;
 const SYNC_STRATEGIES = ['metadata', 'local', 'ls-remote', 'mirror'] as const;
 
 // Validation schemas

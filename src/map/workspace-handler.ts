@@ -31,6 +31,10 @@ import type {
   RepoListParams,
   RepoListResult,
   RepoRetractParams,
+  RepoBindingsParams,
+  RepoBindingsResult,
+  RepoBindingEntry,
+  FederatedPeerEntry,
   RepoVisibility,
   WorkspaceDeclareInput,
 } from 'agent-workspace/kinds/repo';
@@ -284,5 +288,49 @@ export class OpenHiveRepoHandler implements RepoProtocolHandler {
         }
       }
     }
+  }
+
+  // ── bindings ─────────────────────────────────────────────────────────────
+
+  async onBindings(params: RepoBindingsParams, ctx: RepoHandlerContext): Promise<RepoBindingsResult> {
+    const repo = repos.findRepoByCanonicalUrl(params.canonical_url);
+    if (!repo) {
+      return { bindings: [], federated_peers: [] };
+    }
+
+    const repoVis = repoVisibility(repo);
+    const allBindings = workspaces.listWorkspacesForRepo(repo.id, { activeOnly: true });
+
+    const visibleBindings: RepoBindingEntry[] = [];
+    for (const ws of allBindings) {
+      const eff = effectiveVisibility(repoVis, ws.visibility);
+      if (eff === 'private' && ws.agent_id !== ctx.agentId) continue;
+      if (eff === 'hub_local' && ws.swarm_id !== ctx.swarmId) continue;
+
+      visibleBindings.push({
+        agent_id: ws.agent_id,
+        workspace_id: ws.id,
+        local_path: ws.local_path,
+        visibility: ws.visibility,
+        declared_at: ws.created_at,
+      });
+    }
+
+    const db = getDatabase();
+    const peerRows = db.prepare(`
+      SELECT DISTINCT sr.origin_instance_id, sp.peer_endpoint
+      FROM syncable_resources sr
+      LEFT JOIN hive_sync_peers sp ON sp.peer_instance_id = sr.origin_instance_id
+      WHERE sr.resource_type = 'repo'
+        AND sr.git_remote_url = ?
+        AND sr.origin_instance_id IS NOT NULL
+    `).all(repo.git_remote_url) as Array<{ origin_instance_id: string; peer_endpoint: string | null }>;
+
+    const federatedPeers: FederatedPeerEntry[] = peerRows.map((r) => ({
+      hub_id: r.origin_instance_id,
+      hub_url: r.peer_endpoint ?? '',
+    }));
+
+    return { bindings: visibleBindings, federated_peers: federatedPeers };
   }
 }

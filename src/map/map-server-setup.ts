@@ -26,6 +26,7 @@ import {
   type WorkspaceCapability,
 } from 'agent-workspace/kinds/repo';
 import { OpenHiveRepoHandler } from './workspace-handler.js';
+import { handleResourceList, handleResourceGet, getAdvertisedKinds } from './resource-handler.js';
 import type { Config } from '../config.js';
 
 /**
@@ -216,6 +217,10 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
     };
   }
 
+  // ── MAP Resource Protocol (map/resources/*) ──────────────────────
+  handlers['map/resources/list'] = handleResourceList;
+  handlers['map/resources/get'] = handleResourceGet;
+
   // ── Repo Methods (x-workspace/repo.*) ────────────────────────────
   // OpenHive consumer-side adapter for `agent-workspace/kinds/repo`. The
   // package owns the wire format and dispatch; OpenHive supplies persistence
@@ -349,6 +354,10 @@ export function initMapServer(config: Config): any {
     name: config.instance.name || 'OpenHive',
     version: '0.1.0',
     additionalHandlers,
+    resources: {
+      enabled: true,
+      kinds: getAdvertisedKinds(),
+    },
     ...(isVerified
       ? {
           auth: {

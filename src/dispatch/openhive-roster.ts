@@ -27,6 +27,8 @@
 
 import type { AgentRoster, AgentRef, PresenceState } from 'swarm-dispatch';
 import { getAllInbound } from '../map/connection-registry.js';
+import { getActiveDispatchRepoId } from './repo-side-channel.js';
+import { getDatabase } from '../db/index.js';
 
 function mapAgentState(state: string): PresenceState {
   switch (state) {
@@ -95,10 +97,38 @@ export function createOpenHiveRoster(): AgentRoster {
         }
       }
 
-      // Sidecar fallback: mail-routed dispatches on sidecar-only swarms
-      // need a target even when the requested role doesn't match the
-      // sidecar's projected 'worker'. Worker/coordinator hits always win.
-      return exact.length > 0 ? exact : sidecarFallbacks;
+      const candidates = exact.length > 0 ? exact : sidecarFallbacks;
+      if (candidates.length <= 1) return candidates;
+
+      const repoId = getActiveDispatchRepoId();
+      if (!repoId) return candidates;
+
+      const boundSwarms = swarmsWithRepoBindings(repoId);
+      if (boundSwarms.size === 0) return candidates;
+
+      const bound: AgentRef[] = [];
+      const unbound: AgentRef[] = [];
+      for (const c of candidates) {
+        if (c.system && boundSwarms.has(c.system)) {
+          bound.push(c);
+        } else {
+          unbound.push(c);
+        }
+      }
+      return [...bound, ...unbound];
     },
   };
+}
+
+function swarmsWithRepoBindings(repoId: string): Set<string> {
+  try {
+    const db = getDatabase();
+    const rows = db.prepare(
+      `SELECT DISTINCT swarm_id FROM workspaces
+       WHERE repo_id = ? AND is_active = 1`,
+    ).all(repoId) as Array<{ swarm_id: string }>;
+    return new Set(rows.map((r) => r.swarm_id));
+  } catch {
+    return new Set();
+  }
 }
