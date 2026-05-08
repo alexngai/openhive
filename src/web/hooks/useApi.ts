@@ -140,6 +140,12 @@ export function useSpawnSwarm() {
        * a positional arg so the TUI opens with the prompt prefilled.
        */
       initial_prompt?: string;
+      /**
+       * Optional repo resource id. For TUI kinds, the provider mounts the
+       * repo's local_path (or clones from git_remote_url) and sets cwd to
+       * the repo directory.
+       */
+      repo_id?: string;
     }) => api.post<HostedSwarm>("/map/hosted/spawn", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["hosted-swarms"] });

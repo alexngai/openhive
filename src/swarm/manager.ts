@@ -21,9 +21,9 @@ import { LocalProvider } from './providers/local.js';
 import { SandboxedLocalProvider } from './providers/sandboxed-local.js';
 import { resolveCredentialOverlay } from './credentials.js';
 import { findResourceById, subscribeToResource } from '../db/dal/syncable-resources.js';
-import * as repos from '../db/dal/repos.js';
 import { getDatabase } from '../db/index.js';
 import { cloneWorkspaceRepos } from './providers/workspace.js';
+import { resolveRepoForSpawn, applyRepoEnvVars, RepoResolutionError } from './resolve-repo.js';
 import { getTuiKindStrategy, isTuiKind, type TuiKindStrategy } from './tui-strategies.js';
 import * as os from 'os';
 import { getInbound } from '../map/connection-registry.js';
@@ -1194,6 +1194,23 @@ export class SwarmManager {
       input.credential_overrides,
     );
 
+    // Phase 10b: resolve repo_id → WORKSPACE_* env vars + clone target.
+    // Same contract as the openswarm path (shared helper) but here the
+    // provider owns the clone — the TUI process starts IN the repo dir.
+    let repoCloneTarget: { url: string; branch: string; localPath: string; existsLocally: boolean } | undefined;
+    if (input.repo_id) {
+      try {
+        const resolved = resolveRepoForSpawn(input.repo_id, dataDir);
+        applyRepoEnvVars(credentialOverlay, resolved);
+        repoCloneTarget = resolved;
+      } catch (err) {
+        if (err instanceof RepoResolutionError) {
+          throw new SwarmHostingError('REPO_NOT_FOUND', err.message);
+        }
+        throw err;
+      }
+    }
+
     const provisionConfig: SwarmProvisionConfig = {
       name,
       adapter: strategy.adapterLabel(),
@@ -1207,6 +1224,7 @@ export class SwarmManager {
       bootstrap: input.bootstrap,
       spawn_command_override: tuiBinary,
       spawn_args_override: [],
+      ...(input.repo_id !== undefined && { repo_id: input.repo_id }),
     };
 
     // Phase 11: persist the row (now that all preconditions have passed).
@@ -1238,7 +1256,27 @@ export class SwarmManager {
         }
       }
 
+      // Phase 12b: repo_id mount-or-clone. If the resolved path already
+      // exists on disk (local checkout or prior clone), skip cloning and
+      // just mount it as the working directory. Otherwise clone fresh.
+      if (repoCloneTarget && !repoCloneTarget.existsLocally) {
+        try {
+          await cloneWorkspaceRepos(
+            { repos: [{ url: repoCloneTarget.url, branch: repoCloneTarget.branch, path: 'repo' }] },
+            dataDir,
+            process.env as Record<string, string>,
+          );
+        } catch (err) {
+          throw new SwarmHostingError(
+            'WORKSPACE_SETUP_FAILED',
+            `Repo clone failed for ${input.repo_id}: ${(err as Error).message}`,
+          );
+        }
+      }
+
       // Phase 13: per-kind prelaunch files (e.g. cc-swarm config).
+      // Written to dataDir (canonical location) AND repo cwd (if different)
+      // so the sidecar finds its config regardless of working directory.
       strategy.writePrelaunchFiles?.({
         swarmId: preRegisteredSwarmId,
         hostedSwarmId,
@@ -1246,12 +1284,25 @@ export class SwarmManager {
         mapServer,
         dataDir,
       });
+      if (repoCloneTarget && repoCloneTarget.localPath !== dataDir) {
+        strategy.writePrelaunchFiles?.({
+          swarmId: preRegisteredSwarmId,
+          hostedSwarmId,
+          onboardToken,
+          mapServer,
+          dataDir: repoCloneTarget.localPath,
+        });
+      }
 
-      // Phase 14: pre-trust the data_dir in the TUI's user config so the
-      // "Trust this folder?" gate doesn't block first-launch hooks. Best-
-      // effort: missing/invalid user config just means the user gets the
-      // prompt and dismisses it manually.
+      // Phase 14: pre-trust the working directory in the TUI's user config
+      // so the "Trust this folder?" gate doesn't block first-launch hooks.
+      // When a repo was cloned, trust both dataDir (prelaunch files) and the
+      // repo clone path (actual cwd). Best-effort: missing/invalid user
+      // config just means the user gets the prompt and dismisses it manually.
       strategy.preTrustWorkdir(dataDir, os.homedir());
+      if (repoCloneTarget) {
+        strategy.preTrustWorkdir(repoCloneTarget.localPath, os.homedir());
+      }
 
       // Phase 15: spawn the TUI via PtyManager. Both kinds are interactive
       // TUIs that need a real TTY (would crash under child_process.spawn).
@@ -1284,7 +1335,7 @@ export class SwarmManager {
         ptyInfo = this.ptyManager.create({
           command: tuiBinary,
           args: ptyArgs,
-          cwd: dataDir,
+          cwd: repoCloneTarget ? repoCloneTarget.localPath : dataDir,
           env,
           cols: 120,
           rows: 40,
@@ -1546,27 +1597,16 @@ export class SwarmManager {
     // swarm's sidecar reads these on connect and emits `x-workspace/repo.declare`
     // — see `references/agent-workspace/docs/design/agent-integration.md`.
     if (input.repo_id) {
-      const repo = repos.findRepoById(input.repo_id);
-      if (!repo) {
+      try {
+        const resolved = resolveRepoForSpawn(input.repo_id, dataDir);
+        applyRepoEnvVars(credentialOverlay, resolved);
+      } catch (err) {
         this.releasePorts(port, adapter);
-        throw new SwarmHostingError(
-          'REPO_NOT_FOUND',
-          `Repo resource ${input.repo_id} not found`,
-        );
+        if (err instanceof RepoResolutionError) {
+          throw new SwarmHostingError('REPO_NOT_FOUND', err.message);
+        }
+        throw err;
       }
-      if (repo.resource_type !== 'repo') {
-        this.releasePorts(port, adapter);
-        throw new SwarmHostingError(
-          'REPO_NOT_FOUND',
-          `Resource ${input.repo_id} is type=${repo.resource_type}, not repo`,
-        );
-      }
-      const meta = (repo.metadata ?? {}) as { default_branch?: string };
-      credentialOverlay.WORKSPACE_REPO_URL = repo.git_remote_url;
-      credentialOverlay.WORKSPACE_BRANCH = meta.default_branch ?? 'main';
-      // Default clone path: `${dataDir}/repo`. Sidecar can override via env
-      // OPENHIVE_WORKSPACE_LOCAL_PATH if pre-cloned outside dataDir.
-      credentialOverlay.WORKSPACE_LOCAL_PATH = path.join(dataDir, 'repo');
     }
 
     // Persist per-swarm workspace policy on the pre-registered map_swarms row.

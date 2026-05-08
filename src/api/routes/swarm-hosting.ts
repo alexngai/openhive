@@ -66,6 +66,13 @@ const SpawnSwarmSchema = z
      */
     initial_prompt: z.string().max(8000).optional(),
     /**
+     * Pre-attached repo resource. When set, the spawned swarm resolves
+     * the repo and injects WORKSPACE_* env vars. For TUI kinds, the
+     * provider also clones (if no local checkout exists) and sets the
+     * TUI's cwd to the repo directory.
+     */
+    repo_id: z.string().max(200).optional(),
+    /**
      * For kind=codex only: which surface to spawn.
      *   - 'rpc' (default): spawn `codex app-server`, openhive chat drives it
      *   - 'tui': spawn `codex` TUI in a PTY (operator-driven, no chat path)
@@ -130,6 +137,7 @@ function handleSwarmError(error: unknown, reply: FastifyReply): FastifyReply {
       NO_PORTS_AVAILABLE: 503,
       HIVE_NOT_FOUND: 404,
       ONBOARD_TOKEN_FAILED: 500,
+      REPO_NOT_FOUND: 404,
       WORKSPACE_SETUP_FAILED: 500,
       SPAWN_FAILED: 500,
       NOT_FOUND: 404,

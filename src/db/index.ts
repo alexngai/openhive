@@ -46,6 +46,7 @@ import {
   MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK,
   MIGRATION_V52_REPOS_AND_WORKSPACES,
   MIGRATION_V53_RESOURCE_STATUS,
+  MIGRATION_V54_DISPATCH_REPO,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -347,6 +348,10 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // events (resource.redacted / .archived / .merged) per slice 5b.
   // (Renumbered from V51.)
   53: MIGRATION_V53_RESOURCE_STATUS,
+  // Version 54: Per-dispatch repo targeting columns (repo_id, canonical_url,
+  // branch, commit_sha, clone_policy, clone_path). Dispatch body is the
+  // primary source; spec metadata is a fallback for repo_id only.
+  54: MIGRATION_V54_DISPATCH_REPO,
 };
 
 /** Get the SQL for a specific migration version.
@@ -435,6 +440,13 @@ function repairSchema(database: Database.Database): void {
     "ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'openswarm'",
     "ALTER TABLE syncable_resources ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
     "CREATE INDEX IF NOT EXISTS idx_syncable_resources_status ON syncable_resources(status)",
+    "ALTER TABLE dispatches ADD COLUMN repo_id TEXT",
+    "ALTER TABLE dispatches ADD COLUMN canonical_url TEXT",
+    "ALTER TABLE dispatches ADD COLUMN branch TEXT",
+    "ALTER TABLE dispatches ADD COLUMN commit_sha TEXT",
+    "ALTER TABLE dispatches ADD COLUMN clone_policy TEXT DEFAULT 'none'",
+    "ALTER TABLE dispatches ADD COLUMN clone_path TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_dispatches_repo ON dispatches(repo_id)",
   ];
   for (const sql of repairs) {
     try {

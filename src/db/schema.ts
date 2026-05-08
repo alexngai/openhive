@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 53;
+export const SCHEMA_VERSION = 54;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -1144,6 +1144,22 @@ ALTER TABLE map_swarms ADD COLUMN workspace_policy TEXT;
 export const MIGRATION_V53_RESOURCE_STATUS = `
 ALTER TABLE syncable_resources ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_status ON syncable_resources(status);
+`;
+
+// Migration V54: Per-dispatch repo targeting columns.
+// repo_id is the primary source for repo-scoped dispatches (dispatch body).
+// canonical_url is resolved at enrichment time so the receiving sidecar can
+// clone without a round-trip. branch/commit_sha are optional version pins.
+// clone_policy controls whether the sidecar may clone when the repo is absent.
+export const MIGRATION_V54_DISPATCH_REPO = `
+ALTER TABLE dispatches ADD COLUMN repo_id TEXT;
+ALTER TABLE dispatches ADD COLUMN canonical_url TEXT;
+ALTER TABLE dispatches ADD COLUMN branch TEXT;
+ALTER TABLE dispatches ADD COLUMN commit_sha TEXT;
+ALTER TABLE dispatches ADD COLUMN clone_policy TEXT DEFAULT 'none'
+  CHECK (clone_policy IN ('none', 'allowed'));
+ALTER TABLE dispatches ADD COLUMN clone_path TEXT;
+CREATE INDEX IF NOT EXISTS idx_dispatches_repo ON dispatches(repo_id);
 `;
 
 export const MIGRATION_V45_DISPATCH_LINKED_TASKS = `

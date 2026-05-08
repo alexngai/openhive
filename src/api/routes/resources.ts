@@ -972,8 +972,11 @@ export async function resourcesRoutes(
   // Resource Type Specific Endpoints
   // ============================================================================
 
-  // List resources by type (convenience endpoints)
-  for (const resourceType of RESOURCE_TYPES) {
+  // List resources by type (convenience endpoints).
+  // Skip 'repo': repos own a richer dedicated surface in src/api/routes/repos.ts
+  // (visibility tiers, status filtering, workspace bindings, archive/merge
+  // lifecycle). Auto-registering /repos here would duplicate the route.
+  for (const resourceType of RESOURCE_TYPES.filter((t) => t !== 'repo')) {
     const pluralType = resourceType === 'skill' ? 'skills' : `${resourceType}s`;
 
     // List resources of a specific type

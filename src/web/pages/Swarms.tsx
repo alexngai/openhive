@@ -43,6 +43,7 @@ import {
   useSpawnAgent,
   useConnectAcp,
   useKnownProjectPaths,
+  useRepos,
 } from "../hooks/useApi";
 import { useSwarmRealtime } from "../hooks/useRealtimeInvalidation";
 import {
@@ -201,6 +202,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   const [ccInitialPrompt, setCcInitialPrompt] = useState("");
   const [ccRepoUrl, setCcRepoUrl] = useState("");
   const [ccRepoBranch, setCcRepoBranch] = useState("");
+  const [repoId, setRepoId] = useState("");
 
   const isSandboxed = provider === "local-sandboxed";
 
@@ -215,6 +217,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   const spawnMutation = useSpawnSwarm();
   const { data: hives } = useHives({ sort: "popular", limit: 50 });
   const { data: knownProjectPaths } = useKnownProjectPaths();
+  const { data: reposPage } = useRepos({ limit: 100 });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -302,6 +305,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               provider: provider !== 'local' ? provider : undefined,
               workspace: ccWorkspace,
               initial_prompt: trimmedPrompt || undefined,
+              repo_id: repoId || undefined,
               ...codexModeOverride,
             }
           : {
@@ -820,7 +824,35 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
           {/* TUI-kind-specific fields (claude-code, codex) */}
           {(kind === 'claude-code' || kind === 'codex') && (
             <>
-              {/* Optional repo to clone before launching claude */}
+              {/* Repo resource selector — mount existing or clone on spawn */}
+              {reposPage && reposPage.data.length > 0 && (
+                <div>
+                  <SectionLabel>
+                    <span className="flex items-center gap-1">
+                      <GitBranch className="w-3 h-3" />
+                      Repo resource
+                    </span>
+                  </SectionLabel>
+                  <select
+                    value={repoId}
+                    onChange={(e) => setRepoId(e.target.value)}
+                    className="input w-full text-xs"
+                  >
+                    <option value="">None — use data directory</option>
+                    {reposPage.data.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}{r.git_remote_url ? ` (${r.git_remote_url})` : ''}{r.local_path ? ' — local' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                    Mount an existing local checkout or clone from the repo's remote URL.
+                  </p>
+                </div>
+              )}
+
+              {/* Manual repo URL — fallback when no repo resources exist or user skips the selector */}
+              {!repoId && (
               <div className="grid grid-cols-3 gap-2">
                 <div className="col-span-2">
                   <SectionLabel>Clone repo (optional)</SectionLabel>
@@ -848,6 +880,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                   />
                 </div>
               </div>
+              )}
 
               {/* Optional initial prompt */}
               <div>

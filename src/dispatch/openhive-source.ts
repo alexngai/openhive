@@ -18,6 +18,7 @@ import {
 import { emptyMaterialization, type MaterializedLoadout } from '../openteams/types.js';
 import { registerLoadoutForDispatch } from './loadout-side-channel.js';
 import { registerRepoForDispatch, setActiveDispatchRepoId } from './repo-side-channel.js';
+import { findRepoById } from '../db/dal/repos.js';
 import { broadcastToChannel } from '../realtime/index.js';
 
 export interface SpecContentFetcher {
@@ -286,20 +287,51 @@ export async function enrichWithLoadout(
 function enrichWithRepo(task: DispatchTask): DispatchTask {
   const meta = task.metadata ?? {};
   const specMeta = (meta.spec_metadata as Record<string, unknown> | undefined) ?? {};
+
+  // Dispatch row columns (V54) are the primary source. Spec metadata is a
+  // fallback for repo_id only — branch/commit/clone are dispatch-only concerns.
+  const dispatchRow = dispatchesDAL.findDispatchById(task.id);
   const repoId =
-    typeof meta.repo_id === 'string'
-      ? meta.repo_id
-      : typeof specMeta.repo_id === 'string'
-        ? specMeta.repo_id
-        : undefined;
+    dispatchRow?.repo_id
+      ?? (typeof meta.repo_id === 'string' ? meta.repo_id : undefined)
+      ?? (typeof specMeta.repo_id === 'string' ? specMeta.repo_id : undefined);
 
   if (!repoId) return task;
 
-  registerRepoForDispatch(task.id, repoId);
   setActiveDispatchRepoId(repoId);
 
-  if (meta.repo_id === repoId) return task;
-  return { ...task, metadata: { ...meta, repo_id: repoId } };
+  // Resolve canonical_url from the repo row if not already on the dispatch.
+  let canonicalUrl = dispatchRow?.canonical_url ?? undefined;
+  if (!canonicalUrl) {
+    const repo = findRepoById(repoId);
+    if (repo) {
+      canonicalUrl = repo.git_remote_url;
+      try {
+        dispatchesDAL.recordRepoResolution(task.id, canonicalUrl);
+      } catch { /* best effort */ }
+    }
+  }
+
+  // Register the full binding AFTER canonical_url resolution so the
+  // mail port's injectRepoMetadata sees the resolved value.
+  registerRepoForDispatch(task.id, repoId, {
+    canonicalUrl,
+    branch: dispatchRow?.branch ?? undefined,
+    commitSha: dispatchRow?.commit_sha ?? undefined,
+    clonePolicy: dispatchRow?.clone_policy ?? undefined,
+    clonePath: dispatchRow?.clone_path ?? undefined,
+  });
+
+  const additions: Record<string, unknown> = { repo_id: repoId };
+  if (canonicalUrl) additions.canonical_url = canonicalUrl;
+  if (dispatchRow?.branch) additions.branch = dispatchRow.branch;
+  if (dispatchRow?.commit_sha) additions.commit_sha = dispatchRow.commit_sha;
+  if (dispatchRow?.clone_policy && dispatchRow.clone_policy !== 'none') {
+    additions.clone_policy = dispatchRow.clone_policy;
+  }
+  if (dispatchRow?.clone_path) additions.clone_path = dispatchRow.clone_path;
+
+  return { ...task, metadata: { ...meta, ...additions } };
 }
 
 export function createOpenHiveDispatchSource(
