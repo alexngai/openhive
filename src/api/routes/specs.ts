@@ -28,6 +28,12 @@ import { broadcastToChannel } from '../../realtime/index.js';
 import * as dispatchesDAL from '../../db/dal/dispatches.js';
 import { findSwarmById } from '../../db/dal/map.js';
 import { canRouteToSwarm } from '../../dispatch/routing.js';
+import { getLoadout } from '../../db/dal/loadouts.js';
+import { getTeamTemplate } from '../../db/dal/team-templates.js';
+import {
+  onLoadoutBundle,
+  onTeamTemplateBundle,
+} from '../../openteams/sync-bridge.js';
 import type { Dispatch } from '../../db/dal/dispatches.js';
 import type { SyncableResource } from '../../types.js';
 import type { Config } from '../../config.js';
@@ -60,6 +66,13 @@ const UpdateSpecSchema = z
 const DispatchSpecSchema = z.object({
   target_swarms: z.array(z.string().min(1)).min(1).max(20),
   prompt: z.string().max(5000).optional(),
+  // Optional openteams binding (Layer 3). When supplied, the dispatch pins
+  // the content-addressed bundle hash(es) at create time and the runtime
+  // materializes the loadout into the ACP session (mcpServers, permissions,
+  // prompt addendum).
+  loadout_resource_id: z.string().min(1).optional(),
+  team_template_resource_id: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
 });
 
 const VALID_EDGE_TYPES = [
@@ -853,6 +866,9 @@ export async function specsRoutes(
         initiatorType: 'user',
         targetSwarms: body.target_swarms,
         prompt: body.prompt,
+        loadoutResourceId: body.loadout_resource_id,
+        teamTemplateResourceId: body.team_template_resource_id,
+        role: body.role,
       });
 
       if (!result.ok) {
@@ -881,6 +897,11 @@ export async function dispatchSpecToSwarms(input: {
   initiatorType: 'user' | 'agent';
   targetSwarms: string[];
   prompt?: string | null;
+  // Layer 3 — optional openteams binding. Resolved to content-addressed
+  // bundle ids inside this helper before persisting each dispatch row.
+  loadoutResourceId?: string | null;
+  teamTemplateResourceId?: string | null;
+  role?: string | null;
 }): Promise<
   | {
       ok: true;
@@ -936,6 +957,54 @@ export async function dispatchSpecToSwarms(input: {
     };
   }
 
+  // Resolve the optional openteams binding to content-addressed bundle ids.
+  // We bundle here (via the sync-bridge helpers) so the hash is pinned at
+  // dispatch creation time — subsequent edits to the authored
+  // loadout / team_template won't change in-flight dispatches.
+  let loadoutBundleId: string | null = null;
+  if (input.loadoutResourceId) {
+    const row = getLoadout(input.loadoutResourceId);
+    if (!row) {
+      return {
+        ok: false,
+        statusCode: 404,
+        error: 'Not Found',
+        message: `Loadout not found: ${input.loadoutResourceId}`,
+      };
+    }
+    loadoutBundleId = await onLoadoutBundle(row);
+    if (!loadoutBundleId) {
+      return {
+        ok: false,
+        statusCode: 422,
+        error: 'Validation Error',
+        message: `Loadout ${input.loadoutResourceId} could not be bundled`,
+      };
+    }
+  }
+
+  let teamBundleId: string | null = null;
+  if (input.teamTemplateResourceId) {
+    const row = getTeamTemplate(input.teamTemplateResourceId);
+    if (!row) {
+      return {
+        ok: false,
+        statusCode: 404,
+        error: 'Not Found',
+        message: `Team template not found: ${input.teamTemplateResourceId}`,
+      };
+    }
+    teamBundleId = await onTeamTemplateBundle(row);
+    if (!teamBundleId) {
+      return {
+        ok: false,
+        statusCode: 422,
+        error: 'Validation Error',
+        message: `Team template ${input.teamTemplateResourceId} could not be bundled`,
+      };
+    }
+  }
+
   const dispatches: Array<Dispatch & { seed_prompt: string; target_swarm_name: string | null }> = [];
   for (const target of swarmInfos) {
     const dispatch = dispatchesDAL.createDispatch({
@@ -946,6 +1015,9 @@ export async function dispatchSpecToSwarms(input: {
       initiator_type: input.initiatorType,
       initiator_id: input.agentId,
       prompt_override: input.prompt ?? null,
+      loadout_bundle_id: loadoutBundleId,
+      team_bundle_id: teamBundleId,
+      role: input.role ?? null,
     });
 
     const seedPrompt = buildDispatchSeedPrompt({

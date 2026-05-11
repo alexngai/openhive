@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 45;
+export const SCHEMA_VERSION = 46;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -1736,6 +1736,25 @@ CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_re
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
 CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
+`;
+
+// Migration V46: add openteams loadout-reference columns to `dispatches`.
+//
+// A dispatch can now carry a content-addressed loadout id (and optionally a
+// team bundle id + role) alongside the existing spec reference. The columns
+// are nullable so legacy dispatches (spec-only) pass through unchanged. The
+// dispatch runtime materializes the loadout from the openteams bundle store
+// at claim time and feeds the result into the ACP session (mcpServers,
+// permissions, prompt addendum).
+//
+// Hash-stickiness: the bundle id captured at dispatch creation time is
+// pinned, so subsequent edits to the authored team_template / loadout don't
+// retroactively change in-flight dispatches (matches openteams design
+// principle 7 — see references/openteams/docs/team-map-sync-design.md).
+export const MIGRATION_V46_DISPATCH_LOADOUT_REFS = `
+ALTER TABLE dispatches ADD COLUMN loadout_bundle_id TEXT;
+ALTER TABLE dispatches ADD COLUMN team_bundle_id TEXT;
+ALTER TABLE dispatches ADD COLUMN role TEXT;
 `;
 
 // Populate FTS tables from existing data

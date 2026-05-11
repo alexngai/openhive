@@ -11,11 +11,14 @@
  *
  *   onTeamTemplateBundle(row)   // POST + PATCH
  *   onLoadoutBundle(row)        // POST + PATCH
- *   onTeamTemplateRemoved(id)   // DELETE
- *   onLoadoutRemoved(id)        // DELETE
+ *   onTeamTemplateRemoved(row)  // DELETE (pre-delete row supplied so we can rebundle to derive the hash)
+ *   onLoadoutRemoved(row)       // DELETE
  *
- * These are fire-and-forget — failures are logged but never bubble to the
- * caller. Auto-bundle errors should not break a successful REST mutation.
+ * Bundling goes through `internal/bundle-content.ts`, which uses
+ * `TemplateLoader.fromObject` — no temp-dir round-trip.
+ *
+ * Failures are recorded into a small ring buffer surfaced via
+ * `getOpenteamsBundleFailures()` so operators can spot silent breakage.
  *
  * Lifecycle events (`resource.added` / `updated` / `removed`) flow
  * automatically via the kind handlers' `emit` hook, which is wired to the
@@ -23,57 +26,93 @@
  */
 
 import {
-  bundleLoadout,
-  bundleTeam,
-  resolveStandaloneLoadout,
-  TemplateLoader,
   LOADOUT_RESOURCE_TYPE,
   TEAM_RESOURCE_TYPE,
 } from 'openteams';
-import type { LoadoutDefinition, MAPResource } from 'openteams';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import yaml from 'js-yaml';
+import type { MAPResource } from 'openteams';
 import { getOpenteamsBundleStore } from './map-handlers.js';
 import type { SyncableResource } from '../types.js';
 import type { LoadoutContent } from '../api/schemas/loadouts.js';
 import type { TeamTemplateContent } from '../api/schemas/teams.js';
+import {
+  bundleLoadoutContent,
+  bundleTeamTemplateContent,
+} from './internal/bundle-content.js';
+
+// ── Failure observability ───────────────────────────────────────────────────
+
+export interface OpenteamsBundleFailure {
+  resource_id: string;
+  resource_type: 'loadout' | 'team_template';
+  operation: 'bundle' | 'remove';
+  message: string;
+  ts: string;
+}
+
+const MAX_FAILURES = 200;
+const failures: OpenteamsBundleFailure[] = [];
+
+function recordFailure(failure: OpenteamsBundleFailure): void {
+  failures.push(failure);
+  if (failures.length > MAX_FAILURES) failures.shift();
+}
+
+/** Snapshot the recent auto-bundle failures (oldest → newest). */
+export function getOpenteamsBundleFailures(): ReadonlyArray<OpenteamsBundleFailure> {
+  return failures.slice();
+}
+
+/** Test-only: clear the failure log. */
+export function _resetOpenteamsBundleFailures(): void {
+  failures.length = 0;
+}
 
 // ── Auto-bundle on write ────────────────────────────────────────────────────
 
 /**
  * Bundle a `loadout` row's authored content into the openteams store.
  * Returns the bundle id on success, or null when the row has no content
- * or bundling failed.
+ * or bundling failed (in which case the failure is also captured for
+ * operator visibility).
  */
 export async function onLoadoutBundle(row: SyncableResource): Promise<string | null> {
+  const content = (row.metadata as { content?: LoadoutContent } | null)?.content;
+  if (!content) return null;
   try {
-    const content = (row.metadata as { content?: LoadoutContent } | null)?.content;
-    if (!content) return null;
-    const resolved = resolveStandaloneLoadout(content as LoadoutDefinition);
-    const bundle = bundleLoadout(resolved, { version: '0.0.0', name: row.name });
+    const bundle = bundleLoadoutContent(row.name, content);
     await getOpenteamsBundleStore().put(bundle as unknown as MAPResource);
     return bundle.id;
   } catch (err) {
-    console.warn(
-      `[openteams] auto-bundle loadout ${row.id} failed: ${(err as Error).message}`,
-    );
+    const message = (err as Error).message;
+    console.warn(`[openteams] auto-bundle loadout ${row.id} failed: ${message}`);
+    recordFailure({
+      resource_id: row.id,
+      resource_type: 'loadout',
+      operation: 'bundle',
+      message,
+      ts: new Date().toISOString(),
+    });
     return null;
   }
 }
 
 export async function onTeamTemplateBundle(row: SyncableResource): Promise<string | null> {
+  const content = (row.metadata as { content?: TeamTemplateContent } | null)?.content;
+  if (!content) return null;
   try {
-    const content = (row.metadata as { content?: TeamTemplateContent } | null)?.content;
-    if (!content) return null;
-    const bundle = await bundleTeamTemplateContent(row.name, content);
+    const bundle = bundleTeamTemplateContent(row.name, content);
     await getOpenteamsBundleStore().put(bundle as unknown as MAPResource);
     return bundle.id;
   } catch (err) {
-    console.warn(
-      `[openteams] auto-bundle team_template ${row.id} failed: ${(err as Error).message}`,
-    );
+    const message = (err as Error).message;
+    console.warn(`[openteams] auto-bundle team_template ${row.id} failed: ${message}`);
+    recordFailure({
+      resource_id: row.id,
+      resource_type: 'team_template',
+      operation: 'bundle',
+      message,
+      ts: new Date().toISOString(),
+    });
     return null;
   }
 }
@@ -85,78 +124,39 @@ export async function onTeamTemplateBundle(row: SyncableResource): Promise<strin
 // for a row→hash side-map and survives restart (bundle ids are stable).
 
 export async function onLoadoutRemoved(row: SyncableResource): Promise<void> {
+  const content = (row.metadata as { content?: LoadoutContent } | null)?.content;
+  if (!content) return;
   try {
-    const content = (row.metadata as { content?: LoadoutContent } | null)?.content;
-    if (!content) return;
-    const resolved = resolveStandaloneLoadout(content as LoadoutDefinition);
-    const bundle = bundleLoadout(resolved, { version: '0.0.0', name: row.name });
+    const bundle = bundleLoadoutContent(row.name, content);
     await getOpenteamsBundleStore().delete(LOADOUT_RESOURCE_TYPE, bundle.id);
   } catch (err) {
-    console.warn(
-      `[openteams] auto-remove loadout ${row.id} failed: ${(err as Error).message}`,
-    );
+    const message = (err as Error).message;
+    console.warn(`[openteams] auto-remove loadout ${row.id} failed: ${message}`);
+    recordFailure({
+      resource_id: row.id,
+      resource_type: 'loadout',
+      operation: 'remove',
+      message,
+      ts: new Date().toISOString(),
+    });
   }
 }
 
 export async function onTeamTemplateRemoved(row: SyncableResource): Promise<void> {
+  const content = (row.metadata as { content?: TeamTemplateContent } | null)?.content;
+  if (!content) return;
   try {
-    const content = (row.metadata as { content?: TeamTemplateContent } | null)?.content;
-    if (!content) return;
-    const bundle = await bundleTeamTemplateContent(row.name, content);
+    const bundle = bundleTeamTemplateContent(row.name, content);
     await getOpenteamsBundleStore().delete(TEAM_RESOURCE_TYPE, bundle.id);
   } catch (err) {
-    console.warn(
-      `[openteams] auto-remove team_template ${row.id} failed: ${(err as Error).message}`,
-    );
-  }
-}
-
-// ── Internals ───────────────────────────────────────────────────────────────
-
-/**
- * Same temp-dir round-trip the seed function uses. Duplicated here because
- * the seed path imports this module's store accessor too, and pulling the
- * helper into a shared internal would create a cycle worth avoiding for
- * such a small chunk of code.
- */
-async function bundleTeamTemplateContent(
-  templateName: string,
-  content: TeamTemplateContent,
-) {
-  const dir = mkdtempSync(join(tmpdir(), `openteams-bundle-${templateName}-`));
-  try {
-    writeFileSync(join(dir, 'team.yaml'), yaml.dump(content.manifest));
-
-    if (content.roles) {
-      const rolesDir = join(dir, 'roles');
-      mkdirSync(rolesDir, { recursive: true });
-      for (const [name, def] of Object.entries(content.roles)) {
-        writeFileSync(join(rolesDir, `${name}.yaml`), yaml.dump(def));
-      }
-    }
-
-    if (content.loadouts) {
-      const loadoutsDir = join(dir, 'loadouts');
-      mkdirSync(loadoutsDir, { recursive: true });
-      for (const [name, def] of Object.entries(content.loadouts)) {
-        writeFileSync(join(loadoutsDir, `${name}.yaml`), yaml.dump(def));
-      }
-    }
-
-    if (content.prompts) {
-      const promptsDir = join(dir, 'prompts');
-      mkdirSync(promptsDir, { recursive: true });
-      for (const [role, prompts] of Object.entries(content.prompts)) {
-        const body = (prompts as { primary?: string } | null)?.primary;
-        if (typeof body === 'string') {
-          writeFileSync(join(promptsDir, `${role}.md`), body);
-        }
-      }
-    }
-
-    const template = TemplateLoader.load(dir);
-    return bundleTeam(template, { version: '0.0.0', name: templateName });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+    const message = (err as Error).message;
+    console.warn(`[openteams] auto-remove team_template ${row.id} failed: ${message}`);
+    recordFailure({
+      resource_id: row.id,
+      resource_type: 'team_template',
+      operation: 'remove',
+      message,
+      ts: new Date().toISOString(),
+    });
   }
 }

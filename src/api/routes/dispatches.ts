@@ -10,6 +10,10 @@ import { FastifyInstance } from 'fastify';
 import { createAuthOrAdminKey } from '../middleware/auth.js';
 import * as dispatchesDAL from '../../db/dal/dispatches.js';
 import { broadcastToChannel } from '../../realtime/index.js';
+import {
+  materializeLoadoutById,
+  LoadoutBundleNotFoundError,
+} from '../../openteams/loadout-materializer.js';
 import type {
   DispatchInitiatorType,
   DispatchStatus,
@@ -85,6 +89,56 @@ export async function dispatchesRoutes(
     }
     return reply.send({ dispatch });
   });
+
+  /**
+   * GET /dispatches/:id/loadout
+   *
+   * Materialized openteams loadout artifact for a dispatch — the
+   * permissions / mcpServers / prompt addendum the runtime would inject.
+   *
+   * Used by swarm sidecars to fetch the loadout's permission rules and
+   * apply them locally (write `.claude/settings.local.json`, etc.). The
+   * hub doesn't enforce permissions; the consumer policy lives at the
+   * runtime per openteams's design (see `team-map-sync-design.md` §"Trust").
+   *
+   * Returns 200 + `{ materialized: null }` when the dispatch has no
+   * loadout binding, or 200 + `{ materialized: MaterializedLoadout }` when
+   * a bundle was pinned and resolved successfully. 404 if the dispatch is
+   * unknown; 410 if the pinned bundle is missing from the store.
+   */
+  fastify.get<{ Params: { id: string } }>(
+    '/dispatches/:id/loadout',
+    { preHandler: authOrAdminKey },
+    async (request, reply) => {
+      const dispatch = dispatchesDAL.findDispatchById(request.params.id);
+      if (!dispatch) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Dispatch not found' });
+      }
+      if (!dispatch.loadout_bundle_id) {
+        return reply.send({
+          materialized: null,
+          team_bundle_id: dispatch.team_bundle_id,
+          role: dispatch.role,
+        });
+      }
+      try {
+        const materialized = await materializeLoadoutById(dispatch.loadout_bundle_id);
+        return reply.send({
+          materialized,
+          team_bundle_id: dispatch.team_bundle_id,
+          role: dispatch.role,
+        });
+      } catch (err) {
+        if (err instanceof LoadoutBundleNotFoundError) {
+          return reply.status(410).send({
+            error: 'Gone',
+            message: `Pinned loadout bundle ${dispatch.loadout_bundle_id} no longer in store`,
+          });
+        }
+        throw err;
+      }
+    },
+  );
 
   /**
    * POST /dispatches/:id/cancel

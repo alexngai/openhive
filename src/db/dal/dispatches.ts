@@ -56,6 +56,15 @@ export interface Dispatch {
   attempt: number;
   turn_count: number;
   attempts_history: DispatchAttempt[];
+  /**
+   * Content-addressed openteams resource refs pinned at dispatch creation
+   * (V46). Hash-stickiness: subsequent edits to the authored
+   * loadout / team_template don't retroactively change in-flight dispatches.
+   * Null when the dispatch was created without an openteams binding.
+   */
+  loadout_bundle_id: string | null;
+  team_bundle_id: string | null;
+  role: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -77,6 +86,9 @@ interface DispatchRow {
   attempt: number | null;
   turn_count: number | null;
   attempts_history: string | null;
+  loadout_bundle_id: string | null;
+  team_bundle_id: string | null;
+  role: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -125,6 +137,9 @@ function rowToDispatch(row: DispatchRow): Dispatch {
     attempt: row.attempt ?? 0,
     turn_count: row.turn_count ?? 0,
     attempts_history: parsedAttempts,
+    loadout_bundle_id: row.loadout_bundle_id ?? null,
+    team_bundle_id: row.team_bundle_id ?? null,
+    role: row.role ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -145,6 +160,12 @@ export interface CreateDispatchInput {
   // Status defaults to 'queued'; tests may pre-seed.
   status?: DispatchStatus;
   session_ids?: string[];
+  // openteams binding (V46) — nullable. When present these are
+  // content-addressed `sha256:<hex>` ids resolved at create time and held
+  // for the dispatch's lifetime.
+  loadout_bundle_id?: string | null;
+  team_bundle_id?: string | null;
+  role?: string | null;
 }
 
 export function createDispatch(input: CreateDispatchInput): Dispatch {
@@ -156,8 +177,9 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
     `INSERT INTO dispatches (
        id, spec_resource_id, spec_id, spec_captured_at, target_swarm_id,
        status, initiator_type, initiator_id, session_ids, prompt_override,
+       loadout_bundle_id, team_bundle_id, role,
        created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.spec_resource_id,
@@ -169,6 +191,9 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
     input.initiator_id,
     JSON.stringify(input.session_ids ?? []),
     input.prompt_override ?? null,
+    input.loadout_bundle_id ?? null,
+    input.team_bundle_id ?? null,
+    input.role ?? null,
     now,
     now,
   );

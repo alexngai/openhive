@@ -38,6 +38,7 @@ import {
   MIGRATION_V43_AGENT_CAPABILITIES,
   MIGRATION_V44_GRANT_VERSION,
   MIGRATION_V45_TEAM_TEMPLATE_LOADOUT_KINDS,
+  MIGRATION_V46_DISPATCH_LOADOUT_REFS,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -303,6 +304,9 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // admit 'playbook' (latent fix), 'team_template', and 'loadout' for the
   // openteams MAP-sync integration.
   45: MIGRATION_V45_TEAM_TEMPLATE_LOADOUT_KINDS,
+  // Version 46: dispatches.loadout_bundle_id / team_bundle_id / role columns
+  // for the openteams cross-runtime spawn flow (Layer 3 of the integration).
+  46: MIGRATION_V46_DISPATCH_LOADOUT_REFS,
 };
 
 /** Get the SQL for a specific migration version.
@@ -385,6 +389,12 @@ function repairSchema(database: Database.Database): void {
     "CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence)",
     "ALTER TABLE agents ADD COLUMN capabilities TEXT",
     "ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0",
+    // V46 — openteams loadout refs on dispatches. Mirrored here so fresh
+    // installs (which skip migrations and jump straight to SCHEMA_VERSION)
+    // still pick up the columns. Idempotent — ignored on existing installs.
+    "ALTER TABLE dispatches ADD COLUMN loadout_bundle_id TEXT",
+    "ALTER TABLE dispatches ADD COLUMN team_bundle_id TEXT",
+    "ALTER TABLE dispatches ADD COLUMN role TEXT",
   ];
   for (const sql of repairs) {
     try {
