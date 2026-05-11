@@ -102,7 +102,7 @@ describe('cascade.canServeDiff capability handshake', () => {
       role: 'sidecar',
       name: 'sidecar',
       capabilities: { cascade: { canServeDiff: true } },
-    } as MapInboundConnection['registeredAgents'] extends Map<string, infer A> ? A : never);
+    } as unknown as Parameters<MapInboundConnection['registeredAgents']['set']>[1]);
 
     registerInbound(swarmId, conn);
     expect(hasCapability(swarmId, 'cascade.canServeDiff')).toBe(true);

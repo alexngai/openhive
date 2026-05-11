@@ -563,6 +563,86 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
     }
   );
 
+  // ── Stream-level diff (base_commit..head) ──────────────────────────
+  //
+  //   GET /cascade/streams/:id/diff
+  //     ?file=src/foo.ts     — restrict to one path
+  //     &files_only=true     — return files_touched only (D17)
+
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { file?: string; files_only?: string };
+  }>(
+    '/cascade/streams/:id/diff',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { resolveStreamDiff } = await import('../../cascade/diff-resolver.js');
+      const result = await resolveStreamDiff({
+        stream_row_id: request.params.id,
+        file_path: request.query.file,
+        files_only: request.query.files_only === 'true',
+      });
+      if (!result.ok) {
+        return reply.status(diffErrorStatus(result.error.code)).send({
+          error: result.error.code,
+          message: result.error.message,
+        });
+      }
+      return reply.send({ data: result.payload });
+    }
+  );
+
+  // ── Stack-level diff (lowest_base..highest_head across linear stack) ─
+  //
+  //   GET /cascade/streams/:id/stack/diff
+  //     ?file=src/foo.ts     — restrict to one path
+  //     &files_only=true     — files_touched only
+  //
+  //   Stream 2 D2: walker uses active-subset linearity (merged / abandoned
+  //   children are skipped). Non-linear stacks return 400 with code
+  //   `non_linear_stack` so the UI can show a useful notice.
+
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { file?: string; files_only?: string };
+  }>(
+    '/cascade/streams/:id/stack/diff',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { resolveStackDiff } = await import('../../cascade/diff-resolver.js');
+      const result = await resolveStackDiff({
+        stack_root_row_id: request.params.id,
+        file_path: request.query.file,
+        files_only: request.query.files_only === 'true',
+      });
+
+      if (!result.ok) {
+        // Translate the wrapped non-linear error to a dedicated REST code
+        // so the UI can show a "view individual streams instead" notice.
+        const isNonLinear =
+          result.error.code === 'bad_request' &&
+          result.error.message.startsWith('non_linear_stack');
+        if (isNonLinear) {
+          return reply.status(400).send({
+            error: 'non_linear_stack',
+            message: result.error.message,
+          });
+        }
+        return reply.status(diffErrorStatus(result.error.code)).send({
+          error: result.error.code,
+          message: result.error.message,
+        });
+      }
+
+      // Echo the stack shape back so the UI can render the file tree
+      // alongside metadata about which streams contributed to the range.
+      return reply.send({
+        data: result.payload,
+        stack: result.stack ?? null,
+      });
+    }
+  );
+
   // ── PR management (hub-side GitHub API) ─────────────────────────────
   //
   //   POST   /cascade/streams/:id/pr — create PR

@@ -75,3 +75,95 @@ export function useCascadeDiff(
     },
   });
 }
+
+// ============================================================================
+// Stream 2 — stream-level + stack-level diff hooks
+// ============================================================================
+
+export interface UseCascadeRangeDiffOptions {
+  file?: string;
+  files_only?: boolean;
+  enabled?: boolean;
+}
+
+/** Linear-stack echo block returned by the stack-diff endpoint. */
+export interface CascadeLinearStack {
+  entries: Array<{
+    stream_row_id: string;
+    cascade_stream_id: string;
+    name: string;
+    status: string;
+    base_commit: string | null;
+    head_commit: string | null;
+  }>;
+  lowest_base: string;
+  highest_head: string;
+  root: CascadeLinearStack['entries'][number];
+  leaf: CascadeLinearStack['entries'][number];
+}
+
+/**
+ * Fetch the cumulative diff for one stream — `stream.base_commit..head`.
+ * Use `files_only: true` to render a file tree without loading the blob.
+ */
+export function useCascadeStreamDiff(
+  streamRowId: string | null,
+  options: UseCascadeRangeDiffOptions = {},
+) {
+  const { file, files_only, enabled = true } = options;
+  const qs = new URLSearchParams();
+  if (file) qs.set('file', file);
+  if (files_only) qs.set('files_only', 'true');
+  const query = qs.toString();
+
+  return useQuery({
+    queryKey: ['cascade-stream-diff', streamRowId, file ?? null, !!files_only],
+    queryFn: () =>
+      api.get<{ data: CascadeDiffPayload }>(
+        `/cascade/streams/${encodeURIComponent(streamRowId!)}/diff${query ? `?${query}` : ''}`,
+      ),
+    enabled: enabled && !!streamRowId,
+    staleTime: Infinity,
+    retry: (failureCount, err) => {
+      const status = (err as { status?: number } | undefined)?.status;
+      if (status && status >= 400 && status < 500) return false;
+      return failureCount < 1;
+    },
+  });
+}
+
+/**
+ * Fetch the cumulative diff across a linear active-subset stack rooted at
+ * `stackRootRowId`. Returns `data` (the diff payload) plus `stack` (the
+ * linear chain echo block) when the request succeeds.
+ *
+ * If the stack is non-linear, the route returns 400 with
+ * `error: 'non_linear_stack'`. The hook surfaces that via the React Query
+ * `error` field — callers should branch on `(err as any).body?.error` to
+ * render the "view individual streams instead" notice.
+ */
+export function useCascadeStackDiff(
+  stackRootRowId: string | null,
+  options: UseCascadeRangeDiffOptions = {},
+) {
+  const { file, files_only, enabled = true } = options;
+  const qs = new URLSearchParams();
+  if (file) qs.set('file', file);
+  if (files_only) qs.set('files_only', 'true');
+  const query = qs.toString();
+
+  return useQuery({
+    queryKey: ['cascade-stack-diff', stackRootRowId, file ?? null, !!files_only],
+    queryFn: () =>
+      api.get<{ data: CascadeDiffPayload; stack: CascadeLinearStack | null }>(
+        `/cascade/streams/${encodeURIComponent(stackRootRowId!)}/stack/diff${query ? `?${query}` : ''}`,
+      ),
+    enabled: enabled && !!stackRootRowId,
+    staleTime: Infinity,
+    retry: (failureCount, err) => {
+      const status = (err as { status?: number } | undefined)?.status;
+      if (status && status >= 400 && status < 500) return false;
+      return failureCount < 1;
+    },
+  });
+}

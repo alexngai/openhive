@@ -604,6 +604,30 @@ export function listChangesForStream(
   return rows.map(rowToChange);
 }
 
+/**
+ * Return the latest commit on a stream, or null if the stream has no commits.
+ *
+ * "Latest" is the row with the most recent `synced_at`. Hub-side semantics
+ * match the order the projection saw events arrive, which matches the
+ * runtime's emit order for the common case. Used by Stream 2's
+ * `resolveStreamDiff` to derive `head_commit` without a schema change —
+ * `cascade_streams` only stores `base_commit`; head is transient.
+ */
+export function getLatestCommitForStream(
+  stream_row_id: string
+): CascadeChange | null {
+  const db = getDatabase();
+  const row = db
+    .prepare(
+      `SELECT * FROM cascade_changes
+       WHERE stream_row_id = ?
+       ORDER BY synced_at DESC, id DESC
+       LIMIT 1`
+    )
+    .get(stream_row_id) as Row | undefined;
+  return row ? rowToChange(row) : null;
+}
+
 // ============================================================================
 // Merge operations
 // ============================================================================

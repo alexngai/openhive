@@ -1,5 +1,5 @@
 ---
-status: draft
+status: stream-1-shipped
 owner: alexngai
 created: 2026-05-05
 revised: 2026-05-11
@@ -122,6 +122,8 @@ Timeout: 60s for the initial response. Chunks delivered as fire-and-forget after
 
 ## Stream 1 — Diff plumbing (single commit, single file)
 
+**Status: ✅ Complete (2026-05-11).** Hub resolver + MAP protocol + macro-agent diff server + frontend drawer all shipped and verified end-to-end. 74 unit/integration tests (1 hub suite + 1 macro-agent suite) + 3 LIVE_AGENT_E2E tests + manual live verification against running fastify + Vite proxy. Real bugs caught: V56 migration slot, fresh-install CREATE_TABLES gap, getDiff stale-timestamp, missing error-response shape in protocol, listener-attach race on live WS.
+
 Goal: open a stream in `Changes.tsx`, click a commit, see a unified diff for one file fetched via raw `git show` over MAP.
 
 ### Backend (openhive)
@@ -130,38 +132,43 @@ Goal: open a stream in `Changes.tsx`, click a commit, see a unified diff for one
   - Unique on `(stream_id, commit_hash, IFNULL(base_hash, ''), IFNULL(file_path, ''))` (SQLite NULL-safe via IFNULL)
   - Indexes on `stream_id` and `last_accessed_at` (future LRU sweep)
   - SCHEMA_VERSION bumped 55 → 56
-- [ ] DAL `src/db/dal/cascade-diff-cache.ts` — `getDiff`, `putDiff`, `evictByStream`, `touchAccess`
-- [ ] `src/cascade/diff-resolver.ts` — five-tier: cache → on-demand via MAP → cache write-through → 503
-- [ ] `src/cascade/diff-types.ts` — payload + error union, method-name constants
-- [ ] `src/api/routes/cascade.ts` — `GET /cascade/streams/:id/commits/:hash/diff?file=...&base=...`
-- [ ] `src/map/cascade-handler.ts` (or sibling `cascade-diff-protocol.ts`) — register `cascade/diff.response` + `cascade/diff.chunk` notification handlers; reassembly buffer keyed on `request_id` / `chunk_stream_id`
-- [ ] Stream-terminal hooks in `cascade-handler.ts` — `handleStreamMerged`, `handleStreamAbandoned`, `handleCascadeRebased` call `evictByStream`
+  - Also added to `CREATE_TABLES` so fresh installs (which skip the migration runner) get the table
+- [x] DAL `src/db/dal/cascade-diff-cache.ts` — `getDiff`, `putDiff`, `evictByStream`, `touchAccess`, `countDiffsForStream`. `getDiff` re-reads after `touchAccess` so the returned row reflects the bumped timestamp.
+- [x] `src/cascade/diff-types.ts` — `CASCADE_DIFF_METHODS` constants, request/response/chunk types, error-response variant (`CascadeDiffErrorResponse`), `DiffPayload` / `DiffError` / `DiffResult`, tuning constants (`DIFF_INLINE_THRESHOLD_BYTES`, `DIFF_CHUNK_SIZE_BYTES`, `DIFF_REQUEST_TIMEOUT_MS`, `DIFF_MAX_RAW_BYTES`).
+- [x] `src/cascade/diff-resolver.ts` — five-tier resolver with a swappable `MapDiffFetcher`. Tier 1 cache, tier 2 presence + capability gate, tiers 3/4 delegated to the fetcher, tier 5 cache write-through. `files_only` requests bypass the cache (D17).
+- [x] `src/api/routes/cascade.ts` — `GET /cascade/streams/:id/commits/:hash/diff?file=...&base=...&files_only=true` + `diffErrorStatus` HTTP-status mapper covering all 7 `DiffErrorCode` values.
+- [x] `src/map/cascade-diff-protocol.ts` — `sendDiffRequest` (outbound), `handleDiffResponse` (inline / streaming / error), `handleDiffChunk` (assembly + sha256 verify), `installAsResolverFetcher` (idempotent bootstrap). Pending state keyed on `request_id`; chunk routing via `chunk_stream_id → request_id` map. Wired into `src/server.ts` next to `startTaskBinder`.
+- [x] `src/map/ws-map.ts` — dispatch branches for `CASCADE_DIFF_METHODS.RESPONSE` and `.CHUNK` in the existing notification interceptor.
+- [x] Stream-terminal hooks in `src/map/cascade-handler.ts` — `handleStreamMerged` (source stream), `handleStreamAbandoned`, `handleCascadeRebased` all call `evictByStream(stream.stream_id)`. Wrapped in try/catch so eviction failure can't break the projection write.
 
 ### Backend (macro-agent)
-- [ ] Declare `cascade: { canServeDiff: true }` in `references/macro-agent/src/map/sidecar.ts` swarm-level capabilities
-- [ ] `references/macro-agent/src/map/cascade-diff-server.ts` — `cascade/diff.request` notification handler
-- [ ] Resolve worktree path via existing `findWorktreeForStream(streamId)` pattern (extracted to a shared helper); fall back to `adapter.getRepoPath()` when no live worktree
-- [ ] Shell out: `git -C <wt> show --no-textconv -U3 --format= <sha> -- <files>` (single commit) or `git -C <wt> diff --no-textconv -U3 <base>..<head> -- <files>` (range)
-- [ ] Binary detection: substitute `Binary file` marker entries
-- [ ] Chunked send for outputs > 512 KB; cap raw at ~50 MB with explicit truncation marker
-- [ ] Wire from `cascade-bridge.ts` setup so it installs alongside the action handler
+- [x] Declare `cascade: { canServeDiff: true }` in `references/macro-agent/src/map/sidecar.ts` swarm-level capabilities, **conditional on `gitCascadeAdapter` being wired** so swarms without an adapter don't lie to the hub.
+- [x] `references/macro-agent/src/map/cascade-diff-server.ts` — `cascade/diff.request` handler. Worktree resolution via `adapter.listWorktrees().find(...)` with `adapter.repoPath` fallback when no live worktree matches. Git args: `git show --no-textconv -U3 --format=` (single commit) / `git diff --no-textconv -U3 base..head` (range), with `--name-only` injected when `files_only: true`. 50 MB stdout cap with truncation marker; 30 s spawn timeout. Binary files surface as git's default `Binary files ... differ` marker. Inline response when ≤ 512 KB; streamed via N base64 chunks + final sha256 above.
+- [x] Wire from `sidecar.ts` step 5 alongside the cascade-bridge + action-handler setup; cleanup chain extended.
 
 ### Frontend
-- [ ] Add `react-diff-viewer-continued` to `package.json`
-- [ ] `src/web/components/cascade/DiffView.tsx` — fetches `/cascade/streams/:id/commits/:hash/diff`, renders single-file diff
-- [ ] `src/web/hooks/useCascadeDiff.ts` — React Query wrapper
-- [ ] `src/web/pages/Changes.tsx` — wire commit row click (currently around `:783`, inside the expanded change-detail) to open `DiffView` in side panel
+- [x] **`react-diff-viewer-continued` not used.** The library accepts old/new string pairs and computes the diff internally — wrong shape for our backend which serves pre-computed unified-diff text. `DiffView.tsx` renders the unified diff directly with line-by-line styling, which is what most diff UIs (GitHub, GitLab) do.
+- [x] `src/web/hooks/useCascadeDiff.ts` — React Query wrapper. `staleTime: Infinity` (content-addressed, immutable cache keys), retries once on 5xx, no retry on 4xx.
+- [x] `src/web/components/cascade/DiffView.tsx` — per-file collapsible blocks, line-level coloring (`+` green / `-` red / `@@` blue / context muted), loading / error / empty / truncated states, friendly error hints keyed by `DiffErrorCode` (e.g. swarm_offline → "Reconnect the agent that owns this stream").
+- [x] `src/web/pages/Changes.tsx` — diff drawer state, prop-drill `onShowDiff` through ChangesList/BucketSection/ChangeRow + StreamDetailSidebar. Clickable commits in **both** (a) the Stack view's per-stream expandable commit list and (b) the List view's StreamDetailSidebar Timeline panel. Drawer is a fixed-right overlay with backdrop click + X-button dismiss.
 
 ### Tests
-- [ ] `src/__tests__/dal/cascade-diff-cache.test.ts`
-- [ ] `src/__tests__/cascade/diff-resolver.test.ts` — five-tier, eviction on stream merge / abandon / rebase, capability gating
-- [ ] `src/__tests__/map/cascade-diff-protocol.test.ts` — inline + chunked, timeout, sha mismatch
-- [ ] `references/macro-agent/src/__tests__/map/cascade-diff-serve.test.ts` — git show parsing, binary, missing worktree, 50 MB cap
+- [x] `src/__tests__/dal/cascade-diff-cache.test.ts` (7 tests)
+- [x] `src/__tests__/cascade/diff-cache-eviction.test.ts` (3 tests) — eviction on `stream.merged` / `.abandoned` / `cascade.rebased`
+- [x] `src/__tests__/map/cascade-diff-protocol.test.ts` (10 tests) — inline + chunked + timeout + sha mismatch + oversize + swarm_offline ×2 + files_only + base+file plumbing + threshold export
+- [x] `src/__tests__/cascade/diff-chain-e2e.test.ts` (8 tests) — full hub→bridge→sidecar→git→cache→hub chain with real git, real DB, in-process WS bridge. Includes concurrent-race test (S1.19) and real-adapter integration via the dist symlink.
+- [x] `src/__tests__/cascade/diff-route.test.ts` (12 tests) — fastify inject covering 200, auth gate (×2), 7 HTTP-status mappings, query-param plumbing (×2)
+- [x] `src/__tests__/cascade/diff-capability-handshake.test.ts` (6 tests) — sidecar caps shape → hub `hasCapability` recognition
+- [x] `src/__tests__/map/ws-map-cascade-diff-intercept.test.ts` (5 tests) — structural smoke that ws-map.ts wires the dispatch + constants match
+- [x] `src/__tests__/map/cascade-diff-ws-roundtrip.test.ts` (3 tests) — **live** real-WS round-trip via fastify+ws+real client
+- [x] `references/macro-agent/src/map/__tests__/cascade-diff-server.test.ts` (13 tests) — real git, real `createGitCascadeAdapter` via S1.20
+- [x] `references/macro-agent/src/map/__tests__/sidecar-diff-install-smoke.test.ts` (4 tests) — structural guards on the install hook + capability declaration
+- [x] `src/__tests__/cascade/live-cascade-diff-e2e.test.ts` (3 tests, env-gated `LIVE_AGENT_E2E=true`) — real fastify with `setupMapWebSocket`, real WS sidecar simulator, real HTTP→WS→git→HTTP round-trip. Caught a listener-attach race that production sidecar SDKs presumably guard internally.
 
 ### Verification before coding
 - [x] Confirm worktree resolution path (D14 closes OD1 — uses existing helper)
-- [ ] Confirm `git show` output format on a real cascade worktree
-- [ ] Confirm `POST /cascade/streams/:id/pr` works today when source agent is offline. Read of `cascade.ts:537-737`: the route unconditionally calls `sendCascadeAction(..., 'push', ...)` first — that send fails silently when the swarm is offline, then `createPullRequest` proceeds. So today PR creation half-works: it succeeds iff the branch is already on origin. D8 (Octokit branch-exists check) formalizes this.
+- [x] Confirm `git show` output format on a real cascade worktree — verified via the diff-server tests against real git output
+- [x] Confirm `POST /cascade/streams/:id/pr` works today when source agent is offline. Read of `cascade.ts:537-737`: the route unconditionally calls `sendCascadeAction(..., 'push', ...)` first — that send fails silently when the swarm is offline, then `createPullRequest` proceeds. So today PR creation half-works: it succeeds iff the branch is already on origin. D8 (Octokit branch-exists check) formalizes this for Stream 3.
 
 ---
 
@@ -226,12 +233,12 @@ Goal: "Open PR stack" on a root stream → openhive walks descendants, opens one
 
 ## Sequencing
 
-| Stream | Effort | Dependencies |
-|---|---|---|
-| 1 | ~1 week | None |
-| 2 | ~2 days | Stream 1 |
-| 3 | ~3 days | Stream 1 (independent of Stream 2) |
-| 4 | ~1 day | Streams 1 + 3 |
+| Stream | Effort | Dependencies | Status |
+|---|---|---|---|
+| 1 | ~1 week (landed 2026-05-11) | None | ✅ Shipped |
+| 2 | ~2 days | Stream 1 | ⏳ Ready to start |
+| 3 | ~3 days | Stream 1 (independent of Stream 2) | ⏳ Ready to start |
+| 4 | ~1 day | Streams 1 + 3 | ⏳ Blocked on 3 |
 
 Streams 2 and 3 parallelizable.
 

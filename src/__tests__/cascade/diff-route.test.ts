@@ -22,9 +22,18 @@ import type { DiffResult } from '../../cascade/diff-types.js';
 const resolveMock = vi.fn<
   (args: Record<string, unknown>) => Promise<DiffResult>
 >();
+const resolveStreamMock = vi.fn<
+  (args: Record<string, unknown>) => Promise<DiffResult>
+>();
+// Stack resolver returns a DiffResult + optional `stack` echo block.
+const resolveStackMock = vi.fn<
+  (args: Record<string, unknown>) => Promise<DiffResult & { stack?: unknown }>
+>();
 
 vi.mock('../../cascade/diff-resolver.js', () => ({
   resolveCommitDiff: (args: Record<string, unknown>) => resolveMock(args),
+  resolveStreamDiff: (args: Record<string, unknown>) => resolveStreamMock(args),
+  resolveStackDiff: (args: Record<string, unknown>) => resolveStackMock(args),
 }));
 
 vi.mock('../../realtime/index.js', () => ({
@@ -46,6 +55,17 @@ async function createTestApp(): Promise<FastifyInstance> {
   return app;
 }
 
+// File-level DB lifecycle so multiple describe blocks share one fixture.
+// Each describe spins up its own fastify app + agent.
+beforeAll(() => {
+  initDatabase(TEST_DB_PATH);
+});
+
+afterAll(() => {
+  closeDatabase();
+  cleanTestRoot(TEST_ROOT);
+});
+
 describe('GET /cascade/streams/:id/commits/:hash/diff', () => {
   let app: FastifyInstance;
   let apiKey: string;
@@ -54,7 +74,6 @@ describe('GET /cascade/streams/:id/commits/:hash/diff', () => {
   const URL = `/api/v1/cascade/streams/${STREAM_ROW_ID}/commits/${COMMIT}/diff`;
 
   beforeAll(async () => {
-    initDatabase(TEST_DB_PATH);
     const { apiKey: key } = await agentsDAL.createAgent({
       name: 'diff-route-test',
       description: 'route test',
@@ -65,8 +84,6 @@ describe('GET /cascade/streams/:id/commits/:hash/diff', () => {
 
   afterAll(async () => {
     await app.close();
-    closeDatabase();
-    cleanTestRoot(TEST_ROOT);
   });
 
   beforeEach(() => {
@@ -185,5 +202,190 @@ describe('GET /cascade/streams/:id/commits/:hash/diff', () => {
 
     const arg = resolveMock.mock.calls[0][0] as { files_only?: boolean };
     expect(arg.files_only).toBe(false);
+  });
+});
+
+// ============================================================================
+// Stream 2 — stream-level + stack-level routes
+// ============================================================================
+
+describe('GET /cascade/streams/:id/diff (stream-level)', () => {
+  let app: FastifyInstance;
+  let apiKey: string;
+  const STREAM_ROW_ID = 'stream-row-stream-diff';
+  const URL = `/api/v1/cascade/streams/${STREAM_ROW_ID}/diff`;
+
+  beforeAll(async () => {
+    const { apiKey: key } = await agentsDAL.createAgent({
+      name: 'stream-diff-route-test',
+      description: 'route test',
+    });
+    apiKey = key;
+    app = await createTestApp();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    resolveStreamMock.mockReset();
+  });
+
+  it('200 with payload on success', async () => {
+    resolveStreamMock.mockResolvedValueOnce({
+      ok: true,
+      payload: { diff: 'whole-stream diff', files_touched: ['x'], truncated: false },
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: URL,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { data: { diff: string } };
+    expect(body.data.diff).toBe('whole-stream diff');
+  });
+
+  it('forwards file + files_only query params', async () => {
+    resolveStreamMock.mockResolvedValueOnce({
+      ok: true,
+      payload: { diff: '', files_touched: ['a'], truncated: false },
+    });
+    await app.inject({
+      method: 'GET',
+      url: `${URL}?file=src/a.ts&files_only=true`,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const arg = resolveStreamMock.mock.calls[0][0] as {
+      stream_row_id: string;
+      file_path?: string;
+      files_only?: boolean;
+    };
+    expect(arg.stream_row_id).toBe(STREAM_ROW_ID);
+    expect(arg.file_path).toBe('src/a.ts');
+    expect(arg.files_only).toBe(true);
+  });
+
+  it('maps not_found → 404', async () => {
+    resolveStreamMock.mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'not_found', message: 'stream not found' },
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: URL,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe('not_found');
+  });
+
+  it('maps bad_request (no base / no commits) → 400', async () => {
+    resolveStreamMock.mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'bad_request', message: 'stream has no commits' },
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: URL,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('GET /cascade/streams/:id/stack/diff (stack-level)', () => {
+  let app: FastifyInstance;
+  let apiKey: string;
+  const ROOT_ROW_ID = 'stack-root-row';
+  const URL = `/api/v1/cascade/streams/${ROOT_ROW_ID}/stack/diff`;
+
+  beforeAll(async () => {
+    const { apiKey: key } = await agentsDAL.createAgent({
+      name: 'stack-diff-route-test',
+      description: 'route test',
+    });
+    apiKey = key;
+    app = await createTestApp();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    resolveStackMock.mockReset();
+  });
+
+  it('200 with payload + stack echo', async () => {
+    resolveStackMock.mockResolvedValueOnce({
+      ok: true,
+      payload: { diff: 'stack diff', files_touched: ['x'], truncated: false },
+      stack: { entries: [], lowest_base: 'b', highest_head: 'h', root: {}, leaf: {} } as never,
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: URL,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { data: { diff: string }; stack: unknown };
+    expect(body.data.diff).toBe('stack diff');
+    expect(body.stack).toBeDefined();
+  });
+
+  it('translates non_linear_stack to 400 with dedicated error code', async () => {
+    resolveStackMock.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        code: 'bad_request',
+        message:
+          'non_linear_stack: Stack is non-linear at A (2 active children)',
+      },
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: URL,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json() as { error: string; message: string };
+    expect(body.error).toBe('non_linear_stack');
+    expect(body.message).toContain('Stack is non-linear');
+  });
+
+  it('passes through other bad_request errors as-is', async () => {
+    resolveStackMock.mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'bad_request', message: 'stack root has no commits' },
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: URL,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('bad_request');
+  });
+
+  it('forwards file + files_only', async () => {
+    resolveStackMock.mockResolvedValueOnce({
+      ok: true,
+      payload: { diff: '', files_touched: [], truncated: false },
+    });
+    await app.inject({
+      method: 'GET',
+      url: `${URL}?file=src/x.ts&files_only=true`,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const arg = resolveStackMock.mock.calls[0][0] as {
+      stack_root_row_id: string;
+      file_path?: string;
+      files_only?: boolean;
+    };
+    expect(arg.stack_root_row_id).toBe(ROOT_ROW_ID);
+    expect(arg.file_path).toBe('src/x.ts');
+    expect(arg.files_only).toBe(true);
   });
 });

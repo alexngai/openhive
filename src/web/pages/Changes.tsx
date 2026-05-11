@@ -19,6 +19,7 @@ import {
   GitMerge,
   GitPullRequestDraft,
   Layers,
+  ListTree,
   Network,
   Clock,
   AlertTriangle,
@@ -68,6 +69,7 @@ import { useDebouncedValue, matchesSearch } from '../components/common/ListFilte
 import { StreamDAGView } from '../components/streams/StreamDAGView';
 import { StreamStatusDot, STATUS_COLORS, STATUS_LABELS, TimelineEntry } from '../components/streams/shared';
 import { DiffView } from '../components/cascade/DiffView';
+import { StackDiffView } from '../components/cascade/StackDiffView';
 import { usePageContext } from '../components/chat-fab/usePageContext';
 import {
   streamContextItem,
@@ -107,6 +109,12 @@ export function Changes() {
   const [diffTarget, setDiffTarget] = useState<{
     streamRowId: string;
     commitHash: string;
+  } | null>(null);
+  // Range diff drawer — fires when the user clicks "View stream diff" /
+  // "View stack diff". `mode` discriminates which resolver fires.
+  const [rangeDiffTarget, setRangeDiffTarget] = useState<{
+    mode: 'stream' | 'stack';
+    rowId: string;
   } | null>(null);
 
   const { data: dagResponse, isLoading } = useCascadeDAG({
@@ -321,6 +329,9 @@ export function Changes() {
               onBackToList={() => { setStackRootId(null); setViewMode('list'); }}
               onSelect={setSelectedStreamId}
               selectedId={selectedStreamId}
+              onShowStackDiff={(rootRowId) =>
+                setRangeDiffTarget({ mode: 'stack', rowId: rootRowId })
+              }
             />
           ) : (
             <StreamDAGView
@@ -339,6 +350,9 @@ export function Changes() {
             onClose={() => setSelectedStreamId(null)}
             onViewStack={openStackFrom}
             onViewGraph={() => setViewMode('dag')}
+            onShowStreamDiff={(streamRowId) =>
+              setRangeDiffTarget({ mode: 'stream', rowId: streamRowId })
+            }
             onShowDiff={(streamRowId, commitHash) =>
               setDiffTarget({ streamRowId, commitHash })
             }
@@ -353,6 +367,16 @@ export function Changes() {
           streamRowId={diffTarget.streamRowId}
           commitHash={diffTarget.commitHash}
           onClose={() => setDiffTarget(null)}
+        />
+      )}
+
+      {/* Range diff drawer — stream-level or stack-level cumulative diff.
+          Wider than the per-commit drawer (two-pane file tree + content). */}
+      {rangeDiffTarget && (
+        <RangeDiffDrawer
+          mode={rangeDiffTarget.mode}
+          rowId={rangeDiffTarget.rowId}
+          onClose={() => setRangeDiffTarget(null)}
         />
       )}
     </div>
@@ -383,6 +407,32 @@ function DiffDrawer({
           commitHash={commitHash}
           onClose={onClose}
         />
+      </div>
+    </>
+  );
+}
+
+// ─── Range Diff Drawer (stream-level + stack-level) ──────────────────
+
+function RangeDiffDrawer({
+  mode,
+  rowId,
+  onClose,
+}: {
+  mode: 'stream' | 'stack';
+  rowId: string;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-40 bg-black/40"
+        onClick={onClose}
+        aria-hidden
+      />
+      {/* Wider than DiffDrawer to host the file-tree + diff two-pane layout. */}
+      <div className="fixed top-0 right-0 bottom-0 z-50 w-full max-w-5xl p-3">
+        <StackDiffView mode={mode} rowId={rowId} onClose={onClose} />
       </div>
     </>
   );
@@ -663,6 +713,7 @@ function StreamStackView({
   onBackToList,
   onSelect,
   selectedId,
+  onShowStackDiff,
 }: {
   stack: StreamDAGNode[] | null;
   dag: { nodes: StreamDAGNode[]; edges: StreamDAGEdge[] };
@@ -671,6 +722,7 @@ function StreamStackView({
   onBackToList: () => void;
   onSelect: (id: string) => void;
   selectedId: string | null;
+  onShowStackDiff: (rootRowId: string) => void;
 }) {
   const roots = dag.nodes.filter((n) => !n.parent_stream_id);
 
@@ -726,6 +778,15 @@ function StreamStackView({
         >
           <ChevronRight className="w-3 h-3 rotate-180" />
           Back to list
+        </button>
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1"
+          onClick={() => onShowStackDiff(rootId)}
+          title="View cumulative diff across this stack"
+        >
+          <ListTree className="w-3 h-3" />
+          View stack diff
         </button>
         <button
           type="button"
@@ -893,6 +954,7 @@ function StreamDetailSidebar({
   onViewStack,
   onViewGraph,
   onShowDiff,
+  onShowStreamDiff,
 }: {
   streamRowId: string;
   node: StreamDAGNode | null;
@@ -900,6 +962,7 @@ function StreamDetailSidebar({
   onViewStack: (streamRowId: string) => void;
   onViewGraph: () => void;
   onShowDiff: (streamRowId: string, commitHash: string) => void;
+  onShowStreamDiff: (streamRowId: string) => void;
 }) {
   const { data: timelineResp, isLoading } = useCascadeStreamTimeline(streamRowId);
   const timeline = timelineResp?.data ?? [];
@@ -991,6 +1054,15 @@ function StreamDetailSidebar({
           >
             <Network className="w-3 h-3" />
             Graph
+          </button>
+          <button
+            type="button"
+            className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+            onClick={() => onShowStreamDiff(streamRowId)}
+            title="View cumulative diff for this stream (base..head)"
+          >
+            <ListTree className="w-3 h-3" />
+            Stream diff
           </button>
         </div>
       )}
