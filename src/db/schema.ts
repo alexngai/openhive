@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 44;
+export const SCHEMA_VERSION = 45;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 -- Syncable resources registry (git repos backing various resource types)
 CREATE TABLE IF NOT EXISTS syncable_resources (
   id TEXT PRIMARY KEY,
-  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session')),
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout')),
   name TEXT NOT NULL,
   description TEXT,
   git_remote_url TEXT NOT NULL,
@@ -1665,6 +1665,77 @@ CREATE TABLE IF NOT EXISTS cascade_pull_requests (
 
 CREATE INDEX IF NOT EXISTS idx_cascade_prs_stream ON cascade_pull_requests(stream_row_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_prs_state ON cascade_pull_requests(state);
+`;
+
+// Migration V45: widen syncable_resources.resource_type CHECK constraint to
+// include 'playbook', 'team_template', and 'loadout'.
+//
+// Three things going on:
+// 1. 'playbook' was added to the TS union but never to the CHECK — fixing the
+//    latent inconsistency so inserts actually succeed.
+// 2. 'team_template' and 'loadout' carry authored openteams definitions.
+// 3. SQLite cannot alter a CHECK constraint in place. Standard rebuild idiom:
+//    create _new with the widened CHECK, copy via column-name-explicit INSERT
+//    (resilient to column drift), drop old, rename.
+//
+// Indexes are recreated explicitly to match the latest state from V31.
+export const MIGRATION_V45_TEAM_TEMPLATE_LOADOUT_KINDS = `
+CREATE TABLE IF NOT EXISTS syncable_resources_v45 (
+  id TEXT PRIMARY KEY,
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout')),
+  name TEXT NOT NULL,
+  description TEXT,
+  git_remote_url TEXT NOT NULL,
+  webhook_secret TEXT,
+  visibility TEXT DEFAULT 'private'
+    CHECK (visibility IN ('private', 'shared', 'public')),
+  last_commit_hash TEXT,
+  last_push_by TEXT,
+  last_push_at TEXT,
+  owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  scope TEXT DEFAULT 'manual'
+    CHECK (scope IN ('global', 'project', 'agent', 'manual')),
+  sync_strategy TEXT DEFAULT 'metadata'
+    CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle', 'federated')),
+  local_path TEXT,
+  metadata TEXT,
+  origin_instance_id TEXT,
+  origin_resource_id TEXT,
+  sync_event_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+INSERT OR IGNORE INTO syncable_resources_v45 (
+  id, resource_type, name, description, git_remote_url, webhook_secret,
+  visibility, last_commit_hash, last_push_by, last_push_at, owner_agent_id,
+  scope, sync_strategy, local_path, metadata,
+  origin_instance_id, origin_resource_id, sync_event_id,
+  created_at, updated_at
+)
+SELECT
+  id, resource_type, name, description, git_remote_url, webhook_secret,
+  visibility, last_commit_hash, last_push_by, last_push_at, owner_agent_id,
+  scope, sync_strategy, local_path, metadata,
+  origin_instance_id, origin_resource_id, sync_event_id,
+  created_at, updated_at
+FROM syncable_resources;
+
+DROP TABLE IF EXISTS syncable_resources;
+ALTER TABLE syncable_resources_v45 RENAME TO syncable_resources;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_syncable_resources_git_url
+  ON syncable_resources(owner_agent_id, resource_type, git_remote_url)
+  WHERE git_remote_url IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_name_lookup
+  ON syncable_resources(owner_agent_id, resource_type, name);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_owner ON syncable_resources(owner_agent_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type ON syncable_resources(resource_type);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_visibility ON syncable_resources(visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_resources(resource_type, visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
 `;
 
 // Populate FTS tables from existing data

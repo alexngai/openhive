@@ -19,6 +19,11 @@ import { CASCADE_METHOD_SET, CascadeRequestError } from './cascade-types.js';
 import { handleCascadeRequest } from './cascade-handler.js';
 import { consumeCascadeToken } from './cascade-rate-limit.js';
 import { SPAWN_METHOD, handleSpawnRequest } from './spawn-handler.js';
+import {
+  getOpenteamsMapHandlers,
+  getOpenteamsResourceKinds,
+  setOpenteamsBundleEmitter,
+} from '../openteams/map-handlers.js';
 import type { Config } from '../config.js';
 
 let mapServer: any | null = null;
@@ -275,6 +280,24 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
     return await handleSpawnRequest(params, { swarmId, hubAgentId });
   };
 
+  // ── OpenTeams Resource Protocol (map/resources/*) ─────────────────
+  // Layer 2 of the openteams MAP-sync integration: expose
+  // `x-openteams/loadout` and `x-openteams/team` as content-addressed
+  // resources fetched by `sha256:<hex>` id. Composed handler factories
+  // come from the openteams package; the bundle store is an in-memory
+  // singleton seeded on boot from `syncable_resources` (see
+  // `src/openteams/seed.ts`).
+  //
+  // Today openhive doesn't ship its own `map/resources/list`/`get`, so
+  // the composed dispatcher owns both methods. When openhive grows its
+  // own resource kinds, pass them as the `fallback` option to
+  // openteams's `composeResourceHandlers` — the cooperative shape is
+  // already in place upstream.
+  const openteamsComposed = getOpenteamsMapHandlers();
+  for (const [method, handler] of Object.entries(openteamsComposed.handlers)) {
+    handlers[method] = handler as (params: any, ctx: any) => Promise<any>;
+  }
+
   // ── Ping/Pong ────────────────────────────────────────────────────
   // Ping is a notification (no id), handled in the notification interceptor.
   // But if sent as a request, handle it here.
@@ -295,11 +318,21 @@ export function initMapServer(config: Config): any {
   const isVerified = config.mapHub.trustModel === 'verified';
 
   const additionalHandlers = buildAdditionalHandlers();
+  const openteamsKinds = getOpenteamsResourceKinds();
 
   mapServer = new MAPServer({
     name: config.instance.name || 'OpenHive',
     version: '0.1.0',
     additionalHandlers,
+    // Advertise the openteams resource kinds so connected agents can discover
+    // them via the standard MAP capability handshake. The SDK exposes the
+    // `capabilities.resources.kinds` slot per the MAP Resource Protocol v1.
+    capabilities: {
+      resources: {
+        enabled: true,
+        kinds: openteamsKinds,
+      },
+    },
     ...(isVerified
       ? {
           auth: {
@@ -308,6 +341,28 @@ export function initMapServer(config: Config): any {
           },
         }
       : {}),
+  });
+
+  // Bridge openteams kind-handler lifecycle events to the MAP server's
+  // event bus, so subscribers of `resource.added/updated/removed` on
+  // `x-openteams/*` types receive the same shape as native MAP resource
+  // events (matches `docs/map-integration.md:103-115`).
+  setOpenteamsBundleEmitter((event) => {
+    try {
+      mapServer.eventBus?.emit({
+        type: event.type,
+        data: {
+          resource_type: event.resource_type,
+          resource_id: event.resource_id,
+          resource_name: event.resource_name,
+          origin_hub_id: event.origin_hub_id,
+          timestamp: event.timestamp,
+        },
+      });
+    } catch (err) {
+      // Best-effort: missing event bus shouldn't crash the publish path.
+      console.warn('[openteams] failed to emit bundle event', (err as Error).message);
+    }
   });
 
   return mapServer;
@@ -325,6 +380,7 @@ export function getMapServer(): any {
  * Reset the MAPServer singleton (for tests).
  */
 export function _resetMapServer(): void {
+  setOpenteamsBundleEmitter(null);
   if (mapServer) {
     try { mapServer.close({ force: true }); } catch { /* ignore */ }
   }

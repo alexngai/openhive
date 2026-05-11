@@ -60,7 +60,14 @@ export interface HiveEvent {
 
 export interface ResourcePublishedPayload {
   resource_id: string;
-  resource_type: 'memory_bank' | 'task' | 'skill' | 'session' | 'playbook';
+  resource_type:
+    | 'memory_bank'
+    | 'task'
+    | 'skill'
+    | 'session'
+    | 'playbook'
+    | 'team_template'
+    | 'loadout';
   name: string;
   description: string | null;
   git_remote_url: string;

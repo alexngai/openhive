@@ -37,6 +37,7 @@ import {
   MIGRATION_V42_DROP_SOCIAL_TABLES,
   MIGRATION_V43_AGENT_CAPABILITIES,
   MIGRATION_V44_GRANT_VERSION,
+  MIGRATION_V45_TEAM_TEMPLATE_LOADOUT_KINDS,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -298,6 +299,10 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // non-destructive column so existing installs don't need to drop it.
   // See docs/RFC_AGENT_CAPABILITIES.md §"v3→v4 migration".
   44: MIGRATION_V44_GRANT_VERSION,
+  // Version 45: widen syncable_resources.resource_type CHECK constraint to
+  // admit 'playbook' (latent fix), 'team_template', and 'loadout' for the
+  // openteams MAP-sync integration.
+  45: MIGRATION_V45_TEAM_TEMPLATE_LOADOUT_KINDS,
 };
 
 /** Get the SQL for a specific migration version.

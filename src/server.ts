@@ -26,6 +26,7 @@ import {
 import { syncProtocolRoutes } from "./api/routes/sync-protocol.js";
 import { initSyncService } from "./sync/service.js";
 import type { SyncService } from "./sync/service.js";
+import { seedOpenteamsBundleStore } from "./openteams/seed.js";
 import { SwarmManager } from "./swarm/manager.js";
 import type { SwarmHostingConfig } from "./swarm/types.js";
 import { getOrCreateLocalAgent } from "./db/dal/agents.js";
@@ -82,6 +83,27 @@ export async function createHive(
 
   // Initialize database
   initDatabase(config.database);
+
+  // Seed the openteams bundle store from authored team_template / loadout
+  // rows so `map/resources/get { type: x-openteams/* }` works immediately
+  // after restart. The store is in-memory for this iteration; once promoted
+  // to a `team_bundles` table, this pass becomes redundant.
+  try {
+    const seed = await seedOpenteamsBundleStore();
+    if (seed.loadouts || seed.teams || seed.errors.length) {
+      console.log(
+        `[openhive] openteams bundle store seeded: ${seed.loadouts} loadout(s), ${seed.teams} team(s)` +
+          (seed.errors.length ? `, ${seed.errors.length} error(s)` : ''),
+      );
+      for (const err of seed.errors) {
+        console.warn(
+          `[openhive]   seed error: ${err.resource_type} ${err.resource_id} — ${err.message}`,
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('[openhive] openteams bundle seed failed', (err as Error).message);
+  }
 
   // Set up auth mode
   if (config.auth.mode === "local") {

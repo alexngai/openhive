@@ -172,7 +172,16 @@ export type WSEventType =
   | 'cascade:queue_queued'
   | 'cascade:queue_ready'
   | 'cascade:queue_cancelled'
-  | 'cascade:queue_removed';
+  | 'cascade:queue_removed'
+  // OpenTeams resource events (see api/routes/teams.ts, loadouts.ts).
+  // Authored content lifecycle; the MAP `resource.added/updated/removed`
+  // bus carries the content-addressed bundle counterpart at Layer 2.
+  | 'team_template:created'
+  | 'team_template:updated'
+  | 'team_template:deleted'
+  | 'loadout:created'
+  | 'loadout:updated'
+  | 'loadout:deleted';
 
 export interface WSEvent {
   type: WSEventType;
@@ -267,7 +276,14 @@ export interface MemoryBankSubscriptionWithAgent extends MemoryBankSubscription 
 // Syncable Resources Types (generic resource system)
 // ============================================================================
 
-export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session' | 'playbook';
+export type SyncableResourceType =
+  | 'memory_bank'
+  | 'task'
+  | 'skill'
+  | 'session'
+  | 'playbook'
+  | 'team_template'
+  | 'loadout';
 export type ResourceVisibility = 'private' | 'shared' | 'public';
 export type ResourcePermission = 'read' | 'write' | 'admin';
 export type ResourceScope = 'global' | 'project' | 'agent' | 'manual';
