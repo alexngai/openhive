@@ -861,6 +861,7 @@ export interface MailTurn {
   content: MessageContent;
   thread_id?: string;
   in_reply_to?: string;
+  importance?: 'low' | 'normal' | 'high' | 'urgent';
   created_at: string;
 }
 

@@ -47,6 +47,7 @@ import {
   MIGRATION_V52_REPOS_AND_WORKSPACES,
   MIGRATION_V53_RESOURCE_STATUS,
   MIGRATION_V54_DISPATCH_REPO,
+  MIGRATION_V55_DISPATCH_CONVERSATION,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -352,6 +353,9 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // branch, commit_sha, clone_policy, clone_path). Dispatch body is the
   // primary source; spec metadata is a fallback for repo_id only.
   54: MIGRATION_V54_DISPATCH_REPO,
+  // Version 55: Nullable conversation_id on dispatches for dispatch inbox
+  // threads. Written lazily on first coordination message.
+  55: MIGRATION_V55_DISPATCH_CONVERSATION,
 };
 
 /** Get the SQL for a specific migration version.

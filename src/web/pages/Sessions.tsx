@@ -29,7 +29,7 @@ const STALE_MARGIN_MS = 10 * 60 * 1000; // 10 minutes
 // Thread model — unifies sessions + mail conversations
 // ============================================================================
 
-type ThreadFlavor = 'session' | 'mail' | 'hosted-chat';
+type ThreadFlavor = 'session' | 'mail' | 'dispatch' | 'hosted-chat';
 
 type ThreadStatus = 'live' | 'recent' | 'idle' | 'mail-active' | 'mail-completed' | 'hosted-running';
 
@@ -96,12 +96,17 @@ function sessionToThread(
 }
 
 function mailToThread(conv: MailConversation): Thread {
+  const isDispatchThread = conv.scope === 'dispatch-thread';
   const status: ThreadStatus = conv.status === 'active' ? 'mail-active' : 'mail-completed';
+  // Dispatch threads link to their dispatch detail page instead of the mail view
+  const dispatchId = isDispatchThread
+    ? (conv.metadata?.dispatch_id as string | undefined)
+    : undefined;
   return {
     id: conv.id,
-    flavor: 'mail',
-    to: `/threads/mail/${conv.id}`,
-    title: conv.subject || 'Untitled conversation',
+    flavor: isDispatchThread ? 'dispatch' : 'mail',
+    to: dispatchId ? `/dispatch/${dispatchId}` : `/threads/mail/${conv.id}`,
+    title: conv.subject || (isDispatchThread ? 'Dispatch thread' : 'Untitled conversation'),
     description: conv.participants.map((p) => p.agent_id).join(', ') || null,
     status,
     lastActivityAt: conv.updated_at,
@@ -130,12 +135,13 @@ const STATUS_CHIP: Record<ThreadStatus, { label: string; cls: string }> = {
 // Filter chips
 // ============================================================================
 
-type FilterKey = 'all' | 'live' | 'mail';
+type FilterKey = 'all' | 'live' | 'mail' | 'dispatch';
 
 const FILTERS: Array<{ key: FilterKey; label: string }> = [
-  { key: 'all',  label: 'All' },
-  { key: 'live', label: 'Live' },
-  { key: 'mail', label: 'Mail' },
+  { key: 'all',      label: 'All' },
+  { key: 'live',     label: 'Live' },
+  { key: 'mail',     label: 'Mail' },
+  { key: 'dispatch', label: 'Dispatch' },
 ];
 
 function FilterChips({
@@ -591,6 +597,7 @@ export function Sessions() {
         (t) => t.status === 'live' || t.status === 'mail-active' || t.status === 'hosted-running',
       );
       case 'mail': return activeThreads.filter((t) => t.flavor === 'mail');
+      case 'dispatch': return activeThreads.filter((t) => t.flavor === 'dispatch');
       default:     return activeThreads;
     }
   }, [activeThreads, filter]);

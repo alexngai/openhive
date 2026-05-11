@@ -18,6 +18,7 @@ import {
   type MailPushSubscriber,
 } from 'agent-inbox';
 import { broadcastToChannel } from '../realtime/index.js';
+import { sendDispatchNudge } from '../dispatch/nudge.js';
 import { getAllInboundIncludingStale, hasCapability } from '../map/connection-registry.js';
 import { sendToSwarm } from '../map/sync-listener.js';
 import { mapHubEvents } from '../map/service.js';
@@ -145,6 +146,33 @@ function setupEventForwarding(events: EventEmitter): void {
         type: 'mail.turn.added',
         data: turn,
       });
+
+      // Dispatch-thread fan-out: when a turn lands in a dispatch coordination
+      // thread, broadcast on map:dispatches so the dispatch detail UI can
+      // show thread activity in real time.
+      try {
+        const conv = getMailStorage().getConversation(turn.conversation_id);
+        if (conv?.scope === 'dispatch-thread') {
+          const dispatchId = (conv.metadata as Record<string, unknown>)?.dispatch_id;
+          broadcastToChannel('map:dispatches', {
+            type: 'dispatch.thread.turn',
+            data: {
+              dispatch_id: dispatchId,
+              conversation_id: turn.conversation_id,
+              turn,
+            },
+          });
+
+          // Advisory nudge — notify the sidecar so the agent picks up the
+          // message on the next UserPromptSubmit rather than waiting for
+          // the continuation policy's scheduled check.
+          if (typeof dispatchId === 'string') {
+            sendDispatchNudge(dispatchId, turn.conversation_id);
+          }
+        }
+      } catch {
+        // best effort — storage may not be ready yet
+      }
     }
 
     // Mail-push bridge (started below) handles fan-out to swarms with
@@ -164,6 +192,13 @@ function setupEventForwarding(events: EventEmitter): void {
   events.on('mail.closed', (data) => {
     broadcastToChannel('mail:conversations', {
       type: 'mail.closed',
+      data,
+    });
+  });
+
+  events.on('mail.reopened', (data) => {
+    broadcastToChannel('mail:conversations', {
+      type: 'mail.reopened',
       data,
     });
   });

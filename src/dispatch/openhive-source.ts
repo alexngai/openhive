@@ -33,6 +33,13 @@ export interface SpecContentFetcher {
 }
 
 function dispatchToTask(d: Dispatch): DispatchTask {
+  // Resolve linked tasks so the prompt builder can reference them.
+  // Fire-and-forget style: if the DAL throws, the task still proceeds.
+  let linkedTasks: Array<{ resource_id: string; node_id: string; title?: string }> = [];
+  try {
+    linkedTasks = dispatchesDAL.getDispatchLinkedTasks(d.id);
+  } catch { /* best effort */ }
+
   return {
     id: d.id,
     title: `[dispatch] ${d.spec_id}`,
@@ -47,6 +54,10 @@ function dispatchToTask(d: Dispatch): DispatchTask {
       initiator_type: d.initiator_type,
       initiator_id: d.initiator_id,
       prompt_override: d.prompt_override,
+      // Structured fields for the prompt builder's coordination section
+      initiator: { type: d.initiator_type, id: d.initiator_id },
+      conversation_id: d.conversation_id ?? undefined,
+      linkedTasks,
     },
   };
 }
@@ -284,6 +295,40 @@ export async function enrichWithLoadout(
   }
 }
 
+/**
+ * Count unread thread messages for a dispatch's current executor. Used by the
+ * continuation prompt to nudge the agent to check its inbox. Best-effort —
+ * failures return 0.
+ */
+export async function countPendingThreadMessages(
+  conversationId: string,
+  executorAgentId: string | undefined,
+  mailRpc: { handleRequest: (req: unknown) => Promise<unknown> },
+): Promise<number> {
+  try {
+    const id = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const response = (await mailRpc.handleRequest({
+      jsonrpc: '2.0',
+      id,
+      method: 'mail/turns/list',
+      params: { conversationId },
+    })) as { result?: { turns?: Array<{ agentId?: string; created_at?: string }> } };
+    const turns = response?.result?.turns;
+    if (!Array.isArray(turns) || turns.length === 0) return 0;
+    if (!executorAgentId) return turns.length;
+    // Count turns posted after the executor's last turn
+    const lastExecutorTurn = [...turns]
+      .reverse()
+      .find((t) => t.agentId === executorAgentId);
+    if (!lastExecutorTurn?.created_at) return turns.length;
+    return turns.filter(
+      (t) => t.agentId !== executorAgentId && t.created_at! > lastExecutorTurn.created_at!,
+    ).length;
+  } catch {
+    return 0;
+  }
+}
+
 function enrichWithRepo(task: DispatchTask): DispatchTask {
   const meta = task.metadata ?? {};
   const specMeta = (meta.spec_metadata as Record<string, unknown> | undefined) ?? {};
@@ -334,14 +379,50 @@ function enrichWithRepo(task: DispatchTask): DispatchTask {
   return { ...task, metadata: { ...meta, ...additions } };
 }
 
+export interface DispatchSourceDeps {
+  /** Optional mail RPC for pending-message enrichment on continuations. */
+  getMailJsonRpc?: () => { handleRequest: (req: unknown) => Promise<unknown> };
+}
+
 export function createOpenHiveDispatchSource(
   specFetcher: SpecContentFetcher,
   claimantId: string,
+  deps: DispatchSourceDeps = {},
 ): DispatchTaskSource {
   async function enrich(task: DispatchTask): Promise<DispatchTask> {
     const withSpec = await enrichWithSpec(task, specFetcher);
     const withLoadout = await enrichWithLoadout(withSpec);
-    return enrichWithRepo(withLoadout);
+    const withRepo = enrichWithRepo(withLoadout);
+    return enrichWithPendingMessages(withRepo);
+  }
+
+  /**
+   * Enrich continuation tasks with pending thread message count so the
+   * prompt builder can nudge the agent to check its inbox.
+   */
+  async function enrichWithPendingMessages(task: DispatchTask): Promise<DispatchTask> {
+    const meta = task.metadata ?? {};
+    const conversationId = meta.conversation_id as string | undefined;
+    if (!conversationId || !deps.getMailJsonRpc) return task;
+
+    // Resolve the current executor from the dispatch's latest running attempt
+    const dispatch = dispatchesDAL.findDispatchById(task.id);
+    const currentAttempt = dispatch?.attempts_history
+      ?.filter((a) => a.status === 'running')
+      .pop();
+    const executorAgentId = currentAttempt?.agent_id;
+
+    const pending = await countPendingThreadMessages(
+      conversationId,
+      executorAgentId,
+      deps.getMailJsonRpc(),
+    );
+    if (pending <= 0) return task;
+
+    return {
+      ...task,
+      metadata: { ...meta, pendingThreadMessages: pending },
+    };
   }
 
   const source = createSqlSource<Dispatch>({

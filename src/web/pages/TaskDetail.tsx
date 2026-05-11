@@ -15,6 +15,8 @@ import {
   User,
   Tag,
   AlertCircle,
+  MessageCircle,
+  Send,
   GitBranch,
 } from 'lucide-react';
 import {
@@ -230,6 +232,9 @@ export function TaskDetail() {
         taskTitle={taskTitle}
         taskSubtitle={taskSubtitle}
       />
+
+      {/* Dispatch threads — linked coordination conversations */}
+      <DispatchThreadLinks metadata={resource.metadata} />
     </div>
   );
 }
@@ -244,6 +249,52 @@ function TaskBackLink({ resourceId }: { resourceId: string }) {
       <ArrowLeft className="w-3.5 h-3.5" />
       Back to tasks
     </Link>
+  );
+}
+
+/**
+ * Renders linked dispatch coordination threads from the task resource's
+ * `metadata.dispatch_threads[]`. Each entry links to the dispatch detail
+ * page (anchored to the thread section).
+ */
+function DispatchThreadLinks({ metadata }: { metadata?: Record<string, unknown> | null }) {
+  const threads = Array.isArray(metadata?.dispatch_threads)
+    ? (metadata!.dispatch_threads as Array<{ dispatch_id: string; conversation_id: string }>)
+    : [];
+  if (threads.length === 0) return null;
+
+  return (
+    <div
+      className="rounded-md border p-4"
+      style={{
+        borderColor: 'var(--color-border-subtle)',
+        backgroundColor: 'var(--color-surface)',
+      }}
+    >
+      <div className="text-xs mb-2 flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
+        <MessageCircle className="h-3.5 w-3.5 text-honey-500" />
+        Dispatch threads
+      </div>
+      <ul className="space-y-1.5">
+        {threads.map((t) => (
+          <li key={t.dispatch_id}>
+            <Link
+              to={`/dispatch/${t.dispatch_id}`}
+              className="flex items-center gap-2 text-sm hover:opacity-80"
+              style={{ color: 'var(--color-text)' }}
+            >
+              <Send className="h-3.5 w-3.5 shrink-0 text-honey-500" />
+              <code
+                className="text-2xs font-mono px-1 py-0.5 rounded shrink-0"
+                style={{ backgroundColor: 'var(--color-elevated)' }}
+              >
+                {t.dispatch_id.length > 16 ? t.dispatch_id.slice(0, 16) + '...' : t.dispatch_id}
+              </code>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

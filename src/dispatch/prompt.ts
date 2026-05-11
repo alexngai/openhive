@@ -35,6 +35,15 @@ export const openHivePromptBuilder: PromptBuilder = (
   if (context.turnCount > 0) {
     lines.push(`Continue work on dispatch ${task.id} (turn ${context.turnCount + 1}).`);
     lines.push('Re-check progress against the original task and proceed.');
+
+    // Notify about pending thread messages so the agent prioritizes replies
+    const pendingCount = meta.pendingThreadMessages as number | undefined;
+    if (meta.conversation_id && pendingCount && pendingCount > 0) {
+      lines.push('');
+      lines.push(`You have ${pendingCount} unread message(s) in the dispatch thread.`);
+      lines.push('Check your inbox and respond before continuing work.');
+    }
+
     lines.push('');
     lines.push(`Role: ${context.role}`);
     return lines.join('\n');
@@ -45,6 +54,9 @@ export const openHivePromptBuilder: PromptBuilder = (
     lines.push(`> The previous attempt failed.`);
     lines.push(`> Error: ${context.previousError}`);
     lines.push(`> Review the current state before starting fresh.`);
+    if (meta.conversation_id) {
+      lines.push(`> Prior conversation history is available in thread dispatch-${task.id}.`);
+    }
     lines.push('');
   }
 
@@ -86,6 +98,36 @@ export const openHivePromptBuilder: PromptBuilder = (
   if (hints?.additionalContext) {
     lines.push('');
     lines.push(String(hints.additionalContext));
+  }
+
+  // Coordination channel (dispatch inbox thread)
+  // Advertises the thread without creating it — creation is lazy on first message.
+  {
+    const initiator = meta.initiator as { type?: string; id?: string } | undefined;
+    const linkedTasks = Array.isArray(meta.linkedTasks)
+      ? (meta.linkedTasks as Array<{ title?: string }>)
+          .map((t) => t.title)
+          .filter(Boolean)
+          .join(', ')
+      : undefined;
+    lines.push('');
+    lines.push('## Coordination');
+    lines.push('');
+    lines.push('A dispatch thread is available for this work. If you need');
+    lines.push('clarification, hit a blocker, or want input from the dispatch');
+    lines.push('initiator, post a message.');
+    lines.push('');
+    lines.push(`  Thread tag: dispatch-${task.id}`);
+    if (initiator?.type && initiator?.id) {
+      lines.push(`  Initiator: ${initiator.type} ${initiator.id}`);
+    }
+    if (linkedTasks) {
+      lines.push(`  Linked tasks: ${linkedTasks}`);
+    }
+    lines.push('');
+    lines.push('To post, use the agent-inbox send_message tool with');
+    lines.push(`thread_tag "dispatch-${task.id}".`);
+    lines.push('The thread will be created on your first message.');
   }
 
   // MCP expectations — advisory list of servers the role expects.

@@ -9,7 +9,7 @@ import { hostname } from 'node:os';
 import { createOrchestrator, heuristicScorer, noopScorer } from 'swarm-dispatch';
 import type { Orchestrator, DispatchEvent, MessagePort, EligibilityScorer } from 'swarm-dispatch';
 import { createOpenHiveDispatchSource } from './openhive-source.js';
-import type { SpecContentFetcher } from './openhive-source.js';
+import type { SpecContentFetcher, DispatchSourceDeps } from './openhive-source.js';
 import { createOpenHiveAgentRuntime } from './openhive-runtime.js';
 import type { OpenHiveRuntimeDeps } from './openhive-runtime.js';
 import { createOpenHiveRoster } from './openhive-roster.js';
@@ -17,8 +17,15 @@ import { openHivePromptBuilder } from './prompt.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import { finalizeDispatch } from './finalize.js';
-import { claimDelivery } from './delivery-tracker.js';
+import {
+  claimDelivery,
+  getThreadDrivenCount,
+  incrementThreadDrivenCount,
+  clearThreadDrivenCount,
+} from './delivery-tracker.js';
+import { resolveInboxAgentId } from '../map/connection-registry.js';
 import type { Config } from '../config.js';
+import type { MailJsonRpcServer } from 'agent-inbox';
 
 export interface SetupOrchestratorOptions {
   specFetcher: SpecContentFetcher;
@@ -37,12 +44,23 @@ export interface SetupOrchestratorOptions {
    * through the runtime adapter regardless of mail availability.
    */
   dispatchMode?: 'prefer-route' | 'spawn-only' | 'route-only' | 'prefer-spawn';
+  /**
+   * Optional mail JSON-RPC accessor. When provided, enables:
+   * - Pending thread message enrichment on continuation prompts
+   * - System turns on retry events
+   * - New-agent invites on retry dispatched events
+   */
+  getMailJsonRpc?: () => MailJsonRpcServer;
 }
 
 export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator {
   const claimantId = `openhive:${hostname()}:${process.pid}`;
 
-  const source = createOpenHiveDispatchSource(opts.specFetcher, claimantId);
+  const sourceDeps: DispatchSourceDeps = {};
+  if (opts.getMailJsonRpc) {
+    sourceDeps.getMailJsonRpc = opts.getMailJsonRpc as DispatchSourceDeps['getMailJsonRpc'];
+  }
+  const source = createOpenHiveDispatchSource(opts.specFetcher, claimantId, sourceDeps);
   const runtime = createOpenHiveAgentRuntime(opts.runtimeDeps);
   const roster = createOpenHiveRoster();
 
@@ -60,7 +78,29 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
       baseDelayMs: cfg?.retry?.baseDelayMs ?? 10_000,
       maxDelayMs: cfg?.retry?.maxDelayMs ?? 300_000,
     },
-    continuation: { delayMs: 1_000, maxTurns: 20 },
+    continuation: {
+      delayMs: 1_000,
+      maxTurns: cfg?.continuation?.maxTurns ?? 20,
+    },
+    // Thread-aware continuation policy: when an agent's turn completes
+    // and the dispatch thread has pending messages, grant extra turns so
+    // the agent can respond — up to maxThreadTurns. Without pending
+    // messages, fall back to the standard maxTurns budget.
+    continuationPolicy: (task, turnCount, _lastExit) => {
+      const maxTurns = cfg?.continuation?.maxTurns ?? 20;
+      if (turnCount >= maxTurns) return 'release';
+
+      const pending = (task.metadata?.pendingThreadMessages as number) ?? 0;
+      if (pending > 0) {
+        const maxThreadTurns = cfg?.continuation?.maxThreadTurns ?? 3;
+        const threadCount = getThreadDrivenCount(task.id);
+        if (threadCount >= maxThreadTurns) return 'release';
+        incrementThreadDrivenCount(task.id);
+        return 'continue';
+      }
+
+      return turnCount < maxTurns ? 'continue' : 'release';
+    },
     promptBuilder: openHivePromptBuilder,
     eligibility: { scorer },
     roster,
@@ -120,6 +160,29 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
           ...(via ? { via } : {}),
         });
       }
+
+      // On retry attempts (attempt > 1), invite the new executor to the
+      // existing dispatch thread so they can see prior conversation history.
+      if (attempt > 1 && opts.getMailJsonRpc) {
+        const dispatch = dispatchesDAL.findDispatchById(event.taskId);
+        if (dispatch?.conversation_id && agent_id) {
+          const inboxId = resolveInboxAgentId(dispatch.target_swarm_id, agent_id);
+          try {
+            const mailRpc = opts.getMailJsonRpc();
+            const reqId = `invite-retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            void mailRpc.handleRequest({
+              jsonrpc: '2.0',
+              id: reqId,
+              method: 'mail/invite',
+              params: {
+                conversationId: dispatch.conversation_id,
+                agentId: inboxId,
+                role: 'executor',
+              },
+            } as Parameters<MailJsonRpcServer['handleRequest']>[0]);
+          } catch { /* best effort — agent may already be participant */ }
+        }
+      }
     }
 
     // Terminal: agent completed successfully → mark dispatch complete
@@ -129,6 +192,7 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
     // map/dispatches/report. Silent agents leave summary undefined; observed
     // facts (attempts, session_ids, cascade artifacts) still populate.
     if (event.type === 'completed') {
+      clearThreadDrivenCount(event.taskId);
       const current = dispatchesDAL.findDispatchById(event.taskId);
       if (current && current.status !== 'complete' && current.status !== 'failed' && current.status !== 'cancelled') {
         finalizeDispatch(event.taskId, 'complete');
@@ -156,6 +220,7 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
     // `attempts_history[n].error` and `attempts` in the dispatch row, so
     // the observed facts are preserved without shadowing the agent's voice.
     if (event.type === 'dead') {
+      clearThreadDrivenCount(event.taskId);
       const current = dispatchesDAL.findDispatchById(event.taskId);
       if (current && current.status !== 'complete' && current.status !== 'failed' && current.status !== 'cancelled') {
         const lastError = 'lastError' in event ? (event as { lastError?: string }).lastError : undefined;
@@ -196,6 +261,27 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
           error,
           next_retry_at: nextAt ? new Date(nextAt).toISOString() : undefined,
         });
+
+        // Post a system turn to the dispatch thread so participants see the retry
+        if (current?.conversation_id && opts.getMailJsonRpc) {
+          try {
+            const mailRpc = opts.getMailJsonRpc();
+            const turnId = `sys-retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            void mailRpc.handleRequest({
+              jsonrpc: '2.0',
+              id: turnId,
+              method: 'mail/turn',
+              params: {
+                conversationId: current.conversation_id,
+                participantId: 'system:dispatch-orchestrator',
+                content: `Retry attempt ${attempt}: previous attempt failed${error ? ` with: ${error}` : '.'}`,
+                contentType: 'text',
+                importance: 'normal',
+                metadata: { system: true, attempt },
+              },
+            } as Parameters<MailJsonRpcServer['handleRequest']>[0]);
+          } catch { /* best effort */ }
+        }
       }
     }
 

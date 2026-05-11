@@ -23,7 +23,7 @@ import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findN
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isMapTaskEvent, handleMapTaskEvent, isMapContextEvent, handleMapContextEvent } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities, getPeerMapId, getAgentOnSwarm } from './connection-registry.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities, getPeerMapId, getAgentOnSwarm, resolveInboxAgentId } from './connection-registry.js';
 import { resolveSessionScopes } from './session-scopes.js';
 import { verifyToken, isTokenServiceInitialized } from './token-service.js';
 import { handleContentResponse } from './trajectory-content.js';
@@ -36,6 +36,8 @@ import {
 import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { pushDispatchMapReply } from '../dispatch/mail-ingress.js';
+import { ensureDispatchConversation } from '../dispatch/dispatch-conversation.js';
+import * as dispatchesDAL from '../db/dal/dispatches.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import { broadcastSwarmLifecycleEvent } from '../realtime/swarm-events.js';
@@ -369,6 +371,15 @@ function createNotificationInterceptor(
       } else if (typeof msg.method === 'string' && msg.method.startsWith('mail/')) {
         // Mail notifications — fire and forget
         try { getMailJsonRpc().handleRequest(msg as any); } catch { /* ignore */ }
+      } else if (msg.method === 'x-dispatch/thread') {
+        // Dispatch thread message from agent without inbox MCP tools.
+        // Hub routes to the coordination conversation via ensureDispatchConversation.
+        const params = (msg.params ?? {}) as Record<string, unknown>;
+        const dispatchId = typeof params.dispatch_id === 'string' ? params.dispatch_id : '';
+        const content = typeof params.content === 'string' ? params.content : '';
+        if (dispatchId && content) {
+          handleDispatchThreadMessage(dispatchId, content, swarmId, params).catch(() => {});
+        }
       } else if (msg.method === 'map/dispatch/reply') {
         // Dispatch reply from agent — fan out to the mail-transport listeners.
         // Verify from_agent_id is actually registered on the inbound swarm so a
@@ -397,6 +408,91 @@ function createNotificationInterceptor(
 
   ws.on('message', handler);
   return { cleanup: () => ws.removeListener('message', handler) };
+}
+
+// ============================================================================
+// Dispatch Thread Message Handler
+// ============================================================================
+
+/**
+ * Handle `x-dispatch/thread` scope messages from agents that don't have
+ * agent-inbox MCP tools. The hub lazily creates the coordination conversation
+ * and adds the turn, then broadcasts to WS subscribers.
+ */
+async function handleDispatchThreadMessage(
+  dispatchId: string,
+  content: string,
+  swarmId: string,
+  params: Record<string, unknown>,
+): Promise<void> {
+  const dispatch = dispatchesDAL.findDispatchById(dispatchId);
+  if (!dispatch) return;
+
+  // Resolve sender identity: prefer explicit sender_agent_id, fall back
+  // to the current attempt's agent_id resolved through the inbox ID helper.
+  let senderAgentId = typeof params.sender_agent_id === 'string'
+    ? params.sender_agent_id
+    : undefined;
+  if (!senderAgentId) {
+    const currentAttempt = dispatch.attempts_history
+      .filter((a) => a.status === 'running')
+      .pop();
+    if (currentAttempt?.agent_id) {
+      senderAgentId = resolveInboxAgentId(swarmId, currentAttempt.agent_id);
+    }
+  }
+  if (!senderAgentId) senderAgentId = `unknown-agent-${swarmId}`;
+
+  // Resolve spec title + swarm name for conversation subject
+  const swarm = findSwarmById(dispatch.target_swarm_id);
+  const swarmName = swarm?.name ?? dispatch.target_swarm_id;
+  const specTitle = typeof params.spec_title === 'string'
+    ? params.spec_title
+    : `Spec ${dispatch.spec_id}`;
+
+  // Lazy-create conversation
+  const linkedTasks = dispatchesDAL.getDispatchLinkedTasks(dispatch.id);
+  const conversationId = await ensureDispatchConversation(
+    {
+      dispatchId: dispatch.id,
+      specId: dispatch.spec_id,
+      specResourceId: dispatch.spec_resource_id,
+      specTitle,
+      targetSwarmId: dispatch.target_swarm_id,
+      swarmName,
+      linkedTasks,
+      initiator: { type: dispatch.initiator_type, id: dispatch.initiator_id },
+      executorAgentId: senderAgentId,
+    },
+    { getMailJsonRpc },
+  );
+
+  // Add turn
+  const mailRpc = getMailJsonRpc();
+  const turnId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  await mailRpc.handleRequest({
+    jsonrpc: '2.0',
+    id: turnId,
+    method: 'mail/turn',
+    params: {
+      conversationId,
+      agentId: senderAgentId,
+      content,
+      contentType: 'text',
+    },
+  } as Parameters<typeof mailRpc.handleRequest>[0]);
+
+  // Broadcast to WS subscribers
+  broadcastToChannel('map:dispatches', {
+    type: 'dispatch.thread.turn',
+    data: {
+      dispatch_id: dispatch.id,
+      conversation_id: conversationId,
+      sender: senderAgentId,
+      content_preview: content.length > 200 ? content.slice(0, 200) + '...' : content,
+    },
+    timestamp: new Date().toISOString(),
+  } as Parameters<typeof broadcastToChannel>[1]);
 }
 
 // ============================================================================

@@ -61,6 +61,9 @@ export interface Dispatch {
   loadout_status: 'materialized' | 'failed' | null;
   /** Materialization error message when status='failed' (V49). */
   loadout_error: string | null;
+  /** Linked dispatch coordination thread conversation id. Null until the
+   *  first message is posted (lazy creation). */
+  conversation_id: string | null;
   created_at: string;
   updated_at: string;
 }

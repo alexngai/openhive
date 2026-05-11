@@ -35,7 +35,35 @@ export function claimDelivery(taskId: string): DeliveryHint | undefined {
   return hint;
 }
 
+// =============================================================================
+// Thread-driven continuation tracking
+// =============================================================================
+//
+// Tracks how many extra turns have been granted to a dispatch because of
+// pending thread messages. The continuationPolicy in setup.ts uses this to
+// cap thread-driven continuations (maxThreadTurns) independently of the
+// overall turn budget (maxTurns). Without a cap, a chatty thread could
+// keep the agent alive indefinitely.
+
+const threadDrivenCounts = new Map<string, number>();
+
+export function incrementThreadDrivenCount(taskId: string): number {
+  const current = threadDrivenCounts.get(taskId) ?? 0;
+  const next = current + 1;
+  threadDrivenCounts.set(taskId, next);
+  return next;
+}
+
+export function getThreadDrivenCount(taskId: string): number {
+  return threadDrivenCounts.get(taskId) ?? 0;
+}
+
+export function clearThreadDrivenCount(taskId: string): void {
+  threadDrivenCounts.delete(taskId);
+}
+
 /** Test helper — reset all in-memory state. */
 export function _resetDeliveryTrackerForTest(): void {
   hints.clear();
+  threadDrivenCounts.clear();
 }

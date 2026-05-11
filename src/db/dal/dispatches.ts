@@ -109,6 +109,12 @@ export interface Dispatch {
   loadout_status: 'materialized' | 'failed' | null;
   /** Materialization error message when status='failed'. */
   loadout_error: string | null;
+  /**
+   * Agent-inbox conversation ID for the dispatch coordination thread (V55).
+   * Written lazily on first coordination message via
+   * `ensureDispatchConversation`. Null for silent dispatches.
+   */
+  conversation_id: string | null;
   /** Repo targeting (V54). Primary source for repo-scoped dispatches. */
   repo_id: string | null;
   /** Canonical URL resolved at enrichment time (V54). */
@@ -147,6 +153,7 @@ interface DispatchRow {
   loadout_ref: string | null;
   loadout_status: string | null;
   loadout_error: string | null;
+  conversation_id: string | null;
   repo_id: string | null;
   canonical_url: string | null;
   branch: string | null;
@@ -215,6 +222,7 @@ function rowToDispatch(row: DispatchRow): Dispatch {
         ? row.loadout_status
         : null,
     loadout_error: row.loadout_error ?? null,
+    conversation_id: row.conversation_id ?? null,
     repo_id: row.repo_id ?? null,
     canonical_url: row.canonical_url ?? null,
     branch: row.branch ?? null,
@@ -680,6 +688,27 @@ export function listInProgressDispatches(): Dispatch[] {
     .prepare("SELECT * FROM dispatches WHERE status IN ('running') ORDER BY created_at ASC")
     .all() as DispatchRow[];
   return rows.map(rowToDispatch);
+}
+
+// ============================================================================
+// Dispatch conversation (dispatch inbox threads)
+// ============================================================================
+
+/**
+ * Set the conversation_id on a dispatch row. Called by
+ * `ensureDispatchConversation` after lazily creating the coordination
+ * thread. Idempotent — no-ops if already set (first-writer wins).
+ */
+export function setDispatchConversationId(
+  id: string,
+  conversationId: string,
+): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE dispatches
+       SET conversation_id = ?, updated_at = datetime('now')
+     WHERE id = ? AND conversation_id IS NULL`,
+  ).run(conversationId, id);
 }
 
 // ============================================================================

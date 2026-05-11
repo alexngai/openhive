@@ -43,6 +43,7 @@ import {
 import { markStaleSwarms, getWellKnownMapInfo } from "./map/service.js";
 import { setupOrchestrator } from "./dispatch/setup.js";
 import { startTaskBinder, stopTaskBinder } from "./cascade/task-binder.js";
+import { startThreadLifecycle, stopThreadLifecycle } from "./dispatch/thread-lifecycle.js";
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
 import { createOpenHiveMailTransport } from "./dispatch/mail-transport.js";
 import { createOpenHiveMailPort } from "./dispatch/openhive-mail-port.js";
@@ -551,6 +552,7 @@ export async function createHive(
     });
     const messagePort = createOpenHiveMailPort(mailTransport, {
       mailLifecycleDefault: config.dispatch.mail_lifecycle_default,
+      getMailJsonRpc,
     });
 
     dispatchOrchestrator = setupOrchestrator({
@@ -586,6 +588,7 @@ export async function createHive(
       },
       messagePort,
       dispatchConfig: config.dispatch,
+      getMailJsonRpc,
     });
     setAcpAvailabilityProbe(() => {
       const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: AcpStreamManager } }).swarmcraft;
@@ -1110,6 +1113,14 @@ export async function createHive(
         console.warn(`[openhive] Task binder failed to start: ${(err as Error).message}`);
       }
 
+      // Start dispatch thread lifecycle binder. Closes/reopens dispatch
+      // coordination threads when linked tasks change status.
+      try {
+        startThreadLifecycle();
+      } catch (err) {
+        console.warn(`[openhive] Thread lifecycle failed to start: ${(err as Error).message}`);
+      }
+
       return address;
     },
 
@@ -1121,6 +1132,7 @@ export async function createHive(
       stopAutoPull();
       stopHeartbeat();
       stopTaskBinder();
+      stopThreadLifecycle();
       if (dispatchOrchestrator?.running) {
         try { await dispatchOrchestrator.stop(); } catch { /* best effort */ }
       }

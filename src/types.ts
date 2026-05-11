@@ -114,6 +114,7 @@ export type WSEventType =
   | 'dispatch.completed'
   | 'dispatch.cancelled'
   | 'dispatch.materialization_failed'
+  | 'dispatch.thread.turn'
   | 'node_registered'
   | 'node_state_changed'
   | 'swarm_heartbeat'
@@ -161,6 +162,7 @@ export type WSEventType =
   | 'mail.turn.added'
   | 'mail.participant.joined'
   | 'mail.closed'
+  | 'mail.reopened'
   // Learning engine events
   | 'learning:instant'
   | 'learning:batch'

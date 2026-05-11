@@ -202,3 +202,108 @@ describe('openHivePromptBuilder + materializedLoadout', () => {
     expect(out).not.toContain('Expected MCP servers');
   });
 });
+
+// ============================================================================
+// Coordination section (dispatch inbox threads)
+// ============================================================================
+
+describe('openHivePromptBuilder coordination section', () => {
+  it('includes coordination section with thread tag on first-run', () => {
+    const out = build(
+      makeTask({
+        initiator: { type: 'user', id: 'user_abc' },
+        linkedTasks: [{ title: 'Build the API' }],
+      }),
+      { attempt: 1, turnCount: 0, role: 'worker' },
+    );
+
+    expect(out).toContain('## Coordination');
+    expect(out).toContain('Thread tag: dispatch-disp_test');
+    expect(out).toContain('Initiator: user user_abc');
+    expect(out).toContain('Linked tasks: Build the API');
+    expect(out).toContain('thread_tag "dispatch-disp_test"');
+  });
+
+  it('coordination section appears after task content and before role line', () => {
+    const out = build(
+      makeTask({ initiator: { type: 'agent', id: 'agent_xyz' } }),
+      { attempt: 1, turnCount: 0, role: 'worker' },
+    );
+
+    const bodyIdx = out.indexOf('# Body of the dispatched work');
+    const coordIdx = out.indexOf('## Coordination');
+    const roleIdx = out.indexOf('Role: worker');
+    expect(coordIdx).toBeGreaterThan(bodyIdx);
+    expect(roleIdx).toBeGreaterThan(coordIdx);
+  });
+
+  it('omits initiator line when initiator metadata is absent', () => {
+    const out = build(
+      makeTask({}),
+      { attempt: 1, turnCount: 0, role: 'worker' },
+    );
+
+    expect(out).toContain('## Coordination');
+    expect(out).not.toContain('Initiator:');
+  });
+
+  it('omits linked tasks line when no tasks are provided', () => {
+    const out = build(
+      makeTask({ initiator: { type: 'user', id: 'u1' } }),
+      { attempt: 1, turnCount: 0, role: 'worker' },
+    );
+
+    expect(out).not.toContain('Linked tasks:');
+  });
+
+  it('retry prompt references existing thread when conversation_id is set', () => {
+    const out = build(
+      makeTask({ conversation_id: 'dispatch-conv-disp_test' }),
+      { attempt: 2, turnCount: 0, previousError: 'timeout', role: 'worker' },
+    );
+
+    expect(out).toContain('Retry attempt 2');
+    expect(out).toContain('Prior conversation history is available in thread dispatch-disp_test');
+  });
+
+  it('retry prompt omits thread reference when no conversation exists', () => {
+    const out = build(
+      makeTask({}),
+      { attempt: 2, turnCount: 0, previousError: 'timeout', role: 'worker' },
+    );
+
+    expect(out).toContain('Retry attempt 2');
+    expect(out).not.toContain('Prior conversation history');
+  });
+
+  it('continuation prompt mentions pending thread messages', () => {
+    const out = build(
+      makeTask({
+        conversation_id: 'dispatch-conv-disp_test',
+        pendingThreadMessages: 3,
+      }),
+      { attempt: 1, turnCount: 2, role: 'worker' },
+    );
+
+    expect(out).toContain('3 unread message(s)');
+    expect(out).toContain('Check your inbox and respond');
+  });
+
+  it('continuation prompt omits thread notice when no pending messages', () => {
+    const out = build(
+      makeTask({ conversation_id: 'dispatch-conv-disp_test' }),
+      { attempt: 1, turnCount: 2, role: 'worker' },
+    );
+
+    expect(out).not.toContain('unread message');
+  });
+
+  it('coordination section does not appear on continuation turns', () => {
+    const out = build(
+      makeTask({ initiator: { type: 'user', id: 'u1' } }),
+      { attempt: 1, turnCount: 1, role: 'worker' },
+    );
+
+    expect(out).not.toContain('## Coordination');
+  });
+});

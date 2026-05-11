@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 54;
+export const SCHEMA_VERSION = 55;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -675,6 +675,10 @@ CREATE TABLE IF NOT EXISTS dispatches (
   -- carries a short reason ('unauthorized', 'not found', etc.) suitable for
   -- the UI banner. NULL otherwise.
   loadout_error TEXT,
+  -- Dispatch inbox thread conversation ID (V52): agent-inbox conversation
+  -- for the coordination thread. Written lazily on first coordination
+  -- message via ensureDispatchConversation. NULL for silent dispatches.
+  conversation_id TEXT,
   -- timestamps
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
@@ -1160,6 +1164,13 @@ ALTER TABLE dispatches ADD COLUMN clone_policy TEXT DEFAULT 'none'
   CHECK (clone_policy IN ('none', 'allowed'));
 ALTER TABLE dispatches ADD COLUMN clone_path TEXT;
 CREATE INDEX IF NOT EXISTS idx_dispatches_repo ON dispatches(repo_id);
+`;
+
+// Migration V55: Nullable conversation_id on dispatches for dispatch inbox
+// threads. Written lazily on first coordination message — silent dispatches
+// never get one. See docs/design/dispatch-inbox-threads.md.
+export const MIGRATION_V55_DISPATCH_CONVERSATION = `
+ALTER TABLE dispatches ADD COLUMN conversation_id TEXT;
 `;
 
 export const MIGRATION_V45_DISPATCH_LINKED_TASKS = `
