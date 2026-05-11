@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 46;
+export const SCHEMA_VERSION = 47;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -1755,6 +1755,64 @@ export const MIGRATION_V46_DISPATCH_LOADOUT_REFS = `
 ALTER TABLE dispatches ADD COLUMN loadout_bundle_id TEXT;
 ALTER TABLE dispatches ADD COLUMN team_bundle_id TEXT;
 ALTER TABLE dispatches ADD COLUMN role TEXT;
+`;
+
+// Migration V47: relax `spec_resource_id` + `spec_id` on `dispatches` to
+// nullable. Layer 4 of the openteams integration adds spec-less spawns —
+// an `openteams.spawn` task may pin a `loadout_bundle_id` and request a
+// new swarm process without any opentasks spec to anchor the work.
+//
+// SQLite can't ALTER a NOT NULL constraint in-place, so we rebuild the
+// table. Existing rows preserve their non-null spec ids.
+export const MIGRATION_V47_NULLABLE_SPEC_ON_DISPATCH = `
+CREATE TABLE IF NOT EXISTS dispatches_v47 (
+  id TEXT PRIMARY KEY,
+  spec_resource_id TEXT,
+  spec_id TEXT,
+  spec_captured_at TEXT,
+  target_swarm_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued'
+    CHECK (status IN ('queued', 'running', 'complete', 'failed', 'cancelled')),
+  initiator_type TEXT NOT NULL CHECK (initiator_type IN ('user', 'agent')),
+  initiator_id TEXT NOT NULL,
+  session_ids TEXT NOT NULL DEFAULT '[]',
+  outcome TEXT,
+  prompt_override TEXT,
+  lease_token TEXT,
+  lease_expires_at TEXT,
+  attempt INTEGER DEFAULT 0,
+  turn_count INTEGER DEFAULT 0,
+  attempts_history TEXT NOT NULL DEFAULT '[]',
+  loadout_bundle_id TEXT,
+  team_bundle_id TEXT,
+  role TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+INSERT OR IGNORE INTO dispatches_v47 (
+  id, spec_resource_id, spec_id, spec_captured_at, target_swarm_id, status,
+  initiator_type, initiator_id, session_ids, outcome, prompt_override,
+  lease_token, lease_expires_at, attempt, turn_count, attempts_history,
+  loadout_bundle_id, team_bundle_id, role,
+  created_at, updated_at
+)
+SELECT
+  id, spec_resource_id, spec_id, spec_captured_at, target_swarm_id, status,
+  initiator_type, initiator_id, session_ids, outcome, prompt_override,
+  lease_token, lease_expires_at, attempt, turn_count, attempts_history,
+  loadout_bundle_id, team_bundle_id, role,
+  created_at, updated_at
+FROM dispatches;
+
+DROP TABLE IF EXISTS dispatches;
+ALTER TABLE dispatches_v47 RENAME TO dispatches;
+
+CREATE INDEX IF NOT EXISTS idx_dispatches_spec ON dispatches(spec_resource_id, spec_id);
+CREATE INDEX IF NOT EXISTS idx_dispatches_swarm ON dispatches(target_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
+CREATE INDEX IF NOT EXISTS idx_dispatches_initiator ON dispatches(initiator_id);
+CREATE INDEX IF NOT EXISTS idx_dispatches_created ON dispatches(created_at DESC);
 `;
 
 // Populate FTS tables from existing data

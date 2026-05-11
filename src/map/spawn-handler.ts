@@ -45,6 +45,14 @@ const SpawnParamsSchema = z.object({
   capabilities: z.record(z.unknown()).optional(),
   capabilityDescriptor: z.record(z.unknown()).optional(),
   metadata: z.record(z.unknown()).optional(),
+  // Layer 4 — optional openteams binding. When set, the hub records these
+  // ids on the child agent's metadata so downstream dispatch / coordinator
+  // logic can resolve the loadout (and the bundle store can be re-fetched
+  // by hash). For new-process spawns, callers should also pass these via
+  // the hosted-swarm `POST /map/hosted/spawn` route so the bootstrap token
+  // carries materialized MCP scope. This handler stays bookkeeping-only.
+  loadout_bundle_id: z.string().min(1).max(200).optional(),
+  team_bundle_id: z.string().min(1).max(200).optional(),
 });
 
 export type SpawnParams = z.infer<typeof SpawnParamsSchema>;
@@ -151,6 +159,16 @@ export async function handleSpawnRequest(
   // authenticates exclusively via the delegated agent-iam token. The
   // row exists so future `findAgentById` lookups (e.g. at the child's
   // own map/connect) resolve.
+  // OpenTeams binding (Layer 4) — record on the child's metadata so
+  // downstream dispatch/coordinator paths can read the loadout/team/role
+  // without re-walking the spawn task. Matches openteams's
+  // `Participant.metadata.{loadout,team,role}` contract from
+  // `team-map-sync-design.md`.
+  const openteamsMeta: Record<string, unknown> = {};
+  if (params.loadout_bundle_id) openteamsMeta.loadout = params.loadout_bundle_id;
+  if (params.team_bundle_id) openteamsMeta.team = params.team_bundle_id;
+  if (params.role) openteamsMeta.role = params.role;
+
   const { agent: childAgent } = await agentsDAL.createAgent({
     name: params.name,
     description: `Spawned from ${params.parent}`,
@@ -158,6 +176,7 @@ export async function handleSpawnRequest(
       ...(params.metadata ?? {}),
       spawned_by: params.parent,
       spawned_at: new Date().toISOString(),
+      ...(Object.keys(openteamsMeta).length > 0 ? { openteams: openteamsMeta } : {}),
     },
   });
 

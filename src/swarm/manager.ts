@@ -295,6 +295,34 @@ export class SwarmManager {
       );
     }
 
+    // OpenTeams binding (Layer 4). Materialize the loadout up front so the
+    // sidecar receives MCP scope + prompt addendum via the bootstrap token
+    // and can apply them on first agent boot — no round-trip back to the
+    // hub needed. Failures are non-fatal: the spawn proceeds without the
+    // binding, mirroring the dispatch runtime's graceful-fallback behavior
+    // (Layer 3). team_bundle_id / role flow through as advisory metadata
+    // even when loadout materialization is absent.
+    let openteamsBinding: BootstrapToken['openteams'];
+    if (input.loadout_bundle_id || input.team_bundle_id || input.role) {
+      openteamsBinding = {
+        loadout_bundle_id: input.loadout_bundle_id,
+        team_bundle_id: input.team_bundle_id,
+        role: input.role,
+      };
+      if (input.loadout_bundle_id) {
+        try {
+          const { materializeLoadoutById } = await import('../openteams/loadout-materializer.js');
+          const materialized = await materializeLoadoutById(input.loadout_bundle_id);
+          openteamsBinding.mcp_servers = materialized.mcpServers;
+          openteamsBinding.prompt_addendum = materialized.promptAddendum;
+        } catch (err) {
+          console.warn(
+            `[swarm.manager] loadout ${input.loadout_bundle_id} materialization failed; spawn proceeds without binding: ${(err as Error).message}`,
+          );
+        }
+      }
+    }
+
     const bootstrapToken: BootstrapToken = {
       version: 1,
       openhive_url: this.instanceUrl,
@@ -307,6 +335,7 @@ export class SwarmManager {
       resources: injectedResources,
       issued_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(), // 1 hour
+      openteams: openteamsBinding,
     };
 
     const tokenString = Buffer.from(JSON.stringify(bootstrapToken)).toString('base64');

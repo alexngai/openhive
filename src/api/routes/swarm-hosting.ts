@@ -54,6 +54,12 @@ const SpawnSwarmSchema = z.object({
   credential_overrides: z.record(z.string(), z.string()).optional(),
   workspace: WorkspaceSchema.optional(),
   bootstrap: BootstrapSchema.optional(),
+  // Layer 4 — optional openteams binding. SwarmManager.spawn() materializes
+  // the loadout up front and forwards MCP scope + prompt addendum through
+  // the BootstrapToken. team_bundle_id and role flow as advisory metadata.
+  loadout_bundle_id: z.string().min(1).max(200).optional(),
+  team_bundle_id: z.string().min(1).max(200).optional(),
+  role: z.string().min(1).max(100).optional(),
 });
 
 // ============================================================================

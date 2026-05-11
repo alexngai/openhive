@@ -63,6 +63,35 @@ export interface BootstrapToken {
   issued_at: string;
   /** When this token expires (short TTL, just for bootstrapping) */
   expires_at: string;
+  /**
+   * OpenTeams binding (Layer 4). Optional — present when the spawn was
+   * initiated with a `loadout_bundle_id`. The loadout's MCP scope and
+   * prompt addendum are materialized at the hub and forwarded here so
+   * the openswarm sidecar can apply them to the spawned agent's first
+   * session without an extra round-trip to fetch the bundle.
+   *
+   * `loadout_bundle_id` / `team_bundle_id` / `role` are recorded for the
+   * sidecar to surface in the agent's registration metadata, matching
+   * openteams's `Participant.metadata.{loadout,role,team}` contract.
+   */
+  openteams?: {
+    loadout_bundle_id?: string;
+    team_bundle_id?: string;
+    role?: string;
+    /** Materialized MCP server entries (ACP-shaped). */
+    mcp_servers?: Array<{
+      name: string;
+      command?: string;
+      args?: string[];
+      env?: Record<string, string>;
+      cwd?: string;
+      type?: 'stdio' | 'sse' | 'http';
+      url?: string;
+      headers?: Record<string, string>;
+    }>;
+    /** Prompt prefix applied ahead of the agent's first turn. */
+    prompt_addendum?: string;
+  };
 }
 
 // ============================================================================
@@ -135,6 +164,17 @@ export interface SpawnSwarmInput {
   inject_resources?: string[];
   /** Boot-time agent provisioning (e.g. auto-spawn coordinator) */
   bootstrap?: SwarmBootstrap;
+  /**
+   * Optional openteams binding. When `loadout_bundle_id` is supplied the
+   * manager fetches the materialized loadout (MCP scope + prompt
+   * addendum) from the openteams bundle store and forwards it through
+   * the BootstrapToken so the sidecar can apply it on agent boot.
+   * `team_bundle_id` and `role` are advisory — recorded so the spawned
+   * agent's registration metadata can carry the team context.
+   */
+  loadout_bundle_id?: string;
+  team_bundle_id?: string;
+  role?: string;
 }
 
 /** Internal config passed to the hosting provider */

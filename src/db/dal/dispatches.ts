@@ -41,8 +41,12 @@ export interface DispatchAttempt {
 
 export interface Dispatch {
   id: string;
-  spec_resource_id: string;
-  spec_id: string;
+  /**
+   * Opentasks spec reference. Nullable since V47 — spec-less dispatches
+   * (Layer 4 `openteams.spawn` flow) carry a `loadout_bundle_id` instead.
+   */
+  spec_resource_id: string | null;
+  spec_id: string | null;
   spec_captured_at: string | null;
   target_swarm_id: string;
   status: DispatchStatus;
@@ -71,8 +75,8 @@ export interface Dispatch {
 
 interface DispatchRow {
   id: string;
-  spec_resource_id: string;
-  spec_id: string;
+  spec_resource_id: string | null;
+  spec_id: string | null;
   spec_captured_at: string | null;
   target_swarm_id: string;
   status: DispatchStatus;
@@ -150,8 +154,9 @@ function rowToDispatch(row: DispatchRow): Dispatch {
 // ============================================================================
 
 export interface CreateDispatchInput {
-  spec_resource_id: string;
-  spec_id: string;
+  /** Nullable for Layer 4 spec-less spawns. */
+  spec_resource_id: string | null;
+  spec_id: string | null;
   spec_captured_at?: string | null;
   target_swarm_id: string;
   initiator_type: DispatchInitiatorType;
@@ -182,8 +187,8 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
-    input.spec_resource_id,
-    input.spec_id,
+    input.spec_resource_id ?? null,
+    input.spec_id ?? null,
     input.spec_captured_at ?? null,
     input.target_swarm_id,
     input.status ?? 'queued',

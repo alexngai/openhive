@@ -39,6 +39,7 @@ import {
   MIGRATION_V44_GRANT_VERSION,
   MIGRATION_V45_TEAM_TEMPLATE_LOADOUT_KINDS,
   MIGRATION_V46_DISPATCH_LOADOUT_REFS,
+  MIGRATION_V47_NULLABLE_SPEC_ON_DISPATCH,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -307,6 +308,9 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 46: dispatches.loadout_bundle_id / team_bundle_id / role columns
   // for the openteams cross-runtime spawn flow (Layer 3 of the integration).
   46: MIGRATION_V46_DISPATCH_LOADOUT_REFS,
+  // Version 47: relax NOT NULL on dispatches.spec_resource_id + spec_id
+  // for Layer 4 spec-less openteams.spawn flows.
+  47: MIGRATION_V47_NULLABLE_SPEC_ON_DISPATCH,
 };
 
 /** Get the SQL for a specific migration version.
