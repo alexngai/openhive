@@ -55,6 +55,7 @@ import {
   getStreamBySwarmAndId,
   type CascadeStream,
 } from '../db/dal/cascade-streams.js';
+import { evictByStream as evictDiffCacheByStream } from '../db/dal/cascade-diff-cache.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import { mapHubEvents } from './service.js';
 
@@ -299,6 +300,10 @@ function handleStreamMerged(
   // Mark the source stream as merged (if we have one).
   if (sourceStream) {
     updateStreamStatus(sourceStream.id, 'merged', { closed: true });
+    // Evict cached diffs for the merged stream — entries are still
+    // content-addressed-valid but unreachable from the UI now. See
+    // docs/design/cascade-diff-and-stacked-prs.md D6.
+    try { evictDiffCacheByStream(sourceStream.stream_id); } catch { /* non-fatal */ }
   }
 
   // Resolve task_ref: prefer explicit metadata on the merge event; fall back
@@ -480,6 +485,8 @@ function handleStreamAbandoned(
     ensureStreamRow(context.swarmId, params.stream_id, context.agentId ?? 'unknown');
 
   updateStreamStatus(stream.id, 'abandoned', { closed: true });
+  // Drop cached diffs for the abandoned stream (D6).
+  try { evictDiffCacheByStream(stream.stream_id); } catch { /* non-fatal */ }
 
   emitHubEvent('cascade_stream_abandoned', {
     source_swarm_id: context.swarmId,
@@ -548,6 +555,10 @@ function handleCascadeRebased(
     });
     recorded.push({ commit_hash: change.commit_hash, created });
   }
+
+  // Rebase rewrites commit history; cache entries become unreachable.
+  // Eviction matches stream.merged / .abandoned (D6).
+  try { evictDiffCacheByStream(stream.stream_id); } catch { /* non-fatal */ }
 
   emitHubEvent('cascade_stream_rebased', {
     source_swarm_id: context.swarmId,

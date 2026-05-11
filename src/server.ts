@@ -43,6 +43,7 @@ import {
 import { markStaleSwarms, getWellKnownMapInfo } from "./map/service.js";
 import { setupOrchestrator } from "./dispatch/setup.js";
 import { startTaskBinder, stopTaskBinder } from "./cascade/task-binder.js";
+import { installAsResolverFetcher as installCascadeDiffFetcher } from "./map/cascade-diff-protocol.js";
 import { startThreadLifecycle, stopThreadLifecycle } from "./dispatch/thread-lifecycle.js";
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
 import { createOpenHiveMailTransport } from "./dispatch/mail-transport.js";
@@ -1111,6 +1112,14 @@ export async function createHive(
         startTaskBinder({ defaultClosePolicy: config.cascade.defaultClosePolicy });
       } catch (err) {
         console.warn(`[openhive] Task binder failed to start: ${(err as Error).message}`);
+      }
+
+      // Wire the cascade diff resolver's on-demand fetcher to the MAP
+      // wire-protocol module. Idempotent on repeat boot.
+      try {
+        installCascadeDiffFetcher();
+      } catch (err) {
+        console.warn(`[openhive] Cascade diff fetcher install failed: ${(err as Error).message}`);
       }
 
       // Start dispatch thread lifecycle binder. Closes/reopens dispatch

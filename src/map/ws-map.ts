@@ -27,6 +27,11 @@ import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefau
 import { resolveSessionScopes } from './session-scopes.js';
 import { verifyToken, isTokenServiceInitialized } from './token-service.js';
 import { handleContentResponse } from './trajectory-content.js';
+import {
+  handleDiffResponse as handleCascadeDiffResponse,
+  handleDiffChunk as handleCascadeDiffChunk,
+} from './cascade-diff-protocol.js';
+import { CASCADE_DIFF_METHODS } from '../cascade/diff-types.js';
 import { handleTrajectoryRequest } from './trajectory-handler.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
 import {
@@ -345,6 +350,15 @@ function createNotificationInterceptor(
       } else if (msg.method === 'trajectory/content.response') {
         // Content response from swarm — resolve pending content request
         handleContentResponse(msg.params as Record<string, unknown>);
+      } else if (msg.method === CASCADE_DIFF_METHODS.RESPONSE) {
+        // Diff response from swarm — resolve pending diff request (inline)
+        // or initialize chunk-assembly state (streaming).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handleCascadeDiffResponse(msg.params as any);
+      } else if (msg.method === CASCADE_DIFF_METHODS.CHUNK) {
+        // Diff chunk — append to pending request's buffer; resolve on final.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handleCascadeDiffChunk(msg.params as any);
       } else if (msg.method === 'x-workspace/task.result' || msg.method === 'x-openhive/learning.workspace.result') {
         // Workspace execution result from swarm — resolve pending task
         handleWorkspaceResult(msg.params as Record<string, unknown>);

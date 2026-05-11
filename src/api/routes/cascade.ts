@@ -527,6 +527,42 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
     }
   );
 
+  // ── Diff fetch (cascade_diff_cache + on-demand via MAP) ─────────────
+  //
+  //   GET /cascade/streams/:id/commits/:hash/diff
+  //     ?file=src/a.ts        — restrict to one path
+  //     &base=<sha>           — explicit base for ranged diffs
+  //     &files_only=true      — return files_touched only (D17)
+  //
+  //   Returns { data: { diff, files_touched, truncated } } on hit. Error
+  //   codes are mapped to HTTP statuses (see diffErrorStatus below).
+
+  fastify.get<{
+    Params: { id: string; hash: string };
+    Querystring: { file?: string; base?: string; files_only?: string };
+  }>(
+    '/cascade/streams/:id/commits/:hash/diff',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { resolveCommitDiff } = await import('../../cascade/diff-resolver.js');
+      const result = await resolveCommitDiff({
+        stream_row_id: request.params.id,
+        commit_hash: request.params.hash,
+        base_hash: request.query.base,
+        file_path: request.query.file,
+        files_only: request.query.files_only === 'true',
+      });
+
+      if (!result.ok) {
+        return reply.status(diffErrorStatus(result.error.code)).send({
+          error: result.error.code,
+          message: result.error.message,
+        });
+      }
+      return reply.send({ data: result.payload });
+    }
+  );
+
   // ── PR management (hub-side GitHub API) ─────────────────────────────
   //
   //   POST   /cascade/streams/:id/pr — create PR
@@ -746,6 +782,29 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.send({ data: status });
     }
   );
+}
+
+/**
+ * Map a DiffError code to an HTTP status. Kept here (not in diff-types.ts)
+ * because HTTP semantics are a transport concern, not a domain concern.
+ */
+function diffErrorStatus(code: string): number {
+  switch (code) {
+    case 'not_found':
+      return 404;
+    case 'bad_request':
+      return 400;
+    case 'timeout':
+      return 504;
+    case 'integrity_failed':
+      return 502;
+    case 'swarm_offline':
+    case 'capability_missing':
+      return 503;
+    case 'internal':
+    default:
+      return 500;
+  }
 }
 
 /**
