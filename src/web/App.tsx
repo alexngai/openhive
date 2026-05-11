@@ -34,6 +34,7 @@ const SwarmDetail = lazy(() => import('./pages/SwarmDetail').then(m => ({ defaul
 const Terminal = lazy(() => import('./pages/Terminal').then(m => ({ default: m.Terminal })));
 const Sessions = lazy(() => import('./pages/Sessions').then(m => ({ default: m.Sessions })));
 const Events = lazy(() => import('./pages/Events').then(m => ({ default: m.Events })));
+const TeamEditor = lazy(() => import('./pages/TeamEditor'));
 const TasksList = lazy(() => import('./pages/Tasks').then(m => ({ default: m.TaskGraphList })));
 const TaskGraph = lazy(() => import('./pages/TaskGraph').then(m => ({ default: m.TaskGraph })));
 const TaskDetail = lazy(() => import('./pages/TaskDetail').then(m => ({ default: m.TaskDetail })));
@@ -84,6 +85,7 @@ export default function App() {
               <Route path="threads/mail/:mailId" element={<Sessions />} />
               <Route path="events" element={<Events />} />
               <Route path="terminal/:swarmId" element={<Terminal />} />
+              <Route path="teams/:id/editor" element={<TeamEditor />} />
               {/* Redirects from legacy routes */}
               <Route path="sessions" element={<Navigate to="/threads" replace />} />
               <Route path="sessions/:id" element={<SessionIdRedirect />} />
