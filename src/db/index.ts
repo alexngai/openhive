@@ -44,6 +44,7 @@ import {
   MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
   MIGRATION_V50_HOSTED_SWARM_KIND,
   MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK,
+  MIGRATION_V52_DISPATCH_CONVERSATION,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -332,6 +333,9 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // …) can be added without a DB migration. Validation moves to Zod at the
   // API layer + the HostedSwarmKind union type.
   51: MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK,
+  // Version 52: Nullable conversation_id on dispatches for dispatch inbox
+  // threads. Written lazily on first coordination message.
+  52: MIGRATION_V52_DISPATCH_CONVERSATION,
 };
 
 /** Get the SQL for a specific migration version.

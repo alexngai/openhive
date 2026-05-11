@@ -662,6 +662,19 @@ export const ConfigSchema = z.object({
        * `mail_lifecycle` field takes precedence over this default.
        */
       mail_lifecycle_default: z.enum(["fresh", "reuse"]).default("reuse"),
+      /** Continuation turn budgets. */
+      continuation: z
+        .object({
+          /** Max total continuation turns per dispatch session. */
+          maxTurns: z.number().int().positive().default(20),
+          /**
+           * Max extra turns granted because of pending dispatch thread
+           * messages. Prevents a chatty thread from keeping an agent alive
+           * indefinitely. Independent of maxTurns.
+           */
+          maxThreadTurns: z.number().int().min(0).default(3),
+        })
+        .default({}),
     })
     .default({}),
 

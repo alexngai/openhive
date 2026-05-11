@@ -283,6 +283,30 @@ export function findAcpAgentInfo(swarmId: string): {
 }
 
 /**
+ * Resolve a MAP agent ID to its canonical inbox agent ID.
+ *
+ * Since the dispatch-inbox-threads feature, cc-swarm agents register with
+ * MAP using their inbox-derived ID (`${teamName}-main`), so MAP and inbox
+ * identities are unified. For backward compatibility with pre-unification
+ * agents (or macro-agent which uses its own ID scheme), the function falls
+ * back through:
+ *
+ * 1. `metadata.inboxAgentId` — explicitly declared canonical inbox ID
+ * 2. `mapAgentId` — the MAP agent ID itself (works when MAP ID = inbox ID)
+ *
+ * Used by the dispatch conversation factory to determine the correct
+ * participant identity for thread membership.
+ */
+export function resolveInboxAgentId(swarmId: string, mapAgentId: string): string {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn) return mapAgentId;
+  const agent = conn.registeredAgents.get(mapAgentId);
+  if (!agent?.metadata) return mapAgentId;
+  const inboxId = agent.metadata.inboxAgentId;
+  return typeof inboxId === 'string' && inboxId ? inboxId : mapAgentId;
+}
+
+/**
  * Find the sidecar agent's id on a swarm. The sidecar is the connection-
  * level agent that runs the swarm's mail-inbound-consumer (handles
  * `x-dispatch/work` envelopes for fresh-spawn dispatch). Used by the mail

@@ -17,7 +17,9 @@
 
 import { createMailPort } from 'swarm-dispatch/client';
 import type { MessagePort } from 'swarm-dispatch';
-import { findSidecarAgentId, getInbound } from '../map/connection-registry.js';
+import { findSidecarAgentId, getInbound, resolveInboxAgentId } from '../map/connection-registry.js';
+import * as dispatchesDAL from '../db/dal/dispatches.js';
+import { countPendingThreadMessages } from './openhive-source.js';
 import {
   consumeLoadoutForDispatch,
   peekHintsForDispatch,
@@ -111,6 +113,12 @@ export interface OpenHiveMailPortOptions {
    * `OpenHiveRuntimeDeps.acpLifecycleDefault`.
    */
   mailLifecycleDefault?: 'fresh' | 'reuse';
+  /**
+   * Optional mail RPC accessor for `checkThreadPending`. When provided,
+   * enables the continuation policy to query pending thread messages.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getMailJsonRpc?: () => { handleRequest: (req: any) => Promise<any> };
 }
 
 /**
@@ -141,7 +149,7 @@ export function createOpenHiveMailPort(
   transport: MailTransport,
   opts: OpenHiveMailPortOptions = {},
 ): MessagePort {
-  return createMailPort({
+  const port = createMailPort({
     send: async (system, agentId, envelope) => {
       // ACP-lifecycle-fresh dispatches must NOT take the mail route: the
       // mail-inbound consumer would spawn a fresh worker (correct
@@ -207,4 +215,36 @@ export function createOpenHiveMailPort(
       return !!agentId;
     },
   });
+
+  // Extend with checkThreadPending when mail RPC is available
+  if (opts.getMailJsonRpc) {
+    const getMailRpc = opts.getMailJsonRpc;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (port as any).checkThreadPending = async (dispatchId: string) => {
+      const dispatch = dispatchesDAL.findDispatchById(dispatchId);
+      if (!dispatch?.conversation_id) return null;
+
+      // Find current executor from latest running attempt
+      const currentAttempt = dispatch.attempts_history
+        ?.filter((a) => a.status === 'running')
+        .pop();
+      const executorId = currentAttempt?.agent_id;
+      const inboxId = executorId
+        ? resolveInboxAgentId(dispatch.target_swarm_id, executorId)
+        : undefined;
+
+      const count = await countPendingThreadMessages(
+        dispatch.conversation_id,
+        inboxId,
+        getMailRpc(),
+      );
+
+      return {
+        count,
+        participants: inboxId ? [{ agentId: inboxId, unreadCount: count }] : [],
+      };
+    };
+  }
+
+  return port;
 }

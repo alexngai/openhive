@@ -46,6 +46,7 @@ function fakeDispatch(): Dispatch {
     loadout_ref: null,
     loadout_status: null,
     loadout_error: null,
+    conversation_id: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };

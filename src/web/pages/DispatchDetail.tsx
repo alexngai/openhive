@@ -13,6 +13,7 @@ import {
 import { useMapSwarm, useSessionsList, useCascadeDAG } from '../hooks/useApi';
 import { useSpec } from '../hooks/useSpecs';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
+import { DispatchThreadSection } from '../components/dispatch/DispatchThreadSection';
 import { AttemptsTimeline } from '../components/dispatch/AttemptsTimeline';
 import { StreamStatusDot } from '../components/streams/shared';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -380,6 +381,13 @@ export function DispatchDetail() {
           </p>
         </div>
       )}
+
+      {/* Coordination thread */}
+      <DispatchThreadSection
+        dispatchId={d.id}
+        conversationId={d.conversation_id}
+        dispatchStatus={d.status}
+      />
 
       {/* Sessions */}
       {d.session_ids.length > 0 && (
