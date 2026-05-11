@@ -87,6 +87,27 @@ export interface WorkspaceConfig {
   repos: WorkspaceRepo[];
 }
 
+/**
+ * Per-swarm workspace policy. Operators set this at spawn time; runtime
+ * `x-workspace/repo.declare` (and trajectory-bootstrap and `repo.retract`)
+ * calls are gated against it. Persisted on `map_swarms.workspace_policy`
+ * and read by `findSwarmWorkspacePolicy`.
+ *
+ * - `open` (default): any declare succeeds.
+ * - `allow_listed`: declares must match a canonical_url in `allowed_repos`.
+ * - `pinned`: declares must match `pinned_repo`. NOTE: the hub-side
+ *   "auto-attach a binding to `pinned_repo` at swarm register" half is
+ *   not yet implemented (tracked under "Pending follow-ups" in
+ *   src/map/CLAUDE.md). Today this mode behaves like a single-entry
+ *   allow_list — it validates declares but doesn't pre-create a binding.
+ *
+ * Re-exported from `src/types.ts` (the canonical home) so existing
+ * imports from `swarm/types.ts` keep working without dragging the type
+ * back into the upward-import-only layer.
+ */
+export type { WorkspacePolicy } from '../types.js';
+import type { WorkspacePolicy } from '../types.js';
+
 // ============================================================================
 // Spawn Configuration
 // ============================================================================
@@ -138,6 +159,21 @@ export interface SpawnSwarmInput {
   credential_overrides?: Record<string, string>;
   /** Workspace setup (e.g. repos to clone before the swarm starts) */
   workspace?: WorkspaceConfig;
+  /**
+   * Pre-attached repo resource (kinds/repo). When set, the manager looks up
+   * the repo and injects `WORKSPACE_REPO_URL` / `WORKSPACE_LOCAL_PATH` /
+   * `WORKSPACE_BRANCH` env vars so the spawned swarm's sidecar can declare
+   * the repo on connect (per `agent-workspace/docs/design/agent-integration.md`).
+   *
+   * Independent of `workspace.repos` (which clones; this announces).
+   */
+  repo_id?: string;
+  /**
+   * Per-swarm workspace policy gating which repos this swarm's agents may
+   * declare. Persisted on `map_swarms.workspace_policy` so runtime declares
+   * can be gated. See CLAUDE.md "Repos and Workspaces" enforcement layers.
+   */
+  workspace_policy?: WorkspacePolicy;
   /**
    * Initial prompt to seed the spawned agent with.
    *
@@ -207,6 +243,10 @@ export interface SwarmProvisionConfig {
   credential_resolution?: CredentialResolutionMeta;
   /** Workspace setup (repos to clone before process starts) */
   workspace?: WorkspaceConfig;
+  /** Pre-attached repo resource (echoed from SpawnSwarmInput; passed for audit). */
+  repo_id?: string;
+  /** Per-swarm workspace policy (echoed from SpawnSwarmInput; passed for audit). */
+  workspace_policy?: WorkspacePolicy;
   /** Boot-time agent provisioning (env-var bridged into the runtime) */
   bootstrap?: SwarmBootstrap;
   /**

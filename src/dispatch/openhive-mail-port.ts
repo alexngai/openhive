@@ -24,6 +24,7 @@ import {
   consumeLoadoutForDispatch,
   peekHintsForDispatch,
 } from './loadout-side-channel.js';
+import { getRepoBindingForDispatch } from './repo-side-channel.js';
 import { materializedLoadoutToWire } from './wire-loadout.js';
 
 export interface MailTransport {
@@ -101,6 +102,42 @@ function injectLoadoutMetadata(envelope: {
       ...envelope.body,
       ...(hasNewSlot ? { loadout: wireLoadout } : {}),
       ...(hasLegacy ? { metadata: legacyMetadata } : {}),
+    },
+  };
+}
+
+/**
+ * Inject repo binding fields into an outgoing dispatch envelope when the
+ * body's taskId matches a registered repo binding in the side-channel.
+ * The consumer reads these from `data.metadata` to set the worker's cwd
+ * and optionally clone the repo pre-spawn.
+ */
+function injectRepoMetadata(envelope: {
+  type: string;
+  body: Record<string, unknown>;
+}): { type: string; body: Record<string, unknown> } {
+  const taskId = (envelope.body as { taskId?: string })?.taskId;
+  if (!taskId) return envelope;
+  const binding = getRepoBindingForDispatch(taskId);
+  if (!binding) return envelope;
+
+  const repoFields: Record<string, unknown> = { repo_id: binding.repoId };
+  if (binding.canonicalUrl) repoFields.canonical_url = binding.canonicalUrl;
+  if (binding.branch) repoFields.branch = binding.branch;
+  if (binding.commitSha) repoFields.commit_sha = binding.commitSha;
+  if (binding.clonePolicy && binding.clonePolicy !== 'none') {
+    repoFields.clone_policy = binding.clonePolicy;
+  }
+  if (binding.clonePath) repoFields.clone_path = binding.clonePath;
+
+  const existingMeta =
+    (envelope.body.metadata as Record<string, unknown> | undefined) ?? {};
+
+  return {
+    ...envelope,
+    body: {
+      ...envelope.body,
+      metadata: { ...existingMeta, ...repoFields },
     },
   };
 }
@@ -186,10 +223,11 @@ export function createOpenHiveMailPort(
         }
       }
 
+      const enrichedEnvelope = injectRepoMetadata(injectLoadoutMetadata(envelope));
       const result = await transport.sendToAgent(
         system,
         recipient,
-        injectLoadoutMetadata(envelope),
+        enrichedEnvelope,
       );
       // Record the actual recipient + transport on the dispatch row's
       // attempts_history once the orchestrator's `dispatched` event fires.

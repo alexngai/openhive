@@ -1,0 +1,135 @@
+name: Publish npm packages
+
+# Publishes both `openhive` (full) and `openhive-headless` (server-only) to
+# the npm registry on tag push. Skips any version already present on npm so
+# re-runs and partial-failure recoveries are idempotent.
+#
+# Setup required (one-time):
+#   - Add an `NPM_TOKEN` repo secret with publish access to both packages.
+#     Settings → Secrets and variables → Actions → New repository secret.
+#   - For provenance to work, this workflow must run from a tag/branch on
+#     the canonical repo (forks won't get OIDC tokens that npm trusts).
+#
+# Manual / dry-run usage:
+#   workflow_dispatch with dry_run=true builds + validates everything
+#   without uploading. Useful for testing version bumps before tagging.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (build + pack but do not upload)'
+        type: boolean
+        default: false
+      publish_full:
+        description: 'Publish openhive (full)'
+        type: boolean
+        default: true
+      publish_headless:
+        description: 'Publish openhive-headless'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write    # required for `npm publish --provenance`
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # npm bug #4828: lockfile committed from macOS pins zero copies of
+      # @rollup/rollup-linux-x64-gnu and lightningcss-linux-x64-gnu, breaking
+      # vite/rollup + tailwind on ubuntu-latest. Same fix as release.yml.
+      - name: Remove lockfile (npm bug #4828)
+        run: rm -f package-lock.json
+
+      - name: Install deps
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm install --no-audit --no-fund \
+              --fetch-retries=5 \
+              --fetch-retry-mintimeout=20000 \
+              --fetch-retry-maxtimeout=120000 && exit 0
+            echo "npm install failed (attempt $attempt/3), retrying in 15s..."
+            sleep 15
+          done
+          echo "npm install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Build openhive (server + web)
+        run: npm run build
+
+      - name: Stage openhive-headless dist
+        run: npm -w openhive-headless run build
+
+      # On tag pushes, the tag and both package.json versions must agree.
+      # Catches the "tagged v0.1.2 but forgot to bump package.json" footgun.
+      - name: Verify tag matches package versions
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          root_version=$(node -p 'require("./package.json").version')
+          headless_version=$(node -p 'require("./packages/openhive-headless/package.json").version')
+          echo "tag=$tag openhive=$root_version openhive-headless=$headless_version"
+          if [[ "$tag" != "$root_version" ]]; then
+            echo "::error::Tag v$tag does not match openhive@$root_version"
+            exit 1
+          fi
+          if [[ "$tag" != "$headless_version" ]]; then
+            echo "::error::Tag v$tag does not match openhive-headless@$headless_version"
+            exit 1
+          fi
+
+      - name: Publish openhive
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_full
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+        shell: bash
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          if npm view "openhive@$version" version >/dev/null 2>&1; then
+            echo "openhive@$version already on npm — skipping"
+            exit 0
+          fi
+          args="--access public --provenance"
+          if [[ "$DRY_RUN" == "true" ]]; then
+            args="$args --dry-run"
+            echo "DRY RUN: openhive@$version"
+          fi
+          npm publish $args
+
+      - name: Publish openhive-headless
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_headless
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+        shell: bash
+        run: |
+          version=$(node -p 'require("./packages/openhive-headless/package.json").version')
+          if npm view "openhive-headless@$version" version >/dev/null 2>&1; then
+            echo "openhive-headless@$version already on npm — skipping"
+            exit 0
+          fi
+          args="--access public --provenance"
+          if [[ "$DRY_RUN" == "true" ]]; then
+            args="$args --dry-run"
+            echo "DRY RUN: openhive-headless@$version"
+          fi
+          npm publish -w openhive-headless $args

@@ -19,7 +19,51 @@ import { CASCADE_METHOD_SET, CascadeRequestError } from './cascade-types.js';
 import { handleCascadeRequest } from './cascade-handler.js';
 import { consumeCascadeToken } from './cascade-rate-limit.js';
 import { SPAWN_METHOD, handleSpawnRequest } from './spawn-handler.js';
+import {
+  registerRepoHandlers,
+  type RepoMethodServer,
+  type RepoHandlerContext,
+  type WorkspaceCapability,
+} from 'agent-workspace/kinds/repo';
+import { OpenHiveRepoHandler } from './workspace-handler.js';
+import { handleResourceList, handleResourceGet, getAdvertisedKinds } from './resource-handler.js';
 import type { Config } from '../config.js';
+
+/**
+ * Register the four `x-workspace/repo.*` methods on `handlers` by wrapping
+ * `agent-workspace/kinds/repo`'s `registerRepoHandlers` with a tiny shim that
+ * extracts `agentId`/`swarmId` from openhive's session-based context.
+ *
+ * The package's `RepoHandlerContext` ({ agentId, swarmId, capabilities? })
+ * is built from `ctx.session?.metadata?.{swarmId, agentId, ...}`. Calls
+ * without authenticated agent + swarm are rejected with -32004.
+ */
+function registerRepoMethods(
+  handlers: Record<string, (params: any, ctx: any) => Promise<any>>,
+): void {
+  const repoHandler = new OpenHiveRepoHandler();
+  const adapter: RepoMethodServer = {
+    addHandler(method, fn) {
+      handlers[method] = async (params: any, ctx: any) => {
+        const swarmId = ctx.session?.metadata?.swarmId;
+        const agentId = ctx.session?.metadata?.agentId
+          || ctx.session?.metadata?.hubAgentId;
+        if (!agentId || !swarmId) {
+          throw Object.assign(
+            new Error(`${method} requires authenticated agent + swarm context`),
+            { code: -32004 },
+          );
+        }
+        const capabilities = ctx.session?.metadata?.workspaceCapability as
+          | WorkspaceCapability
+          | undefined;
+        const repoCtx: RepoHandlerContext = { agentId, swarmId, ...(capabilities && { capabilities }) };
+        return fn(params, repoCtx);
+      };
+    },
+  };
+  registerRepoHandlers(adapter, repoHandler);
+}
 
 let mapServer: any | null = null;
 
@@ -173,6 +217,16 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
     };
   }
 
+  // ── MAP Resource Protocol (map/resources/*) ──────────────────────
+  handlers['map/resources/list'] = handleResourceList;
+  handlers['map/resources/get'] = handleResourceGet;
+
+  // ── Repo Methods (x-workspace/repo.*) ────────────────────────────
+  // OpenHive consumer-side adapter for `agent-workspace/kinds/repo`. The
+  // package owns the wire format and dispatch; OpenHive supplies persistence
+  // (repos + workspaces DALs) + realtime fan-out via the OpenHiveRepoHandler.
+  registerRepoMethods(handlers);
+
   // ── Mail Methods (mail/*) ────────────────────────────────────────
   // We register a catch-all approach via method prefix in the message handler
   // (see ws-map.ts), but also register individual methods if the mail module
@@ -300,6 +354,10 @@ export function initMapServer(config: Config): any {
     name: config.instance.name || 'OpenHive',
     version: '0.1.0',
     additionalHandlers,
+    resources: {
+      enabled: true,
+      kinds: getAdvertisedKinds(),
+    },
     ...(isVerified
       ? {
           auth: {

@@ -62,7 +62,7 @@ import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as dispatchesDAL from '../../db/dal/dispatches.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
-import { initMail, getMailJsonRpc, getMailStorage } from '../../mail/index.js';
+import { initMail, getMailStorage } from '../../mail/index.js';
 import {
   ensureDispatchConversation,
   DISPATCH_THREAD_SCOPE,

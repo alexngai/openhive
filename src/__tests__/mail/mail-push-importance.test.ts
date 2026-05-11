@@ -12,7 +12,7 @@
  * to `sendToSwarm`, but no test verified that importance survives the chain.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import {
   InMemoryStorage,

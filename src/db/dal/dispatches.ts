@@ -110,11 +110,23 @@ export interface Dispatch {
   /** Materialization error message when status='failed'. */
   loadout_error: string | null;
   /**
-   * Agent-inbox conversation ID for the dispatch coordination thread (V52).
+   * Agent-inbox conversation ID for the dispatch coordination thread (V55).
    * Written lazily on first coordination message via
    * `ensureDispatchConversation`. Null for silent dispatches.
    */
   conversation_id: string | null;
+  /** Repo targeting (V54). Primary source for repo-scoped dispatches. */
+  repo_id: string | null;
+  /** Canonical URL resolved at enrichment time (V54). */
+  canonical_url: string | null;
+  /** Optional branch pin (V54). */
+  branch: string | null;
+  /** Optional commit SHA pin (V54). */
+  commit_sha: string | null;
+  /** Clone policy (V54). 'none' = never clone; 'allowed' = sidecar may clone. */
+  clone_policy: 'none' | 'allowed';
+  /** Explicit clone target path when clone_policy='allowed' (V54). */
+  clone_path: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -142,6 +154,12 @@ interface DispatchRow {
   loadout_status: string | null;
   loadout_error: string | null;
   conversation_id: string | null;
+  repo_id: string | null;
+  canonical_url: string | null;
+  branch: string | null;
+  commit_sha: string | null;
+  clone_policy: string | null;
+  clone_path: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -205,6 +223,13 @@ function rowToDispatch(row: DispatchRow): Dispatch {
         : null,
     loadout_error: row.loadout_error ?? null,
     conversation_id: row.conversation_id ?? null,
+    repo_id: row.repo_id ?? null,
+    canonical_url: row.canonical_url ?? null,
+    branch: row.branch ?? null,
+    commit_sha: row.commit_sha ?? null,
+    clone_policy:
+      row.clone_policy === 'allowed' ? 'allowed' : 'none',
+    clone_path: row.clone_path ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -238,6 +263,16 @@ export interface CreateDispatchInput {
    * `'reuse'`. Same transport-level concern semantics as `acp_lifecycle`.
    */
   mail_lifecycle?: 'fresh' | 'reuse';
+  /** Repo targeting (V54). Links this dispatch to a specific repo. */
+  repo_id?: string;
+  /** Optional branch pin (V54). */
+  branch?: string;
+  /** Optional commit SHA pin (V54). */
+  commit_sha?: string;
+  /** Clone policy (V54). Default 'none'. */
+  clone_policy?: 'none' | 'allowed';
+  /** Explicit clone target path when clone_policy='allowed' (V54). */
+  clone_path?: string;
 }
 
 export function createDispatch(input: CreateDispatchInput): Dispatch {
@@ -249,8 +284,10 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
     `INSERT INTO dispatches (
        id, spec_resource_id, spec_id, spec_captured_at, target_swarm_id,
        status, initiator_type, initiator_id, session_ids, prompt_override,
-       acp_lifecycle, mail_lifecycle, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       acp_lifecycle, mail_lifecycle,
+       repo_id, branch, commit_sha, clone_policy, clone_path,
+       created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.spec_resource_id,
@@ -264,6 +301,11 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
     input.prompt_override ?? null,
     input.acp_lifecycle ?? null,
     input.mail_lifecycle ?? null,
+    input.repo_id ?? null,
+    input.branch ?? null,
+    input.commit_sha ?? null,
+    input.clone_policy ?? 'none',
+    input.clone_path ?? null,
     now,
     now,
   );
@@ -544,6 +586,24 @@ export function upsertDispatchAttempt(id: string, entry: DispatchAttempt): void 
  *
  * Idempotent. No-op when the dispatch row no longer exists.
  */
+/**
+ * Persist the resolved canonical_url onto the dispatch row (V54).
+ * Called from enrichWithRepo when the dispatch was created with repo_id
+ * but without canonical_url (the common case — callers pass repo_id,
+ * enrichment resolves the URL). Idempotent; no-ops if the row is gone.
+ */
+export function recordRepoResolution(
+  id: string,
+  canonicalUrl: string,
+): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE dispatches
+       SET canonical_url = ?, updated_at = datetime('now')
+     WHERE id = ? AND canonical_url IS NULL`,
+  ).run(canonicalUrl, id);
+}
+
 export function recordLoadoutResolution(
   id: string,
   result:

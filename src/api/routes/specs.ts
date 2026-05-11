@@ -77,6 +77,19 @@ const DispatchSpecSchema = z.object({
    * `config.dispatch.mail_lifecycle_default`, then to `'reuse'`.
    */
   mail_lifecycle: z.enum(['fresh', 'reuse']).optional(),
+  /** Repo targeting — links this dispatch to a specific repo resource. */
+  repo_id: z.string().optional(),
+  /** Branch pin — the sidecar checks out this branch before spawning. */
+  branch: z.string().optional(),
+  /** Commit SHA pin — the sidecar checks out this exact commit. */
+  commit_sha: z.string().optional(),
+  /**
+   * Clone policy. 'none' (default) = only route to swarms that already
+   * have the repo; 'allowed' = sidecar may clone when the repo is absent.
+   */
+  clone_policy: z.enum(['none', 'allowed']).optional(),
+  /** Explicit clone target path when clone_policy='allowed'. */
+  clone_path: z.string().optional(),
 });
 
 const VALID_EDGE_TYPES = [
@@ -899,6 +912,11 @@ export async function specsRoutes(
         prompt: body.prompt,
         ...(body.acp_lifecycle ? { acpLifecycle: body.acp_lifecycle } : {}),
         ...(body.mail_lifecycle ? { mailLifecycle: body.mail_lifecycle } : {}),
+        ...(body.repo_id ? { repoId: body.repo_id } : {}),
+        ...(body.branch ? { branch: body.branch } : {}),
+        ...(body.commit_sha ? { commitSha: body.commit_sha } : {}),
+        ...(body.clone_policy ? { clonePolicy: body.clone_policy } : {}),
+        ...(body.clone_path ? { clonePath: body.clone_path } : {}),
       });
 
       if (!result.ok) {
@@ -931,6 +949,16 @@ export async function dispatchSpecToSwarms(input: {
   acpLifecycle?: 'fresh' | 'reuse';
   /** Per-dispatch mail lifecycle override (caller pass-through). */
   mailLifecycle?: 'fresh' | 'reuse';
+  /** Repo targeting (V54). */
+  repoId?: string;
+  /** Branch pin (V54). */
+  branch?: string;
+  /** Commit SHA pin (V54). */
+  commitSha?: string;
+  /** Clone policy (V54). */
+  clonePolicy?: 'none' | 'allowed';
+  /** Clone path (V54). */
+  clonePath?: string;
 }): Promise<
   | {
       ok: true;
@@ -998,6 +1026,11 @@ export async function dispatchSpecToSwarms(input: {
       prompt_override: input.prompt ?? null,
       ...(input.acpLifecycle ? { acp_lifecycle: input.acpLifecycle } : {}),
       ...(input.mailLifecycle ? { mail_lifecycle: input.mailLifecycle } : {}),
+      ...(input.repoId ? { repo_id: input.repoId } : {}),
+      ...(input.branch ? { branch: input.branch } : {}),
+      ...(input.commitSha ? { commit_sha: input.commitSha } : {}),
+      ...(input.clonePolicy ? { clone_policy: input.clonePolicy } : {}),
+      ...(input.clonePath ? { clone_path: input.clonePath } : {}),
     });
 
     // Persist the spec's linked tasks so downstream lifecycle hooks

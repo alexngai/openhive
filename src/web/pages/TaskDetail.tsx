@@ -17,10 +17,12 @@ import {
   AlertCircle,
   MessageCircle,
   Send,
+  GitBranch,
 } from 'lucide-react';
 import {
   useResource,
   useOpenTasksGraph,
+  useRepo,
 } from '../hooks/useApi';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -218,6 +220,7 @@ export function TaskDetail() {
             <span className="flex items-center gap-1" title="OpenTasks graph resource">
               in <Link to={`/tasks?resource=${resourceId}`} className="hover:text-honey-500 transition-colors">{resource.name}</Link>
             </span>
+            <LinkedRepoPill resource={resource} />
           </div>
         )}
       </div>
@@ -315,5 +318,28 @@ function TaskNotFound({ resourceId }: { resourceId: string | undefined }) {
         </p>
       </div>
     </div>
+  );
+}
+
+/**
+ * Small pill linking a task back to the repo it was opportunistically
+ * stamped against (slice 8 — `metadata.repo_id` set by trajectory bootstrap
+ * with `task_ref` or by `autoRegisterResource`'s git-remote lookup).
+ * Renders nothing if the task has no `repo_id` or the repo isn't visible
+ * to the viewer.
+ */
+function LinkedRepoPill({ resource }: { resource: { metadata: unknown } }) {
+  const meta = (resource.metadata ?? {}) as { repo_id?: string };
+  const { data } = useRepo(meta.repo_id);
+  if (!meta.repo_id || !data?.repo) return null;
+  const repoMeta = (data.repo.metadata ?? {}) as { name?: string };
+  const label = repoMeta.name ?? data.repo.name;
+  return (
+    <span className="flex items-center gap-1" title="Repo this task is linked to">
+      <GitBranch className="w-3 h-3" />
+      <Link to={`/repos/${meta.repo_id}`} className="hover:text-honey-500 transition-colors">
+        {label}
+      </Link>
+    </span>
   );
 }

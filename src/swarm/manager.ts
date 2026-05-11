@@ -21,7 +21,9 @@ import { LocalProvider } from './providers/local.js';
 import { SandboxedLocalProvider } from './providers/sandboxed-local.js';
 import { resolveCredentialOverlay } from './credentials.js';
 import { findResourceById, subscribeToResource } from '../db/dal/syncable-resources.js';
+import { getDatabase } from '../db/index.js';
 import { cloneWorkspaceRepos } from './providers/workspace.js';
+import { resolveRepoForSpawn, applyRepoEnvVars, RepoResolutionError } from './resolve-repo.js';
 import { getTuiKindStrategy, isTuiKind, type TuiKindStrategy } from './tui-strategies.js';
 import * as os from 'os';
 import { getInbound } from '../map/connection-registry.js';
@@ -1192,6 +1194,23 @@ export class SwarmManager {
       input.credential_overrides,
     );
 
+    // Phase 10b: resolve repo_id → WORKSPACE_* env vars + clone target.
+    // Same contract as the openswarm path (shared helper) but here the
+    // provider owns the clone — the TUI process starts IN the repo dir.
+    let repoCloneTarget: { url: string; branch: string; localPath: string; existsLocally: boolean } | undefined;
+    if (input.repo_id) {
+      try {
+        const resolved = resolveRepoForSpawn(input.repo_id, dataDir, agentId);
+        applyRepoEnvVars(credentialOverlay, resolved);
+        repoCloneTarget = resolved;
+      } catch (err) {
+        if (err instanceof RepoResolutionError) {
+          throw new SwarmHostingError('REPO_NOT_FOUND', err.message);
+        }
+        throw err;
+      }
+    }
+
     const provisionConfig: SwarmProvisionConfig = {
       name,
       adapter: strategy.adapterLabel(),
@@ -1205,6 +1224,7 @@ export class SwarmManager {
       bootstrap: input.bootstrap,
       spawn_command_override: tuiBinary,
       spawn_args_override: [],
+      ...(input.repo_id !== undefined && { repo_id: input.repo_id }),
     };
 
     // Phase 11: persist the row (now that all preconditions have passed).
@@ -1236,7 +1256,27 @@ export class SwarmManager {
         }
       }
 
+      // Phase 12b: repo_id mount-or-clone. If the resolved path already
+      // exists on disk (local checkout or prior clone), skip cloning and
+      // just mount it as the working directory. Otherwise clone fresh.
+      if (repoCloneTarget && !repoCloneTarget.existsLocally) {
+        try {
+          await cloneWorkspaceRepos(
+            { repos: [{ url: repoCloneTarget.url, branch: repoCloneTarget.branch, path: 'repo' }] },
+            dataDir,
+            process.env as Record<string, string>,
+          );
+        } catch (err) {
+          throw new SwarmHostingError(
+            'WORKSPACE_SETUP_FAILED',
+            `Repo clone failed for ${input.repo_id}: ${(err as Error).message}`,
+          );
+        }
+      }
+
       // Phase 13: per-kind prelaunch files (e.g. cc-swarm config).
+      // Written to dataDir (canonical location) AND repo cwd (if different)
+      // so the sidecar finds its config regardless of working directory.
       strategy.writePrelaunchFiles?.({
         swarmId: preRegisteredSwarmId,
         hostedSwarmId,
@@ -1244,12 +1284,25 @@ export class SwarmManager {
         mapServer,
         dataDir,
       });
+      if (repoCloneTarget && repoCloneTarget.localPath !== dataDir) {
+        strategy.writePrelaunchFiles?.({
+          swarmId: preRegisteredSwarmId,
+          hostedSwarmId,
+          onboardToken,
+          mapServer,
+          dataDir: repoCloneTarget.localPath,
+        });
+      }
 
-      // Phase 14: pre-trust the data_dir in the TUI's user config so the
-      // "Trust this folder?" gate doesn't block first-launch hooks. Best-
-      // effort: missing/invalid user config just means the user gets the
-      // prompt and dismisses it manually.
+      // Phase 14: pre-trust the working directory in the TUI's user config
+      // so the "Trust this folder?" gate doesn't block first-launch hooks.
+      // When a repo was cloned, trust both dataDir (prelaunch files) and the
+      // repo clone path (actual cwd). Best-effort: missing/invalid user
+      // config just means the user gets the prompt and dismisses it manually.
       strategy.preTrustWorkdir(dataDir, os.homedir());
+      if (repoCloneTarget) {
+        strategy.preTrustWorkdir(repoCloneTarget.localPath, os.homedir());
+      }
 
       // Phase 15: spawn the TUI via PtyManager. Both kinds are interactive
       // TUIs that need a real TTY (would crash under child_process.spawn).
@@ -1282,7 +1335,7 @@ export class SwarmManager {
         ptyInfo = this.ptyManager.create({
           command: tuiBinary,
           args: ptyArgs,
-          cwd: dataDir,
+          cwd: repoCloneTarget ? repoCloneTarget.localPath : dataDir,
           env,
           cols: 120,
           rows: 40,
@@ -1540,6 +1593,43 @@ export class SwarmManager {
       input.credential_overrides,
     );
 
+    // Inject WORKSPACE_* env vars when a repo_id is supplied. The spawned
+    // swarm's sidecar reads these on connect and emits `x-workspace/repo.declare`
+    // — see `references/agent-workspace/docs/design/agent-integration.md`.
+    if (input.repo_id) {
+      try {
+        const resolved = resolveRepoForSpawn(input.repo_id, dataDir, agentId);
+        applyRepoEnvVars(credentialOverlay, resolved);
+      } catch (err) {
+        this.releasePorts(port, adapter);
+        if (err instanceof RepoResolutionError) {
+          throw new SwarmHostingError('REPO_NOT_FOUND', err.message);
+        }
+        throw err;
+      }
+    }
+
+    // Persist per-swarm workspace policy on the pre-registered map_swarms
+    // row. Runtime `repo.declare`/`repo.retract`/trajectory-bootstrap
+    // calls are gated against this column in `OpenHiveRepoHandler` and
+    // `bootstrapRepoFromCheckpoint` via `findSwarmWorkspacePolicy`. The
+    // column is also exposed via `GET /api/v1/map/swarms/:id/workspace-policy`
+    // and editable via `PATCH` on the same path.
+    if (input.workspace_policy && preRegisteredSwarmId) {
+      try {
+        mapDal.updateSwarmWorkspacePolicy(preRegisteredSwarmId, input.workspace_policy);
+      } catch (err) {
+        // Fail loud, like `repo_id` does. An operator who explicitly asked
+        // for a policy at spawn-time deserves to know if persistence
+        // failed — silently continuing means the swarm runs with no
+        // enforcement when the operator believed it had one.
+        throw new SwarmHostingError(
+          'WORKSPACE_POLICY_PERSIST_FAILED',
+          `Failed to persist workspace_policy: ${(err as Error).message}`,
+        );
+      }
+    }
+
     const provisionConfig: SwarmProvisionConfig = {
       name,
       adapter,
@@ -1556,6 +1646,8 @@ export class SwarmManager {
       },
       workspace: input.workspace,
       bootstrap: input.bootstrap,
+      ...(input.repo_id !== undefined && { repo_id: input.repo_id }),
+      ...(input.workspace_policy !== undefined && { workspace_policy: input.workspace_policy }),
     };
 
     // Create DB record — id is pre-generated so data_dir matches.
@@ -2683,6 +2775,17 @@ function isPidAlive(pid: number): boolean {
 // Error Type
 // ============================================================================
 
+/**
+ * Failure modes that can surface during a `SwarmManager.spawn` call. The
+ * union mixes pure swarm-hosting concerns with two repo-domain codes
+ * (`REPO_NOT_FOUND`, `WORKSPACE_POLICY_PERSIST_FAILED`) that arise inside
+ * the spawn flow when an `input.repo_id` or `input.workspace_policy`
+ * argument is supplied. They live here rather than in a separate
+ * `RepoSpawnErrorCode` because the caller of `spawn()` only ever sees
+ * one error type — a single union surfaces every reason a single call
+ * can fail. If repo-related concerns ever move out of the spawn
+ * critical path, split them out then.
+ */
 export type SwarmHostingErrorCode =
   | 'MAX_SWARMS_REACHED'
   | 'PROVIDER_NOT_AVAILABLE'
@@ -2695,6 +2798,8 @@ export type SwarmHostingErrorCode =
   | 'NOT_OWNER'
   | 'RESTART_NOT_SUPPORTED'
   | 'RESTART_FAILED'
+  | 'REPO_NOT_FOUND'
+  | 'WORKSPACE_POLICY_PERSIST_FAILED'
   | 'NOT_IMPLEMENTED';
 
 export class SwarmHostingError extends Error {
