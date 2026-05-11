@@ -39,7 +39,14 @@ import {
   getPullRequest,
   checkGitHubConnection,
   parseGitHubRepo,
+  branchExists,
+  findOpenPRByHead,
 } from '../../integrations/github-api.js';
+import {
+  buildPRStackPlan,
+  PRStackRootNotFoundError,
+  type PRStackEntry,
+} from '../../cascade/pr-stack-walker.js';
 
 type ListStreamsQuery = {
   source_swarm_id?: string;
@@ -849,6 +856,248 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       return reply.send({ data: pr });
+    }
+  );
+
+  // ── PR-stack action (Stream 3) ──────────────────────────────────────
+  //
+  //   POST /cascade/streams/:id/pr-stack
+  //     body: { target_branch?: string; draft?: boolean }
+  //
+  //   Walks descendants of the given stream root, opens one PR per
+  //   unmerged stream. Sequential per D18 with `blocked_by_parent`
+  //   propagation per lineage (D20). Idempotent per D19: existing PRs
+  //   are surfaced as `status='existing'`, GitHub 422 races are
+  //   recovered via findOpenPRByHead. Best-effort push hint per entry
+  //   (D21) gives connected sidecars a chance to push before we check
+  //   branch existence on origin.
+
+  fastify.post<{
+    Params: { id: string };
+    Body: { target_branch?: string; draft?: boolean };
+  }>(
+    '/cascade/streams/:id/pr-stack',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const rootStream = getStreamByRowId(request.params.id);
+      if (!rootStream) {
+        return reply.status(404).send({
+          error: 'not_found',
+          message: `Stream ${request.params.id} not found`,
+        });
+      }
+
+      // Resolve repo from the root's task_resource_id. Every stream in
+      // the plan must share the same GitHub repo — descendants inherit
+      // task_resource_id by convention, but we don't enforce it here;
+      // a per-entry mismatch falls through to GitHub returning a real
+      // error which becomes `status='failed'`.
+      const resource = rootStream.task_resource_id
+        ? (await import('../../db/dal/syncable-resources.js')).findResourceById(rootStream.task_resource_id)
+        : null;
+      const gitUrl = resource?.git_remote_url ?? '';
+      const repoInfo = parseGitHubRepo(gitUrl);
+      if (!repoInfo) {
+        return reply.status(400).send({
+          error: 'bad_request',
+          message: `Cannot parse GitHub repo from: ${gitUrl}. PR stack creation requires a github.com remote.`,
+        });
+      }
+
+      let plan;
+      try {
+        plan = buildPRStackPlan(request.params.id);
+      } catch (err) {
+        if (err instanceof PRStackRootNotFoundError) {
+          return reply.status(404).send({
+            error: 'not_found',
+            message: err.message,
+          });
+        }
+        return reply.status(500).send({
+          error: 'internal',
+          message: (err as Error).message,
+        });
+      }
+
+      // Caller-supplied target_branch overrides the root entry's base
+      // (the only entry that uses trunk). All other bases come from the
+      // walker's parent.head_branch chain.
+      const rootTargetBranch = request.body?.target_branch;
+      if (rootTargetBranch && plan.entries.length > 0) {
+        plan.entries[0].base_branch = rootTargetBranch;
+      }
+
+      const draft = request.body?.draft ?? false;
+      // Track lineage_ids that hit push_required so descendants in that
+      // lineage skip GitHub entirely and report blocked_by_parent.
+      const blockedLineages = new Set<string>();
+
+      type PRStackOutEntry = PRStackEntry & {
+        result_status:
+          | 'created'
+          | 'existing'
+          | 'push_required'
+          | 'blocked_by_parent'
+          | 'failed';
+        pr_url?: string;
+        pr_number?: number;
+        error?: string;
+      };
+      const results: PRStackOutEntry[] = [];
+
+      for (const entry of plan.entries) {
+        const base: PRStackOutEntry = { ...entry, result_status: 'failed' };
+
+        // D18: skip if this lineage already saw a push_required ancestor.
+        if (blockedLineages.has(entry.lineage_id)) {
+          base.result_status = 'blocked_by_parent';
+          results.push(base);
+          continue;
+        }
+
+        // D19: existing PR short-circuit.
+        try {
+          const existing = getPRForStream(entry.stream_row_id);
+          if (existing && existing.remote_pr_number && existing.state !== 'closed') {
+            base.result_status = 'existing';
+            base.pr_url = existing.remote_pr_url ?? undefined;
+            base.pr_number = existing.remote_pr_number ?? undefined;
+            results.push(base);
+            continue;
+          }
+        } catch { /* fall through to fresh-create path */ }
+
+        // D21: best-effort push hint. Fire-and-forget; offline-swarm
+        // failures are silently ignored, the branch-exists check below
+        // still gates whether we actually call GitHub.
+        try {
+          sendCascadeAction(rootStream.source_swarm_id, 'push', {
+            stream_id: entry.cascade_stream_id,
+            target_ref: entry.head_branch,
+          });
+        } catch { /* non-critical */ }
+
+        // Branch-exists gate (D8).
+        let onOrigin = false;
+        try {
+          onOrigin = await branchExists(
+            repoInfo.owner,
+            repoInfo.repo,
+            entry.head_branch,
+          );
+        } catch (err) {
+          base.result_status = 'failed';
+          base.error = sanitizeGitHubError(err);
+          results.push(base);
+          continue;
+        }
+
+        if (!onOrigin) {
+          base.result_status = 'push_required';
+          // Block descendants of this entry's lineage. Subsequent
+          // entries with this entry's stream_row_id as their lineage_id
+          // are direct fork-descendants; same-lineage entries (the
+          // linear chain below this fork) are also blocked.
+          blockedLineages.add(entry.lineage_id);
+          // Also: descendants of this specific entry (not a fork ancestor
+          // of theirs) start new lineages based on the entry's row id —
+          // capture that lineage too so a non-forking chain still blocks.
+          blockedLineages.add(entry.stream_row_id);
+          results.push(base);
+          continue;
+        }
+
+        // Build PR body from changelog (same approach as single-PR
+        // endpoint at cascade.ts:693-705). Empty body is acceptable.
+        let prBody = '';
+        try {
+          const changelog = generateChangelog(
+            rootStream.task_resource_id ?? entry.cascade_stream_id,
+            rootStream.task_node_id ?? entry.cascade_stream_id,
+          );
+          if (changelog.has_work) prBody = renderMarkdown(changelog);
+        } catch { /* changelog generation failed — empty body */ }
+        prBody =
+          prBody ||
+          `Stream \`${entry.cascade_stream_id}\` from ${rootStream.source_agent_id}`;
+        const bodyHash = simpleHash(prBody);
+
+        try {
+          const ghPR = await createPullRequest({
+            owner: repoInfo.owner,
+            repo: repoInfo.repo,
+            title: entry.name,
+            body: prBody,
+            head: entry.head_branch,
+            base: entry.base_branch,
+            draft,
+          });
+
+          // Persist + ensure publish_branch matches what we just used.
+          if (!getStreamByRowId(entry.stream_row_id)?.publish_branch) {
+            updatePublishBranch(entry.stream_row_id, entry.head_branch);
+          }
+          createPR({
+            stream_row_id: entry.stream_row_id,
+            source_branch: entry.head_branch,
+            target_branch: entry.base_branch,
+            title: entry.name,
+            body_hash: bodyHash,
+            repo_owner: repoInfo.owner,
+            repo_name: repoInfo.repo,
+            remote_pr_number: ghPR.number,
+            remote_pr_url: ghPR.html_url,
+            state: ghPR.draft ? 'draft' : 'open',
+          });
+          base.result_status = 'created';
+          base.pr_url = ghPR.html_url;
+          base.pr_number = ghPR.number;
+          results.push(base);
+        } catch (err) {
+          // D19 race: 422 duplicate-PR-for-branch → look up the open PR
+          // by `head=owner:branch` and surface as `existing`.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/→ 422\b/.test(msg)) {
+            try {
+              const existingPR = await findOpenPRByHead(
+                repoInfo.owner,
+                repoInfo.repo,
+                entry.head_branch,
+              );
+              if (existingPR) {
+                createPR({
+                  stream_row_id: entry.stream_row_id,
+                  source_branch: existingPR.head.ref,
+                  target_branch: existingPR.base.ref,
+                  title: existingPR.title,
+                  body_hash: bodyHash,
+                  repo_owner: repoInfo.owner,
+                  repo_name: repoInfo.repo,
+                  remote_pr_number: existingPR.number,
+                  remote_pr_url: existingPR.html_url,
+                  state: existingPR.draft ? 'draft' : existingPR.state,
+                });
+                base.result_status = 'existing';
+                base.pr_url = existingPR.html_url;
+                base.pr_number = existingPR.number;
+                results.push(base);
+                continue;
+              }
+            } catch { /* fall through to failed */ }
+          }
+          base.result_status = 'failed';
+          base.error = sanitizeGitHubError(err);
+          results.push(base);
+        }
+      }
+
+      return reply.send({
+        data: {
+          trunk: plan.trunk,
+          entries: results,
+        },
+      });
     }
   );
 

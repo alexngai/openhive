@@ -50,6 +50,9 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[?]` blo
 - **D17** *(new)*: **`cascade/diff.request` carries an optional `files_only: true` param.** When set, the sidecar runs `git diff --name-only base..head -- <files>` and returns `{ streaming: false, files_touched, diff: '' }` without producing a blob. Folds the file-tree query into the existing method instead of adding a separate `cascade/files.request`. Resolver also short-circuits the cache when `files_only` is set — files-touched is cheap enough to recompute that an extra cache column isn't worth it.
 - **D18** *(new)*: **Stack-PR walker is sequential and propagates `push_required` to descendants as `blocked_by_parent`.** A stack `A → B → C` where A isn't pushed means B's `base` (= A's `head_branch`) doesn't exist on origin either; GitHub would reject B with "base does not exist". The walker stops walking past the first `push_required` *for that lineage* — siblings of a different parent can still proceed. Surface lineage status as `created | existing | push_required | blocked_by_parent | failed`.
 - **D19** *(new)*: **Walker consults `getPRForStream(stream.id)` before acting**, returning `status='existing'` with the cached `pr_url` instead of re-POSTing. Makes stack-PR runs idempotent — second invocation after a partial failure only acts on unmerged-unopened entries. Also catch GitHub 422 (duplicate-PR-for-branch) by looking up the open PR via `pulls?head=…&state=open` and treating as `existing`; otherwise users see "failed" cards for what was a race.
+- **D20** *(Stream 3)*: **Walker accepts branching trees**, not just linear chains. Stream 2's stack-diff walker is linear because cumulative-diff semantics break under branching, but stack-PR semantics don't — each leaf is its own PR, parallel branches just become sibling PRs sharing an ancestor base. The push_required → blocked_by_parent propagation (D18) is per-lineage in the tree: a missing branch on `A` blocks descendants of A but not its siblings.
+- **D21** *(Stream 3)*: **Best-effort push hint per entry**, matching the single-PR endpoint at `cascade.ts:684-688`. Before the branch-exists check on each plan entry, fire-and-forget `sendCascadeAction(..., 'push', { target_ref: head_branch })`. The cascade-actions channel is fire-and-forget, so failure or offline-swarm silently no-ops; the branch-exists check still gates whether GitHub actually receives the PR call. Concrete effect: a connected sidecar with a fresh local commit gets a chance to push it before the walker checks GitHub, eliminating the most common "branch not pushed yet" false negative.
+- **D22** *(Stream 3)*: **"Open PR stack" lives only in the stack-view header**, not in StreamDetailSidebar. Single-stream PR creation is already surfaced via the existing "Create PR" button in the sidebar's GitHub section; duplicating the stack-PR affordance there would imply you can run it from a non-root stream, which doesn't typecheck (the walker descends from a chosen root). Stack-view UI already requires picking a root, so the surface composes naturally.
 
 ---
 
@@ -189,20 +192,27 @@ Independent of Stream 3 — can run in parallel after Stream 1.
 
 ## Stream 3 — Stack-of-PRs action
 
+**Status: ⏳ in progress (started 2026-05-11).** Decisions D20–D22 added during scoping.
+
 Goal: "Open PR stack" on a root stream → openhive walks descendants, opens one PR per unmerged stream.
 
-- [ ] `src/cascade/pr-stack-walker.ts` — toposort descendants via `getStreamDAG`, filter `status NOT IN ('merged','abandoned')`, build `[(stream, head_branch, base_branch)]` plan. Walk **sequentially** per D18; on `push_required`, mark all lineage descendants `blocked_by_parent` without contacting GitHub.
-- [ ] Per-stream base resolution: `parent.publish_branch || parent.branch_name || swarm.metadata.trunk_branch || 'main'`
-- [ ] **Idempotent retries (D19)**: for each entry, consult `getPRForStream(stream.id)` first — if a non-closed PR exists, return `status='existing'` with `pr_url`. On GitHub 422 (duplicate head), look up via `pulls?head=…&state=open` and treat as `existing`.
-- [ ] **Offline-agent path (D8)**: extend `src/integrations/github-api.ts` with `branchExists(owner, repo, branch)` (404 → false, others → throw); before invoking agent, check — if exists, skip agent and call `createPullRequest` directly
-- [ ] `src/api/routes/cascade.ts` — `POST /cascade/streams/:id/pr-stack`; aggregates per-stream `{ status: 'created' | 'existing' | 'push_required' | 'blocked_by_parent' | 'failed', pr_url?, error?, branch? }`
-- [ ] UI: `Changes.tsx` stack actions (currently around `:1221-1287`) — "Open PR stack" button + result drawer with per-stream cards (distinct rendering for `existing` / `blocked_by_parent`)
+- [ ] `src/cascade/pr-stack-walker.ts` — DFS descendants from a root via `parent_stream_id`/`source_swarm_id` queries (the same pattern as `stack-resolver.ts` from Stream 2, but accepts branching trees per D20). Filter `status NOT IN ('merged','abandoned')`. Build `[{ stream, head_branch, base_branch, lineage_id }]` in parent-before-child order. `lineage_id` traces each entry back to its branching ancestor so the route can propagate `push_required → blocked_by_parent` correctly when sibling branches exist.
+- [ ] Per-stream base resolution: `parent.publish_branch || parent.branch_name || swarm.metadata.trunk_branch || 'main'`. Root uses `swarm.metadata.trunk_branch || 'main'` directly. `findSwarmById(stream.source_swarm_id).metadata` is the trunk source.
+- [ ] **Idempotency (D19)**: for each entry, consult `getPRForStream(stream.id)` first — if a non-closed PR exists, return `status='existing'` with `pr_url`. On GitHub 422 (duplicate head), look up via `pulls?head=…&state=open` and treat as `existing`.
+- [ ] **Best-effort push hint (D21)**: before the branch-exists check, fire-and-forget `sendCascadeAction(swarmId, 'push', { stream_id, target_ref: head_branch })`. Matches the single-PR endpoint's current behavior. Connected sidecars get a chance to push fresh local commits before the walker queries GitHub.
+- [ ] **Branch-exists gate (D8)**: extend `src/integrations/github-api.ts` with `branchExists(owner, repo, branch)` — 404 → false, other non-2xx → throw. Internal helper that bypasses `githubFetch`'s throw-on-not-ok behavior.
+- [ ] **Branching lineage propagation (D18 + D20)**: per `lineage_id`, when a parent entry resolves `push_required`, mark every descendant in that lineage `blocked_by_parent` *without* contacting GitHub. Siblings of different parents are unaffected.
+- [ ] `src/api/routes/cascade.ts` — `POST /cascade/streams/:id/pr-stack`; aggregates per-stream `{ status: 'created' | 'existing' | 'push_required' | 'blocked_by_parent' | 'failed', pr_url?, error?, branch?, base_branch? }` in walker order.
+- [ ] UI (D22): `Changes.tsx` `StreamStackView` header — **"Open PR stack"** button next to "View stack diff" / "Change root". Result drawer (reuses the Stream 2 drawer-overlay pattern): per-stream cards with status badges, branch names, and click-through to `pr_url` for `created` / `existing`. **No "Open PR stack" affordance in `StreamDetailSidebar`** — single-PR creation already lives there via the existing "Create PR" button.
 
 ### Tests
-- [ ] Walker: toposort correctness, parent-branch resolution, partial stack (mid-stream merged), single-stream root, non-linear stack rejection
-- [ ] Lineage propagation: A unpushed → B+C marked `blocked_by_parent` without GitHub calls
-- [ ] Idempotency: re-run after partial success returns `existing` for already-opened PRs; 422 race resolves to `existing`
-- [ ] Integration: branch-exists happy path + branch-not-pushed case + mixed
+- [ ] Walker unit: toposort correctness on linear chains AND branching trees (siblings), parent-branch resolution (publish_branch wins, then branch_name, then trunk fallback), partial stack (mid-stream merged → walker descends through it but skips it from the plan), single-stream root, terminal-status filter
+- [ ] Walker unit: `lineage_id` correctness on a Y-shaped tree (one parent, two children → each child gets its own lineage_id)
+- [ ] Lineage propagation: A unpushed → A.descendants in A's lineage marked `blocked_by_parent`; A's siblings unaffected
+- [ ] Idempotency: re-run after partial success returns `existing` for already-opened PRs; 422 race resolves to `existing` via `pulls?head=…&state=open`
+- [ ] Route: branch-exists happy path; branch-not-pushed → `push_required`; mixed lineages (one branch ready, one blocked); root has no trunk metadata → falls back to `main`
+- [ ] Route: idempotent retry path returns same plan with updated statuses; GitHub auth missing → 502 with sanitized error
+- [ ] **Live (LIVE_AGENT_E2E)**: extend `live-cascade-diff-sidecar-e2e.test.ts` with a 2-stream stack + a real sidecar that pushes the root's branch on `request.push`; assert root → `created` (since branch is now on origin via the push hint), leaf → `push_required` (no auto-push for leaf). Mocks GitHub via `vi.mock('../../integrations/github-api.js', ...)` matching the cascade-pr-management test pattern.
 
 ---
 
@@ -236,8 +246,8 @@ Goal: "Open PR stack" on a root stream → openhive walks descendants, opens one
 | Stream | Effort | Dependencies | Status |
 |---|---|---|---|
 | 1 | ~1 week (landed 2026-05-11) | None | ✅ Shipped |
-| 2 | ~2 days | Stream 1 | ⏳ Ready to start |
-| 3 | ~3 days | Stream 1 (independent of Stream 2) | ⏳ Ready to start |
+| 2 | ~2 days (landed 2026-05-11) | Stream 1 | ✅ Shipped |
+| 3 | ~3 days | Stream 1 (independent of Stream 2) | ⏳ In progress |
 | 4 | ~1 day | Streams 1 + 3 | ⏳ Blocked on 3 |
 
 Streams 2 and 3 parallelizable.

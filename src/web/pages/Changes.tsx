@@ -20,6 +20,7 @@ import {
   GitPullRequestDraft,
   Layers,
   ListTree,
+  GitPullRequest,
   Network,
   Clock,
   AlertTriangle,
@@ -70,6 +71,7 @@ import { StreamDAGView } from '../components/streams/StreamDAGView';
 import { StreamStatusDot, STATUS_COLORS, STATUS_LABELS, TimelineEntry } from '../components/streams/shared';
 import { DiffView } from '../components/cascade/DiffView';
 import { StackDiffView } from '../components/cascade/StackDiffView';
+import { PRStackDrawer } from '../components/cascade/PRStackDrawer';
 import { usePageContext } from '../components/chat-fab/usePageContext';
 import {
   streamContextItem,
@@ -115,6 +117,12 @@ export function Changes() {
   const [rangeDiffTarget, setRangeDiffTarget] = useState<{
     mode: 'stream' | 'stack';
     rowId: string;
+  } | null>(null);
+  // PR-stack drawer — fires when "Open PR stack" is clicked in the stack
+  // view header. Per D22, only mounted from stack-view context.
+  const [prStackTarget, setPRStackTarget] = useState<{
+    rowId: string;
+    rootName?: string;
   } | null>(null);
 
   const { data: dagResponse, isLoading } = useCascadeDAG({
@@ -332,6 +340,9 @@ export function Changes() {
               onShowStackDiff={(rootRowId) =>
                 setRangeDiffTarget({ mode: 'stack', rowId: rootRowId })
               }
+              onOpenPRStack={(rootRowId, rootName) =>
+                setPRStackTarget({ rowId: rootRowId, rootName })
+              }
             />
           ) : (
             <StreamDAGView
@@ -379,7 +390,41 @@ export function Changes() {
           onClose={() => setRangeDiffTarget(null)}
         />
       )}
+
+      {/* PR-stack drawer — "Open PR stack" workflow from stack view. */}
+      {prStackTarget && (
+        <PRStackDrawerOverlay
+          rowId={prStackTarget.rowId}
+          rootName={prStackTarget.rootName}
+          onClose={() => setPRStackTarget(null)}
+        />
+      )}
     </div>
+  );
+}
+
+// ─── PR Stack Drawer overlay ───────────────────────────────────────────
+
+function PRStackDrawerOverlay({
+  rowId,
+  rootName,
+  onClose,
+}: {
+  rowId: string;
+  rootName?: string;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-40 bg-black/40"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div className="fixed top-0 right-0 bottom-0 z-50 w-full max-w-2xl p-3">
+        <PRStackDrawer rootRowId={rowId} rootName={rootName} onClose={onClose} />
+      </div>
+    </>
   );
 }
 
@@ -714,6 +759,7 @@ function StreamStackView({
   onSelect,
   selectedId,
   onShowStackDiff,
+  onOpenPRStack,
 }: {
   stack: StreamDAGNode[] | null;
   dag: { nodes: StreamDAGNode[]; edges: StreamDAGEdge[] };
@@ -723,6 +769,7 @@ function StreamStackView({
   onSelect: (id: string) => void;
   selectedId: string | null;
   onShowStackDiff: (rootRowId: string) => void;
+  onOpenPRStack: (rootRowId: string, rootName?: string) => void;
 }) {
   const roots = dag.nodes.filter((n) => !n.parent_stream_id);
 
@@ -787,6 +834,17 @@ function StreamStackView({
         >
           <ListTree className="w-3 h-3" />
           View stack diff
+        </button>
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1"
+          onClick={() =>
+            onOpenPRStack(rootId, stack?.[0]?.name ?? stack?.[0]?.stream_id)
+          }
+          title="Open one PR per unmerged stream in this stack"
+        >
+          <GitPullRequest className="w-3 h-3" />
+          Open PR stack
         </button>
         <button
           type="button"

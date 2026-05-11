@@ -143,6 +143,67 @@ export async function closePullRequest(
 }
 
 // ============================================================================
+// Branch + open-PR lookup (Stream 3)
+// ============================================================================
+
+/**
+ * Probe whether a branch exists on GitHub. Returns false on 404, true on
+ * 2xx, throws on other non-2xx (e.g. 403 rate limit) so callers can
+ * surface a typed `failed` for that entry.
+ *
+ * `githubFetch` throws on any non-2xx, which would conflate 404
+ * (legitimately "branch missing") with 403 (auth) — so this helper goes
+ * straight to `fetch` to handle 404 explicitly.
+ */
+export async function branchExists(
+  owner: string,
+  repo: string,
+  branch: string,
+): Promise<boolean> {
+  const token = getGitHubToken();
+  if (!token) throw new Error('GitHub API: no token configured');
+
+  const res = await fetch(
+    `${GITHUB_API}/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`,
+    {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    },
+  );
+  if (res.status === 404) return false;
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(
+      `GitHub API GET /repos/${owner}/${repo}/branches/${branch} → ${res.status}: ${text.slice(0, 200)}`,
+    );
+  }
+  return true;
+}
+
+/**
+ * Find an open PR whose `head` matches `<owner>:<branch>`. Used for the
+ * 422 race recovery in the pr-stack walker: when `createPullRequest`
+ * returns 422 (duplicate-PR-for-branch), this fetches the conflicting
+ * open PR so the walker can return `status='existing'` instead of `failed`.
+ */
+export async function findOpenPRByHead(
+  owner: string,
+  repo: string,
+  branch: string,
+): Promise<GitHubPR | null> {
+  const headFilter = `${owner}:${branch}`;
+  const list = await githubFetch<GitHubPR[]>(
+    `/repos/${owner}/${repo}/pulls?state=open&head=${encodeURIComponent(headFilter)}`,
+  );
+  if (!list || list.length === 0) return null;
+  return list[0];
+}
+
+// ============================================================================
 // Utility
 // ============================================================================
 
