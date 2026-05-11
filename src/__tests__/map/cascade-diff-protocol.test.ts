@@ -19,7 +19,7 @@ import {
 type Sent = { method: string; params: Record<string, unknown> };
 const sent: Sent[] = [];
 
-const fakeWs = {
+const fakeWs: { readyState: number; send: ReturnType<typeof vi.fn> } = {
   readyState: WebSocket.OPEN,
   send: vi.fn((data: string) => {
     const msg = JSON.parse(data);

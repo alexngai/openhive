@@ -103,9 +103,20 @@ export interface CascadeDiffStreamingResponse extends DiffResponseBase {
   /** truncated reported on the final chunk for streamed responses. */
 }
 
+/**
+ * Error path on the same wire method, mirroring trajectory-content.ts.
+ * Sidecar emits when it can't produce a diff (missing worktree, git
+ * shell-out failed, bad input). `files_touched` is omitted on this shape.
+ */
+export interface CascadeDiffErrorResponse {
+  request_id: string;
+  error: { code: DiffErrorCode; message: string };
+}
+
 export type CascadeDiffResponseParams =
   | CascadeDiffInlineResponse
-  | CascadeDiffStreamingResponse;
+  | CascadeDiffStreamingResponse
+  | CascadeDiffErrorResponse;
 
 // ============================================================================
 // Chunk (sidecar → hub, post-streaming-response)
@@ -161,14 +172,20 @@ export type DiffResult =
 // Type guards
 // ============================================================================
 
+export function isErrorResponse(
+  r: CascadeDiffResponseParams
+): r is CascadeDiffErrorResponse {
+  return 'error' in r && r.error != null;
+}
+
 export function isStreamingResponse(
   r: CascadeDiffResponseParams
 ): r is CascadeDiffStreamingResponse {
-  return r.streaming === true;
+  return !isErrorResponse(r) && (r as CascadeDiffStreamingResponse).streaming === true;
 }
 
 export function isInlineResponse(
   r: CascadeDiffResponseParams
 ): r is CascadeDiffInlineResponse {
-  return r.streaming === false;
+  return !isErrorResponse(r) && (r as CascadeDiffInlineResponse).streaming === false;
 }

@@ -28,6 +28,7 @@ import {
   type CascadeDiffResponseParams,
   type DiffResult,
   isStreamingResponse,
+  isErrorResponse,
 } from '../cascade/diff-types.js';
 import {
   setMapDiffFetcher,
@@ -125,6 +126,14 @@ export function handleDiffResponse(params: CascadeDiffResponseParams): void {
   const requestId = params.request_id;
   const pending = pendingRequests.get(requestId);
   if (!pending) return; // unknown / already timed out
+
+  if (isErrorResponse(params)) {
+    pendingRequests.delete(requestId);
+    if (pending.chunkStreamId) chunkStreamToRequest.delete(pending.chunkStreamId);
+    clearTimeout(pending.timer);
+    pending.resolve({ ok: false, error: params.error });
+    return;
+  }
 
   if (!isStreamingResponse(params)) {
     pendingRequests.delete(requestId);
