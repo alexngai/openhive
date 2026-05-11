@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 55;
+export const SCHEMA_VERSION = 56;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -616,6 +616,28 @@ CREATE TABLE IF NOT EXISTS cascade_queue_entries (
 CREATE INDEX IF NOT EXISTS idx_cascade_queue_swarm ON cascade_queue_entries(source_swarm_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_queue_status ON cascade_queue_entries(status);
 CREATE INDEX IF NOT EXISTS idx_cascade_queue_target ON cascade_queue_entries(target_branch);
+
+-- Cascade diff cache (V56) — content-addressed cache for unified diffs
+-- served on-demand from runtimes via cascade/diff.request. Evicted on
+-- stream terminal events. See docs/design/cascade-diff-and-stacked-prs.md.
+CREATE TABLE IF NOT EXISTS cascade_diff_cache (
+  id TEXT PRIMARY KEY,
+  stream_id TEXT NOT NULL,
+  commit_hash TEXT NOT NULL,
+  base_hash TEXT,
+  file_path TEXT,
+  diff_blob TEXT NOT NULL,
+  files_touched TEXT NOT NULL DEFAULT '[]',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  compression TEXT NOT NULL DEFAULT 'none',
+  created_at TEXT DEFAULT (datetime('now')),
+  last_accessed_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cascade_diff_cache_key
+  ON cascade_diff_cache(stream_id, commit_hash, IFNULL(base_hash, ''), IFNULL(file_path, ''));
+CREATE INDEX IF NOT EXISTS idx_cascade_diff_cache_stream ON cascade_diff_cache(stream_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_diff_cache_accessed ON cascade_diff_cache(last_accessed_at);
 
 -- ============================================================================
 -- Dispatches (Stream 2 — D4)
@@ -1990,6 +2012,36 @@ CREATE TABLE IF NOT EXISTS cascade_pull_requests (
 
 CREATE INDEX IF NOT EXISTS idx_cascade_prs_stream ON cascade_pull_requests(stream_row_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_prs_state ON cascade_pull_requests(state);
+`;
+
+// Migration V56: cascade_diff_cache content-addressed cache for unified
+// diff blobs served on-demand from runtimes via cascade/diff.request.
+//
+// Key: (stream_id, commit_hash, base_hash, file_path) — base_hash and
+// file_path may be NULL. Entries are immutable; eviction is by stream
+// lifecycle (merged / abandoned / rebased), not TTL. Compression column is
+// reserved for future gzip flip (see docs/design/cascade-diff-and-stacked-prs.md
+// D11). last_accessed_at + size_bytes enable a later LRU sweep without
+// migration.
+export const MIGRATION_V56_CASCADE_DIFF_CACHE = `
+CREATE TABLE IF NOT EXISTS cascade_diff_cache (
+  id TEXT PRIMARY KEY,
+  stream_id TEXT NOT NULL,
+  commit_hash TEXT NOT NULL,
+  base_hash TEXT,
+  file_path TEXT,
+  diff_blob TEXT NOT NULL,
+  files_touched TEXT NOT NULL DEFAULT '[]',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  compression TEXT NOT NULL DEFAULT 'none',
+  created_at TEXT DEFAULT (datetime('now')),
+  last_accessed_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cascade_diff_cache_key
+  ON cascade_diff_cache(stream_id, commit_hash, IFNULL(base_hash, ''), IFNULL(file_path, ''));
+CREATE INDEX IF NOT EXISTS idx_cascade_diff_cache_stream ON cascade_diff_cache(stream_id);
+CREATE INDEX IF NOT EXISTS idx_cascade_diff_cache_accessed ON cascade_diff_cache(last_accessed_at);
 `;
 
 // Populate FTS tables from existing data

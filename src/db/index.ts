@@ -48,6 +48,7 @@ import {
   MIGRATION_V53_RESOURCE_STATUS,
   MIGRATION_V54_DISPATCH_REPO,
   MIGRATION_V55_DISPATCH_CONVERSATION,
+  MIGRATION_V56_CASCADE_DIFF_CACHE,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -356,6 +357,10 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 55: Nullable conversation_id on dispatches for dispatch inbox
   // threads. Written lazily on first coordination message.
   55: MIGRATION_V55_DISPATCH_CONVERSATION,
+  // Version 56: cascade_diff_cache — content-addressed cache for unified
+  // diff blobs served on-demand via cascade/diff.request. Evicted on stream
+  // merged / abandoned / rebased. See docs/design/cascade-diff-and-stacked-prs.md.
+  56: MIGRATION_V56_CASCADE_DIFF_CACHE,
 };
 
 /** Get the SQL for a specific migration version.
