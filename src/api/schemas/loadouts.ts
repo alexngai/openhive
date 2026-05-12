@@ -72,9 +72,15 @@ const VisibilitySchema = z.enum(['private', 'shared', 'public']);
 export const CreateLoadoutSchema = z.object({
   name: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
   description: z.string().optional(),
-  content: LoadoutContentSchema,
+  content: LoadoutContentSchema.optional(),
   visibility: VisibilitySchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Layer 6 — git-backed authoring. Same semantics as team_template's
+   * `git_remote_url`; the hub treats the on-disk checkout as canonical
+   * once it's been cloned.
+   */
+  git_remote_url: z.string().url().optional(),
 });
 
 export const UpdateLoadoutSchema = z.object({
@@ -83,6 +89,7 @@ export const UpdateLoadoutSchema = z.object({
   content: LoadoutContentSchema.optional(),
   visibility: VisibilitySchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  git_remote_url: z.string().url().optional(),
 });
 
 export type CreateLoadoutInput = z.infer<typeof CreateLoadoutSchema>;

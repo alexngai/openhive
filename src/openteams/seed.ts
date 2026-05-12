@@ -16,12 +16,10 @@ import type { MAPResource } from 'openteams';
 import { getDatabase } from '../db/index.js';
 import { findResourceById } from '../db/dal/syncable-resources.js';
 import type { SyncableResource } from '../types.js';
-import type { TeamTemplateContent } from '../api/schemas/teams.js';
-import type { LoadoutContent } from '../api/schemas/loadouts.js';
 import { getOpenteamsBundleStore } from './map-handlers.js';
 import {
-  bundleLoadoutContent,
-  bundleTeamTemplateContent,
+  bundleLoadoutFromRow,
+  bundleTeamTemplateFromRow,
 } from './internal/bundle-content.js';
 
 export interface SeedResult {
@@ -60,17 +58,20 @@ export async function seedOpenteamsBundleStore(): Promise<SeedResult> {
   for (const row of rows) {
     try {
       if (row.resource_type === 'loadout') {
-        const content = (row.metadata as { content?: LoadoutContent } | null)?.content;
-        if (!content) continue;
-        const bundle = bundleLoadoutContent(row.name, content);
-        await store.put(bundle as unknown as MAPResource);
-        result.loadouts++;
+        // Row-aware helper handles both git-backed (ls-remote, reads from
+        // local checkout) and inline (metadata.content) rows. Skips
+        // silently when neither source has content yet.
+        const bundle = await bundleLoadoutFromRow(row);
+        if (bundle) {
+          await store.put(bundle as unknown as MAPResource);
+          result.loadouts++;
+        }
       } else if (row.resource_type === 'team_template') {
-        const content = (row.metadata as { content?: TeamTemplateContent } | null)?.content;
-        if (!content) continue;
-        const bundle = bundleTeamTemplateContent(row.name, content);
-        await store.put(bundle as unknown as MAPResource);
-        result.teams++;
+        const bundle = await bundleTeamTemplateFromRow(row);
+        if (bundle) {
+          await store.put(bundle as unknown as MAPResource);
+          result.teams++;
+        }
       }
     } catch (err) {
       result.errors.push({

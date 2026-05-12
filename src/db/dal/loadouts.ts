@@ -18,21 +18,31 @@ export interface LoadoutResource extends SyncableResource {
 export interface CreateLoadoutInput {
   name: string;
   description?: string;
-  content: LoadoutContent;
+  /** Inline content; optional when `gitRemoteUrl` is set (Layer 6). */
+  content?: LoadoutContent;
   ownerAgentId: string;
   visibility?: ResourceVisibility;
   metadata?: Record<string, unknown>;
+  /** Layer 6 — git-backed authoring. Same semantics as team_template. */
+  gitRemoteUrl?: string;
 }
 
 export function createLoadout(input: CreateLoadoutInput): LoadoutResource {
+  const gitBacked = typeof input.gitRemoteUrl === 'string' && input.gitRemoteUrl.length > 0;
   const created = resources.createResource({
     resource_type: 'loadout',
     name: input.name,
     description: input.description,
-    git_remote_url: `local://loadout/${input.name}`,
+    git_remote_url: gitBacked
+      ? input.gitRemoteUrl!
+      : `local://loadout/${input.name}`,
     visibility: input.visibility,
     owner_agent_id: input.ownerAgentId,
-    metadata: { ...(input.metadata ?? {}), content: input.content },
+    metadata: {
+      ...(input.metadata ?? {}),
+      ...(input.content !== undefined ? { content: input.content } : {}),
+    },
+    sync_strategy: gitBacked ? 'ls-remote' : undefined,
   });
   return created as LoadoutResource;
 }

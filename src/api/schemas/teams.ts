@@ -103,9 +103,21 @@ const VisibilitySchema = z.enum(['private', 'shared', 'public']);
 export const CreateTeamTemplateSchema = z.object({
   name: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
   description: z.string().optional(),
-  content: TeamTemplateContentSchema,
+  /**
+   * Inline authored content. Optional when `git_remote_url` is set —
+   * git-backed rows derive their canonical content from the on-disk
+   * checkout instead.
+   */
+  content: TeamTemplateContentSchema.optional(),
   visibility: VisibilitySchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Layer 6 — git-backed authoring. When supplied, the row is created
+   * with `sync_strategy: 'ls-remote'`; the hub clones lazily on first
+   * read and re-pulls via webhook or the 2-min auto-pull poll. Sidecar
+   * (or the openteams editor) is responsible for pushing commits.
+   */
+  git_remote_url: z.string().url().optional(),
 });
 
 export const UpdateTeamTemplateSchema = z.object({
@@ -114,6 +126,7 @@ export const UpdateTeamTemplateSchema = z.object({
   content: TeamTemplateContentSchema.optional(),
   visibility: VisibilitySchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  git_remote_url: z.string().url().optional(),
 });
 
 export type CreateTeamTemplateInput = z.infer<typeof CreateTeamTemplateSchema>;

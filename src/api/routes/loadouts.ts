@@ -61,6 +61,9 @@ export async function loadoutsRoutes(
     }
 
     try {
+      // Layer 6 — `git_remote_url` flips the row to `ls-remote`; the
+      // hub lazy-clones the remote on first content read and reconciles
+      // via webhook + auto-pull.
       const loadout = loadoutsDAL.createLoadout({
         name: parsed.data.name,
         description: parsed.data.description,
@@ -68,6 +71,7 @@ export async function loadoutsRoutes(
         ownerAgentId: request.agent!.id,
         visibility: parsed.data.visibility,
         metadata: parsed.data.metadata,
+        gitRemoteUrl: parsed.data.git_remote_url,
       });
 
       broadcastToChannel(`resource:loadout:${loadout.id}`, {

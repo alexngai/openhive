@@ -32,11 +32,9 @@ import {
 import type { MAPResource } from 'openteams';
 import { getOpenteamsBundleStore } from './map-handlers.js';
 import type { SyncableResource } from '../types.js';
-import type { LoadoutContent } from '../api/schemas/loadouts.js';
-import type { TeamTemplateContent } from '../api/schemas/teams.js';
 import {
-  bundleLoadoutContent,
-  bundleTeamTemplateContent,
+  bundleLoadoutFromRow,
+  bundleTeamTemplateFromRow,
 } from './internal/bundle-content.js';
 
 // ── Failure observability ───────────────────────────────────────────────────
@@ -76,10 +74,12 @@ export function _resetOpenteamsBundleFailures(): void {
  * operator visibility).
  */
 export async function onLoadoutBundle(row: SyncableResource): Promise<string | null> {
-  const content = (row.metadata as { content?: LoadoutContent } | null)?.content;
-  if (!content) return null;
   try {
-    const bundle = bundleLoadoutContent(row.name, content);
+    // Row-aware helper picks the git-checkout or in-memory path based on
+    // the row's `sync_strategy`. Returns null when there's no content
+    // (e.g. a freshly-created git-backed row before its first pull).
+    const bundle = await bundleLoadoutFromRow(row);
+    if (!bundle) return null;
     await getOpenteamsBundleStore().put(bundle as unknown as MAPResource);
     return bundle.id;
   } catch (err) {
@@ -97,10 +97,9 @@ export async function onLoadoutBundle(row: SyncableResource): Promise<string | n
 }
 
 export async function onTeamTemplateBundle(row: SyncableResource): Promise<string | null> {
-  const content = (row.metadata as { content?: TeamTemplateContent } | null)?.content;
-  if (!content) return null;
   try {
-    const bundle = bundleTeamTemplateContent(row.name, content);
+    const bundle = await bundleTeamTemplateFromRow(row);
+    if (!bundle) return null;
     await getOpenteamsBundleStore().put(bundle as unknown as MAPResource);
     return bundle.id;
   } catch (err) {
@@ -124,10 +123,13 @@ export async function onTeamTemplateBundle(row: SyncableResource): Promise<strin
 // for a row→hash side-map and survives restart (bundle ids are stable).
 
 export async function onLoadoutRemoved(row: SyncableResource): Promise<void> {
-  const content = (row.metadata as { content?: LoadoutContent } | null)?.content;
-  if (!content) return;
   try {
-    const bundle = bundleLoadoutContent(row.name, content);
+    // Re-bundle from the pre-delete row state so we can derive the hash
+    // (deterministic) and remove the right entry. Git-backed rows still
+    // have their checkout on disk at remove time; metadata rows hydrate
+    // from the inline blob. Either way: no side-map of (rowId → hash).
+    const bundle = await bundleLoadoutFromRow(row);
+    if (!bundle) return;
     await getOpenteamsBundleStore().delete(LOADOUT_RESOURCE_TYPE, bundle.id);
   } catch (err) {
     const message = (err as Error).message;
@@ -143,10 +145,9 @@ export async function onLoadoutRemoved(row: SyncableResource): Promise<void> {
 }
 
 export async function onTeamTemplateRemoved(row: SyncableResource): Promise<void> {
-  const content = (row.metadata as { content?: TeamTemplateContent } | null)?.content;
-  if (!content) return;
   try {
-    const bundle = bundleTeamTemplateContent(row.name, content);
+    const bundle = await bundleTeamTemplateFromRow(row);
+    if (!bundle) return;
     await getOpenteamsBundleStore().delete(TEAM_RESOURCE_TYPE, bundle.id);
   } catch (err) {
     const message = (err as Error).message;

@@ -69,6 +69,10 @@ export async function teamsRoutes(
     }
 
     try {
+      // Layer 6: git_remote_url presence flips the row to `ls-remote`
+      // strategy + lazy-clone on first read. Content remains optional but
+      // we still validate the inline blob when supplied so partial-content
+      // hash-stickiness keeps working until the first pull lands.
       const tmpl = teamTemplatesDAL.createTeamTemplate({
         name: parsed.data.name,
         description: parsed.data.description,
@@ -76,6 +80,7 @@ export async function teamsRoutes(
         ownerAgentId: request.agent!.id,
         visibility: parsed.data.visibility,
         metadata: parsed.data.metadata,
+        gitRemoteUrl: parsed.data.git_remote_url,
       });
 
       broadcastToChannel(`resource:team_template:${tmpl.id}`, {

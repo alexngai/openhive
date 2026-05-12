@@ -18,24 +18,46 @@ export interface TeamTemplateResource extends SyncableResource {
 export interface CreateTeamTemplateInput {
   name: string;
   description?: string;
-  content: TeamTemplateContent;
+  /**
+   * Inline authored content. Optional when `gitRemoteUrl` is set — the
+   * row's canonical content then lives in the cloned git checkout.
+   */
+  content?: TeamTemplateContent;
   ownerAgentId: string;
   visibility?: ResourceVisibility;
   metadata?: Record<string, unknown>;
+  /**
+   * Layer 6 — git-backed authoring. Sidecar / editor pushes commits;
+   * hub lazily clones via `sync_strategy: 'ls-remote'` on first read.
+   */
+  gitRemoteUrl?: string;
 }
 
 export function createTeamTemplate(input: CreateTeamTemplateInput): TeamTemplateResource {
+  const gitBacked = typeof input.gitRemoteUrl === 'string' && input.gitRemoteUrl.length > 0;
   const created = resources.createResource({
     resource_type: 'team_template',
     name: input.name,
     description: input.description,
-    // Templates are authored locally; the `local://` scheme keeps them
-    // out of the `remote://`/`map://` federation auto-detection path until
-    // a Layer-1 hook explicitly fans them out.
-    git_remote_url: `local://team_template/${input.name}`,
+    // Git-backed rows carry the canonical remote URL; in-DB rows fall
+    // back to the `local://` scheme that keeps them out of the
+    // federation auto-detect path until the Layer 1 hook fans them out.
+    git_remote_url: gitBacked
+      ? input.gitRemoteUrl!
+      : `local://team_template/${input.name}`,
     visibility: input.visibility,
     owner_agent_id: input.ownerAgentId,
-    metadata: { ...(input.metadata ?? {}), content: input.content },
+    metadata: {
+      ...(input.metadata ?? {}),
+      // Inline content stays on the row even when git-backed — gives the
+      // hub something to serve before the lazy clone completes, and acts
+      // as a fallback if the remote is unreachable.
+      ...(input.content !== undefined ? { content: input.content } : {}),
+    },
+    // ls-remote = lazy clone on first content read; auto-pull keeps the
+    // checkout fresh on a 2-min poll. Webhooks at
+    // `POST /webhooks/resource/:id` close the latency gap.
+    sync_strategy: gitBacked ? 'ls-remote' : undefined,
   });
   return created as TeamTemplateResource;
 }
