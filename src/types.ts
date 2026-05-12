@@ -203,7 +203,14 @@ export type WSEventType =
   | 'workspace_deactivated'
   | 'repo_visibility_changed'
   | 'repo_archived'
-  | 'repo_updated';
+  | 'repo_updated'
+  // Schedule broadcast events (see api/routes/schedules.ts, scheduler/fire-handler.ts)
+  | 'schedule.created'
+  | 'schedule.updated'
+  | 'schedule.deleted'
+  | 'schedule.paused'
+  | 'schedule.resumed'
+  | 'schedule.fired';
 
 export interface WSEvent {
   type: WSEventType;

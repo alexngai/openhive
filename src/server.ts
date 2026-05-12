@@ -42,6 +42,8 @@ import {
 } from "./sync/local-resource-watcher.js";
 import { markStaleSwarms, getWellKnownMapInfo } from "./map/service.js";
 import { setupOrchestrator } from "./dispatch/setup.js";
+import { setupScheduler } from "./scheduler/setup.js";
+import { isAutonomousDispatchPaused } from "./map/dispatch-policy.js";
 import { startTaskBinder, stopTaskBinder } from "./cascade/task-binder.js";
 import { startThreadLifecycle, stopThreadLifecycle } from "./dispatch/thread-lifecycle.js";
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
@@ -50,7 +52,7 @@ import { createOpenHiveMailPort } from "./dispatch/openhive-mail-port.js";
 import { setAcpAvailabilityProbe } from "./dispatch/routing.js";
 import type { AcpStreamManager } from "./dispatch/openhive-runtime.js";
 import { sendToSwarm } from "./map/sync-listener.js";
-import type { Orchestrator } from "swarm-dispatch";
+import type { Orchestrator, Scheduler } from "swarm-dispatch";
 import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
 import { initMail, getMailJsonRpc, getMailStorage, getMailEvents } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket, disconnectSessionsForAgent } from "./map/ws-map.js";
@@ -607,6 +609,31 @@ export async function createHive(
     console.log('[openhive] Dispatch orchestrator initialized');
   } catch (err) {
     console.warn(`[openhive] Dispatch orchestrator failed: ${(err as Error).message}`);
+  }
+
+  // Initialize scheduler (cron-style recurring dispatches via swarm-dispatch)
+  let scheduler: Scheduler | null = null;
+  try {
+    scheduler = setupScheduler({
+      fetchSpec: async (ref) => {
+        const result = await fetchSpecForDispatch(ref.resource_id, ref.spec_id, 'system');
+        return result.ok ? { ok: true } : null;
+      },
+      isAutonomousDispatchPaused,
+      tickIntervalMs: config.scheduler.tickIntervalMs,
+      maxConcurrentFires: config.scheduler.maxConcurrentFires,
+    });
+    scheduler.start();
+    fastify.addHook('onClose', async () => {
+      try {
+        await scheduler?.stop();
+      } catch {
+        /* best effort */
+      }
+    });
+    console.log('[openhive] Scheduler initialized');
+  } catch (err) {
+    console.warn(`[openhive] Scheduler failed: ${(err as Error).message}`);
   }
 
   // Serve skill.md. In server mode, strip the social-layer sections since

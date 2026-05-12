@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 55;
+export const SCHEMA_VERSION = 56;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -701,6 +701,38 @@ CREATE TABLE IF NOT EXISTS dispatch_linked_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_linked_tasks_ref
   ON dispatch_linked_tasks(resource_id, node_id);
+
+-- ============================================================================
+-- Schedules (V52 — swarm-dispatch scheduler integration)
+-- Library-minimum schema from swarm-dispatch's getScheduleStoreDDL plus
+-- OpenHive-specific audit/tenancy columns (hive_id, initiator_*).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS schedules (
+  id            TEXT PRIMARY KEY,
+  cron          TEXT NOT NULL,
+  timezone      TEXT,
+  payload       TEXT NOT NULL,
+  policy        TEXT NOT NULL,
+  paused        INTEGER NOT NULL DEFAULT 0,
+  next_fires_at TEXT,
+  last_fired_at TEXT,
+  -- OpenHive audit + tenancy (host extensions, not in library schema)
+  hive_id       TEXT NOT NULL DEFAULT '',
+  initiator_type TEXT NOT NULL DEFAULT 'user'
+    CHECK (initiator_type IN ('user', 'agent')),
+  initiator_id  TEXT NOT NULL DEFAULT '',
+  -- Reason set when the fire handler auto-pauses (e.g. deleted spec).
+  -- Null when the schedule is healthy or was paused by user/agent action.
+  pause_reason  TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(paused, next_fires_at);
+CREATE INDEX IF NOT EXISTS idx_schedules_hive ON schedules(hive_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_initiator ON schedules(initiator_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_spec ON schedules(payload);
 `;
 
 export const SEED_DATA = `
@@ -1007,6 +1039,35 @@ ALTER TABLE dispatches ADD COLUMN loadout_error TEXT;
 export const MIGRATION_V50_HOSTED_SWARM_KIND = `
 ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'openswarm'
   CHECK (kind IN ('openswarm', 'claude-code'));
+`;
+
+// Migration V56: Schedules table for swarm-dispatch scheduler integration.
+// (Renumbered from V52 due to merge collision with V52-V55 repos/workspaces.)
+// Library-minimum schema (id, cron, timezone, payload, policy, paused,
+// next_fires_at, last_fired_at, created_at, updated_at) plus OpenHive
+// extensions (hive_id, initiator_type, initiator_id, pause_reason).
+// Additive: new table only, no changes to existing tables.
+export const MIGRATION_V56_SCHEDULES = `
+CREATE TABLE IF NOT EXISTS schedules (
+  id            TEXT PRIMARY KEY,
+  cron          TEXT NOT NULL,
+  timezone      TEXT,
+  payload       TEXT NOT NULL,
+  policy        TEXT NOT NULL,
+  paused        INTEGER NOT NULL DEFAULT 0,
+  next_fires_at TEXT,
+  last_fired_at TEXT,
+  hive_id       TEXT NOT NULL DEFAULT '',
+  initiator_type TEXT NOT NULL DEFAULT 'user'
+    CHECK (initiator_type IN ('user', 'agent')),
+  initiator_id  TEXT NOT NULL DEFAULT '',
+  pause_reason  TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(paused, next_fires_at);
+CREATE INDEX IF NOT EXISTS idx_schedules_hive ON schedules(hive_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_initiator ON schedules(initiator_id);
 `;
 
 // Migration V51: Open up the hosted_swarms.kind CHECK constraint so new

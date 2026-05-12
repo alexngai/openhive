@@ -678,6 +678,21 @@ export const ConfigSchema = z.object({
     })
     .default({}),
 
+  // Scheduler (swarm-dispatch scheduler integration)
+  scheduler: z
+    .object({
+      /** Tick cadence for the scheduler loop. */
+      tickIntervalMs: z.number().int().positive().default(60_000),
+      /** Global cap on in-flight fire handlers across all schedules. */
+      maxConcurrentFires: z.number().int().positive().default(10),
+      /**
+       * Per-agent cap on schedule count. Enforced by REST + MAP create
+       * handlers, not the scheduler tick. Returns 429 / -32606 when hit.
+       */
+      maxSchedulesPerAgent: z.number().int().positive().default(100),
+    })
+    .default({}),
+
   // Cascade ↔ task binding
   cascade: z
     .object({
