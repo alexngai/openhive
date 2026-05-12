@@ -48,6 +48,7 @@ import {
   MIGRATION_V53_RESOURCE_STATUS,
   MIGRATION_V54_DISPATCH_REPO,
   MIGRATION_V55_DISPATCH_CONVERSATION,
+  MIGRATION_V56_SCHEDULES,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -356,6 +357,8 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 55: Nullable conversation_id on dispatches for dispatch inbox
   // threads. Written lazily on first coordination message.
   55: MIGRATION_V55_DISPATCH_CONVERSATION,
+  // Version 56: Schedules table — swarm-dispatch scheduler integration.
+  56: MIGRATION_V56_SCHEDULES,
 };
 
 /** Get the SQL for a specific migration version.
@@ -451,6 +454,10 @@ function repairSchema(database: Database.Database): void {
     "ALTER TABLE dispatches ADD COLUMN clone_policy TEXT DEFAULT 'none'",
     "ALTER TABLE dispatches ADD COLUMN clone_path TEXT",
     "CREATE INDEX IF NOT EXISTS idx_dispatches_repo ON dispatches(repo_id)",
+    // V56 schedules table — repair so a partially-migrated DB still gets
+    // the pause_reason column even if CREATE TABLE IF NOT EXISTS was a
+    // no-op (table existed in an older shape).
+    "ALTER TABLE schedules ADD COLUMN pause_reason TEXT",
   ];
   for (const sql of repairs) {
     try {

@@ -243,7 +243,7 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     let remoteRepo: string;
     let lsDataDir: string;
 
-    beforeAll(() => {
+    beforeAll(async () => {
       lsDataDir = mkTestDir(TEST_ROOT, 'ls-remote-data');
       provider = new LsRemoteProvider(lsDataDir, 60);
       remoteRepo = createTestGitRepo('ls-remote');
@@ -264,12 +264,13 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     });
 
     it('should clone on first ensureContent', async () => {
+      const { agent } = await agentsDAL.createAgent({ name: 'ls-clone-agent', description: '' });
       // Create a real DB resource so updateLocalPath works
       const resource = resourcesDAL.createResource({
         resource_type: 'task',
         name: 'ls-remote-clone-test',
         git_remote_url: remoteRepo,
-        owner_agent_id: agentId,
+        owner_agent_id: agent.id,
         sync_strategy: 'ls-remote',
       });
 
@@ -283,12 +284,13 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     });
 
     it('should return existing clone on subsequent ensureContent', async () => {
+      const { agent } = await agentsDAL.createAgent({ name: 'ls-existing-agent', description: '' });
       const resource = resourcesDAL.findResourceById(
         resourcesDAL.createResource({
           resource_type: 'task',
           name: 'ls-remote-existing-test',
           git_remote_url: remoteRepo,
-          owner_agent_id: agentId,
+          owner_agent_id: agent.id,
           sync_strategy: 'ls-remote',
         }).id
       )!;
@@ -299,11 +301,12 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     });
 
     it('should resolve graph path through ensureContent', async () => {
+      const { agent } = await agentsDAL.createAgent({ name: 'ls-graph-agent', description: '' });
       const resource = resourcesDAL.createResource({
         resource_type: 'task',
         name: 'ls-remote-graph-test',
         git_remote_url: remoteRepo,
-        owner_agent_id: agentId,
+        owner_agent_id: agent.id,
         sync_strategy: 'ls-remote',
       });
 
@@ -319,11 +322,12 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     });
 
     it('should clean up clone on cleanup', async () => {
+      const { agent } = await agentsDAL.createAgent({ name: 'ls-cleanup-agent', description: '' });
       const resource = resourcesDAL.createResource({
         resource_type: 'task',
         name: 'ls-remote-cleanup-test',
         git_remote_url: remoteRepo,
-        owner_agent_id: agentId,
+        owner_agent_id: agent.id,
         sync_strategy: 'ls-remote',
       });
 
@@ -347,7 +351,7 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     let remoteRepo: string;
     let mirrorDataDir: string;
 
-    beforeAll(() => {
+    beforeAll(async () => {
       mirrorDataDir = mkTestDir(TEST_ROOT, 'mirror-data');
       provider = new MirrorProvider(mirrorDataDir, 30000);
       remoteRepo = createTestGitRepo('mirror');
@@ -358,11 +362,12 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     });
 
     it('should clone and fetch on first sync event', async () => {
+      const { agent } = await agentsDAL.createAgent({ name: 'mirror-sync-agent', description: '' });
       const resource = resourcesDAL.createResource({
         resource_type: 'task',
         name: 'mirror-sync-test',
         git_remote_url: remoteRepo,
-        owner_agent_id: agentId,
+        owner_agent_id: agent.id,
         sync_strategy: 'mirror',
       });
 
@@ -380,11 +385,12 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     });
 
     it('should detect changes on sync event after remote update', async () => {
+      const { agent } = await agentsDAL.createAgent({ name: 'mirror-change-agent', description: '' });
       const resource = resourcesDAL.createResource({
         resource_type: 'task',
         name: 'mirror-change-test',
         git_remote_url: remoteRepo,
-        owner_agent_id: agentId,
+        owner_agent_id: agent.id,
         sync_strategy: 'mirror',
       });
 
@@ -400,11 +406,12 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     });
 
     it('should serve content from clone via ensureContent', async () => {
+      const { agent } = await agentsDAL.createAgent({ name: 'mirror-content-agent', description: '' });
       const resource = resourcesDAL.createResource({
         resource_type: 'task',
         name: 'mirror-content-test',
         git_remote_url: remoteRepo,
-        owner_agent_id: agentId,
+        owner_agent_id: agent.id,
         sync_strategy: 'mirror',
       });
 
@@ -414,11 +421,12 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     });
 
     it('should resolve graph path', async () => {
+      const { agent } = await agentsDAL.createAgent({ name: 'mirror-graph-agent', description: '' });
       const resource = resourcesDAL.createResource({
         resource_type: 'task',
         name: 'mirror-graph-test',
         git_remote_url: remoteRepo,
-        owner_agent_id: agentId,
+        owner_agent_id: agent.id,
         sync_strategy: 'mirror',
       });
 
@@ -428,11 +436,12 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     });
 
     it('should clean up clone on cleanup', async () => {
+      const { agent } = await agentsDAL.createAgent({ name: 'mirror-cleanup-agent', description: '' });
       const resource = resourcesDAL.createResource({
         resource_type: 'task',
         name: 'mirror-cleanup-test',
         git_remote_url: remoteRepo,
-        owner_agent_id: agentId,
+        owner_agent_id: agent.id,
         sync_strategy: 'mirror',
       });
 
@@ -479,7 +488,7 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     let remoteRepo: string;
     let orchDataDir: string;
 
-    beforeAll(() => {
+    beforeAll(async () => {
       orchDataDir = mkTestDir(TEST_ROOT, 'orch-data');
       remoteRepo = createTestGitRepo('orchestrator');
 
@@ -493,11 +502,12 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     });
 
     it('should dispatch ensureContent to ls-remote provider', async () => {
+      const { agent } = await agentsDAL.createAgent({ name: 'orch-ls-agent', description: '' });
       const resource = resourcesDAL.createResource({
         resource_type: 'task',
         name: 'orch-ls-remote-test',
         git_remote_url: remoteRepo,
-        owner_agent_id: agentId,
+        owner_agent_id: agent.id,
         sync_strategy: 'ls-remote',
       });
 
@@ -506,11 +516,12 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     });
 
     it('should dispatch handleSyncEvent to mirror provider', async () => {
+      const { agent } = await agentsDAL.createAgent({ name: 'orch-mirror-agent', description: '' });
       const resource = resourcesDAL.createResource({
         resource_type: 'task',
         name: 'orch-mirror-test',
         git_remote_url: remoteRepo,
-        owner_agent_id: agentId,
+        owner_agent_id: agent.id,
         sync_strategy: 'mirror',
       });
 
@@ -522,11 +533,12 @@ describe('Git Sync Providers (ls-remote + mirror)', () => {
     });
 
     it('should dispatch cleanup to mirror provider', async () => {
+      const { agent } = await agentsDAL.createAgent({ name: 'orch-cleanup-agent', description: '' });
       const resource = resourcesDAL.createResource({
         resource_type: 'task',
         name: 'orch-cleanup-test',
         git_remote_url: remoteRepo,
-        owner_agent_id: agentId,
+        owner_agent_id: agent.id,
         sync_strategy: 'mirror',
       });
 

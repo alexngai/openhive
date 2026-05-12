@@ -333,9 +333,11 @@ describe('OpenHiveRepoHandler', () => {
       expect(bindings.every((b) => b.visibility === 'private')).toBe(true);
 
       const changed = mockedBroadcast.mock.calls.filter(
-        (c) => (c[1] as { type: string }).type === 'repo_visibility_changed',
+        (c) => (c[1] as { type: string }).type === 'workspace_changed',
       );
-      expect(changed.length).toBe(2);
+      // broadcastWorkspaceLifecycleEvent fans out to 2 channels per event
+      // (map:repos + map:repo:${repoId}), so 2 workspaces × 2 channels = 4 calls.
+      expect(changed.length).toBe(4);
     });
 
     it('only retracts the calling agent\'s bindings', async () => {

@@ -690,6 +690,29 @@ export function listInProgressDispatches(): Dispatch[] {
   return rows.map(rowToDispatch);
 }
 
+/**
+ * Find the most recently-updated non-terminal dispatch tied to a given
+ * coordination conversation. Used by the mail-completion observer to map
+ * an inbound reply turn back to its in-flight dispatch.
+ *
+ * Returns `null` if no running/queued dispatch matches.
+ */
+export function findRunningDispatchByConversation(
+  conversationId: string,
+): Dispatch | null {
+  const db = getDatabase();
+  const row = db
+    .prepare(
+      `SELECT * FROM dispatches
+         WHERE conversation_id = ?
+           AND status IN ('queued', 'running')
+         ORDER BY updated_at DESC
+         LIMIT 1`,
+    )
+    .get(conversationId) as DispatchRow | undefined;
+  return row ? rowToDispatch(row) : null;
+}
+
 // ============================================================================
 // Dispatch conversation (dispatch inbox threads)
 // ============================================================================

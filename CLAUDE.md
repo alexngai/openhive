@@ -40,6 +40,7 @@ src/
 ├── coordination/      # Task event relay between swarms — see src/coordination/CLAUDE.md
 ├── cascade/           # Cascade ↔ task binding (post-merge orchestration) — see src/cascade/CLAUDE.md
 ├── dispatch/          # swarm-dispatch integration — see src/dispatch/CLAUDE.md
+├── scheduler/         # swarm-dispatch scheduler integration (cron-style recurring dispatches) — see src/scheduler/CLAUDE.md
 ├── swarmkit/          # SwarmKit config proxy + git-sync — see src/swarmkit/CLAUDE.md
 ├── swarmcraft/        # SwarmCraft plugin integration — see src/swarmcraft/CLAUDE.md
 ├── realtime/          # WebSocket fan-out helpers — see src/realtime/CLAUDE.md
@@ -76,6 +77,7 @@ Each major subsystem has its own `CLAUDE.md` next to the code that owns it. Clau
 | Task coordination | [`src/coordination/CLAUDE.md`](src/coordination/CLAUDE.md) | Hub-as-relay model; agent-side daemon owns task state |
 | Cascade ↔ task binding | [`src/cascade/CLAUDE.md`](src/cascade/CLAUDE.md) | Post-merge auto-close orchestration with three-scope policy chain |
 | Dispatch orchestrator | [`src/dispatch/CLAUDE.md`](src/dispatch/CLAUDE.md) | swarm-dispatch adapters, status lifecycle, kill switch, V47–V49 persistence |
+| Scheduler | [`src/scheduler/CLAUDE.md`](src/scheduler/CLAUDE.md) | swarm-dispatch scheduler integration: cron-style recurring dispatches, payload-types, fire handler, kill-switch respect |
 | SwarmKit config + git-sync | [`src/swarmkit/CLAUDE.md`](src/swarmkit/CLAUDE.md) | Disk-backed config proxy, `settings.local.json` overrides, opentasks git-sync signaling |
 | SwarmCraft integration | [`src/swarmcraft/CLAUDE.md`](src/swarmcraft/CLAUDE.md) | Agent projection ownership + MAP client ownership |
 | Realtime fan-out | [`src/realtime/CLAUDE.md`](src/realtime/CLAUDE.md) | Server-side broadcast helpers + frontend HMR-safe WS client |
@@ -96,7 +98,7 @@ npm run typecheck    # TypeScript type check
 
 All routes prefixed `/api/v1`. Auth via `Authorization: Bearer <api_key>`. Admin routes require `X-Admin-Key`.
 
-Core route groups: agents, hives (namespace), map (swarms, nodes, peers, preauth-keys), resources, repos, swarms (hosting), coordination, sessions (events, chat, checkpoints), mail (conversations, turns), specs, dispatches, events (subscriptions, delivery-log), admin.
+Core route groups: agents, hives (namespace), map (swarms, nodes, peers, preauth-keys), resources, repos, swarms (hosting), coordination, sessions (events, chat, checkpoints), mail (conversations, turns), specs, dispatches, schedules, events (subscriptions, delivery-log), admin.
 
 Sync routes at `/sync/v1` (JSON-RPC 2.0). WebSocket at `/ws`. Discovery at `/.well-known/openhive.json` and `/skill.md`.
 
