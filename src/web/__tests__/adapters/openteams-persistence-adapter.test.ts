@@ -15,6 +15,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const get = vi.fn();
 const patch = vi.fn();
 
+// The adapter imports `api` from `web/lib/api` — mock at that path so
+// both old and new test paths share the same captured spies.
 vi.mock('../../lib/api', () => ({
   api: {
     get: (...args: unknown[]) => get(...args),
@@ -22,7 +24,7 @@ vi.mock('../../lib/api', () => ({
   },
 }));
 
-import { createTeamPersistence } from '../../lib/team-persistence';
+import { createTeamPersistence } from '../../adapters/openteams-persistence-adapter';
 
 describe('createTeamPersistence', () => {
   beforeEach(() => {

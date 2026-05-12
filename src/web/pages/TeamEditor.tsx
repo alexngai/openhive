@@ -15,8 +15,13 @@
 import { useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { TeamEditorShell } from 'openteams-editor';
+// Editor stylesheet — Tailwind utility layer + theme tokens + react-flow
+// defaults. Vite's alias prefers the live source (`references/openteams/
+// editor/src/index.css`) in dev; CI/production builds resolve via the
+// package's `exports` map to the processed `dist/lib/openteams-editor.css`.
+// Route-scoped so styles only load when the editor mounts.
 import 'openteams-editor/styles.css';
-import { createTeamPersistence } from '../lib/team-persistence';
+import { createTeamPersistence } from '../adapters/openteams-persistence-adapter';
 
 export default function TeamEditor() {
   const { id } = useParams<{ id: string }>();

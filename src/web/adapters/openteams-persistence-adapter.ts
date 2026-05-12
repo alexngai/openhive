@@ -18,7 +18,7 @@
  * state via `compileToYaml`.
  */
 
-import { api } from './api';
+import { api } from '../lib/api';
 
 // Mirror the editor library's `EditorSavedState` shape without importing
 // the library types — keeps this module dependency-free and side-steps
