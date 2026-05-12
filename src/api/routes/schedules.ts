@@ -20,7 +20,7 @@
  */
 
 import { FastifyInstance } from 'fastify';
-import { evaluateCron } from 'swarm-dispatch';
+import { evaluateCron, expandCron, isValidCron } from 'swarm-dispatch';
 import { createAuthOrAdminKey } from '../middleware/auth.js';
 import * as schedulesDAL from '../../db/dal/schedules.js';
 import * as dispatchesDAL from '../../db/dal/dispatches.js';
@@ -38,6 +38,62 @@ export async function schedulesRoutes(
 ): Promise<void> {
   const authOrAdminKey = createAuthOrAdminKey(options.config);
   const { scheduler: schedulerCfg } = options.config;
+
+  // -------------------------------------------------------------------------
+  // GET /schedules/cron-preview
+  //
+  // Computes the next N fire times for a cron expression. Used by the UI's
+  // create modal + detail page to show "next 3 fires" while editing. Lives
+  // here (not in a shared helper module) so the UI bundle doesn't have to
+  // include cron-parser + luxon.
+  // -------------------------------------------------------------------------
+  fastify.get<{
+    Querystring: { expr?: string; timezone?: string; count?: string };
+  }>(
+    '/schedules/cron-preview',
+    { preHandler: authOrAdminKey },
+    async (request, reply) => {
+      const expr = request.query.expr;
+      if (!expr || typeof expr !== 'string') {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: 'expr query parameter is required',
+        });
+      }
+      if (!isValidCron(expr)) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: 'invalid cron expression',
+        });
+      }
+      const count = Math.min(
+        Math.max(Number(request.query.count) || 5, 1),
+        20,
+      );
+      const timezone =
+        typeof request.query.timezone === 'string' && request.query.timezone.length > 0
+          ? request.query.timezone
+          : undefined;
+
+      // Window: from now, look forward 10 years for safety; expandCron will
+      // bail at its internal 10k cap. For sane crons this is overkill but
+      // bounded.
+      const now = new Date();
+      const horizon = new Date(now.getTime() + 10 * 365 * 24 * 60 * 60 * 1000);
+      let fires: string[];
+      try {
+        fires = expandCron(expr, { from: now, to: horizon, timezone })
+          .slice(0, count)
+          .map((d) => d.toISOString());
+      } catch (err) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: `cron evaluation failed: ${(err as Error).message}`,
+        });
+      }
+      return reply.send({ fires, timezone: timezone ?? 'UTC' });
+    },
+  );
 
   // -------------------------------------------------------------------------
   // GET /schedules

@@ -14,7 +14,6 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import {
   handleScheduleRequest,
-  MAPScheduleRequestError,
   MAP_SCHEDULE_METHODS,
 } from '../../map/schedule-handler.js';
 import * as schedulesDAL from '../../db/dal/schedules.js';

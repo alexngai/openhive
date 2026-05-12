@@ -391,6 +391,97 @@ describe('DELETE /schedules/:id', () => {
   });
 });
 
+describe('GET /schedules/cron-preview', () => {
+  it('returns next N fire times for a valid cron', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/schedules/cron-preview?expr=' + encodeURIComponent('0 * * * *') + '&count=3',
+        headers: adminHeadersBodyless,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { fires: string[]; timezone: string };
+      expect(body.fires).toHaveLength(3);
+      expect(body.timezone).toBe('UTC');
+      // Each fire is a valid ISO timestamp strictly increasing.
+      const t0 = new Date(body.fires[0]).getTime();
+      const t1 = new Date(body.fires[1]).getTime();
+      const t2 = new Date(body.fires[2]).getTime();
+      expect(t0).toBeGreaterThan(Date.now() - 1000);
+      expect(t1).toBeGreaterThan(t0);
+      expect(t2).toBeGreaterThan(t1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('caps count at 20', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/schedules/cron-preview?expr=' + encodeURIComponent('* * * * *') + '&count=100',
+        headers: adminHeadersBodyless,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { fires: string[] };
+      expect(body.fires).toHaveLength(20);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects missing expr (400)', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/schedules/cron-preview',
+        headers: adminHeadersBodyless,
+      });
+      expect(res.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects invalid cron (400)', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/schedules/cron-preview?expr=garbage',
+        headers: adminHeadersBodyless,
+      });
+      expect(res.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('respects timezone', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'GET',
+        url:
+          '/schedules/cron-preview?expr=' +
+          encodeURIComponent('0 9 * * *') +
+          '&count=1&timezone=' +
+          encodeURIComponent('America/Los_Angeles'),
+        headers: adminHeadersBodyless,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { fires: string[]; timezone: string };
+      expect(body.timezone).toBe('America/Los_Angeles');
+      expect(body.fires).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe('pause / resume', () => {
   it('pause sets paused=true with optional reason', async () => {
     const app = await buildApp();

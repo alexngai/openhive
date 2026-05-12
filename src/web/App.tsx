@@ -42,6 +42,8 @@ const SpecNew = lazy(() => import('./pages/SpecNew').then(m => ({ default: m.Spe
 const SpecDetail = lazy(() => import('./pages/SpecDetail').then(m => ({ default: m.SpecDetail })));
 const Dispatch = lazy(() => import('./pages/Dispatch').then(m => ({ default: m.Dispatch })));
 const DispatchDetail = lazy(() => import('./pages/DispatchDetail').then(m => ({ default: m.DispatchDetail })));
+const Schedules = lazy(() => import('./pages/Schedules').then(m => ({ default: m.Schedules })));
+const ScheduleDetail = lazy(() => import('./pages/ScheduleDetail').then(m => ({ default: m.ScheduleDetail })));
 const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
 const MemoryDetail = lazy(() => import('./pages/MemoryDetail').then(m => ({ default: m.MemoryDetail })));
 const Skills = lazy(() => import('./pages/Skills').then(m => ({ default: m.Skills })));
@@ -114,6 +116,8 @@ export default function App() {
               <Route path="specs/:resourceId/:specId" element={<SpecDetail />} />
               <Route path="dispatch" element={<Dispatch />} />
               <Route path="dispatch/:id" element={<DispatchDetail />} />
+              <Route path="schedules" element={<Schedules />} />
+              <Route path="schedules/:id" element={<ScheduleDetail />} />
               {/* Redirect legacy /dispatches URLs */}
               <Route path="dispatches" element={<Navigate to="/dispatch" replace />} />
               <Route path="dispatches/:id" element={<DispatchIdRedirect />} />

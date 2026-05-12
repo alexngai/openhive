@@ -315,17 +315,31 @@ export function DispatchDetail() {
           <div className="text-xs mb-1" style={{ color: 'var(--color-text-muted)' }}>
             Initiator
           </div>
-          <span
-            className="inline-flex items-center gap-1 text-sm"
-            style={{ color: 'var(--color-text)' }}
-          >
-            <InitiatorIcon className="h-4 w-4" />
-            <span>{d.initiator_type}</span>
-            <span style={{ color: 'var(--color-text-muted)' }}>·</span>
-            <span className="font-mono text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-              {d.initiator_id}
+          {d.initiator_id.startsWith('schedule:') ? (
+            <Link
+              to={`/schedules/${d.initiator_id.slice('schedule:'.length)}`}
+              className="inline-flex items-center gap-1 text-sm text-honey-400 hover:text-honey-300"
+            >
+              <InitiatorIcon className="h-4 w-4" />
+              <span>schedule</span>
+              <span style={{ color: 'var(--color-text-muted)' }}>·</span>
+              <span className="font-mono text-xs">
+                {d.initiator_id.slice('schedule:'.length)}
+              </span>
+            </Link>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1 text-sm"
+              style={{ color: 'var(--color-text)' }}
+            >
+              <InitiatorIcon className="h-4 w-4" />
+              <span>{d.initiator_type}</span>
+              <span style={{ color: 'var(--color-text-muted)' }}>·</span>
+              <span className="font-mono text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                {d.initiator_id}
+              </span>
             </span>
-          </span>
+          )}
         </div>
 
         <div>
