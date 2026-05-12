@@ -115,9 +115,24 @@ The MAP SDK splits dispatch by id presence: `id` → `additionalHandlers`, no-id
 - REST: `GET /api/v1/map/swarms/:id/workspace-policy` (any authenticated agent), `PATCH /api/v1/map/swarms/:id/workspace-policy` (owner-only). Defined in `src/api/routes/map.ts`.
 - UI: spawn dialog policy form section (mode dropdown + repo selectors) in `src/web/pages/Swarms.tsx`.
 
+## Cascade diff protocol
+
+Hub fetches unified diffs from runtimes on demand. Three notification methods:
+
+- `cascade/diff.request` (hub → sidecar) — `{ request_id, stream_id, head, base?, file_paths?, files_only?, format: 'unified' }`. Sidecar resolves a worktree from `stream_id` (`adapter.listWorktrees().find(wt => wt.currentStream === streamId) ?? adapter.repoPath`), shells out to `git show` (single commit) or `git diff base..head` (range), with `--name-only` when `files_only: true`. 50 MB stdout cap; 30 s spawn timeout.
+- `cascade/diff.response` (sidecar → hub) — either inline (`streaming: false, diff, files_touched, truncated`) for blobs ≤ 512 KB raw, OR streaming announcement (`streaming: true, chunk_stream_id, total_size, files_touched`). An error variant carries `{ request_id, error: { code, message } }` for typed failure propagation.
+- `cascade/diff.chunk` (sidecar → hub) — base64-encoded chunk with `seq` ordering and `final: true` + `sha256` on the last chunk. Hub reassembles in `seq` order, verifies sha256, decodes UTF-8.
+
+Wiring:
+- Hub-side: `src/map/cascade-diff-protocol.ts` (`sendDiffRequest`, `handleDiffResponse`, `handleDiffChunk`, pending-request + chunk-stream maps). `src/map/ws-map.ts` dispatches inbound responses + chunks into the handler functions (mirrors the `trajectory/content.response` interceptor). `installAsResolverFetcher()` is called from `src/server.ts` once at boot to swap the diff resolver's default fetcher.
+- Capability gate: the resolver only sends requests when `hasCapability(swarmId, 'cascade.canServeDiff')` returns true. The sidecar declares this at MAP registration in `references/macro-agent/src/map/sidecar.ts`, conditional on `gitCascadeAdapter` being wired (declaring without an adapter would be a lie).
+- Sidecar-side handler: `references/macro-agent/src/map/cascade-diff-server.ts`, installed alongside cascade-action-handler in `cascade-bridge.ts` setup.
+
+Reuses the same chunking idiom as `src/map/sync-client.ts` (`INLINE_TRANSCRIPT_THRESHOLD`, `STREAM_CHUNK_SIZE`, `chunkBuffer`) — duplicated rather than factored into a shared module per design OD2.
+
 ## Related subsystems
 
 - **Trajectory data flow**: `src/sessions/CLAUDE.md` — what happens after a checkpoint lands here.
 - **Task coordination**: `src/coordination/CLAUDE.md` — the relay path for task events between swarms.
-- **Cascade**: `src/cascade/CLAUDE.md` — observes `x-cascade/*` MAP events the handler in this directory writes.
+- **Cascade**: `src/cascade/CLAUDE.md` — observes `x-cascade/*` MAP events the handler in this directory writes, and consumes the `cascade/diff.request` flow above.
 - **SwarmCraft integration**: `src/swarmcraft/CLAUDE.md` — agent projection ownership, MAP client ownership.

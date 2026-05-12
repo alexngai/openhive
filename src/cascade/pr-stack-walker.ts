@@ -25,9 +25,17 @@
  * `push_required → blocked_by_parent` correctly when parallel branches
  * exist: a missing branch on one fork doesn't block siblings (D18, D20).
  *
- * Terminal-status streams (`merged`, `abandoned`) are filtered out — we
- * still descend through them (in case live children exist below) but they
- * never appear in the plan as candidates for a PR.
+ * Skip-statuses (`merged`, `abandoned`, `paused`) are filtered out — we
+ * still descend *through* them (in case live children exist below), and
+ * base/ancestor resolution treats them as transparent: a paused mid-stack
+ * stream collapses out of the plan, and its live descendants base on the
+ * next-up live ancestor (or trunk). `conflicted` stays in the plan — it
+ * represents work-in-progress that the operator may still want to push.
+ *
+ * Concurrency: the entire walk runs inside `db.transaction(...)` so the
+ * children index and the per-node reads share one consistent snapshot.
+ * A concurrent `handleStreamMerged` / `handleCascadeRebased` event landing
+ * mid-walk can't produce a plan stitched from mixed projection states.
  */
 
 import {
@@ -38,7 +46,15 @@ import {
 import { findSwarmById } from '../db/dal/map.js';
 import { getDatabase } from '../db/index.js';
 
-const TERMINAL_STATUSES = new Set(['merged', 'abandoned']);
+/**
+ * Statuses skipped (collapsed out) in the plan. `paused` joins
+ * `merged`/`abandoned`: operator-paused streams are explicitly out of
+ * forward progress, so they shouldn't appear as PR candidates and their
+ * live descendants should base on the next live ancestor up (D-paused).
+ * `conflicted` stays out of this set — those streams still need attention
+ * and may still be pushable.
+ */
+const SKIP_STATUSES = new Set(['merged', 'abandoned', 'paused']);
 const DEFAULT_TRUNK = 'main';
 
 export interface PRStackEntry {
@@ -55,13 +71,15 @@ export interface PRStackEntry {
   /** PR `base` — typically the parent's head_branch, or trunk for the root. */
   base_branch: string;
   /**
-   * Walker's notion of "which fork lineage does this entry belong to" —
-   * the row id of the most recent branching ancestor (or the root if no
-   * branching occurs). Two entries with the same lineage_id share the
-   * same chain of unpushed-branch risk; entries with different lineage_ids
-   * are independent for D18 propagation.
+   * The chain of `stream_row_id`s from the walk root down to (but not
+   * including) this entry. Empty for the root itself. The route uses
+   * this for D18 `blocked_by_parent` propagation: an entry is blocked
+   * iff any of its ancestors hit `push_required`. This replaces the
+   * earlier `lineage_id`, which collapsed fork siblings into a single
+   * "lineage" but missed root-with-immediate-fork cases (per code
+   * review 2026-05-11).
    */
-  lineage_id: string;
+  ancestor_row_ids: string[];
 }
 
 export interface PRStackPlanResult {
@@ -83,6 +101,14 @@ export class PRStackRootNotFoundError extends Error {
 // ============================================================================
 
 export function buildPRStackPlan(rootRowId: string): PRStackPlanResult {
+  // Snapshot the whole walk so children fan-out, trunk lookup, and the
+  // root read all share one SQLite read-view. Without this, a concurrent
+  // cascade event (`stream.merged`, `cascade.rebased`) landing mid-walk
+  // could produce a plan stitched from mixed projection states.
+  return getDatabase().transaction(() => doBuildPRStackPlan(rootRowId))();
+}
+
+function doBuildPRStackPlan(rootRowId: string): PRStackPlanResult {
   const root = getStreamByRowId(rootRowId);
   if (!root) throw new PRStackRootNotFoundError(rootRowId);
 
@@ -102,7 +128,7 @@ export function buildPRStackPlan(rootRowId: string): PRStackPlanResult {
   function leadsToLive(node: CascadeStream): boolean {
     const cached = leadsToLiveCache.get(node.id);
     if (cached !== undefined) return cached;
-    if (!TERMINAL_STATUSES.has(node.status)) {
+    if (!SKIP_STATUSES.has(node.status)) {
       leadsToLiveCache.set(node.id, true);
       return true;
     }
@@ -122,7 +148,8 @@ export function buildPRStackPlan(rootRowId: string): PRStackPlanResult {
   function descend(
     node: CascadeStream,
     parentEntry: PRStackEntry | null,
-    lineageId: string,
+    /** Chain of stream_row_ids from root to this node's parent (inclusive). */
+    ancestors: string[],
   ): void {
     if (visited.has(node.id)) return;
     visited.add(node.id);
@@ -133,16 +160,13 @@ export function buildPRStackPlan(rootRowId: string): PRStackPlanResult {
     // grandchildren take its place in the plan, treating the merged
     // node as transparent (effectively collapsed out).
     const productiveChildren = allChildren.filter(leadsToLive);
-    const isFork = productiveChildren.length > 1;
 
-    if (TERMINAL_STATUSES.has(node.status)) {
-      // Skip this node in the plan but walk through it. parent_entry +
-      // lineage_id pass through unchanged for single-child paths; a
-      // terminal node with multiple productive children forks the
-      // lineage just like a live one would have.
+    if (SKIP_STATUSES.has(node.status)) {
+      // Skip this node in the plan, but walk through it. parent_entry
+      // and ancestors pass through unchanged — the merged node is
+      // transparent for both base resolution and blocking propagation.
       for (const child of productiveChildren) {
-        const childLineage = isFork ? child.id : lineageId;
-        descend(child, parentEntry, childLineage);
+        descend(child, parentEntry, ancestors);
       }
       return;
     }
@@ -157,20 +181,22 @@ export function buildPRStackPlan(rootRowId: string): PRStackPlanResult {
       status: node.status,
       head_branch: head,
       base_branch: base,
-      lineage_id: lineageId,
+      ancestor_row_ids: ancestors,
     };
     entries.push(entry);
 
+    // Children inherit this entry as their ancestor + this entry's row id
+    // appended to the chain.
+    const childAncestors = [...ancestors, node.id];
     for (const child of productiveChildren) {
-      const childLineage = isFork ? child.id : lineageId;
-      descend(child, entry, childLineage);
+      descend(child, entry, childAncestors);
     }
   }
 
-  // Root's lineage_id is itself. If a parent above the root exists (this
-  // root row isn't a top-level root), we still treat it as the lineage
-  // anchor for this walk — the caller asked for descendants of THIS row.
-  descend(root, null, root.id);
+  // Root has an empty ancestor list — it's the root of the walk regardless
+  // of whether parent_stream_id exists above it (the caller asked for
+  // descendants of THIS row specifically).
+  descend(root, null, []);
 
   return { entries, trunk };
 }

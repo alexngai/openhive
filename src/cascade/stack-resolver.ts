@@ -5,9 +5,11 @@
  * `parent_stream_id` foreign key inside `cascade_streams`) and produce the
  * **linear active-subset** of the stack:
  *
- *   - Skip children whose `status` is `merged` or `abandoned` — they've
- *     already integrated upward or been discarded, so they don't contribute
- *     to a forward-facing stack diff.
+ *   - Skip children whose `status` is `merged`, `abandoned`, or `paused` —
+ *     merged/abandoned have already integrated upward or been discarded;
+ *     `paused` is operator-suspended and explicitly opted out of forward
+ *     progress until resumed. `conflicted` stays *in* the walk — it still
+ *     represents work-in-progress that needs attention.
  *   - Reject if any node still has more than one active child. A stacked
  *     PR set is by definition linear at the unmerged front; the walker
  *     errors out with `NonLinearStackError` carrying the branching node
@@ -17,6 +19,12 @@
  * SHAs that frame the cumulative diff. `head` is derived per-stream via
  * `getLatestCommitForStream` since `cascade_streams` doesn't denormalize
  * head (see Stream 2 D1 in docs/design/cascade-diff-and-stacked-prs.md).
+ *
+ * Concurrency: the whole walk runs inside `db.transaction(...)` so all
+ * reads share a consistent SQLite snapshot. Without this, a concurrent
+ * `handleStreamMerged` / `handleCascadeRebased` landing between
+ * `getStreamByRowId(root)` and the children-fanout reads could produce a
+ * plan stitched from mixed pre- / post-event state.
  *
  * No cycles: `cascade_streams.parent_stream_id` is the cascade `stream_id`
  * (not the row id) of the parent, which by construction can't form a
@@ -33,8 +41,14 @@ import {
 } from '../db/dal/cascade-streams.js';
 import { getDatabase } from '../db/index.js';
 
-/** Status values that exclude a node from the active-subset walk. */
-const TERMINAL_STATUSES = new Set(['merged', 'abandoned']);
+/**
+ * Statuses that exclude a node from the active-subset walk.
+ * `paused` is treated like terminal for stack semantics — operator-paused
+ * streams shouldn't surface in a stack diff or block siblings via fork
+ * detection. `conflicted` is deliberately NOT in this set: it represents
+ * work-in-progress that still belongs in the chain.
+ */
+const SKIP_STATUSES = new Set(['merged', 'abandoned', 'paused']);
 
 export interface LinearStackEntry {
   /** Hub row id. */
@@ -131,6 +145,15 @@ export class StackHasNoBaseError extends Error {
  * @throws StackHasNoCommitsError leaf has no commits → empty diff range
  */
 export function resolveLinearStack(rootRowId: string): LinearStackResult {
+  // Snapshot the whole walk so children fan-out is consistent with the
+  // root read. `getDatabase()` returns the raw better-sqlite3 Database
+  // whose `transaction(fn)` returns a *thunk* that must be invoked — note
+  // the trailing `()`. Inner throws propagate (better-sqlite3 rolls back
+  // automatically) and the result is returned.
+  return getDatabase().transaction(() => doResolveLinearStack(rootRowId))();
+}
+
+function doResolveLinearStack(rootRowId: string): LinearStackResult {
   const root = getStreamByRowId(rootRowId);
   if (!root) throw new StackNotFoundError(rootRowId);
 
@@ -221,7 +244,7 @@ function getActiveChildren(parent: CascadeStream): CascadeStream[] {
   for (const row of rows) {
     const child = getStreamBySwarmAndId(parent.source_swarm_id, row.stream_id);
     if (!child) continue;
-    if (TERMINAL_STATUSES.has(child.status)) continue;
+    if (SKIP_STATUSES.has(child.status)) continue;
     out.push(child);
   }
   return out;

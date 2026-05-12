@@ -263,6 +263,29 @@ describe('POST /cascade/streams/:id/pr-stack', () => {
     });
   });
 
+  it('root push_required blocks immediate fork descendants (D18 — code review regression)', async () => {
+    // A → {B, C}. A is push_required → both B and C must be blocked.
+    // Previously broken: the lineage_id scheme gave B and C their own
+    // lineages on the fork, so adding A's lineage to `blockedLineages`
+    // missed both children. The ancestor_row_ids fix is what this test
+    // pins down.
+    const { rowByStream } = await setupStack(agentId, agentId, [
+      { stream_id: 'A', publish_branch: 'feat/a' },
+      { stream_id: 'B', parent: 'A', publish_branch: 'feat/b' },
+      { stream_id: 'C', parent: 'A', publish_branch: 'feat/c' },
+    ]);
+    // No branches on origin → A is push_required.
+    const res = await postStack(rowByStream.get('A')!);
+    const byStream = Object.fromEntries(
+      res.body.data!.entries.map((e) => [e.cascade_stream_id, e.result_status]),
+    );
+    expect(byStream).toEqual({
+      A: 'push_required',
+      B: 'blocked_by_parent',
+      C: 'blocked_by_parent',
+    });
+  });
+
   it('does not block siblings of a push_required ancestor (D20)', async () => {
     // A → {B, C} branching. B is push_required, C should still proceed.
     const { rowByStream } = await setupStack(agentId, agentId, [

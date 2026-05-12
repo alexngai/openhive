@@ -39,6 +39,18 @@ import {
 
 const CAPABILITY_PATH = 'cascade.canServeDiff';
 
+/**
+ * Stream statuses where cache writes are unsafe — the projection has
+ * either already transitioned past relevance (merged/abandoned) or the
+ * eviction tied to that transition may have just fired. Re-checking
+ * status after the on-demand fetch closes the race window where
+ * `handleStreamMerged` calls `evictByStream` *between* our pre-fetch
+ * read and the `putDiff` write, leaving a stale row for an already
+ * evicted stream. Doesn't cover the `cascade.rebased` race (status
+ * stays `active` post-rebase) — a small leak class we accept for now.
+ */
+const TERMINAL_FOR_CACHE = new Set(['merged', 'abandoned']);
+
 // ============================================================================
 // MapDiffFetcher — swappable transport for tiers 3/4
 // ============================================================================
@@ -149,7 +161,7 @@ export async function resolveCommitDiff(
   // Tier 5: write-through cache. files_only payloads are not cached —
   // name-only output is cheap to recompute and the cache key doesn't
   // distinguish files-only from full blobs.
-  if (!input.files_only) {
+  if (!input.files_only && !streamWentTerminal(input.stream_row_id)) {
     try {
       cache.putDiff({
         stream_id: stream.stream_id,
@@ -295,7 +307,10 @@ export async function resolveStackDiff(
     if (e instanceof StackHasNoBaseError || e instanceof StackHasNoCommitsError) {
       return err('bad_request', e.message);
     }
-    return err('internal', (e as Error).message);
+    // Unexpected — don't leak the raw message (could include DB internals,
+    // stack traces, etc). Log for ops; surface a generic 'internal'.
+    console.error('[cascade] resolveStackDiff: unexpected walker error', e);
+    return err('internal', 'unexpected error resolving stack');
   }
 
   // Walker guarantees lowest_base + highest_head are non-null when it returns.
@@ -368,8 +383,10 @@ async function rangeDiff(args: RangeDiffArgs): Promise<DiffResult> {
 
   if (!fetched.ok) return fetched;
 
-  // Tier 5: write-through.
-  if (!args.files_only) {
+  // Tier 5: write-through. Skip if the stream went terminal mid-fetch
+  // — the eviction hook may have already fired, and we don't want to
+  // leak a fresh cache row for a closed stream.
+  if (!args.files_only && !streamWentTerminal(args.stream.id)) {
     try {
       cache.putDiff({
         stream_id: args.cacheStreamId,
@@ -385,6 +402,24 @@ async function rangeDiff(args: RangeDiffArgs): Promise<DiffResult> {
   }
 
   return fetched;
+}
+
+/**
+ * Re-read the stream row to check if its status moved into a
+ * cache-unsafe state during the on-demand fetch window. Treats a missing
+ * row as terminal too — defensive against the row being deleted (which
+ * shouldn't happen but, if it did, would imply the cache write is
+ * stranded). Returns true on any read error: we'd rather drop a cache
+ * write than persist a row we can't validate.
+ */
+function streamWentTerminal(stream_row_id: string): boolean {
+  try {
+    const current = getStreamByRowId(stream_row_id);
+    if (!current) return true;
+    return TERMINAL_FOR_CACHE.has(current.status);
+  } catch {
+    return true;
+  }
 }
 
 /** Re-export for tests that want to assert on the payload shape. */

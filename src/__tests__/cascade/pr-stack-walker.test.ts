@@ -34,7 +34,7 @@ interface StreamSpec {
   branch_name?: string;
   /** Explicit publish-branch alias (set via PATCH /branch). */
   publish_branch?: string;
-  status?: 'active' | 'merged' | 'abandoned' | 'conflicted';
+  status?: 'active' | 'merged' | 'abandoned' | 'conflicted' | 'paused';
 }
 
 interface SetupOptions {
@@ -108,7 +108,7 @@ describe('pr-stack-walker — buildPRStackPlan', () => {
       expect(plan.trunk).toBe('main');
       expect(plan.entries.map((e) => e.cascade_stream_id)).toEqual(['A']);
       expect(plan.entries[0].base_branch).toBe('main');
-      expect(plan.entries[0].lineage_id).toBe(plan.entries[0].stream_row_id);
+      expect(plan.entries[0].ancestor_row_ids).toEqual([]);
     });
 
     it('A → B → C with base resolution chain', () => {
@@ -124,17 +124,20 @@ describe('pr-stack-walker — buildPRStackPlan', () => {
       // A: trunk base
       expect(plan.entries[0].base_branch).toBe('main');
       expect(plan.entries[0].head_branch).toBe('feature/a');
+      expect(plan.entries[0].ancestor_row_ids).toEqual([]);
       // B's base = A's head_branch
       expect(plan.entries[1].base_branch).toBe('feature/a');
       // B's head = its publish_branch (none) → defaultPublishBranch from name 'B'
       // i.e. 'cascade/B'
       expect(plan.entries[1].head_branch).toBe('cascade/B');
+      expect(plan.entries[1].ancestor_row_ids).toEqual([rowByStream.get('A')]);
       // C's base = B's head
       expect(plan.entries[2].base_branch).toBe('cascade/B');
       expect(plan.entries[2].head_branch).toBe('cascade/C');
-      // All inherit root's lineage (no branching)
-      const lineage = plan.entries[0].lineage_id;
-      expect(plan.entries.every((e) => e.lineage_id === lineage)).toBe(true);
+      expect(plan.entries[2].ancestor_row_ids).toEqual([
+        rowByStream.get('A'),
+        rowByStream.get('B'),
+      ]);
     });
 
     it('honors swarm.metadata.trunk_branch override', () => {
@@ -149,7 +152,7 @@ describe('pr-stack-walker — buildPRStackPlan', () => {
   });
 
   describe('branching (Y-shape, D20)', () => {
-    it('A → {B, C} produces both B and C with distinct lineages, sharing A as base', () => {
+    it('A → {B, C} — both share A as ancestor + base, root has empty ancestors', () => {
       const { rowByStream } = setupSwarmAndStreams({
         streams: [
           { stream_id: 'A', publish_branch: 'feat/a' },
@@ -158,22 +161,19 @@ describe('pr-stack-walker — buildPRStackPlan', () => {
         ],
       });
       const plan = buildPRStackPlan(rowByStream.get('A')!);
-      // A first, then B and C (order not strictly defined between siblings).
       expect(plan.entries.map((e) => e.cascade_stream_id).sort()).toEqual(['A', 'B', 'C']);
       const a = plan.entries.find((e) => e.cascade_stream_id === 'A')!;
       const b = plan.entries.find((e) => e.cascade_stream_id === 'B')!;
       const c = plan.entries.find((e) => e.cascade_stream_id === 'C')!;
       expect(b.base_branch).toBe('feat/a');
       expect(c.base_branch).toBe('feat/a');
-      // Each fork child gets its own lineage_id.
-      expect(b.lineage_id).not.toBe(c.lineage_id);
-      expect(b.lineage_id).toBe(b.stream_row_id);
-      expect(c.lineage_id).toBe(c.stream_row_id);
-      // Root has its own lineage (itself).
-      expect(a.lineage_id).toBe(a.stream_row_id);
+      // Root has no ancestors; fork children both list root.
+      expect(a.ancestor_row_ids).toEqual([]);
+      expect(b.ancestor_row_ids).toEqual([rowByStream.get('A')]);
+      expect(c.ancestor_row_ids).toEqual([rowByStream.get('A')]);
     });
 
-    it('A → B → {C, D} — fork happens below root; B and ancestors share lineage', () => {
+    it('A → B → {C, D} — fork descendants share B + A as ancestors', () => {
       const { rowByStream } = setupSwarmAndStreams({
         streams: [
           { stream_id: 'A' },
@@ -187,12 +187,10 @@ describe('pr-stack-walker — buildPRStackPlan', () => {
       const b = plan.entries.find((e) => e.cascade_stream_id === 'B')!;
       const c = plan.entries.find((e) => e.cascade_stream_id === 'C')!;
       const d = plan.entries.find((e) => e.cascade_stream_id === 'D')!;
-      // A and B share lineage (linear so far).
-      expect(a.lineage_id).toBe(b.lineage_id);
-      // C and D each start new lineages.
-      expect(c.lineage_id).toBe(c.stream_row_id);
-      expect(d.lineage_id).toBe(d.stream_row_id);
-      expect(c.lineage_id).not.toBe(d.lineage_id);
+      expect(a.ancestor_row_ids).toEqual([]);
+      expect(b.ancestor_row_ids).toEqual([rowByStream.get('A')]);
+      expect(c.ancestor_row_ids).toEqual([rowByStream.get('A'), rowByStream.get('B')]);
+      expect(d.ancestor_row_ids).toEqual([rowByStream.get('A'), rowByStream.get('B')]);
     });
   });
 
@@ -222,6 +220,36 @@ describe('pr-stack-walker — buildPRStackPlan', () => {
       });
       const plan = buildPRStackPlan(rowByStream.get('A')!);
       expect(plan.entries.map((e) => e.cascade_stream_id)).toEqual(['A']);
+    });
+
+    it('skips paused stream in the plan but descends through it (transparent)', () => {
+      // A → paused-B → C. Paused-B should collapse out: C surfaces with
+      // base = A's head_branch, ancestor_row_ids should NOT include B.
+      const { rowByStream } = setupSwarmAndStreams({
+        streams: [
+          { stream_id: 'A' },
+          { stream_id: 'B', parent: 'A', status: 'paused' },
+          { stream_id: 'C', parent: 'B' },
+        ],
+      });
+      const plan = buildPRStackPlan(rowByStream.get('A')!);
+      expect(plan.entries.map((e) => e.cascade_stream_id)).toEqual(['A', 'C']);
+      const a = plan.entries[0];
+      const c = plan.entries[1];
+      expect(c.base_branch).toBe(a.head_branch);
+      // Paused B was transparent — only A is in C's ancestor chain.
+      expect(c.ancestor_row_ids).toEqual([rowByStream.get('A')]);
+    });
+
+    it('does NOT skip conflicted stream — still in plan', () => {
+      const { rowByStream } = setupSwarmAndStreams({
+        streams: [
+          { stream_id: 'A' },
+          { stream_id: 'B', parent: 'A', status: 'conflicted' },
+        ],
+      });
+      const plan = buildPRStackPlan(rowByStream.get('A')!);
+      expect(plan.entries.map((e) => e.cascade_stream_id)).toEqual(['A', 'B']);
     });
 
     it('descends through chain of merged ancestors', () => {

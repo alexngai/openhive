@@ -27,7 +27,7 @@ interface StreamSpec {
   parent?: string;
   base?: string;
   commits?: Array<{ hash: string; ts?: string }>;
-  status?: 'active' | 'merged' | 'abandoned' | 'conflicted';
+  status?: 'active' | 'merged' | 'abandoned' | 'conflicted' | 'paused';
 }
 
 function seed(specs: StreamSpec[]): Map<string, string> {
@@ -38,7 +38,7 @@ function seed(specs: StreamSpec[]): Map<string, string> {
       source_swarm_id: SWARM,
       source_agent_id: 'agent',
       name: spec.stream_id,
-      base_commit: spec.base ?? null,
+      base_commit: spec.base,
       parent_stream_id: spec.parent,
     });
     rowByStream.set(spec.stream_id, stream.id);
@@ -130,6 +130,29 @@ describe('stack-resolver', () => {
       ]);
       const r = resolveLinearStack(rows.get('A')!);
       expect(r.entries.map((e) => e.cascade_stream_id)).toEqual(['A', 'B']);
+    });
+
+    it('skips paused siblings — paused is operator-suspended, like terminal for stack purposes', () => {
+      const rows = seed([
+        { stream_id: 'A', base: 'base-A', commits: [{ hash: 'A1' }] },
+        { stream_id: 'B-paused', parent: 'A', base: 'A1', commits: [{ hash: 'BP1' }], status: 'paused' },
+        { stream_id: 'B-active', parent: 'A', base: 'A1', commits: [{ hash: 'BA1' }] },
+      ]);
+      const r = resolveLinearStack(rows.get('A')!);
+      expect(r.entries.map((e) => e.cascade_stream_id)).toEqual(['A', 'B-active']);
+    });
+
+    it('two paused siblings + one active = linear (paused does not count as branching)', () => {
+      // Without paused-as-skip this would throw NonLinearStackError (3 children
+      // at A). With paused skipped, only B-active counts as an active child.
+      const rows = seed([
+        { stream_id: 'A', base: 'base-A', commits: [{ hash: 'A1' }] },
+        { stream_id: 'P1', parent: 'A', base: 'A1', commits: [{ hash: 'P1c' }], status: 'paused' },
+        { stream_id: 'P2', parent: 'A', base: 'A1', commits: [{ hash: 'P2c' }], status: 'paused' },
+        { stream_id: 'B-active', parent: 'A', base: 'A1', commits: [{ hash: 'BA1' }] },
+      ]);
+      const r = resolveLinearStack(rows.get('A')!);
+      expect(r.entries.map((e) => e.cascade_stream_id)).toEqual(['A', 'B-active']);
     });
   });
 

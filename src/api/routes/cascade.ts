@@ -929,9 +929,13 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       const draft = request.body?.draft ?? false;
-      // Track lineage_ids that hit push_required so descendants in that
-      // lineage skip GitHub entirely and report blocked_by_parent.
-      const blockedLineages = new Set<string>();
+      // Track stream_row_ids of entries that hit push_required (or fail
+      // outright). D18: any plan entry whose `ancestor_row_ids` includes
+      // one of these is blocked_by_parent without contacting GitHub.
+      // Earlier impl used `lineage_id` which collapsed fork siblings
+      // into a shared marker but missed root-with-immediate-fork cases
+      // (code review 2026-05-11).
+      const blockedAncestors = new Set<string>();
 
       type PRStackOutEntry = PRStackEntry & {
         result_status:
@@ -949,8 +953,10 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       for (const entry of plan.entries) {
         const base: PRStackOutEntry = { ...entry, result_status: 'failed' };
 
-        // D18: skip if this lineage already saw a push_required ancestor.
-        if (blockedLineages.has(entry.lineage_id)) {
+        // D18: skip if any ancestor in this entry's chain hit
+        // push_required (or failed before us). Walker emits ancestors
+        // parent-first, so checking by stream_row_id is unambiguous.
+        if (entry.ancestor_row_ids.some((id) => blockedAncestors.has(id))) {
           base.result_status = 'blocked_by_parent';
           results.push(base);
           continue;
@@ -995,15 +1001,10 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
 
         if (!onOrigin) {
           base.result_status = 'push_required';
-          // Block descendants of this entry's lineage. Subsequent
-          // entries with this entry's stream_row_id as their lineage_id
-          // are direct fork-descendants; same-lineage entries (the
-          // linear chain below this fork) are also blocked.
-          blockedLineages.add(entry.lineage_id);
-          // Also: descendants of this specific entry (not a fork ancestor
-          // of theirs) start new lineages based on the entry's row id —
-          // capture that lineage too so a non-forking chain still blocks.
-          blockedLineages.add(entry.stream_row_id);
+          // D18: any descendant whose ancestor chain contains this row
+          // is blocked. The walker emits in parent-before-child order,
+          // so adding this row id now suffices for all future entries.
+          blockedAncestors.add(entry.stream_row_id);
           results.push(base);
           continue;
         }

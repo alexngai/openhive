@@ -1,9 +1,28 @@
 const API_BASE = '/api/v1';
 
-export interface ApiError {
+/** Body shape every openhive route returns on non-2xx (when JSON-parseable). */
+export interface ApiErrorBody {
   error: string;
   message?: string;
   details?: unknown;
+}
+
+/**
+ * Thrown by `ApiClient.request` on non-2xx responses. Carries the HTTP
+ * status and the parsed JSON body so consumers can branch on the typed
+ * error code (e.g. `non_linear_stack`) instead of substring-matching
+ * `.message`. Falls back to `{ error: 'Unknown error' }` if the body
+ * isn't valid JSON.
+ */
+export class ApiClientError extends Error {
+  status: number;
+  body: ApiErrorBody;
+  constructor(status: number, body: ApiErrorBody) {
+    super(body.message || body.error || `HTTP ${status}`);
+    this.name = 'ApiClientError';
+    this.status = status;
+    this.body = body;
+  }
 }
 
 export class ApiClient {
@@ -57,8 +76,8 @@ export class ApiClient {
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(error.message || error.error || `HTTP ${response.status}`);
+      const body = (await response.json().catch(() => ({ error: 'Unknown error' }))) as ApiErrorBody;
+      throw new ApiClientError(response.status, body);
     }
 
     // Handle empty responses
@@ -103,8 +122,8 @@ export class ApiClient {
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(error.message || error.error || `HTTP ${response.status}`);
+      const body = (await response.json().catch(() => ({ error: 'Unknown error' }))) as ApiErrorBody;
+      throw new ApiClientError(response.status, body);
     }
 
     return response.json();
