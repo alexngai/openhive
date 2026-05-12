@@ -97,7 +97,7 @@ function rowToResource(row: Record<string, unknown>): SyncableResource {
     local_path: (row.local_path as string | null) ?? null,
     metadata,
     created_at: row.created_at as string,
-    updated_at: (row.updated_at as string) ?? row.created_at as string,
+    updated_at: (row.updated_at as string | null) ?? (row.created_at as string),
   };
 }
 
@@ -157,35 +157,49 @@ function listCandidateRows(
   return out;
 }
 
+type OpenteamsBundle = LoadoutResource | TeamResource;
+type Bundler = (
+  resourceType: OpenteamsResourceType,
+  row: SyncableResource,
+) => Promise<OpenteamsBundle | null>;
+
 /**
  * Bundle a candidate row via the inline path *only* (no git clone). Used
  * for the cheap first pass. Returns null if the row lacks inline content
  * — caller falls through to the git pass.
  */
-async function bundleInline(
-  resourceType: OpenteamsResourceType,
-  row: SyncableResource,
-): Promise<LoadoutResource | TeamResource | null> {
+const bundleInline: Bundler = async (resourceType, row) => {
   // Force metadata-strategy view so `bundleXxxFromRow` always takes the
   // in-memory path even if the row carries a real git remote.
   const inlineView: SyncableResource = { ...row, sync_strategy: 'metadata' };
   return resourceType === 'loadout'
     ? bundleLoadoutFromRow(inlineView)
     : bundleTeamTemplateFromRow(inlineView);
-}
+};
 
 /**
  * Bundle a candidate row via the git path — clones if needed. Used for
  * the second, expensive pass.
  */
-async function bundleGit(
-  resourceType: OpenteamsResourceType,
-  row: SyncableResource,
-): Promise<LoadoutResource | TeamResource | null> {
+const bundleGit: Bundler = async (resourceType, row) => {
   const promoted = promoteGitBacked(row);
   return resourceType === 'loadout'
     ? bundleLoadoutFromRow(promoted)
     : bundleTeamTemplateFromRow(promoted);
+};
+
+/**
+ * Erase the openteams-specific metadata generics to the abstract
+ * `MAPResource` shape the bundle store contract speaks. The double cast
+ * is intentional: `LoadoutResourceMetadata` / `TeamResourceMetadata` are
+ * strict interfaces without an index signature, so structurally they
+ * don't satisfy `MAPResource<Record<string, unknown>>` even though every
+ * runtime instance is a valid `MAPResource`. Fixing this cleanly would
+ * require adding `[key: string]: unknown` upstream in openteams; until
+ * then this boundary cast is the right place to encapsulate the variance.
+ */
+function asMAPResource(bundle: OpenteamsBundle): MAPResource {
+  return bundle as unknown as MAPResource;
 }
 
 /**
@@ -197,7 +211,7 @@ async function tryCandidate(
   resourceType: OpenteamsResourceType,
   row: SyncableResource,
   expectedId: string,
-  bundler: (rt: OpenteamsResourceType, r: SyncableResource) => Promise<LoadoutResource | TeamResource | null>,
+  bundler: Bundler,
 ): Promise<MAPResource | null> {
   try {
     const bundle = await bundler(resourceType, row);
@@ -209,7 +223,7 @@ async function tryCandidate(
       );
       return null;
     }
-    return bundle as unknown as MAPResource;
+    return asMAPResource(bundle);
   } catch (err) {
     console.warn(
       `[openteams] cross-instance resolve failed for ${resourceType} row ${row.id}: ${(err as Error).message}`,
