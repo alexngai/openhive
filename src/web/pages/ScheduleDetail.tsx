@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
+import cronstrue from 'cronstrue';
 import {
   useSchedule,
   useUpdateSchedule,
@@ -18,7 +19,10 @@ import {
   useResumeSchedule,
   useDeleteSchedule,
   useCronPreview,
+  getPayloadKind,
   type Schedule,
+  type DispatchSpecPayload,
+  type DispatchPromptPayload,
 } from '../hooks/useSchedules';
 import { useSchedulesRealtime } from '../hooks/useSchedulesRealtime';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -98,14 +102,7 @@ function Header({
           <p className="mt-1 font-mono text-xs text-zinc-500">{schedule.id}</p>
 
           <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
-            <MetaRow label="Spec">
-              <Link
-                to={`/specs/${schedule.payload.spec_ref.resource_id}/${schedule.payload.spec_ref.spec_id}`}
-                className="font-mono text-honey-400 hover:text-honey-300"
-              >
-                {schedule.payload.spec_ref.spec_id}
-              </Link>
-            </MetaRow>
+            <ScheduleWorkRow schedule={schedule} />
             <MetaRow label="Targets">
               <span className="font-mono text-zinc-200">{schedule.payload.target_swarm_ids.length} swarm{schedule.payload.target_swarm_ids.length === 1 ? '' : 's'}</span>
             </MetaRow>
@@ -334,6 +331,14 @@ function CronPreviewInline({ cron, timezone }: { cron: string; timezone: string 
   const tz = timezone.trim() || undefined;
   const { data, isLoading, error } = useCronPreview(cron, { timezone: tz, count: 3 });
   if (!cron) return null;
+
+  let description = '';
+  try {
+    description = cronstrue.toString(cron, { use24HourTimeFormat: false });
+  } catch {
+    /* invalid — handled below */
+  }
+
   if (isLoading) {
     return <p className="text-[10px] text-zinc-500">Computing preview…</p>;
   }
@@ -342,15 +347,54 @@ function CronPreviewInline({ cron, timezone }: { cron: string; timezone: string 
   }
   if (!data || data.fires.length === 0) return null;
   return (
-    <div className="rounded border border-zinc-800 bg-zinc-950/40 px-2 py-1.5">
-      <div className="text-[10px] font-medium text-zinc-500">
-        Next {data.fires.length} fires ({data.timezone})
+    <div className="space-y-1">
+      {description && (
+        <p className="text-[11px] italic text-zinc-300">{description}</p>
+      )}
+      <div className="rounded border border-zinc-800 bg-zinc-950/40 px-2 py-1.5">
+        <div className="text-[10px] font-medium text-zinc-500">
+          Next {data.fires.length} fires ({data.timezone})
+        </div>
+        <ul className="mt-0.5 space-y-0.5 text-[11px] text-zinc-300">
+          {data.fires.map((f) => (
+            <li key={f} className="font-mono">{new Date(f).toLocaleString()}</li>
+          ))}
+        </ul>
       </div>
-      <ul className="mt-0.5 space-y-0.5 text-[11px] text-zinc-300">
-        {data.fires.map((f) => (
-          <li key={f} className="font-mono">{new Date(f).toLocaleString()}</li>
-        ))}
-      </ul>
     </div>
+  );
+}
+
+function ScheduleWorkRow({ schedule }: { schedule: Schedule }) {
+  const kind = getPayloadKind(schedule.payload);
+  if (kind === 'dispatch_prompt') {
+    const p = schedule.payload as DispatchPromptPayload;
+    return (
+      <>
+        <div className="text-zinc-500">Work</div>
+        <div className="text-zinc-200">
+          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-zinc-300">
+            ad-hoc prompt
+          </span>
+          <div className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs text-zinc-300">
+            {p.prompt}
+          </div>
+        </div>
+      </>
+    );
+  }
+  const p = schedule.payload as DispatchSpecPayload;
+  return (
+    <>
+      <div className="text-zinc-500">Spec</div>
+      <div className="text-zinc-200">
+        <Link
+          to={`/specs/${p.spec_ref.resource_id}/${p.spec_ref.spec_id}`}
+          className="font-mono text-honey-400 hover:text-honey-300"
+        >
+          {p.spec_ref.spec_id}
+        </Link>
+      </div>
+    </>
   );
 }

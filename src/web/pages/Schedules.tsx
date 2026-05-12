@@ -2,7 +2,14 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Clock, Pause, Play, AlertTriangle, Plus } from 'lucide-react';
 import clsx from 'clsx';
-import { useSchedules, type Schedule } from '../hooks/useSchedules';
+import cronstrue from 'cronstrue';
+import {
+  useSchedules,
+  getPayloadKind,
+  type Schedule,
+  type DispatchSpecPayload,
+  type DispatchPromptPayload,
+} from '../hooks/useSchedules';
 import { useSchedulesRealtime } from '../hooks/useSchedulesRealtime';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { ListFilters, useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
@@ -24,16 +31,23 @@ export function Schedules() {
 
   const filtered = useMemo(
     () =>
-      schedules.filter((s) =>
-        matchesSearch(
+      schedules.filter((s) => {
+        const kind = getPayloadKind(s.payload);
+        const extras: string[] =
+          kind === 'dispatch_prompt'
+            ? [(s.payload as DispatchPromptPayload).prompt]
+            : [
+                (s.payload as DispatchSpecPayload).spec_ref.spec_id,
+                (s.payload as DispatchSpecPayload).spec_ref.resource_id,
+              ];
+        return matchesSearch(
           q,
           s.id,
           s.cron,
-          s.payload.spec_ref.spec_id,
-          s.payload.spec_ref.resource_id,
+          ...extras,
           ...(s.payload.target_swarm_ids ?? []),
-        ),
-      ),
+        );
+      }),
     [schedules, q],
   );
 
@@ -137,6 +151,13 @@ export function Schedules() {
 
 function ScheduleRow({ schedule }: { schedule: Schedule }) {
   const targets = schedule.payload.target_swarm_ids ?? [];
+  const kind = getPayloadKind(schedule.payload);
+  let cronDescription = '';
+  try {
+    cronDescription = cronstrue.toString(schedule.cron, { use24HourTimeFormat: false });
+  } catch {
+    /* keep empty if invalid */
+  }
   return (
     <tr
       className="cursor-pointer transition-colors hover:bg-zinc-900/40"
@@ -144,21 +165,39 @@ function ScheduleRow({ schedule }: { schedule: Schedule }) {
         window.location.href = `/schedules/${schedule.id}`;
       }}
     >
-      <td className="px-4 py-3 font-mono text-xs">
+      <td className="px-4 py-3 text-xs">
         <Link
           to={`/schedules/${schedule.id}`}
-          className="text-honey-400 hover:text-honey-300"
+          className="font-mono text-honey-400 hover:text-honey-300"
           onClick={(e) => e.stopPropagation()}
         >
           {schedule.cron}
         </Link>
+        {cronDescription && (
+          <div className="mt-0.5 text-[10px] italic text-zinc-400">{cronDescription}</div>
+        )}
         {schedule.timezone && (
           <div className="text-[10px] text-zinc-500">{schedule.timezone}</div>
         )}
       </td>
       <td className="px-4 py-3 text-xs">
-        <div className="font-mono">{schedule.payload.spec_ref.spec_id}</div>
-        <div className="text-[10px] text-zinc-500">{schedule.payload.spec_ref.resource_id}</div>
+        {kind === 'dispatch_prompt' ? (
+          <>
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500">prompt</div>
+            <div className="line-clamp-2 text-xs text-zinc-300">
+              {(schedule.payload as DispatchPromptPayload).prompt}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="font-mono">
+              {(schedule.payload as DispatchSpecPayload).spec_ref.spec_id}
+            </div>
+            <div className="text-[10px] text-zinc-500">
+              {(schedule.payload as DispatchSpecPayload).spec_ref.resource_id}
+            </div>
+          </>
+        )}
       </td>
       <td className="px-4 py-3 text-xs">
         {targets.length === 1

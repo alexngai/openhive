@@ -49,6 +49,8 @@ import { startThreadLifecycle, stopThreadLifecycle } from "./dispatch/thread-lif
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
 import { findResourceById as findResourceForSchedule } from "./db/dal/syncable-resources.js";
 import { createOpenHiveSpecResolver } from "./scheduler/setup.js";
+import { takeSpawnedFallback } from "./scheduler/spawn-tracker.js";
+import { findSwarmById } from "./db/dal/map.js";
 import { createOpenHiveMailTransport } from "./dispatch/mail-transport.js";
 import { createOpenHiveMailPort } from "./dispatch/openhive-mail-port.js";
 import { setupMailCompletionObserver } from "./dispatch/mail-completion.js";
@@ -561,6 +563,23 @@ export async function createHive(
     });
 
     dispatchOrchestrator = setupOrchestrator({
+      // Scheduler `fallback_spawn` cleanup. When a dispatch that was
+      // backed by an auto-spawned hosted swarm reaches terminal, stop
+      // the swarm so we don't leak compute. See `src/scheduler/spawn-tracker.ts`.
+      onTerminal: async (taskId, _status) => {
+        const binding = takeSpawnedFallback(taskId);
+        if (!binding || !binding.cleanupOnTerminal) return;
+        if (!swarmManager) return;
+        try {
+          await (swarmManager as unknown as {
+            stop: (id: string, agentId?: string) => Promise<unknown>;
+          }).stop(binding.hostedSwarmId);
+        } catch (err) {
+          console.warn(
+            `[scheduler] failed to stop fallback-spawned hosted swarm ${binding.hostedSwarmId}: ${(err as Error).message}`,
+          );
+        }
+      },
       specFetcher: {
         async fetch(resourceId: string, specId: string) {
           const result = await fetchSpecForDispatch(resourceId, specId, 'system');
@@ -633,6 +652,41 @@ export async function createHive(
   let scheduler: Scheduler | null = null;
   try {
     scheduler = setupScheduler({
+      getSwarmStatus: (swarmId: string) => {
+        const s = findSwarmById(swarmId);
+        if (!s) return 'unknown';
+        return s.status === 'online' ? 'online' : 'offline';
+      },
+      spawnFallbackSwarm: swarmManager
+        ? async ({ adapter, name }) => {
+            const adapterMap: Record<string, 'openswarm' | 'claude-code' | 'codex'> = {
+              openswarm: 'openswarm',
+              'claude-code': 'claude-code',
+              codex: 'codex',
+            };
+            const kind = adapterMap[adapter] ?? 'openswarm';
+            // Spawn under a synthetic system owner — fallback swarms are
+            // schedule-driven, not user-initiated. SwarmManager.spawn
+            // signature: spawn(ownerAgentId, opts) → HostedSwarm
+            const hosted = await swarmManager!.spawn(
+              'system',
+              { name, kind } as Parameters<typeof swarmManager.spawn>[1],
+            );
+            if (!hosted.swarm_id) {
+              throw new Error('spawn returned no swarm_id');
+            }
+            // Wait briefly for the swarm to come online so the orchestrator's
+            // first routing attempt has a registered target.
+            const swarmId = hosted.swarm_id;
+            const deadline = Date.now() + 60_000;
+            while (Date.now() < deadline) {
+              const s = findSwarmById(swarmId);
+              if (s?.status === 'online') break;
+              await new Promise((r) => setTimeout(r, 1_000));
+            }
+            return { swarmId, hostedSwarmId: hosted.id };
+          }
+        : undefined,
       // See `createOpenHiveSpecResolver` for the rationale (existence-only
       // check, no auth, no opentasks resolution — matches the orchestrator's
       // permissive enrichWithSpec semantic).

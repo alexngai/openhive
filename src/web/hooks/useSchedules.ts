@@ -23,12 +23,52 @@ export interface ScheduleLifecycleHints {
   mail?: 'fresh' | 'reuse';
 }
 
-export interface OpenHiveSchedulePayload {
+export type FallbackSpawnAdapter = 'openswarm' | 'claude-code' | 'codex';
+
+export interface FallbackSpawn {
+  adapter: FallbackSpawnAdapter;
+  cleanup_on_terminal?: boolean;
+}
+
+/**
+ * Spec-based dispatch. `kind` optional for backward compat with
+ * schedules created before the discriminator existed.
+ */
+export interface DispatchSpecPayload {
+  kind?: 'dispatch_spec';
   spec_ref: SpecRef;
   target_swarm_ids: string[];
   prompt_override?: string;
   lifecycle?: ScheduleLifecycleHints;
   loadout_ref?: string;
+  fallback_spawn?: FallbackSpawn;
+}
+
+/**
+ * Ad-hoc prompt dispatch — no spec required. The agent gets the prompt
+ * verbatim and decides what to do.
+ */
+export interface DispatchPromptPayload {
+  kind: 'dispatch_prompt';
+  prompt: string;
+  target_swarm_ids: string[];
+  lifecycle?: ScheduleLifecycleHints;
+  loadout_ref?: string;
+  fallback_spawn?: FallbackSpawn;
+}
+
+export type OpenHiveSchedulePayload =
+  | DispatchSpecPayload
+  | DispatchPromptPayload;
+
+/** Returns 'dispatch_spec' for legacy payloads (no `kind` field). */
+export function getPayloadKind(
+  payload: OpenHiveSchedulePayload,
+): 'dispatch_spec' | 'dispatch_prompt' {
+  if ('kind' in payload && payload.kind === 'dispatch_prompt') {
+    return 'dispatch_prompt';
+  }
+  return 'dispatch_spec';
 }
 
 export interface Schedule {

@@ -50,6 +50,10 @@ export function createOpenHiveSpecResolver(deps: {
 export interface SetupSchedulerOptions {
   fetchSpec: FireHandlerDeps['fetchSpec'];
   isAutonomousDispatchPaused: FireHandlerDeps['isAutonomousDispatchPaused'];
+  /** Optional — enables `fallback_spawn` decisions. */
+  getSwarmStatus?: FireHandlerDeps['getSwarmStatus'];
+  /** Optional — enables `fallback_spawn` execution. */
+  spawnFallbackSwarm?: FireHandlerDeps['spawnFallbackSwarm'];
   tickIntervalMs?: number;
   maxConcurrentFires?: number;
 }
@@ -59,6 +63,8 @@ export function setupScheduler(opts: SetupSchedulerOptions): Scheduler {
   const fireHandler = createOpenHiveFireHandler({
     fetchSpec: opts.fetchSpec,
     isAutonomousDispatchPaused: opts.isAutonomousDispatchPaused,
+    getSwarmStatus: opts.getSwarmStatus,
+    spawnFallbackSwarm: opts.spawnFallbackSwarm,
   });
 
   const scheduler = createScheduler({

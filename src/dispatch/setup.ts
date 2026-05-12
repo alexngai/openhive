@@ -45,6 +45,17 @@ export interface SetupOrchestratorOptions {
    */
   dispatchMode?: 'prefer-route' | 'spawn-only' | 'route-only' | 'prefer-spawn';
   /**
+   * Optional callback fired (fire-and-forget) when a dispatch reaches a
+   * terminal state via the orchestrator's event bridge. Decoupling hook
+   * for cross-subsystem concerns (e.g., the scheduler's `fallback_spawn`
+   * cleanup stops the spawned hosted swarm here). Errors are swallowed
+   * so a misbehaving listener can't break the dispatch lifecycle.
+   */
+  onTerminal?: (
+    taskId: string,
+    status: 'complete' | 'failed' | 'cancelled',
+  ) => void | Promise<void>;
+  /**
    * Optional mail JSON-RPC accessor. When provided, enables:
    * - Pending thread message enrichment on continuation prompts
    * - System turns on retry events
@@ -117,6 +128,25 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
       stallTimeoutMs: 300_000,
     },
   });
+
+  // Fire the optional onTerminal hook, swallowing errors so a misbehaving
+  // listener can't crash the dispatch event loop.
+  const fireOnTerminal = (
+    taskId: string,
+    status: 'complete' | 'failed' | 'cancelled',
+  ): void => {
+    if (!opts.onTerminal) return;
+    try {
+      const r = opts.onTerminal(taskId, status);
+      if (r && typeof (r as Promise<void>).catch === 'function') {
+        (r as Promise<void>).catch(() => {
+          /* swallow */
+        });
+      }
+    } catch {
+      /* swallow */
+    }
+  };
 
   orchestrator.onEvent((event: DispatchEvent) => {
     // Broadcast all orchestrator events to WS subscribers
@@ -193,6 +223,7 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
     // facts (attempts, session_ids, cascade artifacts) still populate.
     if (event.type === 'completed') {
       clearThreadDrivenCount(event.taskId);
+      fireOnTerminal(event.taskId, 'complete');
       const current = dispatchesDAL.findDispatchById(event.taskId);
       if (current && current.status !== 'complete' && current.status !== 'failed' && current.status !== 'cancelled') {
         finalizeDispatch(event.taskId, 'complete');
@@ -221,6 +252,7 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
     // the observed facts are preserved without shadowing the agent's voice.
     if (event.type === 'dead') {
       clearThreadDrivenCount(event.taskId);
+      fireOnTerminal(event.taskId, 'failed');
       const current = dispatchesDAL.findDispatchById(event.taskId);
       if (current && current.status !== 'complete' && current.status !== 'failed' && current.status !== 'cancelled') {
         const lastError = 'lastError' in event ? (event as { lastError?: string }).lastError : undefined;
@@ -287,6 +319,7 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
 
     // Cancelled by reconciliation → mark cancelled
     if (event.type === 'cancelled') {
+      fireOnTerminal(event.taskId, 'cancelled');
       const dispatch = dispatchesDAL.findDispatchById(event.taskId);
       if (dispatch && dispatch.status !== 'cancelled' && dispatch.status !== 'complete' && dispatch.status !== 'failed') {
         dispatchesDAL.cancelDispatch(event.taskId);

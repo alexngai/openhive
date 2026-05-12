@@ -22,13 +22,43 @@ export const ScheduleLifecycleHintsSchema = z.object({
   mail: z.enum(['fresh', 'reuse']).optional(),
 });
 
-export const OpenHiveSchedulePayloadSchema = z.object({
+export const FallbackSpawnSchema = z.object({
+  adapter: z.enum(['openswarm', 'claude-code', 'codex']),
+  cleanup_on_terminal: z.boolean().optional().default(true),
+});
+
+// ── Discriminated union: dispatch_spec | dispatch_prompt ─────────────
+// `dispatch_spec` keeps `kind` optional for backward compat with
+// schedules created before the discriminator existed (they never wrote
+// `kind`). `dispatch_prompt` requires the literal so the union can
+// distinguish.
+
+const DispatchSpecPayloadSchema = z.object({
+  kind: z.literal('dispatch_spec').optional(),
   spec_ref: SpecRefSchema,
   target_swarm_ids: z.array(z.string().min(1)).min(1),
   prompt_override: z.string().optional(),
   lifecycle: ScheduleLifecycleHintsSchema.optional(),
   loadout_ref: z.string().optional(),
+  fallback_spawn: FallbackSpawnSchema.optional(),
 });
+
+const DispatchPromptPayloadSchema = z.object({
+  kind: z.literal('dispatch_prompt'),
+  prompt: z.string().min(1),
+  target_swarm_ids: z.array(z.string().min(1)).min(1),
+  lifecycle: ScheduleLifecycleHintsSchema.optional(),
+  loadout_ref: z.string().optional(),
+  fallback_spawn: FallbackSpawnSchema.optional(),
+});
+
+export const OpenHiveSchedulePayloadSchema = z.union([
+  // Try dispatch_prompt first since it requires the literal `kind`; any
+  // payload that doesn't match falls through to dispatch_spec (which
+  // accepts the legacy no-`kind` shape too).
+  DispatchPromptPayloadSchema,
+  DispatchSpecPayloadSchema,
+]);
 
 // ============================================================================
 // Policy
