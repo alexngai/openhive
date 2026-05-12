@@ -15,7 +15,7 @@
  * file tree, with the branching detail surfaced.
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, type ReactNode } from 'react';
 import {
   AlertTriangle,
   FileText,
@@ -26,9 +26,12 @@ import {
 import {
   useCascadeStreamDiff,
   useCascadeStackDiff,
+  useCascadeStreamDiffSmart,
+  useCascadeStackDiffSmart,
+  extractFileFromUnifiedDiff,
   type CascadeLinearStack,
+  type CascadeRangeSmartResult,
 } from '../../hooks/useCascadeDiff';
-import { DiffView } from './DiffView';
 
 type Mode = 'stream' | 'stack';
 
@@ -63,20 +66,28 @@ export function StackDiffView({ mode, rowId, title, onClose }: StackDiffViewProp
 // ───────────────────────────────────────────────────────────────────────
 
 function StreamBody({ rowId }: { rowId: string }) {
-  const filesQuery = useCascadeStreamDiff(rowId, { files_only: true });
+  // Smart variant: files_only first, fall back to cached full-diff on 5xx
+  // (sidecar offline). `data.fullDiff` is populated only when the
+  // fallback fired — used for in-memory per-file slicing below.
+  const filesQuery = useCascadeStreamDiffSmart(rowId);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
   return (
     <TwoPane
       isLoading={filesQuery.isLoading}
       error={filesQuery.error}
-      files={filesQuery.data?.data?.files_touched ?? []}
+      files={filesQuery.data?.files_touched ?? []}
+      smartData={filesQuery.data}
       selectedFile={selectedFile}
       onSelectFile={setSelectedFile}
       sidebar={null}
       filePane={
         selectedFile ? (
-          <StreamFileDiff rowId={rowId} file={selectedFile} />
+          <StreamFileDiff
+            rowId={rowId}
+            file={selectedFile}
+            smartData={filesQuery.data}
+          />
         ) : (
           <EmptyFilePane />
         )
@@ -85,10 +96,38 @@ function StreamBody({ rowId }: { rowId: string }) {
   );
 }
 
-function StreamFileDiff({ rowId, file }: { rowId: string; file: string }) {
-  // Reuse useCascadeStreamDiff with the file restriction. Same cache key
-  // structure as the file-tree query but file-scoped.
-  const q = useCascadeStreamDiff(rowId, { file });
+function StreamFileDiff({
+  rowId,
+  file,
+  smartData,
+}: {
+  rowId: string;
+  file: string;
+  smartData: CascadeRangeSmartResult | null;
+}) {
+  // In-memory slice path: when the smart hook fell back to the cached
+  // full-diff (sidecar offline), we already have every file's content
+  // locally — skip the per-file network round-trip and render directly.
+  const inMemoryChunk = useMemo(
+    () =>
+      smartData?.usedFallback && smartData.fullDiff
+        ? extractFileFromUnifiedDiff(smartData.fullDiff, file)
+        : null,
+    [smartData?.usedFallback, smartData?.fullDiff, file],
+  );
+
+  // Hooks must run unconditionally — call the per-file query every
+  // render but disable it when we already have the chunk in memory.
+  const q = useCascadeStreamDiff(rowId, {
+    file,
+    enabled: inMemoryChunk === null,
+  });
+
+  if (inMemoryChunk !== null && smartData) {
+    return (
+      <InlineFileDiff blob={inMemoryChunk} truncated={smartData.truncated} file={file} />
+    );
+  }
   return <RangeFilePane query={q} file={file} />;
 }
 
@@ -97,10 +136,12 @@ function StreamFileDiff({ rowId, file }: { rowId: string; file: string }) {
 // ───────────────────────────────────────────────────────────────────────
 
 function StackBody({ rowId }: { rowId: string }) {
-  const filesQuery = useCascadeStackDiff(rowId, { files_only: true });
+  const filesQuery = useCascadeStackDiffSmart(rowId);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
   // Non-linear stack → render a dedicated notice instead of the tree.
+  // 400 errors aren't recoverable so the smart hook surfaces them
+  // directly; check the typed body the same way as before.
   const err = filesQuery.error as { body?: { error?: string; message?: string } } | null;
   if (err?.body?.error === 'non_linear_stack') {
     return <NonLinearNotice message={err.body.message ?? ''} />;
@@ -110,7 +151,8 @@ function StackBody({ rowId }: { rowId: string }) {
     <TwoPane
       isLoading={filesQuery.isLoading}
       error={filesQuery.error}
-      files={filesQuery.data?.data?.files_touched ?? []}
+      files={filesQuery.data?.files_touched ?? []}
+      smartData={filesQuery.data}
       selectedFile={selectedFile}
       onSelectFile={setSelectedFile}
       sidebar={
@@ -120,7 +162,11 @@ function StackBody({ rowId }: { rowId: string }) {
       }
       filePane={
         selectedFile ? (
-          <StackFileDiff rowId={rowId} file={selectedFile} />
+          <StackFileDiff
+            rowId={rowId}
+            file={selectedFile}
+            smartData={filesQuery.data}
+          />
         ) : (
           <EmptyFilePane />
         )
@@ -129,8 +175,31 @@ function StackBody({ rowId }: { rowId: string }) {
   );
 }
 
-function StackFileDiff({ rowId, file }: { rowId: string; file: string }) {
-  const q = useCascadeStackDiff(rowId, { file });
+function StackFileDiff({
+  rowId,
+  file,
+  smartData,
+}: {
+  rowId: string;
+  file: string;
+  smartData: (CascadeRangeSmartResult & { stack: CascadeLinearStack | null }) | null;
+}) {
+  const inMemoryChunk = useMemo(
+    () =>
+      smartData?.usedFallback && smartData.fullDiff
+        ? extractFileFromUnifiedDiff(smartData.fullDiff, file)
+        : null,
+    [smartData?.usedFallback, smartData?.fullDiff, file],
+  );
+  const q = useCascadeStackDiff(rowId, {
+    file,
+    enabled: inMemoryChunk === null,
+  });
+  if (inMemoryChunk !== null && smartData) {
+    return (
+      <InlineFileDiff blob={inMemoryChunk} truncated={smartData.truncated} file={file} />
+    );
+  }
   return <RangeFilePane query={q} file={file} />;
 }
 
@@ -142,17 +211,20 @@ interface TwoPaneProps {
   isLoading: boolean;
   error: unknown;
   files: string[];
+  /** Smart hook result; when `usedFallback`, we render an "offline cache" hint. */
+  smartData?: CascadeRangeSmartResult | null;
   selectedFile: string | null;
   onSelectFile: (f: string) => void;
   /** Optional pre-tree content (stack chain preview, etc). */
-  sidebar?: React.ReactNode;
-  filePane: React.ReactNode;
+  sidebar?: ReactNode;
+  filePane: ReactNode;
 }
 
 function TwoPane({
   isLoading,
   error,
   files,
+  smartData,
   selectedFile,
   onSelectFile,
   sidebar,
@@ -166,6 +238,14 @@ function TwoPane({
         <div className="px-3 py-2 text-zinc-500 flex items-center gap-1.5 border-b border-zinc-900">
           <ListTree className="w-3 h-3" />
           <span>Files touched ({files.length})</span>
+          {smartData?.usedFallback && (
+            <span
+              className="ml-auto px-1.5 py-0.5 rounded text-2xs bg-amber-500/10 text-amber-300 border border-amber-500/30"
+              title="Sidecar offline — rendering from cached blob"
+            >
+              cached
+            </span>
+          )}
         </div>
         {isLoading && (
           <div className="flex items-center gap-2 p-3 text-zinc-500">
