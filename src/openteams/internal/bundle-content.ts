@@ -33,7 +33,9 @@ import type {
   TeamManifest,
   TeamResource,
 } from 'openteams';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import yaml from 'js-yaml';
 import * as gitContent from '../../sync/git-content.js';
 import { resolveDataDir } from '../../data-dir.js';
 import type { SyncableResource } from '../../types.js';
@@ -103,18 +105,54 @@ async function ensureRowClone(row: SyncableResource): Promise<string> {
 }
 
 /**
- * Bundle a `loadout` row. For git-backed rows, reads YAML from the clone;
- * otherwise falls back to `metadata.content`.
+ * Resolve a standalone-loadout YAML from a git checkout, if present.
+ * Tries two conventions in order:
+ *   1. `<clonePath>/loadout.yaml` — single-loadout repo layout
+ *   2. `<clonePath>/loadouts/<row.name>.yaml` — same layout team templates use
+ * Returns null when neither file exists or parsing fails (caller falls
+ * back to `metadata.content`).
+ */
+function readLoadoutYamlFromClone(
+  clonePath: string,
+  rowName: string,
+): LoadoutContent | null {
+  const candidates = [
+    join(clonePath, 'loadout.yaml'),
+    join(clonePath, 'loadout.yml'),
+    join(clonePath, 'loadouts', `${rowName}.yaml`),
+    join(clonePath, 'loadouts', `${rowName}.yml`),
+  ];
+  for (const filePath of candidates) {
+    if (!existsSync(filePath)) continue;
+    try {
+      const raw = readFileSync(filePath, 'utf-8');
+      const parsed = yaml.load(raw);
+      if (parsed && typeof parsed === 'object') {
+        return parsed as LoadoutContent;
+      }
+    } catch (err) {
+      console.warn(
+        `[openteams] failed to parse standalone-loadout YAML at ${filePath}: ${(err as Error).message}`,
+      );
+    }
+  }
+  return null;
+}
+
+/**
+ * Bundle a `loadout` row. For git-backed rows, reads `loadout.yaml` (or
+ * `loadouts/<name>.yaml`) from the clone; if that fails, falls back to
+ * `metadata.content`. Inline-only rows always use `metadata.content`.
  */
 export async function bundleLoadoutFromRow(row: SyncableResource): Promise<LoadoutResource | null> {
   if (isGitBacked(row)) {
     const clonePath = await ensureRowClone(row);
-    // Standalone loadouts live as a single YAML in the repo root; load
-    // via the dedicated loader path. `TemplateLoader.load` is the team
-    // entry, so for a single-file loadout we fall back to reading
-    // `metadata.content` until `openteams.loadStandaloneLoadout(dir)`
-    // ships upstream — note in plan §"Out of scope".
-    void clonePath;
+    const fromDisk = readLoadoutYamlFromClone(clonePath, row.name);
+    if (fromDisk) {
+      return bundleLoadoutContent(row.name, fromDisk);
+    }
+    // Fall through to inline content (a transient cache before first pull,
+    // or a fallback when the canonical YAML is missing).
   }
   const content = (row.metadata as { content?: LoadoutContent } | null)?.content;
   if (!content) return null;

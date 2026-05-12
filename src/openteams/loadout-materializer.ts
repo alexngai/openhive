@@ -19,8 +19,11 @@
  * land without churning the call sites.
  *
  * Cross-instance bundle fetch (when the loadout was authored on a peer
- * hub) is deferred to a follow-up: today we only consult the local
- * in-memory store. See plan §"Out of scope" — Layer 3.
+ * hub and only the row was mesh-replicated) is handled transparently
+ * by the `CrossInstanceFallbackStore` wrapper in `map-handlers.ts`:
+ * on a local-store miss it scans replicated rows from trusted peers,
+ * rebundles + hash-verifies, and caches the result. Callers here
+ * don't need to know.
  */
 
 import { hydrateLoadout, LOADOUT_RESOURCE_TYPE } from 'openteams';

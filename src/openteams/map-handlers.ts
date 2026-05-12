@@ -28,7 +28,14 @@ import {
   LOADOUT_RESOURCE_TYPE,
   TEAM_RESOURCE_TYPE,
 } from 'openteams';
-import type { BundleEvent, BundleStore } from 'openteams';
+import type {
+  BundleEvent,
+  BundleStore,
+  ListResourcesParams,
+  ListResourcesResult,
+  MAPResource,
+} from 'openteams';
+import { tryCrossInstanceResolve } from './cross-instance-resolver.js';
 
 // ── Singleton state (lazy) ──────────────────────────────────────────────────
 
@@ -37,12 +44,48 @@ let composed: ReturnType<typeof composeResourceHandlers> | null = null;
 let emitListener: ((event: BundleEvent) => void) | null = null;
 
 /**
+ * Layer 7: wraps an in-memory `BundleStore` so that `get()` misses fall
+ * through to a cross-instance resolver. The resolver inspects rows
+ * replicated by the mesh (`syncable_resources.origin_instance_id`),
+ * trust-gates them via `federated_instances.is_trusted`, and lazy-
+ * clones+bundles the canonical content. First hash-matching row wins;
+ * the resolved bundle is then `put` into the inner store so subsequent
+ * fetches hit the fast path.
+ *
+ * `put` / `delete` / `list` are pure pass-throughs.
+ */
+class CrossInstanceFallbackStore implements BundleStore {
+  constructor(private readonly inner: BundleStore) {}
+
+  async get(type: string, id: string): Promise<MAPResource | null> {
+    const hit = await this.inner.get(type, id);
+    if (hit) return hit;
+    const resolved = await tryCrossInstanceResolve(type, id);
+    if (!resolved) return null;
+    await this.inner.put(resolved);
+    return resolved;
+  }
+
+  put(resource: MAPResource): Promise<MAPResource> {
+    return this.inner.put(resource);
+  }
+
+  delete(type: string, id: string): Promise<boolean> {
+    return this.inner.delete(type, id);
+  }
+
+  list(type: string, opts?: ListResourcesParams): Promise<ListResourcesResult> {
+    return this.inner.list(type, opts);
+  }
+}
+
+/**
  * Get the bundle store. Lazy — first call constructs the singleton, every
  * subsequent call returns it. Tests can reset via `_resetOpenteamsMapHandlers`.
  */
 export function getOpenteamsBundleStore(): BundleStore {
   if (!store) {
-    store = new InMemoryBundleStore();
+    store = new CrossInstanceFallbackStore(new InMemoryBundleStore());
   }
   return store;
 }
