@@ -173,6 +173,22 @@ export function createOpenHiveMailTransport(deps: MailTransportDeps): MailTransp
   ): Promise<{ delivered: boolean; reason?: string }> {
     try {
       const conversationId = await ensureConversation(swarmId, agentId);
+      // Persist the conversation_id back to the dispatch row, if the
+      // envelope carries a taskId. Without this, the mail-completion
+      // observer (src/dispatch/mail-completion.ts) can't map the
+      // agent's reply turn back to the in-flight dispatch — the row's
+      // conversation_id stays null because nothing else writes to it
+      // on the mail-route happy path. Idempotent: setDispatchConversationId
+      // skips when conversation_id is already set (first-writer wins).
+      const taskId = (envelope as { body?: { taskId?: unknown } })?.body?.taskId;
+      if (typeof taskId === 'string' && taskId.length > 0) {
+        try {
+          const { setDispatchConversationId } = await import('../db/dal/dispatches.js');
+          setDispatchConversationId(taskId, conversationId);
+        } catch {
+          /* best effort — observer's joinability is enhanced, not required */
+        }
+      }
       await invokeMailMethod(deps.getMailJsonRpc(), 'mail/turn', {
         conversationId,
         participantId: DISPATCHER_PARTICIPANT_ID,

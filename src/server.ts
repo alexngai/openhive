@@ -51,6 +51,7 @@ import { findResourceById as findResourceForSchedule } from "./db/dal/syncable-r
 import { createOpenHiveSpecResolver } from "./scheduler/setup.js";
 import { createOpenHiveMailTransport } from "./dispatch/mail-transport.js";
 import { createOpenHiveMailPort } from "./dispatch/openhive-mail-port.js";
+import { setupMailCompletionObserver } from "./dispatch/mail-completion.js";
 import { setAcpAvailabilityProbe } from "./dispatch/routing.js";
 import type { AcpStreamManager } from "./dispatch/openhive-runtime.js";
 import { sendToSwarm } from "./map/sync-listener.js";
@@ -608,6 +609,21 @@ export async function createHive(
         /* best effort */
       }
     });
+
+    // Wire the mail-route completion observer. swarm-dispatch's
+    // MessagePort contract only has `onIncoming` (inbound new work), no
+    // `onResult`/reply observation — without this, mail-route dispatches
+    // sit at `running` until the stall timeout flips them to `failed`,
+    // never reaching `complete` on the happy path.
+    const stopMailCompletion = setupMailCompletionObserver({ getMailEvents });
+    fastify.addHook('onClose', async () => {
+      try {
+        stopMailCompletion();
+      } catch {
+        /* best effort */
+      }
+    });
+
     console.log('[openhive] Dispatch orchestrator initialized');
   } catch (err) {
     console.warn(`[openhive] Dispatch orchestrator failed: ${(err as Error).message}`);
