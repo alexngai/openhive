@@ -127,7 +127,7 @@
     "sigma": "^3.0.2",
     "skill-tree": "^0.2.0",
     "skill-tree-indexer": "^0.2.2",
-    "swarm-dispatch": "^0.3.4",
+    "swarm-dispatch": "^0.3.5",
     "swarmcraft": "^0.1.13",
     "swarmkit": "^0.1.0",
     "turndown": "^7.2.4",

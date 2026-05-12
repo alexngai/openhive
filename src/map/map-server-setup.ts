@@ -116,7 +116,12 @@ class OpenHiveIAMAuthenticator {
  * need to be registered explicitly. The MAPServer's router dispatches by
  * exact method name, so we register each custom method.
  */
-function buildAdditionalHandlers(config: Config): Record<string, (params: any, ctx: any) => Promise<any>> {
+/**
+ * Build the additionalHandlers map passed to `new MAPServer({...})`. Exported
+ * for the shape-check test in `src/__tests__/scheduler/map-registration.test.ts`
+ * (and as a hook for any future test that wants to verify a method is wired).
+ */
+export function buildAdditionalHandlers(config: Config): Record<string, (params: any, ctx: any) => Promise<any>> {
   const handlers: Record<string, (params: any, ctx: any) => Promise<any>> = {};
 
   // ── MAP Task Methods (standard MAP spec) ────────────────────────
@@ -179,7 +184,13 @@ function buildAdditionalHandlers(config: Config): Record<string, (params: any, c
   for (const method of MAP_SCHEDULE_METHOD_SET) {
     handlers[method] = async (params: any, ctx: any) => {
       const swarmId = ctx.session?.metadata?.swarmId;
-      const agentId = ctx.session?.metadata?.agentId;
+      // MAP SDK convention: the session's owning-agent id lives at
+      // metadata.hubAgentId, NOT metadata.agentId. The sibling handler
+      // blocks above (specs/tasks/dispatches) read `agentId` and "work"
+      // only because their handlers don't strictly require the value;
+      // schedules MUST persist initiator_id and would silently bind
+      // null otherwise (caught by map-live-wire.test.ts).
+      const agentId = ctx.session?.metadata?.hubAgentId;
       try {
         return await handleScheduleRequest(method, params, {
           swarmId,

@@ -374,9 +374,13 @@ describe('map/schedules/update — semantics', () => {
 
     await new Promise((r) => setTimeout(r, 10));
 
+    // Use `7 * * * *` (hourly at :07) — never collides with `0 * * * *`
+    // (hourly at :00). Earlier `*/5 * * * *` silently coincided in the last
+    // ~3 minutes of every hour (e.g. at 22:57, both have next_fires_at =
+    // next :00:00), causing wall-clock-time flake.
     const upd = (await handleScheduleRequest(
       MAP_SCHEDULE_METHODS.UPDATE,
-      { schedule_id: create.schedule_id, cron: '*/5 * * * *' },
+      { schedule_id: create.schedule_id, cron: '7 * * * *' },
       ctx(AGENT_ALICE),
     )) as { next_fires_at: string };
     expect(upd.next_fires_at).not.toBe(create.next_fires_at);

@@ -300,13 +300,18 @@ describe('PATCH /schedules/:id', () => {
         method: 'PATCH',
         url: `/schedules/${original.id}`,
         headers: adminHeaders,
-        payload: { cron: '*/5 * * * *' }, // every 5 minutes
+        // Use `7 * * * *` (hourly at :07) — never collides with the
+        // original `0 * * * *` (hourly at :00) at any time-of-day. Earlier
+        // version used `*/5 * * * *` which silently coincided with `0 * * * *`
+        // for the last ~3 minutes of every hour (e.g. at 22:57, both have
+        // next_fires_at = 23:00:00), causing wall-clock-time flake.
+        payload: { cron: '7 * * * *' },
       });
       expect(patch.statusCode).toBe(200);
       const updated = (patch.json() as { schedule: schedulesDAL.OpenHiveSchedule }).schedule;
-      expect(updated.cron).toBe('*/5 * * * *');
+      expect(updated.cron).toBe('7 * * * *');
       expect(updated.next_fires_at).not.toBeNull();
-      // Different cadence → almost certainly different next_fires_at.
+      // :07 cron never produces the same next_fires_at as a :00 cron.
       expect(updated.next_fires_at).not.toBe(original.next_fires_at);
     } finally {
       await app.close();

@@ -17,6 +17,36 @@ import {
   type FireHandlerDeps,
 } from './fire-handler.js';
 
+/**
+ * Default `fetchSpec` resolver for OpenHive's scheduler.
+ *
+ * Does an existence-only check against `syncable_resources` — NO auth check,
+ * NO opentasks daemon resolution. The fire handler should auto-pause only
+ * when the spec's resource has been deleted, NOT when it's transiently
+ * unreachable (auth-denied, daemon down, remote-graph unavailable, etc.).
+ * This matches the orchestrator's own permissive `enrichWithSpec` — it skips
+ * prompt enrichment but still dispatches.
+ *
+ * Bug history: an earlier version wired `fetchSpec` to
+ * `fetchSpecForDispatch(ref, 'system')`, which ran an auth check via
+ * `canAccessResource('system', resource)`. There's no `'system'` agent in
+ * the DB → check fails → fire handler treated `null` as "spec deleted" →
+ * auto-paused every schedule against a non-public resource. Caught by the
+ * manual smoke test on a live hub; never reached production because the
+ * automated end-to-end test used a stub `fetchSpec`.
+ *
+ * Injected via deps so tests can plug in `vi.fn()` (unit-test the contract)
+ * or a real DAL function (integration-test the wiring).
+ */
+export function createOpenHiveSpecResolver(deps: {
+  findResourceById: (id: string) => unknown | null;
+}): FireHandlerDeps['fetchSpec'] {
+  return async (ref) => {
+    const resource = deps.findResourceById(ref.resource_id);
+    return resource ? { ok: true } : null;
+  };
+}
+
 export interface SetupSchedulerOptions {
   fetchSpec: FireHandlerDeps['fetchSpec'];
   isAutonomousDispatchPaused: FireHandlerDeps['isAutonomousDispatchPaused'];

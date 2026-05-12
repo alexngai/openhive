@@ -47,6 +47,8 @@ import { isAutonomousDispatchPaused } from "./map/dispatch-policy.js";
 import { startTaskBinder, stopTaskBinder } from "./cascade/task-binder.js";
 import { startThreadLifecycle, stopThreadLifecycle } from "./dispatch/thread-lifecycle.js";
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
+import { findResourceById as findResourceForSchedule } from "./db/dal/syncable-resources.js";
+import { createOpenHiveSpecResolver } from "./scheduler/setup.js";
 import { createOpenHiveMailTransport } from "./dispatch/mail-transport.js";
 import { createOpenHiveMailPort } from "./dispatch/openhive-mail-port.js";
 import { setAcpAvailabilityProbe } from "./dispatch/routing.js";
@@ -615,10 +617,12 @@ export async function createHive(
   let scheduler: Scheduler | null = null;
   try {
     scheduler = setupScheduler({
-      fetchSpec: async (ref) => {
-        const result = await fetchSpecForDispatch(ref.resource_id, ref.spec_id, 'system');
-        return result.ok ? { ok: true } : null;
-      },
+      // See `createOpenHiveSpecResolver` for the rationale (existence-only
+      // check, no auth, no opentasks resolution — matches the orchestrator's
+      // permissive enrichWithSpec semantic).
+      fetchSpec: createOpenHiveSpecResolver({
+        findResourceById: findResourceForSchedule,
+      }),
       isAutonomousDispatchPaused,
       tickIntervalMs: config.scheduler.tickIntervalMs,
       maxConcurrentFires: config.scheduler.maxConcurrentFires,
