@@ -171,10 +171,7 @@ export function CreateScheduleModal({ onClose, initialSpecRef }: Props) {
               )}
             </div>
 
-            <Field
-              label="Target swarms"
-              hint="Includes offline swarms — pair with fallback spawn below to handle them."
-            >
+            <Field label="Target swarms">
               <SwarmChipPicker
                 swarms={swarms}
                 selectedIds={selectedSwarmIds}
@@ -436,16 +433,24 @@ function SwarmChipPicker({
   onChange: (ids: string[]) => void;
 }) {
   const [search, setSearch] = useState('');
+  const [showInactive, setShowInactive] = useState(false);
+  const inactiveCount = useMemo(
+    () => swarms.filter((s) => s.status !== 'online').length,
+    [swarms],
+  );
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return swarms.slice(0, 50);
-    return swarms
+    const active = showInactive
+      ? swarms
+      : swarms.filter((s) => s.status === 'online');
+    if (!q) return active.slice(0, 50);
+    return active
       .filter(
         (s) =>
           s.name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q),
       )
       .slice(0, 50);
-  }, [swarms, search]);
+  }, [swarms, search, showInactive]);
 
   const toggle = (id: string) => {
     onChange(
@@ -482,20 +487,37 @@ function SwarmChipPicker({
           ))}
         </div>
       )}
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search swarms…"
-          className={inputClass + ' pl-7'}
-        />
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search swarms…"
+            className={inputClass + ' pl-7'}
+          />
+        </div>
+        {inactiveCount > 0 && (
+          <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-400">
+            <input
+              type="checkbox"
+              checked={showInactive}
+              onChange={(e) => setShowInactive(e.target.checked)}
+              className="rounded border-zinc-600 bg-zinc-800 text-honey-500"
+            />
+            Show inactive ({inactiveCount})
+          </label>
+        )}
       </div>
       <div className="max-h-32 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-950/50">
         {filtered.length === 0 ? (
           <div className="px-3 py-4 text-center text-xs text-zinc-500">
-            {swarms.length === 0 ? 'No swarms available' : 'No matches'}
+            {swarms.length === 0
+              ? 'No swarms available'
+              : !showInactive && inactiveCount > 0 && swarms.filter((s) => s.status === 'online').length === 0
+                ? 'No active swarms — toggle "Show inactive" to see offline ones'
+                : 'No matches'}
           </div>
         ) : (
           <ul className="divide-y divide-zinc-800">
