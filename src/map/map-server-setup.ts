@@ -13,6 +13,7 @@ import { verifyToken } from './token-service.js';
 import { MAP_TASK_METHOD_SET, handleTaskRequest, MAPTaskRequestError, TaskDaemonError } from './task-handler.js';
 import { MAP_SPEC_METHOD_SET, handleSpecRequest, MAPSpecRequestError } from './spec-handler.js';
 import { MAP_DISPATCH_METHOD_SET, handleDispatchRequest, MAPDispatchRequestError } from './dispatch-handler.js';
+import { MAP_SCHEDULE_METHOD_SET, handleScheduleRequest, MAPScheduleRequestError } from './schedule-handler.js';
 import { TRAJECTORY_METHOD_SET } from './trajectory-types.js';
 import { handleTrajectoryRequest, TrajectoryRequestError } from './trajectory-handler.js';
 import { CASCADE_METHOD_SET, CascadeRequestError } from './cascade-types.js';
@@ -115,7 +116,7 @@ class OpenHiveIAMAuthenticator {
  * need to be registered explicitly. The MAPServer's router dispatches by
  * exact method name, so we register each custom method.
  */
-function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Promise<any>> {
+function buildAdditionalHandlers(config: Config): Record<string, (params: any, ctx: any) => Promise<any>> {
   const handlers: Record<string, (params: any, ctx: any) => Promise<any>> = {};
 
   // ── MAP Task Methods (standard MAP spec) ────────────────────────
@@ -167,6 +168,26 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
         return await handleDispatchRequest(method, params, { swarmId, agentId });
       } catch (err) {
         if (err instanceof MAPDispatchRequestError) {
+          throw Object.assign(new Error(err.message), { code: err.code });
+        }
+        throw err;
+      }
+    };
+  }
+
+  // ── MAP Schedule Methods (cron-style recurring dispatches) ──────
+  for (const method of MAP_SCHEDULE_METHOD_SET) {
+    handlers[method] = async (params: any, ctx: any) => {
+      const swarmId = ctx.session?.metadata?.swarmId;
+      const agentId = ctx.session?.metadata?.agentId;
+      try {
+        return await handleScheduleRequest(method, params, {
+          swarmId,
+          agentId,
+          maxSchedulesPerAgent: config.scheduler.maxSchedulesPerAgent,
+        });
+      } catch (err) {
+        if (err instanceof MAPScheduleRequestError) {
           throw Object.assign(new Error(err.message), { code: err.code });
         }
         throw err;
@@ -348,7 +369,7 @@ export function initMapServer(config: Config): any {
 
   const isVerified = config.mapHub.trustModel === 'verified';
 
-  const additionalHandlers = buildAdditionalHandlers();
+  const additionalHandlers = buildAdditionalHandlers(config);
 
   mapServer = new MAPServer({
     name: config.instance.name || 'OpenHive',
