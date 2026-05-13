@@ -49,6 +49,8 @@ import {
   MIGRATION_V54_DISPATCH_REPO,
   MIGRATION_V55_DISPATCH_CONVERSATION,
   MIGRATION_V56_SCHEDULES,
+  MIGRATION_V57_DISPATCH_LOADOUT_REFS,
+  MIGRATION_V58_NULLABLE_SPEC_ON_DISPATCH,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -359,6 +361,15 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   55: MIGRATION_V55_DISPATCH_CONVERSATION,
   // Version 56: Schedules table — swarm-dispatch scheduler integration.
   56: MIGRATION_V56_SCHEDULES,
+  // Version 57: dispatches.loadout_bundle_id / team_bundle_id / role columns
+  // for the openteams cross-runtime spawn flow. (Renumbered from V46 due to
+  // merge collision; the original V46_RESOURCE_TYPES_EXTEND already widened
+  // the resource_type CHECK so the openteams V45 rebuild migration was
+  // dropped — only the dispatch-level columns survived the rename.)
+  57: MIGRATION_V57_DISPATCH_LOADOUT_REFS,
+  // Version 58: Relax NOT NULL on dispatches.spec_resource_id + spec_id
+  // for Layer 4 spec-less openteams.spawn flows. (Renumbered from V47.)
+  58: MIGRATION_V58_NULLABLE_SPEC_ON_DISPATCH,
 };
 
 /** Get the SQL for a specific migration version.
@@ -458,6 +469,12 @@ function repairSchema(database: Database.Database): void {
     // the pause_reason column even if CREATE TABLE IF NOT EXISTS was a
     // no-op (table existed in an older shape).
     "ALTER TABLE schedules ADD COLUMN pause_reason TEXT",
+    // V57 — openteams loadout refs on dispatches. Mirrored here so fresh
+    // installs (which skip migrations and jump straight to SCHEMA_VERSION)
+    // still pick up the columns. Idempotent — ignored on existing installs.
+    "ALTER TABLE dispatches ADD COLUMN loadout_bundle_id TEXT",
+    "ALTER TABLE dispatches ADD COLUMN team_bundle_id TEXT",
+    "ALTER TABLE dispatches ADD COLUMN role TEXT",
   ];
   for (const sql of repairs) {
     try {

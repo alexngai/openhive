@@ -283,11 +283,26 @@ export function requireAdmin(
 /**
  * Config surface `createAdminAuth` reads. Keeping the shape explicit (instead
  * of accepting `Config` wholesale) documents exactly what the middleware cares
- * about.
+ * about. `host` is consulted only as a safety guard for the localhost-only
+ * auto-trust path (see `createAdminAuth`).
  */
 interface AdminAuthConfig {
   admin: { key?: string; trustLocalMode?: boolean };
   auth: { mode: string };
+  host?: string;
+}
+
+/**
+ * Is the configured `host` a loopback-only binding? Used to decide whether
+ * the auth-mode=local auto-trust is safe to apply without an explicit
+ * `trustLocalMode` flag. Treats `127.0.0.1`, `localhost`, and `::1` as
+ * loopback; everything else (including `0.0.0.0`, `*`, an external IP) is
+ * considered network-reachable and keeps the strict admin-key requirement.
+ */
+function isLoopbackHost(host: string | undefined): boolean {
+  if (!host) return false;
+  const normalized = host.trim().toLowerCase();
+  return normalized === '127.0.0.1' || normalized === 'localhost' || normalized === '::1';
 }
 
 /**
@@ -311,10 +326,24 @@ interface AdminAuthConfig {
  * be reachable from headless operator CLIs.
  */
 export function createAdminAuth(config: AdminAuthConfig) {
-  // Flag is gated on `auth: 'local'`. In token/swarmhub mode there's no
-  // auto-auth agent to trust, so the flag becomes a no-op — evaluated once
-  // at factory time to avoid re-checking per request.
-  const trustLocal = !!config.admin.trustLocalMode && config.auth.mode === 'local';
+  // Two ways to enable the local-auto-trust path, evaluated at factory time:
+  //
+  //   1. Explicit `admin.trustLocalMode = true` — the historical opt-in.
+  //      Works on any host binding; the operator is taking responsibility
+  //      for the network surface.
+  //
+  //   2. Implicit "loopback + local-auth" — when `host ∈ {127.0.0.1,
+  //      localhost, ::1}` AND `auth.mode === 'local'`, no external peer
+  //      can reach the hub, so the auto-authenticated admin agent is a
+  //      safe credential without operator opt-in. Keeps `0.0.0.0` (the
+  //      default config) strict.
+  //
+  // Either path falls through to `authMiddleware` + `requireAdmin`, so a
+  // non-admin local agent still wouldn't pass — but the init wizard
+  // stamps the local agent as admin.
+  const trustLocal =
+    config.auth.mode === 'local' &&
+    (!!config.admin.trustLocalMode || isLoopbackHost(config.host));
 
   return async function adminAuth(
     request: FastifyRequest,

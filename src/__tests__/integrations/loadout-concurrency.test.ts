@@ -101,7 +101,7 @@ function makeTeam(roleName: string, loadout: LoadoutContent): TeamTemplateConten
       roles: [roleName],
       topology: { root: { role: roleName } },
     },
-    roles: { [roleName]: { loadout } },
+    roles: { [roleName]: { name: roleName, loadout } },
     loadouts: {},
     prompts: {},
   };
@@ -117,6 +117,7 @@ function makeTeamWithExtends(roleName: string, parentName: string): TeamTemplate
     },
     roles: {
       [roleName]: {
+        name: roleName,
         loadout: {
           name: `${roleName}-child`,
           extends: parentName,

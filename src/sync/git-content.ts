@@ -9,7 +9,7 @@
 
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { SyncableResource } from '../types.js';
 
@@ -127,9 +127,33 @@ export async function cloneRemote(
   const parentDir = resolve(clonePath, '..');
   mkdirSync(parentDir, { recursive: true });
 
-  await execFileAsync('git', ['clone', '--depth=1', gitUrl, clonePath], {
-    timeout,
-  });
+  // If the destination already exists but isn't a valid checkout (no
+  // `.git`), clear it before cloning. Otherwise `git clone` aborts with
+  // "destination path ... already exists and is not an empty directory."
+  // This can happen when a prior clone was interrupted, or when test
+  // fixtures left scaffolding at the canonical path.
+  if (existsSync(clonePath) && !existsSync(join(clonePath, '.git'))) {
+    rmSync(clonePath, { recursive: true, force: true });
+  }
+  try {
+    await execFileAsync('git', ['clone', '--depth=1', gitUrl, clonePath], {
+      timeout,
+    });
+  } catch (err) {
+    // Surface git's stderr (default execFile only includes the command in
+    // .message). Crucial for diagnosing test-fixture issues.
+    const stderr = (err as { stderr?: string | Buffer }).stderr;
+    const stdout = (err as { stdout?: string | Buffer }).stdout;
+    const code = (err as { code?: string | number }).code;
+    const signal = (err as { signal?: string }).signal;
+    const parts: string[] = [(err as Error).message];
+    if (stderr) parts.push(`stderr: ${String(stderr).trim()}`);
+    if (stdout) parts.push(`stdout: ${String(stdout).trim()}`);
+    if (code !== undefined) parts.push(`code: ${code}`);
+    if (signal !== undefined) parts.push(`signal: ${signal}`);
+    parts.push(`keys: ${JSON.stringify(Object.keys(err as Record<string, unknown>))}`);
+    throw new Error(parts.join(' | '));
+  }
 
   return clonePath;
 }

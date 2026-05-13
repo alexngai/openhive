@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 56;
+export const SCHEMA_VERSION = 58;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -2051,6 +2051,111 @@ CREATE TABLE IF NOT EXISTS cascade_pull_requests (
 
 CREATE INDEX IF NOT EXISTS idx_cascade_prs_stream ON cascade_pull_requests(stream_row_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_prs_state ON cascade_pull_requests(state);
+`;
+
+// Migration V57: add openteams loadout-reference columns to `dispatches`.
+//
+// A dispatch can now carry a content-addressed loadout id (and optionally a
+// team bundle id + role) alongside the existing spec reference. The columns
+// are nullable so legacy dispatches (spec-only) pass through unchanged. The
+// dispatch runtime materializes the loadout from the openteams bundle store
+// at claim time and feeds the result into the ACP session (mcpServers,
+// permissions, prompt addendum).
+//
+// Hash-stickiness: the bundle id captured at dispatch creation time is
+// pinned, so subsequent edits to the authored team_template / loadout don't
+// retroactively change in-flight dispatches (matches openteams design
+// principle 7 — see references/openteams/docs/team-map-sync-design.md).
+export const MIGRATION_V57_DISPATCH_LOADOUT_REFS = `
+ALTER TABLE dispatches ADD COLUMN loadout_bundle_id TEXT;
+ALTER TABLE dispatches ADD COLUMN team_bundle_id TEXT;
+ALTER TABLE dispatches ADD COLUMN role TEXT;
+`;
+
+// Migration V58: relax `spec_resource_id` + `spec_id` on `dispatches` to
+// nullable. Layer 4 of the openteams integration adds spec-less spawns —
+// an `openteams.spawn` task may pin a `loadout_bundle_id` and request a
+// new swarm process without any opentasks spec to anchor the work.
+//
+// SQLite can't ALTER a NOT NULL constraint in-place, so we rebuild the
+// table. Existing rows preserve their non-null spec ids. The rebuilt
+// table includes every column added by intermediate migrations
+// (V32 base, V35, V41, V47-V49, V54-V55, V57) so the COPY step doesn't
+// drop them. Renumbered from V47 due to merge collision.
+export const MIGRATION_V58_NULLABLE_SPEC_ON_DISPATCH = `
+CREATE TABLE IF NOT EXISTS dispatches_v58 (
+  id TEXT PRIMARY KEY,
+  spec_resource_id TEXT,
+  spec_id TEXT,
+  spec_captured_at TEXT,
+  target_swarm_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued'
+    CHECK (status IN ('queued', 'running', 'complete', 'failed', 'cancelled')),
+  initiator_type TEXT NOT NULL CHECK (initiator_type IN ('user', 'agent')),
+  initiator_id TEXT NOT NULL,
+  session_ids TEXT NOT NULL DEFAULT '[]',
+  outcome TEXT,
+  prompt_override TEXT,
+  lease_token TEXT,
+  lease_expires_at TEXT,
+  attempt INTEGER DEFAULT 0,
+  turn_count INTEGER DEFAULT 0,
+  attempts_history TEXT NOT NULL DEFAULT '[]',
+  acp_lifecycle TEXT
+    CHECK (acp_lifecycle IS NULL OR acp_lifecycle IN ('fresh', 'reuse')),
+  mail_lifecycle TEXT
+    CHECK (mail_lifecycle IS NULL OR mail_lifecycle IN ('fresh', 'reuse')),
+  loadout_ref TEXT,
+  loadout_status TEXT
+    CHECK (loadout_status IS NULL OR loadout_status IN ('materialized', 'failed')),
+  loadout_error TEXT,
+  repo_id TEXT,
+  canonical_url TEXT,
+  branch TEXT,
+  commit_sha TEXT,
+  clone_policy TEXT DEFAULT 'none'
+    CHECK (clone_policy IN ('none', 'allowed')),
+  clone_path TEXT,
+  conversation_id TEXT,
+  loadout_bundle_id TEXT,
+  team_bundle_id TEXT,
+  role TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+INSERT OR IGNORE INTO dispatches_v58 (
+  id, spec_resource_id, spec_id, spec_captured_at, target_swarm_id, status,
+  initiator_type, initiator_id, session_ids, outcome, prompt_override,
+  lease_token, lease_expires_at, attempt, turn_count, attempts_history,
+  acp_lifecycle, mail_lifecycle,
+  loadout_ref, loadout_status, loadout_error,
+  repo_id, canonical_url, branch, commit_sha, clone_policy, clone_path,
+  conversation_id,
+  loadout_bundle_id, team_bundle_id, role,
+  created_at, updated_at
+)
+SELECT
+  id, spec_resource_id, spec_id, spec_captured_at, target_swarm_id, status,
+  initiator_type, initiator_id, session_ids, outcome, prompt_override,
+  lease_token, lease_expires_at, attempt, turn_count, attempts_history,
+  acp_lifecycle, mail_lifecycle,
+  loadout_ref, loadout_status, loadout_error,
+  repo_id, canonical_url, branch, commit_sha, clone_policy, clone_path,
+  conversation_id,
+  loadout_bundle_id, team_bundle_id, role,
+  created_at, updated_at
+FROM dispatches;
+
+DROP TABLE IF EXISTS dispatches;
+ALTER TABLE dispatches_v58 RENAME TO dispatches;
+
+CREATE INDEX IF NOT EXISTS idx_dispatches_spec ON dispatches(spec_resource_id, spec_id);
+CREATE INDEX IF NOT EXISTS idx_dispatches_swarm ON dispatches(target_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
+CREATE INDEX IF NOT EXISTS idx_dispatches_initiator ON dispatches(initiator_id);
+CREATE INDEX IF NOT EXISTS idx_dispatches_created ON dispatches(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dispatches_repo ON dispatches(repo_id);
 `;
 
 // Populate FTS tables from existing data

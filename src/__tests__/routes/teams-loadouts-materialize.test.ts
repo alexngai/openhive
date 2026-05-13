@@ -71,7 +71,7 @@ function teamWithReviewer(): TeamTemplateContent {
       roles: ['reviewer'],
       topology: { root: { role: 'reviewer' } },
     },
-    roles: { reviewer: { loadout: reviewerLoadoutContent() } },
+    roles: { reviewer: { name: 'reviewer', loadout: reviewerLoadoutContent() } },
     loadouts: {},
     prompts: {},
   };

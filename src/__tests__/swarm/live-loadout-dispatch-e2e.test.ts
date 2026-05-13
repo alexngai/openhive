@@ -281,7 +281,7 @@ function buildTeamContent(skillBankRef?: string): TeamTemplateContent {
       roles: ['executor'],
       topology: { root: { role: 'executor' } },
     },
-    roles: { executor: { loadout: buildLoadoutContent(skillBankRef) } },
+    roles: { executor: { name: 'executor', loadout: buildLoadoutContent(skillBankRef) } },
     loadouts: {},
     prompts: {},
   };

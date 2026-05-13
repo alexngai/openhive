@@ -49,7 +49,7 @@ function teamWithReviewer(): TeamTemplateContent {
       roles: ['reviewer'],
       topology: { root: { role: 'reviewer' } },
     },
-    roles: { reviewer: { loadout: loadoutContent() } },
+    roles: { reviewer: { name: 'reviewer', loadout: loadoutContent() } },
     loadouts: {},
     prompts: {},
   };

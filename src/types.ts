@@ -188,7 +188,9 @@ export type WSEventType =
   | 'cascade:queue_ready'
   | 'cascade:queue_cancelled'
   | 'cascade:queue_removed'
-  // Team template + loadout resource events (see api/routes/teams.ts, loadouts.ts)
+  // OpenTeams resource events (see api/routes/teams.ts, loadouts.ts).
+  // Authored content lifecycle; the MAP `resource.added/updated/removed`
+  // bus carries the content-addressed bundle counterpart at Layer 2.
   | 'team_template:created'
   | 'team_template:updated'
   | 'team_template:deleted'
@@ -305,7 +307,15 @@ export interface MemoryBankSubscriptionWithAgent extends MemoryBankSubscription 
 // Syncable Resources Types (generic resource system)
 // ============================================================================
 
-export type SyncableResourceType = 'memory_bank' | 'task' | 'skill' | 'session' | 'playbook' | 'team_template' | 'loadout' | 'repo';
+export type SyncableResourceType =
+  | 'memory_bank'
+  | 'task'
+  | 'skill'
+  | 'session'
+  | 'playbook'
+  | 'team_template'
+  | 'loadout'
+  | 'repo';
 
 // Workspace bindings — local-only, per-agent instance of a federated repo
 // resource. See CLAUDE.md "Repos and Workspaces".

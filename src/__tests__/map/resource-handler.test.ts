@@ -16,8 +16,6 @@ import {
   toInternalType,
   getAdvertisedKinds,
 } from '../../map/resource-handler.js';
-import * as repos from '../../db/dal/repos.js';
-import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 
 const TEST_ROOT = testRoot('resource-handler');
 const TEST_DB_PATH = testDbPath(TEST_ROOT, 'resource-handler.db');

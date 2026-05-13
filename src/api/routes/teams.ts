@@ -1,11 +1,14 @@
 /**
  * Team Templates API Routes
  *
- * REST CRUD over the `team_template` syncable resource type. Stores authored
- * openteams team manifests with sidecar files (roles, loadouts, prompts).
+ * REST CRUD over `team_template` syncable resources. Authored openteams
+ * team manifests + sidecar files (roles, loadouts, prompts) live in
+ * `metadata.content` and round-trip through a single JSON column.
  *
- * Resolution + per-role materialization happen in src/openteams/resolver.ts
- * (added in Slice 2). These routes are pure storage.
+ * Layer 0 of the openteams MAP integration — pure storage. Layer 1 wires
+ * `onResourcePublished/Updated/Unpublished` from these handlers so peers
+ * federate the rows; Layer 2 bundles the content to MAP for cross-runtime
+ * fetch-by-hash.
  */
 
 import { FastifyInstance } from 'fastify';
@@ -14,13 +17,22 @@ import * as teamTemplatesDAL from '../../db/dal/team-templates.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import {
+  onResourcePublished,
+  onResourceUpdated,
+  onResourceUnpublished,
+} from '../../sync/resource-hooks.js';
+import {
+  onTeamTemplateBundle,
+  onTeamTemplateRemoved,
+} from '../../openteams/sync-bridge.js';
+import {
   CreateTeamTemplateSchema,
   UpdateTeamTemplateSchema,
 } from '../schemas/teams.js';
 import {
   materializeRoleLoadout,
-  RoleNotFoundError,
   TemplateNotFoundError,
+  RoleNotFoundError,
 } from '../../openteams/resolver.js';
 import type { Config } from '../../config.js';
 
@@ -62,6 +74,10 @@ export async function teamsRoutes(
     }
 
     try {
+      // Layer 6: git_remote_url presence flips the row to `ls-remote`
+      // strategy + lazy-clone on first read. Content remains optional but
+      // we still validate the inline blob when supplied so partial-content
+      // hash-stickiness keeps working until the first pull lands.
       const tmpl = teamTemplatesDAL.createTeamTemplate({
         name: parsed.data.name,
         description: parsed.data.description,
@@ -69,12 +85,37 @@ export async function teamsRoutes(
         ownerAgentId: request.agent!.id,
         visibility: parsed.data.visibility,
         metadata: parsed.data.metadata,
+        gitRemoteUrl: parsed.data.git_remote_url,
       });
 
       broadcastToChannel(`resource:team_template:${tmpl.id}`, {
         type: 'team_template:created',
         data: { team_template_id: tmpl.id, name: tmpl.name },
       });
+
+      // Bundle to the MAP store (Layer 2 auto-bundle on write). Fire-and-
+      // forget — the kind handler emits `resource.added`/`updated` events
+      // on the SDK bus from within `bundleStore.put`.
+      void onTeamTemplateBundle(tmpl);
+
+      // Fan-out to peer hubs over the JSON-RPC sync mesh. Private rows stay
+      // local — federation is opt-in via visibility, matching how the
+      // generic /resources route gates its hooks.
+      if (tmpl.visibility !== 'private') {
+        onResourcePublished(
+          {
+            id: tmpl.id,
+            resource_type: 'team_template',
+            name: tmpl.name,
+            description: tmpl.description ?? null,
+            git_remote_url: tmpl.git_remote_url,
+            visibility: tmpl.visibility,
+          },
+          [],
+          (tmpl.metadata as Record<string, unknown> | null) ?? null,
+          request.agent!,
+        );
+      }
 
       return reply.status(201).send({ team_template: tmpl });
     } catch (error) {
@@ -88,7 +129,7 @@ export async function teamsRoutes(
     }
   });
 
-  // Get team template by id.
+  // Get team template by id. Visibility-gated.
   fastify.get<{ Params: { id: string } }>(
     '/teams/:id',
     { preHandler: optionalAuthMiddleware },
@@ -100,6 +141,9 @@ export async function teamsRoutes(
           .send({ error: 'Not Found', message: 'Team template not found' });
       }
 
+      // Private rows are invisible to non-owners (return 404, not 403, to
+      // avoid leaking existence). Shared rows require ACL check. Public
+      // rows are open.
       if (tmpl.visibility === 'private') {
         if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, tmpl)) {
           return reply
@@ -116,6 +160,50 @@ export async function teamsRoutes(
       }
 
       return reply.send({ team_template: tmpl });
+    },
+  );
+
+  // Resolve the row to its content-addressed bundle id. Used by the UI
+  // when spawning a swarm bound to a team_template — the spawn endpoint
+  // takes a content hash, not a row id. Computes on-the-fly via the
+  // bundle helpers (same logic the auto-bundle hook runs on write).
+  fastify.get<{ Params: { id: string } }>(
+    '/teams/:id/bundle',
+    { preHandler: optionalAuthMiddleware },
+    async (request, reply) => {
+      const tmpl = teamTemplatesDAL.getTeamTemplate(request.params.id);
+      if (!tmpl) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Team template not found' });
+      }
+      if (tmpl.visibility === 'private') {
+        if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, tmpl)) {
+          return reply.status(404).send({ error: 'Not Found', message: 'Team template not found' });
+        }
+      } else if (tmpl.visibility === 'shared') {
+        if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, tmpl)) {
+          return reply.status(403).send({ error: 'Forbidden', message: 'No access' });
+        }
+      }
+      const content = (tmpl.metadata as { content?: unknown } | null)?.content;
+      if (!content) {
+        return reply.status(409).send({
+          error: 'Conflict',
+          message: 'Team template has no inline content yet (git-backed row pre-first-pull?)',
+        });
+      }
+      try {
+        const { bundleTeamTemplateContent } = await import('../../openteams/internal/bundle-content.js');
+        const bundle = bundleTeamTemplateContent(
+          tmpl.name,
+          content as Parameters<typeof bundleTeamTemplateContent>[1],
+        );
+        return reply.send({ bundle_id: bundle.id });
+      } catch (err) {
+        return reply.status(500).send({
+          error: 'Internal Error',
+          message: `Bundle computation failed: ${(err as Error).message}`,
+        });
+      }
     },
   );
 
@@ -155,7 +243,67 @@ export async function teamsRoutes(
         data: { team_template_id: updated.id, name: updated.name },
       });
 
+      // Re-bundle to keep the MAP store in sync with authored content.
+      void onTeamTemplateBundle(updated);
+
+      // Mesh fan-out. We only emit when the effective visibility (post-update)
+      // is non-private; flipping a federated row back to private is a future
+      // "redacted" event handled in a later slice (see plan §"Out of scope").
+      if (updated.visibility !== 'private') {
+        onResourceUpdated(
+          updated.id,
+          {
+            name: parsed.data.name,
+            description: parsed.data.description,
+            visibility: parsed.data.visibility,
+            metadata: (updated.metadata as Record<string, unknown> | null) ?? undefined,
+          },
+          request.agent!,
+        );
+      }
+
       return reply.send({ team_template: updated });
+    },
+  );
+
+  // Delete team template. Owner-only.
+  fastify.delete<{ Params: { id: string } }>(
+    '/teams/:id',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const existing = teamTemplatesDAL.getTeamTemplate(request.params.id);
+      if (!existing) {
+        return reply
+          .status(404)
+          .send({ error: 'Not Found', message: 'Team template not found' });
+      }
+      if (existing.owner_agent_id !== request.agent!.id) {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          message: 'Only the owner can delete this team template',
+        });
+      }
+
+      // Emit the unpublish event before deletion so the hook can read the
+      // row's pre-delete visibility (matches resources.ts:386 ordering).
+      if (existing.visibility !== 'private') {
+        onResourceUnpublished(request.params.id, request.agent!);
+      }
+
+      // Remove the corresponding bundle from the MAP store.
+      void onTeamTemplateRemoved(existing);
+
+      const deleted = teamTemplatesDAL.deleteTeamTemplate(request.params.id);
+      if (!deleted) {
+        return reply.status(500).send({ error: 'Internal Error', message: 'Delete failed' });
+      }
+
+      broadcastToChannel(`resource:team_template:${request.params.id}`, {
+        type: 'team_template:deleted',
+        data: { team_template_id: request.params.id },
+      });
+
+      return reply.status(204).send();
     },
   );
 
@@ -173,7 +321,6 @@ export async function teamsRoutes(
           .send({ error: 'Not Found', message: 'Team template not found' });
       }
 
-      // Visibility / access checks mirror GET /teams/:id.
       if (tmpl.visibility === 'private') {
         if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, tmpl)) {
           return reply
@@ -205,38 +352,6 @@ export async function teamsRoutes(
         }
         throw err;
       }
-    },
-  );
-
-  // Delete team template.
-  fastify.delete<{ Params: { id: string } }>(
-    '/teams/:id',
-    { preHandler: authMiddleware },
-    async (request, reply) => {
-      const existing = teamTemplatesDAL.getTeamTemplate(request.params.id);
-      if (!existing) {
-        return reply
-          .status(404)
-          .send({ error: 'Not Found', message: 'Team template not found' });
-      }
-      if (existing.owner_agent_id !== request.agent!.id) {
-        return reply.status(403).send({
-          error: 'Forbidden',
-          message: 'Only the owner can delete this team template',
-        });
-      }
-
-      const deleted = teamTemplatesDAL.deleteTeamTemplate(request.params.id);
-      if (!deleted) {
-        return reply.status(500).send({ error: 'Internal Error', message: 'Delete failed' });
-      }
-
-      broadcastToChannel(`resource:team_template:${request.params.id}`, {
-        type: 'team_template:deleted',
-        data: { team_template_id: request.params.id },
-      });
-
-      return reply.status(204).send();
     },
   );
 }

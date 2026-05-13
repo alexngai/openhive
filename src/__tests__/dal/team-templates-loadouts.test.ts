@@ -37,9 +37,9 @@ function sampleTeamTemplate(overrides: Partial<TeamTemplateContent> = {}): TeamT
       roles: ['reviewer', 'implementer'],
       topology: { root: { role: 'reviewer' } },
     },
-    roles: { reviewer: { loadout: 'security-auditor' } },
+    roles: { reviewer: { name: 'reviewer', loadout: 'security-auditor' } },
     loadouts: { 'security-auditor': sampleLoadout() },
-    prompts: { reviewer: '# Reviewer prompt\n\nReview code carefully.' },
+    prompts: { reviewer: { primary: '# Reviewer prompt\n\nReview code carefully.' } },
     ...overrides,
   };
 }
@@ -195,8 +195,8 @@ describe('team-templates + loadouts DAL', () => {
       const content = teamTemplatesDAL.getTeamTemplateContent(tmpl);
       expect(content?.manifest.name).toBe('loadout-demo');
       expect(content?.manifest.roles).toEqual(['reviewer', 'implementer']);
-      expect(content?.loadouts['security-auditor'].skills?.profile).toBe('security-engineer');
-      expect(content?.prompts.reviewer).toContain('Review code carefully');
+      expect((content?.loadouts?.['security-auditor'] as { skills?: { profile?: string } } | undefined)?.skills?.profile).toBe('security-engineer');
+      expect(content?.prompts?.reviewer?.primary).toContain('Review code carefully');
     });
 
     it('getTeamTemplateByName scopes to owner', () => {
@@ -220,13 +220,13 @@ describe('team-templates + loadouts DAL', () => {
         metadata: { upstreamRef: 'github:foo/bar#abc' },
       });
 
-      const next = sampleTeamTemplate({ prompts: { reviewer: 'updated' } });
+      const next = sampleTeamTemplate({ prompts: { reviewer: { primary: 'updated' } } });
       const updated = teamTemplatesDAL.updateTeamTemplate(tmpl.id, { content: next });
 
       expect(updated).not.toBeNull();
       const meta = updated!.metadata as Record<string, unknown>;
       expect(meta.upstreamRef).toBe('github:foo/bar#abc');
-      expect(teamTemplatesDAL.getTeamTemplateContent(updated!)?.prompts.reviewer).toBe('updated');
+      expect(teamTemplatesDAL.getTeamTemplateContent(updated!)?.prompts?.reviewer?.primary).toBe('updated');
     });
 
     it('listTeamTemplates only returns team_template-typed resources', () => {

@@ -192,7 +192,7 @@ function buildTeamContent(skillBankRef?: string): TeamTemplateContent {
       roles: ['coordinator'],
       topology: { root: { role: 'coordinator' } },
     },
-    roles: { coordinator: { loadout: buildLoadoutContent(skillBankRef) } },
+    roles: { coordinator: { name: 'coordinator', loadout: buildLoadoutContent(skillBankRef) } },
     loadouts: {},
     prompts: {},
   };

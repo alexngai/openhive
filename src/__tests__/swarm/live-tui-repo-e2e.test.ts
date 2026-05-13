@@ -231,7 +231,7 @@ describeIf('Live Agent E2E — kind=claude-code spawn with repo_id', () => {
 
     // Verify the hosted_swarm config persisted repo_id.
     // (resolved_credentials are NOT persisted — verified by mock tests instead)
-    const provisionConfig = row!.config as Record<string, unknown>;
+    const provisionConfig = row!.config as unknown as Record<string, unknown>;
     expect(provisionConfig.repo_id).toBe(repoId);
   }, 90_000);
 

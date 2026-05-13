@@ -118,6 +118,7 @@ describe('openhive.skillBankRef resolution (lock-in)', () => {
       },
       roles: {
         executor: {
+          name: 'executor',
           loadout: {
             name: 'no-ref',
             skills: { include: [MARKER_SKILL.id] },
@@ -170,6 +171,7 @@ describe('openhive.skillBankRef resolution (lock-in)', () => {
       },
       roles: {
         executor: {
+          name: 'executor',
           loadout: {
             name: 'override-loadout',
             skills: { include: [MARKER_SKILL.id] },

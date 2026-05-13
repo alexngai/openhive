@@ -54,7 +54,7 @@ function teamWithReviewer(): TeamTemplateContent {
       roles: ['reviewer'],
       topology: { root: { role: 'reviewer' } },
     },
-    roles: { reviewer: { loadout: reviewerLoadout() } },
+    roles: { reviewer: { name: 'reviewer', loadout: reviewerLoadout() } },
     loadouts: {},
     prompts: {},
   };
@@ -205,6 +205,7 @@ describe('dispatch source adapter integration', () => {
     // Edit the loadout content via DAL (simulates the user editing in the UI).
     const updated = teamWithReviewer();
     updated.roles!.reviewer = {
+      name: 'reviewer',
       loadout: reviewerLoadout('## NEW MARKER VERSION 2'),
     };
     teamTemplatesDAL.updateTeamTemplate(tmpl.id, { content: updated });

@@ -26,19 +26,48 @@ const devPort = parseInt(process.env.VITE_DEV_PORT || "5173", 10);
  * package.json `exports` map when it doesn't — which is what happens
  * on CI runners and in any clone without references/ populated.
  */
-function buildResolveAlias(): Record<string, string> {
-  const alias: Record<string, string> = {
-    "@": __dirname,
+function buildResolveAlias(): Array<{ find: string | RegExp; replacement: string }> {
+  const alias: Array<{ find: string | RegExp; replacement: string }> = [
+    { find: "@", replacement: __dirname },
     // Fix for mermaid d3-color prototype crash (known issue with mermaid 10.9.0+ and Vite)
-    mermaid: path.resolve(
-      __dirname,
-      "../../node_modules/mermaid/dist/mermaid.esm.min.mjs",
-    ),
-  };
+    {
+      find: "mermaid",
+      replacement: path.resolve(
+        __dirname,
+        "../../node_modules/mermaid/dist/mermaid.esm.min.mjs",
+      ),
+    },
+  ];
   const swarmcraftSrc = path.resolve(__dirname, "../../references/swarmcraft/src/ui");
   if (fs.existsSync(path.join(swarmcraftSrc, "embed.ts"))) {
-    alias["swarmcraft/ui/embed"] = path.join(swarmcraftSrc, "embed.ts");
-    alias["swarmcraft/ui/embed.css"] = path.join(swarmcraftSrc, "embed.css");
+    alias.push({
+      find: "swarmcraft/ui/embed.css",
+      replacement: path.join(swarmcraftSrc, "embed.css"),
+    });
+    alias.push({
+      find: "swarmcraft/ui/embed",
+      replacement: path.join(swarmcraftSrc, "embed.ts"),
+    });
+  }
+  // openteams-editor live-edit: when the source tree is present (dev),
+  // alias the package entry to the editor's own `src/index.ts`. Vite
+  // walks the editor's module graph from source — Tailwind processing,
+  // hot reload, all "just work" the same as for swarmcraft. CI builds
+  // (no references/) fall through to the published library dist.
+  //
+  // Subpath alias listed BEFORE the bare alias so longest-match wins —
+  // an `import 'openteams-editor/styles.css'` resolves to the editor's
+  // `index.css` rather than `index.ts` + `/styles.css` prefix-rewrite.
+  const openteamsEditorSrc = path.resolve(__dirname, "../../references/openteams/editor/src");
+  if (fs.existsSync(path.join(openteamsEditorSrc, "index.ts"))) {
+    alias.push({
+      find: "openteams-editor/styles.css",
+      replacement: path.join(openteamsEditorSrc, "index.css"),
+    });
+    alias.push({
+      find: /^openteams-editor$/,
+      replacement: path.join(openteamsEditorSrc, "index.ts"),
+    });
   }
   return alias;
 }

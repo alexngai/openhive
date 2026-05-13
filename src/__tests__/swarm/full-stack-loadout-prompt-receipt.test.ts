@@ -184,7 +184,7 @@ function teamWithRole(): TeamTemplateContent {
       roles: ['executor'],
       topology: { root: { role: 'executor' } },
     },
-    roles: { executor: { loadout: loadoutContent() } },
+    roles: { executor: { name: 'executor', loadout: loadoutContent() } },
     loadouts: {},
     prompts: {},
   };

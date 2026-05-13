@@ -455,8 +455,8 @@ async function handleDispatchThreadMessage(
   const conversationId = await ensureDispatchConversation(
     {
       dispatchId: dispatch.id,
-      specId: dispatch.spec_id,
-      specResourceId: dispatch.spec_resource_id,
+      specId: dispatch.spec_id ?? '',
+      specResourceId: dispatch.spec_resource_id ?? '',
       specTitle,
       targetSwarmId: dispatch.target_swarm_id,
       swarmName,

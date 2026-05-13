@@ -95,16 +95,14 @@ function addTaskAndCommit(repoDir: string, taskId: string): string {
 }
 
 describe('Git Sync Providers (ls-remote + mirror)', () => {
-  let agentId: string;
   let dataDir: string;
 
   beforeAll(async () => {
     initDatabase(TEST_DB_PATH);
-    const { agent } = await agentsDAL.createAgent({
+    await agentsDAL.createAgent({
       name: 'git-sync-test-agent',
       description: 'Agent for git sync provider tests',
     });
-    agentId = agent.id;
     dataDir = mkTestDir(TEST_ROOT, 'clone-data');
   });
 

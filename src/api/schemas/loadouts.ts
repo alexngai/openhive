@@ -1,28 +1,32 @@
 /**
- * Zod schemas for openteams loadout resources.
+ * Loadout API Schemas
  *
- * Mirrors references/openteams/schema/loadout.schema.json — structural validation
- * only. Deep semantic validation (extends-chain integrity, mcp ref resolution,
- * skill bank wiring) happens at resolution time via openteams' TemplateLoader.
+ * Authored standalone openteams loadouts stored as `syncable_resources` rows
+ * of type `loadout`. The authored content lives in `metadata.content` and
+ * matches the shape openteams' loader consumes from `loadouts/<name>.yaml`.
  *
- * Use .passthrough() so openteams extension namespaces (e.g. `openhive:`,
- * `claude_code:`) survive the round-trip through OpenHive.
+ * Validation mirrors `team.ts` in spirit: enforce the small set of structural
+ * invariants (name, optional extends), let the openteams loader's schema be
+ * authoritative on the deeper shape. Loadouts carry extension namespaces
+ * (`macro_agent`, `claude_code`, etc.) that openhive must store verbatim.
  */
 
 import { z } from 'zod';
-
-const NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
-const CAPABILITY_PATTERN = /^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_]*)*$/;
 
 const SkillsConfigSchema = z
   .object({
     profile: z.string().optional(),
     include: z.array(z.string()).optional(),
     exclude: z.array(z.string()).optional(),
-    max_tokens: z.number().int().positive().optional(),
+    max_tokens: z.number().int().nonnegative().optional(),
   })
   .passthrough();
 
+/**
+ * `permissions:` block — three optional lists. Inherits the
+ * agent-system-agnostic shape from openteams (allow/deny/ask), with
+ * deny-wins precedence applied at hydrate time.
+ */
 const PermissionsConfigSchema = z
   .object({
     allow: z.array(z.string()).optional(),
@@ -31,22 +35,28 @@ const PermissionsConfigSchema = z
   })
   .passthrough();
 
+/**
+ * `mcp_servers:` entries — four accepted shapes. Validation is loose
+ * because openteams' loader normalizes the four shapes into a single
+ * canonical form at hydrate time.
+ */
 const McpServerEntrySchema = z.union([
-  z.string().regex(NAME_PATTERN),
-  z.object({ ref: z.string() }).passthrough(),
-  z.object({ name: z.string(), command: z.string() }).passthrough(),
-  z.record(z.unknown()), // single-key scope object — too permissive to enumerate
+  z.string(),
+  z.record(z.string(), z.unknown()),
 ]);
 
+/**
+ * The shape stored in `syncable_resources.metadata.content` for a loadout.
+ */
 export const LoadoutContentSchema = z
   .object({
-    name: z.string().regex(NAME_PATTERN),
+    name: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
     extends: z.string().optional(),
     description: z.string().optional(),
     skills: SkillsConfigSchema.optional(),
-    capabilities: z.unknown().optional(), // array | composition | map; pass through
-    capabilities_add: z.array(z.string().regex(CAPABILITY_PATTERN)).optional(),
-    capabilities_remove: z.array(z.string().regex(CAPABILITY_PATTERN)).optional(),
+    capabilities: z.unknown().optional(),
+    capabilities_add: z.array(z.string()).optional(),
+    capabilities_remove: z.array(z.string()).optional(),
     mcp_servers: z.array(McpServerEntrySchema).optional(),
     permissions: PermissionsConfigSchema.optional(),
     prompt_addendum: z.string().optional(),
@@ -55,30 +65,32 @@ export const LoadoutContentSchema = z
 
 export type LoadoutContent = z.infer<typeof LoadoutContentSchema>;
 
-// ============================================================================
-// REST request bodies
-// ============================================================================
+// ── request bodies ────────────────────────────────────────────────────────
+
+const VisibilitySchema = z.enum(['private', 'shared', 'public']);
 
 export const CreateLoadoutSchema = z.object({
-  name: z.string().regex(NAME_PATTERN),
+  name: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
   description: z.string().optional(),
-  content: LoadoutContentSchema,
-  visibility: z.enum(['private', 'shared', 'public']).optional(),
-  metadata: z.record(z.unknown()).optional(),
+  content: LoadoutContentSchema.optional(),
+  visibility: VisibilitySchema.optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Layer 6 — git-backed authoring. Same semantics as team_template's
+   * `git_remote_url`; the hub treats the on-disk checkout as canonical
+   * once it's been cloned.
+   */
+  git_remote_url: z.string().url().optional(),
+});
+
+export const UpdateLoadoutSchema = z.object({
+  name: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/).optional(),
+  description: z.string().optional(),
+  content: LoadoutContentSchema.optional(),
+  visibility: VisibilitySchema.optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  git_remote_url: z.string().url().optional(),
 });
 
 export type CreateLoadoutInput = z.infer<typeof CreateLoadoutSchema>;
-
-export const UpdateLoadoutSchema = z
-  .object({
-    name: z.string().regex(NAME_PATTERN).optional(),
-    description: z.string().optional(),
-    content: LoadoutContentSchema.optional(),
-    visibility: z.enum(['private', 'shared', 'public']).optional(),
-    metadata: z.record(z.unknown()).optional(),
-  })
-  .refine((data) => Object.keys(data).length > 0, {
-    message: 'At least one field must be provided',
-  });
-
 export type UpdateLoadoutInput = z.infer<typeof UpdateLoadoutSchema>;
