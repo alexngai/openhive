@@ -15,14 +15,25 @@ import {
   User,
   Tag,
   AlertCircle,
+  MessageCircle,
+  Send,
+  GitBranch,
 } from 'lucide-react';
 import {
   useResource,
   useOpenTasksGraph,
+  useRepo,
 } from '../hooks/useApi';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { CascadeBlock } from '../components/CascadeBlock';
+import { usePageContext } from '../components/chat-fab/usePageContext';
+import {
+  taskContextItem,
+  tasksContextItem,
+  type TaskRef,
+} from '../components/chat-fab/context-types';
+import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
 
 export function TaskDetail() {
   const { resourceId, nodeId } = useParams<{ resourceId: string; nodeId: string }>();
@@ -37,6 +48,81 @@ export function TaskDetail() {
     if (!graph || !nodeId) return undefined;
     return graph.nodes.find((n) => n.id === nodeId);
   }, [graph, nodeId]);
+
+  // Parents, children, and block edges for the chat-context items. The
+  // task primary carries its own blocked_by/blocks inline; the plural
+  // `tasks` items render the dependency subtrees as bulleted lists.
+  const { parents, children, blockedBy, blocks } = useMemo(() => {
+    if (!graph || !nodeId) {
+      return {
+        parents: [] as TaskRef[],
+        children: [] as TaskRef[],
+        blockedBy: [] as string[],
+        blocks: [] as string[],
+      };
+    }
+    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+    const parentIds = new Set<string>();
+    const childIds = new Set<string>();
+    const blockedByIds: string[] = [];
+    const blocksIds: string[] = [];
+    for (const edge of graph.edges ?? []) {
+      const e = edge as { type?: string; source?: string; target?: string };
+      if (e.type === 'parent' && e.target === nodeId && e.source) {
+        parentIds.add(e.source);
+      }
+      if (e.type === 'parent' && e.source === nodeId && e.target) {
+        childIds.add(e.target);
+      }
+      if (e.type === 'blocks' && e.target === nodeId && e.source) {
+        blockedByIds.push(e.source);
+      }
+      if (e.type === 'blocks' && e.source === nodeId && e.target) {
+        blocksIds.push(e.target);
+      }
+    }
+    const toRef = (id: string): TaskRef => {
+      const n = byId.get(id);
+      return {
+        id,
+        title: n?.title,
+        status: n?.status,
+      };
+    };
+    return {
+      parents: Array.from(parentIds).map(toRef),
+      children: Array.from(childIds).map(toRef),
+      blockedBy: blockedByIds,
+      blocks: blocksIds,
+    };
+  }, [graph, nodeId]);
+
+  // Declare page context items. Runs unconditionally before the early
+  // returns below so hook order is stable.
+  usePageContext(
+    () => {
+      if (!resourceId || !nodeId || !node) return [];
+      const items: ChatFabContextItem[] = [
+        taskContextItem(
+          {
+            id: nodeId,
+            resource_id: resourceId,
+            title: node.title,
+            description: node.description ?? undefined,
+            status: node.status,
+            assignee: node.assignee ?? undefined,
+            blocked_by: blockedBy.length > 0 ? blockedBy : undefined,
+            blocks: blocks.length > 0 ? blocks : undefined,
+          },
+          { primary: true },
+        ),
+      ];
+      if (parents.length > 0) items.push(tasksContextItem(parents));
+      if (children.length > 0) items.push(tasksContextItem(children));
+      return items;
+    },
+    [resourceId, nodeId, node, parents, children, blockedBy, blocks],
+  );
 
   const isLoading = resourceLoading || graphLoading;
 
@@ -134,6 +220,7 @@ export function TaskDetail() {
             <span className="flex items-center gap-1" title="OpenTasks graph resource">
               in <Link to={`/tasks?resource=${resourceId}`} className="hover:text-honey-500 transition-colors">{resource.name}</Link>
             </span>
+            <LinkedRepoPill resource={resource} />
           </div>
         )}
       </div>
@@ -145,6 +232,9 @@ export function TaskDetail() {
         taskTitle={taskTitle}
         taskSubtitle={taskSubtitle}
       />
+
+      {/* Dispatch threads — linked coordination conversations */}
+      <DispatchThreadLinks metadata={resource.metadata} />
     </div>
   );
 }
@@ -159,6 +249,52 @@ function TaskBackLink({ resourceId }: { resourceId: string }) {
       <ArrowLeft className="w-3.5 h-3.5" />
       Back to tasks
     </Link>
+  );
+}
+
+/**
+ * Renders linked dispatch coordination threads from the task resource's
+ * `metadata.dispatch_threads[]`. Each entry links to the dispatch detail
+ * page (anchored to the thread section).
+ */
+function DispatchThreadLinks({ metadata }: { metadata?: Record<string, unknown> | null }) {
+  const threads = Array.isArray(metadata?.dispatch_threads)
+    ? (metadata!.dispatch_threads as Array<{ dispatch_id: string; conversation_id: string }>)
+    : [];
+  if (threads.length === 0) return null;
+
+  return (
+    <div
+      className="rounded-md border p-4"
+      style={{
+        borderColor: 'var(--color-border-subtle)',
+        backgroundColor: 'var(--color-surface)',
+      }}
+    >
+      <div className="text-xs mb-2 flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
+        <MessageCircle className="h-3.5 w-3.5 text-honey-500" />
+        Dispatch threads
+      </div>
+      <ul className="space-y-1.5">
+        {threads.map((t) => (
+          <li key={t.dispatch_id}>
+            <Link
+              to={`/dispatch/${t.dispatch_id}`}
+              className="flex items-center gap-2 text-sm hover:opacity-80"
+              style={{ color: 'var(--color-text)' }}
+            >
+              <Send className="h-3.5 w-3.5 shrink-0 text-honey-500" />
+              <code
+                className="text-2xs font-mono px-1 py-0.5 rounded shrink-0"
+                style={{ backgroundColor: 'var(--color-elevated)' }}
+              >
+                {t.dispatch_id.length > 16 ? t.dispatch_id.slice(0, 16) + '...' : t.dispatch_id}
+              </code>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -182,5 +318,28 @@ function TaskNotFound({ resourceId }: { resourceId: string | undefined }) {
         </p>
       </div>
     </div>
+  );
+}
+
+/**
+ * Small pill linking a task back to the repo it was opportunistically
+ * stamped against (slice 8 — `metadata.repo_id` set by trajectory bootstrap
+ * with `task_ref` or by `autoRegisterResource`'s git-remote lookup).
+ * Renders nothing if the task has no `repo_id` or the repo isn't visible
+ * to the viewer.
+ */
+function LinkedRepoPill({ resource }: { resource: { metadata: unknown } }) {
+  const meta = (resource.metadata ?? {}) as { repo_id?: string };
+  const { data } = useRepo(meta.repo_id);
+  if (!meta.repo_id || !data?.repo) return null;
+  const repoMeta = (data.repo.metadata ?? {}) as { name?: string };
+  const label = repoMeta.name ?? data.repo.name;
+  return (
+    <span className="flex items-center gap-1" title="Repo this task is linked to">
+      <GitBranch className="w-3 h-3" />
+      <Link to={`/repos/${meta.repo_id}`} className="hover:text-honey-500 transition-colors">
+        {label}
+      </Link>
+    </span>
   );
 }

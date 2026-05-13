@@ -396,6 +396,7 @@ Items intentionally not addressed in current scope. Each entry: **what**, **why 
 - Phase 1: hub projections + macro-agent emission via cascade-bridge; standalone-mode preserved
 - Phase 1 closure (G1, G2, G3, G4, G5, G6, G7, G11, G12-pagination, G13, G14-investigation, G15)
 - Phase 3: changelog generator (`src/cascade/changelog.ts`) + REST surface (`/cascade/tasks/:r/:n/changelog`) + `TaskDetail` page (`/tasks/:resourceId/:nodeId`) + `CascadeBlock` component + sidebar deep-link + WS realtime invalidation (`useCascadeRealtime`)
+- Phase 3a — Cascade ↔ task binder (2026-04-21): `src/cascade/task-binder.ts` orchestrator + `src/cascade/policy.ts` three-scope resolver + `src/map/task-broadcast.ts` consolidated broadcast helper. `cascade_stream_merged` now carries `task_ref`; terminal `task.status` broadcasts carry a `cascade` block when cascade data exists. Default close policy is `manual` (no auto-close); opt-in via per-task `close_policy`, per-swarm `cascade.autoCloseOnMerge` capability, or hub `config.cascade.defaultClosePolicy`. Design spec: `docs/superpowers/specs/2026-04-21-cascade-task-binding-design.md`. 28 unit + 4 integration tests; 588-test regression suite clean.
 
 **Verified in Phase 3 E2E pass (live dev server + chrome-devtools):**
 

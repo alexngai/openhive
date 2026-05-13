@@ -133,6 +133,27 @@ export interface WorkspaceConfig {
   repos: WorkspaceRepo[];
 }
 
+/**
+ * Per-swarm workspace policy. Operators set this at spawn time; runtime
+ * `x-workspace/repo.declare` (and trajectory-bootstrap and `repo.retract`)
+ * calls are gated against it. Persisted on `map_swarms.workspace_policy`
+ * and read by `findSwarmWorkspacePolicy`.
+ *
+ * - `open` (default): any declare succeeds.
+ * - `allow_listed`: declares must match a canonical_url in `allowed_repos`.
+ * - `pinned`: declares must match `pinned_repo`. NOTE: the hub-side
+ *   "auto-attach a binding to `pinned_repo` at swarm register" half is
+ *   not yet implemented (tracked under "Pending follow-ups" in
+ *   src/map/CLAUDE.md). Today this mode behaves like a single-entry
+ *   allow_list — it validates declares but doesn't pre-create a binding.
+ *
+ * Re-exported from `src/types.ts` (the canonical home) so existing
+ * imports from `swarm/types.ts` keep working without dragging the type
+ * back into the upward-import-only layer.
+ */
+export type { WorkspacePolicy } from '../types.js';
+import type { WorkspacePolicy } from '../types.js';
+
 // ============================================================================
 // Spawn Configuration
 // ============================================================================
@@ -159,6 +180,13 @@ export interface SwarmBootstrap {
 
 /** What the caller provides when requesting a swarm spawn */
 export interface SpawnSwarmInput {
+  /**
+   * What kind of agent process to spawn. Defaults to 'openswarm' (existing
+   * behavior). When set to 'claude-code', the manager routes to a separate
+   * spawn pipeline that launches the Claude Code TUI alongside cc-swarm's
+   * plugin-managed sidecar. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+   */
+  kind?: HostedSwarmKind;
   /** Human-readable name for the swarm (auto-generated if omitted) */
   name?: string;
   /** Optional description */
@@ -177,6 +205,47 @@ export interface SpawnSwarmInput {
   credential_overrides?: Record<string, string>;
   /** Workspace setup (e.g. repos to clone before the swarm starts) */
   workspace?: WorkspaceConfig;
+  /**
+   * Pre-attached repo resource (kinds/repo). When set, the manager looks up
+   * the repo and injects `WORKSPACE_REPO_URL` / `WORKSPACE_LOCAL_PATH` /
+   * `WORKSPACE_BRANCH` env vars so the spawned swarm's sidecar can declare
+   * the repo on connect (per `agent-workspace/docs/design/agent-integration.md`).
+   *
+   * Independent of `workspace.repos` (which clones; this announces).
+   */
+  repo_id?: string;
+  /**
+   * Per-swarm workspace policy gating which repos this swarm's agents may
+   * declare. Persisted on `map_swarms.workspace_policy` so runtime declares
+   * can be gated. See CLAUDE.md "Repos and Workspaces" enforcement layers.
+   */
+  workspace_policy?: WorkspacePolicy;
+  /**
+   * Initial prompt to seed the spawned agent with.
+   *
+   * For `kind: 'claude-code'`, passed to `claude` as a positional arg so the
+   * TUI opens with the prompt prefilled (claude treats it as the first user
+   * turn). For `kind: 'openswarm'`, currently a no-op — the openswarm adapter
+   * has its own prompt-injection path via the bootstrap-coordinator field.
+   */
+  initial_prompt?: string;
+  /**
+   * For `kind: 'codex'` only: which surface to spawn.
+   *
+   *   - `'rpc'` (default): spawn `codex app-server` and let openhive's chat
+   *     UI drive it via JSON-RPC. The canonical interaction model — full
+   *     streaming, mid-turn injection, dispatch hand-off, etc.
+   *   - `'tui'`: spawn `codex` interactive TUI in a node-pty PTY. Operator
+   *     drives it through the embedded terminal, openhive does NOT see the
+   *     conversation programmatically (codex has no plugin sidecar yet).
+   *
+   * `'rpc'` and `'tui'` operate on independent threads — codex's app-server
+   * and `codex resume` don't share live state. See
+   * docs/HOSTED_SWARM_KINDS_DESIGN.md "codex — programmatic mode".
+   *
+   * Ignored for non-codex kinds.
+   */
+  mode?: 'rpc' | 'tui';
   /** Resource IDs to inject into the swarm's bootstrap config */
   inject_resources?: string[];
   /** Boot-time agent provisioning (e.g. auto-spawn coordinator) */
@@ -192,6 +261,24 @@ export interface SpawnSwarmInput {
   loadout_bundle_id?: string;
   team_bundle_id?: string;
   role?: string;
+  /**
+   * Optional git-sync config for the swarm's OWN opentasks workspace.
+   * When set, the manager writes `.opentasks/config.json` into the
+   * spawn's `dataDir` BEFORE the subprocess starts, so the embedded
+   * daemon reads it on first boot — no PATCH + hot-reload needed.
+   *
+   * Shape mirrors `metadata.git_sync` on a resource (see
+   * `src/swarmkit/git-sync-config.ts` for the schema).
+   */
+  git_sync?: {
+    enabled: boolean;
+    remote?: string;
+    autoCommit?: boolean;
+    autoPush?: boolean;
+    pullOnStartup?: boolean;
+    pushDebounceMs?: number;
+    pullOnSignal?: boolean;
+  };
 }
 
 /** Internal config passed to the hosting provider */
@@ -213,8 +300,34 @@ export interface SwarmProvisionConfig {
   credential_resolution?: CredentialResolutionMeta;
   /** Workspace setup (repos to clone before process starts) */
   workspace?: WorkspaceConfig;
+  /** Pre-attached repo resource (echoed from SpawnSwarmInput; passed for audit). */
+  repo_id?: string;
+  /** Per-swarm workspace policy (echoed from SpawnSwarmInput; passed for audit). */
+  workspace_policy?: WorkspacePolicy;
   /** Boot-time agent provisioning (env-var bridged into the runtime) */
   bootstrap?: SwarmBootstrap;
+  /**
+   * When set, the provider spawns this command instead of its kind-default
+   * (e.g. the local provider's `openswarm_command`). Used by non-openswarm
+   * kinds (`claude-code`, future codex/gemini) to point the provider at the
+   * right binary without making the provider itself kind-aware.
+   *
+   * The override is taken verbatim — provider does NOT append default args.
+   */
+  spawn_command_override?: string;
+  /**
+   * For `kind: 'codex'` only — which surface this row was spawned with.
+   * `'rpc'` rows route through CodexAppServerManager; `'tui'` (and absent)
+   * rows route through PtyManager. Persisted so restart/revive can pick
+   * the right pipeline. Ignored for non-codex kinds.
+   */
+  mode?: 'rpc' | 'tui';
+  /**
+   * Args to pair with `spawn_command_override`. When the override is set
+   * these REPLACE the provider's default args (not append). When the
+   * override is unset, this field is ignored.
+   */
+  spawn_args_override?: string[];
 }
 
 // ============================================================================
@@ -279,8 +392,20 @@ export interface HostingProvider {
 // Hosted Swarm Record (DB)
 // ============================================================================
 
+/**
+ * What flavour of agent process this hosted swarm is. Drives the spawn-plan
+ * resolver — see docs/HOSTED_SWARM_KINDS_DESIGN.md. New rows must specify a
+ * kind; legacy rows default to 'openswarm' on read.
+ */
+export type HostedSwarmKind =
+  | 'openswarm'    // OpenSwarm hosting gateway (current default)
+  | 'claude-code'  // claude TUI + cc-swarm plugin sidecar
+  | 'codex';       // codex TUI (no plugin/sidecar in v1; future codex-swarm plugin will add MAP integration)
+
 export interface HostedSwarm {
   id: string;
+  /** What kind of agent process this is. */
+  kind: HostedSwarmKind;
   /** References map_swarms.id — NULL until the swarm registers with the hub */
   swarm_id: string | null;
   /** Which provider is managing this instance */

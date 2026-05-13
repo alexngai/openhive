@@ -39,6 +39,7 @@ export interface AgentSnapshot {
  */
 export type HiveEventType =
   | 'resource_published' | 'resource_updated' | 'resource_unpublished' | 'resource_synced'
+  | 'resource_redacted' | 'resource_archived' | 'resource_merged'
   | 'coordination_message';
 
 export interface HiveEvent {
@@ -67,10 +68,17 @@ export interface ResourcePublishedPayload {
     | 'session'
     | 'playbook'
     | 'team_template'
-    | 'loadout';
+    | 'loadout'
+    | 'repo';
   name: string;
   description: string | null;
   git_remote_url: string;
+  /**
+   * Column-level visibility. Federated `repo` resources always carry
+   * column-level `'shared'` here (private/shared/public is the
+   * syncable_resources CHECK domain); the actual repo federation tier
+   * (`'hub_local' | 'federated'`) lives on `metadata.visibility`.
+   */
   visibility: 'shared' | 'public';
   owner: AgentSnapshot;
   tags: string[];
@@ -102,6 +110,38 @@ export interface ResourceSyncedPayload {
   files_added: number;
   files_modified: number;
   files_removed: number;
+}
+
+// ── Mesh Lifecycle Event Payloads (slice 5b) ────────────────────
+// Mirror of `agent-workspace/protocol/resource-events.ts`'s
+// `RESOURCE_MESH_EVENTS`. Resources are looked up on the receiver
+// by `(resource_type, canonical_url)` rather than `origin_resource_id`
+// because lifecycle events propagate across hubs the receiver may
+// have learned about from a different origin (or via gossip).
+
+export interface ResourceRedactedPayload {
+  resource_type: string;
+  canonical_url: string;
+  /** New federation tier (semantic per resource type — for repos:
+   *  `'private' | 'hub_local' | 'federated'`). */
+  new_visibility: string;
+  redacted_at: string;
+  origin_hub_id: string;
+}
+
+export interface ResourceArchivedPayload {
+  resource_type: string;
+  canonical_url: string;
+  archived_at: string;
+  origin_hub_id: string;
+}
+
+export interface ResourceMergedPayload {
+  resource_type: string;
+  source_canonical_url: string;
+  target_canonical_url: string;
+  merged_at: string;
+  origin_hub_id: string;
 }
 
 // ── Coordination Event Payloads ─────────────────────────────────

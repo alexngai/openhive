@@ -59,6 +59,7 @@ function makeResource(overrides: Partial<SyncableResource> = {}): SyncableResour
     metadata: { opentasks: true },
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
+    status: 'active',
     ...overrides,
   };
 }
@@ -116,8 +117,8 @@ describe('Sync Strategy', () => {
       for (const strategy of strategies) {
         const resource = resourcesDAL.createResource({
           resource_type: 'task',
-          name: `test-strategy-${strategy}`,
-          git_remote_url: `/tmp/test-${strategy}`,
+          name: `test-strategy-all-${strategy}`,
+          git_remote_url: `/tmp/test-all-${strategy}`,
           owner_agent_id: agentId,
           sync_strategy: strategy,
         });

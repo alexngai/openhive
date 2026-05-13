@@ -14,14 +14,16 @@
  */
 
 import { useState } from 'react';
-import { Zap, Plus, MessageSquare, Loader2, Radio } from 'lucide-react';
+import { Zap, Plus, Loader2, Radio, RotateCw, Play, Server } from 'lucide-react';
+import { AgentAvatar } from '../common/AgentAvatar';
 import clsx from 'clsx';
-import { useMapSwarmsForPicker, useConnectAcp } from '../../hooks/useApi';
+import { useMapSwarmsForPicker, useConnectAcp, useHostedSwarms, useRestartSwarm } from '../../hooks/useApi';
 import { useSwarmRealtime } from '../../hooks/useRealtimeInvalidation';
 import { useChatFabStore } from './ChatFabStore';
-import type { MapSwarm } from '../../lib/api';
+import type { MapSwarm, HostedSwarm } from '../../lib/api';
 import { getPeerMapId } from '../../lib/map';
 import { SpawnAgentDialog } from '../swarm/SpawnAgentDialog';
+import { SpawnFormDialog } from '../../pages/Swarms';
 
 interface RegisteredAgent {
   id: string;
@@ -41,10 +43,21 @@ interface PickerAgent {
 interface SwarmGroup {
   swarm: MapSwarm;
   agents: PickerAgent[];
+  spawnable: boolean;
 }
 
 function isOnline(s: MapSwarm): boolean {
   return s.status === 'online';
+}
+
+/**
+ * Whether the swarm supports agent spawning via `_macro/spawnAgent`. Only
+ * hub-spawned macro-agent swarms get `lifecycle: true` on their capabilities
+ * record (set in `swarm/manager.ts`). cc-swarm self-registers without it.
+ */
+function canSpawnAgents(s: MapSwarm): boolean {
+  const caps = s.capabilities as Record<string, unknown> | null | undefined;
+  return !!caps?.lifecycle;
 }
 
 function getRegisteredAgents(s: MapSwarm): RegisteredAgent[] {
@@ -93,21 +106,24 @@ function getSwarmDefaultCwd(swarm: MapSwarm): string | undefined {
 }
 
 /**
- * Group online swarms with their chat-capable agents. Empty groups (swarms
- * with no chat-capable agents) are kept so the user can still spawn into
- * them. Exported for unit testing.
+ * Group online swarms with their chat-capable agents. Empty groups are kept
+ * only when the swarm supports agent spawning (macro-agent) so the user can
+ * spawn into them; non-spawnable swarms (e.g. cc-swarm) with zero chat
+ * agents are dropped since they offer no actionable path.
  */
 export function buildSwarmGroups(swarms: MapSwarm[]): SwarmGroup[] {
-  return swarms.map((swarm) => {
-    const agents: PickerAgent[] = [];
-    for (const agent of getRegisteredAgents(swarm)) {
-      if (agent.role === 'sidecar') continue;
-      const mode = getAgentChatMode(agent, swarm);
-      if (!mode) continue;
-      agents.push({ agent, swarm, mode });
-    }
-    return { swarm, agents };
-  });
+  return swarms
+    .map((swarm) => {
+      const agents: PickerAgent[] = [];
+      for (const agent of getRegisteredAgents(swarm)) {
+        if (agent.role === 'sidecar') continue;
+        const mode = getAgentChatMode(agent, swarm);
+        if (!mode) continue;
+        agents.push({ agent, swarm, mode });
+      }
+      return { swarm, agents, spawnable: canSpawnAgents(swarm) };
+    })
+    .filter((g) => g.agents.length > 0 || g.spawnable);
 }
 
 /**
@@ -128,6 +144,7 @@ export function SessionPicker() {
   const [connecting, setConnecting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [spawnFor, setSpawnFor] = useState<MapSwarm | null>(null);
+  const [showSpawnSwarm, setShowSpawnSwarm] = useState(false);
 
   const onlineSwarms = swarms.filter(isOnline);
   const groups = buildSwarmGroups(onlineSwarms);
@@ -226,15 +243,6 @@ export function SessionPicker() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-4 py-3 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
-        <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>
-          Start a conversation
-        </h3>
-        <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-          Pick an agent to chat with, or spawn a new one.
-        </p>
-      </div>
-
       {error && (
         <div
           className="mx-3 mt-2 px-3 py-2 rounded text-xs"
@@ -245,7 +253,7 @@ export function SessionPicker() {
       )}
 
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
-        {groups.map(({ swarm, agents }) => {
+        {groups.map(({ swarm, agents, spawnable }) => {
           const spawnLoadingPrefix = `spawn:${swarm.id}:`;
           const spawning = connecting?.startsWith(spawnLoadingPrefix);
           return (
@@ -259,20 +267,22 @@ export function SessionPicker() {
                 >
                   {swarm.name}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => setSpawnFor(swarm)}
-                  disabled={spawning}
-                  className="p-0.5 rounded hover:bg-white/10 transition-colors disabled:opacity-50"
-                  style={{ color: 'var(--color-text-muted)' }}
-                  title="Spawn agent on this swarm"
-                >
-                  {spawning ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <Plus className="h-3 w-3" />
-                  )}
-                </button>
+                {spawnable && (
+                  <button
+                    type="button"
+                    onClick={() => setSpawnFor(swarm)}
+                    disabled={spawning}
+                    className="p-0.5 rounded hover:bg-white/10 transition-colors disabled:opacity-50"
+                    style={{ color: 'var(--color-text-muted)' }}
+                    title="Spawn agent on this swarm"
+                  >
+                    {spawning ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Plus className="h-3 w-3" />
+                    )}
+                  </button>
+                )}
               </div>
 
               {/* Agent rows or empty hint */}
@@ -296,7 +306,7 @@ export function SessionPicker() {
                       {connecting === key ? (
                         <Loader2 className="h-4 w-4 animate-spin text-honey-500 shrink-0" />
                       ) : (
-                        <Zap className="h-4 w-4 text-honey-500 shrink-0" />
+                        <AgentAvatar name={name} size={24} />
                       )}
                       <div className="flex-1 min-w-0">
                         <div className="truncate">{name}</div>
@@ -322,7 +332,9 @@ export function SessionPicker() {
                   className="px-3 py-1.5 text-2xs italic"
                   style={{ color: 'var(--color-text-muted)' }}
                 >
-                  No chat-capable agents — spawn one with +
+                  {spawnable
+                    ? 'No chat-capable agents — spawn one with +'
+                    : 'No chat-capable agents'}
                 </div>
               )}
             </div>
@@ -330,15 +342,28 @@ export function SessionPicker() {
         })}
 
         {onlineSwarms.length === 0 && (
-          <div
-            className="px-3 py-6 text-center text-xs"
-            style={{ color: 'var(--color-text-muted)' }}
-          >
-            <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-30" />
-            <p>No swarms online.</p>
-            <p className="mt-1">Connect a swarm to start chatting.</p>
-          </div>
+          <NoSwarmsOnline />
         )}
+
+        {/* Always show spawn swarm action */}
+        <div className="space-y-1.5 pt-1">
+          <button
+            type="button"
+            onClick={() => setShowSpawnSwarm(true)}
+            className={clsx(
+              'w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',
+              'hover:bg-white/5 border border-dashed',
+            )}
+            style={{
+              color: 'var(--color-text)',
+              borderColor: 'var(--color-border-subtle)',
+            }}
+          >
+            <Server className="h-4 w-4 text-honey-500/70 shrink-0" />
+            <span className="flex-1 text-left">Spawn a new swarm</span>
+            <Plus className="h-3 w-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+          </button>
+        </div>
       </div>
 
       {spawnFor && (
@@ -352,6 +377,84 @@ export function SessionPicker() {
             void handleSpawned(swarm, result);
           }}
         />
+      )}
+
+      {showSpawnSwarm && (
+        <SpawnFormDialog onClose={() => setShowSpawnSwarm(false)} />
+      )}
+    </div>
+  );
+}
+
+// ── Empty-state component when no swarms are online ──
+
+function NoSwarmsOnline() {
+  const { data: hostedSwarms = [] } = useHostedSwarms();
+  const restartMutation = useRestartSwarm();
+
+  const stoppedSwarms = hostedSwarms.filter(
+    (s: HostedSwarm) => s.state === 'stopped' || s.state === 'failed',
+  );
+
+  const [restartingId, setRestartingId] = useState<string | null>(null);
+
+  const handleRestart = async (swarm: HostedSwarm) => {
+    setRestartingId(swarm.id);
+    try {
+      await restartMutation.mutateAsync(swarm.id);
+    } catch {
+      // toast or inline error could go here; for now the mutation's own
+      // error state is enough and the picker auto-refreshes on lifecycle events
+    }
+    setRestartingId(null);
+  };
+
+  return (
+    <div className="py-2 space-y-3">
+      <p className="text-xs text-center" style={{ color: 'var(--color-text-muted)' }}>
+        No swarms online.
+      </p>
+
+      {/* Stopped / failed hosted swarms that can be restarted */}
+      {stoppedSwarms.length > 0 && (
+        <div className="space-y-1">
+          <p
+            className="text-2xs font-medium uppercase tracking-wide px-1"
+            style={{ color: 'var(--color-text-muted)' }}
+          >
+            Restart a swarm
+          </p>
+          {stoppedSwarms.map((swarm: HostedSwarm) => (
+            <button
+              key={swarm.id}
+              type="button"
+              onClick={() => handleRestart(swarm)}
+              disabled={restartingId === swarm.id}
+              className={clsx(
+                'w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors',
+                'hover:bg-white/5 disabled:opacity-50',
+              )}
+              style={{ color: 'var(--color-text)' }}
+            >
+              {restartingId === swarm.id ? (
+                <Loader2 className="h-4 w-4 animate-spin text-honey-500 shrink-0" />
+              ) : (
+                <RotateCw className="h-4 w-4 text-honey-500/70 shrink-0" />
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="truncate">{swarm.name}</div>
+                <div
+                  className="text-2xs truncate"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
+                  {swarm.state === 'failed' ? 'Failed' : 'Stopped'}
+                  {swarm.bootstrap?.cwd ? ` · ${swarm.bootstrap.cwd.split('/').pop()}` : ''}
+                </div>
+              </div>
+              <Play className="h-3 w-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );

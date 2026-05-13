@@ -465,6 +465,25 @@ export interface ListStreamsOptions {
   offset?: number;
 }
 
+/**
+ * Look up streams whose `(task_resource_id, task_node_id)` matches any of the
+ * given refs. Returns [] for empty input. Used by dispatch finalization to
+ * enrich `DispatchOutcome.artifacts` with the cascade streams associated with
+ * the dispatch's linked tasks.
+ */
+export function findCascadeStreamsByTaskRefs(
+  refs: Array<{ resource_id: string; node_id: string }>,
+): CascadeStream[] {
+  if (refs.length === 0) return [];
+  const db = getDatabase();
+  const clauses = refs.map(() => '(task_resource_id = ? AND task_node_id = ?)').join(' OR ');
+  const params = refs.flatMap((r) => [r.resource_id, r.node_id]);
+  const rows = db
+    .prepare(`SELECT * FROM cascade_streams WHERE ${clauses}`)
+    .all(...params) as Row[];
+  return rows.map(rowToStream);
+}
+
 export function listStreams(options: ListStreamsOptions = {}): {
   streams: CascadeStream[];
   total: number;

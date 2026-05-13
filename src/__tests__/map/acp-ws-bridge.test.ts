@@ -215,4 +215,52 @@ describe('ACP WebSocket Bridge', () => {
     expect(origBroadcast).toHaveBeenCalledTimes(4);
     expect(broadcastToChannel).not.toHaveBeenCalled();
   });
+
+  // P3 chat-surface verification — when the dispatch overlay is NOT set,
+  // macro-agent's prompt iterator yields permission_request through to
+  // claude-agent-acp, which surfaces it via the ACP wire. The chat-side
+  // path then needs the OpenHive WS bridge to forward the
+  // `acp.session.update` carrying that update to the browser so swarmcraft's
+  // PermissionDialog can render. This pins that the bridge doesn't strip
+  // permission_request payloads from the otherwise-generic acp.session.update
+  // forwarding.
+  it('forwards acp.session.update carrying permission_request payloads (chat dialog path)', () => {
+    const origBroadcast = vi.fn();
+    const broadcastToChannel = vi.fn();
+    const bridge = createBridge(origBroadcast, broadcastToChannel);
+
+    const payload = {
+      streamId: 'stream-chat-1',
+      sessionId: 'sess-chat-1',
+      update: {
+        sessionUpdate: 'permission_request',
+        requestId: 'perm-1',
+        toolCall: {
+          toolCallId: 'toolu_1',
+          title: 'Read /tmp/sensitive.txt',
+          kind: 'read',
+          status: 'pending',
+          rawInput: { file_path: '/tmp/sensitive.txt' },
+        },
+        options: [
+          { kind: 'allow_always', optionId: 'allow_always' },
+          { kind: 'allow_once', optionId: 'allow' },
+          { kind: 'reject_once', optionId: 'reject' },
+        ],
+      },
+    };
+
+    bridge({ type: 'acp.session.update', payload }, 'acp');
+
+    expect(broadcastToChannel).toHaveBeenCalledWith('global', {
+      type: 'acp.session.update',
+      data: payload,
+    });
+    // The whole payload (including the inner permission_request shape) must
+    // pass through intact — no filtering, no stripping, no transformation.
+    const lastCall = broadcastToChannel.mock.calls.at(-1);
+    expect(lastCall?.[1]?.data?.update?.sessionUpdate).toBe('permission_request');
+    expect(lastCall?.[1]?.data?.update?.requestId).toBe('perm-1');
+    expect(lastCall?.[1]?.data?.update?.options).toHaveLength(3);
+  });
 });

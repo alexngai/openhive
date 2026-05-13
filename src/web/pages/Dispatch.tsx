@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Send, Zap, FileText, User, Bot } from 'lucide-react';
+import { Send, Zap, FileText, User, Bot, Loader2, CheckCircle2, XCircle, Clock, Ban } from 'lucide-react';
 import clsx from 'clsx';
 import { useDispatchList, type DispatchStatus } from '../hooks/useDispatch';
 import { useDispatchRealtime } from '../hooks/useDispatchRealtime';
@@ -10,6 +10,14 @@ import { TimeAgo } from '../components/common/TimeAgo';
 import { ListFilters, useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
 
 const ALL_STATUSES: DispatchStatus[] = ['queued', 'running', 'complete', 'failed', 'cancelled'];
+
+const STATUS_META: Record<DispatchStatus, { label: string; Icon: React.ElementType; tone: string }> = {
+  queued:    { label: 'Queued',    Icon: Clock,         tone: 'text-slate-400' },
+  running:   { label: 'Running',   Icon: Loader2,       tone: 'text-amber-400' },
+  complete:  { label: 'Complete',  Icon: CheckCircle2,  tone: 'text-emerald-400' },
+  failed:    { label: 'Failed',    Icon: XCircle,       tone: 'text-red-400' },
+  cancelled: { label: 'Cancelled', Icon: Ban,           tone: 'text-zinc-400' },
+};
 
 export function Dispatch() {
   const [statusFilter, setStatusFilter] = useState<Set<DispatchStatus>>(new Set());
@@ -70,29 +78,35 @@ export function Dispatch() {
         search={search}
         onSearchChange={setSearch}
         placeholder="Search dispatches…"
-        count={{ visible: filtered.length, total: dispatches.length, noun: 'dispatch' }}
+        count={{ visible: filtered.length, total: dispatches.length, noun: 'dispatch', nounPlural: 'dispatches' }}
         right={
           <>
-            {ALL_STATUSES.map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => toggleStatus(s)}
-                className={clsx(
-                  'px-2 py-1 rounded text-xs transition-colors',
-                  statusFilter.has(s)
-                    ? 'bg-honey-500/15 text-honey-400 border border-honey-500/40'
-                    : 'border border-transparent hover:bg-white/5',
-                )}
-                style={
-                  !statusFilter.has(s)
-                    ? { color: 'var(--color-text-secondary)' }
-                    : undefined
-                }
-              >
-                {s}
-              </button>
-            ))}
+            {ALL_STATUSES.map((s) => {
+              const meta = STATUS_META[s];
+              const active = statusFilter.has(s);
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => toggleStatus(s)}
+                  aria-pressed={active}
+                  className={clsx(
+                    'inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors border',
+                    active
+                      ? `${meta.tone} border-current`
+                      : 'border-transparent hover:bg-white/5',
+                  )}
+                  style={
+                    active
+                      ? undefined
+                      : { color: 'var(--color-text-muted)' }
+                  }
+                >
+                  <meta.Icon className={clsx('h-3 w-3', s === 'running' && active && 'animate-spin')} />
+                  {meta.label}
+                </button>
+              );
+            })}
             <select
               value={swarmFilter}
               onChange={(e) => setSwarmFilter(e.target.value)}
@@ -173,7 +187,9 @@ export function Dispatch() {
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 mb-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>
-                      <span className="font-mono">{d.id}</span>
+                      <span className="font-mono" title={d.id}>
+                        {d.id.length > 12 ? `${d.id.slice(0, 12)}…` : d.id}
+                      </span>
                       <span>·</span>
                       <FileText className="h-3 w-3 text-honey-500" />
                       <span className="font-mono truncate">{d.spec_id}</span>
@@ -186,7 +202,10 @@ export function Dispatch() {
                       <span style={{ color: 'var(--color-text-muted)' }}>·</span>
                       <span className="inline-flex items-center gap-1 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
                         <InitiatorIcon className="h-3 w-3" />
-                        {d.initiator_type === 'agent' ? 'agent' : 'user'} · <span className="font-mono">{d.initiator_id}</span>
+                        {d.initiator_type === 'agent' ? 'agent' : 'user'}
+                        <span className="font-mono" title={d.initiator_id}>
+                          · {d.initiator_id.length > 10 ? `${d.initiator_id.slice(0, 10)}…` : d.initiator_id}
+                        </span>
                       </span>
                       <span style={{ color: 'var(--color-text-muted)' }}>·</span>
                       <TimeAgo date={d.created_at} className="text-xs" />

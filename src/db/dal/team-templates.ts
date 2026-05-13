@@ -68,6 +68,15 @@ export function getTeamTemplate(id: string): TeamTemplateResource | null {
   return r as TeamTemplateResource;
 }
 
+export function getTeamTemplateByName(
+  name: string,
+  ownerAgentId: string,
+): TeamTemplateResource | null {
+  const r = resources.findResourceByName(ownerAgentId, 'team_template', name);
+  if (!r || r.resource_type !== 'team_template') return null;
+  return r as TeamTemplateResource;
+}
+
 /**
  * Extract the authored content blob from a stored row. Returns `null` when
  * `metadata.content` is absent or malformed — the caller decides whether

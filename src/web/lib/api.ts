@@ -168,6 +168,14 @@ export interface HostedSwarm {
    * runtime fallback cwd for any spawn call that doesn't specify one.
    */
   data_dir?: string;
+  /** Kind of hosted swarm. Defaults to 'openswarm' when absent. */
+  kind?: 'openswarm' | 'claude-code' | 'codex';
+  /**
+   * For kind='codex' only — which surface this swarm spawned with.
+   * 'rpc' rows are driven through openhive chat (POST /codex/turn);
+   * 'tui' (and absent) rows are driven through the embedded terminal.
+   */
+  mode?: 'rpc' | 'tui';
 }
 
 export interface MapRegisteredAgent {
@@ -398,7 +406,6 @@ export interface SkillRelationship {
 
 export interface SkillDetail extends SkillSummary {
   instructions: string | null;
-  metrics: Record<string, unknown> | null;
   serving: Record<string, unknown> | null;
   namespace: Record<string, unknown> | null;
   raw: string;
@@ -854,6 +861,7 @@ export interface MailTurn {
   content: MessageContent;
   thread_id?: string;
   in_reply_to?: string;
+  importance?: 'low' | 'normal' | 'high' | 'urgent';
   created_at: string;
 }
 

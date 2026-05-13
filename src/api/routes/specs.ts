@@ -25,6 +25,7 @@ import {
 } from '../../map/task-daemon-client.js';
 import { findSwarmForResource, remoteGetGraph } from '../../map/opentasks-remote.js';
 import { broadcastToChannel } from '../../realtime/index.js';
+import { shouldBroadcastSpecEvent } from '../../map/spec-broadcast-dedup.js';
 import * as dispatchesDAL from '../../db/dal/dispatches.js';
 import { findSwarmById } from '../../db/dal/map.js';
 import { canRouteToSwarm } from '../../dispatch/routing.js';
@@ -73,6 +74,35 @@ const DispatchSpecSchema = z.object({
   loadout_resource_id: z.string().min(1).optional(),
   team_template_resource_id: z.string().min(1).optional(),
   role: z.string().min(1).optional(),
+  /**
+   * Per-dispatch ACP lifecycle override. When the dispatch routes via
+   * ACP, controls whether the orchestrator spawns a fresh coordinator
+   * (`'fresh'`) or reuses an existing ACP-capable agent (`'reuse'`).
+   * Omitted → falls back to `config.dispatch.acp_lifecycle_default`
+   * (cluster-wide operator default), then to `'reuse'`.
+   */
+  acp_lifecycle: z.enum(['fresh', 'reuse']).optional(),
+  /**
+   * Per-dispatch mail lifecycle override. When the dispatch routes via
+   * mail, controls whether the hub mail port forces routing to the
+   * connection's sidecar (`'fresh'`) or lets prefer-route pick a
+   * non-busy long-lived worker (`'reuse'`). Omitted → falls back to
+   * `config.dispatch.mail_lifecycle_default`, then to `'reuse'`.
+   */
+  mail_lifecycle: z.enum(['fresh', 'reuse']).optional(),
+  /** Repo targeting — links this dispatch to a specific repo resource. */
+  repo_id: z.string().optional(),
+  /** Branch pin — the sidecar checks out this branch before spawning. */
+  branch: z.string().optional(),
+  /** Commit SHA pin — the sidecar checks out this exact commit. */
+  commit_sha: z.string().optional(),
+  /**
+   * Clone policy. 'none' (default) = only route to swarms that already
+   * have the repo; 'allowed' = sidecar may clone when the repo is absent.
+   */
+  clone_policy: z.enum(['none', 'allowed']).optional(),
+  /** Explicit clone target path when clone_policy='allowed'. */
+  clone_path: z.string().optional(),
 });
 
 const VALID_EDGE_TYPES = [
@@ -625,17 +655,19 @@ export async function specsRoutes(
       );
       const normalized = normalizeNode(node, resource, 'local');
 
-      try {
-        broadcastToChannel('map:tasks', {
-          type: 'spec.created',
-          data: {
-            spec: { id: normalized.id, title: normalized.title },
-            resource_id: resource.id,
-            initiator: { type: 'user', id: request.agent!.id },
-          },
-        });
-      } catch {
-        /* best effort */
+      if (shouldBroadcastSpecEvent('spec.created', resource.id, normalized.id)) {
+        try {
+          broadcastToChannel('map:tasks', {
+            type: 'spec.created',
+            data: {
+              spec: { id: normalized.id, title: normalized.title },
+              resource_id: resource.id,
+              initiator: { type: 'user', id: request.agent!.id },
+            },
+          });
+        } catch {
+          /* best effort */
+        }
       }
 
       return reply.status(201).send({ spec: normalized });
@@ -699,17 +731,19 @@ export async function specsRoutes(
       );
       const normalized = normalizeNode(node, resource, 'local');
 
-      try {
-        broadcastToChannel('map:tasks', {
-          type: 'spec.updated',
-          data: {
-            spec: { id: normalized.id, title: normalized.title, archived: normalized.archived },
-            resource_id: resource.id,
-            initiator: { type: 'user', id: request.agent!.id },
-          },
-        });
-      } catch {
-        /* best effort */
+      if (shouldBroadcastSpecEvent('spec.updated', resource.id, normalized.id)) {
+        try {
+          broadcastToChannel('map:tasks', {
+            type: 'spec.updated',
+            data: {
+              spec: { id: normalized.id, title: normalized.title, archived: normalized.archived },
+              resource_id: resource.id,
+              initiator: { type: 'user', id: request.agent!.id },
+            },
+          });
+        } catch {
+          /* best effort */
+        }
       }
 
       return reply.send({ spec: normalized });
@@ -764,12 +798,25 @@ export async function specsRoutes(
         localPath,
       );
 
-      try {
-        broadcastToChannel('map:tasks', {
-          type: 'spec.updated',
-          data: { spec_id: specId, target_id: body.target_id, edge_type: body.type, resource_id: resourceId },
-        });
-      } catch { /* best effort */ }
+      if (shouldBroadcastSpecEvent('spec.updated', resourceId, specId)) {
+        try {
+          // Shape matches PATCH /specs's spec.updated envelope so the
+          // frontend's `useSpecsRealtime.invalidateOne` can extract
+          // `spec.id` to invalidate the detail query — link edits should
+          // refresh both list and detail views.
+          broadcastToChannel('map:tasks', {
+            type: 'spec.updated',
+            data: {
+              spec: { id: specId },
+              resource_id: resourceId,
+              link: {
+                target_id: body.target_id,
+                edge_type: body.type,
+              },
+            },
+          });
+        } catch { /* best effort */ }
+      }
 
       return reply.status(201).send({ edge_id: result.edgeId, from_id: fromId, to_id: toId, type: body.type });
     } catch (err) {
@@ -817,12 +864,22 @@ export async function specsRoutes(
       try { await daemonRemoveLink(socketPath, { fromId: body.target_id, toId: specId, type: body.type }, localPath); } catch { /* may not exist in this direction */ }
       try { await daemonRemoveLink(socketPath, { fromId: specId, toId: body.target_id, type: body.type }, localPath); } catch { /* may not exist in this direction */ }
 
-      try {
-        broadcastToChannel('map:tasks', {
-          type: 'spec.updated',
-          data: { spec_id: specId, target_id: body.target_id, edge_type: body.type, resource_id: resourceId, removed: true },
-        });
-      } catch { /* best effort */ }
+      if (shouldBroadcastSpecEvent('spec.updated', resourceId, specId)) {
+        try {
+          broadcastToChannel('map:tasks', {
+            type: 'spec.updated',
+            data: {
+              spec: { id: specId },
+              resource_id: resourceId,
+              link: {
+                target_id: body.target_id,
+                edge_type: body.type,
+                removed: true,
+              },
+            },
+          });
+        } catch { /* best effort */ }
+      }
 
       return reply.send({ ok: true });
     } catch (err) {
@@ -869,6 +926,13 @@ export async function specsRoutes(
         loadoutResourceId: body.loadout_resource_id,
         teamTemplateResourceId: body.team_template_resource_id,
         role: body.role,
+        ...(body.acp_lifecycle ? { acpLifecycle: body.acp_lifecycle } : {}),
+        ...(body.mail_lifecycle ? { mailLifecycle: body.mail_lifecycle } : {}),
+        ...(body.repo_id ? { repoId: body.repo_id } : {}),
+        ...(body.branch ? { branch: body.branch } : {}),
+        ...(body.commit_sha ? { commitSha: body.commit_sha } : {}),
+        ...(body.clone_policy ? { clonePolicy: body.clone_policy } : {}),
+        ...(body.clone_path ? { clonePath: body.clone_path } : {}),
       });
 
       if (!result.ok) {
@@ -902,6 +966,20 @@ export async function dispatchSpecToSwarms(input: {
   loadoutResourceId?: string | null;
   teamTemplateResourceId?: string | null;
   role?: string | null;
+  /** Per-dispatch ACP lifecycle override (caller pass-through). */
+  acpLifecycle?: 'fresh' | 'reuse';
+  /** Per-dispatch mail lifecycle override (caller pass-through). */
+  mailLifecycle?: 'fresh' | 'reuse';
+  /** Repo targeting (V54). */
+  repoId?: string;
+  /** Branch pin (V54). */
+  branch?: string;
+  /** Commit SHA pin (V54). */
+  commitSha?: string;
+  /** Clone policy (V54). */
+  clonePolicy?: 'none' | 'allowed';
+  /** Clone path (V54). */
+  clonePath?: string;
 }): Promise<
   | {
       ok: true;
@@ -1018,7 +1096,24 @@ export async function dispatchSpecToSwarms(input: {
       loadout_bundle_id: loadoutBundleId,
       team_bundle_id: teamBundleId,
       role: input.role ?? null,
+      ...(input.acpLifecycle ? { acp_lifecycle: input.acpLifecycle } : {}),
+      ...(input.mailLifecycle ? { mail_lifecycle: input.mailLifecycle } : {}),
+      ...(input.repoId ? { repo_id: input.repoId } : {}),
+      ...(input.branch ? { branch: input.branch } : {}),
+      ...(input.commitSha ? { commit_sha: input.commitSha } : {}),
+      ...(input.clonePolicy ? { clone_policy: input.clonePolicy } : {}),
+      ...(input.clonePath ? { clone_path: input.clonePath } : {}),
     });
+
+    // Persist the spec's linked tasks so downstream lifecycle hooks
+    // (advance-on-start, cascade artifact enrichment) can find them without
+    // re-querying the opentasks daemon.
+    if (linkedTasks.length > 0) {
+      dispatchesDAL.addDispatchLinkedTasks(
+        dispatch.id,
+        linkedTasks.map((t) => ({ resource_id: resource.id, node_id: t.id })),
+      );
+    }
 
     const seedPrompt = buildDispatchSeedPrompt({
       dispatchId: dispatch.id,

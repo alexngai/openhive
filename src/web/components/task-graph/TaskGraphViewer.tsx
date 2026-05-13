@@ -20,6 +20,8 @@ import { STATUS_COLORS } from "./useTaskGraph";
 import NodeSquareProgram from "./NodeSquareProgram";
 import { ZoomIn, ZoomOut, Maximize2, GitFork, Palette } from "lucide-react";
 import { applySigmaPerfSettings } from "../../utils/sigmaPerf";
+import { getFA2Settings, NOVERLAP_SETTINGS } from "../../utils/sigmaLayout";
+import noverlap from "graphology-layout-noverlap";
 import { GraphActionBar, type LinkModeState } from "./GraphActionBar";
 import { useCreateTaskLink, useMapSwarms } from "../../hooks/useApi";
 import { resolveAssigneeSwarm } from "../swarm/SwarmChip";
@@ -39,8 +41,16 @@ const MAX_LABEL_LENGTH = 28;
 
 /** Palette used for "color by swarm" mode. */
 const SWARM_PALETTE = [
-  "#f59e0b", "#3b82f6", "#10b981", "#8b5cf6", "#ec4899",
-  "#06b6d4", "#ef4444", "#84cc16", "#f97316", "#14b8a6",
+  "#f59e0b",
+  "#3b82f6",
+  "#10b981",
+  "#8b5cf6",
+  "#ec4899",
+  "#06b6d4",
+  "#ef4444",
+  "#84cc16",
+  "#f97316",
+  "#14b8a6",
 ];
 
 const SWARM_UNASSIGNED_COLOR = "#4b5563";
@@ -137,12 +147,14 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
   // Stable fingerprint of graph content — only changes when nodes/edges actually change.
   // This prevents sigma recreation on React re-renders with identical graph data.
   const graphFingerprint = (() => {
-    if (!graph || graph.order === 0) return '';
-    const nodes = graph.nodes().sort().join(',');
+    if (!graph || graph.order === 0) return "";
+    const nodes = graph.nodes().sort().join(",");
     const edgeCount = graph.size;
     return `${nodes}|${edgeCount}`;
   })();
-  const [selectedNode, setSelectedNode] = useState<OpenTasksGraphNode | null>(null);
+  const [selectedNode, setSelectedNode] = useState<OpenTasksGraphNode | null>(
+    null,
+  );
   const [selectedEdge, setSelectedEdge] = useState<SelectedEdge | null>(null);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [depthFilter, setDepthFilter] = useState<number>(0); // 0 = show all
@@ -162,7 +174,9 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     try {
       const stored = localStorage.getItem("openhive-task-color-mode");
       return stored === "swarm" ? "swarm" : "status";
-    } catch { return "status"; }
+    } catch {
+      return "status";
+    }
   });
   const { data: swarms } = useMapSwarms();
   const createLink = useCreateTaskLink(resourceId);
@@ -681,7 +695,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
           id: hoveredEdgeRef.current,
           from_id: graph.source(hoveredEdgeRef.current),
           to_id: graph.target(hoveredEdgeRef.current),
-          type: (edgeAttrs.edgeType as string) || 'related',
+          type: (edgeAttrs.edgeType as string) || "related",
         });
         setSelectedNode(null);
         onNodeSelectRef.current?.(null);
@@ -771,21 +785,21 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
 
     // ---------- Start FA2 supervisor ----------
     const supervisor = new FA2LayoutSupervisor(graph, {
-      settings: {
-        gravity: 0.5,
-        scalingRatio: 3,
-        barnesHutOptimize: graph.order > 50,
-        strongGravityMode: true,
-        slowDown: 15,
-      },
+      settings: getFA2Settings(graph.order),
     });
     supervisorRef.current = supervisor;
 
-    // Always run physics on mount, stop after settling
     supervisor.start();
+    const settleDuration =
+      graph.order > 500 ? 5000 : graph.order > 100 ? 3500 : 2500;
     const settleTimer = setTimeout(() => {
       supervisor.stop();
-    }, 2000);
+      // Final noverlap pass to pry apart any residual overlaps
+      if (graph.order < 5000) {
+        noverlap.assign(graph, NOVERLAP_SETTINGS);
+        sigma.refresh();
+      }
+    }, settleDuration);
 
     return () => {
       if (settleTimer) clearTimeout(settleTimer);
@@ -921,7 +935,11 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
   const toggleColorMode = useCallback(() => {
     setColorMode((prev) => {
       const next = prev === "status" ? "swarm" : "status";
-      try { localStorage.setItem("openhive-task-color-mode", next); } catch { /* ignore */ }
+      try {
+        localStorage.setItem("openhive-task-color-mode", next);
+      } catch {
+        /* ignore */
+      }
       return next;
     });
   }, []);
@@ -1019,23 +1037,35 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     setDepthFilter(0);
   }, [onNodeSelect]);
 
-  const handleSidebarSelectNode = useCallback((node: OpenTasksGraphNode) => {
-    setSelectedNode(node);
-    setSelectedEdge(null);
-    onNodeSelect?.(node);
+  const handleSidebarSelectNode = useCallback(
+    (node: OpenTasksGraphNode) => {
+      setSelectedNode(node);
+      setSelectedEdge(null);
+      onNodeSelect?.(node);
 
-    // Animate camera to the node
-    const sigma = sigmaRef.current;
-    if (sigma && graph.hasNode(node.id)) {
-      const nodeData = graph.getNodeAttributes(node.id);
-      const viewportPos = sigma.graphToViewport({ x: nodeData.x as number, y: nodeData.y as number });
-      const framedPos = sigma.viewportToFramedGraph(viewportPos);
-      sigma.getCamera().animate(
-        { x: framedPos.x, y: framedPos.y, ratio: Math.min(sigma.getCamera().ratio, 0.7) },
-        { duration: 400 },
-      );
-    }
-  }, [graph, onNodeSelect]);
+      // Animate camera to the node
+      const sigma = sigmaRef.current;
+      if (sigma && graph.hasNode(node.id)) {
+        const nodeData = graph.getNodeAttributes(node.id);
+        const viewportPos = sigma.graphToViewport({
+          x: nodeData.x as number,
+          y: nodeData.y as number,
+        });
+        const framedPos = sigma.viewportToFramedGraph(viewportPos);
+        sigma
+          .getCamera()
+          .animate(
+            {
+              x: framedPos.x,
+              y: framedPos.y,
+              ratio: Math.min(sigma.getCamera().ratio, 0.7),
+            },
+            { duration: 400 },
+          );
+      }
+    },
+    [graph, onNodeSelect],
+  );
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -1078,7 +1108,10 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
             className="btn-ghost p-1.5 rounded"
             style={{
               backgroundColor: "var(--color-surface)",
-              color: colorMode === "swarm" ? "var(--color-honey-500, #f59e0b)" : undefined,
+              color:
+                colorMode === "swarm"
+                  ? "var(--color-honey-500, #f59e0b)"
+                  : undefined,
             }}
             title={`Color by: ${colorMode === "swarm" ? "swarm" : "status"} (click to toggle)`}
           >
@@ -1095,7 +1128,10 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
               border: "1px solid var(--color-border-subtle)",
             }}
           >
-            <div className="text-2xs font-medium" style={{ color: "var(--color-text-muted)" }}>
+            <div
+              className="text-2xs font-medium"
+              style={{ color: "var(--color-text-muted)" }}
+            >
               Color by swarm
             </div>
             {swarms.map((s: MapSwarm) => (
@@ -1119,12 +1155,17 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
                 </span>
               </div>
             ))}
-            <div className="flex items-center gap-1.5 text-2xs pt-1 border-t" style={{ borderColor: "var(--color-border-subtle)" }}>
+            <div
+              className="flex items-center gap-1.5 text-2xs pt-1 border-t"
+              style={{ borderColor: "var(--color-border-subtle)" }}
+            >
               <span
                 className="w-2 h-2 rounded-full shrink-0"
                 style={{ backgroundColor: SWARM_UNASSIGNED_COLOR }}
               />
-              <span style={{ color: "var(--color-text-muted)" }}>Unassigned / other</span>
+              <span style={{ color: "var(--color-text-muted)" }}>
+                Unassigned / other
+              </span>
             </div>
           </div>
         )}

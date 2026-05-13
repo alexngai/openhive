@@ -8,13 +8,34 @@
 
 import type { WebSocket } from 'ws';
 
+/**
+ * Cascade-related capability flags an agent may declare during MAP
+ * registration. Stored under `capabilities.cascade` in the generic
+ * `Record<string, unknown>` bag; this alias documents the expected shape
+ * for consumers (task-binder, policy resolver). Nothing else enforces it —
+ * the aggregate helper preserves arbitrary keys.
+ */
+export interface CascadeCapability {
+  /**
+   * When true, the agent delegates task-close decisions to the hub: when a
+   * cascade stream carrying a `task_ref` merges, the hub transitions the
+   * linked task to `completed` without requiring the agent to drive it.
+   * Per-task metadata overrides (see policy resolver).
+   */
+  autoCloseOnMerge?: boolean;
+}
+
 export interface RegisteredAgent {
   id: string;
   name: string;
   role: string;
   state: string;
   scopes: string[];
-  /** Capabilities declared by this specific agent during MAP registration. */
+  /**
+   * Capabilities declared by this specific agent during MAP registration.
+   * Known nested shapes include `mail`, `messaging`, `trajectory`, `acp`,
+   * `protocols`, and `cascade` (see `CascadeCapability`).
+   */
   capabilities?: Record<string, unknown>;
   /**
    * Metadata from the agent's registration. May include `peerMapId`, which
@@ -156,6 +177,16 @@ export function getAllInbound(): Map<string, MapInboundConnection> {
   return result;
 }
 
+/**
+ * Returns ALL inbound connections, including stale ones (reconnecting sidecars).
+ * Callers MUST NOT use the `ws` field on stale entries — it is closed.
+ * Use only for metadata reads (capabilities, registeredAgents) during the
+ * 30-second grace window before stale entries are garbage-collected.
+ */
+export function getAllInboundIncludingStale(): Map<string, MapInboundConnection> {
+  return new Map(inboundConnections);
+}
+
 export function getInboundCount(): number {
   // Count only non-stale; stale entries are invisible to health reporting.
   let n = 0;
@@ -249,6 +280,49 @@ export function findAcpAgentInfo(swarmId: string): {
     }
   }
   return undefined;
+}
+
+/**
+ * Resolve a MAP agent ID to its canonical inbox agent ID.
+ *
+ * Since the dispatch-inbox-threads feature, cc-swarm agents register with
+ * MAP using their inbox-derived ID (`${teamName}-main`), so MAP and inbox
+ * identities are unified. For backward compatibility with pre-unification
+ * agents (or macro-agent which uses its own ID scheme), the function falls
+ * back through:
+ *
+ * 1. `metadata.inboxAgentId` — explicitly declared canonical inbox ID
+ * 2. `mapAgentId` — the MAP agent ID itself (works when MAP ID = inbox ID)
+ *
+ * Used by the dispatch conversation factory to determine the correct
+ * participant identity for thread membership.
+ */
+export function resolveInboxAgentId(swarmId: string, mapAgentId: string): string {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn) return mapAgentId;
+  const agent = conn.registeredAgents.get(mapAgentId);
+  if (!agent?.metadata) return mapAgentId;
+  const inboxId = agent.metadata.inboxAgentId;
+  return typeof inboxId === 'string' && inboxId ? inboxId : mapAgentId;
+}
+
+/**
+ * Find the sidecar agent's id on a swarm. The sidecar is the connection-
+ * level agent that runs the swarm's mail-inbound-consumer (handles
+ * `x-dispatch/work` envelopes for fresh-spawn dispatch). Used by the mail
+ * port to force routing to the sidecar when `mail_lifecycle: 'fresh'` is
+ * set per-dispatch.
+ *
+ * Returns the hub-side agent id (suitable for `MailTransport.sendToAgent`).
+ * Returns null when no inbound connection or no sidecar-role agent exists.
+ */
+export function findSidecarAgentId(swarmId: string): string | null {
+  const conn = inboundConnections.get(swarmId);
+  if (!conn || conn.isStale) return null;
+  for (const agent of conn.registeredAgents.values()) {
+    if (agent.role === 'sidecar') return agent.id;
+  }
+  return null;
 }
 
 /**

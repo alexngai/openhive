@@ -11,9 +11,29 @@
 
 import { EventEmitter } from 'node:events';
 import type { Storage, MailJsonRpcServer } from 'agent-inbox';
+import {
+  createMailPushBridge,
+  MAIL_TURN_RECEIVED_METHOD,
+  type MailPushBridge,
+  type MailPushSubscriber,
+} from 'agent-inbox';
 import { broadcastToChannel } from '../realtime/index.js';
-import { getAllInbound, hasCapability } from '../map/connection-registry.js';
+import { sendDispatchNudge } from '../dispatch/nudge.js';
+import { getAllInboundIncludingStale, hasCapability } from '../map/connection-registry.js';
 import { sendToSwarm } from '../map/sync-listener.js';
+import { mapHubEvents } from '../map/service.js';
+
+/**
+ * OpenHive-specific subscriber shape passed through the mail-push
+ * bridge. The base library expects only `{ id: string }`; we attach
+ * the swarmId + isStale flag so the consumer's sendNotification
+ * callback can branch on connection state (active → queue + send;
+ * stale → queue only) without re-walking the registry.
+ */
+interface OpenHiveMailSubscriber extends MailPushSubscriber {
+  swarmId: string;
+  isStale: boolean;
+}
 
 let mailStorage: Storage | null = null;
 let mailJsonRpc: MailJsonRpcServer | null = null;
@@ -126,13 +146,41 @@ function setupEventForwarding(events: EventEmitter): void {
         type: 'mail.turn.added',
         data: turn,
       });
+
+      // Dispatch-thread fan-out: when a turn lands in a dispatch coordination
+      // thread, broadcast on map:dispatches so the dispatch detail UI can
+      // show thread activity in real time.
+      try {
+        const conv = getMailStorage().getConversation(turn.conversation_id);
+        if (conv?.scope === 'dispatch-thread') {
+          const dispatchId = (conv.metadata as Record<string, unknown>)?.dispatch_id;
+          broadcastToChannel('map:dispatches', {
+            type: 'dispatch.thread.turn',
+            data: {
+              dispatch_id: dispatchId,
+              conversation_id: turn.conversation_id,
+              turn,
+            },
+          });
+
+          // Advisory nudge — notify the sidecar so the agent picks up the
+          // message on the next UserPromptSubmit rather than waiting for
+          // the continuation policy's scheduled check.
+          if (typeof dispatchId === 'string') {
+            sendDispatchNudge(dispatchId, turn.conversation_id);
+          }
+        }
+      } catch {
+        // best effort — storage may not be ready yet
+      }
     }
 
-    // Forward turn to connected swarms that have mail capability.
-    // This bridges the hub's mail system to agent sidecars so they can
-    // receive conversation turns via their MAP WebSocket connection.
-    forwardTurnToSwarms(turn);
+    // Mail-push bridge (started below) handles fan-out to swarms with
+    // mail.canJoin via agent-inbox's createMailPushBridge. The bridge
+    // subscribes to mail.turn.added itself, so no per-event call here.
   });
+  // One-time wire of the mail-push bridge.
+  startMailPushBridge(events);
 
   events.on('mail.participant.joined', (data) => {
     broadcastToChannel('mail:conversations', {
@@ -147,47 +195,191 @@ function setupEventForwarding(events: EventEmitter): void {
       data,
     });
   });
+
+  events.on('mail.reopened', (data) => {
+    broadcastToChannel('mail:conversations', {
+      type: 'mail.reopened',
+      data,
+    });
+  });
 }
 
 /**
- * Forward a mail turn to connected swarms that declare mail capability.
- * Sends a JSON-RPC notification so the sidecar's mail handler can process it.
- *
- * This bridges the gap between OpenHive's mail module (hub-side) and
- * agent sidecars (connected via MAP WebSocket). Without this, turns
- * stored in the hub's agent-inbox are only visible via REST/WebSocket
- * polling — sidecars never receive them proactively.
+ * Pending notifications for swarms that were stale (reconnecting) when a
+ * mail turn arrived. Keyed by swarmId → array of notification payloads.
+ * Drained when swarm_online fires for that swarm (i.e. the sidecar reconnects).
+ * Entries expire after PENDING_TURN_TTL_MS to prevent unbounded growth.
  */
-function forwardTurnToSwarms(turn: any): void {
-  try {
-    const inbound = getAllInbound();
-    for (const [swarmId] of inbound) {
-      // Only forward to swarms that declared mail capabilities
-      if (!hasCapability(swarmId, 'mail.canJoin')) continue;
+const PENDING_TURN_TTL_MS = 5 * 60 * 1000; // 5 minutes
+interface PendingNotification {
+  payload: object;
+  turnId: string | undefined;
+  expiresAt: number;
+}
+const pendingNotifications = new Map<string, PendingNotification[]>();
 
-      // Don't echo turns back to the sender's swarm
-      // (participant_id is the agent who sent the turn)
-      const conn = inbound.get(swarmId);
-      if (conn) {
-        const senderIsOnThisSwarm = conn.registeredAgents.has(turn.participant_id);
-        if (senderIsOnThisSwarm) continue;
+/**
+ * Returns true if turn_id is already queued for swarmId (hub-side dedup).
+ * Prevents always-queue from enqueuing the same turn twice when forwardTurnToSwarms
+ * is called multiple times (e.g., on retransmit or duplicate mail.turn.added events).
+ */
+function isTurnAlreadyQueued(swarmId: string, turnId: string | undefined): boolean {
+  if (!turnId) return false;
+  const existing = pendingNotifications.get(swarmId);
+  if (!existing) return false;
+  return existing.some((n) => n.turnId === turnId && n.expiresAt > Date.now());
+}
+
+/**
+ * Register the swarm_online listener once on first use so it fires for every
+ * reconnect and drains any pending notifications for that swarm.
+ */
+let _pendingRetryListenerInstalled = false;
+function ensurePendingRetryListener(): void {
+  if (_pendingRetryListenerInstalled) return;
+  _pendingRetryListenerInstalled = true;
+
+  mapHubEvents.on('swarm_online', (e: { swarm_id: string }) => {
+    const swarmId = e.swarm_id;
+    const pending = pendingNotifications.get(swarmId);
+    if (!pending || pending.length === 0) return;
+
+    // Drain expired entries first
+    const now = Date.now();
+    const live = pending.filter((n) => n.expiresAt > now);
+    pendingNotifications.delete(swarmId);
+
+    if (live.length === 0) return;
+
+    // Wait for the sidecar to register an agent (signal that it has
+    // completed its MAP handshake + capability publish) before delivering
+    // the queued notifications. A bare 2s wall-clock sleep is racy on slow
+    // boots; a 2s timeout fallback bounds the worst case so a buggy sidecar
+    // that never registers can't pin pending notifications indefinitely.
+    let drained = false;
+    const drain = (): void => {
+      if (drained) return;
+      drained = true;
+      mapHubEvents.off('node_registered', onRegistered);
+      clearTimeout(fallbackTimer);
+      for (const { payload } of live) {
+        try {
+          sendToSwarm(swarmId, payload);
+        } catch {
+          // best effort
+        }
+      }
+    };
+    const onRegistered = (ev: { swarm_id?: string }): void => {
+      if (ev?.swarm_id === swarmId) drain();
+    };
+    mapHubEvents.on('node_registered', onRegistered);
+    const fallbackTimer = setTimeout(drain, 2_000);
+  });
+}
+
+/**
+ * Forward mail turns to connected swarms that declare mail capability,
+ * via agent-inbox's `createMailPushBridge`. The library factory owns
+ * the event subscription, payload-shape construction (using the
+ * canonical `MAIL_TURN_RECEIVED_METHOD` constant), and per-subscriber
+ * fan-out loop. OpenHive supplies:
+ *
+ *   - `getSubscribers(turn)` — walks `getAllInboundIncludingStale()`,
+ *     filters by `mail.canJoin` (handling the stale-grace path
+ *     specially because `hasCapability` skips stale entries), and
+ *     skips swarms where the turn's sender is registered (no echo).
+ *
+ *   - `sendNotification(sub, method, params)` — queues the payload for
+ *     the swarm AND sends synchronously when active. Stale connections
+ *     get queue-only; the queue is drained on `swarm_online`.
+ *
+ * The OpenHive-specific stale-grace queue logic stays in this module
+ * because it depends on `conn.isStale` from OpenHive's connection
+ * registry. The bridge is the single fan-out site; queue policy is the
+ * consumer's responsibility.
+ */
+let mailPushBridge: MailPushBridge | null = null;
+
+function startMailPushBridge(events: EventEmitter): void {
+  if (mailPushBridge) return;
+  ensurePendingRetryListener();
+
+  mailPushBridge = createMailPushBridge<OpenHiveMailSubscriber>({
+    mailEvents: events,
+    getSubscribers: (turn) => {
+      const subs: OpenHiveMailSubscriber[] = [];
+      for (const [swarmId, conn] of getAllInboundIncludingStale()) {
+        // Capability check: hasCapability() skips stale entries so we
+        // walk per-agent / connection-level caps directly when isStale.
+        const hasMail =
+          !conn.isStale
+            ? hasCapability(swarmId, 'mail.canJoin')
+            : (conn.capabilities as any)?.mail?.canJoin === true ||
+              Array.from(conn.registeredAgents.values()).some(
+                (a: any) => a.capabilities?.mail?.canJoin === true,
+              );
+        if (!hasMail) continue;
+        // Don't echo turns back to the sender's own swarm.
+        if (conn.registeredAgents.has(turn.participant_id)) continue;
+        subs.push({
+          id: swarmId,
+          swarmId,
+          isStale: !!conn.isStale,
+        });
+      }
+      return subs;
+    },
+    sendNotification: (sub, method, params) => {
+      const payload = { jsonrpc: '2.0', method, params };
+      const turnId = (params as { turn_id?: string }).turn_id;
+
+      if (sub.isStale) {
+        // Reconnecting — queue for delivery when swarm_online fires.
+        if (!isTurnAlreadyQueued(sub.swarmId, turnId)) {
+          console.log(
+            `[mail-forward] Swarm ${sub.swarmId} is stale (reconnecting); ` +
+              `queuing ${method} turn=${turnId ?? '?'} for retry`,
+          );
+          const existing = pendingNotifications.get(sub.swarmId) ?? [];
+          existing.push({
+            payload,
+            turnId,
+            expiresAt: Date.now() + PENDING_TURN_TTL_MS,
+          });
+          pendingNotifications.set(sub.swarmId, existing);
+        }
+        return;
       }
 
-      sendToSwarm(swarmId, {
-        jsonrpc: '2.0',
-        method: 'mail/turn.received',
-        params: {
-          conversation_id: turn.conversation_id,
-          turn_id: turn.id,
-          participant_id: turn.participant_id,
-          content_type: turn.content_type,
-          content: turn.content,
-          thread_id: turn.thread_id,
-          created_at: turn.created_at,
-        },
-      });
-    }
-  } catch {
-    // Non-critical — don't crash on forwarding failures
-  }
+      // Active connection: always queue alongside the send. The WS
+      // write can succeed yet the sidecar's stream may close before it
+      // reads the message; on reconnect the hub re-delivers from the
+      // queue. Hub-side dedup (isTurnAlreadyQueued) prevents double-
+      // queueing if the bridge fires twice for the same turn.
+      if (!isTurnAlreadyQueued(sub.swarmId, turnId)) {
+        const existing = pendingNotifications.get(sub.swarmId) ?? [];
+        existing.push({
+          payload,
+          turnId,
+          expiresAt: Date.now() + PENDING_TURN_TTL_MS,
+        });
+        pendingNotifications.set(sub.swarmId, existing);
+      }
+
+      const sent = sendToSwarm(sub.swarmId, payload);
+      if (!sent) {
+        console.log(
+          `[mail-forward] sendToSwarm returned false for ${sub.swarmId}; ` +
+            `turn=${turnId ?? '?'} queued for retry on reconnect`,
+        );
+      }
+    },
+    log: (msg) => console.log(msg),
+  });
 }
+
+// Re-export for any existing consumers / tests that reference the
+// canonical method name. New code should import directly from
+// 'agent-inbox' (`MAIL_TURN_RECEIVED_METHOD`).
+export { MAIL_TURN_RECEIVED_METHOD };

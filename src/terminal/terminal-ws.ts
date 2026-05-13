@@ -19,7 +19,8 @@
  */
 
 import { WebSocket } from 'ws';
-import type { PtyManager, TerminalSessionConfig } from './pty-manager.js';
+import type { PtyManager, TerminalSessionConfig, TerminalSandboxConfig } from './pty-manager.js';
+import { resolveOpenSwarmTuiBinary } from './resolve-tui.js';
 
 interface TerminalWSClient {
   socket: WebSocket;
@@ -33,18 +34,25 @@ const activeClients: Map<string, TerminalWSClient> = new Map();
 /** Only allow environment variable keys matching these prefixes */
 const ALLOWED_ENV_PREFIXES = ['MAP_', 'OPENSWARM_', 'OPENHIVE_', 'TERM', 'LANG', 'LC_'];
 
-/** Only allow commands matching these patterns (security) */
-function isAllowedCommand(command: string): boolean {
-  // Standard shells
+/**
+ * Only allow commands matching these patterns (security). Exported for unit
+ * testing — the substring-vulnerable predecessor would accept any path
+ * containing `@openswarm/cli-`, so we lock down to exact-match ground truth.
+ */
+export function isAllowedCommand(command: string): boolean {
+  // Standard shells (exact match)
   if (['/bin/bash', '/bin/zsh', '/bin/sh', 'bash', 'zsh', 'sh'].includes(command)) {
     return true;
   }
-  // OpenSwarm TUI binary paths
-  if (command.includes('@openswarm/cli-') || command.includes('packages/cli-')) {
+  // User's default shell (exact match)
+  if (process.env.SHELL && command === process.env.SHELL) {
     return true;
   }
-  // User's default shell
-  if (command === process.env.SHELL) {
+  // OpenSwarm TUI: exact match against the resolved binary path. Substring
+  // checks are unsafe — a path like /tmp/evil/@openswarm/cli-x/openswarm
+  // passes a `.includes('@openswarm/cli-')` check.
+  const resolvedTui = resolveOpenSwarmTuiBinary();
+  if (resolvedTui && command === resolvedTui) {
     return true;
   }
   return false;
@@ -52,9 +60,9 @@ function isAllowedCommand(command: string): boolean {
 
 /**
  * Handle a new terminal WebSocket connection.
- * Query params can include: cols, rows, command, args, cwd, sessionId, env
+ * Query params can include: cols, rows, command, args, cwd, sessionId, env, sandbox
  */
-export function handleTerminalWebSocket(
+export async function handleTerminalWebSocket(
   socket: WebSocket,
   query: {
     cols?: string;
@@ -64,9 +72,11 @@ export function handleTerminalWebSocket(
     cwd?: string;
     sessionId?: string;
     env?: string;
+    /** "1"/"true" to wrap the session with sandbox-runtime restrictions. */
+    sandbox?: string;
   },
   ptyManager: PtyManager,
-): void {
+): Promise<void> {
   console.log('[terminal-ws] new connection, query:', JSON.stringify(query));
 
   // If a sessionId is provided, attach to an existing session
@@ -145,11 +155,29 @@ export function handleTerminalWebSocket(
       env,
     };
 
-    console.log('[terminal-ws] creating PTY session with config:', JSON.stringify(config));
+    // Sandbox is opt-in via the query param. Shell sessions should always
+    // request it; TUI tunneling typically runs unsandboxed because the binary
+    // only talks to MAP. The PtyManager.createSandboxed helper has its own
+    // fallback to unsandboxed execution if the sandbox runtime can't load —
+    // we can't enforce strictness from here without changing that contract.
+    const wantSandbox = query.sandbox === '1' || query.sandbox === 'true';
+    const sandboxConfig: TerminalSandboxConfig = {
+      // Confine writes to cwd by default. Reads are otherwise unrestricted
+      // except for default deny-list (~/.ssh, ~/.gnupg, ~/.aws — see
+      // pty-manager.ts).
+      allow_write: query.cwd ? [query.cwd] : undefined,
+    };
+
+    console.log(
+      '[terminal-ws] creating PTY session with config:',
+      JSON.stringify({ ...config, sandbox: wantSandbox }),
+    );
     try {
-      const info = ptyManager.create(config);
+      const info = wantSandbox
+        ? await ptyManager.createSandboxed({ ...config, sandbox: sandboxConfig })
+        : ptyManager.create(config);
       sessionId = info.id;
-      console.log('[terminal-ws] PTY session created: id=%s pid=%d', info.id, info.pid);
+      console.log('[terminal-ws] PTY session created: id=%s pid=%d sandbox=%s', info.id, info.pid, wantSandbox);
     } catch (err) {
       console.error('[terminal-ws] PTY create failed:', err);
       socket.send(
@@ -173,15 +201,35 @@ export function handleTerminalWebSocket(
     }
   };
 
+  // Attach mode: replay the per-session output buffer FIRST, before
+  // wiring up the live listener. Without replay, a reattach lands on a
+  // freshly-cleared xterm with no way to know what the running TUI is
+  // currently rendering — claude/codex sit waiting for input and don't
+  // redraw until the user types, leaving a blank or jumbled view.
+  // Replay → connected → live in this order means: the client clears the
+  // xterm on `connected`, renders the historical bytes (which culminate
+  // in claude's last alt-screen frame), then live updates start streaming
+  // and overwrite as new frames arrive.
+  //
+  // Order matters: capture the buffer + send `connected` + send replay
+  // BEFORE `ptyManager.on('session.data', ...)`. If we attached the
+  // listener first, any in-flight 'session.data' could race ahead of the
+  // replay onto the wire and mis-order the rendered state.
+  const replay = existingSessionId
+    ? ptyManager.getRecentOutput(existingSessionId)
+    : '';
+
+  console.log('[terminal-ws] sending connected message for session %s (replay bytes=%d)', sessionId, replay.length);
+  socket.send(JSON.stringify({ type: 'connected', sessionId }));
+  if (replay.length > 0) {
+    socket.send(replay);
+  }
+
   ptyManager.on('session.data', dataListener);
   ptyManager.on('session.exit', exitListener);
 
   const clientId = sessionId + '-' + Date.now();
   activeClients.set(clientId, { socket, sessionId, dataListener, exitListener });
-
-  // Send session info to client
-  console.log('[terminal-ws] sending connected message for session %s', sessionId);
-  socket.send(JSON.stringify({ type: 'connected', sessionId }));
 
   // Handle incoming messages from the client
   socket.on('message', (rawData) => {

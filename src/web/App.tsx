@@ -46,10 +46,14 @@ const SpecNew = lazy(() => import('./pages/SpecNew').then(m => ({ default: m.Spe
 const SpecDetail = lazy(() => import('./pages/SpecDetail').then(m => ({ default: m.SpecDetail })));
 const Dispatch = lazy(() => import('./pages/Dispatch').then(m => ({ default: m.Dispatch })));
 const DispatchDetail = lazy(() => import('./pages/DispatchDetail').then(m => ({ default: m.DispatchDetail })));
+const Schedules = lazy(() => import('./pages/Schedules').then(m => ({ default: m.Schedules })));
+const ScheduleDetail = lazy(() => import('./pages/ScheduleDetail').then(m => ({ default: m.ScheduleDetail })));
 const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
 const MemoryDetail = lazy(() => import('./pages/MemoryDetail').then(m => ({ default: m.MemoryDetail })));
 const Skills = lazy(() => import('./pages/Skills').then(m => ({ default: m.Skills })));
 const SkillDetail = lazy(() => import('./pages/SkillDetail').then(m => ({ default: m.SkillDetail })));
+const Repos = lazy(() => import('./pages/Repos').then(m => ({ default: m.Repos })));
+const RepoDetail = lazy(() => import('./pages/RepoDetail').then(m => ({ default: m.RepoDetail })));
 const Learning = lazy(() => import('./pages/Learning').then(m => ({ default: m.Learning })));
 const LearningPlaybookDetail = lazy(() => import('./pages/LearningPlaybookDetail').then(m => ({ default: m.LearningPlaybookDetail })));
 const Changes = lazy(() => import('./pages/Changes').then(m => ({ default: m.Changes })));
@@ -86,6 +90,11 @@ export default function App() {
               <Route path="threads" element={<Sessions />} />
               <Route path="threads/:id" element={<Sessions />} />
               <Route path="threads/mail/:mailId" element={<Sessions />} />
+              {/* Programmatic-mode hosted swarms (codex-rpc today) live on
+                  the Threads page like sessions/mail. Sessions reads
+                  `hostedId` from params and renders <HostedChat /> in the
+                  detail pane — same chrome as SessionDetail/MailThreadView. */}
+              <Route path="threads/hosted-chat/:hostedId" element={<Sessions />} />
               <Route path="events" element={<Events />} />
               <Route path="terminal/:swarmId" element={<Terminal />} />
               <Route path="teams" element={<Teams />} />
@@ -103,6 +112,8 @@ export default function App() {
               <Route path="memory/:resourceId" element={<MemoryDetail />} />
               <Route path="skills" element={<Skills />} />
               <Route path="skills/:resourceId" element={<SkillDetail />} />
+              <Route path="repos" element={<Repos />} />
+              <Route path="repos/:id" element={<RepoDetail />} />
               <Route path="learning" element={<Learning />} />
               <Route path="learning/playbooks/:id" element={<LearningPlaybookDetail />} />
               <Route path="changes" element={<Changes />} />
@@ -115,6 +126,8 @@ export default function App() {
               <Route path="specs/:resourceId/:specId" element={<SpecDetail />} />
               <Route path="dispatch" element={<Dispatch />} />
               <Route path="dispatch/:id" element={<DispatchDetail />} />
+              <Route path="schedules" element={<Schedules />} />
+              <Route path="schedules/:id" element={<ScheduleDetail />} />
               {/* Redirect legacy /dispatches URLs */}
               <Route path="dispatches" element={<Navigate to="/dispatch" replace />} />
               <Route path="dispatches/:id" element={<DispatchIdRedirect />} />
@@ -122,6 +135,13 @@ export default function App() {
               {/* Redirects for removed routes */}
               <Route path="resources" element={<Navigate to="/memory" replace />} />
               <Route path="swarmcraft" element={<Navigate to="/" replace />} />
+              {/* Agents concept was removed — operational agent context
+                  lives on SwarmDetail's Registered Agents section. */}
+              <Route path="agents" element={<Navigate to="/swarms" replace />} />
+              <Route path="a/:agentName" element={<Navigate to="/swarms" replace />} />
+              {/* Catch-all: anything else falls back to the dashboard so users
+                  never land on an empty frame. */}
+              <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Route>
         </Routes>

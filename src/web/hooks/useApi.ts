@@ -109,6 +109,13 @@ export function useSpawnSwarm() {
 
   return useMutation({
     mutationFn: (data: {
+      /**
+       * What kind of agent process to spawn. Defaults server-side to
+       * 'openswarm' for backwards compatibility. 'claude-code' routes to
+       * a different spawn pipeline (claude TUI + cc-swarm plugin sidecar).
+       * See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+       */
+      kind?: 'openswarm' | 'claude-code' | 'codex';
       name: string;
       description?: string;
       adapter?: string;
@@ -134,6 +141,28 @@ export function useSpawnSwarm() {
       team_bundle_id?: string;
       loadout_bundle_id?: string;
       role?: string;
+      /**
+       * Optional first-turn prompt. For claude-code, passed to `claude` as
+       * a positional arg so the TUI opens with the prompt prefilled.
+       */
+      initial_prompt?: string;
+      /**
+       * Optional repo resource id. For TUI kinds, the provider mounts the
+       * repo's local_path (or clones from git_remote_url) and sets cwd to
+       * the repo directory.
+       */
+      repo_id?: string;
+      /**
+       * Per-swarm workspace policy. Persisted at spawn time and consulted
+       * by the hub on every `repo.declare` / `repo.retract` /
+       * trajectory-bootstrap binding from this swarm. Omit for the
+       * default `mode: 'open'` (any declare allowed).
+       */
+      workspace_policy?: {
+        mode: 'open' | 'allow_listed' | 'pinned';
+        allowed_repos?: string[];
+        pinned_repo?: string;
+      };
     }) => api.post<HostedSwarm>("/map/hosted/spawn", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["hosted-swarms"] });
@@ -214,7 +243,10 @@ export function useMapSwarmsForPicker(opts?: { status?: string; recency_days?: n
       api.get<{ data: (MapSwarm & { variant_count?: number })[]; total: number }>(
         `/map/swarms?${params}`,
       ),
-    select: (data) => data.data,
+    // Drop ephemeral `session swarm_*` rows — they're registrations that
+    // back a single session and aren't valid dispatch / chat targets. The
+    // hub returns them for dedupe/variant context; pickers don't need them.
+    select: (data) => data.data.filter((s) => !s.name?.startsWith('session ')),
     // Pure WS-driven now that the HMR leak + stale-emit-closure in
     // `useWebSocket` is fixed. `useSwarmRealtime` invalidates
     // `['map-swarms-picker']` on swarm lifecycle events, which refetches
@@ -361,6 +393,124 @@ export function useResourceEvents(id: string, options?: { limit?: number }) {
         `/resources/${id}/events?limit=${limit}`,
       ),
     enabled: !!id,
+  });
+}
+
+// ============================================================================
+// Git sync (opentasks-backed task resources)
+// ============================================================================
+
+export interface GitSyncMetadata {
+  enabled: boolean;
+  remote?: string;
+  autoCommit?: boolean;
+  autoPush?: boolean;
+  pullOnStartup?: boolean;
+  pushDebounceMs?: number;
+  /** When true, hub-received MAP context events fire an immediate pull. */
+  pullOnSignal?: boolean;
+}
+
+/**
+ * Recent health snapshot from the resource's daemon. Present when git
+ * sync is enabled AND the daemon is reachable; null otherwise.
+ *
+ * `lastError` being null with a non-null `lastSuccessAt` means the most
+ * recent cycle succeeded. A non-null `lastError` is sticky until the
+ * corresponding op (commit/pull/push) succeeds again.
+ */
+export interface GitSyncHealth {
+  lastError: string | null;
+  lastErrorAt: string | null;
+  lastErrorOp: "commit" | "pull" | "push" | null;
+  lastSuccessAt: string | null;
+}
+
+export interface GitSyncResponse {
+  git_sync: GitSyncMetadata | null;
+  health: GitSyncHealth | null;
+}
+
+export interface UpdateGitSyncResponse {
+  resource: SyncableResource;
+  git_sync: GitSyncMetadata;
+  /**
+   * Present when a running daemon picked up the new config in-place.
+   * Null if the daemon wasn't reachable (flag still persists; next
+   * daemon restart will apply it).
+   */
+  daemon_applied: { enabled: boolean; remote?: string } | null;
+}
+
+/**
+ * Read the current git_sync block + live health for a resource. Only
+ * meaningful on task resources backed by a local opentasks workspace.
+ *
+ * Refetches every 15s so operators see push failures surface without
+ * having to reload the page.
+ */
+export function useResourceGitSync(resourceId: string | undefined) {
+  return useQuery({
+    queryKey: ["resource-git-sync", resourceId],
+    queryFn: () =>
+      api.get<GitSyncResponse>(`/resources/${resourceId}/git-sync`),
+    enabled: !!resourceId,
+    refetchInterval: 15000,
+  });
+}
+
+export interface SyncNowResponse {
+  ran: boolean;
+  reason?: string;
+  result?: {
+    commit: { committed: boolean; hash?: string };
+    pull: { pulled: boolean; hasChanges: boolean; error?: string };
+    push: { pushed: boolean; error?: string };
+  };
+}
+
+/**
+ * Force an immediate sync cycle (commit + pull + push) on a resource's
+ * daemon. Used by the "Sync now" button in the GitSyncToggle popover to
+ * let operators verify their auth + remote config without waiting for
+ * the auto-sync debounce.
+ */
+export function useRunGitSyncNow() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (resourceId: string) =>
+      api.post<SyncNowResponse>(`/resources/${resourceId}/git-sync/run`, {}),
+    onSuccess: (_data, resourceId) => {
+      // Refetch git-sync data so the new health snapshot lands in the UI.
+      queryClient.invalidateQueries({ queryKey: ["resource-git-sync", resourceId] });
+    },
+  });
+}
+
+/**
+ * Toggle git_sync on/off for a resource. PATCH writes the metadata,
+ * writes the opentasks daemon's `.opentasks/config.json`, and attempts
+ * a live sync.reload on the daemon so the change takes effect without
+ * a restart (see `daemon_applied` on the response).
+ */
+export function useUpdateResourceGitSync() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      resourceId,
+      gitSync,
+    }: {
+      resourceId: string;
+      gitSync: GitSyncMetadata;
+    }) =>
+      api.patch<UpdateGitSyncResponse>(
+        `/resources/${resourceId}/git-sync`,
+        gitSync,
+      ),
+    onSuccess: (_data, { resourceId }) => {
+      queryClient.invalidateQueries({ queryKey: ["resource-git-sync", resourceId] });
+      queryClient.invalidateQueries({ queryKey: ["resource", resourceId] });
+    },
   });
 }
 
@@ -2173,6 +2323,162 @@ export function useStopAgent() {
       queryClient.invalidateQueries({ queryKey: ['map-swarm', vars.swarmId] });
       queryClient.invalidateQueries({ queryKey: ['map-swarms'] });
       queryClient.invalidateQueries({ queryKey: ['map-swarms-picker'] });
+    },
+  });
+}
+
+// ── Repos (slice 4) ────────────────────────────────────────────────────────
+
+export interface RepoMetadata {
+  name?: string;
+  default_branch?: string;
+  description?: string;
+  origin?: 'user_defined' | 'agent_declared' | 'trajectory_inferred';
+  visibility?: 'private' | 'hub_local' | 'federated';
+  binding_policy?: 'open' | 'closed';
+  branches?: Array<{ name: string; head_sha: string; last_seen: string }>;
+  merged_into_canonical_url?: string;
+  archived_at?: string;
+  redacted_at?: string;
+}
+
+export interface Workspace {
+  id: string;
+  repo_id: string;
+  agent_id: string;
+  swarm_id: string;
+  local_path: string;
+  current_branch: string | null;
+  head_sha: string | null;
+  dirty: number;
+  instance_label: string | null;
+  visibility: 'private' | 'hub_local' | 'federated';
+  is_active: number;
+  created_at: string;
+  updated_at: string;
+  last_seen_at: string;
+}
+
+export interface ReposListFilters {
+  origin?: 'user_defined' | 'agent_declared' | 'trajectory_inferred';
+  visibility?: 'private' | 'hub_local' | 'federated';
+  status?: 'active' | 'redacted_remote' | 'archived' | 'merged_into';
+  limit?: number;
+  offset?: number;
+}
+
+function reposQueryString(filters: ReposListFilters | undefined): string {
+  if (!filters) return '';
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== null) params.set(k, String(v));
+  }
+  const s = params.toString();
+  return s ? `?${s}` : '';
+}
+
+export function useRepos(filters?: ReposListFilters) {
+  return useQuery({
+    queryKey: ['repos', filters ?? {}],
+    queryFn: () =>
+      api.get<PaginatedResponse<SyncableResource>>(`/repos${reposQueryString(filters)}`),
+    staleTime: 10_000,
+  });
+}
+
+export function useRepo(id: string | undefined) {
+  return useQuery({
+    queryKey: ['repo', id],
+    queryFn: () => api.get<{ repo: SyncableResource }>(`/repos/${id}`),
+    enabled: !!id,
+    staleTime: 10_000,
+  });
+}
+
+export function useRepoWorkspaces(id: string | undefined, opts?: { activeOnly?: boolean }) {
+  const activeOnly = opts?.activeOnly ?? true;
+  return useQuery({
+    queryKey: ['repo-workspaces', id, activeOnly],
+    queryFn: () =>
+      api.get<{ data: Workspace[]; total: number }>(
+        `/repos/${id}/workspaces?active_only=${activeOnly}`,
+      ),
+    enabled: !!id,
+    staleTime: 10_000,
+  });
+}
+
+export function useCreateRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      remote_url: string;
+      name?: string;
+      default_branch?: string;
+      description?: string;
+      visibility?: 'private' | 'hub_local' | 'federated';
+      binding_policy?: 'open' | 'closed';
+    }) => api.post<{ repo: SyncableResource }>('/repos', input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+    },
+  });
+}
+
+export function useUpdateRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: {
+      id: string;
+      name?: string;
+      default_branch?: string;
+      description?: string;
+      visibility?: 'private' | 'hub_local' | 'federated';
+      binding_policy?: 'open' | 'closed';
+    }) => api.patch<{ repo: SyncableResource }>(`/repos/${id}`, input),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+      queryClient.invalidateQueries({ queryKey: ['repo', vars.id] });
+    },
+  });
+}
+
+export function useArchiveRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<{ repo: SyncableResource }>(`/repos/${id}/archive`, {}),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+      queryClient.invalidateQueries({ queryKey: ['repo', id] });
+    },
+  });
+}
+
+export function useUnarchiveRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<{ repo: SyncableResource }>(`/repos/${id}/unarchive`, {}),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+      queryClient.invalidateQueries({ queryKey: ['repo', id] });
+    },
+  });
+}
+
+export function useMergeRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sourceId, into }: { sourceId: string; into: string }) =>
+      api.post<{ source: SyncableResource; target: SyncableResource }>(
+        `/repos/${sourceId}/merge`,
+        { into },
+      ),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+      queryClient.invalidateQueries({ queryKey: ['repo', vars.sourceId] });
+      queryClient.invalidateQueries({ queryKey: ['repo', vars.into] });
     },
   });
 }

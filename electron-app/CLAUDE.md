@@ -69,7 +69,7 @@ that hasn't subscribed yet.
 
 ```bash
 # First time setup — installs deps for all workspaces (openhive + electron-app)
-# and fetches the Electron-specific better-sqlite3 prebuild via postinstall.
+# and stages dual better-sqlite3 prebuilds (Node + Electron) via postinstall.
 npm install
 
 # Dev launch — builds openhive server + web, compiles electron-app, runs it
@@ -162,11 +162,16 @@ Tail one place, see everything.
 
 **`config.port=0` poisons bootstrap tokens.** `SwarmManager` reads `config.port` at construction — before `fastify.listen()` has assigned the ephemeral port. If passed 0, coordinators get `http://host:0` and can't phone home. We `pickFreePort()` before calling `createHive()` (belt); openhive's `start()` calls `swarmManager.setInstanceUrl()` after listen (suspenders).
 
-**better-sqlite3 requires the Electron-specific prebuild, not a source rebuild.** `electron-builder install-app-deps` rebuilds from source against Electron's V8 headers, but the resulting binary silently aborts at `new Database(...)` — likely a SQLite-symbol conflict with the copy Chromium bundles for cookies/IDB. `electron-app/scripts/fix-better-sqlite3.mjs` (runs via postinstall) deletes any source-built `build/` dir and pulls the Electron prebuild via `prebuild-install --runtime=electron --target=<electronVersion> --arch=<process.arch>`. If you ever see a silent `code=null` exit from hive-child with no JS stack, check this first.
+**better-sqlite3 ships two prebuilds side-by-side (Electron + Node).** `electron-builder install-app-deps` rebuilds from source against Electron's V8 headers, but the resulting binary silently aborts at `new Database(...)` — likely a SQLite-symbol conflict with the copy Chromium bundles for cookies/IDB. Meanwhile, plain `npm run dev` runs under Node 22 (ABI 127) and can't load an Electron binary. `electron-app/scripts/fix-better-sqlite3.mjs` (runs via postinstall) stages **both** prebuilds:
 
-**Nested `better-sqlite3` copies.** Several transitive deps (`git-cascade`, `skill-tree-indexer`, `swarmcraft`, `cognitive-core`) pin older `better-sqlite3` versions that don't compile under modern Xcode AND don't ship Electron prebuilds. `fix-better-sqlite3.mjs` walks `node_modules/` + `references/` and deletes every nested copy so everyone dedups to the top-level `@12.8.0`. Runs on every `npm install`.
+- `node_modules/better-sqlite3/build/Release-electron/better_sqlite3.node` — fetched via `prebuild-install --runtime=electron --target=<electronVersion>`
+- `node_modules/better-sqlite3/build/Release-node/better_sqlite3.node` — fetched via `prebuild-install --runtime=node --target=<process.versions.node>`
 
-**Electron 37's Node ABI is `v136`, not `v127`.** Node 22's standard ABI is v127. Electron's embedded Node uses a V8 build with a different ABI — hence the Electron-specific prebuild is a separate artifact from the Node one. `prebuild-install --runtime=electron` handles this correctly; the default doesn't.
+The script then idempotently patches `lib/database.js` (guarded by a `// openhive-dual-runtime-patch` marker) to replace the default `require('bindings')('better_sqlite3.node')` with a runtime selector: `Release-electron/` under Electron, `Release-node/` under plain Node. Both dev loops work from the same install — no re-toggling. If you ever see a silent `code=null` exit from hive-child with no JS stack, or `NODE_MODULE_VERSION` mismatch errors from the hive server, check that both directories exist and the patch marker is present in `lib/database.js`.
+
+**Nested `better-sqlite3` copies.** Several transitive deps (`git-cascade`, `skill-tree-indexer`, etc.) pin older `better-sqlite3` versions that don't compile under modern Xcode AND don't ship Electron prebuilds. `fix-better-sqlite3.mjs` walks `node_modules/` + `references/` and deletes every nested copy so everyone dedups to the top-level `@12.8.0`. Runs on every `npm install`. All first-party dependencies currently resolve from the npm registry — no `file:` / symlinked packages into `references/` — but the walk is kept defensively for future workspace links.
+
+**Electron 37's Node ABI is `v136`, not `v127`.** Node 22's standard ABI is v127. Electron's embedded Node uses a V8 build with a different ABI — hence the Electron-specific prebuild is a separate artifact from the Node one. A single `build/Release/` slot can only satisfy one runtime at a time, which is why the postinstall stages both under `Release-electron/` + `Release-node/` and patches `lib/database.js` to select at load time via `process.versions.electron`.
 
 **`swarmcraft@0.1.10` on npm was a stale publish.** Missing the `mapClientManager` plugin-option wiring openhive's ownership-contract guard requires. `0.1.11` fixes it — pin `^0.1.11` or later.
 

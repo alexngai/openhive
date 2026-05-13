@@ -15,4 +15,5 @@ logs/
 .dev-port
 test-data/
 .swarm/
+.claude/
 .omc/

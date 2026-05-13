@@ -13,6 +13,7 @@ import { verifyToken } from './token-service.js';
 import { MAP_TASK_METHOD_SET, handleTaskRequest, MAPTaskRequestError, TaskDaemonError } from './task-handler.js';
 import { MAP_SPEC_METHOD_SET, handleSpecRequest, MAPSpecRequestError } from './spec-handler.js';
 import { MAP_DISPATCH_METHOD_SET, handleDispatchRequest, MAPDispatchRequestError } from './dispatch-handler.js';
+import { MAP_SCHEDULE_METHOD_SET, handleScheduleRequest, MAPScheduleRequestError } from './schedule-handler.js';
 import { TRAJECTORY_METHOD_SET } from './trajectory-types.js';
 import { handleTrajectoryRequest, TrajectoryRequestError } from './trajectory-handler.js';
 import { CASCADE_METHOD_SET, CascadeRequestError } from './cascade-types.js';
@@ -24,7 +25,51 @@ import {
   getOpenteamsResourceKinds,
   setOpenteamsBundleEmitter,
 } from '../openteams/map-handlers.js';
+import {
+  registerRepoHandlers,
+  type RepoMethodServer,
+  type RepoHandlerContext,
+  type WorkspaceCapability,
+} from 'agent-workspace/kinds/repo';
+import { OpenHiveRepoHandler } from './workspace-handler.js';
+import { handleResourceList, handleResourceGet, getAdvertisedKinds } from './resource-handler.js';
 import type { Config } from '../config.js';
+
+/**
+ * Register the four `x-workspace/repo.*` methods on `handlers` by wrapping
+ * `agent-workspace/kinds/repo`'s `registerRepoHandlers` with a tiny shim that
+ * extracts `agentId`/`swarmId` from openhive's session-based context.
+ *
+ * The package's `RepoHandlerContext` ({ agentId, swarmId, capabilities? })
+ * is built from `ctx.session?.metadata?.{swarmId, agentId, ...}`. Calls
+ * without authenticated agent + swarm are rejected with -32004.
+ */
+function registerRepoMethods(
+  handlers: Record<string, (params: any, ctx: any) => Promise<any>>,
+): void {
+  const repoHandler = new OpenHiveRepoHandler();
+  const adapter: RepoMethodServer = {
+    addHandler(method, fn) {
+      handlers[method] = async (params: any, ctx: any) => {
+        const swarmId = ctx.session?.metadata?.swarmId;
+        const agentId = ctx.session?.metadata?.agentId
+          || ctx.session?.metadata?.hubAgentId;
+        if (!agentId || !swarmId) {
+          throw Object.assign(
+            new Error(`${method} requires authenticated agent + swarm context`),
+            { code: -32004 },
+          );
+        }
+        const capabilities = ctx.session?.metadata?.workspaceCapability as
+          | WorkspaceCapability
+          | undefined;
+        const repoCtx: RepoHandlerContext = { agentId, swarmId, ...(capabilities && { capabilities }) };
+        return fn(params, repoCtx);
+      };
+    },
+  };
+  registerRepoHandlers(adapter, repoHandler);
+}
 
 let mapServer: any | null = null;
 
@@ -76,7 +121,12 @@ class OpenHiveIAMAuthenticator {
  * need to be registered explicitly. The MAPServer's router dispatches by
  * exact method name, so we register each custom method.
  */
-function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Promise<any>> {
+/**
+ * Build the additionalHandlers map passed to `new MAPServer({...})`. Exported
+ * for the shape-check test in `src/__tests__/scheduler/map-registration.test.ts`
+ * (and as a hook for any future test that wants to verify a method is wired).
+ */
+export function buildAdditionalHandlers(config: Config): Record<string, (params: any, ctx: any) => Promise<any>> {
   const handlers: Record<string, (params: any, ctx: any) => Promise<any>> = {};
 
   // ── MAP Task Methods (standard MAP spec) ────────────────────────
@@ -135,6 +185,32 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
     };
   }
 
+  // ── MAP Schedule Methods (cron-style recurring dispatches) ──────
+  for (const method of MAP_SCHEDULE_METHOD_SET) {
+    handlers[method] = async (params: any, ctx: any) => {
+      const swarmId = ctx.session?.metadata?.swarmId;
+      // MAP SDK convention: the session's owning-agent id lives at
+      // metadata.hubAgentId, NOT metadata.agentId. The sibling handler
+      // blocks above (specs/tasks/dispatches) read `agentId` and "work"
+      // only because their handlers don't strictly require the value;
+      // schedules MUST persist initiator_id and would silently bind
+      // null otherwise (caught by map-live-wire.test.ts).
+      const agentId = ctx.session?.metadata?.hubAgentId;
+      try {
+        return await handleScheduleRequest(method, params, {
+          swarmId,
+          agentId,
+          maxSchedulesPerAgent: config.scheduler.maxSchedulesPerAgent,
+        });
+      } catch (err) {
+        if (err instanceof MAPScheduleRequestError) {
+          throw Object.assign(new Error(err.message), { code: err.code });
+        }
+        throw err;
+      }
+    };
+  }
+
   // ── Trajectory Methods ──────────────────────────────────────────
   for (const method of TRAJECTORY_METHOD_SET) {
     handlers[method] = async (params: any, ctx: any) => {
@@ -177,6 +253,16 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
       }
     };
   }
+
+  // ── MAP Resource Protocol (map/resources/*) ──────────────────────
+  handlers['map/resources/list'] = handleResourceList;
+  handlers['map/resources/get'] = handleResourceGet;
+
+  // ── Repo Methods (x-workspace/repo.*) ────────────────────────────
+  // OpenHive consumer-side adapter for `agent-workspace/kinds/repo`. The
+  // package owns the wire format and dispatch; OpenHive supplies persistence
+  // (repos + workspaces DALs) + realtime fan-out via the OpenHiveRepoHandler.
+  registerRepoMethods(handlers);
 
   // ── Mail Methods (mail/*) ────────────────────────────────────────
   // We register a catch-all approach via method prefix in the message handler
@@ -317,21 +403,20 @@ export function initMapServer(config: Config): any {
 
   const isVerified = config.mapHub.trustModel === 'verified';
 
-  const additionalHandlers = buildAdditionalHandlers();
+  const additionalHandlers = buildAdditionalHandlers(config);
   const openteamsKinds = getOpenteamsResourceKinds();
 
   mapServer = new MAPServer({
     name: config.instance.name || 'OpenHive',
     version: '0.1.0',
     additionalHandlers,
-    // Advertise the openteams resource kinds so connected agents can discover
-    // them via the standard MAP capability handshake. The SDK exposes the
-    // `capabilities.resources.kinds` slot per the MAP Resource Protocol v1.
-    capabilities: {
-      resources: {
-        enabled: true,
-        kinds: openteamsKinds,
-      },
+    // Advertise resource kinds so connected agents can discover them via
+    // the standard MAP capability handshake. Merges native MAP advertised
+    // kinds (per the resource handler) with the openteams kinds the
+    // hub serves over the bundle store.
+    resources: {
+      enabled: true,
+      kinds: [...getAdvertisedKinds(), ...openteamsKinds],
     },
     ...(isVerified
       ? {

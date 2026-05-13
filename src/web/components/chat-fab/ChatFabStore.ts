@@ -7,8 +7,18 @@
 
 import { create } from 'zustand';
 import { api } from '../../lib/api';
+import { useChatFabStagedChipsStore } from './chat-fab-staged-chips-store';
 
 export type ChatFabMode = 'floating' | 'docked';
+
+/**
+ * Which view the ChatFab body is showing. Drives both the body content and
+ * the header title / back-button behaviour.
+ *
+ * - `picker`: agent/session picker (default when no session)
+ * - `chat`: active chat session
+ */
+export type ChatFabView = 'picker' | 'chat';
 
 const MODE_STORAGE_KEY = 'chat-fab-mode';
 const OPEN_STORAGE_KEY = 'chat-fab-open';
@@ -70,6 +80,8 @@ export interface ChatFabAgentRef {
 export interface ChatFabState {
   /** FAB expanded or collapsed */
   open: boolean;
+  /** Which panel view is active */
+  view: ChatFabView;
   /** Active chat session ID (null = show picker) */
   sessionId: string | null;
   /** Swarm the active session is on */
@@ -99,6 +111,8 @@ export interface ChatFabState {
   // Actions
   toggle: () => void;
   collapse: () => void;
+  /** Navigate to a specific view within the panel. */
+  navigate: (view: ChatFabView) => void;
   setSession: (
     sessionId: string,
     swarmId: string,
@@ -124,6 +138,7 @@ export interface ChatFabState {
 
 export const useChatFabStore = create<ChatFabState>((set) => ({
   open: loadOpen(),
+  view: 'picker',
   sessionId: null,
   swarmId: null,
   sessionLabel: null,
@@ -144,17 +159,31 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
     set({ open: false });
   },
 
-  setSession: (sessionId, swarmId, label, resume, agentRef) =>
-    set({
-      sessionId,
-      swarmId,
-      sessionLabel: label,
-      agentRef: agentRef ?? null,
-      resume: resume ?? null,
-      connectError: null,
-    }),
+  navigate: (view) => set({ view }),
 
-  clearSession: () =>
+  setSession: (sessionId, swarmId, label, resume, agentRef) => {
+    // Session swap clears staged chips — composition state belongs to the
+    // active composer, not to a history. Avoids "agent A's context bled
+    // into agent B" when switching sessions. Only clears on actual id
+    // changes so noop re-sets (same id + updated label) don't wipe drafts.
+    set((s) => {
+      if (s.sessionId && s.sessionId !== sessionId) {
+        useChatFabStagedChipsStore.getState().clearChips();
+      }
+      return {
+        sessionId,
+        swarmId,
+        sessionLabel: label,
+        agentRef: agentRef ?? null,
+        resume: resume ?? null,
+        connectError: null,
+        view: 'chat',
+      };
+    });
+  },
+
+  clearSession: () => {
+    useChatFabStagedChipsStore.getState().clearChips();
     set({
       sessionId: null,
       swarmId: null,
@@ -162,7 +191,9 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
       agentRef: null,
       resume: null,
       connectError: null,
-    }),
+      view: 'picker',
+    });
+  },
 
   setMode: (mode) => {
     saveMode(mode);
@@ -177,7 +208,7 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
 
   connectAndOpen: async (swarmId, agentId, label, peerMapId) => {
     saveOpen(true);
-    set({ connecting: true, connectError: null, open: true });
+    set({ connecting: true, connectError: null, open: true, view: 'chat' });
     try {
       const result = await api.post<{
         session_resource_id: string;
@@ -196,16 +227,21 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
       // the name from the MAP registry as it arrives. This fixes the
       // race where the agent is spawned and connected to faster than the
       // hub publishes its registration back through `registered_agents`.
-      set({
-        sessionId: result.session_resource_id,
-        swarmId,
-        sessionLabel: label ?? 'Agent',
-        agentRef: { swarmId, agentId },
-        resume: {
-          acpStreamId: result.acp_stream_id,
-          acpSessionId: result.acp_session_id,
-        },
-        connecting: false,
+      set((s) => {
+        if (s.sessionId && s.sessionId !== result.session_resource_id) {
+          useChatFabStagedChipsStore.getState().clearChips();
+        }
+        return {
+          sessionId: result.session_resource_id,
+          swarmId,
+          sessionLabel: label ?? 'Agent',
+          agentRef: { swarmId, agentId },
+          resume: {
+            acpStreamId: result.acp_stream_id,
+            acpSessionId: result.acp_session_id,
+          },
+          connecting: false,
+        };
       });
     } catch (err) {
       set({

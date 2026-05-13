@@ -6,9 +6,11 @@ import multipart from "@fastify/multipart";
 import * as path from "path";
 import * as fs from "fs";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const requireFrom = createRequire(import.meta.url);
 import { Config, loadConfig } from "./config.js";
 import { initDatabase, closeDatabase, getDatabase } from "./db/index.js";
 import { registerRoutes } from "./api/index.js";
@@ -41,13 +43,22 @@ import {
 } from "./sync/local-resource-watcher.js";
 import { markStaleSwarms, getWellKnownMapInfo } from "./map/service.js";
 import { setupOrchestrator } from "./dispatch/setup.js";
+import { setupScheduler } from "./scheduler/setup.js";
+import { isAutonomousDispatchPaused } from "./map/dispatch-policy.js";
+import { startTaskBinder, stopTaskBinder } from "./cascade/task-binder.js";
+import { startThreadLifecycle, stopThreadLifecycle } from "./dispatch/thread-lifecycle.js";
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
+import { findResourceById as findResourceForSchedule } from "./db/dal/syncable-resources.js";
+import { createOpenHiveSpecResolver } from "./scheduler/setup.js";
+import { takeSpawnedFallback } from "./scheduler/spawn-tracker.js";
+import { findSwarmById } from "./db/dal/map.js";
 import { createOpenHiveMailTransport } from "./dispatch/mail-transport.js";
 import { createOpenHiveMailPort } from "./dispatch/openhive-mail-port.js";
+import { setupMailCompletionObserver } from "./dispatch/mail-completion.js";
 import { setAcpAvailabilityProbe } from "./dispatch/routing.js";
 import type { AcpStreamManager } from "./dispatch/openhive-runtime.js";
 import { sendToSwarm } from "./map/sync-listener.js";
-import type { Orchestrator } from "swarm-dispatch";
+import type { Orchestrator, Scheduler } from "swarm-dispatch";
 import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
 import { initMail, getMailJsonRpc, getMailStorage, getMailEvents } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket, disconnectSessionsForAgent } from "./map/ws-map.js";
@@ -298,7 +309,17 @@ export async function createHive(
       fastify.get("/ws/terminal", { websocket: true }, (socket, request) => {
         const ws = socket as unknown as import("ws").WebSocket;
         const query = request.query as Record<string, string>;
-        handleTerminalWebSocket(ws, query, ptyManager);
+        // handleTerminalWebSocket awaits sandbox setup when ?sandbox=1; surface
+        // any rejection here so it doesn't become an unhandled promise.
+        handleTerminalWebSocket(ws, query, ptyManager).catch((err) => {
+          console.error("[openhive] terminal-ws handler failed:", err);
+          try {
+            ws.send(JSON.stringify({ type: "error", message: (err as Error).message }));
+            ws.close();
+          } catch {
+            // socket may already be closed
+          }
+        });
       });
 
       console.log("[openhive] Terminal WebSocket registered at /ws/terminal");
@@ -464,24 +485,13 @@ export async function createHive(
 
       // Bridge ACP events from SwarmCraft WS (/ws/swarmcraft) to OpenHive WS (/ws).
       // The frontend's useWebSocket hooks listen on /ws. ACP streaming events
-      // (acp.session.update, acp.prompt.completed, etc.) are broadcast on SwarmCraft's
-      // wsHub. We intercept broadcast() to forward acp.* events to OpenHive's system.
+      // (acp.session.update, acp.prompt.completed, etc.) are broadcast on
+      // SwarmCraft's wsHub. The bridge wraps wsHub.broadcast() so acp.*
+      // events from the `acp` topic also reach OpenHive's `global` channel.
+      // See src/realtime/acp-bridge.ts for the implementation.
       const { broadcastToChannel } = await import("./realtime/index.js");
-      const origBroadcast = sc.wsHub.broadcast.bind(sc.wsHub);
-      sc.wsHub.broadcast = (message: any, topic?: string) => {
-        // Forward to original SwarmCraft subscribers
-        origBroadcast(message, topic);
-
-        // Bridge acp.* events to OpenHive's WS.
-        // Only forward from the 'acp' topic to avoid duplicates — SwarmCraft
-        // broadcasts each ACP event to both 'events' and 'acp' topics.
-        if (topic === 'acp' && message?.type && typeof message.type === 'string' && message.type.startsWith('acp.')) {
-          broadcastToChannel('global', {
-            type: message.type,
-            data: message.payload ?? message.data ?? message,
-          });
-        }
-      };
+      const { installAcpBridge } = await import("./realtime/acp-bridge.js");
+      installAcpBridge(sc.wsHub, broadcastToChannel);
       console.log('[openhive] ACP event bridge active (SwarmCraft → OpenHive WS)');
       // onClose hook is already registered above (pre-`fastify.register`) so
       // SC's internal teardown runs first via LIFO ordering. See the comment
@@ -509,6 +519,35 @@ export async function createHive(
     // Attach to fastify instance so routes can access it
     (fastify as unknown as { swarmManager: SwarmManager }).swarmManager =
       swarmManager;
+
+    // Wire PtyManager into SwarmManager so kind=claude-code spawns can use
+    // it. PtyManager was created earlier in the bootstrap if available; if
+    // it isn't (terminal disabled, node-pty not installed), claude-code
+    // spawns will fail with a clear "PtyManager not configured" error.
+    const ptyManager = (
+      fastify as unknown as { ptyManager?: import('./terminal/pty-manager.js').PtyManager }
+    ).ptyManager;
+    if (ptyManager) {
+      swarmManager.setPtyManager(ptyManager);
+    }
+
+    // Wire CodexAppServerManager so kind=codex with mode=rpc can spawn the
+    // app-server child process and drive it via JSON-RPC. No external
+    // native deps — just a child_process + ws client — so this is safe to
+    // construct unconditionally when swarm hosting is enabled.
+    try {
+      const { CodexAppServerManager } = await import('./swarm/codex-app-server-manager.js');
+      const codexAppServerManager = new CodexAppServerManager();
+      swarmManager.setCodexAppServerManager(codexAppServerManager);
+      (fastify as unknown as { codexAppServerManager?: typeof codexAppServerManager })
+        .codexAppServerManager = codexAppServerManager;
+    } catch (err) {
+      console.warn(
+        '[openhive] CodexAppServerManager unavailable — kind=codex+mode=rpc spawns will fail:',
+        (err as Error).message,
+      );
+    }
+
     console.log("[openhive] Swarm hosting enabled");
   }
 
@@ -540,9 +579,29 @@ export async function createHive(
       getMailEvents,
       sendToSwarm,
     });
-    const messagePort = createOpenHiveMailPort(mailTransport);
+    const messagePort = createOpenHiveMailPort(mailTransport, {
+      mailLifecycleDefault: config.dispatch.mail_lifecycle_default,
+      getMailJsonRpc,
+    });
 
     dispatchOrchestrator = setupOrchestrator({
+      // Scheduler `fallback_spawn` cleanup. When a dispatch that was
+      // backed by an auto-spawned hosted swarm reaches terminal, stop
+      // the swarm so we don't leak compute. See `src/scheduler/spawn-tracker.ts`.
+      onTerminal: async (taskId, _status) => {
+        const binding = takeSpawnedFallback(taskId);
+        if (!binding || !binding.cleanupOnTerminal) return;
+        if (!swarmManager) return;
+        try {
+          await (swarmManager as unknown as {
+            stop: (id: string, agentId?: string) => Promise<unknown>;
+          }).stop(binding.hostedSwarmId);
+        } catch (err) {
+          console.warn(
+            `[scheduler] failed to stop fallback-spawned hosted swarm ${binding.hostedSwarmId}: ${(err as Error).message}`,
+          );
+        }
+      },
       specFetcher: {
         async fetch(resourceId: string, specId: string) {
           const result = await fetchSpecForDispatch(resourceId, specId, 'system');
@@ -562,6 +621,7 @@ export async function createHive(
             title: (node.title as string) ?? 'Untitled spec',
             content: (node.content as string) ?? '',
             tasks,
+            metadata: (node.metadata as Record<string, unknown> | undefined) ?? {},
           };
         },
       },
@@ -570,9 +630,11 @@ export async function createHive(
           const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: AcpStreamManager } }).swarmcraft;
           return sc?.acpStreamManager;
         },
+        acpLifecycleDefault: config.dispatch.acp_lifecycle_default,
       },
       messagePort,
       dispatchConfig: config.dispatch,
+      getMailJsonRpc,
     });
     setAcpAvailabilityProbe(() => {
       const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: AcpStreamManager } }).swarmcraft;
@@ -588,9 +650,86 @@ export async function createHive(
         /* best effort */
       }
     });
+
+    // Wire the mail-route completion observer. swarm-dispatch's
+    // MessagePort contract only has `onIncoming` (inbound new work), no
+    // `onResult`/reply observation — without this, mail-route dispatches
+    // sit at `running` until the stall timeout flips them to `failed`,
+    // never reaching `complete` on the happy path.
+    const stopMailCompletion = setupMailCompletionObserver({ getMailEvents });
+    fastify.addHook('onClose', async () => {
+      try {
+        stopMailCompletion();
+      } catch {
+        /* best effort */
+      }
+    });
+
     console.log('[openhive] Dispatch orchestrator initialized');
   } catch (err) {
     console.warn(`[openhive] Dispatch orchestrator failed: ${(err as Error).message}`);
+  }
+
+  // Initialize scheduler (cron-style recurring dispatches via swarm-dispatch)
+  let scheduler: Scheduler | null = null;
+  try {
+    scheduler = setupScheduler({
+      getSwarmStatus: (swarmId: string) => {
+        const s = findSwarmById(swarmId);
+        if (!s) return 'unknown';
+        return s.status === 'online' ? 'online' : 'offline';
+      },
+      spawnFallbackSwarm: swarmManager
+        ? async ({ adapter, name }) => {
+            const adapterMap: Record<string, 'openswarm' | 'claude-code' | 'codex'> = {
+              openswarm: 'openswarm',
+              'claude-code': 'claude-code',
+              codex: 'codex',
+            };
+            const kind = adapterMap[adapter] ?? 'openswarm';
+            // Spawn under a synthetic system owner — fallback swarms are
+            // schedule-driven, not user-initiated. SwarmManager.spawn
+            // signature: spawn(ownerAgentId, opts) → HostedSwarm
+            const hosted = await swarmManager!.spawn(
+              'system',
+              { name, kind } as Parameters<typeof swarmManager.spawn>[1],
+            );
+            if (!hosted.swarm_id) {
+              throw new Error('spawn returned no swarm_id');
+            }
+            // Wait briefly for the swarm to come online so the orchestrator's
+            // first routing attempt has a registered target.
+            const swarmId = hosted.swarm_id;
+            const deadline = Date.now() + 60_000;
+            while (Date.now() < deadline) {
+              const s = findSwarmById(swarmId);
+              if (s?.status === 'online') break;
+              await new Promise((r) => setTimeout(r, 1_000));
+            }
+            return { swarmId, hostedSwarmId: hosted.id };
+          }
+        : undefined,
+      // See `createOpenHiveSpecResolver` for the rationale (existence-only
+      // check, no auth, no opentasks resolution — matches the orchestrator's
+      // permissive enrichWithSpec semantic).
+      fetchSpec: createOpenHiveSpecResolver({
+        findResourceById: findResourceForSchedule,
+      }),
+      isAutonomousDispatchPaused,
+      tickIntervalMs: config.scheduler.tickIntervalMs,
+      maxConcurrentFires: config.scheduler.maxConcurrentFires,
+    });
+    scheduler.start();
+    fastify.addHook('onClose', async () => {
+      try {
+        await scheduler?.stop();
+      } catch {
+        /* best effort */
+      }
+    });
+    console.log('[openhive] Scheduler initialized');
+  } catch (err) {
+    console.warn(`[openhive] Scheduler failed: ${(err as Error).message}`);
   }
 
   // Serve skill.md. In server mode, strip the social-layer sections since
@@ -691,6 +830,48 @@ export async function createHive(
         );
     });
   } else if (actualWebPath) {
+    // Serve tree-sitter / kuzu WASM grammars directly from the swarmcraft
+    // package. Same physical files are otherwise bundled twice — once here
+    // and once under `node_modules/swarmcraft/public/wasm/` for the
+    // server-side parser-loader. This route dedupes the ~24 MB duplicate
+    // out of the packaged app by pointing the HTTP `/wasm/*` route at the
+    // swarmcraft copy (which is required by swarmcraft's own runtime).
+    //
+    // Must register BEFORE the `/` SPA route so the more-specific prefix
+    // wins in Fastify's radix routing.
+    //
+    // `swarmcraft`'s `package.json` isn't listed under its `exports`
+    // field so we can't require.resolve it directly under strict ESM.
+    // Resolve the main entry instead, then walk up to find the package
+    // root (where `public/wasm/` lives).
+    try {
+      let dir = path.dirname(requireFrom.resolve("swarmcraft"));
+      while (dir !== path.dirname(dir)) {
+        const pkgPath = path.join(dir, "package.json");
+        if (fs.existsSync(pkgPath)) {
+          try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+            if (pkg.name === "swarmcraft") break;
+          } catch {
+            // ignore malformed package.json and keep walking
+          }
+        }
+        dir = path.dirname(dir);
+      }
+      const swarmcraftWasm = path.join(dir, "public", "wasm");
+      if (fs.existsSync(swarmcraftWasm)) {
+        await fastify.register(fastifyStatic, {
+          root: swarmcraftWasm,
+          prefix: "/wasm/",
+          decorateReply: !staticRegistered,
+        });
+        staticRegistered = true;
+      }
+    } catch {
+      // swarmcraft not resolvable (unusual); fall through — the `/` SPA
+      // static below will still serve dist/web/wasm/ if vite built it.
+    }
+
     await fastify.register(fastifyStatic, {
       root: actualWebPath,
       prefix: "/",
@@ -1047,6 +1228,22 @@ export async function createHive(
         }
       }
 
+      // Start cascade→task binder. No-op unless something opted in to
+      // `on_merge` close policy (per-task, per-swarm, or per-hub default).
+      try {
+        startTaskBinder({ defaultClosePolicy: config.cascade.defaultClosePolicy });
+      } catch (err) {
+        console.warn(`[openhive] Task binder failed to start: ${(err as Error).message}`);
+      }
+
+      // Start dispatch thread lifecycle binder. Closes/reopens dispatch
+      // coordination threads when linked tasks change status.
+      try {
+        startThreadLifecycle();
+      } catch (err) {
+        console.warn(`[openhive] Thread lifecycle failed to start: ${(err as Error).message}`);
+      }
+
       return address;
     },
 
@@ -1057,6 +1254,8 @@ export async function createHive(
       }
       stopAutoPull();
       stopHeartbeat();
+      stopTaskBinder();
+      stopThreadLifecycle();
       if (dispatchOrchestrator?.running) {
         try { await dispatchOrchestrator.stop(); } catch { /* best effort */ }
       }

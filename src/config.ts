@@ -626,6 +626,89 @@ export const ConfigSchema = z.object({
        * - `noop` — preserves source input order (previous default).
        */
       scorer: z.enum(["heuristic", "noop"]).default("heuristic"),
+      /**
+       * Cluster-wide default for the ACP-route lifecycle when a dispatch
+       * doesn't carry an explicit `acp_lifecycle` per-call override.
+       *
+       * - `reuse` (default) — orchestrator attaches to an existing
+       *   ACP-capable agent on the swarm via `findAcpAgentInfo`.
+       *   Backwards-compatible with the pre-this-work behavior; loadout
+       *   permissions are advisory because the existing session was
+       *   created earlier.
+       * - `fresh` — orchestrator spawns a fresh coordinator per dispatch
+       *   via the `dispatch/spawn-agent` notification-pair RPC. Loadout
+       *   permissions are enforced at spawn time. Requires the swarm to
+       *   be running a macro-agent build with the dispatch handler.
+       *
+       * Per-dispatch override via the dispatch request body's
+       * `acp_lifecycle` field takes precedence over this default.
+       */
+      acp_lifecycle_default: z.enum(["fresh", "reuse"]).default("reuse"),
+      /**
+       * Cluster-wide default for the mail-route lifecycle when a dispatch
+       * doesn't carry an explicit `mail_lifecycle` per-call override.
+       *
+       * - `reuse` (default) — hub mail port lets prefer-route pick a
+       *   non-busy long-lived worker via the roster. Falls back to the
+       *   sidecar (and its mail-inbound-consumer fresh-spawn) when no
+       *   roster match is available. Loadout permissions are advisory
+       *   for the existing session, same as ACP+reuse.
+       * - `fresh` — hub mail port forces routing to the connection's
+       *   sidecar regardless of roster matches. The sidecar's
+       *   mail-inbound-consumer spawns a fresh ephemeral worker per
+       *   envelope. Loadout permissions are enforced at spawn time.
+       *
+       * Per-dispatch override via the dispatch request body's
+       * `mail_lifecycle` field takes precedence over this default.
+       */
+      mail_lifecycle_default: z.enum(["fresh", "reuse"]).default("reuse"),
+      /** Continuation turn budgets. */
+      continuation: z
+        .object({
+          /** Max total continuation turns per dispatch session. */
+          maxTurns: z.number().int().positive().default(20),
+          /**
+           * Max extra turns granted because of pending dispatch thread
+           * messages. Prevents a chatty thread from keeping an agent alive
+           * indefinitely. Independent of maxTurns.
+           */
+          maxThreadTurns: z.number().int().min(0).default(3),
+        })
+        .default({}),
+    })
+    .default({}),
+
+  // Scheduler (swarm-dispatch scheduler integration)
+  scheduler: z
+    .object({
+      /** Tick cadence for the scheduler loop. */
+      tickIntervalMs: z.number().int().positive().default(60_000),
+      /** Global cap on in-flight fire handlers across all schedules. */
+      maxConcurrentFires: z.number().int().positive().default(10),
+      /**
+       * Per-agent cap on schedule count. Enforced by REST + MAP create
+       * handlers, not the scheduler tick. Returns 429 / -32606 when hit.
+       */
+      maxSchedulesPerAgent: z.number().int().positive().default(100),
+    })
+    .default({}),
+
+  // Cascade ↔ task binding
+  cascade: z
+    .object({
+      /**
+       * Hub-wide default policy for closing tasks on observed cascade merges.
+       *
+       * `manual` (default) — hub never auto-closes; agents and users drive task
+       *   state themselves. Cascade metadata still flows to the UI via the
+       *   changelog enrichment on task status broadcasts.
+       *
+       * `on_merge` — when a cascade stream carrying a task_ref merges, the
+       *   hub transitions the linked task to `completed`. Overridable per-task
+       *   via `task.metadata.close_policy` and per-swarm via the
+       *   `cascade.autoCloseOnMerge` capability.
+       */
+      defaultClosePolicy: z.enum(["manual", "on_merge"]).default("manual"),
     })
     .default({}),
 });

@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 47;
+export const SCHEMA_VERSION = 58;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 -- Syncable resources registry (git repos backing various resource types)
 CREATE TABLE IF NOT EXISTS syncable_resources (
   id TEXT PRIMARY KEY,
-  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout')),
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout', 'repo')),
   name TEXT NOT NULL,
   description TEXT,
   git_remote_url TEXT NOT NULL,
@@ -644,6 +644,41 @@ CREATE TABLE IF NOT EXISTS dispatches (
   outcome TEXT,
   -- optional caller-supplied prompt addendum
   prompt_override TEXT,
+  -- ACP lifecycle hint (V47): when this dispatch routes via ACP, controls
+  -- whether the orchestrator spawns a fresh coordinator ("fresh") or
+  -- reuses an existing ACP-capable agent ("reuse"). NULL means fall
+  -- through to config.dispatch.acp_lifecycle_default. Transport concern,
+  -- intentionally NOT in spec/loadout authoring (those are content layers).
+  acp_lifecycle TEXT
+    CHECK (acp_lifecycle IS NULL OR acp_lifecycle IN ('fresh', 'reuse')),
+  -- Mail lifecycle hint (V48): when this dispatch routes via mail, controls
+  -- whether the hub mail port forces routing to the connection's sidecar
+  -- ("fresh" — sidecar's mail-inbound-consumer spawns a new ephemeral
+  -- worker) or lets prefer-route pick a non-busy long-lived worker
+  -- ("reuse"). NULL means fall through to config.dispatch.mail_lifecycle_default.
+  -- Same transport-vs-content split as acp_lifecycle.
+  mail_lifecycle TEXT
+    CHECK (mail_lifecycle IS NULL OR mail_lifecycle IN ('fresh', 'reuse')),
+  -- Loadout binding (V49): the spec_metadata.loadout_ref or team_role_ref
+  -- string captured at enrichment time. NULL = no binding. Persisted so
+  -- the detail UI can show what loadout was attached after the side-channel
+  -- TTL expires; also doubles as an audit trail.
+  loadout_ref TEXT,
+  -- Materialization status (V49): result of resolving loadout_ref into a
+  -- MaterializedLoadout. 'materialized' on success, 'failed' on resolution
+  -- error (loadout not found, ACL forbidden, etc.), NULL when no binding
+  -- exists. The UI uses this to surface a sticky failure banner that
+  -- survives page refresh, complementing the live WS event.
+  loadout_status TEXT
+    CHECK (loadout_status IS NULL OR loadout_status IN ('materialized', 'failed')),
+  -- Materialization error message (V49): populated when loadout_status='failed',
+  -- carries a short reason ('unauthorized', 'not found', etc.) suitable for
+  -- the UI banner. NULL otherwise.
+  loadout_error TEXT,
+  -- Dispatch inbox thread conversation ID (V52): agent-inbox conversation
+  -- for the coordination thread. Written lazily on first coordination
+  -- message via ensureDispatchConversation. NULL for silent dispatches.
+  conversation_id TEXT,
   -- timestamps
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
@@ -654,6 +689,50 @@ CREATE INDEX IF NOT EXISTS idx_dispatches_swarm ON dispatches(target_swarm_id);
 CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
 CREATE INDEX IF NOT EXISTS idx_dispatches_initiator ON dispatches(initiator_id);
 CREATE INDEX IF NOT EXISTS idx_dispatches_created ON dispatches(created_at DESC);
+
+-- dispatch_linked_tasks (V45): dispatch → opentasks task refs captured at
+-- creation. Powers advance-on-start + cascade artifact enrichment.
+CREATE TABLE IF NOT EXISTS dispatch_linked_tasks (
+  dispatch_id TEXT NOT NULL REFERENCES dispatches(id) ON DELETE CASCADE,
+  resource_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  advanced_on_start INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (dispatch_id, resource_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dispatch_linked_tasks_ref
+  ON dispatch_linked_tasks(resource_id, node_id);
+
+-- ============================================================================
+-- Schedules (V52 — swarm-dispatch scheduler integration)
+-- Library-minimum schema from swarm-dispatch's getScheduleStoreDDL plus
+-- OpenHive-specific audit/tenancy columns (hive_id, initiator_*).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS schedules (
+  id            TEXT PRIMARY KEY,
+  cron          TEXT NOT NULL,
+  timezone      TEXT,
+  payload       TEXT NOT NULL,
+  policy        TEXT NOT NULL,
+  paused        INTEGER NOT NULL DEFAULT 0,
+  next_fires_at TEXT,
+  last_fired_at TEXT,
+  -- OpenHive audit + tenancy (host extensions, not in library schema)
+  hive_id       TEXT NOT NULL DEFAULT '',
+  initiator_type TEXT NOT NULL DEFAULT 'user'
+    CHECK (initiator_type IN ('user', 'agent')),
+  initiator_id  TEXT NOT NULL DEFAULT '',
+  -- Reason set when the fire handler auto-pauses (e.g. deleted spec).
+  -- Null when the schedule is healthy or was paused by user/agent action.
+  pause_reason  TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(paused, next_fires_at);
+CREATE INDEX IF NOT EXISTS idx_schedules_hive ON schedules(hive_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_initiator ON schedules(initiator_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_spec ON schedules(payload);
 `;
 
 export const SEED_DATA = `
@@ -858,6 +937,313 @@ ALTER TABLE agents ADD COLUMN capabilities TEXT;
 // migration".
 export const MIGRATION_V44_GRANT_VERSION = `
 ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0;
+`;
+
+// Migration V45: dispatch_linked_tasks — join rows from a dispatch back to
+// the opentasks tasks it was seeded with. Populated at dispatch creation
+// from the spec's linked-task neighbors. Powers (a) advance-on-start task
+// state transitions, (b) cascade artifact enrichment on completion via the
+// (task_resource_id, task_node_id) join with cascade_streams.
+// Migration V46: Extend syncable_resources.resource_type CHECK to admit
+// 'playbook', 'team_template', and 'loadout'. ('playbook' was added to the
+// SyncableResourceType union earlier without a matching CHECK update; this
+// migration brings the constraint in line with the union.)
+//
+// SQLite can't ALTER a CHECK constraint in place, so we follow the same
+// recreate-and-rename pattern used by V30 + V31. All existing data is
+// copied verbatim.
+export const MIGRATION_V46_RESOURCE_TYPES_EXTEND = `
+CREATE TABLE IF NOT EXISTS syncable_resources_v46 (
+  id TEXT PRIMARY KEY,
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout')),
+  name TEXT NOT NULL,
+  description TEXT,
+  git_remote_url TEXT NOT NULL,
+  webhook_secret TEXT,
+  visibility TEXT DEFAULT 'private'
+    CHECK (visibility IN ('private', 'shared', 'public')),
+  last_commit_hash TEXT,
+  last_push_by TEXT,
+  last_push_at TEXT,
+  owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  scope TEXT DEFAULT 'manual'
+    CHECK (scope IN ('global', 'project', 'agent', 'manual')),
+  sync_strategy TEXT DEFAULT 'metadata'
+    CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle', 'federated')),
+  local_path TEXT,
+  metadata TEXT,
+  origin_instance_id TEXT,
+  origin_resource_id TEXT,
+  sync_event_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+INSERT OR IGNORE INTO syncable_resources_v46 SELECT * FROM syncable_resources;
+
+DROP TABLE IF EXISTS syncable_resources;
+ALTER TABLE syncable_resources_v46 RENAME TO syncable_resources;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_syncable_resources_git_url
+  ON syncable_resources(owner_agent_id, resource_type, git_remote_url)
+  WHERE git_remote_url IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_name_lookup
+  ON syncable_resources(owner_agent_id, resource_type, name);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_owner ON syncable_resources(owner_agent_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type ON syncable_resources(resource_type);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_visibility ON syncable_resources(visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_resources(resource_type, visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
+`;
+
+// Migration V47: Per-dispatch ACP lifecycle hint. Adds `acp_lifecycle` to
+// dispatches so callers can override the cluster default when creating a
+// dispatch via REST. Transport-level concern; intentionally not stored on
+// spec metadata or loadout content (those are content-authoring layers,
+// not routing).
+export const MIGRATION_V47_DISPATCH_ACP_LIFECYCLE = `
+ALTER TABLE dispatches ADD COLUMN acp_lifecycle TEXT
+  CHECK (acp_lifecycle IS NULL OR acp_lifecycle IN ('fresh', 'reuse'));
+`;
+
+// Migration V48: Per-dispatch mail lifecycle hint. Adds `mail_lifecycle`
+// to dispatches mirroring V47's acp_lifecycle. Transport-level concern;
+// "fresh" forces routing to the sidecar (ephemeral spawn), "reuse" lets
+// prefer-route pick a non-busy long-lived worker.
+export const MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE = `
+ALTER TABLE dispatches ADD COLUMN mail_lifecycle TEXT
+  CHECK (mail_lifecycle IS NULL OR mail_lifecycle IN ('fresh', 'reuse'));
+`;
+
+// Migration V49: Persist loadout resolution outcome on the dispatch row.
+// Adds three nullable columns:
+//   - loadout_ref: original binding string (e.g. "loadout_xxx" or
+//     "team:foo/role:bar") captured at enrichment time
+//   - loadout_status: 'materialized' | 'failed' | NULL (no binding)
+//   - loadout_error: short reason when status='failed'
+// Replaces the previous "ephemeral side-channel + WS-only failure event"
+// pattern: now the failure survives page refresh and is queryable.
+export const MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION = `
+ALTER TABLE dispatches ADD COLUMN loadout_ref TEXT;
+ALTER TABLE dispatches ADD COLUMN loadout_status TEXT
+  CHECK (loadout_status IS NULL OR loadout_status IN ('materialized', 'failed'));
+ALTER TABLE dispatches ADD COLUMN loadout_error TEXT;
+`;
+
+// Migration V50: Hosted swarm kind — generalize the spawn pipeline beyond
+// OpenSwarm. Existing rows default to 'openswarm' so the current behavior is
+// preserved. New kinds (claude-code, future codex/gemini) carry different
+// spawn-plan resolvers. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+export const MIGRATION_V50_HOSTED_SWARM_KIND = `
+ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'openswarm'
+  CHECK (kind IN ('openswarm', 'claude-code'));
+`;
+
+// Migration V56: Schedules table for swarm-dispatch scheduler integration.
+// (Renumbered from V52 due to merge collision with V52-V55 repos/workspaces.)
+// Library-minimum schema (id, cron, timezone, payload, policy, paused,
+// next_fires_at, last_fired_at, created_at, updated_at) plus OpenHive
+// extensions (hive_id, initiator_type, initiator_id, pause_reason).
+// Additive: new table only, no changes to existing tables.
+export const MIGRATION_V56_SCHEDULES = `
+CREATE TABLE IF NOT EXISTS schedules (
+  id            TEXT PRIMARY KEY,
+  cron          TEXT NOT NULL,
+  timezone      TEXT,
+  payload       TEXT NOT NULL,
+  policy        TEXT NOT NULL,
+  paused        INTEGER NOT NULL DEFAULT 0,
+  next_fires_at TEXT,
+  last_fired_at TEXT,
+  hive_id       TEXT NOT NULL DEFAULT '',
+  initiator_type TEXT NOT NULL DEFAULT 'user'
+    CHECK (initiator_type IN ('user', 'agent')),
+  initiator_id  TEXT NOT NULL DEFAULT '',
+  pause_reason  TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(paused, next_fires_at);
+CREATE INDEX IF NOT EXISTS idx_schedules_hive ON schedules(hive_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_initiator ON schedules(initiator_id);
+`;
+
+// Migration V51: Open up the hosted_swarms.kind CHECK constraint so new
+// kinds can be added without a DB migration each time. Validation moves to
+// the application layer (Zod schema in the spawn route + the
+// HostedSwarmKind union type). SQLite can't drop a column-level CHECK in
+// place, so we rebuild the table — this preserves all data, indexes, and
+// the FK to map_swarms.
+export const MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK = `
+CREATE TABLE hosted_swarms_v51 (
+  id TEXT PRIMARY KEY,
+  swarm_id TEXT REFERENCES map_swarms(id) ON DELETE SET NULL,
+  provider TEXT NOT NULL CHECK (provider IN ('local', 'docker', 'fly', 'ssh', 'k8s')),
+  state TEXT NOT NULL DEFAULT 'provisioning'
+    CHECK (state IN ('provisioning', 'starting', 'running', 'unhealthy', 'stopping', 'stopped', 'failed')),
+  pid INTEGER,
+  container_id TEXT,
+  deployment_id TEXT,
+  bootstrap_token_hash TEXT,
+  assigned_port INTEGER,
+  endpoint TEXT,
+  config TEXT,
+  error TEXT,
+  spawned_by TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  kind TEXT NOT NULL DEFAULT 'openswarm'
+);
+INSERT INTO hosted_swarms_v51
+  (id, swarm_id, provider, state, pid, container_id, deployment_id,
+   bootstrap_token_hash, assigned_port, endpoint, config, error,
+   spawned_by, created_at, updated_at, kind)
+  SELECT id, swarm_id, provider, state, pid, container_id, deployment_id,
+         bootstrap_token_hash, assigned_port, endpoint, config, error,
+         spawned_by, created_at, updated_at, kind
+  FROM hosted_swarms;
+DROP TABLE hosted_swarms;
+ALTER TABLE hosted_swarms_v51 RENAME TO hosted_swarms;
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_swarm_id ON hosted_swarms(swarm_id);
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_state ON hosted_swarms(state);
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_spawned_by ON hosted_swarms(spawned_by);
+CREATE INDEX IF NOT EXISTS idx_hosted_swarms_bootstrap ON hosted_swarms(bootstrap_token_hash);
+`;
+
+// Migration V52: Repos as syncable resources + per-agent workspace bindings.
+// (Renumbered from V50 due to merge collision with hosted-swarm-kind work.)
+// Three changes in one migration:
+//   1. Extend syncable_resources.resource_type CHECK to admit 'repo'
+//      (V46-style recreate-and-rename, since SQLite can't ALTER a CHECK).
+//   2. Add `workspaces` table — per-agent local-only bindings keyed by
+//      (agent_id, repo_id, local_path). Federates the abstract repo
+//      resource; bindings stay local. See CLAUDE.md "Repos and Workspaces".
+//   3. Add `map_swarms.workspace_policy` JSON column — swarm-operator-set
+//      policy ({ mode: 'open' | 'allow_listed' | 'pinned', ...}).
+export const MIGRATION_V52_REPOS_AND_WORKSPACES = `
+-- 1. Extend syncable_resources resource_type CHECK to admit 'repo'.
+CREATE TABLE IF NOT EXISTS syncable_resources_v52 (
+  id TEXT PRIMARY KEY,
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout', 'repo')),
+  name TEXT NOT NULL,
+  description TEXT,
+  git_remote_url TEXT NOT NULL,
+  webhook_secret TEXT,
+  visibility TEXT DEFAULT 'private'
+    CHECK (visibility IN ('private', 'shared', 'public')),
+  last_commit_hash TEXT,
+  last_push_by TEXT,
+  last_push_at TEXT,
+  owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  scope TEXT DEFAULT 'manual'
+    CHECK (scope IN ('global', 'project', 'agent', 'manual')),
+  sync_strategy TEXT DEFAULT 'metadata'
+    CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle', 'federated')),
+  local_path TEXT,
+  metadata TEXT,
+  origin_instance_id TEXT,
+  origin_resource_id TEXT,
+  sync_event_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+INSERT OR IGNORE INTO syncable_resources_v52 SELECT * FROM syncable_resources;
+
+DROP TABLE IF EXISTS syncable_resources;
+ALTER TABLE syncable_resources_v52 RENAME TO syncable_resources;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_syncable_resources_git_url
+  ON syncable_resources(owner_agent_id, resource_type, git_remote_url)
+  WHERE git_remote_url IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_name_lookup
+  ON syncable_resources(owner_agent_id, resource_type, name);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_owner ON syncable_resources(owner_agent_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type ON syncable_resources(resource_type);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_visibility ON syncable_resources(visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_resources(resource_type, visibility);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
+
+-- 2. Workspaces table — local-only bindings of agents to repo resources.
+CREATE TABLE IF NOT EXISTS workspaces (
+  id              TEXT PRIMARY KEY,
+  repo_id         TEXT NOT NULL REFERENCES syncable_resources(id) ON DELETE CASCADE,
+  agent_id        TEXT NOT NULL REFERENCES map_nodes(id) ON DELETE CASCADE,
+  swarm_id        TEXT NOT NULL REFERENCES map_swarms(id) ON DELETE CASCADE,
+  local_path      TEXT NOT NULL,
+  current_branch  TEXT,
+  head_sha        TEXT,
+  dirty           INTEGER NOT NULL DEFAULT 0,
+  instance_label  TEXT,
+  visibility      TEXT NOT NULL DEFAULT 'hub_local'
+    CHECK (visibility IN ('private', 'hub_local', 'federated')),
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (agent_id, repo_id, local_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspaces_repo_active   ON workspaces(repo_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_workspaces_agent_active  ON workspaces(agent_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_workspaces_swarm         ON workspaces(swarm_id);
+
+-- 3. Per-swarm workspace policy (operator-set; JSON shape).
+ALTER TABLE map_swarms ADD COLUMN workspace_policy TEXT;
+`;
+
+// V53 — Resource lifecycle status column.
+// (Renumbered from V51 due to merge collision with hosted-swarm-kind work.)
+// Adds `status` to `syncable_resources` for the new mesh-level lifecycle
+// events (`resource.redacted`, `.archived`, `.merged`) shipped by
+// agent-workspace's `RESOURCE_MESH_EVENTS`. See
+// CLAUDE.md "Repos and Workspaces" — federation lifecycle events.
+//
+// SQLite ALTER TABLE ADD COLUMN doesn't support CHECK constraints, so
+// allowed values ('active' | 'redacted_remote' | 'archived' | 'merged_into')
+// are enforced by the materializer + DAL rather than the column.
+export const MIGRATION_V53_RESOURCE_STATUS = `
+ALTER TABLE syncable_resources ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+CREATE INDEX IF NOT EXISTS idx_syncable_resources_status ON syncable_resources(status);
+`;
+
+// Migration V54: Per-dispatch repo targeting columns.
+// repo_id is the primary source for repo-scoped dispatches (dispatch body).
+// canonical_url is resolved at enrichment time so the receiving sidecar can
+// clone without a round-trip. branch/commit_sha are optional version pins.
+// clone_policy controls whether the sidecar may clone when the repo is absent.
+export const MIGRATION_V54_DISPATCH_REPO = `
+ALTER TABLE dispatches ADD COLUMN repo_id TEXT;
+ALTER TABLE dispatches ADD COLUMN canonical_url TEXT;
+ALTER TABLE dispatches ADD COLUMN branch TEXT;
+ALTER TABLE dispatches ADD COLUMN commit_sha TEXT;
+ALTER TABLE dispatches ADD COLUMN clone_policy TEXT DEFAULT 'none'
+  CHECK (clone_policy IN ('none', 'allowed'));
+ALTER TABLE dispatches ADD COLUMN clone_path TEXT;
+CREATE INDEX IF NOT EXISTS idx_dispatches_repo ON dispatches(repo_id);
+`;
+
+// Migration V55: Nullable conversation_id on dispatches for dispatch inbox
+// threads. Written lazily on first coordination message — silent dispatches
+// never get one. See docs/design/dispatch-inbox-threads.md.
+export const MIGRATION_V55_DISPATCH_CONVERSATION = `
+ALTER TABLE dispatches ADD COLUMN conversation_id TEXT;
+`;
+
+export const MIGRATION_V45_DISPATCH_LINKED_TASKS = `
+CREATE TABLE IF NOT EXISTS dispatch_linked_tasks (
+  dispatch_id TEXT NOT NULL REFERENCES dispatches(id) ON DELETE CASCADE,
+  resource_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  advanced_on_start INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (dispatch_id, resource_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dispatch_linked_tasks_ref
+  ON dispatch_linked_tasks(resource_id, node_id);
 `;
 
 // ============================================================================
@@ -1667,78 +2053,7 @@ CREATE INDEX IF NOT EXISTS idx_cascade_prs_stream ON cascade_pull_requests(strea
 CREATE INDEX IF NOT EXISTS idx_cascade_prs_state ON cascade_pull_requests(state);
 `;
 
-// Migration V45: widen syncable_resources.resource_type CHECK constraint to
-// include 'playbook', 'team_template', and 'loadout'.
-//
-// Three things going on:
-// 1. 'playbook' was added to the TS union but never to the CHECK — fixing the
-//    latent inconsistency so inserts actually succeed.
-// 2. 'team_template' and 'loadout' carry authored openteams definitions.
-// 3. SQLite cannot alter a CHECK constraint in place. Standard rebuild idiom:
-//    create _new with the widened CHECK, copy via column-name-explicit INSERT
-//    (resilient to column drift), drop old, rename.
-//
-// Indexes are recreated explicitly to match the latest state from V31.
-export const MIGRATION_V45_TEAM_TEMPLATE_LOADOUT_KINDS = `
-CREATE TABLE IF NOT EXISTS syncable_resources_v45 (
-  id TEXT PRIMARY KEY,
-  resource_type TEXT NOT NULL CHECK (resource_type IN ('memory_bank', 'task', 'skill', 'session', 'playbook', 'team_template', 'loadout')),
-  name TEXT NOT NULL,
-  description TEXT,
-  git_remote_url TEXT NOT NULL,
-  webhook_secret TEXT,
-  visibility TEXT DEFAULT 'private'
-    CHECK (visibility IN ('private', 'shared', 'public')),
-  last_commit_hash TEXT,
-  last_push_by TEXT,
-  last_push_at TEXT,
-  owner_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  scope TEXT DEFAULT 'manual'
-    CHECK (scope IN ('global', 'project', 'agent', 'manual')),
-  sync_strategy TEXT DEFAULT 'metadata'
-    CHECK(sync_strategy IN ('metadata', 'local', 'ls-remote', 'mirror', 'bundle', 'federated')),
-  local_path TEXT,
-  metadata TEXT,
-  origin_instance_id TEXT,
-  origin_resource_id TEXT,
-  sync_event_id TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
-INSERT OR IGNORE INTO syncable_resources_v45 (
-  id, resource_type, name, description, git_remote_url, webhook_secret,
-  visibility, last_commit_hash, last_push_by, last_push_at, owner_agent_id,
-  scope, sync_strategy, local_path, metadata,
-  origin_instance_id, origin_resource_id, sync_event_id,
-  created_at, updated_at
-)
-SELECT
-  id, resource_type, name, description, git_remote_url, webhook_secret,
-  visibility, last_commit_hash, last_push_by, last_push_at, owner_agent_id,
-  scope, sync_strategy, local_path, metadata,
-  origin_instance_id, origin_resource_id, sync_event_id,
-  created_at, updated_at
-FROM syncable_resources;
-
-DROP TABLE IF EXISTS syncable_resources;
-ALTER TABLE syncable_resources_v45 RENAME TO syncable_resources;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_syncable_resources_git_url
-  ON syncable_resources(owner_agent_id, resource_type, git_remote_url)
-  WHERE git_remote_url IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_syncable_resources_name_lookup
-  ON syncable_resources(owner_agent_id, resource_type, name);
-CREATE INDEX IF NOT EXISTS idx_syncable_resources_owner ON syncable_resources(owner_agent_id);
-CREATE INDEX IF NOT EXISTS idx_syncable_resources_type ON syncable_resources(resource_type);
-CREATE INDEX IF NOT EXISTS idx_syncable_resources_visibility ON syncable_resources(visibility);
-CREATE INDEX IF NOT EXISTS idx_syncable_resources_type_visibility ON syncable_resources(resource_type, visibility);
-CREATE INDEX IF NOT EXISTS idx_syncable_resources_scope ON syncable_resources(scope);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_origin ON syncable_resources(origin_instance_id, origin_resource_id);
-CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_resources(sync_strategy);
-`;
-
-// Migration V46: add openteams loadout-reference columns to `dispatches`.
+// Migration V57: add openteams loadout-reference columns to `dispatches`.
 //
 // A dispatch can now carry a content-addressed loadout id (and optionally a
 // team bundle id + role) alongside the existing spec reference. The columns
@@ -1751,21 +2066,24 @@ CREATE INDEX IF NOT EXISTS idx_syncable_resources_sync_strategy ON syncable_reso
 // pinned, so subsequent edits to the authored team_template / loadout don't
 // retroactively change in-flight dispatches (matches openteams design
 // principle 7 — see references/openteams/docs/team-map-sync-design.md).
-export const MIGRATION_V46_DISPATCH_LOADOUT_REFS = `
+export const MIGRATION_V57_DISPATCH_LOADOUT_REFS = `
 ALTER TABLE dispatches ADD COLUMN loadout_bundle_id TEXT;
 ALTER TABLE dispatches ADD COLUMN team_bundle_id TEXT;
 ALTER TABLE dispatches ADD COLUMN role TEXT;
 `;
 
-// Migration V47: relax `spec_resource_id` + `spec_id` on `dispatches` to
+// Migration V58: relax `spec_resource_id` + `spec_id` on `dispatches` to
 // nullable. Layer 4 of the openteams integration adds spec-less spawns —
 // an `openteams.spawn` task may pin a `loadout_bundle_id` and request a
 // new swarm process without any opentasks spec to anchor the work.
 //
 // SQLite can't ALTER a NOT NULL constraint in-place, so we rebuild the
-// table. Existing rows preserve their non-null spec ids.
-export const MIGRATION_V47_NULLABLE_SPEC_ON_DISPATCH = `
-CREATE TABLE IF NOT EXISTS dispatches_v47 (
+// table. Existing rows preserve their non-null spec ids. The rebuilt
+// table includes every column added by intermediate migrations
+// (V32 base, V35, V41, V47-V49, V54-V55, V57) so the COPY step doesn't
+// drop them. Renumbered from V47 due to merge collision.
+export const MIGRATION_V58_NULLABLE_SPEC_ON_DISPATCH = `
+CREATE TABLE IF NOT EXISTS dispatches_v58 (
   id TEXT PRIMARY KEY,
   spec_resource_id TEXT,
   spec_id TEXT,
@@ -1783,6 +2101,22 @@ CREATE TABLE IF NOT EXISTS dispatches_v47 (
   attempt INTEGER DEFAULT 0,
   turn_count INTEGER DEFAULT 0,
   attempts_history TEXT NOT NULL DEFAULT '[]',
+  acp_lifecycle TEXT
+    CHECK (acp_lifecycle IS NULL OR acp_lifecycle IN ('fresh', 'reuse')),
+  mail_lifecycle TEXT
+    CHECK (mail_lifecycle IS NULL OR mail_lifecycle IN ('fresh', 'reuse')),
+  loadout_ref TEXT,
+  loadout_status TEXT
+    CHECK (loadout_status IS NULL OR loadout_status IN ('materialized', 'failed')),
+  loadout_error TEXT,
+  repo_id TEXT,
+  canonical_url TEXT,
+  branch TEXT,
+  commit_sha TEXT,
+  clone_policy TEXT DEFAULT 'none'
+    CHECK (clone_policy IN ('none', 'allowed')),
+  clone_path TEXT,
+  conversation_id TEXT,
   loadout_bundle_id TEXT,
   team_bundle_id TEXT,
   role TEXT,
@@ -1790,10 +2124,14 @@ CREATE TABLE IF NOT EXISTS dispatches_v47 (
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
-INSERT OR IGNORE INTO dispatches_v47 (
+INSERT OR IGNORE INTO dispatches_v58 (
   id, spec_resource_id, spec_id, spec_captured_at, target_swarm_id, status,
   initiator_type, initiator_id, session_ids, outcome, prompt_override,
   lease_token, lease_expires_at, attempt, turn_count, attempts_history,
+  acp_lifecycle, mail_lifecycle,
+  loadout_ref, loadout_status, loadout_error,
+  repo_id, canonical_url, branch, commit_sha, clone_policy, clone_path,
+  conversation_id,
   loadout_bundle_id, team_bundle_id, role,
   created_at, updated_at
 )
@@ -1801,18 +2139,23 @@ SELECT
   id, spec_resource_id, spec_id, spec_captured_at, target_swarm_id, status,
   initiator_type, initiator_id, session_ids, outcome, prompt_override,
   lease_token, lease_expires_at, attempt, turn_count, attempts_history,
+  acp_lifecycle, mail_lifecycle,
+  loadout_ref, loadout_status, loadout_error,
+  repo_id, canonical_url, branch, commit_sha, clone_policy, clone_path,
+  conversation_id,
   loadout_bundle_id, team_bundle_id, role,
   created_at, updated_at
 FROM dispatches;
 
 DROP TABLE IF EXISTS dispatches;
-ALTER TABLE dispatches_v47 RENAME TO dispatches;
+ALTER TABLE dispatches_v58 RENAME TO dispatches;
 
 CREATE INDEX IF NOT EXISTS idx_dispatches_spec ON dispatches(spec_resource_id, spec_id);
 CREATE INDEX IF NOT EXISTS idx_dispatches_swarm ON dispatches(target_swarm_id);
 CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
 CREATE INDEX IF NOT EXISTS idx_dispatches_initiator ON dispatches(initiator_id);
 CREATE INDEX IF NOT EXISTS idx_dispatches_created ON dispatches(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dispatches_repo ON dispatches(repo_id);
 `;
 
 // Populate FTS tables from existing data

@@ -19,6 +19,15 @@ export interface DispatchAttempt {
   error?: string;
   session_id?: string;
   next_retry_at?: string;
+  /** Transport that delivered this attempt (V49). Populated by the adapter
+   *  that performed delivery — `acp` from the runtime, `mail` from the
+   *  mail port. Absent on attempts that never reached delivery. */
+  transport?: 'acp' | 'mail';
+  /** Resolved target agent id at delivery time (V49). */
+  agent_id?: string;
+  /** Routing decision from swarm-dispatch (V49): `spawn` = fresh agent
+   *  started, `route` = existing agent picked. Diagnostic. */
+  via?: 'spawn' | 'route';
 }
 
 export interface Dispatch {
@@ -36,6 +45,25 @@ export interface Dispatch {
   attempt?: number;
   turn_count?: number;
   attempts_history?: DispatchAttempt[];
+  /** Per-dispatch transport hint for ACP routing. `'fresh'` spawns a new
+   *  coordinator with loadout permissions enforced at spawn time;
+   *  `'reuse'` attaches to an existing ACP-capable agent (advisory). Null
+   *  falls through to `config.dispatch.acp_lifecycle_default`. */
+  acp_lifecycle: 'fresh' | 'reuse' | null;
+  /** Same shape as acp_lifecycle but for the mail transport. `'fresh'`
+   *  forces routing to the connection's sidecar (which spawns an
+   *  ephemeral worker per envelope); `'reuse'` lets the roster pick. */
+  mail_lifecycle: 'fresh' | 'reuse' | null;
+  /** Loadout binding (V49): the original `loadout_ref` or
+   *  `team:<template>/role:<role>` string captured at enrichment. */
+  loadout_ref: string | null;
+  /** Materialization status (V49). `null` = no binding. */
+  loadout_status: 'materialized' | 'failed' | null;
+  /** Materialization error message when status='failed' (V49). */
+  loadout_error: string | null;
+  /** Linked dispatch coordination thread conversation id. Null until the
+   *  first message is posted (lazy creation). */
+  conversation_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -99,10 +127,21 @@ export function useDispatchList(options: UseDispatchListOptions = {}) {
   });
 }
 
+export interface DispatchLinkedTaskRef {
+  resource_id: string;
+  node_id: string;
+  advanced_on_start?: boolean;
+}
+
+export interface DispatchDetailResponse {
+  dispatch: Dispatch;
+  linked_tasks?: DispatchLinkedTaskRef[];
+}
+
 export function useDispatch(id: string | undefined) {
   return useQuery({
     queryKey: ['dispatch', id],
-    queryFn: () => api.get<{ dispatch: Dispatch }>(`/dispatches/${id}`),
+    queryFn: () => api.get<DispatchDetailResponse>(`/dispatches/${id}`),
     enabled: !!id,
     staleTime: 15_000,
     // Polling fallback for the running window: the primary source of

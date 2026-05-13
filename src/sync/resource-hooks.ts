@@ -15,7 +15,8 @@ import { insertLocalEvent } from '../db/dal/sync-events.js';
 import { signEvent } from './crypto.js';
 import { getSyncService } from './service.js';
 import { mapHubEvents } from '../map/service.js';
-import type { Agent } from '../types.js';
+import { findAgentById } from '../db/dal/agents.js';
+import type { Agent, SyncableResource } from '../types.js';
 import type {
   HiveEventType,
   AgentSnapshot,
@@ -24,6 +25,9 @@ import type {
   ResourceUpdatedPayload,
   ResourceUnpublishedPayload,
   ResourceSyncedPayload,
+  ResourceRedactedPayload,
+  ResourceArchivedPayload,
+  ResourceMergedPayload,
 } from './types.js';
 
 function getInstanceId(syncGroup: SyncGroup): string {
@@ -147,6 +151,199 @@ export function onResourceUnpublished(resourceId: string, agent: Agent): void {
     recordEventOnAllGroups('resource_unpublished', payload);
   } catch (err) {
     console.error('[Sync Hook] onResourceUnpublished failed:', (err as Error).message);
+  }
+}
+
+/**
+ * Fire `resource_published` for a federated repo so peer hubs materialize
+ * it. Repos created at `'private' | 'hub_local'` visibility are intentionally
+ * silent — federation is opt-in per the package's visibility model.
+ *
+ * Owner agent is looked up by id (the DAL doesn't carry auth context).
+ * Best-effort: missing owner / no sync groups → silent skip.
+ */
+export function onRepoPublished(repo: SyncableResource): void {
+  try {
+    const meta = (repo.metadata ?? {}) as { visibility?: string };
+    if (meta.visibility !== 'federated') return;
+
+    const owner = findAgentById(repo.owner_agent_id);
+    if (!owner) return;
+
+    const groups = listSyncGroups();
+    if (groups.length === 0) return;
+
+    const instanceId = getInstanceId(groups[0]);
+    const payload: ResourcePublishedPayload = {
+      resource_id: repo.id,
+      resource_type: 'repo',
+      name: repo.name,
+      description: repo.description,
+      git_remote_url: repo.git_remote_url,
+      // Column-level visibility — repos federate via metadata.visibility,
+      // not the column-level value. The column stays 'shared' on the wire
+      // so the receiving hub's `upsertRemoteResource` writes a CHECK-valid
+      // row; the federation tier travels in metadata intact.
+      visibility: 'shared',
+      owner: agentToSnapshot(owner, instanceId),
+      tags: [],
+      metadata: (repo.metadata as Record<string, unknown>) ?? null,
+    };
+
+    recordEventOnAllGroups('resource_published', payload);
+
+    mapHubEvents.emit('resource_published', {
+      resource_id: repo.id,
+      resource_type: 'repo',
+      name: repo.name,
+      owner_agent_id: owner.id,
+    });
+  } catch (err) {
+    console.error('[Sync Hook] onRepoPublished failed:', (err as Error).message);
+  }
+}
+
+/**
+ * Fire `resource_updated` for a federated repo whose metadata changed
+ * (default_branch refresh, branch list updates, etc.). Visibility
+ * downgrade (federated → hub_local/private) intentionally does NOT fire
+ * here — that's a `resource.redacted` event in slice 5b.
+ */
+export function onRepoUpdated(repo: SyncableResource): void {
+  try {
+    const meta = (repo.metadata ?? {}) as { visibility?: string };
+    if (meta.visibility !== 'federated') return;
+
+    const owner = findAgentById(repo.owner_agent_id);
+    if (!owner) return;
+
+    const groups = listSyncGroups();
+    if (groups.length === 0) return;
+
+    const instanceId = getInstanceId(groups[0]);
+    const payload: ResourceUpdatedPayload = {
+      resource_id: repo.id,
+      fields: {
+        name: repo.name,
+        description: repo.description ?? undefined,
+        metadata: (repo.metadata as Record<string, unknown>) ?? undefined,
+      },
+      updated_by: agentToSnapshot(owner, instanceId),
+    };
+
+    recordEventOnAllGroups('resource_updated', payload);
+  } catch (err) {
+    console.error('[Sync Hook] onRepoUpdated failed:', (err as Error).message);
+  }
+}
+
+// ── Mesh lifecycle hooks (slice 5b) ─────────────────────────────────────────
+
+/**
+ * A repo is "ever federated" if it currently is OR was redacted from a
+ * prior federated state (the `redacted_at` audit field is the witness).
+ * Peers retain rows for ever-federated repos as tombstones, so lifecycle
+ * events (archive / merge) MUST still fire even after a redaction so peers
+ * can update their tombstones — otherwise the target row drifts forever.
+ */
+function wasEverFederated(repo: SyncableResource): boolean {
+  const meta = (repo.metadata ?? {}) as {
+    visibility?: string;
+    redacted_at?: string;
+  };
+  return meta.visibility === 'federated' || meta.redacted_at !== undefined;
+}
+
+/**
+ * Fire `resource_redacted` when a federated resource's federation tier
+ * narrows (e.g. `'federated' → 'hub_local'`). Peers mark the local row
+ * `status='redacted_remote'`. No-op for already-private resources.
+ *
+ * The `oldVisibility` argument prevents redundant redaction events for
+ * resources that were never federated to begin with.
+ */
+export function onRepoRedacted(
+  repo: SyncableResource,
+  oldVisibility: string,
+  newVisibility: string,
+): void {
+  try {
+    if (oldVisibility !== 'federated' || newVisibility === 'federated') return;
+
+    const groups = listSyncGroups();
+    if (groups.length === 0) return;
+
+    const instanceId = getInstanceId(groups[0]);
+    const payload: ResourceRedactedPayload = {
+      resource_type: 'repo',
+      canonical_url: repo.git_remote_url,
+      new_visibility: newVisibility,
+      redacted_at: new Date().toISOString(),
+      origin_hub_id: instanceId,
+    };
+
+    recordEventOnAllGroups('resource_redacted', payload);
+  } catch (err) {
+    console.error('[Sync Hook] onRepoRedacted failed:', (err as Error).message);
+  }
+}
+
+/**
+ * Fire `resource_archived` when a federated resource is archived. Peers
+ * mark the local row `status='archived'` while keeping the row + any
+ * inbound references intact.
+ */
+export function onRepoArchived(repo: SyncableResource): void {
+  try {
+    if (!wasEverFederated(repo)) return;
+
+    const groups = listSyncGroups();
+    if (groups.length === 0) return;
+
+    const instanceId = getInstanceId(groups[0]);
+    const payload: ResourceArchivedPayload = {
+      resource_type: 'repo',
+      canonical_url: repo.git_remote_url,
+      archived_at: new Date().toISOString(),
+      origin_hub_id: instanceId,
+    };
+
+    recordEventOnAllGroups('resource_archived', payload);
+  } catch (err) {
+    console.error('[Sync Hook] onRepoArchived failed:', (err as Error).message);
+  }
+}
+
+/**
+ * Fire `resource_merged` when one federated repo is merged into another
+ * (typically a duplicate canonical URL cleanup). Source becomes a
+ * forwarding tombstone; references follow `metadata.merged_into_canonical_url`.
+ *
+ * Only the source repo receives the lifecycle event; the target survives
+ * as the canonical row.
+ */
+export function onRepoMerged(
+  source: SyncableResource,
+  targetCanonicalUrl: string,
+): void {
+  try {
+    if (!wasEverFederated(source)) return;
+
+    const groups = listSyncGroups();
+    if (groups.length === 0) return;
+
+    const instanceId = getInstanceId(groups[0]);
+    const payload: ResourceMergedPayload = {
+      resource_type: 'repo',
+      source_canonical_url: source.git_remote_url,
+      target_canonical_url: targetCanonicalUrl,
+      merged_at: new Date().toISOString(),
+      origin_hub_id: instanceId,
+    };
+
+    recordEventOnAllGroups('resource_merged', payload);
+  } catch (err) {
+    console.error('[Sync Hook] onRepoMerged failed:', (err as Error).message);
   }
 }
 

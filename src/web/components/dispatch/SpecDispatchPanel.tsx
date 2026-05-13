@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Send, Zap } from 'lucide-react';
+import { Plus, Send, Zap } from 'lucide-react';
 import { useDispatchList } from '../../hooks/useDispatch';
 import { useDispatchRealtime } from '../../hooks/useDispatchRealtime';
 import { useMapSwarms } from '../../hooks/useApi';
@@ -9,6 +9,11 @@ import { TimeAgo } from '../common/TimeAgo';
 interface SpecDispatchPanelProps {
   resourceId: string;
   specId: string;
+  /** Optional CTA to trigger a new dispatch (opens the dispatch modal). */
+  onDispatch?: () => void;
+  /** Disable the dispatch CTA with a reason shown in the title attribute. */
+  dispatchDisabled?: boolean;
+  dispatchDisabledReason?: string;
 }
 
 /**
@@ -16,7 +21,13 @@ interface SpecDispatchPanelProps {
  * Used by SpecDetail; subscribes to realtime so a dispatch from elsewhere
  * (the modal, an autonomous agent, etc.) shows up here without refresh.
  */
-export function SpecDispatchPanel({ resourceId, specId }: SpecDispatchPanelProps) {
+export function SpecDispatchPanel({
+  resourceId,
+  specId,
+  onDispatch,
+  dispatchDisabled = false,
+  dispatchDisabledReason,
+}: SpecDispatchPanelProps) {
   useDispatchRealtime();
   const { data, isLoading } = useDispatchList({
     spec_resource_id: resourceId,
@@ -45,10 +56,30 @@ export function SpecDispatchPanel({ resourceId, specId }: SpecDispatchPanelProps
           <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>
             Dispatch
           </h3>
+          <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+            {dispatches.length}
+          </span>
         </div>
-        <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-          {dispatches.length}
-        </span>
+        {onDispatch && (
+          <button
+            type="button"
+            onClick={onDispatch}
+            disabled={dispatchDisabled}
+            className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+            style={{
+              borderColor: 'var(--color-border-subtle)',
+              color: 'var(--color-text-secondary)',
+            }}
+            title={
+              dispatchDisabled
+                ? (dispatchDisabledReason ?? 'Dispatch unavailable')
+                : 'Dispatch to swarms'
+            }
+          >
+            <Plus className="h-3 w-3" />
+            New
+          </button>
+        )}
       </div>
 
       {isLoading ? (

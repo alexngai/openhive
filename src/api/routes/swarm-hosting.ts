@@ -15,6 +15,7 @@
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import path from 'node:path';
 import { z } from 'zod';
 import { authMiddleware } from '../middleware/auth.js';
 import { SwarmHostingError } from '../../swarm/manager.js';
@@ -43,24 +44,141 @@ const BootstrapSchema = z.object({
   cwd: z.string().max(2000).optional(),
 });
 
-const SpawnSwarmSchema = z.object({
-  name: z.string().min(1).max(100).optional(),
-  description: z.string().max(500).optional(),
-  adapter: z.string().max(100).optional(),
-  adapter_config: z.record(z.unknown()).optional(),
-  hive: z.string().max(100).optional(),
-  provider: z.enum(['local', 'local-sandboxed', 'docker', 'fly', 'ssh', 'k8s']).optional(),
-  metadata: z.record(z.unknown()).optional(),
-  credential_overrides: z.record(z.string(), z.string()).optional(),
-  workspace: WorkspaceSchema.optional(),
-  bootstrap: BootstrapSchema.optional(),
-  // Layer 4 — optional openteams binding. SwarmManager.spawn() materializes
-  // the loadout up front and forwards MCP scope + prompt addendum through
-  // the BootstrapToken. team_bundle_id and role flow as advisory metadata.
-  loadout_bundle_id: z.string().min(1).max(200).optional(),
-  team_bundle_id: z.string().min(1).max(200).optional(),
-  role: z.string().min(1).max(100).optional(),
-});
+/**
+ * Per-swarm workspace policy. Mirrors `WorkspacePolicy` in `src/swarm/types.ts`.
+ *
+ *   - `open` (default if omitted): any agent declare is accepted.
+ *   - `allow_listed`: declares must canonicalize to one of `allowed_repos`.
+ *     `allowed_repos` is required + non-empty when this mode is set.
+ *   - `pinned`: declares must canonicalize to `pinned_repo`. Required when
+ *     this mode is set. Auto-bind on swarm-register is not yet implemented;
+ *     this gate currently behaves like a single-entry allow_list.
+ */
+// Exported so the PATCH endpoint in `map.ts` can reuse the same shape +
+// `superRefine` rules. Both endpoints write to the same column; sharing
+// the validator means a typo in one place doesn't drift the other.
+export const WorkspacePolicySchema = z
+  .object({
+    mode: z.enum(['open', 'allow_listed', 'pinned']),
+    allowed_repos: z.array(z.string().min(1).max(2000)).max(50).optional(),
+    pinned_repo: z.string().min(1).max(2000).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.mode === 'allow_listed') {
+      if (!data.allowed_repos || data.allowed_repos.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['allowed_repos'],
+          message: 'allowed_repos must be a non-empty array when mode="allow_listed"',
+        });
+      }
+    }
+    if (data.mode === 'pinned' && !data.pinned_repo) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pinned_repo'],
+        message: 'pinned_repo is required when mode="pinned"',
+      });
+    }
+  });
+
+// Exported so it can be unit-tested in isolation. Importing test code
+// should treat this as the source of truth for the request shape — the
+// route's HTTP plumbing (auth, manager lookup) is deliberately separate.
+export const SpawnSwarmSchema = z
+  .object({
+    // Defaults to 'openswarm' to preserve the existing API contract for clients
+    // that don't pass kind. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+    kind: z.enum(['openswarm', 'claude-code', 'codex']).optional().default('openswarm'),
+    name: z.string().min(1).max(100).optional(),
+    description: z.string().max(500).optional(),
+    adapter: z.string().max(100).optional(),
+    adapter_config: z.record(z.unknown()).optional(),
+    hive: z.string().max(100).optional(),
+    provider: z.enum(['local', 'local-sandboxed', 'docker', 'fly', 'ssh', 'k8s']).optional(),
+    metadata: z.record(z.unknown()).optional(),
+    credential_overrides: z.record(z.string(), z.string()).optional(),
+    workspace: WorkspaceSchema.optional(),
+    bootstrap: BootstrapSchema.optional(),
+    /**
+     * Optional first-turn prompt. For claude-code, passed to `claude` as a
+     * positional arg so the TUI opens with the prompt prefilled. Length cap
+     * is generous — Claude Code itself accepts large prompts.
+     */
+    initial_prompt: z.string().max(8000).optional(),
+    /**
+     * Pre-attached repo resource. When set, the spawned swarm resolves
+     * the repo and injects WORKSPACE_* env vars. For TUI kinds, the
+     * provider also clones (if no local checkout exists) and sets the
+     * TUI's cwd to the repo directory.
+     */
+    repo_id: z.string().max(200).optional(),
+    /**
+     * Per-swarm workspace policy. Persisted on `map_swarms.workspace_policy`
+     * and consulted by `OpenHiveRepoHandler.onDeclare` to validate every
+     * `x-workspace/repo.declare` from this swarm. See `WorkspacePolicy` in
+     * `src/swarm/types.ts` for semantics. Omitted = `open`.
+     */
+    workspace_policy: WorkspacePolicySchema.optional(),
+    /**
+     * For kind=codex only: which surface to spawn.
+     *   - 'rpc' (default): spawn `codex app-server`, openhive chat drives it
+     *   - 'tui': spawn `codex` TUI in a PTY (operator-driven, no chat path)
+     * Other kinds reject this field.
+     */
+    mode: z.enum(['rpc', 'tui']).optional(),
+    // Layer 4 — optional openteams binding. SwarmManager.spawn() materializes
+    // the loadout up front and forwards MCP scope + prompt addendum through
+    // the BootstrapToken. team_bundle_id and role flow as advisory metadata.
+    loadout_bundle_id: z.string().min(1).max(200).optional(),
+    team_bundle_id: z.string().min(1).max(200).optional(),
+    role: z.string().min(1).max(100).optional(),
+  })
+
+  .superRefine((data, ctx) => {
+    // `mode` is codex-only — reject for any other kind so users get a
+    // clear error rather than a silently-ignored field.
+    if (data.mode !== undefined && data.kind !== 'codex') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mode'],
+        message: `mode is only valid when kind="codex"; got kind="${data.kind ?? 'openswarm'}"`,
+      });
+    }
+
+    // Reject openswarm-specific fields for TUI-shaped kinds (claude-code,
+    // codex). They route through PtyManager (no provider config, no
+    // adapter, no bootstrap-coordinator) — these fields are dead. Keep
+    // the schema permissive for openswarm. Workspace IS supported (clones
+    // land under data_dir before the PTY spawn). The error message names
+    // the kind so the operator sees which validation tripped.
+    if (data.kind !== 'claude-code' && data.kind !== 'codex') return;
+    const adapterMsg = data.kind === 'claude-code'
+      ? 'cc-swarm plugin handles agent setup; no adapter to pick'
+      : 'codex spawns its own TUI; no adapter to pick';
+    const adapterConfigMsg = data.kind === 'claude-code'
+      ? 'no adapter for claude-code'
+      : 'no adapter for codex';
+    const hiveMsg = 'hive-bound credentials are openswarm-specific';
+    const bootstrapMsg = 'macro-agent bootstrap-coordinator is openswarm-specific';
+    const credsMsg = `${data.kind} uses operator local creds; no overrides`;
+    const blocked: Array<[keyof typeof data, string]> = [
+      ['adapter', adapterMsg],
+      ['adapter_config', adapterConfigMsg],
+      ['hive', hiveMsg],
+      ['bootstrap', bootstrapMsg],
+      ['credential_overrides', credsMsg],
+    ];
+    for (const [field, reason] of blocked) {
+      if (data[field] !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message: `kind=${data.kind} does not support "${field}": ${reason}`,
+        });
+      }
+    }
+  });
 
 // ============================================================================
 // Error Handler
@@ -74,12 +192,14 @@ function handleSwarmError(error: unknown, reply: FastifyReply): FastifyReply {
       NO_PORTS_AVAILABLE: 503,
       HIVE_NOT_FOUND: 404,
       ONBOARD_TOKEN_FAILED: 500,
+      REPO_NOT_FOUND: 404,
       WORKSPACE_SETUP_FAILED: 500,
       SPAWN_FAILED: 500,
       NOT_FOUND: 404,
       NOT_OWNER: 403,
       RESTART_NOT_SUPPORTED: 400,
       RESTART_FAILED: 500,
+      NOT_IMPLEMENTED: 501,
     };
     return reply.status(statusMap[error.code] || 500).send({
       error: error.code,
@@ -102,7 +222,7 @@ function handleSwarmError(error: unknown, reply: FastifyReply): FastifyReply {
 
 export async function swarmHostingRoutes(
   fastify: FastifyInstance,
-  _opts: { config: Config }
+  opts: { config: Config }
 ): Promise<void> {
   // Helper to get the SwarmManager from the fastify instance
   function getManager(request: FastifyRequest): SwarmManager {
@@ -193,6 +313,8 @@ export async function swarmHostingRoutes(
     const data = result.data.map((h) => ({
       id: h.id,
       name: h.config?.name ?? h.id,
+      kind: h.kind,
+      mode: h.config?.mode,
       swarm_id: h.swarm_id,
       provider: h.provider,
       state: h.state,
@@ -222,6 +344,8 @@ export async function swarmHostingRoutes(
     return reply.send({
       id: hosted.id,
       name: hosted.config?.name ?? hosted.id,
+      kind: hosted.kind,
+      mode: hosted.config?.mode,
       swarm_id: hosted.swarm_id,
       provider: hosted.provider,
       state: hosted.state,
@@ -344,6 +468,51 @@ export async function swarmHostingRoutes(
     return reply.status(204).send();
   });
 
+  // POST /map/hosted/:id/chat/turn — Send a user turn to a programmatic-mode
+  // hosted swarm. Provider-agnostic — manager dispatches based on the
+  // row's kind+mode. Streaming output fans out as normalized
+  // `hosted-chat.event` notifications on the WS channel
+  // `hosted-chat:<hostedSwarmId>` — subscribe there before posting if you
+  // want to capture the stream. Body: { text }.
+  fastify.post<{ Params: { id: string }; Body: { text?: string } }>(
+    '/map/hosted/:id/chat/turn',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const manager = getManager(request);
+        const text = (request.body?.text ?? '').toString();
+        if (!text.trim()) {
+          return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'text is required' });
+        }
+        const ack = await manager.sendChatTurn(request.params.id, request.agent!.id, text);
+        return reply.send(ack);
+      } catch (error) {
+        return handleSwarmError(error, reply);
+      }
+    },
+  );
+
+  // POST /map/hosted/:id/chat/interrupt — Clean cancel of the active turn.
+  // Body: { turn_id }. The session stays usable; only the in-flight turn
+  // stops. Provider-agnostic — manager dispatches.
+  fastify.post<{ Params: { id: string }; Body: { turn_id?: string } }>(
+    '/map/hosted/:id/chat/interrupt',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const manager = getManager(request);
+        const turnId = (request.body?.turn_id ?? '').toString();
+        if (!turnId.trim()) {
+          return reply.status(422).send({ error: 'VALIDATION_ERROR', message: 'turn_id is required' });
+        }
+        await manager.interruptChatTurn(request.params.id, request.agent!.id, turnId);
+        return reply.status(204).send();
+      } catch (error) {
+        return handleSwarmError(error, reply);
+      }
+    },
+  );
+
   // GET /map/hosted/:id/logs — Get logs from a hosted swarm
   fastify.get<{
     Params: { id: string };
@@ -362,43 +531,122 @@ export async function swarmHostingRoutes(
     }
   });
 
-  // GET /map/hosted/:id/terminal-info — Get terminal command for connecting TUI to a swarm
-  fastify.get<{ Params: { id: string } }>('/map/hosted/:id/terminal-info', {
-    preHandler: [authMiddleware],
-  }, async (request, reply) => {
-    const hosted = dal.findHostedSwarmById(request.params.id);
-    if (!hosted) {
-      return reply.status(404).send({ error: 'NOT_FOUND', message: 'Hosted swarm not found' });
-    }
-    if (hosted.state !== 'running') {
-      return reply.status(409).send({ error: 'NOT_RUNNING', message: 'Swarm is not running' });
-    }
+  // GET /map/hosted/:id/terminal-info — Resolve the terminal session config
+  // for a hosted swarm. Two modes:
+  //   ?mode=tui   (default) — OpenSwarm TUI tunneled into the browser PTY
+  //                          (or, for kind=claude-code, attach to the
+  //                          existing claude PTY session by sessionId)
+  //   ?mode=shell           — User's $SHELL in the swarm's data dir, sandboxed
+  fastify.get<{ Params: { id: string }; Querystring: { mode?: string } }>(
+    '/map/hosted/:id/terminal-info',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const hosted = dal.findHostedSwarmById(request.params.id);
+      if (!hosted) {
+        return reply.status(404).send({ error: 'NOT_FOUND', message: 'Hosted swarm not found' });
+      }
+      if (hosted.state !== 'running') {
+        return reply.status(409).send({ error: 'NOT_RUNNING', message: 'Swarm is not running' });
+      }
 
-    const baseEndpoint = hosted.endpoint || `ws://127.0.0.1:${hosted.assigned_port}`;
-    // The TUI connects to /map for the MAP protocol. It internally derives /acp from /map.
-    // The stored endpoint often omits the path, so ensure it's present.
-    const mapEndpoint = baseEndpoint.endsWith('/map') ? baseEndpoint : `${baseEndpoint}/map`;
+      const mode = request.query.mode === 'shell' ? 'shell' : 'tui';
 
-    try {
-      const { resolveOpenSwarmTuiBinary } = await import('../../terminal/resolve-tui.js');
-      const binaryPath = resolveOpenSwarmTuiBinary();
+      // claude-code TUI: don't spawn a fresh PTY — attach to the
+      // existing one SwarmManager already started for this row. Falls
+      // through to shell mode below for ?mode=shell (the swarm's data
+      // dir + sandboxed $SHELL works for any kind).
+      if (mode === 'tui' && (hosted.kind === 'claude-code' || hosted.kind === 'codex')) {
+        let sessionId: string | null = null;
+        try {
+          const manager = getManager(request);
+          sessionId = manager.getTuiPtySessionId(request.params.id);
+        } catch {
+          // Manager not available — surface as unavailable, not 5xx
+        }
+        console.log('[terminal-info] swarm=%s mode=tui kind=claude-code session=%s', request.params.id, sessionId ?? 'NONE');
+        return reply.send({
+          mode: 'tui',
+          binding: 'attach',
+          available: !!sessionId,
+          sessionId,
+          // No command/args — caller attaches by sessionId.
+          command: null,
+          args: [],
+          sandbox: false,
+          // Endpoint isn't meaningful for claude-code (no MAP server on
+          // the swarm); leave the field for shape compatibility.
+          endpoint: null,
+        });
+      }
 
-      console.log('[terminal-info] swarm=%s endpoint=%s binary=%s', request.params.id, mapEndpoint, binaryPath ?? 'NOT_FOUND');
+      // Point the TUI at openhive's own MAP hub, not the hosted swarm's
+      // assigned port. The openswarm `serve` gateway exposes /health, /metrics,
+      // /api/stats — it has no MAP WebSocket bound to assigned_port. MAP traffic
+      // for hosted swarms flows inbound to this hub via the sidecar pattern, so
+      // the TUI must dial the hub to see anything useful.
+      //
+      // Use 127.0.0.1 because the PTY runs on this host. `config.host` is the
+      // bind address ("0.0.0.0" by default) and isn't a usable connect target.
+      const hubMapEndpoint = `ws://127.0.0.1:${opts.config.port}/ws/map`;
 
-      return reply.send({
-        available: !!binaryPath,
-        command: binaryPath,
-        args: binaryPath ? ['--url', mapEndpoint, '--auto-connect'] : [],
-        endpoint: mapEndpoint,
-      });
-    } catch (err) {
-      console.warn('[terminal-info] resolve failed for swarm=%s:', request.params.id, err);
-      return reply.send({
-        available: false,
-        command: null,
-        args: [],
-        endpoint: mapEndpoint,
-      });
-    }
-  });
+      // Shell mode: drop the user into their $SHELL inside the swarm's data
+      // dir. Sandboxed by default — the PTY ends up with full host access
+      // otherwise. data_dir is stored as written by manager.ts (path.join, no
+      // resolve) so it can be relative; absolute-ize here so the sandbox
+      // allow_write list and the PTY cwd match the directory on disk.
+      if (mode === 'shell') {
+        const shell = process.env.SHELL || '/bin/bash';
+        const rawDataDir = hosted.config?.data_dir;
+        if (!rawDataDir) {
+          return reply.status(409).send({
+            error: 'NO_CWD',
+            message: 'Hosted swarm has no resolved data_dir for shell mode.',
+          });
+        }
+        const cwd = path.resolve(rawDataDir);
+        console.log('[terminal-info] swarm=%s mode=shell shell=%s cwd=%s', request.params.id, shell, cwd);
+        return reply.send({
+          mode: 'shell',
+          available: true,
+          command: shell,
+          args: [],
+          cwd,
+          sandbox: true,
+          endpoint: hubMapEndpoint,
+        });
+      }
+
+      // TUI mode (default).
+      try {
+        const { resolveOpenSwarmTuiBinary } = await import('../../terminal/resolve-tui.js');
+        const binaryPath = resolveOpenSwarmTuiBinary();
+
+        console.log(
+          '[terminal-info] swarm=%s mode=tui hub=%s binary=%s',
+          request.params.id,
+          hubMapEndpoint,
+          binaryPath ?? 'NOT_FOUND',
+        );
+
+        return reply.send({
+          mode: 'tui',
+          available: !!binaryPath,
+          command: binaryPath,
+          args: binaryPath ? ['--url', hubMapEndpoint, '--auto-connect'] : [],
+          sandbox: false,
+          endpoint: hubMapEndpoint,
+        });
+      } catch (err) {
+        console.warn('[terminal-info] resolve failed for swarm=%s:', request.params.id, err);
+        return reply.send({
+          mode: 'tui',
+          available: false,
+          command: null,
+          args: [],
+          sandbox: false,
+          endpoint: hubMapEndpoint,
+        });
+      }
+    },
+  );
 }

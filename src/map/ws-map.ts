@@ -22,16 +22,22 @@ import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
 import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findNodeBySwarmAndAgentId, findSwarmById, bulkUpdateSwarmNodesPresence } from '../db/dal/map.js';
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
-import { isMapTaskEvent, handleMapTaskEvent } from '../coordination/listener.js';
-import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities, getPeerMapId, getAgentOnSwarm } from './connection-registry.js';
+import { isMapTaskEvent, handleMapTaskEvent, isMapContextEvent, handleMapContextEvent } from '../coordination/listener.js';
+import { registerInbound, unregisterInbound, getAllInbound, getInbound, setDefaultTaskGraph, getAggregateCapabilities, getPeerMapId, getAgentOnSwarm, resolveInboxAgentId } from './connection-registry.js';
 import { resolveSessionScopes } from './session-scopes.js';
 import { verifyToken, isTokenServiceInitialized } from './token-service.js';
 import { handleContentResponse } from './trajectory-content.js';
 import { handleTrajectoryRequest } from './trajectory-handler.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
+import {
+  handleNotificationPairResponse,
+  rejectPendingForSwarm,
+} from './notification-rpc.js';
 import { handleWorkspaceResult } from '../learning/swarm-agent-backend.js';
 import { getMailJsonRpc } from '../mail/index.js';
 import { pushDispatchMapReply } from '../dispatch/mail-ingress.js';
+import { ensureDispatchConversation } from '../dispatch/dispatch-conversation.js';
+import * as dispatchesDAL from '../db/dal/dispatches.js';
 import { initMapServer, _resetMapServer } from './map-server-setup.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import { broadcastSwarmLifecycleEvent } from '../realtime/swarm-events.js';
@@ -327,6 +333,13 @@ function createNotificationInterceptor(
         handleSyncMessage(msg, swarmId);
       } else if (isMapTaskEvent(msg)) {
         handleMapTaskEvent(msg.payload as Record<string, unknown>, swarmId);
+      } else if (isMapContextEvent(msg)) {
+        const conn = getInbound(swarmId);
+        handleMapContextEvent(
+          msg.payload as Record<string, unknown>,
+          swarmId,
+          conn?.agentId ?? swarmId,
+        );
       } else if (msg.method === 'ping') {
         sendJsonRpc(ws, 'pong', {});
       } else if (msg.method === 'trajectory/content.response') {
@@ -338,9 +351,35 @@ function createNotificationInterceptor(
       } else if (typeof msg.method === 'string' && msg.method.startsWith('opentasks/') && msg.method.endsWith('.response')) {
         // OpenTasks response from swarm — resolve pending remote query
         handleOpenTasksResponse(msg.params as Record<string, unknown>);
+      } else if (
+        typeof msg.method === 'string' &&
+        (msg.method === 'x-dispatch/spawn-agent.response' ||
+          msg.method === 'dispatch/spawn-agent.response' ||
+          (msg.method.startsWith('x-dispatch/') &&
+            msg.method.endsWith('.response')))
+      ) {
+        // Response side of the notification-pair RPC used for hub→swarm
+        // request/response on x-dispatch/* methods. AgentConnection
+        // doesn't expose setRequestHandler, so we simulate request/
+        // response over notifications. Canonical method names live
+        // under `x-dispatch/` (owned by swarm-dispatch) — covers
+        // `spawn-agent`, `permissions.set`, `permissions.clear`, and
+        // any future additions. The legacy `dispatch/spawn-agent.response`
+        // is accepted for one release window so old swarms continue
+        // to work.
+        handleNotificationPairResponse(msg.params);
       } else if (typeof msg.method === 'string' && msg.method.startsWith('mail/')) {
         // Mail notifications — fire and forget
         try { getMailJsonRpc().handleRequest(msg as any); } catch { /* ignore */ }
+      } else if (msg.method === 'x-dispatch/thread') {
+        // Dispatch thread message from agent without inbox MCP tools.
+        // Hub routes to the coordination conversation via ensureDispatchConversation.
+        const params = (msg.params ?? {}) as Record<string, unknown>;
+        const dispatchId = typeof params.dispatch_id === 'string' ? params.dispatch_id : '';
+        const content = typeof params.content === 'string' ? params.content : '';
+        if (dispatchId && content) {
+          handleDispatchThreadMessage(dispatchId, content, swarmId, params).catch(() => {});
+        }
       } else if (msg.method === 'map/dispatch/reply') {
         // Dispatch reply from agent — fan out to the mail-transport listeners.
         // Verify from_agent_id is actually registered on the inbound swarm so a
@@ -372,6 +411,91 @@ function createNotificationInterceptor(
 }
 
 // ============================================================================
+// Dispatch Thread Message Handler
+// ============================================================================
+
+/**
+ * Handle `x-dispatch/thread` scope messages from agents that don't have
+ * agent-inbox MCP tools. The hub lazily creates the coordination conversation
+ * and adds the turn, then broadcasts to WS subscribers.
+ */
+async function handleDispatchThreadMessage(
+  dispatchId: string,
+  content: string,
+  swarmId: string,
+  params: Record<string, unknown>,
+): Promise<void> {
+  const dispatch = dispatchesDAL.findDispatchById(dispatchId);
+  if (!dispatch) return;
+
+  // Resolve sender identity: prefer explicit sender_agent_id, fall back
+  // to the current attempt's agent_id resolved through the inbox ID helper.
+  let senderAgentId = typeof params.sender_agent_id === 'string'
+    ? params.sender_agent_id
+    : undefined;
+  if (!senderAgentId) {
+    const currentAttempt = dispatch.attempts_history
+      .filter((a) => a.status === 'running')
+      .pop();
+    if (currentAttempt?.agent_id) {
+      senderAgentId = resolveInboxAgentId(swarmId, currentAttempt.agent_id);
+    }
+  }
+  if (!senderAgentId) senderAgentId = `unknown-agent-${swarmId}`;
+
+  // Resolve spec title + swarm name for conversation subject
+  const swarm = findSwarmById(dispatch.target_swarm_id);
+  const swarmName = swarm?.name ?? dispatch.target_swarm_id;
+  const specTitle = typeof params.spec_title === 'string'
+    ? params.spec_title
+    : `Spec ${dispatch.spec_id}`;
+
+  // Lazy-create conversation
+  const linkedTasks = dispatchesDAL.getDispatchLinkedTasks(dispatch.id);
+  const conversationId = await ensureDispatchConversation(
+    {
+      dispatchId: dispatch.id,
+      specId: dispatch.spec_id ?? '',
+      specResourceId: dispatch.spec_resource_id ?? '',
+      specTitle,
+      targetSwarmId: dispatch.target_swarm_id,
+      swarmName,
+      linkedTasks,
+      initiator: { type: dispatch.initiator_type, id: dispatch.initiator_id },
+      executorAgentId: senderAgentId,
+    },
+    { getMailJsonRpc },
+  );
+
+  // Add turn
+  const mailRpc = getMailJsonRpc();
+  const turnId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  await mailRpc.handleRequest({
+    jsonrpc: '2.0',
+    id: turnId,
+    method: 'mail/turn',
+    params: {
+      conversationId,
+      agentId: senderAgentId,
+      content,
+      contentType: 'text',
+    },
+  } as Parameters<typeof mailRpc.handleRequest>[0]);
+
+  // Broadcast to WS subscribers
+  broadcastToChannel('map:dispatches', {
+    type: 'dispatch.thread.turn',
+    data: {
+      dispatch_id: dispatch.id,
+      conversation_id: conversationId,
+      sender: senderAgentId,
+      content_preview: content.length > 200 ? content.slice(0, 200) + '...' : content,
+    },
+    timestamp: new Date().toISOString(),
+  } as Parameters<typeof broadcastToChannel>[1]);
+}
+
+// ============================================================================
 // WebSocket Handler
 // ============================================================================
 
@@ -392,27 +516,35 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
     const payload = message.payload as Record<string, unknown>;
     if (typeof payload.type !== 'string') return;
 
-    // Only handle task events
+    // Only handle task + context events
     const taskTypes = new Set(['task.created', 'task.assigned', 'task.status']);
-    if (!taskTypes.has(payload.type)) return;
+    const contextTypes = new Set(['context.created', 'context.updated']);
+    const isTask = taskTypes.has(payload.type);
+    const isContext = contextTypes.has(payload.type);
+    if (!isTask && !isContext) return;
 
-    // Resolve the OpenHive agent ID from the MAP message sender.
+    // Resolve the OpenHive agent ID + swarm ID from the MAP message sender.
     // message.from is the MAP session agent ID (a ULID assigned by MAPServer),
     // not the OpenHive swarmId or agentId. We need to find which inbound
     // connection this MAP agent belongs to, then use its OpenHive agentId.
+    // Context events additionally need the swarmId to look up the connection's
+    // default task graph (→ resource_id) in the broadcast.
     const mapFrom = typeof message.from === 'string' ? message.from : 'unknown';
     let resolvedAgentId = mapFrom;
+    let resolvedSwarmId: string | undefined;
 
     // Try direct lookup (message.from might be a swarmId)
     const directConn = getInbound(mapFrom);
     if (directConn) {
       resolvedAgentId = directConn.agentId;
+      resolvedSwarmId = directConn.swarmId;
     } else {
       // Search all connections — message.from might be a MAP session agent ID
       // or a registered agent name. Check both registeredAgents and the ULID match.
       for (const [, conn] of getAllInbound()) {
         if (conn.registeredAgents.has(mapFrom)) {
           resolvedAgentId = conn.agentId;
+          resolvedSwarmId = conn.swarmId;
           break;
         }
       }
@@ -425,6 +557,7 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
           for (const [, regAgent] of conn.registeredAgents) {
             if (regAgent.id === mapFrom || regAgent.name === mapFrom) {
               resolvedAgentId = conn.agentId;
+              resolvedSwarmId = conn.swarmId;
               break;
             }
           }
@@ -434,13 +567,19 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
         if (resolvedAgentId === mapFrom) {
           const allInbound = getAllInbound();
           if (allInbound.size === 1) {
-            resolvedAgentId = [...allInbound.values()][0].agentId;
+            const only = [...allInbound.values()][0];
+            resolvedAgentId = only.agentId;
+            resolvedSwarmId = only.swarmId;
           }
         }
       }
     }
 
-    handleMapTaskEvent(payload, resolvedAgentId);
+    if (isTask) {
+      handleMapTaskEvent(payload, resolvedAgentId);
+    } else if (isContext && resolvedSwarmId) {
+      handleMapContextEvent(payload, resolvedSwarmId, resolvedAgentId);
+    }
   });
 
   fastify.get('/ws/map', { websocket: true }, async (socket, request) => {
@@ -489,6 +628,10 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
 
       clearHeartbeatDebounce(sid);
       unregisterInbound(sid);
+      // Fail any pending notification-pair RPCs to this swarm fast,
+      // instead of waiting out their (default 30s) timeouts. Callers see
+      // a typed `NotificationPairTransportLost` error and can retry.
+      try { rejectPendingForSwarm(sid, 'swarm_ws_closed'); } catch { /* non-critical */ }
       try {
         if (!hasOutboundConnection(sid)) {
           updateSwarm(sid, { status: 'unreachable' });

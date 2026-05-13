@@ -5,7 +5,7 @@ import {
   Clock, Cpu, FileText, GitBranch, GitCommit, Hash,
   Info, MessageSquare, Send, User,
 } from 'lucide-react';
-import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants, useResumeSession } from '../hooks/useApi';
+import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants, useResumeSession, useRepo } from '../hooks/useApi';
 import { useDispatchList } from '../hooks/useDispatch';
 import { useSpec } from '../hooks/useSpecs';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
@@ -26,6 +26,14 @@ import { useSessionCapabilityResolver, sessionTarget } from '../lib/chat/resolve
 import { useOpenHiveAdapters } from '../adapters/openhive-adapters';
 import { sessionEventsToChatMessages } from '../lib/chat/session-events';
 import { useEnrichedUserTurns } from '../hooks/useEnrichedUserTurns';
+import { usePageContext } from '../components/chat-fab/usePageContext';
+import {
+  sessionContextItem,
+  conversationContextItem,
+  specContextItem,
+  dispatchContextItem,
+} from '../components/chat-fab/context-types';
+import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
 import clsx from 'clsx';
 
 // ============================================================================
@@ -482,32 +490,16 @@ export function SessionDetail() {
     return undefined;
   })();
 
-  if (resourceLoading) return <PageLoader />;
-
-  if (!resource) {
-    return (
-      <div className="px-4 py-12 text-center">
-        <p style={{ color: 'var(--color-text-muted)' }}>Session not found.</p>
-      </div>
-    );
-  }
-
+  // Compute sourceSwarmId from already-fetched hooks so the dispatch/spec
+  // lineage hooks below can run unconditionally — placing them after the
+  // early returns violates rules-of-hooks (hook count must be stable across
+  // renders).
   const checkpoints = checkpointsData?.data ?? [];
   const total = checkpointsData?.total ?? 0;
   const meta = (resource?.metadata ?? {}) as Record<string, unknown>;
   const sourceSwarmId = checkpoints[0]?.source_swarm_id
     ?? (meta.source_swarm_id as string)
     ?? null;
-  // Existing ACP stream/session from create-acp endpoint (avoids duplicate stream creation).
-  // URL search params survive page reloads; metadata is the async fallback.
-  const existingAcpStreamId = searchParams.get('streamId') ?? (meta.acpStreamId as string) ?? null;
-  const existingAcpSessionId = searchParams.get('sessionId') ?? (meta.sessionId as string) ?? null;
-  // Provider session ID (Claude Code's UUID) enables the macro-agent to recover
-  // history from its on-disk JSONL via ACP loadSession._meta, even across its
-  // own process restarts.
-  const providerSessionId = (meta.provider_session_id as string) ?? null;
-  // Enable trajectory/chat for sessions with checkpoints OR eagerly-created ACP sessions
-  const hasTrajectorySupport = total > 0 || !!sourceSwarmId;
 
   // Upstream lineage heuristic: if this session was spawned by a dispatch,
   // the dispatch on the same swarm will list this session's id. Small query
@@ -524,6 +516,104 @@ export function SessionDetail() {
     sourceDispatch?.spec_resource_id,
     sourceDispatch?.spec_id,
   );
+
+  // Declare chat context items. Unconditional — runs before early returns
+  // so hook order is stable. Primary is the session itself; source spec +
+  // dispatch + linked conversation ride along when present.
+  const mailConversationId = resource?.metadata
+    ? ((resource.metadata as Record<string, unknown>).mail_conversation_id as
+        | string
+        | undefined)
+    : undefined;
+  const firstCheckpoint = checkpoints[0];
+  const sourceSpec = sourceSpecResp?.spec;
+  usePageContext(
+    () => {
+      if (!resource || !id) return [];
+      const rmeta = (resource.metadata ?? {}) as Record<string, unknown>;
+      const items: ChatFabContextItem[] = [
+        sessionContextItem(
+          {
+            id,
+            name: resource.name,
+            swarm_id: sourceSwarmId ?? undefined,
+            project: (rmeta.project as string | undefined) ?? undefined,
+            project_path:
+              (rmeta.project_path as string | undefined) ?? undefined,
+            branch:
+              firstCheckpoint?.branch ?? (rmeta.branch as string | undefined),
+            first_prompt: (rmeta.first_prompt as string | undefined) ?? undefined,
+            state: (rmeta.state as string | undefined) ?? undefined,
+            checkpoint_count: total,
+            owner_agent_id: resource.owner_agent_id,
+            description: resource.description ?? null,
+          },
+          { primary: true },
+        ),
+      ];
+      if (mailConversationId) {
+        items.push(
+          conversationContextItem({
+            id: mailConversationId,
+            swarm_id: sourceSwarmId ?? undefined,
+          }),
+        );
+      }
+      if (sourceSpec) {
+        items.push(
+          specContextItem({
+            id: sourceSpec.id,
+            resource_id: sourceSpec.resource_id,
+            title: sourceSpec.title,
+            content: sourceSpec.content ?? '',
+          }),
+        );
+      }
+      if (sourceDispatch) {
+        items.push(
+          dispatchContextItem({
+            id: sourceDispatch.id,
+            spec_id: sourceDispatch.spec_id,
+            target_swarm_id: sourceDispatch.target_swarm_id,
+            status: sourceDispatch.status,
+            created_at: sourceDispatch.created_at,
+          }),
+        );
+      }
+      return items;
+    },
+    [
+      resource,
+      id,
+      sourceSwarmId,
+      firstCheckpoint,
+      total,
+      mailConversationId,
+      sourceSpec,
+      sourceDispatch,
+    ],
+  );
+
+  if (resourceLoading) return <PageLoader />;
+
+  if (!resource) {
+    return (
+      <div className="px-4 py-12 text-center">
+        <p style={{ color: 'var(--color-text-muted)' }}>Session not found.</p>
+      </div>
+    );
+  }
+
+  // Existing ACP stream/session from create-acp endpoint (avoids duplicate stream creation).
+  // URL search params survive page reloads; metadata is the async fallback.
+  const existingAcpStreamId = searchParams.get('streamId') ?? (meta.acpStreamId as string) ?? null;
+  const existingAcpSessionId = searchParams.get('sessionId') ?? (meta.sessionId as string) ?? null;
+  // Provider session ID (Claude Code's UUID) enables the macro-agent to recover
+  // history from its on-disk JSONL via ACP loadSession._meta, even across its
+  // own process restarts.
+  const providerSessionId = (meta.provider_session_id as string) ?? null;
+  // Enable trajectory/chat for sessions with checkpoints OR eagerly-created ACP sessions
+  const hasTrajectorySupport = total > 0 || !!sourceSwarmId;
 
   return (
     <>
@@ -547,6 +637,7 @@ export function SessionDetail() {
                   Awaiting input
                 </span>
               )}
+              <LinkedRepoChip resource={resource} />
             </div>
             {stats && (
               <div className="flex items-center gap-2.5 mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
@@ -726,5 +817,31 @@ function SessionLearningTab({ sessionId }: { sessionId: string }) {
         </Link>
       </div>
     </div>
+  );
+}
+
+/**
+ * Inline chip linking a session to the repo it was opportunistically
+ * stamped against (slice 8 — `metadata.repo_id` set by trajectory bootstrap
+ * when the session's checkpoints carry `gitRemoteUrl + projectPath`).
+ * Renders nothing if the session has no `repo_id` or the repo isn't
+ * visible to the viewer.
+ */
+function LinkedRepoChip({ resource }: { resource: { metadata: unknown } }) {
+  const meta = (resource.metadata ?? {}) as { repo_id?: string };
+  const { data } = useRepo(meta.repo_id);
+  if (!meta.repo_id || !data?.repo) return null;
+  const repoMeta = (data.repo.metadata ?? {}) as { name?: string };
+  const label = repoMeta.name ?? data.repo.name;
+  return (
+    <Link
+      to={`/repos/${meta.repo_id}`}
+      className="text-2xs px-1.5 py-0.5 rounded inline-flex items-center gap-1 hover:bg-honey-500/20 transition-colors"
+      style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }}
+      title="Repo this session is linked to"
+    >
+      <GitBranch className="w-2.5 h-2.5" />
+      {label}
+    </Link>
   );
 }

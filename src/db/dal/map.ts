@@ -23,6 +23,7 @@ import type {
   MapNodePublic,
   FederationConnectionStatus,
 } from '../../map/types.js';
+import type { WorkspacePolicy } from '../../types.js';
 
 // ============================================================================
 // Helpers
@@ -128,6 +129,54 @@ export function findSwarmByEndpoint(endpoint: string): MapSwarm | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM map_swarms WHERE map_endpoint = ?').get(endpoint) as Record<string, unknown> | undefined;
   return row ? rowToSwarm(row) : null;
+}
+
+/**
+ * Read just the workspace_policy JSON for a swarm.
+ *
+ * Returns `null` for swarms with no policy set (legacy rows or operators
+ * who didn't pass `workspace_policy` at spawn). The handler treats `null`
+ * as `mode: 'open'` for backwards compatibility.
+ *
+ * Kept as a separate helper from `findSwarmById` so the policy gate doesn't
+ * load the whole MapSwarm row (and so the handler doesn't need to know
+ * about MapSwarm at all).
+ */
+export function findSwarmWorkspacePolicy(swarmId: string): WorkspacePolicy | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    'SELECT workspace_policy FROM map_swarms WHERE id = ?',
+  ).get(swarmId) as { workspace_policy: string | null } | undefined;
+  if (!row?.workspace_policy) return null;
+  try {
+    // Trust the schema validator that wrote the row — `superRefine` in
+    // SpawnSwarmSchema rejects malformed policies before they land here.
+    return JSON.parse(row.workspace_policy) as WorkspacePolicy;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Update the workspace_policy for a swarm. Pass `null` to clear (revert
+ * to "open" by absence of a row). Returns true if the row was found and
+ * updated, false if the swarm doesn't exist.
+ *
+ * Caller is expected to have validated the policy shape with
+ * `WorkspacePolicySchema` from `src/api/routes/swarm-hosting.ts` so the
+ * mode-specific `superRefine` rules apply uniformly across the
+ * spawn-time path and the post-spawn PATCH path.
+ */
+export function updateSwarmWorkspacePolicy(
+  swarmId: string,
+  policy: WorkspacePolicy | null,
+): boolean {
+  const db = getDatabase();
+  const json = policy === null ? null : JSON.stringify(policy);
+  const result = db.prepare(
+    "UPDATE map_swarms SET workspace_policy = ?, updated_at = datetime('now') WHERE id = ?",
+  ).run(json, swarmId);
+  return result.changes > 0;
 }
 
 export function updateSwarm(id: string, input: UpdateSwarmInput): MapSwarm | null {
@@ -422,6 +471,52 @@ export function createNode(input: RegisterNodeInput): MapNode {
   );
 
   return findNodeById(id)!;
+}
+
+/**
+ * Idempotently ensure a `map_nodes` row exists with the given id. Used by
+ * paths (like the workspace handler + trajectory bootstrap) where
+ * `ctx.agentId` is treated as the projected node id but no prior REST-style
+ * `createNode` registered the row. Returns silently if a row already
+ * exists for this id.
+ *
+ * Uses `INSERT OR IGNORE` so concurrent callers don't race; the swarm FK
+ * still enforces that `swarm_id` is valid.
+ *
+ * **Partial row caveat.** Rows inserted via this shim populate only:
+ * `id`, `swarm_id`, `map_agent_id`, `state='registered'`, `presence='online'`,
+ * and (if provided) `name` / `role`. Other columns —
+ * `capabilities`, `scopes`, `visibility`, `metadata`, `tags`, `description` —
+ * are NULL because the shim doesn't have the registration payload that
+ * the explicit `createNode` path receives.
+ *
+ * Consumers that need the richer fields (e.g. UI agent panels) should
+ * fall back to `connection-registry`'s `RegisteredAgent` map for
+ * authoritative per-agent capabilities. The shim's job is FK satisfaction,
+ * not full projection.
+ *
+ * If the broader `map/agents/register` path ever projects into `map_nodes`
+ * directly, this shim becomes a no-op — see CLAUDE.md "Repos and Workspaces"
+ * pending follow-ups.
+ */
+export function ensureNodeWithId(input: {
+  id: string;
+  swarm_id: string;
+  map_agent_id?: string;
+  name?: string;
+  role?: string;
+}): void {
+  const db = getDatabase();
+  db.prepare(`
+    INSERT OR IGNORE INTO map_nodes (id, swarm_id, map_agent_id, name, role, state, presence)
+    VALUES (?, ?, ?, ?, ?, 'registered', 'online')
+  `).run(
+    input.id,
+    input.swarm_id,
+    input.map_agent_id ?? input.id,
+    input.name ?? null,
+    input.role ?? null,
+  );
 }
 
 export function findNodeById(id: string): MapNode | null {

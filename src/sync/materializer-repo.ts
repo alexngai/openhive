@@ -36,6 +36,15 @@ export interface MaterializerRepository {
 
   // Resources
   findResourceByOrigin(originInstanceId: string, originResourceId: string): { id: string; resource_type: string; updated_at: string | null } | null;
+  /**
+   * Find a resource by its `(resource_type, canonical_url)` pair. Used by
+   * mesh lifecycle events (`resource.redacted` / `.archived` / `.merged`)
+   * which travel by canonical identity rather than origin id, since the
+   * receiver may have learned of the resource from a non-origin hub.
+   */
+  findResourceByCanonicalUrl(resourceType: string, canonicalUrl: string): { id: string; resource_type: string; metadata: string | null; status: string } | null;
+  /** Update lifecycle status + optional metadata patch. */
+  updateResourceStatus(id: string, status: string, metadata?: string): void;
   upsertRemoteResource(input: {
     id: string; resource_type: string; name: string; description: string | null;
     git_remote_url: string; visibility: string; owner_agent_id: string;
@@ -157,6 +166,24 @@ export class SQLiteMaterializerRepository implements MaterializerRepository {
     return this.db.prepare(
       'SELECT id, resource_type, updated_at FROM syncable_resources WHERE origin_instance_id = ? AND origin_resource_id = ?'
     ).get(originInstanceId, originResourceId) as { id: string; resource_type: string; updated_at: string | null } | null;
+  }
+
+  findResourceByCanonicalUrl(resourceType: string, canonicalUrl: string) {
+    return this.db.prepare(
+      'SELECT id, resource_type, metadata, status FROM syncable_resources WHERE resource_type = ? AND git_remote_url = ? LIMIT 1'
+    ).get(resourceType, canonicalUrl) as { id: string; resource_type: string; metadata: string | null; status: string } | null;
+  }
+
+  updateResourceStatus(id: string, status: string, metadata?: string) {
+    if (metadata !== undefined) {
+      this.db.prepare(
+        `UPDATE syncable_resources SET status = ?, metadata = ?, updated_at = datetime('now') WHERE id = ?`
+      ).run(status, metadata, id);
+    } else {
+      this.db.prepare(
+        `UPDATE syncable_resources SET status = ?, updated_at = datetime('now') WHERE id = ?`
+      ).run(status, id);
+    }
   }
 
   upsertRemoteResource(input: {

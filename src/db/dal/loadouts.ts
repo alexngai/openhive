@@ -53,6 +53,12 @@ export function getLoadout(id: string): LoadoutResource | null {
   return r as LoadoutResource;
 }
 
+export function getLoadoutByName(name: string, ownerAgentId: string): LoadoutResource | null {
+  const r = resources.findResourceByName(ownerAgentId, 'loadout', name);
+  if (!r || r.resource_type !== 'loadout') return null;
+  return r as LoadoutResource;
+}
+
 export function getLoadoutContent(loadout: LoadoutResource): LoadoutContent | null {
   const meta = loadout.metadata as { content?: LoadoutContent } | null;
   return meta?.content ?? null;

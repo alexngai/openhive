@@ -7,6 +7,9 @@ import { ChatFab, ChatSidebar } from '../chat-fab/ChatFab';
 // Routes that need full-width layout (no max-width constraint)
 const FULL_WIDTH_ROUTES = ['/terminal', '/tasks', '/threads', '/changes'];
 const FULL_WIDTH_EXACT = ['/'];
+// Spec detail (`/specs/:resourceId/:specId`) needs full width for the
+// TOC + content + dispatch sidebar layout; spec list and spec create do not.
+const FULL_WIDTH_PATTERNS = [/^\/specs\/[^/]+\/[^/]+/];
 
 // Visual editors (team/loadout/etc.) want the full main-area viewport —
 // they manage their own height/width internally and break when wrapped
@@ -19,7 +22,8 @@ export function Layout() {
   const location = useLocation();
   const isFullWidth = FULL_WIDTH_ROUTES.some(r => location.pathname.startsWith(r))
     || FULL_WIDTH_EXACT.includes(location.pathname)
-    || isEditorRoute(location.pathname);
+    || isEditorRoute(location.pathname)
+    || FULL_WIDTH_PATTERNS.some(p => p.test(location.pathname));
 
   return (
     <div className="h-screen flex overflow-hidden">

@@ -22,7 +22,14 @@ import { resolveLocalPath } from '../api/routes/_resource-helpers.js';
 import { daemonAppendTaskFiles, resolveDaemonSocket } from './task-daemon-client.js';
 import { createTrajectoryCheckpoint } from '../db/dal/trajectory-checkpoints.js';
 import { broadcastToChannel } from '../realtime/index.js';
-import { updateSwarm, findNodeBySwarmAndAgentId } from '../db/dal/map.js';
+import { updateSwarm, findNodeBySwarmAndAgentId, ensureNodeWithId, findSwarmWorkspacePolicy } from '../db/dal/map.js';
+import * as repos from '../db/dal/repos.js';
+import * as workspaces from '../db/dal/workspaces.js';
+import { getDatabase } from '../db/index.js';
+import { broadcastWorkspaceLifecycleEvent } from '../realtime/workspace-events.js';
+import { enforceSwarmWorkspacePolicyForUrls } from './workspace-policy.js';
+import { PolicyViolationError } from 'agent-workspace/kinds/repo';
+import { getAggregateCapabilities } from './connection-registry.js';
 import { mapHubEvents } from './service.js';
 import { fetchTranscriptFromSwarm } from './trajectory-content.js';
 import { isSessionStorageInitialized, getSessionStorage } from '../sessions/storage/index.js';
@@ -124,7 +131,74 @@ function handleCheckpoint(
     } catch { /* non-critical */ }
   }
 
-  // Emit for SwarmCraft bridge (after enrichment so projectPath is available)
+  // ── Repo bootstrap (capability-gated) ────────────────────────────────
+  // Capability-gated lazy upsert: agents that declared workspace.declare
+  // but never explicitly called RepoClient.declare still appear in the
+  // repo list once they start sending checkpoints. See
+  // `agent-workspace/docs/design/agent-integration.md` "Trajectory-
+  // bootstrap interaction" — and the Build-Order step 5 in
+  // CLAUDE.md "Repos and Workspaces".
+  // Fire-and-forget: never blocks checkpoint persistence.
+  if (gitRemoteUrl && projectPath) {
+    try {
+      const bootstrap = bootstrapRepoFromCheckpoint({
+        swarmId,
+        agentId,
+        gitRemoteUrl,
+        projectPath,
+        branch: checkpoint.branch as string | undefined,
+        gitCommitHash,
+        agentName: (checkpoint.agent as string | undefined) ?? undefined,
+      });
+      // Slice 8 prerequisite: stamp `metadata.repo_id` on the session
+      // resource so future "show all sessions for this repo" queries are
+      // a one-line FK lookup. Idempotent — overwrites with the same value
+      // on every checkpoint. Skipped if bootstrap was capability-gated
+      // off or the swarm row is missing.
+      if (bootstrap) {
+        // Stamp metadata.repo_id on the session resource (slice 8 prereq).
+        try {
+          const sessionMeta = (findResourceById(resourceId)?.metadata as Record<string, unknown>) || {};
+          if (sessionMeta.repo_id !== bootstrap.repoId) {
+            updateResource(resourceId, {
+              metadata: { ...sessionMeta, repo_id: bootstrap.repoId },
+            });
+          }
+        } catch { /* non-critical — repo_id linkage is advisory */ }
+
+        // Path A — when the same checkpoint also carries `task_ref`, stamp
+        // metadata.repo_id on that task resource too. Idempotent: skipped
+        // if the task already has the same repo_id, and silently no-ops if
+        // the task resource doesn't exist or isn't a task.
+        const taskRef = meta?.task_ref as { resource_id?: string; node_id?: string } | undefined;
+        if (taskRef?.resource_id) {
+          try {
+            const taskResource = findResourceById(taskRef.resource_id);
+            if (taskResource && taskResource.resource_type === 'task') {
+              const taskMeta = (taskResource.metadata as Record<string, unknown>) || {};
+              if (taskMeta.repo_id !== bootstrap.repoId) {
+                updateResource(taskRef.resource_id, {
+                  metadata: { ...taskMeta, repo_id: bootstrap.repoId },
+                });
+              }
+            }
+          } catch { /* non-critical — repo_id linkage is advisory */ }
+        }
+      }
+    } catch { /* non-critical — checkpoint succeeds regardless */ }
+  }
+
+  // Emit for SwarmCraft bridge (after enrichment so projectPath is available).
+  //
+  // CONTRACT: `gitRemoteUrl` on this payload is the raw value from the
+  // checkpoint, NOT gated by `workspace_policy`. Subscribers MUST NOT
+  // create workspace bindings (or any other repo-resource side effect)
+  // from this field — the canonical binding-creation path is
+  // `bootstrapRepoFromCheckpoint` above, which is policy-gated. Using
+  // `gitRemoteUrl` for read-only display (agent panels, cards) is fine.
+  // If a future consumer needs binding creation, route it back through
+  // `bootstrapRepoFromCheckpoint` so the policy gate stays the only
+  // declare/bootstrap codepath.
   mapHubEvents.emit('trajectory_checkpoint', {
     session_resource_id: resourceId,
     checkpoint_id: checkpointId,
@@ -221,6 +295,110 @@ function handleCheckpoint(
     created,
     checkpoint_id: checkpointId,
   };
+}
+
+// ============================================================================
+// Repo Bootstrap (capability-gated)
+// ============================================================================
+
+interface BootstrapInput {
+  swarmId: string;
+  agentId: string;
+  gitRemoteUrl: string;
+  projectPath: string;
+  branch?: string;
+  gitCommitHash?: string;
+  /** Agent self-reported name from the checkpoint, surfaced into the
+   *  shim-inserted `map_nodes` row so UI panels don't render "Unknown". */
+  agentName?: string;
+}
+
+/**
+ * Lazily upsert a repo + workspace binding from a trajectory checkpoint.
+ *
+ * Gated on `workspace.declare.enabled === true` in the connection's
+ * aggregated capabilities. Idempotent at every step: repeat checkpoints
+ * for the same (agent, repo, projectPath) just refresh branch/HEAD on
+ * the existing binding rather than creating duplicates.
+ *
+ * Owner-agent resolution mirrors `OpenHiveRepoHandler`: `map_swarms.
+ * owner_agent_id` is the source of truth for repo ownership; the
+ * connection's agentId can't own an `agents`-table-backed resource.
+ */
+// Exported so the policy gate can be unit-tested in isolation. The
+// production caller is `handleTrajectoryRequest` below; tests should
+// import from this exported seam rather than going through the full
+// trajectory-checkpoint flow.
+export function bootstrapRepoFromCheckpoint(input: BootstrapInput): { repoId: string } | null {
+  const { swarmId, agentId, gitRemoteUrl, projectPath, branch, gitCommitHash, agentName } = input;
+
+  // Capability check — aggregate across all registered agents on the swarm.
+  const caps = getAggregateCapabilities(swarmId) ?? {};
+  const ws = caps.workspace as { declare?: { enabled?: boolean } } | undefined;
+  if (ws?.declare?.enabled !== true) return null;
+
+  // Swarm policy gate. The bootstrap path creates a workspace binding from
+  // checkpoint metadata — the same effect as an explicit `repo.declare`
+  // call — so the same `workspace_policy` must apply. Without this gate,
+  // a pinned-mode swarm could exfiltrate the binding via checkpoint
+  // metadata (`gitRemoteUrl` field) bypassing the explicit-declare
+  // gate in `OpenHiveRepoHandler.onDeclare`.
+  //
+  // Silently skip on policy violation rather than throwing — this code
+  // path runs on every checkpoint and a noisy throw would surface as a
+  // checkpoint-write failure to the agent. The cap-disabled branch above
+  // uses the same silent-skip shape.
+  try {
+    const policy = findSwarmWorkspacePolicy(swarmId);
+    enforceSwarmWorkspacePolicyForUrls(policy, [gitRemoteUrl]);
+  } catch (err) {
+    if (err instanceof PolicyViolationError) return null;
+    throw err;
+  }
+
+  // Resolve repo owner from the swarm record (same pattern as workspace-handler).
+  const db = getDatabase();
+  const ownerRow = db.prepare(
+    'SELECT owner_agent_id FROM map_swarms WHERE id = ?',
+  ).get(swarmId) as { owner_agent_id: string } | undefined;
+  if (!ownerRow) return null; // swarm not in DB — nothing to attribute the repo to
+
+  // Upsert the repo. `trajectory_inferred` origin distinguishes from agents
+  // that explicitly call declare; future paths can prefer explicit declares.
+  const repo = repos.upsertRepoFromRemoteUrl(gitRemoteUrl, {
+    origin: 'trajectory_inferred',
+    visibility: 'hub_local',
+    owner_agent_id: ownerRow.owner_agent_id,
+  });
+
+  // Workspace FK requires a map_nodes row keyed on agentId. Forward the
+  // checkpoint's agent name so UI agent panels don't render "Unknown" for
+  // shim-inserted rows.
+  ensureNodeWithId({
+    id: agentId,
+    swarm_id: swarmId,
+    map_agent_id: agentId,
+    ...(agentName !== undefined && { name: agentName }),
+  });
+
+  // Upsert the per-agent binding. Branch + HEAD refresh on subsequent
+  // checkpoints for the same (agent, repo, path) triple.
+  const binding = workspaces.upsertWorkspace({
+    repo_id: repo.id,
+    agent_id: agentId,
+    swarm_id: swarmId,
+    local_path: projectPath,
+    visibility: 'hub_local',
+    ...(branch !== undefined && { current_branch: branch }),
+    ...(gitCommitHash !== undefined && { head_sha: gitCommitHash }),
+  });
+
+  broadcastWorkspaceLifecycleEvent(repo.id, {
+    type: 'workspace_added',
+    data: { workspace: binding },
+  });
+
+  return { repoId: repo.id };
 }
 
 // ============================================================================

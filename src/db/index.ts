@@ -37,9 +37,20 @@ import {
   MIGRATION_V42_DROP_SOCIAL_TABLES,
   MIGRATION_V43_AGENT_CAPABILITIES,
   MIGRATION_V44_GRANT_VERSION,
-  MIGRATION_V45_TEAM_TEMPLATE_LOADOUT_KINDS,
-  MIGRATION_V46_DISPATCH_LOADOUT_REFS,
-  MIGRATION_V47_NULLABLE_SPEC_ON_DISPATCH,
+  MIGRATION_V45_DISPATCH_LINKED_TASKS,
+  MIGRATION_V46_RESOURCE_TYPES_EXTEND,
+  MIGRATION_V47_DISPATCH_ACP_LIFECYCLE,
+  MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE,
+  MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
+  MIGRATION_V50_HOSTED_SWARM_KIND,
+  MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK,
+  MIGRATION_V52_REPOS_AND_WORKSPACES,
+  MIGRATION_V53_RESOURCE_STATUS,
+  MIGRATION_V54_DISPATCH_REPO,
+  MIGRATION_V55_DISPATCH_CONVERSATION,
+  MIGRATION_V56_SCHEDULES,
+  MIGRATION_V57_DISPATCH_LOADOUT_REFS,
+  MIGRATION_V58_NULLABLE_SPEC_ON_DISPATCH,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -139,6 +150,9 @@ export function initDatabase(
     db.exec(MIGRATION_V19_EVENT_ROUTING);
     // Create coordination tables
     db.exec(MIGRATION_V22_COORDINATION);
+    // Create workspaces table + map_swarms.workspace_policy for fresh installs.
+    // (Existing DBs get this via runMigrations at V52.)
+    db.exec(MIGRATION_V52_REPOS_AND_WORKSPACES);
     // Seed default data
     db.exec(SEED_DATA);
   } else if (versionRow.version < SCHEMA_VERSION) {
@@ -301,16 +315,61 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // non-destructive column so existing installs don't need to drop it.
   // See docs/RFC_AGENT_CAPABILITIES.md §"v3→v4 migration".
   44: MIGRATION_V44_GRANT_VERSION,
-  // Version 45: widen syncable_resources.resource_type CHECK constraint to
-  // admit 'playbook' (latent fix), 'team_template', and 'loadout' for the
-  // openteams MAP-sync integration.
-  45: MIGRATION_V45_TEAM_TEMPLATE_LOADOUT_KINDS,
-  // Version 46: dispatches.loadout_bundle_id / team_bundle_id / role columns
-  // for the openteams cross-runtime spawn flow (Layer 3 of the integration).
-  46: MIGRATION_V46_DISPATCH_LOADOUT_REFS,
-  // Version 47: relax NOT NULL on dispatches.spec_resource_id + spec_id
-  // for Layer 4 spec-less openteams.spawn flows.
-  47: MIGRATION_V47_NULLABLE_SPEC_ON_DISPATCH,
+  // Version 45: dispatch_linked_tasks join table — dispatch → opentasks task refs
+  // captured at creation time. Drives advance-on-start + cascade artifact enrichment.
+  45: MIGRATION_V45_DISPATCH_LINKED_TASKS,
+  // Version 46: Extend syncable_resources.resource_type CHECK to admit
+  // 'playbook', 'team_template', and 'loadout'.
+  46: MIGRATION_V46_RESOURCE_TYPES_EXTEND,
+  // Version 47: Per-dispatch ACP lifecycle hint column on dispatches.
+  // Transport-level concern; replaces the spec-metadata smell where
+  // `acp_lifecycle` was being read off opentasks task content.
+  47: MIGRATION_V47_DISPATCH_ACP_LIFECYCLE,
+  // Version 48: Per-dispatch mail lifecycle hint column on dispatches.
+  // Mirrors V47 — "fresh" forces sidecar routing, "reuse" lets
+  // prefer-route pick a non-busy long-lived worker.
+  48: MIGRATION_V48_DISPATCH_MAIL_LIFECYCLE,
+  // Version 49: Persist loadout resolution result on dispatches
+  // (loadout_ref, loadout_status, loadout_error). Powers the post-refresh
+  // detail UI panel and surfaces materialization failures durably, not
+  // just over the live WS event.
+  49: MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
+  // Version 50: hosted_swarms.kind — generalize the spawn pipeline beyond
+  // OpenSwarm. Existing rows default to 'openswarm'. See
+  // docs/HOSTED_SWARM_KINDS_DESIGN.md.
+  50: MIGRATION_V50_HOSTED_SWARM_KIND,
+  // Version 51: Drop the kind CHECK constraint so new kinds (codex, gemini,
+  // …) can be added without a DB migration. Validation moves to Zod at the
+  // API layer + the HostedSwarmKind union type.
+  51: MIGRATION_V51_HOSTED_SWARM_KIND_OPEN_CHECK,
+  // Version 52: Repos as syncable resources + per-agent workspace bindings.
+  // (Renumbered from V50 due to merge collision.) Extends
+  // syncable_resources.resource_type CHECK with 'repo', adds the local-only
+  // workspaces table, and adds map_swarms.workspace_policy JSON column. See
+  // CLAUDE.md "Repos and Workspaces".
+  52: MIGRATION_V52_REPOS_AND_WORKSPACES,
+  // Version 53: syncable_resources.status column for mesh-level lifecycle
+  // events (resource.redacted / .archived / .merged) per slice 5b.
+  // (Renumbered from V51.)
+  53: MIGRATION_V53_RESOURCE_STATUS,
+  // Version 54: Per-dispatch repo targeting columns (repo_id, canonical_url,
+  // branch, commit_sha, clone_policy, clone_path). Dispatch body is the
+  // primary source; spec metadata is a fallback for repo_id only.
+  54: MIGRATION_V54_DISPATCH_REPO,
+  // Version 55: Nullable conversation_id on dispatches for dispatch inbox
+  // threads. Written lazily on first coordination message.
+  55: MIGRATION_V55_DISPATCH_CONVERSATION,
+  // Version 56: Schedules table — swarm-dispatch scheduler integration.
+  56: MIGRATION_V56_SCHEDULES,
+  // Version 57: dispatches.loadout_bundle_id / team_bundle_id / role columns
+  // for the openteams cross-runtime spawn flow. (Renumbered from V46 due to
+  // merge collision; the original V46_RESOURCE_TYPES_EXTEND already widened
+  // the resource_type CHECK so the openteams V45 rebuild migration was
+  // dropped — only the dispatch-level columns survived the rename.)
+  57: MIGRATION_V57_DISPATCH_LOADOUT_REFS,
+  // Version 58: Relax NOT NULL on dispatches.spec_resource_id + spec_id
+  // for Layer 4 spec-less openteams.spawn flows. (Renumbered from V47.)
+  58: MIGRATION_V58_NULLABLE_SPEC_ON_DISPATCH,
 };
 
 /** Get the SQL for a specific migration version.
@@ -389,11 +448,28 @@ function repairSchema(database: Database.Database): void {
     "ALTER TABLE dispatches ADD COLUMN attempt INTEGER DEFAULT 0",
     "ALTER TABLE dispatches ADD COLUMN turn_count INTEGER DEFAULT 0",
     "ALTER TABLE dispatches ADD COLUMN attempts_history TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE dispatches ADD COLUMN loadout_ref TEXT",
+    "ALTER TABLE dispatches ADD COLUMN loadout_status TEXT",
+    "ALTER TABLE dispatches ADD COLUMN loadout_error TEXT",
     "ALTER TABLE map_nodes ADD COLUMN presence TEXT NOT NULL DEFAULT 'offline'",
     "CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence)",
     "ALTER TABLE agents ADD COLUMN capabilities TEXT",
     "ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0",
-    // V46 — openteams loadout refs on dispatches. Mirrored here so fresh
+    "ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'openswarm'",
+    "ALTER TABLE syncable_resources ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+    "CREATE INDEX IF NOT EXISTS idx_syncable_resources_status ON syncable_resources(status)",
+    "ALTER TABLE dispatches ADD COLUMN repo_id TEXT",
+    "ALTER TABLE dispatches ADD COLUMN canonical_url TEXT",
+    "ALTER TABLE dispatches ADD COLUMN branch TEXT",
+    "ALTER TABLE dispatches ADD COLUMN commit_sha TEXT",
+    "ALTER TABLE dispatches ADD COLUMN clone_policy TEXT DEFAULT 'none'",
+    "ALTER TABLE dispatches ADD COLUMN clone_path TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_dispatches_repo ON dispatches(repo_id)",
+    // V56 schedules table — repair so a partially-migrated DB still gets
+    // the pause_reason column even if CREATE TABLE IF NOT EXISTS was a
+    // no-op (table existed in an older shape).
+    "ALTER TABLE schedules ADD COLUMN pause_reason TEXT",
+    // V57 — openteams loadout refs on dispatches. Mirrored here so fresh
     // installs (which skip migrations and jump straight to SCHEMA_VERSION)
     // still pick up the columns. Idempotent — ignored on existing installs.
     "ALTER TABLE dispatches ADD COLUMN loadout_bundle_id TEXT",

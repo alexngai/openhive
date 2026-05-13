@@ -4,7 +4,7 @@ import {
   Activity, ChevronDown, ChevronRight, Clock, Cpu, FileText, Loader2, Mail,
   Search, User, Users,
 } from 'lucide-react';
-import { useSessionsList, useSessionsInfinite, useMapSwarms, useMailConversations } from '../hooks/useApi';
+import { useSessionsList, useSessionsInfinite, useMapSwarms, useMailConversations, useHostedSwarms } from '../hooks/useApi';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { useSubscribe, useWSEvent } from '../hooks/useWebSocket';
 import { useQueryClient } from '@tanstack/react-query';
@@ -14,7 +14,9 @@ import { AgentAvatar } from '../components/common/AgentAvatar';
 import { useSessionAttentionStore } from '../stores/session-attention';
 import { SessionDetail } from './SessionDetail';
 import { MailThreadView } from '../components/sessions/MailThreadView';
-import type { SessionListItem, MapSwarm, MailConversation } from '../lib/api';
+import { HostedChat } from '../components/hosted-chat/HostedChat';
+import { Link } from 'react-router-dom';
+import type { SessionListItem, MapSwarm, MailConversation, HostedSwarm } from '../lib/api';
 
 // ============================================================================
 // Constants
@@ -27,9 +29,9 @@ const STALE_MARGIN_MS = 10 * 60 * 1000; // 10 minutes
 // Thread model — unifies sessions + mail conversations
 // ============================================================================
 
-type ThreadFlavor = 'session' | 'mail';
+type ThreadFlavor = 'session' | 'mail' | 'dispatch' | 'hosted-chat';
 
-type ThreadStatus = 'live' | 'recent' | 'idle' | 'mail-active' | 'mail-completed';
+type ThreadStatus = 'live' | 'recent' | 'idle' | 'mail-active' | 'mail-completed' | 'hosted-running';
 
 interface Thread {
   /** Underlying data id (session resource id or mail conversation id) */
@@ -94,12 +96,17 @@ function sessionToThread(
 }
 
 function mailToThread(conv: MailConversation): Thread {
+  const isDispatchThread = conv.scope === 'dispatch-thread';
   const status: ThreadStatus = conv.status === 'active' ? 'mail-active' : 'mail-completed';
+  // Dispatch threads link to their dispatch detail page instead of the mail view
+  const dispatchId = isDispatchThread
+    ? (conv.metadata?.dispatch_id as string | undefined)
+    : undefined;
   return {
     id: conv.id,
-    flavor: 'mail',
-    to: `/threads/mail/${conv.id}`,
-    title: conv.subject || 'Untitled conversation',
+    flavor: isDispatchThread ? 'dispatch' : 'mail',
+    to: dispatchId ? `/dispatch/${dispatchId}` : `/threads/mail/${conv.id}`,
+    title: conv.subject || (isDispatchThread ? 'Dispatch thread' : 'Untitled conversation'),
     description: conv.participants.map((p) => p.agent_id).join(', ') || null,
     status,
     lastActivityAt: conv.updated_at,
@@ -128,12 +135,13 @@ const STATUS_CHIP: Record<ThreadStatus, { label: string; cls: string }> = {
 // Filter chips
 // ============================================================================
 
-type FilterKey = 'all' | 'live' | 'mail';
+type FilterKey = 'all' | 'live' | 'mail' | 'dispatch';
 
 const FILTERS: Array<{ key: FilterKey; label: string }> = [
-  { key: 'all',  label: 'All' },
-  { key: 'live', label: 'Live' },
-  { key: 'mail', label: 'Mail' },
+  { key: 'all',      label: 'All' },
+  { key: 'live',     label: 'Live' },
+  { key: 'mail',     label: 'Mail' },
+  { key: 'dispatch', label: 'Dispatch' },
 ];
 
 function FilterChips({
@@ -502,11 +510,16 @@ function InactiveSection({
 // ============================================================================
 
 export function Sessions() {
-  const params = useParams<{ id?: string; mailId?: string }>();
+  const params = useParams<{ id?: string; mailId?: string; hostedId?: string }>();
   const navigate = useNavigate();
   const { data: sessionsData, isLoading: sessionsLoading } = useSessionsList();
   const { data: mailConvs } = useMailConversations();
   const { data: swarms } = useMapSwarms();
+  // Pull running hosted swarms so codex-rpc rows surface as Threads. We
+  // filter client-side; the list is small (capped by max_swarms), and
+  // useHostedSwarms already drives query invalidation on swarm-lifecycle
+  // events.
+  const { data: hostedSwarms } = useHostedSwarms({ state: 'running' });
   useSessionsRealtime();
 
   // Keep mail list fresh via WebSocket
@@ -519,10 +532,13 @@ export function Sessions() {
 
   const selectedSessionId = params.id ?? null;
   const selectedMailId = params.mailId ?? null;
+  const selectedHostedId = params.hostedId ?? null;
   const selectedKey = selectedSessionId
     ? `session:${selectedSessionId}`
     : selectedMailId
       ? `mail:${selectedMailId}`
+      : selectedHostedId
+        ? `hosted-chat:${selectedHostedId}`
       : null;
 
   const [filter, setFilter] = useState<FilterKey>('all');
@@ -546,20 +562,42 @@ export function Sessions() {
     const mailThreads = (mailConvs ?? [])
       .filter((c) => c.status !== 'archived')
       .map(mailToThread);
-    return [...sessionThreads, ...mailThreads].sort(
+    // Programmatic-mode hosted swarms (mode='rpc', any kind) surface as
+    // live threads — clicking routes to the swarm detail page where the
+    // inline chat lives. Each running rpc-mode swarm gets one thread row.
+    // Provider-agnostic — codex today, future kinds drop in without
+    // changes here.
+    const hostedChatThreads: Thread[] = (hostedSwarms ?? [])
+      .filter((h) => h.mode === 'rpc' && h.state === 'running')
+      .map((h) => ({
+        id: `hosted-chat:${h.id}`,
+        flavor: 'hosted-chat' as ThreadFlavor,
+        to: `/threads/hosted-chat/${h.id}`,
+        title: h.name ?? h.id,
+        description: `${h.kind ?? 'hosted'} · openhive chat`,
+        status: 'hosted-running' as ThreadStatus,
+        lastActivityAt: h.updated_at ?? h.created_at ?? new Date().toISOString(),
+        participantCount: 1,
+      }));
+    return [...sessionThreads, ...mailThreads, ...hostedChatThreads].sort(
       (a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
     );
-  }, [sessionsData, mailConvs, swarmStatusMap]);
+  }, [sessionsData, mailConvs, swarmStatusMap, hostedSwarms]);
 
   const liveThreads = useMemo(
-    () => activeThreads.filter((t) => t.status === 'live' || t.status === 'mail-active'),
+    () => activeThreads.filter(
+      (t) => t.status === 'live' || t.status === 'mail-active' || t.status === 'hosted-running',
+    ),
     [activeThreads],
   );
 
   const visibleActive = useMemo(() => {
     switch (filter) {
-      case 'live': return activeThreads.filter((t) => t.status === 'live' || t.status === 'mail-active');
+      case 'live': return activeThreads.filter(
+        (t) => t.status === 'live' || t.status === 'mail-active' || t.status === 'hosted-running',
+      );
       case 'mail': return activeThreads.filter((t) => t.flavor === 'mail');
+      case 'dispatch': return activeThreads.filter((t) => t.flavor === 'dispatch');
       default:     return activeThreads;
     }
   }, [activeThreads, filter]);
@@ -679,6 +717,8 @@ export function Sessions() {
           <MailThreadView conversationId={selectedMailId} />
         ) : selectedSessionId ? (
           <SessionDetail />
+        ) : selectedHostedId ? (
+          <HostedChatThreadDetail hostedSwarmId={selectedHostedId} hostedSwarms={hostedSwarms ?? []} />
         ) : activeThreads.length > 0 ? (
           <EmptyDetail />
         ) : (sessionsData?.data ?? []).length > 0 || (mailConvs ?? []).length > 0 ? (
@@ -695,6 +735,76 @@ export function Sessions() {
           <EmptyDetail />
         )}
       </main>
+    </div>
+  );
+}
+
+// ============================================================================
+// Hosted-chat detail (codex-rpc and any future programmatic-mode kind)
+// ============================================================================
+
+/**
+ * Right-pane view for `/threads/hosted-chat/:hostedId`. Composes the same
+ * `<HostedChat>` widget the rest of openhive uses (swarmcraft's
+ * `ChatMessageList` + `ChatInput` underneath). The list of running hosted
+ * swarms is already loaded in Sessions; we just look up this row to drive
+ * the header label + a "back to swarm" affordance.
+ */
+function HostedChatThreadDetail({
+  hostedSwarmId,
+  hostedSwarms,
+}: {
+  hostedSwarmId: string;
+  hostedSwarms: HostedSwarm[];
+}) {
+  const hosted = hostedSwarms.find((h) => h.id === hostedSwarmId);
+  if (!hosted) {
+    return (
+      <div className="p-6">
+        <div
+          className="card p-4 text-center text-xs"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          No running hosted swarm with id <code>{hostedSwarmId}</code>. It may
+          have stopped — return to{' '}
+          <Link to="/threads" className="text-honey-500 hover:underline">
+            Threads
+          </Link>
+          .
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col min-h-0">
+      <div
+        className="px-4 py-2 border-b text-xs flex items-center justify-between"
+        style={{ borderColor: 'var(--color-border-subtle)' }}
+      >
+        <div>
+          <span className="font-medium">{hosted.name ?? hosted.id}</span>
+          <span
+            className="ml-2 text-2xs"
+            style={{ color: 'var(--color-text-muted)' }}
+          >
+            {hosted.kind ?? 'hosted'} · {hosted.mode ?? 'rpc'}
+          </span>
+        </div>
+        <Link
+          to={`/swarms/${hosted.swarm_id ?? hosted.id}`}
+          className="text-2xs hover:underline"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          View swarm details →
+        </Link>
+      </div>
+      <div className="flex-1 min-h-0">
+        <HostedChat
+          hostedSwarmId={hostedSwarmId}
+          providerLabel={hosted.kind}
+        />
+      </div>
     </div>
   );
 }

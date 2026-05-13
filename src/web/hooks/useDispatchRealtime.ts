@@ -13,11 +13,18 @@ import { useSubscribe, useWSEvent } from './useWebSocket';
 interface DispatchEventData {
   dispatch?: { id?: string };
   taskId?: string;
+  dispatch_id?: string;
+  error?: string;
 }
 
 function extractDispatchId(data: unknown): string | undefined {
   const d = data as DispatchEventData | undefined;
-  return d?.dispatch?.id ?? d?.taskId;
+  return d?.dispatch?.id ?? d?.taskId ?? d?.dispatch_id;
+}
+
+function extractDispatchError(data: unknown): string | undefined {
+  const d = data as DispatchEventData | undefined;
+  return d?.error;
 }
 
 export function useDispatchRealtime() {
@@ -44,6 +51,11 @@ export function useDispatchRealtime() {
   useWSEvent('dispatch.dead', invalidate);
   useWSEvent('dispatch.cancel_not_acked', invalidate);
   useWSEvent('dispatch.stall_detected', invalidate);
+  // Loadout materialization failed during enrichment — the dispatch will
+  // proceed without the loadout. Surfaced as a banner on DispatchDetail via
+  // useMaterializationWarnings; we still invalidate so the row reloads in
+  // case the orchestrator persists a marker.
+  useWSEvent('dispatch.materialization_failed', invalidate);
 }
 
 /**
@@ -87,6 +99,51 @@ export function useCancelAckWarnings(dispatchId: string | undefined): {
 
   return {
     warned: dispatchId ? warnedIds.has(dispatchId) : false,
+    dismiss,
+  };
+}
+
+/**
+ * Track which dispatches saw a `materialization_failed` event in the current
+ * session, alongside the error reason. Consumed by DispatchDetail to surface
+ * a banner when loadout enrichment failed and the dispatch ran without it.
+ */
+export function useMaterializationWarnings(dispatchId: string | undefined): {
+  error: string | null;
+  dismiss: () => void;
+} {
+  const [errors, setErrors] = useState<Map<string, string>>(new Map());
+
+  const onMaterializationFailed = useCallback((data: unknown) => {
+    const id = extractDispatchId(data);
+    if (!id) return;
+    const err = extractDispatchError(data) ?? 'unknown error';
+    setErrors((prev) => {
+      if (prev.get(id) === err) return prev;
+      const next = new Map(prev);
+      next.set(id, err);
+      return next;
+    });
+  }, []);
+
+  useWSEvent('dispatch.materialization_failed', onMaterializationFailed);
+
+  const dismiss = useCallback(() => {
+    if (!dispatchId) return;
+    setErrors((prev) => {
+      if (!prev.has(dispatchId)) return prev;
+      const next = new Map(prev);
+      next.delete(dispatchId);
+      return next;
+    });
+  }, [dispatchId]);
+
+  useEffect(() => {
+    setErrors(new Map());
+  }, [dispatchId]);
+
+  return {
+    error: dispatchId ? errors.get(dispatchId) ?? null : null,
     dismiss,
   };
 }

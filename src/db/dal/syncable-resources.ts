@@ -248,6 +248,27 @@ export function findResourceById(id: string): SyncableResource | null {
   return rowToResource(row);
 }
 
+/**
+ * Find a single resource by (ownerAgentId, resourceType, name).
+ * Backed by the UNIQUE(owner_agent_id, resource_type, name) constraint, so
+ * there is at most one match.
+ */
+export function findResourceByName(
+  ownerAgentId: string,
+  resourceType: SyncableResourceType,
+  name: string,
+): SyncableResource | null {
+  const db = getDatabase();
+  const row = db
+    .prepare(
+      `SELECT * FROM syncable_resources
+       WHERE owner_agent_id = ? AND resource_type = ? AND name = ?`,
+    )
+    .get(ownerAgentId, resourceType, name) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return rowToResource(row);
+}
+
 export function findResourceByWebhookSecret(secret: string): SyncableResource | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM syncable_resources WHERE webhook_secret = ?').get(secret) as Record<string, unknown> | undefined;
@@ -580,6 +601,7 @@ export function getResourceWithMeta(id: string, viewerAgentId?: string): Syncabl
     metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
+    status: (row.status as SyncableResource['status']) ?? 'active',
     owner: {
       id: row.owner_id as string,
       name: row.owner_name as string,
@@ -697,6 +719,7 @@ export function listAccessibleResources(options: ListResourcesOptions): {
       metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
       created_at: row.created_at as string,
       updated_at: row.updated_at as string,
+    status: (row.status as SyncableResource['status']) ?? 'active',
       owner: {
         id: row.owner_id as string,
         name: row.owner_name as string,
@@ -806,6 +829,7 @@ export function discoverPublicResources(options: DiscoverResourcesOptions): {
       metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
       created_at: row.created_at as string,
       updated_at: row.updated_at as string,
+    status: (row.status as SyncableResource['status']) ?? 'active',
       owner: {
         id: row.owner_id as string,
         name: row.owner_name as string,

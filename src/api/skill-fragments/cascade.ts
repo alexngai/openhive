@@ -48,5 +48,20 @@ downstream consumers (merge queue, metrics, WebSocket).
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | GET | /cascade/streams | List active streams |
-| POST | /cascade/streams/:id/actions | Request a cascade action |`,
+| POST | /cascade/streams/:id/actions | Request a cascade action |
+
+### Opt-in close-on-merge
+
+When a stream carries a \`task_ref\` (\`metadata.task_ref = { resource_id, node_id }\`),
+the hub can automatically transition the linked task to \`completed\` on merge.
+Off by default — you must opt in at one of three scopes:
+
+- **Per-task**: set \`task.metadata.close_policy = 'on_merge'\` at task creation
+- **Per-swarm**: declare \`cascade.autoCloseOnMerge: true\` in \`ParticipantCapabilities\`
+  at MAP registration
+- **Per-hub**: operator sets \`config.cascade.defaultClosePolicy = 'on_merge'\`
+
+Per-task beats per-swarm beats per-hub. An explicit \`cascade.autoCloseOnMerge: false\`
+on the swarm overrides a permissive hub default. Task-status broadcasts on terminal
+transitions carry a \`cascade\` block with the commit range from linked streams.`,
 };

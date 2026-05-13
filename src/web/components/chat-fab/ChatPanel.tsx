@@ -3,9 +3,15 @@
  *
  * Wraps useChatChannel from swarmcraft with the OpenHive adapters.
  * Renders messages via ChatMessageList + ChatInput from swarmcraft/ui/embed.
+ *
+ * Composer path branches on the `CHAT_CONTEXT_CHIPS` module constant (§7.0):
+ * - ON (default): ChipStrip + ChipsComposer; context-menu clicks stage chips,
+ *   Send composes chips + text into a single turn.
+ * - OFF (escape hatch, `VITE_CHAT_CONTEXT_CHIPS=false`): plain `ChatInput`,
+ *   no context menu — chip UI is the only context surface.
  */
 
-import { useMemo, useState, useCallback, useEffect } from 'react';
+import { useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   useChatChannel,
   ChatMessageList,
@@ -15,10 +21,13 @@ import {
 import { useOpenHiveAdapters } from '../../adapters/openhive-adapters';
 import { useSessionCapabilityResolver, sessionTarget } from '../../lib/chat/resolvers';
 import { useChatFabStore } from './ChatFabStore';
-import { ContextMenu } from './ContextMenu';
+import { ContextMenu, type ContextMenuHandle } from './ContextMenu';
 import { setAcpStreamAgentName } from '../../adapters/openhive-acp-service';
 import { useMapSwarm } from '../../hooks/useApi';
 import { useEnrichedUserTurns } from '../../hooks/useEnrichedUserTurns';
+import { CHAT_CONTEXT_CHIPS } from './feature-flags';
+import { ChipStrip } from './ChipStrip';
+import { ChipsComposer } from './ChipsComposer';
 
 /**
  * Backfill the acp-service's agent display name on resumed streams.
@@ -50,7 +59,7 @@ export function ChatPanel() {
   const { sessionId, swarmId, resume } = useChatFabStore();
   const adapters = useOpenHiveAdapters();
   const resolveCapabilities = useSessionCapabilityResolver(swarmId ?? undefined);
-  const [pendingContext, setPendingContext] = useState<string | null>(null);
+  const contextMenuRef = useRef<ContextMenuHandle>(null);
   useBackfillAcpAgentName();
 
   // Passing `resume` into the target steers the ACP adapter into
@@ -89,19 +98,9 @@ export function ChatPanel() {
   // coordination adapter so the same user shows the same way everywhere.
   const messages = useEnrichedUserTurns(channel.messages);
 
-  const handleContextInject = useCallback((text: string) => {
-    if (channel.status === 'ready' || channel.status === 'streaming') {
-      channel.send(text).catch(() => {});
-    } else {
-      setPendingContext(text);
-    }
-  }, [channel]);
-
-  // Send pending context once channel is ready
-  if (pendingContext && (channel.status === 'ready' || channel.status === 'streaming')) {
-    channel.send(pendingContext).catch(() => {});
-    setPendingContext(null);
-  }
+  const onAtKey = useCallback((): boolean => {
+    return contextMenuRef.current?.openWithPrimary() ?? false;
+  }, []);
 
   if (!target) {
     return (
@@ -141,11 +140,15 @@ export function ChatPanel() {
         className="border-t px-3 py-2 space-y-1"
         style={{ borderColor: 'var(--color-border-subtle)' }}
       >
-        <ContextMenu onInject={handleContextInject} />
-        <ChatInput
-          channel={channel}
-          compact
-        />
+        {CHAT_CONTEXT_CHIPS ? (
+          <>
+            <ContextMenu ref={contextMenuRef} />
+            <ChipStrip />
+            <ChipsComposer channel={channel} onAtKey={onAtKey} compact />
+          </>
+        ) : (
+          <ChatInput channel={channel} compact />
+        )}
       </div>
     </div>
   );

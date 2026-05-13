@@ -14,18 +14,36 @@ import { uniqueNamesGenerator, adjectives, colors, animals } from 'unique-names-
 import { broadcastToChannel } from '../realtime/index.js';
 import { registerSwarm } from '../map/service.js';
 import { delegateForSpawn } from '../map/delegate-for-spawn.js';
+import { applyGitSyncConfig } from '../swarmkit/git-sync-config.js';
 import * as mapDal from '../db/dal/map.js';
 import * as dal from './dal.js';
 import { LocalProvider } from './providers/local.js';
 import { SandboxedLocalProvider } from './providers/sandboxed-local.js';
 import { resolveCredentialOverlay } from './credentials.js';
 import { findResourceById, subscribeToResource } from '../db/dal/syncable-resources.js';
+import { cloneWorkspaceRepos } from './providers/workspace.js';
+import { resolveRepoForSpawn, applyRepoEnvVars, RepoResolutionError } from './resolve-repo.js';
+import { getTuiKindStrategy, isTuiKind, type TuiKindStrategy } from './tui-strategies.js';
+import * as os from 'os';
+import { getInbound } from '../map/connection-registry.js';
+// Type-only import — PtyManager is provided at runtime via setPtyManager(),
+// not loaded here. This preserves the dynamic-import gating in server.ts
+// (PtyManager only loads when swarmHosting.enabled = true and node-pty is
+// available).
+import type { PtyManager } from '../terminal/pty-manager.js';
+// Same dynamic-import pattern as PtyManager — the app-server manager only
+// loads when swarmHosting.enabled = true (see server.ts).
+import type { CodexAppServerManager } from './codex-app-server-manager.js';
+import { resolveCodexBinary } from './codex-binary.js';
+import { preTrustCodexWorkdir } from './codex-config.js';
+import { translateCodexNotification } from './hosted-chat-events.js';
 import type {
   SpawnSwarmInput,
   SwarmProvisionConfig,
   BootstrapToken,
   HostingProvider,
   HostedSwarm,
+  HostedSwarmKind,
   SwarmHostingConfig,
   SwarmSandboxPolicy,
 } from './types.js';
@@ -44,6 +62,23 @@ export class SwarmManager {
   private restartCounts = new Map<string, number>();
   /** Reverse mapping: hosted swarm DB ID → provider instance ID */
   private hostedToInstanceId = new Map<string, string>();
+
+  // claude-code spawns route through PtyManager (not LocalProvider) because
+  // `claude` is an interactive TUI and crashes without a real TTY. The
+  // PtyManager instance is provided after construction via setPtyManager()
+  // — see server.ts for wiring.
+  private ptyManager: PtyManager | null = null;
+  private tuiSessions = new Map<string, string>();  // hostedSwarmId → ptySessionId
+  private claudeExitHandler: ((event: { sessionId: string; exitCode: number; signal?: number }) => void) | null = null;
+
+  // codex `mode: 'rpc'` spawns route through CodexAppServerManager rather
+  // than PtyManager — the underlying process is `codex app-server` (a
+  // long-running JSON-RPC server), not a TTY-bound TUI. Same wiring shape
+  // as PtyManager: server.ts injects the instance after construction via
+  // setCodexAppServerManager() so the dynamic-import gating still works.
+  private codexAppServerManager: CodexAppServerManager | null = null;
+  private codexRpcSessions = new Map<string, string>();  // hostedSwarmId → codex session id
+  private codexRpcExitHandler: ((event: { sessionId: string; exitCode: number | null; signal?: NodeJS.Signals | null }) => void) | null = null;
 
   constructor(config: SwarmHostingConfig, instanceUrl: string) {
     this.config = config;
@@ -88,6 +123,826 @@ export class SwarmManager {
    */
   setInstanceUrl(instanceUrl: string): void {
     this.instanceUrl = instanceUrl;
+  }
+
+  /**
+   * Inject the PtyManager instance used to spawn claude-code TUIs.
+   * server.ts calls this after both managers are created and PtyManager has
+   * loaded (gated on `swarmHosting.enabled` + node-pty availability).
+   *
+   * Idempotent: replacing the manager rewires the exit listener to the new
+   * instance. Safe to call multiple times during startup or test setup.
+   */
+  /**
+   * Look up the PtyManager session id for a claude-code hosted swarm. The
+   * embedded terminal uses this to attach to the running `claude` TUI
+   * instead of spawning a fresh PTY. Returns null when there's no live
+   * session — either the row isn't claude-code, or the session has exited
+   * since we registered it.
+   */
+  getTuiPtySessionId(hostedSwarmId: string): string | null {
+    return this.tuiSessions.get(hostedSwarmId) ?? null;
+  }
+
+  setPtyManager(ptyManager: PtyManager): void {
+    if (this.ptyManager && this.claudeExitHandler) {
+      this.ptyManager.removeListener('session.exit', this.claudeExitHandler);
+    }
+    this.ptyManager = ptyManager;
+    this.claudeExitHandler = (event) => this.handleClaudePtyExit(event);
+    ptyManager.on('session.exit', this.claudeExitHandler);
+  }
+
+  /**
+   * Inject the CodexAppServerManager instance used to drive `codex
+   * app-server` for `kind: 'codex'` + `mode: 'rpc'` swarms. Mirrors
+   * setPtyManager(). Idempotent — replacing the manager rewires the exit
+   * listener.
+   */
+  setCodexAppServerManager(mgr: CodexAppServerManager): void {
+    if (this.codexAppServerManager && this.codexRpcExitHandler) {
+      this.codexAppServerManager.removeListener('session.exit', this.codexRpcExitHandler);
+    }
+    this.codexAppServerManager = mgr;
+    this.codexRpcExitHandler = (event) => this.handleCodexRpcExit(event);
+    mgr.on('session.exit', this.codexRpcExitHandler);
+
+    // Translate codex's native JSON-RPC notifications to the normalized
+    // `HostedChatEvent` shape and fan out per-swarm on
+    // `hosted-chat:<hostedId>`. Frontend hooks consume the normalized
+    // shape and don't need to know it's codex underneath — adding a new
+    // programmatic-mode provider is a translator + the same bridge call.
+    mgr.on('notification', (event: { sessionId: string; method: string; params?: unknown }) => {
+      const hostedId = this.findHostedIdByCodexSessionId(event.sessionId);
+      if (!hostedId) return;
+      const normalized = translateCodexNotification(event.method, event.params);
+      if (!normalized) return;
+      broadcastToChannel(`hosted-chat:${hostedId}`, {
+        type: 'hosted-chat.event',
+        data: {
+          hosted_swarm_id: hostedId,
+          provider: 'codex',
+          event: normalized,
+        },
+      });
+    });
+  }
+
+  /** Reverse lookup: codex session id → hosted swarm id. Linear scan is fine
+   *  given the small map size (capped at MAX_SESSIONS in CodexAppServerManager). */
+  private findHostedIdByCodexSessionId(codexSid: string): string | null {
+    for (const [hostedId, sid] of this.codexRpcSessions) {
+      if (sid === codexSid) return hostedId;
+    }
+    return null;
+  }
+
+  /**
+   * Look up the CodexAppServerManager session id for a `mode: 'rpc'`
+   * codex hosted swarm. The chat bridge and live-e2e tests use this to
+   * route turn/start through the right session. Returns null when the
+   * row isn't a live codex-rpc session.
+   */
+  getCodexRpcSessionId(hostedSwarmId: string): string | null {
+    return this.codexRpcSessions.get(hostedSwarmId) ?? null;
+  }
+
+  /**
+   * Submit a user turn against a programmatic-mode (`mode: 'rpc'`) hosted
+   * swarm. Auth-gated (only the spawn owner can drive). Dispatches to the
+   * underlying provider based on `hosted.kind` — codex today, future
+   * providers slot in by adding a branch here. Streaming output arrives as
+   * normalized `HostedChatEvent`s on the per-swarm WS channel
+   * `hosted-chat:<hostedSwarmId>`.
+   */
+  async sendChatTurn(
+    hostedSwarmId: string,
+    agentId: string,
+    text: string,
+  ): Promise<{ turn_id: string }> {
+    const hosted = dal.findHostedSwarmById(hostedSwarmId);
+    if (!hosted) throw new SwarmHostingError('NOT_FOUND', 'Hosted swarm not found');
+    if (hosted.spawned_by !== agentId) throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
+    if (hosted.config?.mode !== 'rpc') {
+      throw new SwarmHostingError('NOT_IMPLEMENTED', 'Hosted swarm is not in mode=rpc');
+    }
+    if (hosted.kind === 'codex') {
+      if (!this.codexAppServerManager) {
+        throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', 'CodexAppServerManager is not configured');
+      }
+      const sid = this.codexRpcSessions.get(hostedSwarmId);
+      if (!sid) throw new SwarmHostingError('NOT_FOUND', 'No live rpc session for this swarm');
+      const ack = await this.codexAppServerManager.sendTurn(sid, text);
+      return { turn_id: ack.turn.id };
+    }
+    throw new SwarmHostingError('NOT_IMPLEMENTED', `kind="${hosted.kind}" has no mode=rpc provider`);
+  }
+
+  /**
+   * Interrupt the in-flight turn for a programmatic-mode hosted swarm.
+   * Clean cancel — the agent stops the current turn but the session
+   * stays usable. No-op if there's no active turn.
+   */
+  async interruptChatTurn(
+    hostedSwarmId: string,
+    agentId: string,
+    turnId: string,
+  ): Promise<void> {
+    const hosted = dal.findHostedSwarmById(hostedSwarmId);
+    if (!hosted) throw new SwarmHostingError('NOT_FOUND', 'Hosted swarm not found');
+    if (hosted.spawned_by !== agentId) throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
+    if (hosted.config?.mode !== 'rpc') {
+      throw new SwarmHostingError('NOT_IMPLEMENTED', 'Hosted swarm is not in mode=rpc');
+    }
+    if (hosted.kind === 'codex') {
+      if (!this.codexAppServerManager) {
+        throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', 'CodexAppServerManager is not configured');
+      }
+      const sid = this.codexRpcSessions.get(hostedSwarmId);
+      if (!sid) throw new SwarmHostingError('NOT_FOUND', 'No live rpc session for this swarm');
+      await this.codexAppServerManager.interrupt(sid, turnId);
+      return;
+    }
+    throw new SwarmHostingError('NOT_IMPLEMENTED', `kind="${hosted.kind}" has no mode=rpc provider`);
+  }
+
+  /**
+   * Handle `codex app-server` child exit for codex-rpc rows. Mirrors
+   * handleClaudePtyExit() — exit code 0 → `stopped`, anything else →
+   * `failed`. Operator-driven stop deletes from `codexRpcSessions` BEFORE
+   * destroy(), so the handler returns early on that path.
+   */
+  private handleCodexRpcExit(event: { sessionId: string; exitCode: number | null; signal?: NodeJS.Signals | null }): void {
+    let owningHostedId: string | null = null;
+    for (const [hostedId, codexSid] of this.codexRpcSessions) {
+      if (codexSid === event.sessionId) { owningHostedId = hostedId; break; }
+    }
+    if (!owningHostedId) return;
+
+    this.codexRpcSessions.delete(owningHostedId);
+    const wasSignalled = event.signal != null;
+    const isClean = !wasSignalled && event.exitCode === 0;
+    dal.updateHostedSwarm(owningHostedId, {
+      state: isClean ? 'stopped' : 'failed',
+      error: isClean
+        ? null
+        : `codex app-server exited with code ${event.exitCode ?? 'null'}${wasSignalled ? ` (signal ${event.signal})` : ''}`,
+    });
+
+    broadcastToChannel('map:discovery', {
+      type: isClean ? 'swarm_stopped' : 'swarm_offline',
+      data: { hosted_swarm_id: owningHostedId },
+    });
+    console.log(
+      `[swarm-manager] codex-rpc session exited: hosted=${owningHostedId} code=${event.exitCode} signal=${event.signal ?? 'none'}`,
+    );
+  }
+
+  /**
+   * Handle PTY exit for claude-code rows. Mirrors handleProcessExit() but
+   * for the PtyManager-managed claude TUIs (LocalProvider's exit handler
+   * doesn't fire for these). Exit code 0 → 'stopped' (user typed `/exit`
+   * or operator stopped); non-zero → 'failed'. Auto-restart is intentionally
+   * NOT applied here (interactive TUIs aren't meant to auto-restart).
+   *
+   * Also signals the cc-swarm sidecar to shut down promptly. cc-swarm
+   * would self-terminate after 30 min of inactivity anyway, but that
+   * leaves a confusing UX gap where the row says stopped but MAP shows the
+   * sidecar registered. SIGTERM hits cc-swarm's existing shutdown handler
+   * (closes WS, removes socket/pid files, exits) — see
+   * references/claude-code-swarm/scripts/map-sidecar.mjs:142-176.
+   */
+  private handleClaudePtyExit(event: { sessionId: string; exitCode: number; signal?: number }): void {
+    let owningHostedId: string | null = null;
+    for (const [hostedId, ptySid] of this.tuiSessions) {
+      if (ptySid === event.sessionId) {
+        owningHostedId = hostedId;
+        break;
+      }
+    }
+    if (!owningHostedId) return;  // not one of our TUI sessions
+
+    this.tuiSessions.delete(owningHostedId);
+    // A signal-kill is always a crash, even when node-pty reports exitCode=0
+    // (which it does for SIGKILL/SIGSEGV/etc on macOS+Linux — the OS sets the
+    // termination signal, not the exit code). Operator-driven stop() routes
+    // through stopTuiKind which deletes the session-map entry BEFORE
+    // destroy(), so by the time this handler fires on that path, the
+    // owningHostedId lookup misses and we returned earlier — no risk of a
+    // legitimate stop landing here. Anything reaching this point with a
+    // non-zero signal was killed externally.
+    const wasSignalled = typeof event.signal === 'number' && event.signal > 0;
+    const isClean = !wasSignalled && event.exitCode === 0;
+    const hosted = dal.findHostedSwarmById(owningHostedId);
+    const kindLabel = hosted?.kind ?? 'tui';
+    dal.updateHostedSwarm(owningHostedId, {
+      state: isClean ? 'stopped' : 'failed',
+      error: isClean
+        ? null
+        : `${kindLabel} exited with code ${event.exitCode}${wasSignalled ? ` (signal ${event.signal})` : ''}`,
+    });
+
+    // Signal any per-kind sidecar (best-effort; missing PID file is fine).
+    // Kinds without a sidecar (codex v1) skip — the strategy hides the
+    // signal call behind hasSidecar.
+    if (hosted) {
+      const strategy = this.getTuiStrategy(hosted.kind);
+      if (strategy?.hasSidecar) strategy.signalSidecar?.(hosted, 'SIGTERM');
+    }
+
+    broadcastToChannel('map:discovery', {
+      type: isClean ? 'swarm_stopped' : 'swarm_offline',
+      data: { hosted_swarm_id: owningHostedId },
+    });
+    console.log(
+      `[swarm-manager] ${kindLabel} session exited: hosted=${owningHostedId} code=${event.exitCode} signal=${event.signal ?? 'none'}`,
+    );
+  }
+
+  /**
+   * Send a signal to the cc-swarm sidecar process(es) for a claude-code
+   * row. cc-swarm writes pid files under (per-session paths.mjs):
+   *   <data_dir>/.swarm/claude-swarm/tmp/map/sessions/<hash>/sidecar.pid
+   * For long-lived persistent mode it instead uses the legacy single path:
+   *   <data_dir>/.swarm/claude-swarm/tmp/map/sidecar.pid
+   * We walk both layouts so this works regardless of cc-swarm config.
+   * Returns true if at least one signal landed; false otherwise. Tolerates
+   * missing files (sidecar already exited) and ESRCH (process already gone).
+   * Exposed for testing.
+   */
+  signalClaudeCodeSidecar(hosted: HostedSwarm, signal: NodeJS.Signals | 0 = 'SIGTERM'): boolean {
+    if (hosted.kind !== 'claude-code') return false;
+    const dataDirRaw = hosted.config?.data_dir;
+    if (!dataDirRaw) return false;
+    // dataDir is stored as written by manager.ts (path.join, no resolve), so
+    // it can be relative — absolute-ize against the current process cwd
+    // (same cwd the spawn ran under).
+    const dataDir = path.resolve(dataDirRaw);
+    const mapDir = path.join(dataDir, '.swarm', 'claude-swarm', 'tmp', 'map');
+
+    const pidFiles: string[] = [];
+    // Legacy/persistent layout: single sidecar.pid at the top level.
+    const legacyPid = path.join(mapDir, 'sidecar.pid');
+    if (fs.existsSync(legacyPid)) pidFiles.push(legacyPid);
+    // Per-session layout: sessions/<hash>/sidecar.pid (current default).
+    const sessionsDir = path.join(mapDir, 'sessions');
+    if (fs.existsSync(sessionsDir)) {
+      try {
+        for (const entry of fs.readdirSync(sessionsDir)) {
+          const candidate = path.join(sessionsDir, entry, 'sidecar.pid');
+          if (fs.existsSync(candidate)) pidFiles.push(candidate);
+        }
+      } catch {
+        // Directory listing failed — keep what we have
+      }
+    }
+
+    if (pidFiles.length === 0) return false;
+
+    let signalled = false;
+    for (const pidPath of pidFiles) {
+      let pid: number;
+      try {
+        const raw = fs.readFileSync(pidPath, 'utf-8').trim();
+        pid = parseInt(raw, 10);
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+      } catch {
+        continue;
+      }
+      try {
+        process.kill(pid, signal);
+        console.log(`[swarm-manager] sidecar signal ${signal} → pid=${pid} hosted=${hosted.id}`);
+        signalled = true;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ESRCH') continue;  // process already gone — fine
+        console.warn(`[swarm-manager] sidecar signal failed: pid=${pid} hosted=${hosted.id}: ${(err as Error).message}`);
+      }
+    }
+    return signalled;
+  }
+
+  /**
+   * stop() branch for claude-code rows. Destroys the PtyManager session;
+   * handleClaudePtyExit observes the exit and updates the row to `stopped`.
+   * Returns the row in its final state.
+   *
+   * Lifecycle subtlety: PtyManager.destroy() sends SIGHUP synchronously and
+   * marks its internal state stopped, but the actual process may take a
+   * tick (or ignore the signal) before its onExit fires. We mark the row
+   * 'stopped' unconditionally after destroy — the user's intent is clear,
+   * and the exit handler running later just becomes a no-op (the
+   * tuiSessions entry is already gone).
+   */
+  private async stopTuiKind(hosted: HostedSwarm, strategy: TuiKindStrategy): Promise<HostedSwarm> {
+    dal.updateHostedSwarm(hosted.id, { state: 'stopping' });
+
+    const ptySessionId = this.tuiSessions.get(hosted.id);
+    if (this.ptyManager && ptySessionId) {
+      // Remove from the tracking map BEFORE destroy. If the exit listener
+      // fires from destroy(), it'll find no entry and silently no-op.
+      // We own the state transition here.
+      this.tuiSessions.delete(hosted.id);
+      try {
+        this.ptyManager.destroy(ptySessionId);
+      } catch (err) {
+        console.warn(`[swarm-manager] PTY destroy failed for ${hosted.id}: ${(err as Error).message}`);
+      }
+    }
+
+    // For sidecar-bearing kinds, politely SIGTERM the sidecar so it doesn't
+    // linger on its idle timer. Kinds without a sidecar (codex v1) skip.
+    if (strategy.hasSidecar) {
+      strategy.signalSidecar?.(hosted, 'SIGTERM');
+    }
+
+    dal.updateHostedSwarm(hosted.id, { state: 'stopped', error: null });
+
+    // MAP swarm row → offline (preserves swarm_id for any future linkage).
+    if (hosted.swarm_id) {
+      try {
+        mapDal.updateSwarm(hosted.swarm_id, { status: 'offline' });
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    this.restartCounts.delete(hosted.id);
+    broadcastToChannel('map:discovery', {
+      type: 'swarm_stopped',
+      data: { hosted_swarm_id: hosted.id },
+    });
+    return dal.findHostedSwarmById(hosted.id)!;
+  }
+
+  /**
+   * restart() branch for claude-code rows. Tear down the existing PTY +
+   * sidecar, re-mint a fresh onboard token (the previous one's TTL may have
+   * lapsed), re-write the prelaunch config, and spawn a new claude PTY
+   * against the SAME row (preserves hosted_swarm_id, swarm_id, data_dir).
+   *
+   * Note: this duplicates the boot phases of spawnClaudeCode rather than
+   * extracting a helper. The duplication is bounded (~80 lines) and clearer
+   * than threading a "fresh-vs-restart" flag through one method. Refactor
+   * to a shared `bootClaudeCodeProcess(hosted)` when the strategy-pattern
+   * pass lands (refactor plan §"Approach B preview").
+   */
+  private async restartTuiKind(hosted: HostedSwarm, strategy: TuiKindStrategy): Promise<HostedSwarm> {
+    if (!hosted.swarm_id) {
+      throw new SwarmHostingError(
+        'RESTART_FAILED',
+        `${strategy.kind} row is missing swarm_id; cannot restart in place. Stop and spawn fresh.`,
+      );
+    }
+    if (!hosted.config?.data_dir) {
+      throw new SwarmHostingError(
+        'RESTART_FAILED',
+        `${strategy.kind} row is missing data_dir; cannot restart in place. Stop and spawn fresh.`,
+      );
+    }
+    if (!this.ptyManager) {
+      throw new SwarmHostingError(
+        'RESTART_NOT_SUPPORTED',
+        `PtyManager is not configured. Cannot restart ${strategy.kind} rows without it.`,
+      );
+    }
+
+    // Resolve the binary BEFORE touching state.
+    const tuiBinary = strategy.resolveBinary();
+    if (!tuiBinary) {
+      throw new SwarmHostingError(
+        'RESTART_FAILED',
+        `${strategy.kind} binary not found on PATH. Install ${strategy.kind} and retry.`,
+      );
+    }
+
+    dal.updateHostedSwarm(hosted.id, { state: 'starting', error: null });
+
+    // 1. Tear down the existing PTY (if any) + sidecar (kind-specific).
+    const oldPtySid = this.tuiSessions.get(hosted.id);
+    if (oldPtySid) {
+      this.tuiSessions.delete(hosted.id);
+      try { this.ptyManager.destroy(oldPtySid); } catch { /* already gone */ }
+    }
+    if (strategy.hasSidecar) {
+      strategy.signalSidecar?.(hosted, 'SIGTERM');
+    }
+
+    // 2. Re-mint the onboard token. Restart may run after the original
+    // 24h TTL lapsed, so always rotate.
+    let onboardToken: string;
+    try {
+      const delegated = delegateForSpawn({
+        parentAgentId: hosted.spawned_by,
+        parentScopes: ['map:*'],
+        childAgentId: hosted.swarm_id,
+        requestedScopes: ['map:*'],
+        ttlMinutes: 24 * 60,
+        childDelegatable: true,
+      });
+      onboardToken = delegated.credentials.token;
+    } catch (err) {
+      dal.updateHostedSwarm(hosted.id, {
+        state: 'failed',
+        error: `Failed to mint onboard token: ${(err as Error).message}`,
+      });
+      throw new SwarmHostingError(
+        'ONBOARD_TOKEN_FAILED',
+        `Failed to mint onboard token: ${(err as Error).message}`,
+      );
+    }
+
+    // 3. Re-write per-kind prelaunch files with the rotated token, then
+    //    re-trust the workdir.
+    const dataDir = path.resolve(hosted.config.data_dir);
+    const mapServer = this.instanceUrl.replace(/^http/, 'ws').replace(/\/?$/, '/ws/map');
+    fs.mkdirSync(dataDir, { recursive: true });
+    strategy.writePrelaunchFiles?.({
+      swarmId: hosted.swarm_id,
+      hostedSwarmId: hosted.id,
+      onboardToken,
+      mapServer,
+      dataDir,
+    });
+    strategy.preTrustWorkdir(dataDir, os.homedir());
+
+    // 4. Build env (kind-specific extras + strip).
+    const inheritEnv = this.config.credentials?.inherit_env !== false;
+    const env: Record<string, string> = {};
+    if (inheritEnv) Object.assign(env, process.env as Record<string, string>);
+    Object.assign(env, strategy.extraEnv());
+    for (const key of strategy.envVarsToStrip()) delete env[key];
+
+    // 5. Spawn the new PTY.
+    let ptyInfo;
+    try {
+      ptyInfo = this.ptyManager.create({
+        command: tuiBinary,
+        args: [],
+        cwd: dataDir,
+        env,
+        cols: 120,
+        rows: 40,
+      });
+    } catch (err) {
+      const msg = (err as Error).message;
+      dal.updateHostedSwarm(hosted.id, {
+        state: 'failed',
+        error: `Restart failed: ${msg}`,
+      });
+      if (msg.includes('Maximum number of terminal sessions')) {
+        throw new SwarmHostingError(
+          'MAX_SWARMS_REACHED',
+          `Cannot restart ${strategy.kind} — the embedded terminal pool is full.`,
+        );
+      }
+      throw new SwarmHostingError('RESTART_FAILED', `Restart failed: ${msg}`);
+    }
+    this.tuiSessions.set(hosted.id, ptyInfo.id);
+    dal.updateHostedSwarm(hosted.id, { pid: ptyInfo.pid });
+
+    // 6. Bring MAP swarm row back online if it was marked offline by a
+    // prior stop. For sidecar-bearing kinds, also wait for the new sidecar
+    // to register against our pre-registered swarm_id.
+    try {
+      mapDal.updateSwarm(hosted.swarm_id, { status: 'online' });
+    } catch { /* best-effort */ }
+
+    if (strategy.hasSidecar) {
+      const ready = await this.waitForSidecarRegistration(
+        hosted.swarm_id,
+        strategy.sidecarRegistrationTimeoutMs ?? 60_000,
+      );
+      if (!ready) {
+        this.tuiSessions.delete(hosted.id);
+        try { this.ptyManager.destroy(ptyInfo.id); } catch { /* gone */ }
+        strategy.signalSidecar?.(hosted, 'SIGTERM');
+        dal.updateHostedSwarm(hosted.id, {
+          state: 'unhealthy',
+          error: `Restart: ${strategy.kind} sidecar did not register within ${(strategy.sidecarRegistrationTimeoutMs ?? 60_000) / 1000}s.`,
+        });
+        return dal.findHostedSwarmById(hosted.id)!;
+      }
+    }
+
+    dal.updateHostedSwarm(hosted.id, { state: 'running', error: null });
+    broadcastToChannel('map:discovery', {
+      type: 'swarm_spawned',
+      data: {
+        hosted_swarm_id: hosted.id,
+        name: hosted.config?.name ?? hosted.id,
+        provider: hosted.provider,
+        kind: strategy.kind,
+        swarm_id: hosted.swarm_id,
+      },
+    });
+
+    return dal.findHostedSwarmById(hosted.id)!;
+  }
+
+  // ==========================================================================
+  // codex `mode: 'rpc'` — spawn/stop/restart
+  // ==========================================================================
+  //
+  // Mirrors the spawnTuiKind / stopTuiKind / restartTuiKind shape but routes
+  // through CodexAppServerManager instead of PtyManager. The underlying
+  // process is `codex app-server` (a JSON-RPC server), and the openhive
+  // chat UI drives it via turn/start. The TUI mode is its own separate
+  // path (kind=codex + mode=tui → spawnTuiKind with the codex strategy).
+
+  private async spawnCodexRpc(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
+    const name = input.name ?? uniqueNamesGenerator({
+      dictionaries: [adjectives, colors, animals],
+      separator: '-',
+      length: 3,
+    });
+
+    // Phase 1: max-swarms validation.
+    const activeCount = dal.countActiveHostedSwarms();
+    if (activeCount >= this.config.max_swarms) {
+      throw new SwarmHostingError(
+        'MAX_SWARMS_REACHED',
+        `Maximum of ${this.config.max_swarms} hosted swarms reached (${activeCount} active)`,
+      );
+    }
+
+    const providerType = input.provider ?? this.config.default_provider;
+    const provider = this.providers.get(providerType);
+    if (!provider) {
+      throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', `Hosting provider "${providerType}" is not configured`);
+    }
+
+    if (!this.codexAppServerManager) {
+      throw new SwarmHostingError(
+        'SPAWN_FAILED',
+        'CodexAppServerManager is not configured. SwarmManager.setCodexAppServerManager() must be called during server bootstrap before spawning kind=codex with mode=rpc.',
+      );
+    }
+
+    // Phase 2: id + data_dir.
+    const hostedSwarmId = dal.generateHostedSwarmId();
+    const dataDir = path.join(this.config.data_dir, `swarm-${hostedSwarmId}`);
+
+    // Phase 3: hive validation.
+    if (input.hive) {
+      const { findHiveByName } = await import('../db/dal/hives.js');
+      const hive = findHiveByName(input.hive);
+      if (!hive) {
+        throw new SwarmHostingError('HIVE_NOT_FOUND', `Hive "${input.hive}" not found`);
+      }
+    }
+
+    // Phase 4: resolve the codex binary BEFORE we touch state.
+    const codexBinary = resolveCodexBinary();
+    if (!codexBinary) {
+      throw new SwarmHostingError(
+        'SPAWN_FAILED',
+        'codex binary not found on PATH. Install Codex and retry.',
+      );
+    }
+
+    // Phase 5: MAP pre-registration with a placeholder endpoint. Codex
+    // doesn't have an openhive-aware plugin yet, so the placeholder is
+    // purely an identity tag — no sidecar will ever dial back. Tagged
+    // `internal:cx-rpc:` to distinguish from the TUI codex placeholder.
+    let preRegisteredSwarmId: string;
+    try {
+      const placeholder = `internal:cx-rpc:${hostedSwarmId}`;
+      const stale = mapDal.findSwarmByEndpoint(placeholder);
+      if (stale) mapDal.deleteSwarm(stale.id);
+      const mapResult = registerSwarm(agentId, {
+        name,
+        description: input.description,
+        map_endpoint: placeholder,
+        map_transport: 'websocket',
+        capabilities: { observation: true, messaging: true, lifecycle: true },
+        metadata: {
+          ...(input.metadata ?? {}),
+          hosted: true,
+          hosted_swarm_id: hostedSwarmId,
+          provider: providerType,
+          kind: 'codex',
+          mode: 'rpc',
+        },
+      });
+      preRegisteredSwarmId = mapResult.swarm.id;
+      console.log(`[swarm-manager] Pre-registered codex-rpc swarm with stable ID: ${preRegisteredSwarmId}`);
+    } catch (err) {
+      throw new SwarmHostingError(
+        'SPAWN_FAILED',
+        `MAP pre-registration failed: ${(err as Error).message}`,
+      );
+    }
+
+    // Phase 6: build provision config. We don't mint an onboard token —
+    // codex's app-server doesn't dial back to openhive (no sidecar in v1).
+    // Mode goes on the config so restart and revive can branch correctly.
+    const inheritEnv = this.config.credentials?.inherit_env !== false;
+    const credentialOverlay = resolveCredentialOverlay(
+      this.config.credentials,
+      input.hive,
+      input.credential_overrides,
+    );
+
+    const provisionConfig: SwarmProvisionConfig = {
+      name,
+      adapter: 'codex',
+      adapter_config: input.adapter_config,
+      bootstrap_token: '',
+      assigned_port: 0,
+      data_dir: dataDir,
+      resolved_credentials: credentialOverlay,
+      inherit_env: inheritEnv,
+      workspace: input.workspace,
+      bootstrap: input.bootstrap,
+      spawn_command_override: codexBinary,
+      spawn_args_override: ['app-server', '--listen', 'ws://127.0.0.1:0'],
+      mode: 'rpc',
+    };
+
+    // Phase 7: persist the row.
+    const hosted = dal.createHostedSwarm({
+      id: hostedSwarmId,
+      kind: 'codex',
+      provider: providerType,
+      assigned_port: undefined,
+      bootstrap_token_hash: undefined,
+      config: provisionConfig,
+      spawned_by: agentId,
+    });
+    dal.updateHostedSwarm(hosted.id, { state: 'starting', swarm_id: preRegisteredSwarmId });
+
+    try {
+      // Phase 8: clone any workspace repos FIRST (same constraint as TUI
+      // path — git clone needs an empty target).
+      fs.mkdirSync(dataDir, { recursive: true });
+      if (input.workspace) {
+        try {
+          await cloneWorkspaceRepos(input.workspace, dataDir, process.env as Record<string, string>);
+        } catch (err) {
+          throw new SwarmHostingError(
+            'WORKSPACE_SETUP_FAILED',
+            `Workspace clone failed: ${(err as Error).message}`,
+          );
+        }
+      }
+
+      // Phase 9: pre-trust the data_dir so codex doesn't gate on the
+      // "Trust this folder?" prompt the first time it loads. (Even though
+      // the app-server doesn't render that prompt, codex shares the trust
+      // check with its TUI; keeping this consistent prevents surprises if
+      // we ever spawn `codex resume` for the same data_dir.)
+      preTrustCodexWorkdir(dataDir, os.homedir());
+
+      // Phase 10: build env (mirror TUI hygiene minus the CLAUDE markers).
+      const env: Record<string, string> = {};
+      if (inheritEnv) Object.assign(env, process.env as Record<string, string>);
+      if (credentialOverlay) Object.assign(env, credentialOverlay);
+      delete env.CODEX_SESSION_ID;
+      delete env.CODEX_THREAD_ID;
+      delete env.CODEX_ENTRYPOINT;
+
+      // Phase 11: spawn the app-server, drive initialize → thread/start,
+      // optionally fire the initial prompt as the first turn.
+      let session;
+      try {
+        session = await this.codexAppServerManager.create({
+          command: codexBinary,
+          cwd: dataDir,
+          env,
+          initialPrompt: input.initial_prompt,
+        });
+      } catch (err) {
+        throw new SwarmHostingError(
+          'SPAWN_FAILED',
+          `codex-rpc spawn failed: ${(err as Error).message}`,
+        );
+      }
+      this.codexRpcSessions.set(hosted.id, session.id);
+      dal.updateHostedSwarm(hosted.id, { pid: session.pid, state: 'running', error: null });
+
+      // Phase 12: broadcast.
+      broadcastToChannel('map:discovery', {
+        type: 'swarm_spawned',
+        data: {
+          hosted_swarm_id: hosted.id,
+          name,
+          provider: providerType,
+          kind: 'codex',
+          mode: 'rpc',
+          swarm_id: preRegisteredSwarmId,
+        },
+      });
+
+      return dal.findHostedSwarmById(hosted.id)!;
+    } catch (err) {
+      dal.updateHostedSwarm(hosted.id, {
+        state: 'failed',
+        error: `codex-rpc spawn failed: ${(err as Error).message}`,
+      });
+      throw err instanceof SwarmHostingError
+        ? err
+        : new SwarmHostingError('SPAWN_FAILED', `codex-rpc spawn failed: ${(err as Error).message}`);
+    }
+  }
+
+  private async stopCodexRpc(hosted: HostedSwarm): Promise<HostedSwarm> {
+    dal.updateHostedSwarm(hosted.id, { state: 'stopping' });
+
+    const codexSid = this.codexRpcSessions.get(hosted.id);
+    if (this.codexAppServerManager && codexSid) {
+      // Remove from the tracking map BEFORE destroy. If the exit listener
+      // fires from destroy(), it'll find no entry and silently no-op.
+      this.codexRpcSessions.delete(hosted.id);
+      try {
+        this.codexAppServerManager.destroy(codexSid);
+      } catch (err) {
+        console.warn(`[swarm-manager] codex-rpc destroy failed for ${hosted.id}: ${(err as Error).message}`);
+      }
+    }
+
+    dal.updateHostedSwarm(hosted.id, { state: 'stopped', error: null });
+    if (hosted.swarm_id) {
+      try { mapDal.updateSwarm(hosted.swarm_id, { status: 'offline' }); } catch { /* best-effort */ }
+    }
+    this.restartCounts.delete(hosted.id);
+    broadcastToChannel('map:discovery', {
+      type: 'swarm_stopped',
+      data: { hosted_swarm_id: hosted.id },
+    });
+    return dal.findHostedSwarmById(hosted.id)!;
+  }
+
+  private async restartCodexRpc(hosted: HostedSwarm): Promise<HostedSwarm> {
+    if (!hosted.swarm_id) {
+      throw new SwarmHostingError('RESTART_FAILED', 'codex-rpc row is missing swarm_id; stop and spawn fresh.');
+    }
+    if (!hosted.config?.data_dir) {
+      throw new SwarmHostingError('RESTART_FAILED', 'codex-rpc row is missing data_dir; stop and spawn fresh.');
+    }
+    if (!this.codexAppServerManager) {
+      throw new SwarmHostingError('RESTART_NOT_SUPPORTED', 'CodexAppServerManager is not configured.');
+    }
+
+    const codexBinary = resolveCodexBinary();
+    if (!codexBinary) {
+      throw new SwarmHostingError('RESTART_FAILED', 'codex binary not found on PATH. Install Codex and retry.');
+    }
+
+    dal.updateHostedSwarm(hosted.id, { state: 'starting', error: null });
+
+    // 1. Tear down the existing session.
+    const oldSid = this.codexRpcSessions.get(hosted.id);
+    if (oldSid) {
+      this.codexRpcSessions.delete(hosted.id);
+      try { this.codexAppServerManager.destroy(oldSid); } catch { /* already gone */ }
+    }
+
+    const dataDir = path.resolve(hosted.config.data_dir);
+    fs.mkdirSync(dataDir, { recursive: true });
+    preTrustCodexWorkdir(dataDir, os.homedir());
+
+    // 2. Build env (same hygiene as spawn).
+    const inheritEnv = this.config.credentials?.inherit_env !== false;
+    const env: Record<string, string> = {};
+    if (inheritEnv) Object.assign(env, process.env as Record<string, string>);
+    delete env.CODEX_SESSION_ID;
+    delete env.CODEX_THREAD_ID;
+    delete env.CODEX_ENTRYPOINT;
+
+    // 3. Spawn a fresh session. Restart starts a NEW thread — codex
+    // app-server doesn't expose live-thread takeover across processes
+    // (proven by the resume probe), so each restart is a clean start.
+    let session;
+    try {
+      session = await this.codexAppServerManager.create({
+        command: codexBinary,
+        cwd: dataDir,
+        env,
+      });
+    } catch (err) {
+      const msg = (err as Error).message;
+      dal.updateHostedSwarm(hosted.id, { state: 'failed', error: `Restart failed: ${msg}` });
+      throw new SwarmHostingError('RESTART_FAILED', `Restart failed: ${msg}`);
+    }
+    this.codexRpcSessions.set(hosted.id, session.id);
+    dal.updateHostedSwarm(hosted.id, { pid: session.pid, state: 'running', error: null });
+
+    try { mapDal.updateSwarm(hosted.swarm_id, { status: 'online' }); } catch { /* best-effort */ }
+
+    broadcastToChannel('map:discovery', {
+      type: 'swarm_spawned',
+      data: {
+        hosted_swarm_id: hosted.id,
+        name: hosted.config?.name ?? hosted.id,
+        provider: hosted.provider,
+        kind: 'codex',
+        mode: 'rpc',
+        swarm_id: hosted.swarm_id,
+      },
+    });
+
+    return dal.findHostedSwarmById(hosted.id)!;
   }
 
   /**
@@ -154,7 +1009,424 @@ export class SwarmManager {
    * 6. Wait for health, then register in the MAP hub
    * 7. Update the DB record with the swarm_id
    */
+  /**
+   * Public entry point. Dispatches to the per-kind spawn pipeline. Existing
+   * callers that don't pass kind get the openswarm pipeline (preserves the
+   * pre-V50 contract). See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+   */
   async spawn(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
+    const kind = input.kind ?? 'openswarm';
+
+    // codex has two modes; the dispatcher branches BEFORE the TUI strategy
+    // lookup so `mode: 'rpc'` doesn't accidentally fall through to the TUI
+    // path. Default for codex is 'rpc' (chat-driven). 'tui' is opt-in.
+    if (kind === 'codex') {
+      const mode = input.mode ?? 'rpc';
+      if (mode === 'rpc') return this.spawnCodexRpc(agentId, input);
+      // mode === 'tui' falls through to the shared TUI pipeline below.
+    }
+
+    if (isTuiKind(kind)) {
+      const strategy = this.getTuiStrategy(kind);
+      if (!strategy) {
+        throw new SwarmHostingError('NOT_IMPLEMENTED', `Unsupported TUI kind: ${kind}`);
+      }
+      return this.spawnTuiKind(agentId, input, strategy);
+    }
+    return this.spawnOpenswarm(agentId, input);
+  }
+
+  /**
+   * Look up the per-kind strategy and bind any manager-owned helpers it
+   * needs (e.g. signalClaudeCodeSidecar). Returns null if the kind isn't
+   * TUI-shaped.
+   */
+  private getTuiStrategy(kind: HostedSwarmKind): TuiKindStrategy | null {
+    return getTuiKindStrategy(kind, {
+      signalSidecar: (hosted, signal) => this.signalClaudeCodeSidecar(hosted, signal),
+    });
+  }
+
+  /**
+   * claude-code kind: spawn the `claude` TUI. cc-swarm is a Claude Code
+   * plugin (must be installed on the host); its `SessionStart` hook reads
+   * the prelaunch `.swarm/claude-swarm/config.json` we write into the
+   * swarm's data_dir, detaches the MAP sidecar internally, and the sidecar
+   * registers with the openhive hub. We wait for that registration to
+   * flip the row to `running`.
+   *
+   * Differences from spawnOpenswarm:
+   *   - No port allocation (claude binds nothing)
+   *   - Slim onboard token (no BootstrapToken envelope; cc-swarm reads
+   *     `map.auth.credential` from the prelaunch config directly)
+   *   - Placeholder endpoint `internal:cc:<hostedSwarmId>` since there's
+   *     no inbound MAP server URL on this swarm
+   *   - Wait pattern is `getInbound(swarmId)` rather than HTTP `/health`
+   *
+   * See docs/HOSTED_SWARM_KINDS_DESIGN.md and the milestone-A plan for the
+   * design rationale.
+   */
+  private async spawnTuiKind(
+    agentId: string,
+    input: SpawnSwarmInput,
+    strategy: TuiKindStrategy,
+  ): Promise<HostedSwarm> {
+    const name = input.name ?? uniqueNamesGenerator({
+      dictionaries: [adjectives, colors, animals],
+      separator: '-',
+      length: 3,
+    });
+
+    // Phase 1: max-swarms validation (shared semantics with openswarm path).
+    const activeCount = dal.countActiveHostedSwarms();
+    if (activeCount >= this.config.max_swarms) {
+      throw new SwarmHostingError(
+        'MAX_SWARMS_REACHED',
+        `Maximum of ${this.config.max_swarms} hosted swarms reached (${activeCount} active)`,
+      );
+    }
+
+    const providerType = input.provider ?? this.config.default_provider;
+    const provider = this.providers.get(providerType);
+    if (!provider) {
+      throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', `Hosting provider "${providerType}" is not configured`);
+    }
+
+    // Phase 2: skip port allocation — TUI kinds don't bind a server.
+
+    // Phase 3: id + data_dir.
+    const hostedSwarmId = dal.generateHostedSwarmId();
+    const dataDir = path.join(this.config.data_dir, `swarm-${hostedSwarmId}`);
+
+    // Phase 4: hive validation.
+    if (input.hive) {
+      const { findHiveByName } = await import('../db/dal/hives.js');
+      const hive = findHiveByName(input.hive);
+      if (!hive) {
+        throw new SwarmHostingError('HIVE_NOT_FOUND', `Hive "${input.hive}" not found`);
+      }
+    }
+
+    // Phase 5: injected resources NOT YET SUPPORTED for TUI kinds in v1.
+    if (input.inject_resources && input.inject_resources.length > 0) {
+      console.warn(
+        `[swarm-manager] inject_resources is not yet supported for kind=${strategy.kind} (ignoring)`,
+      );
+    }
+
+    // Phase 6: resolve the binary BEFORE we touch state, so a missing
+    // binary fails fast with a clear error rather than after a half-spawned
+    // row exists.
+    const tuiBinary = strategy.resolveBinary();
+    if (!tuiBinary) {
+      throw new SwarmHostingError(
+        'SPAWN_FAILED',
+        `${strategy.kind} binary not found on PATH. Install ${strategy.kind} and retry.`,
+      );
+    }
+
+    // Phase 7: MAP pre-registration. We use a placeholder endpoint —
+    // there's no inbound MAP server on this swarm; the sidecar (if any)
+    // dials OUT to openhive's hub. The endpoint is just a stable identity
+    // tag for the registry.
+    let preRegisteredSwarmId: string;
+    try {
+      const placeholder = strategy.placeholderEndpoint(hostedSwarmId);
+      const stale = mapDal.findSwarmByEndpoint(placeholder);
+      if (stale) mapDal.deleteSwarm(stale.id);
+      const mapResult = registerSwarm(agentId, {
+        name,
+        description: input.description,
+        map_endpoint: placeholder,
+        map_transport: 'websocket',
+        capabilities: {
+          observation: true,
+          messaging: true,
+          lifecycle: true,
+        },
+        metadata: {
+          ...(input.metadata ?? {}),
+          hosted: true,
+          hosted_swarm_id: hostedSwarmId,
+          provider: providerType,
+          kind: strategy.kind,
+        },
+      });
+      preRegisteredSwarmId = mapResult.swarm.id;
+      console.log(`[swarm-manager] Pre-registered ${strategy.kind} swarm with stable ID: ${preRegisteredSwarmId}`);
+    } catch (err) {
+      throw new SwarmHostingError(
+        'SPAWN_FAILED',
+        `MAP pre-registration failed: ${(err as Error).message}`,
+      );
+    }
+
+    // Phase 8: mint slim onboard token. Used by sidecar-based kinds to
+    // auth their dial-back; kinds without a sidecar (codex v1) just hold
+    // the credential as a no-op.
+    let onboardToken: string;
+    try {
+      const delegated = delegateForSpawn({
+        parentAgentId: agentId,
+        parentScopes: ['map:*'],
+        childAgentId: preRegisteredSwarmId,
+        requestedScopes: ['map:*'],
+        ttlMinutes: 24 * 60,
+        childDelegatable: true,
+      });
+      onboardToken = delegated.credentials.token;
+    } catch (err) {
+      throw new SwarmHostingError(
+        'ONBOARD_TOKEN_FAILED',
+        `Failed to mint onboard token: ${(err as Error).message}`,
+      );
+    }
+
+    const mapServer = this.instanceUrl.replace(/^http/, 'ws').replace(/\/?$/, '/ws/map');
+
+    // Phase 10: build provision config. Most fields are openswarm-meaningful
+    // and have no analog for TUI kinds; we set them to defensible empties.
+    const inheritEnv = this.config.credentials?.inherit_env !== false;
+    const credentialOverlay = resolveCredentialOverlay(
+      this.config.credentials,
+      input.hive,
+      input.credential_overrides,
+    );
+
+    // Phase 10b: resolve repo_id → WORKSPACE_* env vars + clone target.
+    // Same contract as the openswarm path (shared helper) but here the
+    // provider owns the clone — the TUI process starts IN the repo dir.
+    let repoCloneTarget: { url: string; branch: string; localPath: string; existsLocally: boolean } | undefined;
+    if (input.repo_id) {
+      try {
+        const resolved = resolveRepoForSpawn(input.repo_id, dataDir, agentId);
+        applyRepoEnvVars(credentialOverlay, resolved);
+        repoCloneTarget = resolved;
+      } catch (err) {
+        if (err instanceof RepoResolutionError) {
+          throw new SwarmHostingError('REPO_NOT_FOUND', err.message);
+        }
+        throw err;
+      }
+    }
+
+    const provisionConfig: SwarmProvisionConfig = {
+      name,
+      adapter: strategy.adapterLabel(),
+      adapter_config: input.adapter_config,
+      bootstrap_token: '',
+      assigned_port: 0,
+      data_dir: dataDir,
+      resolved_credentials: credentialOverlay,
+      inherit_env: inheritEnv,
+      workspace: input.workspace,
+      bootstrap: input.bootstrap,
+      spawn_command_override: tuiBinary,
+      spawn_args_override: [],
+      ...(input.repo_id !== undefined && { repo_id: input.repo_id }),
+    };
+
+    // Phase 11: persist the row (now that all preconditions have passed).
+    const hosted = dal.createHostedSwarm({
+      id: hostedSwarmId,
+      kind: strategy.kind,
+      provider: providerType,
+      assigned_port: undefined,
+      bootstrap_token_hash: createHash('sha256').update(onboardToken).digest('hex'),
+      config: provisionConfig,
+      spawned_by: agentId,
+    });
+
+    dal.updateHostedSwarm(hosted.id, { state: 'starting', swarm_id: preRegisteredSwarmId });
+
+    try {
+      // Phase 12: clone any workspace repos FIRST. `git clone <url> <dir>`
+      // requires the target directory to be empty, so we do this before
+      // any prelaunch-file writes that would create entries under data_dir.
+      fs.mkdirSync(dataDir, { recursive: true });
+      if (input.workspace) {
+        try {
+          await cloneWorkspaceRepos(input.workspace, dataDir, process.env as Record<string, string>);
+        } catch (err) {
+          throw new SwarmHostingError(
+            'WORKSPACE_SETUP_FAILED',
+            `Workspace clone failed: ${(err as Error).message}`,
+          );
+        }
+      }
+
+      // Phase 12b: repo_id mount-or-clone. If the resolved path already
+      // exists on disk (local checkout or prior clone), skip cloning and
+      // just mount it as the working directory. Otherwise clone fresh.
+      if (repoCloneTarget && !repoCloneTarget.existsLocally) {
+        try {
+          await cloneWorkspaceRepos(
+            { repos: [{ url: repoCloneTarget.url, branch: repoCloneTarget.branch, path: 'repo' }] },
+            dataDir,
+            process.env as Record<string, string>,
+          );
+        } catch (err) {
+          throw new SwarmHostingError(
+            'WORKSPACE_SETUP_FAILED',
+            `Repo clone failed for ${input.repo_id}: ${(err as Error).message}`,
+          );
+        }
+      }
+
+      // Phase 13: per-kind prelaunch files (e.g. cc-swarm config).
+      // Written to dataDir (canonical location) AND repo cwd (if different)
+      // so the sidecar finds its config regardless of working directory.
+      strategy.writePrelaunchFiles?.({
+        swarmId: preRegisteredSwarmId,
+        hostedSwarmId,
+        onboardToken,
+        mapServer,
+        dataDir,
+      });
+      if (repoCloneTarget && repoCloneTarget.localPath !== dataDir) {
+        strategy.writePrelaunchFiles?.({
+          swarmId: preRegisteredSwarmId,
+          hostedSwarmId,
+          onboardToken,
+          mapServer,
+          dataDir: repoCloneTarget.localPath,
+        });
+      }
+
+      // Phase 14: pre-trust the working directory in the TUI's user config
+      // so the "Trust this folder?" gate doesn't block first-launch hooks.
+      // When a repo was cloned, trust both dataDir (prelaunch files) and the
+      // repo clone path (actual cwd). Best-effort: missing/invalid user
+      // config just means the user gets the prompt and dismisses it manually.
+      strategy.preTrustWorkdir(dataDir, os.homedir());
+      if (repoCloneTarget) {
+        strategy.preTrustWorkdir(repoCloneTarget.localPath, os.homedir());
+      }
+
+      // Phase 15: spawn the TUI via PtyManager. Both kinds are interactive
+      // TUIs that need a real TTY (would crash under child_process.spawn).
+      if (!this.ptyManager) {
+        throw new SwarmHostingError(
+          'SPAWN_FAILED',
+          `PtyManager is not configured. SwarmManager.setPtyManager() must be called during server bootstrap before spawning kind=${strategy.kind}.`,
+        );
+      }
+
+      // Build the env: inherit operator env, layer credentials, apply per-
+      // kind extras, then strip self-detection markers so a TUI launched
+      // from inside another TUI session of the same kind doesn't refuse.
+      const env: Record<string, string> = {};
+      if (inheritEnv) Object.assign(env, process.env as Record<string, string>);
+      if (credentialOverlay) Object.assign(env, credentialOverlay);
+      Object.assign(env, strategy.extraEnv());
+      for (const key of strategy.envVarsToStrip()) delete env[key];
+
+      // Both `claude` and `codex` accept an initial prompt as the first
+      // positional arg, opening their TUI with it prefilled. Empty/unset
+      // → no positional, the TUI opens at an empty prompt input.
+      const ptyArgs: string[] = [];
+      if (input.initial_prompt && input.initial_prompt.trim().length > 0) {
+        ptyArgs.push(input.initial_prompt);
+      }
+
+      let ptyInfo;
+      try {
+        ptyInfo = this.ptyManager.create({
+          command: tuiBinary,
+          args: ptyArgs,
+          cwd: repoCloneTarget ? repoCloneTarget.localPath : dataDir,
+          env,
+          cols: 120,
+          rows: 40,
+        });
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (msg.includes('Maximum number of terminal sessions')) {
+          throw new SwarmHostingError(
+            'MAX_SWARMS_REACHED',
+            `Cannot spawn ${strategy.kind} — the embedded terminal pool is full. Close some terminal tabs or stop other TUI swarms and try again.`,
+          );
+        }
+        throw err;
+      }
+      this.tuiSessions.set(hosted.id, ptyInfo.id);
+
+      dal.updateHostedSwarm(hosted.id, { pid: ptyInfo.pid });
+
+      // Phase 16: per-kind readiness wait. Kinds with a sidecar (claude-code)
+      // wait for the sidecar's MAP registration; kinds without (codex v1)
+      // are ready as soon as the PTY is up. Future codex-swarm plugin will
+      // flip codex to hasSidecar=true at no architectural cost.
+      if (strategy.hasSidecar) {
+        const ready = await this.waitForSidecarRegistration(
+          preRegisteredSwarmId,
+          strategy.sidecarRegistrationTimeoutMs ?? 60_000,
+        );
+        if (!ready) {
+          this.tuiSessions.delete(hosted.id);
+          try { this.ptyManager.destroy(ptyInfo.id); } catch { /* already gone */ }
+          strategy.signalSidecar?.(hosted, 'SIGTERM');
+          dal.updateHostedSwarm(hosted.id, {
+            state: 'unhealthy',
+            error: `${strategy.kind} sidecar did not register within ${(strategy.sidecarRegistrationTimeoutMs ?? 60_000) / 1000}s.`,
+          });
+          console.warn(`[swarm-manager] ${strategy.kind} swarm ${hosted.id} sidecar registration timed out`);
+          return dal.findHostedSwarmById(hosted.id)!;
+        }
+      }
+
+      dal.updateHostedSwarm(hosted.id, { state: 'running', error: null });
+
+      // Phase 17: broadcast (same shape openswarm uses).
+      broadcastToChannel('map:discovery', {
+        type: 'swarm_spawned',
+        data: {
+          hosted_swarm_id: hosted.id,
+          name,
+          provider: providerType,
+          kind: strategy.kind,
+          swarm_id: preRegisteredSwarmId,
+        },
+      });
+
+      return dal.findHostedSwarmById(hosted.id)!;
+    } catch (err) {
+      dal.updateHostedSwarm(hosted.id, {
+        state: 'failed',
+        error: `${strategy.kind} spawn failed: ${(err as Error).message}`,
+      });
+      throw new SwarmHostingError(
+        'SPAWN_FAILED',
+        `${strategy.kind} spawn failed: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Polls the inbound connection registry for the cc-swarm sidecar's
+   * registration against the pre-registered swarm id. Returns true when
+   * the sidecar shows up; false on timeout. Polling rather than event-
+   * driven because the registration path is several layers deep
+   * (WS upgrade → MAP server → connection-registry) and an event hook
+   * would be its own refactor — for v1 a 250ms poll with a 15s deadline
+   * is fine.
+   */
+  private async waitForSidecarRegistration(swarmId: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (getInbound(swarmId)) return true;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return false;
+  }
+
+  /**
+   * openswarm kind (existing behavior, unchanged). Was named `spawn()` before
+   * the kind-dispatcher was added; renamed for clarity. All openswarm-specific
+   * logic — bootstrap-token envelopes, port allocation, MAP pre-registration
+   * with `ws://127.0.0.1:<port>` shape — lives here.
+   */
+  private async spawnOpenswarm(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
     // Generate a name if none provided
     const name = input.name ?? uniqueNamesGenerator({
       dictionaries: [adjectives, colors, animals],
@@ -379,6 +1651,43 @@ export class SwarmManager {
       input.credential_overrides,
     );
 
+    // Inject WORKSPACE_* env vars when a repo_id is supplied. The spawned
+    // swarm's sidecar reads these on connect and emits `x-workspace/repo.declare`
+    // — see `references/agent-workspace/docs/design/agent-integration.md`.
+    if (input.repo_id) {
+      try {
+        const resolved = resolveRepoForSpawn(input.repo_id, dataDir, agentId);
+        applyRepoEnvVars(credentialOverlay, resolved);
+      } catch (err) {
+        this.releasePorts(port, adapter);
+        if (err instanceof RepoResolutionError) {
+          throw new SwarmHostingError('REPO_NOT_FOUND', err.message);
+        }
+        throw err;
+      }
+    }
+
+    // Persist per-swarm workspace policy on the pre-registered map_swarms
+    // row. Runtime `repo.declare`/`repo.retract`/trajectory-bootstrap
+    // calls are gated against this column in `OpenHiveRepoHandler` and
+    // `bootstrapRepoFromCheckpoint` via `findSwarmWorkspacePolicy`. The
+    // column is also exposed via `GET /api/v1/map/swarms/:id/workspace-policy`
+    // and editable via `PATCH` on the same path.
+    if (input.workspace_policy && preRegisteredSwarmId) {
+      try {
+        mapDal.updateSwarmWorkspacePolicy(preRegisteredSwarmId, input.workspace_policy);
+      } catch (err) {
+        // Fail loud, like `repo_id` does. An operator who explicitly asked
+        // for a policy at spawn-time deserves to know if persistence
+        // failed — silently continuing means the swarm runs with no
+        // enforcement when the operator believed it had one.
+        throw new SwarmHostingError(
+          'WORKSPACE_POLICY_PERSIST_FAILED',
+          `Failed to persist workspace_policy: ${(err as Error).message}`,
+        );
+      }
+    }
+
     const provisionConfig: SwarmProvisionConfig = {
       name,
       adapter,
@@ -395,6 +1704,8 @@ export class SwarmManager {
       },
       workspace: input.workspace,
       bootstrap: input.bootstrap,
+      ...(input.repo_id !== undefined && { repo_id: input.repo_id }),
+      ...(input.workspace_policy !== undefined && { workspace_policy: input.workspace_policy }),
     };
 
     // Create DB record — id is pre-generated so data_dir matches.
@@ -410,6 +1721,24 @@ export class SwarmManager {
     try {
       // Provision via the hosting provider
       dal.updateHostedSwarm(hosted.id, { state: 'starting' });
+
+      // If the caller requested git-sync on this hosted swarm's own
+      // workspace, write the opentasks config.json BEFORE the subprocess
+      // starts so the embedded daemon picks it up on first boot. This
+      // closes the "spawn-time propagation" gap — without it, a fresh
+      // hosted swarm always starts with sync off even when the operator
+      // already knows they want it on.
+      if (input.git_sync?.enabled) {
+        try {
+          fs.mkdirSync(dataDir, { recursive: true });
+          applyGitSyncConfig(dataDir, input.git_sync);
+        } catch (err) {
+          console.warn(
+            `[swarm-manager] git_sync config write failed for ${hosted.id}: ${(err as Error).message}`,
+          );
+          // Non-fatal: the swarm still spawns, user can PATCH later.
+        }
+      }
 
       // Resolve sandbox policy for sandboxed providers
       const sandboxPolicy = this.resolveSandboxPolicy(input.hive);
@@ -539,6 +1868,22 @@ export class SwarmManager {
       throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
     }
 
+    // codex `mode: 'rpc'` rows live in CodexAppServerManager. Branch first
+    // so they don't fall through to the TUI pipeline (which expects a PTY).
+    if (hosted.kind === 'codex' && hosted.config?.mode === 'rpc') {
+      return this.stopCodexRpc(hosted);
+    }
+
+    // TUI kinds live in PtyManager, not LocalProvider. Destroy the PTY;
+    // the exit handler (handleTuiPtyExit) flips the row state.
+    if (isTuiKind(hosted.kind)) {
+      const strategy = this.getTuiStrategy(hosted.kind);
+      if (!strategy) {
+        throw new SwarmHostingError('NOT_IMPLEMENTED', `Unsupported TUI kind: ${hosted.kind}`);
+      }
+      return this.stopTuiKind(hosted, strategy);
+    }
+
     const provider = this.providers.get(hosted.provider);
     if (!provider) {
       throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', `Provider "${hosted.provider}" not available`);
@@ -609,6 +1954,27 @@ export class SwarmManager {
     }
     if (hostedInitial.spawned_by !== agentId) {
       throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
+    }
+
+    // codex `mode: 'rpc'` rows route through CodexAppServerManager — branch
+    // first so they don't fall through to the TUI restart pipeline.
+    // Restart starts a fresh thread (codex app-server doesn't expose live-
+    // thread takeover; see the resume-probe deviation in the design doc).
+    if (hostedInitial.kind === 'codex' && hostedInitial.config?.mode === 'rpc') {
+      return this.restartCodexRpc(hostedInitial);
+    }
+
+    // TUI kinds route through PtyManager, not LocalProvider — the openswarm
+    // restart machinery (port reuse, provider.restart, autoRestart) doesn't
+    // apply. Branch early to a dedicated cold-restart path that tears down
+    // the existing PTY/sidecar and re-boots the TUI against the SAME row
+    // (preserves hosted_swarm_id, swarm_id, data_dir).
+    if (isTuiKind(hostedInitial.kind)) {
+      const strategy = this.getTuiStrategy(hostedInitial.kind);
+      if (!strategy) {
+        throw new SwarmHostingError('NOT_IMPLEMENTED', `Unsupported TUI kind: ${hostedInitial.kind}`);
+      }
+      return this.restartTuiKind(hostedInitial, strategy);
     }
 
     // Heal orphaned swarm_id if a prior stop nulled it via the old FK cascade.
@@ -740,6 +2106,21 @@ export class SwarmManager {
       throw new SwarmHostingError('NOT_OWNER', 'You did not spawn this swarm');
     }
 
+    // codex `mode: 'rpc'` streams via the JSON-RPC notification channel into
+    // openhive's chat surface — no scrollback buffer here either, but the
+    // hint should point users to the right place.
+    if (hosted.kind === 'codex' && hosted.config?.mode === 'rpc') {
+      return '(codex-rpc output streams live via JSON-RPC notifications into openhive chat — no scrollback buffer)';
+    }
+
+    // TUI kinds live in PtyManager. Output is streamed live to the
+    // embedded terminal via WS attach; PtyManager doesn't keep a scrollback
+    // buffer that we could replay here. Return a clear hint instead of the
+    // misleading "(no tracked instance)" the provider fallback emits.
+    if (isTuiKind(hosted.kind)) {
+      return `(${hosted.kind} logs stream live in the embedded terminal — no scrollback buffer)`;
+    }
+
     const provider = this.providers.get(hosted.provider);
     if (!provider) return '(provider not available)';
 
@@ -776,6 +2157,14 @@ export class SwarmManager {
 
     for (const hosted of active) {
       if (hosted.state === 'stopping' || hosted.state === 'provisioning') continue;
+
+      // TUI kinds (claude-code, codex) live in PtyManager, not
+      // LocalProvider. Their liveness comes from the PTY exit handler
+      // (handleClaudePtyExit) and, for sidecar-bearing kinds, the
+      // sidecar's MAP registration — not an HTTP probe. The default
+      // openswarm probe (port+1/health) doesn't apply: there's no port
+      // and no HTTP server. Skip explicitly.
+      if (isTuiKind(hosted.kind)) continue;
 
       const provider = this.providers.get(hosted.provider);
       if (!provider) continue;
@@ -886,6 +2275,30 @@ export class SwarmManager {
     let failed = 0;
 
     for (const hosted of active) {
+      // TUI kinds can't be revived: the PTY is gone (PtyManager is in-
+      // memory only), and any per-kind sidecar exited with the TUI or
+      // self-stopped on idle. No auto-restart logic applies to
+      // interactive TUIs. Mark them stopped with a clear diagnostic so
+      // the operator knows to spawn fresh; don't try to provision()
+      // through LocalProvider (which would crash without a TTY).
+      if (isTuiKind(hosted.kind)) {
+        console.log(
+          `[swarm-manager] ${hosted.kind} row ${hosted.id} cannot survive hub restart — marking stopped`,
+        );
+        dal.updateHostedSwarm(hosted.id, {
+          state: 'stopped',
+          error: `${hosted.kind} session ended with hub restart; spawn fresh to resume`,
+          pid: null,
+        });
+        if (hosted.swarm_id) {
+          try { mapDal.updateSwarm(hosted.swarm_id, { status: 'offline' }); } catch { /* best-effort */ }
+        }
+        // Best-effort sidecar cleanup if this kind has one and it survived.
+        const strategy = this.getTuiStrategy(hosted.kind);
+        if (strategy?.hasSidecar) strategy.signalSidecar?.(hosted, 'SIGTERM');
+        continue;
+      }
+
       const pid = hosted.pid;
       const alive = pid ? isPidAlive(pid) : false;
 
@@ -1420,6 +2833,17 @@ function isPidAlive(pid: number): boolean {
 // Error Type
 // ============================================================================
 
+/**
+ * Failure modes that can surface during a `SwarmManager.spawn` call. The
+ * union mixes pure swarm-hosting concerns with two repo-domain codes
+ * (`REPO_NOT_FOUND`, `WORKSPACE_POLICY_PERSIST_FAILED`) that arise inside
+ * the spawn flow when an `input.repo_id` or `input.workspace_policy`
+ * argument is supplied. They live here rather than in a separate
+ * `RepoSpawnErrorCode` because the caller of `spawn()` only ever sees
+ * one error type — a single union surfaces every reason a single call
+ * can fail. If repo-related concerns ever move out of the spawn
+ * critical path, split them out then.
+ */
 export type SwarmHostingErrorCode =
   | 'MAX_SWARMS_REACHED'
   | 'PROVIDER_NOT_AVAILABLE'
@@ -1431,7 +2855,10 @@ export type SwarmHostingErrorCode =
   | 'NOT_FOUND'
   | 'NOT_OWNER'
   | 'RESTART_NOT_SUPPORTED'
-  | 'RESTART_FAILED';
+  | 'RESTART_FAILED'
+  | 'REPO_NOT_FOUND'
+  | 'WORKSPACE_POLICY_PERSIST_FAILED'
+  | 'NOT_IMPLEMENTED';
 
 export class SwarmHostingError extends Error {
   code: SwarmHostingErrorCode;

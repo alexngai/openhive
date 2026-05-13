@@ -1,4 +1,4 @@
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Activity, AlertTriangle, Bell, ChevronRight, ChevronDown, ChevronUp, Clock, Cpu, FileText, Globe,
   GitBranch, Link2, Loader2, Megaphone, MessageSquare, Monitor, Network, Play, Plus, Send, Settings2, Share2,
@@ -43,8 +43,12 @@ import {
   type ChatTarget,
 } from 'swarmcraft/ui/embed';
 import { createCoordinationChatAdapter } from '../adapters/coordination-chat-adapter';
+import { getSwarmDetailSections } from '../lib/swarm-detail-sections';
 import { SpawnAgentDialog } from '../components/swarm/SpawnAgentDialog';
 import { getPeerMapId } from '../lib/map';
+import { usePageContext } from '../components/chat-fab/usePageContext';
+import { swarmContextItem } from '../components/chat-fab/context-types';
+import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -70,11 +74,20 @@ function SectionHeading({ icon: Icon, label, count }: {
   );
 }
 
+/**
+ * Compact placeholder used by idle sections (Registered Agents, Sessions,
+ * Messages, etc.). Single-line, subdued — keeps the page scannable when
+ * a swarm has nothing to show. An earlier version used a full card which
+ * stacked three tall empty panels on idle swarms.
+ */
 function EmptyState({ message }: { message: string }) {
   return (
-    <div className="card px-4 py-6 text-center" style={{ color: 'var(--color-text-muted)' }}>
-      <p className="text-xs">{message}</p>
-    </div>
+    <p
+      className="px-3 py-1.5 text-xs"
+      style={{ color: 'var(--color-text-muted)' }}
+    >
+      {message}
+    </p>
   );
 }
 
@@ -278,7 +291,9 @@ function SwarmHeader({
             <span className="opacity-30">·</span>
             <span>
               <span className="font-medium" style={{ color: 'var(--color-text-secondary)' }}>Agents </span>
-              {health.registeredAgentCount}
+              {/* Exclude sidecars from the visible count so it matches the
+                  Registered Agents section body, which hides sidecars. */}
+              {health.registeredAgents.filter((a) => a.role !== 'sidecar').length}
             </span>
             <span className="opacity-30">·</span>
             <span>
@@ -426,30 +441,70 @@ function useSwarmActions({
 function TerminalSection({ hosted }: { hosted: HostedSwarm }) {
   const navigate = useNavigate();
   if (hosted.state !== 'running') return null;
+  // Programmatic-mode (mode='rpc') swarms have no embedded TUI — the
+  // chat surface (HostedChatSection) handles these. Bail to keep the
+  // page clean. Provider-agnostic check: any rpc-mode kind, not just
+  // codex.
+  if (hosted.mode === 'rpc') return null;
 
   return (
-    <button
-      onClick={() => navigate(`/terminal/${hosted.id}`)}
-      className="mt-4 w-full card card-hover px-3 py-2.5 flex items-center gap-3 text-left transition-colors group"
-      aria-label="Open TUI in a dedicated view"
-    >
-      <div
-        className="w-7 h-7 rounded flex items-center justify-center shrink-0"
-        style={{ backgroundColor: 'var(--color-elevated)' }}
+    <div className="mt-4 grid gap-2 sm:grid-cols-2">
+      <button
+        onClick={() => navigate(`/terminal/${hosted.id}`)}
+        className="card card-hover px-3 py-2.5 flex items-center gap-3 text-left transition-colors group"
+        aria-label="Open TUI in a dedicated view"
       >
-        <Terminal className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">Open Terminal</div>
-        <div className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-          Attach to the hosted process to tail output and drive the TUI.
+        <div
+          className="w-7 h-7 rounded flex items-center justify-center shrink-0"
+          style={{ backgroundColor: 'var(--color-elevated)' }}
+        >
+          <Terminal className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
         </div>
-      </div>
-      <ChevronRight
-        className="w-3.5 h-3.5 shrink-0 group-hover:text-honey-500 transition-colors"
-        style={{ color: 'var(--color-text-muted)' }}
-      />
-    </button>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">
+            {hosted.kind === 'claude-code'
+              ? 'Open Claude Code'
+              : hosted.kind === 'codex'
+                ? 'Open Codex'
+                : 'Open TUI'}
+          </div>
+          <div className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+            {hosted.kind === 'claude-code'
+              ? 'Attach to the running Claude Code TUI.'
+              : hosted.kind === 'codex'
+                ? 'Attach to the running Codex TUI.'
+                : 'OpenSwarm TUI tunneled through this hub.'}
+          </div>
+        </div>
+        <ChevronRight
+          className="w-3.5 h-3.5 shrink-0 group-hover:text-honey-500 transition-colors"
+          style={{ color: 'var(--color-text-muted)' }}
+        />
+      </button>
+
+      <button
+        onClick={() => navigate(`/terminal/${hosted.id}?mode=shell`)}
+        className="card card-hover px-3 py-2.5 flex items-center gap-3 text-left transition-colors group"
+        aria-label="Open a shell in the swarm's working directory"
+      >
+        <div
+          className="w-7 h-7 rounded flex items-center justify-center shrink-0"
+          style={{ backgroundColor: 'var(--color-elevated)' }}
+        >
+          <Terminal className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">Open Shell</div>
+          <div className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+            $SHELL inside the swarm's data dir, sandboxed.
+          </div>
+        </div>
+        <ChevronRight
+          className="w-3.5 h-3.5 shrink-0 group-hover:text-honey-500 transition-colors"
+          style={{ color: 'var(--color-text-muted)' }}
+        />
+      </button>
+    </div>
   );
 }
 
@@ -667,9 +722,23 @@ function RegisteredAgentCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium truncate">{agent.name || agent.id}</span>
-            <span className="text-2xs px-1.5 py-0.5 rounded capitalize" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
-              {agent.role}
-            </span>
+            {agent.role === 'sidecar' ? (
+              // Sidecars are infrastructure (cc-swarm bridge), not worker
+              // agents — distinct amber chip so the operator instantly
+              // sees this card represents the bridge, not something they
+              // can drive directly.
+              <span
+                className="text-2xs px-1.5 py-0.5 rounded font-medium"
+                style={{ backgroundColor: 'rgba(255, 165, 0, 0.12)', color: '#f59e0b' }}
+                title="Infrastructure agent — bridges this swarm's lifecycle to openhive. Not a driveable worker."
+              >
+                sidecar
+              </span>
+            ) : (
+              <span className="text-2xs px-1.5 py-0.5 rounded capitalize" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
+                {agent.role}
+              </span>
+            )}
             {protocols.map((p) => (
               <span
                 key={p}
@@ -875,10 +944,38 @@ function ActiveWorkSection({ swarmId }: { swarmId: string }) {
   );
 }
 
-function RegisteredAgentsSection({ swarm, swarmId, hosted }: { swarm: MapSwarm; swarmId: string; hosted?: HostedSwarm }) {
+function RegisteredAgentsSection({
+  swarm,
+  swarmId,
+  hosted,
+  canSpawnAgent = true,
+}: {
+  swarm: MapSwarm;
+  swarmId: string;
+  hosted?: HostedSwarm;
+  /**
+   * When false, the section renders agents read-only — the Spawn Agent
+   * button and advanced dialog are hidden. Used for hosted-swarm kinds
+   * that own a single TUI process (claude-code, codex) where there's no
+   * fleet to grow into. Defaults to true so legacy callers keep the
+   * full controls.
+   */
+  canSpawnAgent?: boolean;
+}) {
   const allAgents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined ?? [];
-  const sidecars = allAgents.filter((a) => a.role === 'sidecar');
-  const agents = allAgents.filter((a) => a.role !== 'sidecar');
+  // Render sidecars in the cards list — for kinds where the sidecar is
+  // the only agent (claude-code), hiding it leaves the section eternally
+  // empty. Sort sidecars LAST so worker fleets (openswarm) render natural
+  // ordering up top with infrastructure at the bottom; for claude-code
+  // the sidecar is just the only visible card.
+  const agents = useMemo(
+    () => [...allAgents].sort((a, b) => {
+      const aSide = a.role === 'sidecar' ? 1 : 0;
+      const bSide = b.role === 'sidecar' ? 1 : 0;
+      return aSide - bSide;
+    }),
+    [allAgents],
+  );
 
   // Fan data into per-agent buckets for inline chips. Single query at the
   // section level; cards consume the derived maps.
@@ -934,20 +1031,11 @@ function RegisteredAgentsSection({ swarm, swarmId, hosted }: { swarm: MapSwarm; 
           {agents.length > 0 && (
             <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>{agents.length}</span>
           )}
-          {sidecars.length > 0 && (
-            <span
-              className="text-2xs font-normal px-1.5 py-0.5 rounded"
-              style={{ color: 'var(--color-text-muted)', backgroundColor: 'var(--color-surface)' }}
-              title={`Sidecar: ${sidecars.map((s) => s.id).join(', ')}`}
-            >
-              sidecar connected
-            </span>
-          )}
         </h3>
-        {swarmActions.button}
+        {canSpawnAgent && swarmActions.button}
       </div>
-      {swarmActions.error}
-      {swarmActions.dialog}
+      {canSpawnAgent && swarmActions.error}
+      {canSpawnAgent && swarmActions.dialog}
       {agents.length > 0 ? (
         <div className="space-y-1">
           {agents.map((agent) => {
@@ -965,7 +1053,9 @@ function RegisteredAgentsSection({ swarm, swarmId, hosted }: { swarm: MapSwarm; 
           })}
         </div>
       ) : (
-        <EmptyState message="No agents yet. Click Spawn Agent to create a coordinator." />
+        <EmptyState message={canSpawnAgent
+          ? "No agents yet. Click Spawn Agent to create a coordinator."
+          : "No agents registered for this swarm."} />
       )}
     </div>
   );
@@ -1497,12 +1587,22 @@ function ResumableSessionsSection({ swarmId }: { swarmId: string }) {
   );
 }
 
-function SessionsSection({ swarmId }: { swarmId: string }) {
+function SessionsSection({ swarmId, hosted }: { swarmId: string; hosted?: HostedSwarm }) {
   const { data, isLoading } = useSessionsList({ swarm_id: swarmId });
   useSessionsRealtime();
   const sessions = data?.data ?? [];
 
   if (isLoading) return <LoadingSpinner size="sm" />;
+
+  // Make the empty state explanatory for kinds where session population
+  // depends on a specific lifecycle event. claude-code only writes
+  // session resources via cc-swarm's sessionlog → trajectory/checkpoint
+  // bridge, which fires on the Stop hook after a completed turn — so
+  // a freshly-spawned session shows nothing until the user actually
+  // sends a prompt and gets a response.
+  const emptyMessage = hosted?.kind === 'claude-code'
+    ? 'No sessions yet — session resources appear after claude completes a turn (cc-swarm syncs trajectory checkpoints on the Stop hook).'
+    : 'No sessions synced from this swarm yet.';
 
   return (
     <div>
@@ -1514,7 +1614,7 @@ function SessionsSection({ swarmId }: { swarmId: string }) {
           ))}
         </div>
       ) : (
-        <EmptyState message="No sessions synced from this swarm yet." />
+        <EmptyState message={emptyMessage} />
       )}
     </div>
   );
@@ -1525,7 +1625,7 @@ function SessionsSection({ swarmId }: { swarmId: string }) {
 export function SwarmDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: swarm, isLoading: mapLoading } = useMapSwarm(id!);
-  const { data: hostedSwarms } = useHostedSwarms();
+  const { data: hostedSwarms, isLoading: hostedLoading } = useHostedSwarms();
   useSwarmRealtime();
 
   // Find matching hosted swarm (by swarm_id linking to MAP registration).
@@ -1534,7 +1634,62 @@ export function SwarmDetail() {
     (h) => h.swarm_id === id || h.id === id
   );
 
-  if (mapLoading) return <PageLoader />;
+  // Detect hosted-swarm-id alias: the route accepts both MAP swarm IDs
+  // (`swarm_*`) and hosted swarm IDs (`hswarm_*`). The page itself is keyed on
+  // the MAP id (every section hook depends on it), so when the user lands on
+  // a hosted id we redirect to the canonical MAP id below — *after* all hooks
+  // run so the early return doesn't break hook order on the redirect render.
+  const hostedAliasMatch = hostedSwarms?.find((h) => h.id === id);
+  const aliasRedirectTarget =
+    hostedAliasMatch?.swarm_id && hostedAliasMatch.swarm_id !== id
+      ? hostedAliasMatch.swarm_id
+      : null;
+
+  // Section visibility — central registry decides which sections render
+  // for each kind/mode combo so kind-specific noise doesn't bleed into
+  // the page layout. claude-code rows additionally gate ActiveWork +
+  // ComposeMessage on the cc-swarm sidecar being present (otherwise the
+  // user sees mail-driven surfaces with no actor to receive them). See
+  // src/web/lib/swarm-detail-sections.ts.
+  const sections = useMemo(
+    () => getSwarmDetailSections(hosted, swarm ?? {}),
+    [hosted, swarm],
+  );
+
+  // Declare chat context items. Unconditional (before early returns) so
+  // hook order is stable across loading/missing states.
+  usePageContext(
+    () => {
+      if (!swarm) return [];
+      const items: ChatFabContextItem[] = [
+        swarmContextItem(
+          {
+            id: swarm.id,
+            name: swarm.name,
+            status: swarm.status,
+            agent_count: swarm.agent_count,
+            registered_agent_count: swarm.registered_agents?.length,
+            last_seen_at: swarm.last_seen_at,
+            description: swarm.description,
+          },
+          { primary: true },
+        ),
+      ];
+      return items;
+    },
+    [swarm],
+  );
+
+  // Wait for both queries before declaring not-found. Without hostedLoading,
+  // a deep link to /swarms/<hswarm_*> can flash "Swarm not found" before the
+  // hosted-id alias redirect lands.
+  if (mapLoading || hostedLoading) return <PageLoader />;
+
+  // Redirect hosted-id aliases to the canonical MAP id. Placed after all
+  // hooks have run (loading guard above) so hook order stays stable.
+  if (aliasRedirectTarget) {
+    return <Navigate to={`/swarms/${aliasRedirectTarget}`} replace />;
+  }
 
   if (!swarm) {
     return (
@@ -1581,27 +1736,34 @@ export function SwarmDetail() {
 
       <SwarmHeader swarm={swarm} swarmId={id!} hosted={hosted} />
 
-      <ActiveWorkSection swarmId={id!} />
+      {sections.has('active-work') && <ActiveWorkSection swarmId={id!} />}
 
-      {hosted && <TerminalSection hosted={hosted} />}
+      {hosted && sections.has('terminal') && <TerminalSection hosted={hosted} />}
 
-      {hosted && <LogsSection hosted={hosted} />}
+      {hosted && sections.has('logs') && <LogsSection hosted={hosted} />}
 
-      <NodesSection swarmId={id!} />
+      {sections.has('nodes') && <NodesSection swarmId={id!} />}
 
-      <RegisteredAgentsSection swarm={swarm} swarmId={id!} hosted={hosted} />
+      {sections.has('registered-agents') && (
+        <RegisteredAgentsSection
+          swarm={swarm}
+          swarmId={id!}
+          hosted={hosted}
+          canSpawnAgent={sections.has('spawn-agent')}
+        />
+      )}
 
-      <ResumableSessionsSection swarmId={id!} />
+      {sections.has('resumable-sessions') && <ResumableSessionsSection swarmId={id!} />}
 
-      <SessionsSection swarmId={id!} />
+      {sections.has('sessions') && <SessionsSection swarmId={id!} hosted={hosted} />}
 
-      <ComposeMessageSection swarmId={id!} />
+      {sections.has('compose-message') && <ComposeMessageSection swarmId={id!} />}
 
-      <MessagesSection swarmId={id!} />
+      {sections.has('messages') && <MessagesSection swarmId={id!} />}
 
-      <EventsSection swarmId={id!} />
+      {sections.has('events') && <EventsSection swarmId={id!} />}
 
-      <PeersSection swarmId={id!} />
+      {sections.has('peers') && <PeersSection swarmId={id!} />}
     </div>
   );
 }

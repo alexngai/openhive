@@ -51,7 +51,6 @@ function buildSkill(overrides: Partial<Skill> & { id: string; name: string }): S
     createdAt: now,
     updatedAt: now,
     status: 'active',
-    metrics: { usageCount: 0, successRate: 0, feedbackScores: [] },
     ...overrides,
   };
 }

@@ -14,6 +14,10 @@ import {
   materializeLoadoutById,
   LoadoutBundleNotFoundError,
 } from '../../openteams/loadout-materializer.js';
+import { getMailJsonRpc } from '../../mail/index.js';
+import { ensureDispatchConversation } from '../../dispatch/dispatch-conversation.js';
+import { findSwarmById } from '../../db/dal/map.js';
+import { getInbound, getInboundIncludingStale } from '../../map/connection-registry.js';
 import type {
   DispatchInitiatorType,
   DispatchStatus,
@@ -87,7 +91,8 @@ export async function dispatchesRoutes(
     if (!dispatch) {
       return reply.status(404).send({ error: 'Not Found', message: 'Dispatch not found' });
     }
-    return reply.send({ dispatch });
+    const linked_tasks = dispatchesDAL.getDispatchLinkedTasks(request.params.id);
+    return reply.send({ dispatch, linked_tasks });
   });
 
   /**
@@ -196,6 +201,195 @@ export async function dispatchesRoutes(
     }
 
     return reply.send({ dispatch: cancelled });
+  });
+
+  /**
+   * POST /dispatches/:id/thread/turns
+   *
+   * User posts a message to the dispatch coordination thread. Lazily creates
+   * the conversation on first message. Returns the conversation_id so the
+   * frontend can subscribe to updates.
+   *
+   * Body: { content: string }
+   */
+  fastify.post<{
+    Params: { id: string };
+    Body: { content: string; importance?: string };
+  }>('/dispatches/:id/thread/turns', { preHandler: authOrAdminKey }, async (request, reply) => {
+    const dispatch = dispatchesDAL.findDispatchById(request.params.id);
+    if (!dispatch) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Dispatch not found' });
+    }
+    if (dispatch.status === 'cancelled') {
+      return reply.status(409).send({
+        error: 'Conflict',
+        message: 'Dispatch is cancelled',
+      });
+    }
+
+    const content = request.body?.content;
+    if (!content || typeof content !== 'string' || content.trim().length === 0) {
+      return reply.status(400).send({ error: 'Bad Request', message: 'content is required' });
+    }
+
+    // Resolve user identity
+    const userId = request.agent?.id ?? 'user:admin-key';
+
+    // Resolve executor from latest running attempt
+    const currentAttempt = dispatch.attempts_history
+      .filter((a) => a.status === 'running')
+      .pop();
+    const executorAgentId = currentAttempt?.agent_id ?? `executor-${dispatch.target_swarm_id}`;
+
+    // Resolve swarm name for conversation subject
+    const swarm = findSwarmById(dispatch.target_swarm_id);
+    const swarmName = swarm?.name ?? dispatch.target_swarm_id;
+
+    try {
+      const linkedTasks = dispatchesDAL.getDispatchLinkedTasks(dispatch.id);
+      const conversationId = await ensureDispatchConversation(
+        {
+          dispatchId: dispatch.id,
+          specId: dispatch.spec_id ?? '',
+          specResourceId: dispatch.spec_resource_id ?? '',
+          specTitle: dispatch.spec_id ? `Spec ${dispatch.spec_id}` : `Dispatch ${dispatch.id}`,
+          targetSwarmId: dispatch.target_swarm_id,
+          swarmName,
+          linkedTasks,
+          initiator: { type: dispatch.initiator_type, id: dispatch.initiator_id },
+          executorAgentId,
+        },
+        { getMailJsonRpc },
+      );
+
+      // Add the user's turn — default to 'high' importance for user-posted
+      // dispatch thread messages since they typically expect a reply.
+      const mailRpc = getMailJsonRpc();
+      const turnId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const validImportance = ['low', 'normal', 'high', 'urgent'];
+      const turnImportance =
+        typeof request.body.importance === 'string' && validImportance.includes(request.body.importance)
+          ? request.body.importance
+          : 'high';
+      await mailRpc.handleRequest({
+        jsonrpc: '2.0',
+        id: turnId,
+        method: 'mail/turn',
+        params: {
+          conversationId,
+          participantId: userId,
+          content: content.trim(),
+          contentType: 'text',
+          importance: turnImportance,
+        },
+      } as Parameters<typeof mailRpc.handleRequest>[0]);
+
+      // Broadcast to WS subscribers
+      try {
+        broadcastToChannel('map:dispatches', {
+          type: 'dispatch.thread.turn',
+          data: {
+            dispatch_id: dispatch.id,
+            conversation_id: conversationId,
+            sender: userId,
+            content_preview: content.length > 200 ? content.slice(0, 200) + '...' : content,
+          },
+        });
+      } catch { /* best effort */ }
+
+      return reply.status(201).send({
+        conversation_id: conversationId,
+        dispatch_id: dispatch.id,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to post thread turn';
+      return reply.status(500).send({ error: 'Internal Error', message });
+    }
+  });
+
+  /**
+   * GET /dispatches/:id/thread/presence
+   *
+   * Returns the participant list for a dispatch's coordination thread,
+   * enriched with live presence status from the MAP connection registry.
+   *
+   * Presence values:
+   * - `online`  — the agent's swarm has an active MAP connection
+   * - `stale`   — the swarm WS closed but metadata is retained (reconnect window)
+   * - `offline` — no connection found
+   */
+  fastify.get<{
+    Params: { id: string };
+  }>('/dispatches/:id/thread/presence', { preHandler: authOrAdminKey }, async (request, reply) => {
+    const dispatch = dispatchesDAL.findDispatchById(request.params.id);
+    if (!dispatch) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Dispatch not found' });
+    }
+    if (!dispatch.conversation_id) {
+      return reply.send({
+        dispatch_id: dispatch.id,
+        conversation_id: null,
+        participants: [],
+      });
+    }
+
+    // Query conversation participants via mail RPC
+    try {
+      const mailRpc = getMailJsonRpc();
+      const reqId = `presence-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const response = (await mailRpc.handleRequest({
+        jsonrpc: '2.0',
+        id: reqId,
+        method: 'mail/presence',
+        params: { conversationId: dispatch.conversation_id },
+      })) as {
+        result?: {
+          participants?: Array<{
+            agent_id: string;
+            role?: string;
+            joined_at?: string;
+            presence?: string;
+          }>;
+        };
+      };
+
+      const rawParticipants = response?.result?.participants ?? [];
+
+      // Enrich with MAP connection registry presence for more accurate status.
+      // The mail/presence method returns registry-based status if a registry
+      // was provided; here we overlay MAP-level swarm connectivity which is
+      // authoritative for OpenHive's context.
+      const participants = rawParticipants.map((p) => {
+        let presence: 'online' | 'stale' | 'offline' = 'offline';
+
+        // Check if the agent's swarm has an active connection
+        const conn = getInbound(dispatch.target_swarm_id);
+        if (conn) {
+          presence = 'online';
+        } else {
+          const stale = getInboundIncludingStale(dispatch.target_swarm_id);
+          if (stale) {
+            presence = 'stale';
+          }
+        }
+
+        return {
+          agent_id: p.agent_id,
+          role: p.role ?? null,
+          joined_at: p.joined_at ?? null,
+          presence,
+        };
+      });
+
+      return reply.send({
+        dispatch_id: dispatch.id,
+        conversation_id: dispatch.conversation_id,
+        participants,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to query presence';
+      return reply.status(500).send({ error: 'Internal Error', message });
+    }
   });
 
 }

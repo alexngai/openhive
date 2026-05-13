@@ -10,8 +10,10 @@
  *      `metadata.source = 'swarm-dispatch'` so replies can be demuxed.
  *      The envelope is stored as the turn content (JSON).
  *   2. `messaging.canReceive` present → MAP JSON-RPC notification
- *      `map/dispatch/message` sent via `sendToSwarm`. The sidecar is expected
- *      to forward to the named agent and reply with `map/dispatch/reply`.
+ *      `x-dispatch/message` sent via `sendToSwarm` (the canonical method
+ *      name; method/schema constants live in swarm-dispatch's
+ *      `client/methods.ts`). The sidecar is expected to forward to the
+ *      named agent and reply on the dispatch's mail conversation.
  *   3. Neither → `{ delivered: false, reason: 'recipient_unreachable' }`.
  *
  * The receive path fans inbound mail turns (matching our conversation
@@ -19,13 +21,33 @@
  */
 import type { EventEmitter } from 'node:events';
 import type { MailJsonRpcServer, Storage } from 'agent-inbox';
+import {
+  X_DISPATCH_METHODS,
+  LEGACY_MAP_DISPATCH_MESSAGE_METHOD,
+} from 'swarm-dispatch/client';
 import type { MailTransport } from './openhive-mail-port.js';
 import { hasAgentCapability, getAgentOnSwarm } from '../map/connection-registry.js';
 import { subscribeDispatchMapReply } from './mail-ingress.js';
 
 export const DISPATCHER_PARTICIPANT_ID = 'openhive:dispatcher';
 export const DISPATCH_CONVERSATION_SCOPE = 'swarm-dispatch';
-export const DISPATCH_MAP_MESSAGE_METHOD = 'map/dispatch/message';
+
+/**
+ * Canonical method name for dispatch envelopes routed via MAP scope.
+ * Re-exported from swarm-dispatch's protocol-constants module so callers
+ * importing from this file see the same string the orchestrator uses.
+ */
+export const DISPATCH_MAP_MESSAGE_METHOD: typeof X_DISPATCH_METHODS.MESSAGE =
+  X_DISPATCH_METHODS.MESSAGE;
+
+/**
+ * @deprecated — old method name, kept exported for one release window so
+ * external callers (tests, downstream consumers) can identify the legacy
+ * alias. Use `DISPATCH_MAP_MESSAGE_METHOD` (or
+ * `X_DISPATCH_METHODS.MESSAGE` from swarm-dispatch directly) instead.
+ */
+export const DISPATCH_MAP_MESSAGE_METHOD_LEGACY: typeof LEGACY_MAP_DISPATCH_MESSAGE_METHOD =
+  LEGACY_MAP_DISPATCH_MESSAGE_METHOD;
 
 type DispatchEnvelope = { type: string; body: Record<string, unknown> };
 
@@ -151,6 +173,22 @@ export function createOpenHiveMailTransport(deps: MailTransportDeps): MailTransp
   ): Promise<{ delivered: boolean; reason?: string }> {
     try {
       const conversationId = await ensureConversation(swarmId, agentId);
+      // Persist the conversation_id back to the dispatch row, if the
+      // envelope carries a taskId. Without this, the mail-completion
+      // observer (src/dispatch/mail-completion.ts) can't map the
+      // agent's reply turn back to the in-flight dispatch — the row's
+      // conversation_id stays null because nothing else writes to it
+      // on the mail-route happy path. Idempotent: setDispatchConversationId
+      // skips when conversation_id is already set (first-writer wins).
+      const taskId = (envelope as { body?: { taskId?: unknown } })?.body?.taskId;
+      if (typeof taskId === 'string' && taskId.length > 0) {
+        try {
+          const { setDispatchConversationId } = await import('../db/dal/dispatches.js');
+          setDispatchConversationId(taskId, conversationId);
+        } catch {
+          /* best effort — observer's joinability is enhanced, not required */
+        }
+      }
       await invokeMailMethod(deps.getMailJsonRpc(), 'mail/turn', {
         conversationId,
         participantId: DISPATCHER_PARTICIPANT_ID,
@@ -194,7 +232,27 @@ export function createOpenHiveMailTransport(deps: MailTransportDeps): MailTransp
       }
 
       if (hasAgentCapability(swarmId, agentId, 'messaging.canReceive')) {
-        return sendViaMapScope(swarmId, agentId, envelope);
+        // Ensure a per-(swarm, agent) conversation exists and inject its
+        // id into the envelope body so the swarm-side `x-dispatch/message`
+        // handler can surface it as `_conversationId` on the inbox event.
+        // Without this, the mail-inbound-reuse-consumer has no
+        // conversation to post the agent's reply turn to.
+        let envelopeWithConv = envelope;
+        try {
+          const conversationId = await ensureConversation(swarmId, agentId);
+          envelopeWithConv = {
+            ...envelope,
+            body: {
+              ...envelope.body,
+              _conversationId: conversationId,
+            },
+          };
+        } catch {
+          // Best-effort: if conversation creation fails, fall through to
+          // sending without — the dispatch's reply path will be lost
+          // but the prompt itself still flows.
+        }
+        return sendViaMapScope(swarmId, agentId, envelopeWithConv);
       }
 
       return { delivered: false, reason: 'no_mail_transport' };

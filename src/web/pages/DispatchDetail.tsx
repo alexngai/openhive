@@ -2,17 +2,29 @@ import { useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Send, Zap, FileText, User, Bot, Ban, AlertCircle, GitBranch, GitCommit,
+  ListChecks, CheckCircle2, Circle, Sparkles,
 } from 'lucide-react';
 import { useDispatch, useCancelDispatch } from '../hooks/useDispatch';
-import { useDispatchRealtime, useCancelAckWarnings } from '../hooks/useDispatchRealtime';
+import {
+  useDispatchRealtime,
+  useCancelAckWarnings,
+  useMaterializationWarnings,
+} from '../hooks/useDispatchRealtime';
 import { useMapSwarm, useSessionsList, useCascadeDAG } from '../hooks/useApi';
 import { useSpec } from '../hooks/useSpecs';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
+import { DispatchThreadSection } from '../components/dispatch/DispatchThreadSection';
 import { AttemptsTimeline } from '../components/dispatch/AttemptsTimeline';
 import { StreamStatusDot } from '../components/streams/shared';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
-import { ChatFabContextProvider } from '../components/chat-fab/ChatFabContext';
+import { usePageContext } from '../components/chat-fab/usePageContext';
+import {
+  dispatchContextItem,
+  specContextItem,
+  tasksContextItem,
+} from '../components/chat-fab/context-types';
+import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
 
 export function DispatchDetail() {
   const { id } = useParams<{ id: string }>();
@@ -23,6 +35,8 @@ export function DispatchDetail() {
   const [cancelError, setCancelError] = useState<string | null>(null);
   useDispatchRealtime();
   const { warned: cancelNotAcked, dismiss: dismissCancelWarning } = useCancelAckWarnings(id);
+  const { error: materializationError, dismiss: dismissMaterializationWarning } =
+    useMaterializationWarnings(id);
 
   // Sessions + cascade streams on this swarm — used to compute which changes
   // (if any) were opened by agents that ran this dispatch. Heuristic match:
@@ -48,6 +62,64 @@ export function DispatchDetail() {
     if (agentIds.size === 0) return [];
     return cascadeResp.data.nodes.filter((n) => agentIds.has(n.source_agent_id));
   }, [data, sessionsResp, cascadeResp]);
+
+  // Declare this page's chat context items. Re-runs when the dispatch,
+  // source spec, or linked tasks change; cleared on unmount. Must stay
+  // unconditional so hook order is stable across loading/error returns.
+  const dispatchRec = data?.dispatch;
+  const sourceSpec = specResp?.spec;
+  const linkedTasks = data?.linked_tasks;
+  usePageContext(
+    () => {
+      if (!dispatchRec) return [];
+      const latest = dispatchRec.attempts_history?.length
+        ? dispatchRec.attempts_history[dispatchRec.attempts_history.length - 1]
+        : undefined;
+      const items: ChatFabContextItem[] = [
+        dispatchContextItem(
+          {
+            id: dispatchRec.id,
+            spec_id: dispatchRec.spec_id,
+            target_swarm_id: dispatchRec.target_swarm_id,
+            status: dispatchRec.status,
+            created_at: dispatchRec.created_at,
+            latest_attempt: latest
+              ? {
+                  attempt: latest.attempt,
+                  status: latest.status,
+                  started_at: latest.started_at,
+                  error: latest.error,
+                }
+              : undefined,
+          },
+          { primary: true },
+        ),
+      ];
+      if (sourceSpec) {
+        items.push(
+          specContextItem({
+            id: sourceSpec.id,
+            resource_id: sourceSpec.resource_id,
+            title: sourceSpec.title,
+            content: sourceSpec.content ?? '',
+          }),
+        );
+      }
+      // `linked_tasks` on the dispatch carries `{ resource_id, node_id }`
+      // refs — best-effort mapping to the TaskRef shape the registry
+      // expects. Titles/statuses aren't on the payload without a new
+      // fetch, so the block renders ids alone.
+      if (linkedTasks && linkedTasks.length > 0) {
+        items.push(
+          tasksContextItem(
+            linkedTasks.map((t) => ({ id: t.node_id })),
+          ),
+        );
+      }
+      return items;
+    },
+    [dispatchRec, sourceSpec, linkedTasks],
+  );
 
   if (isLoading) return <PageLoader />;
 
@@ -89,12 +161,7 @@ export function DispatchDetail() {
     }
   };
 
-  const chatFabItems = [
-    { label: `Dispatch: ${d.id.slice(0, 15)}…`, type: 'dispatch' as const, data: { id: d.id, spec_id: d.spec_id, status: d.status, target_swarm_id: d.target_swarm_id } },
-  ];
-
   return (
-    <ChatFabContextProvider items={chatFabItems}>
     <div className="p-6 max-w-4xl mx-auto">
       <Link
         to="/dispatch"
@@ -172,6 +239,38 @@ export function DispatchDetail() {
             </button>
           </div>
         )}
+
+        {materializationError && (
+          <div
+            className="mt-2 rounded-md border p-2 text-sm flex items-start gap-2"
+            style={{
+              borderColor: 'rgba(245, 158, 11, 0.4)',
+              backgroundColor: 'rgba(245, 158, 11, 0.05)',
+              color: 'var(--color-text)',
+            }}
+          >
+            <AlertCircle className="h-4 w-4 mt-0.5 text-amber-400" />
+            <div className="flex-1">
+              <div className="font-medium">Loadout materialization failed</div>
+              <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                The bound loadout could not be resolved
+                {materializationError !== 'unknown error' ? (
+                  <> (<span className="font-mono">{materializationError}</span>)</>
+                ) : null}
+                . The dispatch is proceeding without it — the agent will run with
+                its default permissions and skill set.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={dismissMaterializationWarning}
+              className="text-xs opacity-70 hover:opacity-100"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              dismiss
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Metadata grid */}
@@ -216,17 +315,31 @@ export function DispatchDetail() {
           <div className="text-xs mb-1" style={{ color: 'var(--color-text-muted)' }}>
             Initiator
           </div>
-          <span
-            className="inline-flex items-center gap-1 text-sm"
-            style={{ color: 'var(--color-text)' }}
-          >
-            <InitiatorIcon className="h-4 w-4" />
-            <span>{d.initiator_type}</span>
-            <span style={{ color: 'var(--color-text-muted)' }}>·</span>
-            <span className="font-mono text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-              {d.initiator_id}
+          {d.initiator_id.startsWith('schedule:') ? (
+            <Link
+              to={`/schedules/${d.initiator_id.slice('schedule:'.length)}`}
+              className="inline-flex items-center gap-1 text-sm text-honey-400 hover:text-honey-300"
+            >
+              <InitiatorIcon className="h-4 w-4" />
+              <span>schedule</span>
+              <span style={{ color: 'var(--color-text-muted)' }}>·</span>
+              <span className="font-mono text-xs">
+                {d.initiator_id.slice('schedule:'.length)}
+              </span>
+            </Link>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1 text-sm"
+              style={{ color: 'var(--color-text)' }}
+            >
+              <InitiatorIcon className="h-4 w-4" />
+              <span>{d.initiator_type}</span>
+              <span style={{ color: 'var(--color-text-muted)' }}>·</span>
+              <span className="font-mono text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                {d.initiator_id}
+              </span>
             </span>
-          </span>
+          )}
         </div>
 
         <div>
@@ -237,7 +350,33 @@ export function DispatchDetail() {
             {d.spec_captured_at ? <TimeAgo date={d.spec_captured_at} /> : '—'}
           </span>
         </div>
+
+        {(d.acp_lifecycle || d.mail_lifecycle) && (
+          <div className="md:col-span-2">
+            <div className="text-xs mb-1" style={{ color: 'var(--color-text-muted)' }}>
+              Routing
+            </div>
+            <div className="flex flex-wrap gap-3 text-sm" style={{ color: 'var(--color-text)' }}>
+              {d.acp_lifecycle && (
+                <LifecycleChip transport="ACP" value={d.acp_lifecycle} />
+              )}
+              {d.mail_lifecycle && (
+                <LifecycleChip transport="Mail" value={d.mail_lifecycle} />
+              )}
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Loadout (V49) — sticky surface for materialization status. Banner
+          above is live-only; this section persists across refresh. */}
+      {d.loadout_status && (
+        <LoadoutPanel
+          loadoutRef={d.loadout_ref}
+          status={d.loadout_status}
+          error={d.loadout_error}
+        />
+      )}
 
       {/* Prompt override */}
       {d.prompt_override && (
@@ -256,6 +395,13 @@ export function DispatchDetail() {
           </p>
         </div>
       )}
+
+      {/* Coordination thread */}
+      <DispatchThreadSection
+        dispatchId={d.id}
+        conversationId={d.conversation_id}
+        dispatchStatus={d.status}
+      />
 
       {/* Sessions */}
       {d.session_ids.length > 0 && (
@@ -337,6 +483,55 @@ export function DispatchDetail() {
         </div>
       )}
 
+      {/* Linked tasks — captured at dispatch creation; `advanced_on_start`
+          reflects whether the orchestrator bumped the task `open` → `in_progress`. */}
+      {data.linked_tasks && data.linked_tasks.length > 0 && (
+        <div
+          className="rounded-md border p-4 mb-6"
+          style={{
+            borderColor: 'var(--color-border-subtle)',
+            backgroundColor: 'var(--color-surface)',
+          }}
+        >
+          <div className="text-xs mb-2 flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
+            <ListChecks className="h-3.5 w-3.5 text-honey-500" />
+            Linked tasks
+          </div>
+          <ul className="space-y-1.5">
+            {data.linked_tasks.map((t) => {
+              const advanced = Boolean(t.advanced_on_start);
+              const Icon = advanced ? CheckCircle2 : Circle;
+              return (
+                <li key={`${t.resource_id}:${t.node_id}`}>
+                  <Link
+                    to={`/tasks/${t.resource_id}/${t.node_id}`}
+                    className="flex items-center gap-2 text-sm hover:opacity-80"
+                    style={{ color: 'var(--color-text)' }}
+                  >
+                    <Icon
+                      className="h-3.5 w-3.5 shrink-0"
+                      style={{ color: advanced ? 'var(--color-honey-500, #f59e0b)' : 'var(--color-text-muted)' }}
+                    />
+                    <code
+                      className="text-2xs font-mono px-1 py-0.5 rounded shrink-0"
+                      style={{ backgroundColor: 'var(--color-elevated)' }}
+                    >
+                      {t.node_id}
+                    </code>
+                    <span
+                      className="text-2xs shrink-0"
+                      style={{ color: 'var(--color-text-muted)' }}
+                    >
+                      {advanced ? 'advanced on start' : 'not advanced'}
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
       {/* Outcome */}
       {d.outcome && (
         <div
@@ -359,12 +554,37 @@ export function DispatchDetail() {
           )}
           {d.outcome.artifacts && d.outcome.artifacts.length > 0 && (
             <ul className="space-y-1 text-sm">
-              {d.outcome.artifacts.map((a, i) => (
-                <li key={i} style={{ color: 'var(--color-text-secondary)' }}>
-                  <span className="font-mono text-xs mr-2">{a.kind}</span>
-                  {a.ref}
-                </li>
-              ))}
+              {d.outcome.artifacts.map((a, i) => {
+                // cascade_stream refs are `${swarm_id}/${stream_id}` — the
+                // Changes page groups streams fleet-wide; there's no
+                // per-stream detail route so we link there.
+                const isCascadeStream = a.kind === 'cascade_stream';
+                const streamId = isCascadeStream ? a.ref.split('/').slice(1).join('/') : null;
+                const body = (
+                  <>
+                    <span className="font-mono text-xs mr-2">{a.kind}</span>
+                    {isCascadeStream ? (
+                      <span className="inline-flex items-center gap-1">
+                        <GitBranch className="h-3 w-3" />
+                        <span>{streamId || a.ref}</span>
+                      </span>
+                    ) : (
+                      <span>{a.ref}</span>
+                    )}
+                  </>
+                );
+                return (
+                  <li key={i} style={{ color: 'var(--color-text-secondary)' }}>
+                    {isCascadeStream ? (
+                      <Link to="/changes" className="hover:opacity-80">
+                        {body}
+                      </Link>
+                    ) : (
+                      body
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -391,6 +611,126 @@ export function DispatchDetail() {
         </div>
       )}
     </div>
-    </ChatFabContextProvider>
+  );
+}
+
+/**
+ * Persistent display of the dispatch's loadout binding + materialization
+ * outcome. Driven by the V49 columns on the dispatch row, so the data
+ * survives page refresh (unlike the live `materialization_failed` banner).
+ *
+ * `loadout_ref` may be a direct loadout resource id (e.g. `loadout_xxx`) or
+ * a synthetic `team:<template>/role:<role>` string. We link to the resource
+ * detail page only for the former.
+ */
+function LoadoutPanel({
+  loadoutRef,
+  status,
+  error,
+}: {
+  loadoutRef: string | null;
+  status: 'materialized' | 'failed';
+  error: string | null;
+}) {
+  const isFailed = status === 'failed';
+  const isTeamRoleRef = loadoutRef?.startsWith('team:') ?? false;
+  const isDirectLoadout = loadoutRef && !isTeamRoleRef;
+  const tone = isFailed
+    ? {
+        borderColor: 'rgba(245, 158, 11, 0.4)',
+        backgroundColor: 'rgba(245, 158, 11, 0.05)',
+      }
+    : {
+        borderColor: 'var(--color-border-subtle)',
+        backgroundColor: 'var(--color-surface)',
+      };
+  return (
+    <div
+      className="rounded-md border p-4 mb-6"
+      style={{ ...tone, color: 'var(--color-text)' }}
+    >
+      <div
+        className="text-xs mb-2 flex items-center gap-1.5"
+        style={{ color: 'var(--color-text-muted)' }}
+      >
+        <Sparkles className="h-3.5 w-3.5 text-honey-500" />
+        Loadout
+      </div>
+      <div className="flex items-start gap-2 text-sm">
+        {isFailed ? (
+          <AlertCircle className="h-4 w-4 mt-0.5 text-amber-400 shrink-0" />
+        ) : (
+          <CheckCircle2 className="h-4 w-4 mt-0.5 text-honey-500 shrink-0" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div>
+            <span style={{ color: 'var(--color-text-muted)' }}>
+              {isFailed ? 'Failed: ' : 'Materialized: '}
+            </span>
+            {isDirectLoadout ? (
+              <Link
+                to={`/resources/${loadoutRef}`}
+                className="font-mono hover:opacity-80"
+              >
+                {loadoutRef}
+              </Link>
+            ) : (
+              <span className="font-mono">{loadoutRef ?? '—'}</span>
+            )}
+          </div>
+          {isFailed && error && (
+            <div
+              className="text-xs mt-1"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              {error}. The dispatch ran without the loadout — agent used its
+              default permissions and skill set.
+            </div>
+          )}
+          {!isFailed && (
+            <div
+              className="text-xs mt-1"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              Permissions, MCP servers, and skill bank were applied at delivery.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Compact display of an `acp_lifecycle` / `mail_lifecycle` hint. `fresh` means
+ * the transport spawns a new agent for this dispatch (loadout permissions
+ * enforced at spawn); `reuse` means it routes to an existing agent and the
+ * loadout is advisory.
+ */
+function LifecycleChip({
+  transport,
+  value,
+}: {
+  transport: 'ACP' | 'Mail';
+  value: 'fresh' | 'reuse';
+}) {
+  const tone =
+    value === 'fresh'
+      ? { color: 'var(--color-honey-500, #f59e0b)' }
+      : { color: 'var(--color-text-muted)' };
+  const explanation =
+    value === 'fresh'
+      ? 'spawns a new agent per dispatch with loadout permissions enforced at spawn'
+      : 'routes to an existing agent; loadout is advisory only';
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-sm"
+      title={explanation}
+    >
+      <span style={{ color: 'var(--color-text-muted)' }}>{transport}</span>
+      <span className="font-mono text-xs" style={tone}>
+        {value}
+      </span>
+    </span>
   );
 }

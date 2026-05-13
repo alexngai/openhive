@@ -12,13 +12,17 @@
  */
 
 import { existsSync, statSync, readFileSync, realpathSync } from 'node:fs';
-import { resolve, normalize, join } from 'node:path';
+import { resolve, normalize, join, dirname } from 'node:path';
+import { execSync } from 'node:child_process';
+import { canonicalizeRepoUrl } from 'agent-workspace/kinds/repo';
 import { getDefaultTaskGraph } from './connection-registry.js';
+import * as repos from '../db/dal/repos.js';
 import {
   daemonCreateTask,
   daemonUpdateTask,
   daemonAssignTask,
   daemonListTasks,
+  daemonGetNodeWithNeighbors,
   resolveDaemonSocket,
   TaskDaemonError,
 } from './task-daemon-client.js';
@@ -32,6 +36,7 @@ import {
 } from './opentasks-remote.js';
 import { getSyncOrchestrator } from '../sync/sync-orchestrator.js';
 import * as resourcesDAL from '../db/dal/syncable-resources.js';
+import { broadcastTaskStatus } from './task-broadcast.js';
 import type { SyncableResource } from '../types.js';
 
 /** Resolved graph target — either local (daemon path) or remote (swarm connection) */
@@ -39,6 +44,8 @@ type ResolvedTarget = {
   type: 'local';
   localPath: string;
   socketPath: string;
+  /** Owning syncable_resources row (when known — always set for id/hash lookups). */
+  resourceId?: string;
 } | {
   type: 'remote';
   swarmId: string;
@@ -114,8 +121,50 @@ function readOpenTasksMeta(opentasksDir: string): Record<string, unknown> {
   return meta;
 }
 
-function autoRegisterResource(opentasksPath: string, agentId: string): SyncableResource {
+/**
+ * Best-effort: if `opentasksPath` lives inside a git working tree with an
+ * `origin` remote, return the canonical repo URL. Mirrors the helper in
+ * `task-daemon-lifecycle.ts:generateLocationHash` (sync stdio with all
+ * channels piped so failures don't print to the console).
+ *
+ * Exported for testing.
+ */
+export function readGitOriginCanonical(opentasksPath: string): string | null {
+  try {
+    const parentDir = dirname(resolve(opentasksPath));
+    const gitRoot = execSync('git rev-parse --show-toplevel', {
+      cwd: parentDir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).toString().trim();
+    const remoteUrl = execSync('git remote get-url origin', {
+      cwd: gitRoot,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).toString().trim();
+    if (!remoteUrl) return null;
+    return canonicalizeRepoUrl(remoteUrl).canonicalUrl;
+  } catch {
+    // No git, no `origin` remote, no `git` binary, or path doesn't exist —
+    // all are "no canonical URL available", silent skip.
+    return null;
+  }
+}
+
+/** Exported for testing. */
+export function autoRegisterResource(opentasksPath: string, agentId: string): SyncableResource {
   const meta = readOpenTasksMeta(opentasksPath);
+
+  // Path B (slice 8): if the opentasks dir lives inside a git working tree
+  // whose origin remote matches a federated repo we already know about,
+  // stamp `metadata.repo_id` on the new task resource so future "show all
+  // tasks for this repo" queries are a one-line FK lookup.
+  const canonical = readGitOriginCanonical(opentasksPath);
+  if (canonical) {
+    try {
+      const repo = repos.findRepoByCanonicalUrl(canonical);
+      if (repo) meta.repo_id = repo.id;
+    } catch { /* non-critical */ }
+  }
+
   const { resource } = resourcesDAL.upsertDiscoveredResource({
     resource_type: 'task',
     name: `auto/${opentasksPath.replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').slice(0, 60)}`,
@@ -164,7 +213,7 @@ async function resolveResourceTarget(resource: SyncableResource, agentId: string
   // Try local first
   const localPath = await resolveLocalForResource(resource, agentId, label);
   if (localPath) {
-    return { type: 'local', localPath, socketPath: resolveDaemonSocket(localPath) };
+    return { type: 'local', localPath, socketPath: resolveDaemonSocket(localPath), resourceId: resource.id };
   }
 
   // Try remote — find connected swarm that owns this graph
@@ -334,10 +383,12 @@ export async function handleTaskRequest(
       }
 
       if (p.status) {
-        try {
-          const { broadcastToChannel } = await import('../realtime/index.js');
-          broadcastToChannel('map:tasks', { type: 'task.status', data: { taskId: p.taskId, current: p.status } });
-        } catch { /* best effort */ }
+        const resourceId = target.type === 'local' ? target.resourceId : target.resource.id;
+        broadcastTaskStatus({
+          taskId: p.taskId as string,
+          status: p.status as string,
+          resourceId,
+        });
       }
 
       return { task: result };
@@ -372,6 +423,96 @@ export async function handleTaskRequest(
     default:
       throw new MAPTaskRequestError(-32601, `Unknown task method: ${method}`);
   }
+}
+
+// ============================================================================
+// Internal (hub-originated) task helpers
+//
+// These bypass canAccessResource because the hub acts on its own behalf when
+// driving tasks from dispatch lifecycle (advance-on-start, completion). They
+// reuse the same local/remote target resolution as the MAP handler so
+// hub-initiated writes land in the right daemon or swarm.
+// ============================================================================
+
+async function resolveResourceTargetInternal(
+  resource: SyncableResource,
+  label: string,
+): Promise<ResolvedTarget> {
+  const meta = resource.metadata as Record<string, unknown> | null;
+  if (resource.resource_type !== 'task' || !meta?.opentasks) {
+    throw new MAPTaskRequestError(-32602, `Resource is not an OpenTasks resource: ${label}`);
+  }
+  let localPath = resolveLocalPath(resource);
+  if (!localPath) {
+    const strategy = resource.sync_strategy;
+    if (strategy === 'ls-remote' || strategy === 'mirror') {
+      const clonePath = await getSyncOrchestrator().ensureContent(resource);
+      if (clonePath) localPath = clonePath;
+    }
+  }
+  if (localPath && existsSync(localPath) && statSync(localPath).isDirectory()) {
+    return { type: 'local', localPath, socketPath: resolveDaemonSocket(localPath) };
+  }
+  const swarmId = findSwarmForResource(resource);
+  if (swarmId) return { type: 'remote', swarmId, resource };
+  throw new MAPTaskRequestError(-32002, `Resource not available locally or via connected swarm: ${label}`);
+}
+
+/**
+ * Fetch a single task node by id. Local-only today — remote lookups are not
+ * wired because the opentasks remote query surface doesn't expose a
+ * single-node-by-id operation. Returns null when the resource is remote.
+ */
+export async function getTaskInternal(
+  target: { resource_id: string },
+  taskId: string,
+): Promise<Record<string, unknown> | null> {
+  const resource = resourcesDAL.findResourceById(target.resource_id);
+  if (!resource) return null;
+  const resolved = await resolveResourceTargetInternal(resource, target.resource_id);
+  if (resolved.type === 'local') {
+    const result = await daemonGetNodeWithNeighbors(resolved.socketPath, taskId, resolved.localPath);
+    return result.node;
+  }
+  return null;
+}
+
+/**
+ * Apply updates to a task from hub-internal code. Local paths drive the
+ * opentasks daemon directly; remote paths route through the MAP opentasks
+ * request surface (status-only today, mirroring the existing remote helper).
+ */
+export async function updateTaskInternal(
+  target: { resource_id: string },
+  taskId: string,
+  updates: {
+    status?: string;
+    title?: string;
+    description?: string;
+    assignee?: string | null;
+  },
+): Promise<Record<string, unknown> | null> {
+  const resource = resourcesDAL.findResourceById(target.resource_id);
+  if (!resource) throw new MAPTaskRequestError(-32001, `Resource not found: ${target.resource_id}`);
+  const resolved = await resolveResourceTargetInternal(resource, target.resource_id);
+  if (resolved.type === 'local') {
+    const result = await daemonUpdateTask(
+      resolved.socketPath,
+      taskId,
+      {
+        status: updates.status,
+        title: updates.title,
+        description: updates.description,
+        assignee: updates.assignee ?? undefined,
+      },
+      resolved.localPath,
+    );
+    return result as unknown as Record<string, unknown>;
+  }
+  if (updates.status) {
+    return remoteUpdateTask(resolved.swarmId, taskId, updates.status);
+  }
+  return null;
 }
 
 // ============================================================================

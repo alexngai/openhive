@@ -10,6 +10,7 @@
 import { useEffect, useMemo } from 'react';
 import {
   createAcpAdapter,
+  createHostedChatAdapter,
   createMailAdapter,
   type ApiConfig,
   type ChatAdapter,
@@ -19,6 +20,7 @@ import {
   createOpenHiveAcpServiceLike,
   ensureAcpListenersRegistered,
 } from './openhive-acp-service';
+import { hostedChatService } from '../services/hosted-chat-service';
 
 /** OpenHive-specific ApiConfig: /api/v1 + lazy conv creation via /sessions/:id/chat */
 function openHiveApiConfig(): ApiConfig {
@@ -57,6 +59,7 @@ export function useOpenHiveAdapters(): ChatAdapter[] {
     // inject mode was purely a UI label with no working transport.
     return [
       createAcpAdapter({ acpService }),
+      createHostedChatAdapter({ service: hostedChatService }),
       createMailAdapter(api),
     ];
   }, []);

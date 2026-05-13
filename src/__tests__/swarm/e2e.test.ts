@@ -364,7 +364,7 @@ describe('E2E: Swarm Hosting + Terminal WebSocket', () => {
       });
     });
 
-    it('should return terminal-info with /map endpoint path', async () => {
+    it('should return terminal-info pointing at the openhive hub MAP endpoint', async () => {
       const response = await app.inject({
         method: 'GET',
         url: `/api/v1/map/hosted/${runningSwarmId}/terminal-info`,
@@ -374,15 +374,16 @@ describe('E2E: Swarm Hosting + Terminal WebSocket', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
 
-      // The endpoint must use /map path (not /acp)
-      expect(body.endpoint).toBe(`ws://127.0.0.1:${runningSwarmPort}/map`);
+      // The endpoint must be the hub's MAP server, not the swarm's
+      // assigned port — the openswarm `serve` gateway has no MAP WS bound to
+      // assigned_port, so pointing the TUI there used to silently fail.
+      expect(body.endpoint).toBe(`ws://127.0.0.1:${SERVER_PORT}/ws/map`);
+      expect(body.endpoint).not.toContain(String(runningSwarmPort));
 
-      // The args should include --url with /map and --auto-connect
       if (body.available) {
         expect(body.args).toContain('--auto-connect');
         const urlArg = body.args[body.args.indexOf('--url') + 1];
-        expect(urlArg).toContain('/map');
-        expect(urlArg).not.toContain('/acp');
+        expect(urlArg).toBe(`ws://127.0.0.1:${SERVER_PORT}/ws/map`);
       }
     });
 
@@ -704,11 +705,17 @@ describe('E2E: Swarm Hosting + Terminal WebSocket', () => {
 
       expect(infoRes.statusCode).toBe(200);
       const info = JSON.parse(infoRes.body);
-      expect(info.endpoint).toContain('/map');
+      // Endpoint now points at the hub, not the swarm's assigned port.
+      expect(info.endpoint).toBe(`ws://127.0.0.1:${SERVER_PORT}/ws/map`);
       expect(info.endpoint).not.toContain('/acp');
 
-      // Step 4: Connect to the MAP endpoint from terminal-info
-      const ws = new WebSocket(info.endpoint);
+      // Step 4: Connect to the fixture MAP server on the swarm's assigned
+      // port. The hub URL from info.endpoint isn't reachable in this test
+      // (the test app doesn't register MAP WS routes), but the fixture
+      // map-server.js IS bound to the assigned port and speaks /map. We
+      // round-trip there to confirm the spawn pipeline still produces a
+      // working MAP-speaking subprocess.
+      const ws = new WebSocket(`ws://127.0.0.1:${spawned.assigned_port}/map`);
 
       const connected = await new Promise<boolean>((resolve) => {
         ws.on('open', () => resolve(true));
