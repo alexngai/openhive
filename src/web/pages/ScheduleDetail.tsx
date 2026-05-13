@@ -27,6 +27,14 @@ import {
 import { useSchedulesRealtime } from '../hooks/useSchedulesRealtime';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
+import { PageLoader } from '../components/common/LoadingSpinner';
+import { StatusChip, type StatusTone } from '../components/common/StatusChip';
+
+function scheduleStateToChip(active: boolean): { tone: StatusTone; label: string } {
+  return active
+    ? { tone: 'success', label: 'Active' }
+    : { tone: 'neutral', label: 'Paused' };
+}
 
 export function ScheduleDetail() {
   const { id } = useParams<{ id: string }>();
@@ -36,17 +44,27 @@ export function ScheduleDetail() {
   const { data, isLoading, error } = useSchedule(id);
 
   if (isLoading) {
-    return <div className="p-6 text-sm text-zinc-400">Loading…</div>;
+    return <PageLoader />;
   }
   if (error) {
     return (
-      <div className="p-6">
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
-          Failed to load schedule: {(error as Error).message}
-        </div>
-        <Link to="/schedules" className="mt-3 inline-flex items-center gap-1 text-sm text-honey-400">
+      <div className="p-6 max-w-5xl mx-auto">
+        <Link
+          to="/schedules"
+          className="inline-flex items-center gap-1 text-sm mb-4"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
           <ArrowLeft className="h-3.5 w-3.5" /> Back to schedules
         </Link>
+        <div
+          className="rounded-md border p-4 text-sm"
+          style={{
+            borderColor: 'var(--color-border-subtle)',
+            color: 'var(--color-text)',
+          }}
+        >
+          {`Failed to load schedule: ${(error as Error).message}`}
+        </div>
       </div>
     );
   }
@@ -87,40 +105,52 @@ function Header({
   }
 
   return (
-    <div className="mb-6 rounded-lg border border-zinc-800 bg-zinc-900/50 p-5">
+    <div
+      className="mb-6 rounded-lg border p-5"
+      style={{
+        borderColor: 'var(--color-border-subtle)',
+        backgroundColor: 'var(--color-elevated)',
+      }}
+    >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h1 className="flex items-center gap-2 text-xl font-semibold" style={{ color: 'var(--color-text)' }}>
             <Clock className="h-5 w-5 text-honey-500" />
             <span className="font-mono text-base">{schedule.cron}</span>
             {schedule.timezone && (
-              <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs font-normal text-zinc-300">
+              <span
+                className="rounded px-1.5 py-0.5 text-xs font-normal"
+                style={{
+                  backgroundColor: 'var(--color-surface)',
+                  color: 'var(--color-text-secondary)',
+                }}
+              >
                 {schedule.timezone}
               </span>
             )}
           </h1>
-          <p className="mt-1 font-mono text-xs text-zinc-500">{schedule.id}</p>
+          <p className="mt-1 font-mono text-xs" style={{ color: 'var(--color-text-muted)' }}>{schedule.id}</p>
 
           <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
             <ScheduleWorkRow schedule={schedule} />
             <MetaRow label="Targets">
-              <span className="font-mono text-zinc-200">{schedule.payload.target_swarm_ids.length} swarm{schedule.payload.target_swarm_ids.length === 1 ? '' : 's'}</span>
+              <span className="font-mono" style={{ color: 'var(--color-text)' }}>{schedule.payload.target_swarm_ids.length} swarm{schedule.payload.target_swarm_ids.length === 1 ? '' : 's'}</span>
             </MetaRow>
             <MetaRow label="Next fire">
-              {schedule.next_fires_at ? <TimeAgo date={schedule.next_fires_at} /> : <span className="text-zinc-500">—</span>}
+              {schedule.next_fires_at ? <TimeAgo date={schedule.next_fires_at} /> : <span style={{ color: 'var(--color-text-muted)' }}>—</span>}
             </MetaRow>
             <MetaRow label="Last fired">
-              {schedule.last_fired_at ? <TimeAgo date={schedule.last_fired_at} /> : <span className="text-zinc-500">never</span>}
+              {schedule.last_fired_at ? <TimeAgo date={schedule.last_fired_at} /> : <span style={{ color: 'var(--color-text-muted)' }}>never</span>}
             </MetaRow>
             <MetaRow label="Catch-up">
-              <code className="text-zinc-200">{schedule.policy.catchUp}</code>
+              <code style={{ color: 'var(--color-text)' }}>{schedule.policy.catchUp}</code>
             </MetaRow>
             <MetaRow label="Skip if running">
-              <code className="text-zinc-200">{String(schedule.policy.skipIfRunning)}</code>
+              <code style={{ color: 'var(--color-text)' }}>{String(schedule.policy.skipIfRunning)}</code>
             </MetaRow>
             <MetaRow label="Initiator">
-              <span className="text-zinc-300">{schedule.initiator_type} · </span>
-              <span className="font-mono text-zinc-300">{schedule.initiator_id}</span>
+              <span style={{ color: 'var(--color-text-secondary)' }}>{schedule.initiator_type} · </span>
+              <span className="font-mono" style={{ color: 'var(--color-text-secondary)' }}>{schedule.initiator_id}</span>
             </MetaRow>
             <MetaRow label="Created">
               <TimeAgo date={schedule.created_at} />
@@ -133,6 +163,10 @@ function Header({
               <span>Paused — {schedule.pause_reason}</span>
             </div>
           )}
+
+          <div className="mt-3">
+            <StatusChip {...scheduleStateToChip(!schedule.paused)} icon={schedule.paused ? Pause : Play} />
+          </div>
         </div>
 
         <div className="flex flex-col items-end gap-2">
@@ -151,7 +185,11 @@ function Header({
               type="button"
               onClick={() => pause.mutate(undefined)}
               disabled={pause.isPending}
-              className="flex items-center gap-1.5 rounded-md bg-zinc-700/50 px-3 py-1.5 text-sm font-medium text-zinc-200 transition-colors hover:bg-zinc-700 disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors hover:bg-white/5 disabled:opacity-50"
+              style={{
+                borderColor: 'var(--color-border-subtle)',
+                color: 'var(--color-text)',
+              }}
             >
               <Pause className="h-3.5 w-3.5" />
               Pause
@@ -200,7 +238,13 @@ function CronAndPayloadEditor({ schedule }: { schedule: Schedule }) {
   }
 
   return (
-    <div className="mb-6 rounded-lg border border-zinc-800 bg-zinc-900/30 p-5">
+    <div
+      className="mb-6 rounded-lg border p-5"
+      style={{
+        borderColor: 'var(--color-border-subtle)',
+        backgroundColor: 'var(--color-elevated)',
+      }}
+    >
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>
           Cron expression
@@ -218,7 +262,8 @@ function CronAndPayloadEditor({ schedule }: { schedule: Schedule }) {
             <button
               type="button"
               onClick={() => setEditing(false)}
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs hover:bg-white/5"
+              style={{ color: 'var(--color-text-muted)' }}
             >
               <X className="h-3 w-3" /> Cancel
             </button>
@@ -240,24 +285,24 @@ function CronAndPayloadEditor({ schedule }: { schedule: Schedule }) {
             type="text"
             value={cron}
             onChange={(e) => setCron(e.target.value)}
-            className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 font-mono text-sm text-zinc-100 focus:border-honey-500 focus:outline-none focus:ring-1 focus:ring-honey-500"
+            className="input w-full font-mono text-sm"
           />
           <input
             type="text"
             value={timezone}
             onChange={(e) => setTimezone(e.target.value)}
             placeholder="Timezone (optional, e.g. America/Los_Angeles)"
-            className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-xs text-zinc-100 placeholder-zinc-500 focus:border-honey-500 focus:outline-none focus:ring-1 focus:ring-honey-500"
+            className="input w-full text-xs"
           />
           <CronPreviewInline cron={cron} timezone={timezone} />
-          <p className="text-[10px] text-zinc-500">
+          <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
             Saving recomputes next_fires_at from now.
           </p>
           {err && <div className="text-xs text-red-300">{err}</div>}
         </div>
       ) : (
         <div>
-          <code className="font-mono text-sm text-zinc-100">{schedule.cron}</code>
+          <code className="font-mono text-sm" style={{ color: 'var(--color-text)' }}>{schedule.cron}</code>
           <CronPreviewInline cron={schedule.cron} timezone={schedule.timezone ?? ''} />
         </div>
       )}
@@ -266,7 +311,13 @@ function CronAndPayloadEditor({ schedule }: { schedule: Schedule }) {
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
           Payload
         </h3>
-        <pre className="overflow-x-auto rounded-md bg-zinc-950 p-3 text-xs text-zinc-300">
+        <pre
+          className="overflow-x-auto rounded-md p-3 text-xs"
+          style={{
+            backgroundColor: 'var(--color-surface)',
+            color: 'var(--color-text-secondary)',
+          }}
+        >
           {JSON.stringify(schedule.payload, null, 2)}
         </pre>
       </div>
@@ -276,42 +327,35 @@ function CronAndPayloadEditor({ schedule }: { schedule: Schedule }) {
 
 function FireHistory({ fires }: { fires: Schedule extends never ? never : ReadonlyArray<import('../hooks/useDispatch').Dispatch> }) {
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5">
+    <div
+      className="rounded-lg border p-5"
+      style={{
+        borderColor: 'var(--color-border-subtle)',
+        backgroundColor: 'var(--color-elevated)',
+      }}
+    >
       <h2 className="mb-3 text-sm font-semibold" style={{ color: 'var(--color-text)' }}>
         Recent fires
       </h2>
       {fires.length === 0 ? (
-        <p className="text-xs text-zinc-500">No dispatches yet — this schedule hasn't fired.</p>
+        <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>No dispatches yet — this schedule hasn't fired.</p>
       ) : (
-        <div className="overflow-hidden rounded-md border border-zinc-800">
-          <table className="w-full text-sm">
-            <thead className="bg-zinc-900/50">
-              <tr className="text-left text-xs uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
-                <th className="px-3 py-2 font-medium">Dispatch</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Target</th>
-                <th className="px-3 py-2 font-medium">Created</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-800">
-              {fires.map((d) => (
-                <tr key={d.id} className="hover:bg-zinc-900/40">
-                  <td className="px-3 py-2 font-mono text-xs">
-                    <Link to={`/dispatch/${d.id}`} className="text-honey-400 hover:text-honey-300">
-                      {d.id}
-                    </Link>
-                  </td>
-                  <td className="px-3 py-2">
-                    <DispatchStatusChip status={d.status} />
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs text-zinc-300">{d.target_swarm_id}</td>
-                  <td className="px-3 py-2 text-xs">
-                    <TimeAgo date={d.created_at} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-1">
+          {fires.map((d) => (
+            <Link
+              key={d.id}
+              to={`/dispatch/${d.id}`}
+              className="flex items-center gap-3 rounded-md border px-3 py-2 text-xs transition-colors hover:bg-white/5"
+              style={{ borderColor: 'var(--color-border-subtle)' }}
+            >
+              <span className="font-mono text-honey-400 min-w-0 truncate flex-1">{d.id}</span>
+              <DispatchStatusChip status={d.status} />
+              <span className="font-mono shrink-0" style={{ color: 'var(--color-text-secondary)' }}>{d.target_swarm_id}</span>
+              <span className="shrink-0" style={{ color: 'var(--color-text-muted)' }}>
+                <TimeAgo date={d.created_at} />
+              </span>
+            </Link>
+          ))}
         </div>
       )}
     </div>
@@ -321,8 +365,8 @@ function FireHistory({ fires }: { fires: Schedule extends never ? never : Readon
 function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <>
-      <div className="text-zinc-500">{label}</div>
-      <div className="text-zinc-200">{children}</div>
+      <div style={{ color: 'var(--color-text-muted)' }}>{label}</div>
+      <div style={{ color: 'var(--color-text)' }}>{children}</div>
     </>
   );
 }
@@ -340,22 +384,28 @@ function CronPreviewInline({ cron, timezone }: { cron: string; timezone: string 
   }
 
   if (isLoading) {
-    return <p className="text-[10px] text-zinc-500">Computing preview…</p>;
+    return <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>Computing preview…</p>;
   }
   if (error) {
-    return <p className="text-[10px] text-red-400">Invalid cron expression</p>;
+    return <p className="text-2xs text-red-400">Invalid cron expression</p>;
   }
   if (!data || data.fires.length === 0) return null;
   return (
     <div className="space-y-1">
       {description && (
-        <p className="text-[11px] italic text-zinc-300">{description}</p>
+        <p className="text-2xs italic" style={{ color: 'var(--color-text-secondary)' }}>{description}</p>
       )}
-      <div className="rounded border border-zinc-800 bg-zinc-950/40 px-2 py-1.5">
-        <div className="text-[10px] font-medium text-zinc-500">
+      <div
+        className="rounded border px-2 py-1.5"
+        style={{
+          borderColor: 'var(--color-border-subtle)',
+          backgroundColor: 'var(--color-surface)',
+        }}
+      >
+        <div className="text-2xs font-medium" style={{ color: 'var(--color-text-muted)' }}>
           Next {data.fires.length} fires ({data.timezone})
         </div>
-        <ul className="mt-0.5 space-y-0.5 text-[11px] text-zinc-300">
+        <ul className="mt-0.5 space-y-0.5 text-2xs" style={{ color: 'var(--color-text-secondary)' }}>
           {data.fires.map((f) => (
             <li key={f} className="font-mono">{new Date(f).toLocaleString()}</li>
           ))}
@@ -371,12 +421,18 @@ function ScheduleWorkRow({ schedule }: { schedule: Schedule }) {
     const p = schedule.payload as DispatchPromptPayload;
     return (
       <>
-        <div className="text-zinc-500">Work</div>
-        <div className="text-zinc-200">
-          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-zinc-300">
+        <div style={{ color: 'var(--color-text-muted)' }}>Work</div>
+        <div style={{ color: 'var(--color-text)' }}>
+          <span
+            className="rounded px-1.5 py-0.5 text-2xs uppercase tracking-wider"
+            style={{
+              backgroundColor: 'var(--color-surface)',
+              color: 'var(--color-text-secondary)',
+            }}
+          >
             ad-hoc prompt
           </span>
-          <div className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs text-zinc-300">
+          <div className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs" style={{ color: 'var(--color-text-secondary)' }}>
             {p.prompt}
           </div>
         </div>
@@ -386,8 +442,8 @@ function ScheduleWorkRow({ schedule }: { schedule: Schedule }) {
   const p = schedule.payload as DispatchSpecPayload;
   return (
     <>
-      <div className="text-zinc-500">Spec</div>
-      <div className="text-zinc-200">
+      <div style={{ color: 'var(--color-text-muted)' }}>Spec</div>
+      <div style={{ color: 'var(--color-text)' }}>
         <Link
           to={`/specs/${p.spec_ref.resource_id}/${p.spec_ref.spec_id}`}
           className="font-mono text-honey-400 hover:text-honey-300"

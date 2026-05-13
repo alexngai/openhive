@@ -12,6 +12,7 @@ import { useResourcesRealtime } from '../hooks/useRealtimeInvalidation';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { ListFilters, useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
+import { EmptyState } from '../components/common/EmptyState';
 import type { SyncableResource } from '../lib/api';
 
 function SkillResourceCard({ resource }: { resource: SyncableResource }) {
@@ -121,13 +122,11 @@ export function Skills() {
       )}
 
       {resources.length === 0 ? (
-        <div className="card p-8 text-center">
-          <Wrench className="w-8 h-8 mx-auto mb-2" style={{ color: 'var(--color-text-muted)' }} />
-          <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>No skill libraries yet</p>
-          <p className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
-            Skills appear when discovered locally or registered by connected swarms.
-          </p>
-        </div>
+        <EmptyState
+          icon={Wrench}
+          title="No skill libraries yet"
+          description="Skills appear when discovered locally or registered by connected swarms."
+        />
       ) : filtered.length === 0 ? (
         <p className="text-xs text-center py-8" style={{ color: 'var(--color-text-muted)' }}>
           No skills match “{q}”.

@@ -132,7 +132,7 @@ export function DispatchDetail() {
           style={{ color: 'var(--color-text-muted)' }}
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to Dispatch
+          Back to Jobs
         </Link>
         <div
           className="rounded-md border p-4 text-sm"
@@ -141,7 +141,7 @@ export function DispatchDetail() {
             color: 'var(--color-text)',
           }}
         >
-          {error ? `Failed to load: ${error instanceof Error ? error.message : String(error)}` : 'Dispatch not found'}
+          {error ? `Failed to load: ${error instanceof Error ? error.message : String(error)}` : 'Job not found'}
         </div>
       </div>
     );

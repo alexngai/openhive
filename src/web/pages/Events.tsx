@@ -11,6 +11,8 @@ import {
 import { useSwarmRealtime } from '../hooks/useRealtimeInvalidation';
 import type { EventSubscription } from '../lib/api';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
+import { Tabs, type TabDef } from '../components/common/Tabs';
+import { StatusChip, type StatusTone } from '../components/common/StatusChip';
 import { toast } from '../stores/toast';
 import clsx from 'clsx';
 
@@ -32,29 +34,37 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+const SOURCE_TONE: Record<string, StatusTone> = {
+  github:  'accent',
+  slack:   'success',
+  '*':     'info',
+};
+
 function SourceBadge({ source }: { source: string }) {
-  const colors: Record<string, string> = {
-    github: 'bg-purple-500/15 text-purple-400',
-    slack: 'bg-green-500/15 text-green-400',
-    '*': 'bg-blue-500/15 text-blue-400',
-  };
   return (
-    <span className={clsx('text-2xs px-1.5 py-0.5 rounded font-medium', colors[source] || 'bg-gray-500/15 text-gray-400')}>
-      {source === '*' ? 'all' : source}
-    </span>
+    <StatusChip
+      label={source === '*' ? 'all' : source}
+      tone={SOURCE_TONE[source] ?? 'neutral'}
+      size="sm"
+      shape="square"
+    />
   );
 }
 
+const DELIVERY_TONE: Record<string, StatusTone> = {
+  sent:    'success',
+  offline: 'warning',
+  failed:  'danger',
+};
+
 function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    sent: 'bg-green-500/15 text-green-400',
-    offline: 'bg-yellow-500/15 text-yellow-400',
-    failed: 'bg-red-500/15 text-red-400',
-  };
   return (
-    <span className={clsx('text-2xs px-1.5 py-0.5 rounded font-medium', styles[status] || '')}>
-      {status}
-    </span>
+    <StatusChip
+      label={status}
+      tone={DELIVERY_TONE[status] ?? 'neutral'}
+      size="sm"
+      shape="square"
+    />
   );
 }
 
@@ -566,8 +576,20 @@ export function Events() {
   const [formMode, setFormMode] = useState<FormMode>('none');
   const [editingSub, setEditingSub] = useState<EventSubscription | undefined>();
 
-  const tabs: { id: Tab; label: string; icon: React.ElementType; count?: number }[] = [
-    { id: 'subscriptions', label: 'Subscriptions', icon: Radio, count: subs?.length },
+  const tabs: TabDef<Tab>[] = [
+    {
+      id: 'subscriptions',
+      label: 'Subscriptions',
+      icon: Radio,
+      badge: subs?.length != null ? (
+        <span
+          className="text-2xs px-1 py-0 rounded-full"
+          style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
+        >
+          {subs.length}
+        </span>
+      ) : undefined,
+    },
     { id: 'log', label: 'Delivery Log', icon: Bell },
   ];
 
@@ -600,32 +622,13 @@ export function Events() {
       )}
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 mb-3">
-        {tabs.map(({ id, label, icon: Icon, count }) => (
-          <button
-            key={id}
-            onClick={() => { setActiveTab(id); closeForm(); }}
-            className={clsx(
-              'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors',
-              activeTab === id
-                ? 'bg-honey-500/10 text-honey-500'
-                : 'hover:bg-workspace-hover',
-            )}
-            style={activeTab !== id ? { color: 'var(--color-text-secondary)' } : undefined}
-          >
-            <Icon className="w-3.5 h-3.5" />
-            {label}
-            {count !== undefined && (
-              <span
-                className="text-2xs ml-0.5 px-1 py-0 rounded-full"
-                style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
-              >
-                {count}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        tabs={tabs}
+        activeId={activeTab}
+        onChange={(id) => { setActiveTab(id); closeForm(); }}
+        variant="pill"
+        className="mb-3"
+      />
 
       {/* Content */}
       {isLoading ? (

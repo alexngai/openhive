@@ -11,6 +11,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { LoadingSpinner, PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { AgentAvatar } from '../components/common/AgentAvatar';
+import { StatusChip, type StatusTone } from '../components/common/StatusChip';
 import { useSessionAttentionStore } from '../stores/session-attention';
 import { SessionDetail } from './SessionDetail';
 import { MailThreadView } from '../components/sessions/MailThreadView';
@@ -115,21 +116,27 @@ function mailToThread(conv: MailConversation): Thread {
   };
 }
 
-const STATUS_BORDER_COLORS: Record<ThreadStatus, string> = {
-  live: '#34d399',
-  recent: '#fbbf24',
-  idle: 'transparent',
-  'mail-active': '#34d399',
-  'mail-completed': 'transparent',
+const STATUS_CHIP: Record<ThreadStatus, { label: string; tone: StatusTone }> = {
+  live:             { label: 'live',    tone: 'success' },
+  recent:           { label: 'recent',  tone: 'warning' },
+  idle:             { label: 'idle',    tone: 'neutral' },
+  'mail-active':    { label: 'active',  tone: 'success' },
+  'mail-completed': { label: 'closed',  tone: 'neutral' },
+  'hosted-running': { label: 'running', tone: 'success' },
 };
 
-const STATUS_CHIP: Record<ThreadStatus, { label: string; cls: string }> = {
-  live:             { label: 'live',     cls: 'bg-emerald-500/10 text-emerald-400' },
-  recent:           { label: 'recent',   cls: 'bg-amber-500/10 text-amber-400' },
-  idle:             { label: 'idle',     cls: 'bg-gray-500/10 text-gray-400' },
-  'mail-active':    { label: 'active',   cls: 'bg-emerald-500/10 text-emerald-400' },
-  'mail-completed': { label: 'closed',   cls: 'bg-gray-500/10 text-gray-400' },
+const TONE_BORDER_HEX: Record<StatusTone, string> = {
+  success: '#34d399',
+  warning: '#fbbf24',
+  danger:  '#ef4444',
+  info:    '#3b82f6',
+  neutral: 'transparent',
+  accent:  '#f5a623',
 };
+
+function statusBorderColor(status: ThreadStatus): string {
+  return TONE_BORDER_HEX[STATUS_CHIP[status].tone];
+}
 
 // ============================================================================
 // Filter chips
@@ -209,14 +216,14 @@ function ThreadRow({
           <AgentAvatar
             name={thread.title}
             size={24}
-            borderColor={STATUS_BORDER_COLORS[thread.status]}
+            borderColor={statusBorderColor(thread.status)}
           />
         ) : isGroup ? (
           <div
             className="w-6 h-6 rounded-full flex items-center justify-center"
             style={{
               backgroundColor: 'var(--color-elevated)',
-              border: `1.5px solid ${STATUS_BORDER_COLORS[thread.status]}`,
+              border: `1.5px solid ${statusBorderColor(thread.status)}`,
             }}
             title={`Group of ${thread.participantCount}`}
           >
@@ -227,7 +234,7 @@ function ThreadRow({
             className="w-6 h-6 rounded-full flex items-center justify-center"
             style={{
               backgroundColor: 'var(--color-elevated)',
-              border: `1.5px solid ${STATUS_BORDER_COLORS[thread.status]}`,
+              border: `1.5px solid ${statusBorderColor(thread.status)}`,
             }}
             title="Mail thread"
           >
@@ -337,9 +344,7 @@ function ThreadsGrid({
                   <h3 className="font-medium text-sm truncate group-hover:text-honey-500 transition-colors">
                     {t.title}
                   </h3>
-                  <span className={`text-2xs px-1.5 py-0.5 rounded shrink-0 ${chip.cls}`}>
-                    {chip.label}
-                  </span>
+                  <StatusChip label={chip.label} tone={chip.tone} shape="square" className="shrink-0" />
                 </div>
                 {t.description && (
                   <p className="text-xs line-clamp-1 mt-0.5" style={{ color: 'var(--color-text-secondary)' }}>
@@ -445,7 +450,7 @@ function InactiveSection({
         style={{ color: 'var(--color-text-muted)' }}
       >
         {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-        {debouncedSearch ? `Results (${total})` : `Inactive sessions (${total})`}
+        {debouncedSearch ? `Results (${total})` : `Inactive threads (${total})`}
       </button>
 
       {expanded && (
@@ -460,7 +465,7 @@ function InactiveSection({
                 type="text"
                 value={search}
                 onChange={(e) => handleSearch(e.target.value)}
-                placeholder="Search sessions..."
+                placeholder="Search threads..."
                 className="bg-transparent outline-none flex-1 text-xs placeholder:text-[var(--color-text-muted)]"
                 style={{ color: 'var(--color-text)' }}
               />

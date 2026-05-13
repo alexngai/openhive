@@ -92,7 +92,7 @@ export default function LoadoutEditor() {
         <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
           Failed to load loadout: {loadError}
         </p>
-        <Link to="/loadouts" className="text-xs text-honey-500 mt-2 inline-block">← Back to loadouts</Link>
+        <Link to="/teams?tab=loadouts" className="text-xs text-honey-500 mt-2 inline-block">← Back to loadouts</Link>
       </div>
     );
   }
@@ -104,7 +104,7 @@ export default function LoadoutEditor() {
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <button
-          onClick={() => navigate('/loadouts')}
+          onClick={() => navigate('/teams?tab=loadouts')}
           className="btn btn-ghost flex items-center gap-1.5"
         >
           <ChevronLeft className="w-4 h-4" />

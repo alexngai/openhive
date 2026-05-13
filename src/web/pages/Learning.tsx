@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Brain, BookOpen, Lightbulb, Activity, Zap, Settings, ChevronRight, AlertCircle, CheckCircle2, Clock, Database, Wrench, RefreshCw } from 'lucide-react';
+import { EmptyState } from '../components/common/EmptyState';
+import { Tabs, type TabDef } from '../components/common/Tabs';
 import {
   useLearningStats,
   useLearningHealth,
@@ -43,18 +45,16 @@ export function Learning() {
           <Brain className="w-5 h-5 text-honey-500" />
           Learning
         </h1>
-        <div className="card px-4 py-8 flex flex-col items-center gap-3 text-center">
-          <AlertCircle className="w-8 h-8 text-text-muted" />
-          <p className="text-sm font-medium">Learning engine is not available</p>
-          <p className="text-2xs text-text-muted max-w-md">
-            {health?.reason || 'Enable learning in openhive.config.js by setting learning.enabled to true.'}
-          </p>
-        </div>
+        <EmptyState
+          icon={AlertCircle}
+          title="Learning engine is not available"
+          description={health?.reason || 'Enable learning in openhive.config.js by setting learning.enabled to true.'}
+        />
       </div>
     );
   }
 
-  const tabs: { id: Tab; label: string; icon: typeof Brain }[] = [
+  const tabs: TabDef<Tab>[] = [
     { id: 'overview', label: 'Overview', icon: Activity },
     { id: 'playbooks', label: 'Playbooks', icon: BookOpen },
     { id: 'knowledge', label: 'Knowledge', icon: Lightbulb },
@@ -78,24 +78,7 @@ export function Learning() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-border">
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
-              tab === t.id
-                ? 'border-honey-500 text-honey-500'
-                : 'border-transparent text-text-muted hover:text-text-secondary'
-            }`}
-            onClick={() => setTab(t.id)}
-          >
-            <span className="flex items-center gap-1.5">
-              <t.icon className="w-3.5 h-3.5" />
-              {t.label}
-            </span>
-          </button>
-        ))}
-      </div>
+      <Tabs tabs={tabs} activeId={tab} onChange={setTab} variant="underline" />
 
       {/* Tab content */}
       {tab === 'overview' && <OverviewTab health={health} stats={stats} />}
@@ -489,16 +472,6 @@ function ExperiencesTab() {
 }
 
 // ── Shared Components ──
-
-function EmptyState({ icon: Icon, title, description }: { icon: typeof Brain; title: string; description: string }) {
-  return (
-    <div className="card px-4 py-8 flex flex-col items-center gap-3 text-center">
-      <Icon className="w-8 h-8 text-text-muted" />
-      <p className="text-sm font-medium">{title}</p>
-      <p className="text-2xs text-text-muted max-w-md">{description}</p>
-    </div>
-  );
-}
 
 function LoadingPlaceholder() {
   return (

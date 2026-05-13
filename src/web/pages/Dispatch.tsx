@@ -6,8 +6,10 @@ import { useDispatchList, type DispatchStatus } from '../hooks/useDispatch';
 import { useDispatchRealtime } from '../hooks/useDispatchRealtime';
 import { useMapSwarmsForPicker } from '../hooks/useApi';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
+import { JobsTabs } from '../components/dispatch/JobsTabs';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { ListFilters, useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
+import { EmptyState } from '../components/common/EmptyState';
 
 const ALL_STATUSES: DispatchStatus[] = ['queued', 'running', 'complete', 'failed', 'cancelled'];
 
@@ -61,24 +63,26 @@ export function Dispatch() {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      <div className="mb-6">
+      <div className="mb-4">
         <h1
           className="flex items-center gap-2 text-2xl font-bold"
           style={{ color: 'var(--color-text)' }}
         >
           <Send className="h-6 w-6 text-honey-500" />
-          Dispatch
+          Jobs
         </h1>
         <p className="mt-1 text-sm" style={{ color: 'var(--color-text-muted)' }}>
           Work handed off to swarms. Each row is one (spec, swarm) pair.
         </p>
       </div>
 
+      <JobsTabs activeId="one-offs" className="mb-4" />
+
       <ListFilters
         search={search}
         onSearchChange={setSearch}
-        placeholder="Search dispatches…"
-        count={{ visible: filtered.length, total: dispatches.length, noun: 'dispatch', nounPlural: 'dispatches' }}
+        placeholder="Search jobs…"
+        count={{ visible: filtered.length, total: dispatches.length, noun: 'job', nounPlural: 'jobs' }}
         right={
           <>
             {ALL_STATUSES.map((s) => {
@@ -142,31 +146,22 @@ export function Dispatch() {
 
       {isLoading && (
         <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-          Loading dispatches…
+          Loading jobs…
         </p>
       )}
 
       {!isLoading && filtered.length === 0 && (
-        <div
-          className="rounded-md border p-6 text-center"
-          style={{
-            borderColor: 'var(--color-border-subtle)',
-            color: 'var(--color-text-muted)',
-          }}
-        >
-          <p className="text-sm">
-            {q
-              ? `No dispatches match “${q}”.`
+        <EmptyState
+          title={
+            q
+              ? `No jobs match “${q}”.`
               : dispatches.length === 0
-                ? 'No dispatches match your filter.'
-                : 'No dispatches match your search.'}
-          </p>
-          {dispatches.length === 0 && (
-            <p className="mt-1 text-xs">
-              Open a spec and click Dispatch to send work to a swarm.
-            </p>
-          )}
-        </div>
+                ? 'No jobs match your filter.'
+                : 'No jobs match your search.'
+          }
+          description={dispatches.length === 0 ? 'Open a spec and dispatch it to send work to a swarm.' : undefined}
+          size=”md”
+        />
       )}
 
       {filtered.length > 0 && (

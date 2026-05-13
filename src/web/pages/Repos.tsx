@@ -10,6 +10,7 @@ import { useReposRealtime } from '../hooks/useRealtimeInvalidation';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { ListFilters, useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
+import { EmptyState } from '../components/common/EmptyState';
 import { RegisterRepoModal } from '../components/repos/RegisterRepoModal';
 import type { SyncableResource } from '../lib/api';
 
@@ -207,14 +208,11 @@ export function Repos() {
       )}
 
       {filtered.length === 0 ? (
-        <div className="card p-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
-          <GitBranch className="w-8 h-8 mx-auto mb-2 opacity-40" />
-          <p className="text-sm">
-            {repos.length === 0
-              ? 'No repos yet. Connected agents will declare them automatically when the workspace capability is enabled.'
-              : 'No repos match the current filters.'}
-          </p>
-        </div>
+        <EmptyState
+          icon={GitBranch}
+          title={repos.length === 0 ? 'No repos yet' : 'No repos match the current filters.'}
+          description={repos.length === 0 ? 'Connected agents will declare them automatically when the workspace capability is enabled.' : undefined}
+        />
       ) : (
         <div className="space-y-2">
           {filtered.map((r) => (

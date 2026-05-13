@@ -8,6 +8,7 @@ import { toast } from '../stores/toast';
 import { api } from '../lib/api';
 import { useSEO } from '../hooks/useDocumentTitle';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
+import { Tabs, type TabDef } from '../components/common/Tabs';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { SwarmKitSettings } from './settings/SwarmKitSettings';
 import { SwarmHubSettings } from './settings/SwarmHubSettings';
@@ -1682,21 +1683,15 @@ function GitSyncManageDialog({ resource, onClose }: { resource: GitSyncResource;
       </div>
 
       {/* Tab bar */}
-      <div className="flex border-b px-4" style={{ borderColor: 'var(--color-border-subtle)' }}>
-        {(['config', 'log'] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={clsx('px-3 py-2 text-xs font-medium border-b-2 transition-colors -mb-px', {
-              'border-honey-500 text-honey-500': tab === t,
-              'border-transparent': tab !== t,
-            })}
-            style={tab !== t ? { color: 'var(--color-text-muted)' } : undefined}
-          >
-            {t === 'config' ? 'Config & Actions' : 'Commit Log'}
-          </button>
-        ))}
-      </div>
+      <Tabs<'config' | 'log'>
+        tabs={[
+          { id: 'config', label: 'Config & Actions' },
+          { id: 'log',    label: 'Commit Log' },
+        ] satisfies TabDef<'config' | 'log'>[]}
+        activeId={tab}
+        onChange={setTab}
+        variant="underline"
+      />
 
       <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
         {tab === 'config' && (

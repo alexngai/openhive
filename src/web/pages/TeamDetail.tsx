@@ -37,6 +37,7 @@ import {
 import { api, type SyncableResource } from '../lib/api';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
+import { EmptyState } from '../components/common/EmptyState';
 
 interface TeamRole {
   name?: string;
@@ -114,14 +115,10 @@ export default function TeamDetail() {
     return (
       <div className="max-w-4xl mx-auto px-4 py-6">
         <BackLink />
-        <div className="card p-8 text-center">
-          <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-            Team template not found
-          </p>
-          <p className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
-            {loadError}
-          </p>
-        </div>
+        <EmptyState
+          title="Team template not found"
+          description={loadError}
+        />
       </div>
     );
   }

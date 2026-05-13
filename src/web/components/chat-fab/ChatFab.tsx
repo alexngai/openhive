@@ -23,6 +23,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
 import { useSubscribe, useWSEvent } from '../../hooks/useWebSocket';
 import { AgentAvatar } from '../common/AgentAvatar';
+import { StatusDot, type StatusTone } from '../common/StatusChip';
 
 /**
  * Suppress the FAB whenever the user is on a Threads page — Threads *is*
@@ -62,19 +63,29 @@ function useLiveSwarmRefresh(swarmId: string | null) {
 }
 
 /**
- * MAP agent state colours. Mirrors swarmcraft's AGENT_STATE_COLORS so the
+ * MAP agent state → StatusTone. Mirrors swarmcraft's AGENT_STATE_COLORS so the
  * dot on the chat header matches the dot on the AgentPortrait grid.
  */
-const STATE_COLORS: Record<string, string> = {
-  registered: '#9ca3af',
-  active: '#22c55e',
-  busy: '#3b82f6',
-  idle: '#6b7280',
-  suspended: '#f59e0b',
-  stopping: '#f97316',
-  stopped: '#9ca3af',
-  failed: '#ef4444',
-  orphaned: '#f97316',
+const STATE_TONES: Record<string, StatusTone> = {
+  registered: 'neutral',
+  active:     'success',
+  busy:       'info',
+  idle:       'neutral',
+  suspended:  'warning',
+  stopping:   'warning',
+  stopped:    'neutral',
+  failed:     'danger',
+  orphaned:   'warning',
+};
+
+/** Hex values for AgentAvatar.borderColor, which requires a CSS color string. */
+const TONE_HEX: Record<StatusTone, string> = {
+  success: '#34d399',
+  warning: '#f59e0b',
+  danger:  '#ef4444',
+  info:    '#3b82f6',
+  neutral: '#6b7280',
+  accent:  '#f5a623',
 };
 
 interface LiveAgentInfo {
@@ -129,9 +140,9 @@ function ChatHeader({ isDocked }: { isDocked: boolean }) {
   const live = useLiveAgent(agentRef);
   const headerName = live.name ?? sessionLabel ?? 'Agent';
   const swarmReachable = live.swarmStatus === 'online' || live.swarmStatus === null;
-  const stateColor = !swarmReachable
-    ? '#6b7280'
-    : (live.state ? STATE_COLORS[live.state] ?? STATE_COLORS.registered : STATE_COLORS.registered);
+  const stateTone: StatusTone = !swarmReachable
+    ? 'neutral'
+    : (live.state ? STATE_TONES[live.state] ?? STATE_TONES.registered : STATE_TONES.registered);
   const isWorking = swarmReachable && (live.state === 'active' || live.state === 'busy');
 
   // View-specific header titles and subtitles
@@ -165,15 +176,14 @@ function ChatHeader({ isDocked }: { isDocked: boolean }) {
             <AgentAvatar
               name={headerName}
               size={26}
-              borderColor={stateColor}
+              borderColor={TONE_HEX[stateTone]}
             />
-            <span
-              className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full ${isWorking ? 'animate-pulse' : ''}`}
-              style={{
-                backgroundColor: stateColor,
-                boxShadow: '0 0 0 1.5px var(--color-elevated)',
-              }}
+            <StatusDot
+              tone={stateTone}
+              size="xs"
+              pulse={isWorking}
               title={live.state ?? 'unknown state'}
+              className="absolute -top-0.5 -right-0.5 ring-[1.5px] ring-[var(--color-elevated)]"
             />
           </div>
         ) : (

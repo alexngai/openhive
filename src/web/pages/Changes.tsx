@@ -66,6 +66,7 @@ import { useCascadeStreamsRealtime } from '../hooks/useRealtimeInvalidation';
 import { useMapSwarms } from '../hooks/useApi';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
+import { EmptyState } from '../components/common/EmptyState';
 import { useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
 import { StreamDAGView } from '../components/streams/StreamDAGView';
 import { StreamStatusDot, STATUS_COLORS, STATUS_LABELS, TimelineEntry } from '../components/streams/shared';
@@ -316,7 +317,11 @@ export function Changes() {
       <div className="flex flex-1 min-h-0">
         <div className={`flex-1 ${viewMode === 'dag' ? 'overflow-hidden' : 'overflow-auto'}`}>
           {!dag || dag.nodes.length === 0 ? (
-            <EmptyState />
+            <EmptyState
+              icon={GitBranch}
+              title="No changes yet"
+              description="A change appears here when a cascade-aware agent opens a stream and emits events to this hub."
+            />
           ) : viewMode === 'list' ? (
             <ChangesList
               buckets={buckets}
@@ -517,18 +522,6 @@ function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode
 }
 
 // ─── Empty State ──────────────────────────────────────────────────────
-
-function EmptyState() {
-  return (
-    <div className="flex flex-col items-center justify-center h-full p-8">
-      <GitBranch className="w-8 h-8 mb-3" style={{ color: 'var(--color-text-muted)' }} />
-      <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-        No changes yet. A change appears here when a cascade-aware agent opens
-        a stream and emits events to this hub.
-      </p>
-    </div>
-  );
-}
 
 // ─── Triaged List View ────────────────────────────────────────────────
 
