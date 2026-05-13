@@ -39,7 +39,14 @@ import {
   getPullRequest,
   checkGitHubConnection,
   parseGitHubRepo,
+  branchExists,
+  findOpenPRByHead,
 } from '../../integrations/github-api.js';
+import {
+  buildPRStackPlan,
+  PRStackRootNotFoundError,
+  type PRStackEntry,
+} from '../../cascade/pr-stack-walker.js';
 
 type ListStreamsQuery = {
   source_swarm_id?: string;
@@ -527,6 +534,122 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
     }
   );
 
+  // ── Diff fetch (cascade_diff_cache + on-demand via MAP) ─────────────
+  //
+  //   GET /cascade/streams/:id/commits/:hash/diff
+  //     ?file=src/a.ts        — restrict to one path
+  //     &base=<sha>           — explicit base for ranged diffs
+  //     &files_only=true      — return files_touched only (D17)
+  //
+  //   Returns { data: { diff, files_touched, truncated } } on hit. Error
+  //   codes are mapped to HTTP statuses (see diffErrorStatus below).
+
+  fastify.get<{
+    Params: { id: string; hash: string };
+    Querystring: { file?: string; base?: string; files_only?: string };
+  }>(
+    '/cascade/streams/:id/commits/:hash/diff',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { resolveCommitDiff } = await import('../../cascade/diff-resolver.js');
+      const result = await resolveCommitDiff({
+        stream_row_id: request.params.id,
+        commit_hash: request.params.hash,
+        base_hash: request.query.base,
+        file_path: request.query.file,
+        files_only: request.query.files_only === 'true',
+      });
+
+      if (!result.ok) {
+        return reply.status(diffErrorStatus(result.error.code)).send({
+          error: result.error.code,
+          message: result.error.message,
+        });
+      }
+      return reply.send({ data: result.payload });
+    }
+  );
+
+  // ── Stream-level diff (base_commit..head) ──────────────────────────
+  //
+  //   GET /cascade/streams/:id/diff
+  //     ?file=src/foo.ts     — restrict to one path
+  //     &files_only=true     — return files_touched only (D17)
+
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { file?: string; files_only?: string };
+  }>(
+    '/cascade/streams/:id/diff',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { resolveStreamDiff } = await import('../../cascade/diff-resolver.js');
+      const result = await resolveStreamDiff({
+        stream_row_id: request.params.id,
+        file_path: request.query.file,
+        files_only: request.query.files_only === 'true',
+      });
+      if (!result.ok) {
+        return reply.status(diffErrorStatus(result.error.code)).send({
+          error: result.error.code,
+          message: result.error.message,
+        });
+      }
+      return reply.send({ data: result.payload });
+    }
+  );
+
+  // ── Stack-level diff (lowest_base..highest_head across linear stack) ─
+  //
+  //   GET /cascade/streams/:id/stack/diff
+  //     ?file=src/foo.ts     — restrict to one path
+  //     &files_only=true     — files_touched only
+  //
+  //   Stream 2 D2: walker uses active-subset linearity (merged / abandoned
+  //   children are skipped). Non-linear stacks return 400 with code
+  //   `non_linear_stack` so the UI can show a useful notice.
+
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { file?: string; files_only?: string };
+  }>(
+    '/cascade/streams/:id/stack/diff',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { resolveStackDiff } = await import('../../cascade/diff-resolver.js');
+      const result = await resolveStackDiff({
+        stack_root_row_id: request.params.id,
+        file_path: request.query.file,
+        files_only: request.query.files_only === 'true',
+      });
+
+      if (!result.ok) {
+        // Translate the wrapped non-linear error to a dedicated REST code
+        // so the UI can show a "view individual streams instead" notice.
+        const isNonLinear =
+          result.error.code === 'bad_request' &&
+          result.error.message.startsWith('non_linear_stack');
+        if (isNonLinear) {
+          return reply.status(400).send({
+            error: 'non_linear_stack',
+            message: result.error.message,
+          });
+        }
+        return reply.status(diffErrorStatus(result.error.code)).send({
+          error: result.error.code,
+          message: result.error.message,
+        });
+      }
+
+      // Echo the stack shape back so the UI can render the file tree
+      // alongside metadata about which streams contributed to the range.
+      return reply.send({
+        data: result.payload,
+        stack: result.stack ?? null,
+      });
+    }
+  );
+
   // ── PR management (hub-side GitHub API) ─────────────────────────────
   //
   //   POST   /cascade/streams/:id/pr — create PR
@@ -736,6 +859,249 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
     }
   );
 
+  // ── PR-stack action (Stream 3) ──────────────────────────────────────
+  //
+  //   POST /cascade/streams/:id/pr-stack
+  //     body: { target_branch?: string; draft?: boolean }
+  //
+  //   Walks descendants of the given stream root, opens one PR per
+  //   unmerged stream. Sequential per D18 with `blocked_by_parent`
+  //   propagation per lineage (D20). Idempotent per D19: existing PRs
+  //   are surfaced as `status='existing'`, GitHub 422 races are
+  //   recovered via findOpenPRByHead. Best-effort push hint per entry
+  //   (D21) gives connected sidecars a chance to push before we check
+  //   branch existence on origin.
+
+  fastify.post<{
+    Params: { id: string };
+    Body: { target_branch?: string; draft?: boolean };
+  }>(
+    '/cascade/streams/:id/pr-stack',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const rootStream = getStreamByRowId(request.params.id);
+      if (!rootStream) {
+        return reply.status(404).send({
+          error: 'not_found',
+          message: `Stream ${request.params.id} not found`,
+        });
+      }
+
+      // Resolve repo from the root's task_resource_id. Every stream in
+      // the plan must share the same GitHub repo — descendants inherit
+      // task_resource_id by convention, but we don't enforce it here;
+      // a per-entry mismatch falls through to GitHub returning a real
+      // error which becomes `status='failed'`.
+      const resource = rootStream.task_resource_id
+        ? (await import('../../db/dal/syncable-resources.js')).findResourceById(rootStream.task_resource_id)
+        : null;
+      const gitUrl = resource?.git_remote_url ?? '';
+      const repoInfo = parseGitHubRepo(gitUrl);
+      if (!repoInfo) {
+        return reply.status(400).send({
+          error: 'bad_request',
+          message: `Cannot parse GitHub repo from: ${gitUrl}. PR stack creation requires a github.com remote.`,
+        });
+      }
+
+      let plan;
+      try {
+        plan = buildPRStackPlan(request.params.id);
+      } catch (err) {
+        if (err instanceof PRStackRootNotFoundError) {
+          return reply.status(404).send({
+            error: 'not_found',
+            message: err.message,
+          });
+        }
+        return reply.status(500).send({
+          error: 'internal',
+          message: (err as Error).message,
+        });
+      }
+
+      // Caller-supplied target_branch overrides the root entry's base
+      // (the only entry that uses trunk). All other bases come from the
+      // walker's parent.head_branch chain.
+      const rootTargetBranch = request.body?.target_branch;
+      if (rootTargetBranch && plan.entries.length > 0) {
+        plan.entries[0].base_branch = rootTargetBranch;
+      }
+
+      const draft = request.body?.draft ?? false;
+      // Track stream_row_ids of entries that hit push_required (or fail
+      // outright). D18: any plan entry whose `ancestor_row_ids` includes
+      // one of these is blocked_by_parent without contacting GitHub.
+      // Earlier impl used `lineage_id` which collapsed fork siblings
+      // into a shared marker but missed root-with-immediate-fork cases
+      // (code review 2026-05-11).
+      const blockedAncestors = new Set<string>();
+
+      type PRStackOutEntry = PRStackEntry & {
+        result_status:
+          | 'created'
+          | 'existing'
+          | 'push_required'
+          | 'blocked_by_parent'
+          | 'failed';
+        pr_url?: string;
+        pr_number?: number;
+        error?: string;
+      };
+      const results: PRStackOutEntry[] = [];
+
+      for (const entry of plan.entries) {
+        const base: PRStackOutEntry = { ...entry, result_status: 'failed' };
+
+        // D18: skip if any ancestor in this entry's chain hit
+        // push_required (or failed before us). Walker emits ancestors
+        // parent-first, so checking by stream_row_id is unambiguous.
+        if (entry.ancestor_row_ids.some((id) => blockedAncestors.has(id))) {
+          base.result_status = 'blocked_by_parent';
+          results.push(base);
+          continue;
+        }
+
+        // D19: existing PR short-circuit.
+        try {
+          const existing = getPRForStream(entry.stream_row_id);
+          if (existing && existing.remote_pr_number && existing.state !== 'closed') {
+            base.result_status = 'existing';
+            base.pr_url = existing.remote_pr_url ?? undefined;
+            base.pr_number = existing.remote_pr_number ?? undefined;
+            results.push(base);
+            continue;
+          }
+        } catch { /* fall through to fresh-create path */ }
+
+        // D21: best-effort push hint. Fire-and-forget; offline-swarm
+        // failures are silently ignored, the branch-exists check below
+        // still gates whether we actually call GitHub.
+        try {
+          sendCascadeAction(rootStream.source_swarm_id, 'push', {
+            stream_id: entry.cascade_stream_id,
+            target_ref: entry.head_branch,
+          });
+        } catch { /* non-critical */ }
+
+        // Branch-exists gate (D8).
+        let onOrigin = false;
+        try {
+          onOrigin = await branchExists(
+            repoInfo.owner,
+            repoInfo.repo,
+            entry.head_branch,
+          );
+        } catch (err) {
+          base.result_status = 'failed';
+          base.error = sanitizeGitHubError(err);
+          results.push(base);
+          continue;
+        }
+
+        if (!onOrigin) {
+          base.result_status = 'push_required';
+          // D18: any descendant whose ancestor chain contains this row
+          // is blocked. The walker emits in parent-before-child order,
+          // so adding this row id now suffices for all future entries.
+          blockedAncestors.add(entry.stream_row_id);
+          results.push(base);
+          continue;
+        }
+
+        // Build PR body from changelog (same approach as single-PR
+        // endpoint at cascade.ts:693-705). Empty body is acceptable.
+        let prBody = '';
+        try {
+          const changelog = generateChangelog(
+            rootStream.task_resource_id ?? entry.cascade_stream_id,
+            rootStream.task_node_id ?? entry.cascade_stream_id,
+          );
+          if (changelog.has_work) prBody = renderMarkdown(changelog);
+        } catch { /* changelog generation failed — empty body */ }
+        prBody =
+          prBody ||
+          `Stream \`${entry.cascade_stream_id}\` from ${rootStream.source_agent_id}`;
+        const bodyHash = simpleHash(prBody);
+
+        try {
+          const ghPR = await createPullRequest({
+            owner: repoInfo.owner,
+            repo: repoInfo.repo,
+            title: entry.name,
+            body: prBody,
+            head: entry.head_branch,
+            base: entry.base_branch,
+            draft,
+          });
+
+          // Persist + ensure publish_branch matches what we just used.
+          if (!getStreamByRowId(entry.stream_row_id)?.publish_branch) {
+            updatePublishBranch(entry.stream_row_id, entry.head_branch);
+          }
+          createPR({
+            stream_row_id: entry.stream_row_id,
+            source_branch: entry.head_branch,
+            target_branch: entry.base_branch,
+            title: entry.name,
+            body_hash: bodyHash,
+            repo_owner: repoInfo.owner,
+            repo_name: repoInfo.repo,
+            remote_pr_number: ghPR.number,
+            remote_pr_url: ghPR.html_url,
+            state: ghPR.draft ? 'draft' : 'open',
+          });
+          base.result_status = 'created';
+          base.pr_url = ghPR.html_url;
+          base.pr_number = ghPR.number;
+          results.push(base);
+        } catch (err) {
+          // D19 race: 422 duplicate-PR-for-branch → look up the open PR
+          // by `head=owner:branch` and surface as `existing`.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/→ 422\b/.test(msg)) {
+            try {
+              const existingPR = await findOpenPRByHead(
+                repoInfo.owner,
+                repoInfo.repo,
+                entry.head_branch,
+              );
+              if (existingPR) {
+                createPR({
+                  stream_row_id: entry.stream_row_id,
+                  source_branch: existingPR.head.ref,
+                  target_branch: existingPR.base.ref,
+                  title: existingPR.title,
+                  body_hash: bodyHash,
+                  repo_owner: repoInfo.owner,
+                  repo_name: repoInfo.repo,
+                  remote_pr_number: existingPR.number,
+                  remote_pr_url: existingPR.html_url,
+                  state: existingPR.draft ? 'draft' : existingPR.state,
+                });
+                base.result_status = 'existing';
+                base.pr_url = existingPR.html_url;
+                base.pr_number = existingPR.number;
+                results.push(base);
+                continue;
+              }
+            } catch { /* fall through to failed */ }
+          }
+          base.result_status = 'failed';
+          base.error = sanitizeGitHubError(err);
+          results.push(base);
+        }
+      }
+
+      return reply.send({
+        data: {
+          trunk: plan.trunk,
+          entries: results,
+        },
+      });
+    }
+  );
+
   // ── GitHub connection check ─────────────────────────────────────────
 
   fastify.get(
@@ -746,6 +1112,29 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.send({ data: status });
     }
   );
+}
+
+/**
+ * Map a DiffError code to an HTTP status. Kept here (not in diff-types.ts)
+ * because HTTP semantics are a transport concern, not a domain concern.
+ */
+function diffErrorStatus(code: string): number {
+  switch (code) {
+    case 'not_found':
+      return 404;
+    case 'bad_request':
+      return 400;
+    case 'timeout':
+      return 504;
+    case 'integrity_failed':
+      return 502;
+    case 'swarm_offline':
+    case 'capability_missing':
+      return 503;
+    case 'internal':
+    default:
+      return 500;
+  }
 }
 
 /**

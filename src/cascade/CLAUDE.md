@@ -5,6 +5,25 @@ Everything that *uses* cascade projections lives here. The projections themselve
 - **`changelog.ts`** — on-demand changelog generator. Reads cascade projections via `getCommitRangeForTask(resource_id, node_id)` from `src/db/dal/cascade-streams.ts` and renders a structured result + markdown. Served via `GET /api/v1/cascade/tasks/:resourceId/:nodeId/changelog`.
 - **`policy.ts`** — pure `resolveClosePolicy({ taskMetadata, swarmCapabilities, hubConfig })` function. No I/O. Implements the three-scope chain (task > swarm > hub) that decides whether a cascade merge should auto-close its linked task.
 - **`task-binder.ts`** — named orchestrator. Subscribes to `mapHubEvents.cascade_stream_merged`, evaluates `policy.ts`, and (when resolved to `'on_merge'`) calls the opentasks update path to transition the linked task to `completed`. Off by default.
+- **`diff-types.ts`** — types + method-name constants for the `cascade/diff.request` / `cascade/diff.response` / `cascade/diff.chunk` MAP protocol. `DiffResult` is the resolver's return shape (`{ ok, payload | error }`). No runtime logic.
+- **`diff-resolver.ts`** — five-tier diff fetcher used by three REST endpoints. Tiers: (1) cache via `cascade_diff_cache`, (2) presence + `cascade.canServeDiff` capability gate, (3) on-demand `cascade/diff.request` via a swappable `MapDiffFetcher` (default stubs `not_implemented`; the production one is installed from `src/map/cascade-diff-protocol.ts` at boot), (4) 60s wait surface as `timeout`, (5) cache write-through. Three entry points: `resolveCommitDiff` (single commit), `resolveStreamDiff` (`stream.base_commit..head`, head derived from `getLatestCommitForStream`), `resolveStackDiff` (calls `stack-resolver` then runs `lowest_base..highest_head`).
+- **`stack-resolver.ts`** — linear-stack walker for stack-level diff. Walks `parent_stream_id` edges. **Skip statuses** (`merged`, `abandoned`, `paused`) are filtered out as candidates; `conflicted` stays in the chain. Rejects branching with `NonLinearStackError` → route returns 400 `non_linear_stack`. Returns ordered chain + `(lowest_base, highest_head)`. The entire walk runs inside `db.transaction(...)` so the children fan-out is consistent with the root read (no torn plan from a concurrent `stream.merged` / `cascade.rebased` event).
+- **`pr-stack-walker.ts`** — toposort walker for "Open PR stack". DFS from a root via `parent_stream_id`, allows branching (D20). Each entry carries `ancestor_row_ids` so the route can propagate `push_required → blocked_by_parent` only down the affected branch. Per-stream base resolution: `parent.publish_branch || parent.branch_name || swarm.metadata.trunk_branch || 'main'`. Skip statuses (`merged`, `abandoned`, `paused`) are transparent — collapsed out of the plan, descendants base on the next live ancestor up. `conflicted` stays in. Returns parent-before-child plan. The entire walk runs inside `db.transaction(...)` for snapshot consistency.
+
+## Cascade diff cache
+
+`cascade_diff_cache` (migration V59) is content-addressed by `(stream_id, commit_hash, base_hash, file_path)` with all four columns NULL-tolerant via `IFNULL` in the unique index. Eviction happens on terminal events (`stream.merged`, `.abandoned`, `cascade.rebased`) — the cascade handler calls `evictByStream(stream.stream_id)` in those handlers. Cache writes go through `putDiff` which is idempotent via `INSERT OR IGNORE`; reads bump `last_accessed_at` so a future LRU sweep can use it.
+
+## REST surface (Streams 1–3)
+
+| Endpoint | Resolver | Notes |
+|---|---|---|
+| `GET /cascade/streams/:id/commits/:hash/diff` | `resolveCommitDiff` | Stream 1. Optional `?file=…`, `?base=…`, `?files_only=true` (D17 — skips blob + cache write). |
+| `GET /cascade/streams/:id/diff` | `resolveStreamDiff` | Stream 2 stream-level (`base..head`). Same query options. |
+| `GET /cascade/streams/:id/stack/diff` | `resolveStackDiff` | Stream 2 stack-level. Returns 400 `non_linear_stack` on branching. Echoes `stack` block alongside `data`. |
+| `POST /cascade/streams/:id/pr-stack` | `pr-stack-walker` + `github-api` | Stream 3. Sequential walker; idempotent (D19); per-lineage `blocked_by_parent` propagation (D18, D20); best-effort push hint per entry (D21). |
+
+Wire protocol (Stream 1): hub → sidecar `cascade/diff.request` notification → sidecar replies with `cascade/diff.response` (inline ≤ 512 KB or streaming with `chunk_stream_id`) → N `cascade/diff.chunk` notifications for streamed responses. Reassembly + sha256 verification in `src/map/cascade-diff-protocol.ts`; sidecar-side implementation lives in `references/macro-agent/src/map/cascade-diff-server.ts`.
 
 ## Where the boundary sits
 

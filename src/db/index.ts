@@ -51,6 +51,7 @@ import {
   MIGRATION_V56_SCHEDULES,
   MIGRATION_V57_DISPATCH_LOADOUT_REFS,
   MIGRATION_V58_NULLABLE_SPEC_ON_DISPATCH,
+  MIGRATION_V59_CASCADE_DIFF_CACHE,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -370,6 +371,11 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 58: Relax NOT NULL on dispatches.spec_resource_id + spec_id
   // for Layer 4 spec-less openteams.spawn flows. (Renumbered from V47.)
   58: MIGRATION_V58_NULLABLE_SPEC_ON_DISPATCH,
+  // Version 59: cascade_diff_cache — content-addressed cache for unified
+  // diff blobs served on-demand via cascade/diff.request. Evicted on stream
+  // merged / abandoned / rebased. See docs/design/cascade-diff-and-stacked-prs.md.
+  // Renumbered from V56 due to merge collision with V56_SCHEDULES.
+  59: MIGRATION_V59_CASCADE_DIFF_CACHE,
 };
 
 /** Get the SQL for a specific migration version.

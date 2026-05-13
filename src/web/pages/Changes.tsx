@@ -19,6 +19,8 @@ import {
   GitMerge,
   GitPullRequestDraft,
   Layers,
+  ListTree,
+  GitPullRequest,
   Network,
   Clock,
   AlertTriangle,
@@ -67,6 +69,9 @@ import { PageLoader } from '../components/common/LoadingSpinner';
 import { useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
 import { StreamDAGView } from '../components/streams/StreamDAGView';
 import { StreamStatusDot, STATUS_COLORS, STATUS_LABELS, TimelineEntry } from '../components/streams/shared';
+import { DiffView } from '../components/cascade/DiffView';
+import { StackDiffView } from '../components/cascade/StackDiffView';
+import { PRStackDrawer } from '../components/cascade/PRStackDrawer';
 import { usePageContext } from '../components/chat-fab/usePageContext';
 import {
   streamContextItem,
@@ -102,6 +107,23 @@ export function Changes() {
   const [conflictsOnly, setConflictsOnly] = useState(false);
   const [searchRaw, setSearchRaw] = useState('');
   const search = useDebouncedValue(searchRaw, 180);
+  // Diff drawer target — set when the user clicks a commit row.
+  const [diffTarget, setDiffTarget] = useState<{
+    streamRowId: string;
+    commitHash: string;
+  } | null>(null);
+  // Range diff drawer — fires when the user clicks "View stream diff" /
+  // "View stack diff". `mode` discriminates which resolver fires.
+  const [rangeDiffTarget, setRangeDiffTarget] = useState<{
+    mode: 'stream' | 'stack';
+    rowId: string;
+  } | null>(null);
+  // PR-stack drawer — fires when "Open PR stack" is clicked in the stack
+  // view header. Per D22, only mounted from stack-view context.
+  const [prStackTarget, setPRStackTarget] = useState<{
+    rowId: string;
+    rootName?: string;
+  } | null>(null);
 
   const { data: dagResponse, isLoading } = useCascadeDAG({
     source_swarm_id: selectedSwarmId,
@@ -301,6 +323,9 @@ export function Changes() {
               filteredCount={filteredCount}
               onSelect={setSelectedStreamId}
               onViewStack={openStackFrom}
+              onShowDiff={(streamRowId, commitHash) =>
+                setDiffTarget({ streamRowId, commitHash })
+              }
               selectedId={selectedStreamId}
             />
           ) : viewMode === 'stack' ? (
@@ -312,6 +337,12 @@ export function Changes() {
               onBackToList={() => { setStackRootId(null); setViewMode('list'); }}
               onSelect={setSelectedStreamId}
               selectedId={selectedStreamId}
+              onShowStackDiff={(rootRowId) =>
+                setRangeDiffTarget({ mode: 'stack', rowId: rootRowId })
+              }
+              onOpenPRStack={(rootRowId, rootName) =>
+                setPRStackTarget({ rowId: rootRowId, rootName })
+              }
             />
           ) : (
             <StreamDAGView
@@ -330,10 +361,125 @@ export function Changes() {
             onClose={() => setSelectedStreamId(null)}
             onViewStack={openStackFrom}
             onViewGraph={() => setViewMode('dag')}
+            onShowStreamDiff={(streamRowId) =>
+              setRangeDiffTarget({ mode: 'stream', rowId: streamRowId })
+            }
+            onShowDiff={(streamRowId, commitHash) =>
+              setDiffTarget({ streamRowId, commitHash })
+            }
           />
         )}
       </div>
+
+      {/* Diff drawer — opens when the user clicks a commit row. Fixed
+          right-aligned overlay; click backdrop or X to dismiss. */}
+      {diffTarget && (
+        <DiffDrawer
+          streamRowId={diffTarget.streamRowId}
+          commitHash={diffTarget.commitHash}
+          onClose={() => setDiffTarget(null)}
+        />
+      )}
+
+      {/* Range diff drawer — stream-level or stack-level cumulative diff.
+          Wider than the per-commit drawer (two-pane file tree + content). */}
+      {rangeDiffTarget && (
+        <RangeDiffDrawer
+          mode={rangeDiffTarget.mode}
+          rowId={rangeDiffTarget.rowId}
+          onClose={() => setRangeDiffTarget(null)}
+        />
+      )}
+
+      {/* PR-stack drawer — "Open PR stack" workflow from stack view. */}
+      {prStackTarget && (
+        <PRStackDrawerOverlay
+          rowId={prStackTarget.rowId}
+          rootName={prStackTarget.rootName}
+          onClose={() => setPRStackTarget(null)}
+        />
+      )}
     </div>
+  );
+}
+
+// ─── PR Stack Drawer overlay ───────────────────────────────────────────
+
+function PRStackDrawerOverlay({
+  rowId,
+  rootName,
+  onClose,
+}: {
+  rowId: string;
+  rootName?: string;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-40 bg-black/40"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div className="fixed top-0 right-0 bottom-0 z-50 w-full max-w-2xl p-3">
+        <PRStackDrawer rootRowId={rowId} rootName={rootName} onClose={onClose} />
+      </div>
+    </>
+  );
+}
+
+// ─── Diff Drawer ──────────────────────────────────────────────────────
+
+function DiffDrawer({
+  streamRowId,
+  commitHash,
+  onClose,
+}: {
+  streamRowId: string;
+  commitHash: string;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-40 bg-black/40"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div className="fixed top-0 right-0 bottom-0 z-50 w-full max-w-3xl p-3">
+        <DiffView
+          streamRowId={streamRowId}
+          commitHash={commitHash}
+          onClose={onClose}
+        />
+      </div>
+    </>
+  );
+}
+
+// ─── Range Diff Drawer (stream-level + stack-level) ──────────────────
+
+function RangeDiffDrawer({
+  mode,
+  rowId,
+  onClose,
+}: {
+  mode: 'stream' | 'stack';
+  rowId: string;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-40 bg-black/40"
+        onClick={onClose}
+        aria-hidden
+      />
+      {/* Wider than DiffDrawer to host the file-tree + diff two-pane layout. */}
+      <div className="fixed top-0 right-0 bottom-0 z-50 w-full max-w-5xl p-3">
+        <StackDiffView mode={mode} rowId={rowId} onClose={onClose} />
+      </div>
+    </>
   );
 }
 
@@ -425,12 +571,14 @@ function ChangesList({
   filteredCount,
   onSelect,
   onViewStack,
+  onShowDiff,
   selectedId,
 }: {
   buckets: Record<TriageBucket, StreamDAGNode[]>;
   filteredCount: number;
   onSelect: (id: string) => void;
   onViewStack: (id: string) => void;
+  onShowDiff: (streamRowId: string, commitHash: string) => void;
   selectedId: string | null;
 }) {
   if (filteredCount === 0) {
@@ -453,6 +601,7 @@ function ChangesList({
           nodes={buckets[cfg.key]}
           onSelect={onSelect}
           onViewStack={onViewStack}
+          onShowDiff={onShowDiff}
           selectedId={selectedId}
         />
       ))}
@@ -465,12 +614,14 @@ function BucketSection({
   nodes,
   onSelect,
   onViewStack,
+  onShowDiff,
   selectedId,
 }: {
   cfg: BucketConfig;
   nodes: StreamDAGNode[];
   onSelect: (id: string) => void;
   onViewStack: (id: string) => void;
+  onShowDiff: (streamRowId: string, commitHash: string) => void;
   selectedId: string | null;
 }) {
   const [collapsed, setCollapsed] = useState(cfg.defaultCollapsed);
@@ -516,6 +667,7 @@ function BucketSection({
                 isSelected={selectedId === node.id}
                 onSelect={() => onSelect(node.id)}
                 onViewStack={() => onViewStack(node.id)}
+                onShowDiff={(commitHash) => onShowDiff(node.id, commitHash)}
               />
             ))}
           </div>
@@ -530,11 +682,13 @@ function ChangeRow({
   isSelected,
   onSelect,
   onViewStack,
+  onShowDiff,
 }: {
   node: StreamDAGNode;
   isSelected: boolean;
   onSelect: () => void;
   onViewStack: () => void;
+  onShowDiff: (commitHash: string) => void;
 }) {
   return (
     <button
@@ -604,6 +758,8 @@ function StreamStackView({
   onBackToList,
   onSelect,
   selectedId,
+  onShowStackDiff,
+  onOpenPRStack,
 }: {
   stack: StreamDAGNode[] | null;
   dag: { nodes: StreamDAGNode[]; edges: StreamDAGEdge[] };
@@ -612,6 +768,8 @@ function StreamStackView({
   onBackToList: () => void;
   onSelect: (id: string) => void;
   selectedId: string | null;
+  onShowStackDiff: (rootRowId: string) => void;
+  onOpenPRStack: (rootRowId: string, rootName?: string) => void;
 }) {
   const roots = dag.nodes.filter((n) => !n.parent_stream_id);
 
@@ -667,6 +825,26 @@ function StreamStackView({
         >
           <ChevronRight className="w-3 h-3 rotate-180" />
           Back to list
+        </button>
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1"
+          onClick={() => onShowStackDiff(rootId)}
+          title="View cumulative diff across this stack"
+        >
+          <ListTree className="w-3 h-3" />
+          View stack diff
+        </button>
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1"
+          onClick={() =>
+            onOpenPRStack(rootId, stack?.[0]?.name ?? stack?.[0]?.stream_id)
+          }
+          title="Open one PR per unmerged stream in this stack"
+        >
+          <GitPullRequest className="w-3 h-3" />
+          Open PR stack
         </button>
         <button
           type="button"
@@ -777,14 +955,42 @@ function StackLevel({
 
         {expanded && commits.length > 0 && (
           <div className="mt-2 ml-4 space-y-1 border-l pl-3" style={{ borderColor: 'var(--color-border-subtle)' }}>
-            {commits.slice(0, 10).map((c, i) => (
-              <div key={i} className="text-2xs flex items-start gap-2">
-                <code className="font-mono shrink-0" style={{ color: 'var(--color-text-muted)' }}>
-                  {(c.data.commit_hash as string)?.slice(0, 7)}
-                </code>
-                <span className="truncate">{c.data.message_summary as string}</span>
-              </div>
-            ))}
+            {commits.slice(0, 10).map((c, i) => {
+              const hash = c.data.commit_hash as string | undefined;
+              // role="button" rather than a real <button> — the change row
+              // is itself a <button> for the whole-card click target; nesting
+              // a real button inside trips DOM validation.
+              return (
+                <div
+                  key={i}
+                  role="button"
+                  tabIndex={hash ? 0 : -1}
+                  aria-disabled={!hash}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (hash) onShowDiff(hash);
+                  }}
+                  onKeyDown={(e) => {
+                    if (!hash) return;
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onShowDiff(hash);
+                    }
+                  }}
+                  className={`text-2xs flex items-start gap-2 cursor-pointer
+                             hover:bg-honey-500/5 transition-colors rounded px-1 -mx-1
+                             focus:outline-none focus-visible:ring-1 focus-visible:ring-honey-500/60
+                             ${!hash ? 'cursor-default hover:bg-transparent' : ''}`}
+                  title={hash ? `View diff for ${hash}` : 'No commit hash'}
+                >
+                  <code className="font-mono shrink-0" style={{ color: 'var(--color-text-muted)' }}>
+                    {hash?.slice(0, 7) ?? '???????'}
+                  </code>
+                  <span className="truncate">{c.data.message_summary as string}</span>
+                </div>
+              );
+            })}
             {commits.length > 10 && (
               <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
                 +{commits.length - 10} more
@@ -805,12 +1011,16 @@ function StreamDetailSidebar({
   onClose,
   onViewStack,
   onViewGraph,
+  onShowDiff,
+  onShowStreamDiff,
 }: {
   streamRowId: string;
   node: StreamDAGNode | null;
   onClose: () => void;
   onViewStack: (streamRowId: string) => void;
   onViewGraph: () => void;
+  onShowDiff: (streamRowId: string, commitHash: string) => void;
+  onShowStreamDiff: (streamRowId: string) => void;
 }) {
   const { data: timelineResp, isLoading } = useCascadeStreamTimeline(streamRowId);
   const timeline = timelineResp?.data ?? [];
@@ -903,6 +1113,15 @@ function StreamDetailSidebar({
             <Network className="w-3 h-3" />
             Graph
           </button>
+          <button
+            type="button"
+            className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+            onClick={() => onShowStreamDiff(streamRowId)}
+            title="View cumulative diff for this stream (base..head)"
+          >
+            <ListTree className="w-3 h-3" />
+            Stream diff
+          </button>
         </div>
       )}
 
@@ -927,9 +1146,34 @@ function StreamDetailSidebar({
           <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>No events yet.</div>
         ) : (
           <div className="space-y-0">
-            {timeline.map((event, idx) => (
-              <TimelineEntry key={idx} event={event} />
-            ))}
+            {timeline.map((event, idx) => {
+              const isCommit = event.type === 'commit';
+              const hash = isCommit
+                ? ((event.data?.commit_hash as string | undefined) ?? undefined)
+                : undefined;
+              if (!isCommit || !hash) {
+                return <TimelineEntry key={idx} event={event} />;
+              }
+              return (
+                <div
+                  key={idx}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onShowDiff(streamRowId, hash)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onShowDiff(streamRowId, hash);
+                    }
+                  }}
+                  title={`View diff for ${hash.slice(0, 7)}`}
+                  className="cursor-pointer rounded -mx-1 px-1 hover:bg-honey-500/5
+                             focus:outline-none focus-visible:ring-1 focus-visible:ring-honey-500/60"
+                >
+                  <TimelineEntry event={event} />
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
