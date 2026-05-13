@@ -221,6 +221,16 @@ export function _resetOverlayStateForTest(): void {
 export function createOpenHiveAgentRuntime(
   deps: OpenHiveRuntimeDeps,
 ): DispatchAgentRuntime {
+  // Bridge loadout from `resolveTarget` (knows taskId) through
+  // `createStream` (gets streamId) to `createSession` / `sendPrompt`
+  // (only see streamId). swarm-dispatch's `createStreamRuntime` calls
+  // these sequentially per spawn but doesn't thread context, so we
+  // stash here. FIFO queue keyed by `${serverId}:${agentId}` handles
+  // concurrent spawns to the same target without collision.
+  const pendingByTarget = new Map<string, MaterializedLoadout[]>();
+  const loadoutByStream = new Map<string, MaterializedLoadout>();
+  const targetKey = (serverId: string, agentId: string) => `${serverId}:${agentId}`;
+
   return createStreamRuntime({
     async resolveTarget(taskId) {
       const acpStreamManager = deps.getAcpStreamManager();
@@ -284,6 +294,12 @@ export function createOpenHiveAgentRuntime(
           { timeoutMs: deps.spawnAgentTimeoutMs ?? 30_000 },
         );
         markDelivery(taskId, { transport: 'acp', agent_id: result.agentId });
+        if (loadout) {
+          const key = targetKey(dispatch.target_swarm_id, result.agentId);
+          const queue = pendingByTarget.get(key) ?? [];
+          queue.push(loadout);
+          pendingByTarget.set(key, queue);
+        }
         return {
           serverId: dispatch.target_swarm_id,
           agentId: result.agentId,
@@ -315,6 +331,12 @@ export function createOpenHiveAgentRuntime(
         });
       }
 
+      if (loadout) {
+        const key = targetKey(dispatch.target_swarm_id, agentInfo.targetId);
+        const queue = pendingByTarget.get(key) ?? [];
+        queue.push(loadout);
+        pendingByTarget.set(key, queue);
+      }
       return {
         serverId: dispatch.target_swarm_id,
         agentId: agentInfo.targetId,
@@ -324,6 +346,13 @@ export function createOpenHiveAgentRuntime(
     createStream: async (serverId, agentId) => {
       const mgr = deps.getAcpStreamManager()!;
       const result = await mgr.createStream(serverId, agentId);
+      // Move the queued loadout (set by resolveTarget) under streamId so
+      // createSession + sendPrompt can read it without needing taskId.
+      const key = targetKey(serverId, agentId);
+      const queue = pendingByTarget.get(key);
+      const loadout = queue?.shift();
+      if (queue && queue.length === 0) pendingByTarget.delete(key);
+      if (loadout) loadoutByStream.set(result.streamId, loadout);
       // After the stream is wired, push any staged overlay onto the
       // swarm via the x-dispatch/permissions.set notification-pair RPC.
       // We bind the staged entry to the new streamId so closeStream can
@@ -347,17 +376,26 @@ export function createOpenHiveAgentRuntime(
     },
 
     createSession: async (streamId, cwd) => {
-      return deps.getAcpStreamManager()!.newSession(streamId, { cwd, mcpServers: [] });
+      const loadout = loadoutByStream.get(streamId);
+      return deps.getAcpStreamManager()!.newSession(streamId, {
+        cwd,
+        mcpServers: loadout?.mcpProviders ?? [],
+      });
     },
 
     sendPrompt: async (streamId, sessionId, prompt) => {
+      const loadout = loadoutByStream.get(streamId);
+      const text = loadout?.promptAddendum
+        ? `${loadout.promptAddendum}\n\n${prompt}`
+        : prompt;
       await deps.getAcpStreamManager()!.prompt(streamId, {
         sessionId,
-        prompt: [{ type: 'text', text: prompt }],
+        prompt: [{ type: 'text', text }],
       });
     },
 
     closeStream: async (streamId) => {
+      loadoutByStream.delete(streamId);
       // Clear any active overlay before tearing down the stream so the
       // long-lived agent isn't left with stale dispatch deny rules.
       // Errors here are non-fatal — the overlay times out / gets

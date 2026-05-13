@@ -49,7 +49,9 @@ import { canonicalizeRepoUrl } from 'agent-workspace/kinds/repo';
 const TEST_ROOT = testRoot('dispatch-repo-routing');
 const TEST_DB_PATH = testDbPath(TEST_ROOT, 'repo-routing.db');
 
-const REPO_CANONICAL_URL = 'https://github.com/test-org/test-repo.git';
+// Canonical form (no `.git` suffix) — `canonicalizeRepoUrl` strips it, and the
+// repo row + downstream envelope metadata stores the canonical form.
+const REPO_CANONICAL_URL = 'https://github.com/test-org/test-repo';
 const MAIL_SWARM_ID = 'repo-test-swarm-001';
 const MAIL_AGENT_ID = 'repo-test-agent-001';
 

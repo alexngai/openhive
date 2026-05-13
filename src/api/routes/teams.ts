@@ -29,6 +29,11 @@ import {
   CreateTeamTemplateSchema,
   UpdateTeamTemplateSchema,
 } from '../schemas/teams.js';
+import {
+  materializeRoleLoadout,
+  TemplateNotFoundError,
+  RoleNotFoundError,
+} from '../../openteams/resolver.js';
 import type { Config } from '../../config.js';
 
 export async function teamsRoutes(
@@ -299,6 +304,54 @@ export async function teamsRoutes(
       });
 
       return reply.status(204).send();
+    },
+  );
+
+  // Materialize a role's loadout — UI preview surface.
+  // POST so we can extend with body params (token-budget overrides, format)
+  // without breaking GET-cache assumptions.
+  fastify.post<{ Params: { id: string; role: string } }>(
+    '/teams/:id/roles/:role/loadout/materialize',
+    { preHandler: optionalAuthMiddleware },
+    async (request, reply) => {
+      const tmpl = teamTemplatesDAL.getTeamTemplate(request.params.id);
+      if (!tmpl) {
+        return reply
+          .status(404)
+          .send({ error: 'Not Found', message: 'Team template not found' });
+      }
+
+      if (tmpl.visibility === 'private') {
+        if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, tmpl)) {
+          return reply
+            .status(404)
+            .send({ error: 'Not Found', message: 'Team template not found' });
+        }
+      } else if (tmpl.visibility === 'shared') {
+        if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, tmpl)) {
+          return reply.status(403).send({
+            error: 'Forbidden',
+            message: 'You do not have access to this team template',
+          });
+        }
+      }
+
+      try {
+        const materialized = await materializeRoleLoadout(
+          request.params.id,
+          request.params.role,
+          request.agent?.id,
+        );
+        return reply.send({ materialized });
+      } catch (err) {
+        if (err instanceof TemplateNotFoundError) {
+          return reply.status(404).send({ error: 'Not Found', message: err.message });
+        }
+        if (err instanceof RoleNotFoundError) {
+          return reply.status(404).send({ error: 'Not Found', message: err.message });
+        }
+        throw err;
+      }
     },
   );
 }

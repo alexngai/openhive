@@ -23,6 +23,10 @@ import {
   onLoadoutRemoved,
 } from '../../openteams/sync-bridge.js';
 import { CreateLoadoutSchema, UpdateLoadoutSchema } from '../schemas/loadouts.js';
+import {
+  materializeLoadoutById,
+  LoadoutNotFoundError,
+} from '../../openteams/resolver.js';
 import type { Config } from '../../config.js';
 
 export async function loadoutsRoutes(
@@ -274,6 +278,44 @@ export async function loadoutsRoutes(
       });
 
       return reply.status(204).send();
+    },
+  );
+
+  // Materialize a standalone loadout — UI preview surface.
+  fastify.post<{ Params: { id: string } }>(
+    '/loadouts/:id/materialize',
+    { preHandler: optionalAuthMiddleware },
+    async (request, reply) => {
+      const loadout = loadoutsDAL.getLoadout(request.params.id);
+      if (!loadout) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Loadout not found' });
+      }
+
+      if (loadout.visibility === 'private') {
+        if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, loadout)) {
+          return reply.status(404).send({ error: 'Not Found', message: 'Loadout not found' });
+        }
+      } else if (loadout.visibility === 'shared') {
+        if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, loadout)) {
+          return reply.status(403).send({
+            error: 'Forbidden',
+            message: 'You do not have access to this loadout',
+          });
+        }
+      }
+
+      try {
+        const materialized = await materializeLoadoutById(
+          request.params.id,
+          request.agent?.id,
+        );
+        return reply.send({ materialized });
+      } catch (err) {
+        if (err instanceof LoadoutNotFoundError) {
+          return reply.status(404).send({ error: 'Not Found', message: err.message });
+        }
+        throw err;
+      }
     },
   );
 }

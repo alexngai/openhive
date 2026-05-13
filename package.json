@@ -38,8 +38,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:web": "vitest run --config vitest.web.config.ts",
-    "test:web:watch": "vitest --config vitest.web.config.ts",
+    "test:server": "vitest run --project server",
+    "test:server:watch": "vitest --project server",
+    "test:web": "vitest run --project web",
+    "test:web:watch": "vitest --project web",
     "lint": "eslint src --ext .ts",
     "prepublishOnly": "npm run build"
   },

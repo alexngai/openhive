@@ -23,6 +23,12 @@ import {
   _resetOpenteamsMapHandlers,
   getOpenteamsBundleStore,
 } from '../../openteams/map-handlers.js';
+import {
+  registerLoadoutForDispatch,
+  peekLoadoutForDispatch,
+  _resetLoadoutSideChannelForTest,
+} from '../../dispatch/loadout-side-channel.js';
+import type { MaterializedLoadout } from '../../openteams/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 vi.mock('../../map/connection-registry.js', () => ({
@@ -124,6 +130,7 @@ describe('loadout dispatch runtime — broader coverage', () => {
   beforeEach(() => {
     getDatabase().prepare('DELETE FROM dispatches').run();
     _resetOpenteamsMapHandlers();
+    _resetLoadoutSideChannelForTest();
     // Silence expected warnings (hash-mismatch tests, missing-bundle).
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
@@ -160,6 +167,33 @@ describe('loadout dispatch runtime — broader coverage', () => {
       loadout_bundle_id: bB.id,
     });
 
+    // Post-merge: runtime reads pre-materialized loadouts from the
+    // in-memory side-channel. Build per-dispatch materialized loadouts
+    // mirroring LOADOUT_A / LOADOUT_B and register each — verifying
+    // there's no cross-contamination through the side-channel.
+    const materializedA: MaterializedLoadout = {
+      capabilities: ['file.read'],
+      mcpScope: [],
+      mcpProviders: [{ name: 'serverA', command: 'node', args: ['./a.js'] }],
+      permissions: { allow: [], deny: [], ask: [] },
+      promptAddendum: 'A-ADD',
+      skills: null,
+      unresolvedRefs: [],
+      materializedAt: new Date().toISOString(),
+    };
+    const materializedB: MaterializedLoadout = {
+      capabilities: ['exec.test'],
+      mcpScope: [],
+      mcpProviders: [{ name: 'serverB', command: 'node', args: ['./b.js'] }],
+      permissions: { allow: [], deny: [], ask: [] },
+      promptAddendum: 'B-ADD',
+      skills: null,
+      unresolvedRefs: [],
+      materializedAt: new Date().toISOString(),
+    };
+    registerLoadoutForDispatch(dA.id, materializedA);
+    registerLoadoutForDispatch(dB.id, materializedB);
+
     const { mgr, byStream } = makeMockManager();
     const runtime = createOpenHiveAgentRuntime({ getAcpStreamManager: () => mgr });
 
@@ -172,11 +206,18 @@ describe('loadout dispatch runtime — broader coverage', () => {
     const recs = Array.from(byStream.values());
     expect(recs).toHaveLength(2);
 
-    // Each session should see the loadout that matches its dispatch — never crossed.
+    // Each spawn consumed its own side-channel entry (no cross-contamination)
+    // and threaded its own loadout into the per-stream ACP session: the
+    // addendum-prefixed prompt + mcpServers reach each session independently.
+    expect(peekLoadoutForDispatch(dA.id)).toBeNull();
+    expect(peekLoadoutForDispatch(dB.id)).toBeNull();
+
     const aRec = recs.find((r) => r.prompt.startsWith('A-ADD'));
     const bRec = recs.find((r) => r.prompt.startsWith('B-ADD'));
     expect(aRec).toBeDefined();
     expect(bRec).toBeDefined();
+    expect(aRec!.prompt).toBe('A-ADD\n\nA-PROMPT');
+    expect(bRec!.prompt).toBe('B-ADD\n\nB-PROMPT');
     expect(aRec!.mcpServers).toEqual([
       { name: 'serverA', command: 'node', args: ['./a.js'] },
     ]);

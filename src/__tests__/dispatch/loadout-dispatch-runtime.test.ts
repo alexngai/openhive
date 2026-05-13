@@ -27,6 +27,12 @@ import {
   _resetOpenteamsMapHandlers,
   getOpenteamsBundleStore,
 } from '../../openteams/map-handlers.js';
+import {
+  registerLoadoutForDispatch,
+  peekLoadoutForDispatch,
+  _resetLoadoutSideChannelForTest,
+} from '../../dispatch/loadout-side-channel.js';
+import type { MaterializedLoadout } from '../../openteams/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 // Stub the connection registry — the real one needs an active MAP server +
@@ -104,6 +110,7 @@ describe('loadout dispatch runtime — E2E spawn', () => {
   beforeEach(() => {
     getDatabase().prepare('DELETE FROM dispatches').run();
     _resetOpenteamsMapHandlers();
+    _resetLoadoutSideChannelForTest();
   });
 
   it('feeds materialized MCP servers + prompt addendum into the ACP session', async () => {
@@ -122,6 +129,24 @@ describe('loadout dispatch runtime — E2E spawn', () => {
       loadout_bundle_id: bundle.id,
     });
 
+    // Post-merge: the runtime reads the materialized loadout from an
+    // in-memory side-channel rather than re-materializing from the
+    // bundle store inline. Build a minimal materialized loadout that
+    // mirrors LOADOUT_DEF and register it for this dispatch.
+    const materialized: MaterializedLoadout = {
+      capabilities: ['file.read'],
+      mcpScope: [],
+      mcpProviders: [
+        { name: 'opentasks', command: 'node', args: ['./mcp.js'] },
+      ],
+      permissions: { allow: [], deny: [], ask: [] },
+      promptAddendum: 'WORK SAFELY',
+      skills: null,
+      unresolvedRefs: [],
+      materializedAt: new Date().toISOString(),
+    };
+    registerLoadoutForDispatch(d.id, materialized);
+
     const { mgr, recorded } = makeMockAcpManager();
     const runtime = createOpenHiveAgentRuntime({
       getAcpStreamManager: () => mgr,
@@ -129,6 +154,10 @@ describe('loadout dispatch runtime — E2E spawn', () => {
 
     await runtime.spawn({ taskId: d.id, prompt: 'do the spec work' } as any);
 
+    // The runtime threads the side-channel loadout through resolveTarget
+    // → createStream → createSession/sendPrompt so newSession gets the
+    // materialized mcpServers and the prompt gets the addendum prefix.
+    expect(peekLoadoutForDispatch(d.id)).toBeNull();
     expect(recorded.newSession?.mcpServers).toEqual([
       { name: 'opentasks', command: 'node', args: ['./mcp.js'] },
     ]);

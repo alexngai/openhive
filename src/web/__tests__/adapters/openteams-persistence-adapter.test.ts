@@ -73,9 +73,18 @@ describe('createTeamPersistence', () => {
     const p = createTeamPersistence('res_team_save');
     const state = { config: { team: { name: 'updated' } } };
     await p.save(state);
-    expect(patch).toHaveBeenCalledWith('/teams/res_team_save', {
-      metadata: { editor_state: state },
-    });
+    // The adapter writes both editor_state (the full visual snapshot) and
+    // content (compileToContent's manifest+roles projection so downstream
+    // bundle/mesh-sync layers stay current). We assert on editor_state
+    // specifically and tolerate the content sibling — its shape comes
+    // from the editor's live store state, which is global to the test
+    // process.
+    expect(patch).toHaveBeenCalledWith(
+      '/teams/res_team_save',
+      expect.objectContaining({
+        metadata: expect.objectContaining({ editor_state: state }),
+      }),
+    );
   });
 
   it('save() degrades gracefully on a network failure', async () => {
