@@ -67,14 +67,21 @@ const EmbeddedLoadoutSchema = z
   .passthrough();
 
 /**
- * Prompt files for a role. openteams accepts either a single `prompts/<role>.md`
- * file or a multi-file `prompts/<role>/` directory (SOUL.md, ROLE.md, RULES.md,
- * etc.). We collapse both shapes to a typed record indexed by filename.
+ * Prompt files for a role. Mirror of openteams's `ResolvedPrompts` —
+ * `primary` is the main role markdown and `additional` is an ordered
+ * list of named sections (SOUL.md, RULES.md, EXAMPLES.md, etc.). The
+ * shape is `PromptSection[]` rather than a `Record<filename, content>`
+ * because openteams preserves load order for prompt concatenation, and
+ * upstream's `TemplateLoader.fromObject` expects exactly this layout.
  */
+const PromptSectionSchema = z.object({
+  name: z.string(),
+  content: z.string(),
+});
 const RolePromptsSchema = z
   .object({
     primary: z.string().optional(),
-    additional: z.record(z.string(), z.string()).optional(),
+    additional: z.array(PromptSectionSchema).optional(),
   })
   .passthrough();
 

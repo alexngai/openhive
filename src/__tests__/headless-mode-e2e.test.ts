@@ -45,7 +45,7 @@ function makeConfig(overrides?: Partial<Config>): Config {
   return ConfigSchema.parse({
     database: TEST_DB_PATH,
     instance: { name: 'Headless Test', description: 'E2E test hub' },
-    admin: { createOnStartup: false, key: ADMIN_KEY },
+    admin: { createOnStartup: false, key: ADMIN_KEY, trustLocalMode: false },
     auth: { mode: 'local' },
     rateLimit: { enabled: false },
     cors: { enabled: false },
@@ -601,6 +601,114 @@ describe('Headless-mode E2E', () => {
       });
       expect(res.statusCode).toBe(200);
       await app.close();
+    });
+  });
+
+  // ==========================================================================
+  // 6.7. Implicit auto-trust: loopback host + local-auth mode
+  // ==========================================================================
+  describe('loopback host auto-trusts in local-auth mode', () => {
+    it('host=127.0.0.1 + auth.local + admin local agent → admin endpoint works without credentials', async () => {
+      // The hub is bound to loopback only, so no external peer can reach
+      // admin endpoints. In that posture, requiring the operator to type
+      // the admin key is friction without security benefit — the local
+      // agent auto-trust kicks in implicitly.
+      setLocalAgent({ id: adminAgent.id, name: 'local', is_admin: true } as Parameters<typeof setLocalAgent>[0]);
+      try {
+        const app = await makeApp(makeConfig({
+          host: '127.0.0.1',
+          admin: { createOnStartup: false, key: ADMIN_KEY, trustLocalMode: false }, // no opt-in!
+        }));
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/v1/admin/onboard-token',
+          payload: { scopes: ['map:*'] },
+        });
+        expect(res.statusCode).toBe(200);
+        await app.close();
+      } finally {
+        setLocalAgent(null);
+      }
+    });
+
+    it('host=localhost is treated as loopback', async () => {
+      setLocalAgent({ id: adminAgent.id, name: 'local', is_admin: true } as Parameters<typeof setLocalAgent>[0]);
+      try {
+        const app = await makeApp(makeConfig({
+          host: 'localhost',
+          admin: { createOnStartup: false, key: ADMIN_KEY, trustLocalMode: false },
+        }));
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/v1/admin/onboard-token',
+          payload: { scopes: ['map:*'] },
+        });
+        expect(res.statusCode).toBe(200);
+        await app.close();
+      } finally {
+        setLocalAgent(null);
+      }
+    });
+
+    it('host=0.0.0.0 + auth.local → STILL requires credentials (network-reachable surface)', async () => {
+      // 0.0.0.0 means "bind to every interface" — anyone on the same LAN
+      // can hit admin endpoints. Auto-trust would be a security regression
+      // here, so the strict admin-key requirement must stay.
+      setLocalAgent({ id: adminAgent.id, name: 'local', is_admin: true } as Parameters<typeof setLocalAgent>[0]);
+      try {
+        const app = await makeApp(makeConfig({
+          host: '0.0.0.0',
+          admin: { createOnStartup: false, key: ADMIN_KEY, trustLocalMode: false },
+        }));
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/v1/admin/onboard-token',
+          payload: { scopes: ['map:*'] },
+        });
+        expect(res.statusCode).toBe(401);
+        await app.close();
+      } finally {
+        setLocalAgent(null);
+      }
+    });
+
+    it('host=127.0.0.1 + auth.swarmhub → STILL requires credentials (no local auto-auth agent)', async () => {
+      // Loopback alone isn't enough — there has to be an auto-authenticated
+      // agent to trust. Token/swarmhub mode has no such agent, so strict
+      // behavior must apply.
+      const app = await makeApp(makeConfig({
+        host: '127.0.0.1',
+        auth: { mode: 'swarmhub' },
+        admin: { createOnStartup: false, key: ADMIN_KEY, trustLocalMode: false },
+      }));
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/admin/onboard-token',
+        payload: { scopes: ['map:*'] },
+      });
+      expect(res.statusCode).toBe(401);
+      await app.close();
+    });
+
+    it('host=127.0.0.1 + auth.local + non-admin local agent → 403 (requireAdmin still gates)', async () => {
+      // Loopback auto-trust accepts the agent as authenticated; it doesn't
+      // upgrade them to admin. Non-admin local agent must still fail.
+      setLocalAgent({ id: regularAgent.id, name: 'local-regular', is_admin: false } as Parameters<typeof setLocalAgent>[0]);
+      try {
+        const app = await makeApp(makeConfig({
+          host: '127.0.0.1',
+          admin: { createOnStartup: false, key: ADMIN_KEY, trustLocalMode: false },
+        }));
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/v1/admin/onboard-token',
+          payload: { scopes: ['map:*'] },
+        });
+        expect(res.statusCode).toBe(403);
+        await app.close();
+      } finally {
+        setLocalAgent(null);
+      }
     });
   });
 

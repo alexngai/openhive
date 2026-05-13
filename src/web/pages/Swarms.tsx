@@ -41,7 +41,9 @@ import {
   useSpawnAgent,
   useConnectAcp,
   useKnownProjectPaths,
+  useResourcesByType,
 } from "../hooks/useApi";
+import { api } from "../lib/api";
 import { useSwarmRealtime } from "../hooks/useRealtimeInvalidation";
 import {
   PageLoader,
@@ -180,6 +182,16 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   // coordinator at `projectDirectory` — no separate _macro/spawnAgent call.
   const [projectDirectory, setProjectDirectory] = useState("");
   const [bootstrapCoordinator, setBootstrapCoordinator] = useState(false);
+  // OpenTeams binding (Path B). When a team_template + (optional) loadout
+  // is selected, the spawned swarm's macro-agent boots a team-aware
+  // TeamRuntime from the wire-delivered bundle content — no filesystem
+  // write needed. See `src/openteams/internal/bundle-content.ts` + macro-
+  // agent's bootV2 openteams handling.
+  const [selectedTeamId, setSelectedTeamId] = useState<string>("");
+  const [selectedLoadoutId, setSelectedLoadoutId] = useState<string>("");
+  const [openteamsRole, setOpenteamsRole] = useState("");
+  const { data: teamResources } = useResourcesByType("team_template", { limit: 100 });
+  const { data: loadoutResources } = useResourcesByType("loadout", { limit: 100 });
 
   const isSandboxed = provider === "local-sandboxed";
 
@@ -247,6 +259,26 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
         }
       : undefined;
 
+    // Resolve team_template / loadout row ids to content-addressed
+    // bundle hashes via the dedicated /bundle endpoints. The spawn
+    // route takes hashes, not row ids — keeps the swarm boot path
+    // content-addressed end-to-end.
+    let team_bundle_id: string | undefined;
+    let loadout_bundle_id: string | undefined;
+    try {
+      if (selectedTeamId) {
+        const r = await api.get<{ bundle_id: string }>(`/teams/${selectedTeamId}/bundle`);
+        team_bundle_id = r.bundle_id;
+      }
+      if (selectedLoadoutId) {
+        const r = await api.get<{ bundle_id: string }>(`/loadouts/${selectedLoadoutId}/bundle`);
+        loadout_bundle_id = r.bundle_id;
+      }
+    } catch (err) {
+      toast.error("Bundle lookup failed", (err as Error).message);
+      return;
+    }
+
     try {
       await spawnMutation.mutateAsync({
         name,
@@ -258,6 +290,9 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
         metadata,
         workspace: validRepos.length > 0 ? { repos: validRepos } : undefined,
         bootstrap,
+        team_bundle_id,
+        loadout_bundle_id,
+        role: openteamsRole.trim() || undefined,
       });
       toast.success("Swarm spawned", `"${name}" is starting up.`);
       onClose();
@@ -457,6 +492,79 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                 </p>
               </div>
             </label>
+          </div>
+
+          {/* OpenTeams binding (Path B) */}
+          <div>
+            <SectionLabel>OpenTeams binding (optional)</SectionLabel>
+            <p
+              className="text-2xs mb-2"
+              style={{ color: "var(--color-text-muted)" }}
+            >
+              Bind the spawned swarm to an authored team template and/or
+              loadout. The team's content travels in the bootstrap token —
+              macro-agent boots a team-aware TeamRuntime from the inline
+              manifest (no disk write, no MAP fetch).
+            </p>
+            <div className="grid grid-cols-1 gap-2">
+              <label className="text-2xs">
+                <span
+                  className="block mb-0.5"
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  Team template
+                </span>
+                <select
+                  className="input w-full"
+                  value={selectedTeamId}
+                  onChange={(e) => setSelectedTeamId(e.target.value)}
+                >
+                  <option value="">— none —</option>
+                  {(teamResources?.data ?? []).map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-2xs">
+                <span
+                  className="block mb-0.5"
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  Loadout
+                </span>
+                <select
+                  className="input w-full"
+                  value={selectedLoadoutId}
+                  onChange={(e) => setSelectedLoadoutId(e.target.value)}
+                >
+                  <option value="">— none —</option>
+                  {(loadoutResources?.data ?? []).map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {(selectedTeamId || selectedLoadoutId) && (
+                <label className="text-2xs">
+                  <span
+                    className="block mb-0.5"
+                    style={{ color: "var(--color-text-secondary)" }}
+                  >
+                    Role (advisory)
+                  </span>
+                  <input
+                    type="text"
+                    className="input w-full"
+                    placeholder="e.g. worker"
+                    value={openteamsRole}
+                    onChange={(e) => setOpenteamsRole(e.target.value)}
+                  />
+                </label>
+              )}
+            </div>
           </div>
 
           {/* Workspace (Git Repos) */}

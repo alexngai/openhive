@@ -143,6 +143,48 @@ export async function loadoutsRoutes(
     },
   );
 
+  // Resolve the row to its content-addressed bundle id. UI uses this to
+  // pass loadout_bundle_id to /map/hosted/spawn.
+  fastify.get<{ Params: { id: string } }>(
+    '/loadouts/:id/bundle',
+    { preHandler: optionalAuthMiddleware },
+    async (request, reply) => {
+      const loadout = loadoutsDAL.getLoadout(request.params.id);
+      if (!loadout) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Loadout not found' });
+      }
+      if (loadout.visibility === 'private') {
+        if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, loadout)) {
+          return reply.status(404).send({ error: 'Not Found', message: 'Loadout not found' });
+        }
+      } else if (loadout.visibility === 'shared') {
+        if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, loadout)) {
+          return reply.status(403).send({ error: 'Forbidden', message: 'No access' });
+        }
+      }
+      const content = (loadout.metadata as { content?: unknown } | null)?.content;
+      if (!content) {
+        return reply.status(409).send({
+          error: 'Conflict',
+          message: 'Loadout has no inline content yet (git-backed row pre-first-pull?)',
+        });
+      }
+      try {
+        const { bundleLoadoutContent } = await import('../../openteams/internal/bundle-content.js');
+        const bundle = bundleLoadoutContent(
+          loadout.name,
+          content as Parameters<typeof bundleLoadoutContent>[1],
+        );
+        return reply.send({ bundle_id: bundle.id });
+      } catch (err) {
+        return reply.status(500).send({
+          error: 'Internal Error',
+          message: `Bundle computation failed: ${(err as Error).message}`,
+        });
+      }
+    },
+  );
+
   fastify.patch<{ Params: { id: string } }>(
     '/loadouts/:id',
     { preHandler: authMiddleware },

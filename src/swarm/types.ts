@@ -91,6 +91,23 @@ export interface BootstrapToken {
     }>;
     /** Prompt prefix applied ahead of the agent's first turn. */
     prompt_addendum?: string;
+    /**
+     * Inlined team content for wire delivery. When set, the spawned
+     * swarm's adapter (macro-agent's bootV2) can hydrate a TeamRuntime
+     * from this content via `TemplateLoader.fromObject` — no filesystem
+     * write, no MAP fetch needed.
+     *
+     * Shape matches openteams's `TemplateLoader.fromObject` input. Sized
+     * for inline transport: even the heaviest reference team (gsd, 12
+     * roles) is ~30 KB after base64 — ~3% of macOS ARG_MAX (1 MB).
+     * Larger teams should switch to a MAP-fetch path.
+     */
+    team_content?: {
+      manifest: Record<string, unknown>;
+      roles?: Record<string, Record<string, unknown>>;
+      loadouts?: Record<string, Record<string, unknown>>;
+      prompts?: Record<string, Record<string, unknown>>;
+    };
   };
 }
 

@@ -128,6 +128,12 @@ export function useSpawnSwarm() {
         coordinator?: boolean;
         cwd?: string;
       };
+      // OpenTeams (Path B) — content-addressed bundle ids; the spawn
+      // route materializes the team/loadout from the bundle store and
+      // inlines it in the OPENSWARM_BOOTSTRAP_TOKEN.
+      team_bundle_id?: string;
+      loadout_bundle_id?: string;
+      role?: string;
     }) => api.post<HostedSwarm>("/map/hosted/spawn", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["hosted-swarms"] });
@@ -321,7 +327,7 @@ export function useSyncStatus() {
 
 // Resources (extended)
 export function useResourcesByType(
-  type: "memory_bank" | "skill" | "task",
+  type: "memory_bank" | "skill" | "task" | "team_template" | "loadout",
   options?: { limit?: number },
 ) {
   const { limit = 50 } = options || {};

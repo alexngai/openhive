@@ -321,6 +321,36 @@ export class SwarmManager {
           );
         }
       }
+      // Inline the team bundle content so the spawned adapter (macro-agent
+      // bootV2) can hydrate a TeamRuntime on boot — no filesystem write
+      // needed. The bundle store already holds the canonical `{manifest,
+      // roles, loadouts, prompts}` (L2 materialization). Failures are
+      // non-fatal: spawn proceeds without team awareness, mirroring the
+      // loadout fallback above.
+      if (input.team_bundle_id) {
+        try {
+          const { getOpenteamsBundleStore } = await import('../openteams/map-handlers.js');
+          const { TEAM_RESOURCE_TYPE } = await import('openteams');
+          const bundle = await getOpenteamsBundleStore().get(TEAM_RESOURCE_TYPE, input.team_bundle_id);
+          if (bundle) {
+            const md = (bundle.metadata ?? {}) as Record<string, unknown>;
+            openteamsBinding.team_content = {
+              manifest: md.manifest as Record<string, unknown>,
+              roles: md.roles as Record<string, Record<string, unknown>> | undefined,
+              loadouts: md.loadouts as Record<string, Record<string, unknown>> | undefined,
+              prompts: md.prompts as Record<string, Record<string, unknown>> | undefined,
+            };
+          } else {
+            console.warn(
+              `[swarm.manager] team bundle ${input.team_bundle_id} not in store; spawn proceeds without team_content`,
+            );
+          }
+        } catch (err) {
+          console.warn(
+            `[swarm.manager] team ${input.team_bundle_id} materialization failed; spawn proceeds without team_content: ${(err as Error).message}`,
+          );
+        }
+      }
     }
 
     const bootstrapToken: BootstrapToken = {

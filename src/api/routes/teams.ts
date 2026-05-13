@@ -158,6 +158,50 @@ export async function teamsRoutes(
     },
   );
 
+  // Resolve the row to its content-addressed bundle id. Used by the UI
+  // when spawning a swarm bound to a team_template — the spawn endpoint
+  // takes a content hash, not a row id. Computes on-the-fly via the
+  // bundle helpers (same logic the auto-bundle hook runs on write).
+  fastify.get<{ Params: { id: string } }>(
+    '/teams/:id/bundle',
+    { preHandler: optionalAuthMiddleware },
+    async (request, reply) => {
+      const tmpl = teamTemplatesDAL.getTeamTemplate(request.params.id);
+      if (!tmpl) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Team template not found' });
+      }
+      if (tmpl.visibility === 'private') {
+        if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, tmpl)) {
+          return reply.status(404).send({ error: 'Not Found', message: 'Team template not found' });
+        }
+      } else if (tmpl.visibility === 'shared') {
+        if (!request.agent || !resourcesDAL.canAccessResource(request.agent.id, tmpl)) {
+          return reply.status(403).send({ error: 'Forbidden', message: 'No access' });
+        }
+      }
+      const content = (tmpl.metadata as { content?: unknown } | null)?.content;
+      if (!content) {
+        return reply.status(409).send({
+          error: 'Conflict',
+          message: 'Team template has no inline content yet (git-backed row pre-first-pull?)',
+        });
+      }
+      try {
+        const { bundleTeamTemplateContent } = await import('../../openteams/internal/bundle-content.js');
+        const bundle = bundleTeamTemplateContent(
+          tmpl.name,
+          content as Parameters<typeof bundleTeamTemplateContent>[1],
+        );
+        return reply.send({ bundle_id: bundle.id });
+      } catch (err) {
+        return reply.status(500).send({
+          error: 'Internal Error',
+          message: `Bundle computation failed: ${(err as Error).message}`,
+        });
+      }
+    },
+  );
+
   // Update team template.
   fastify.patch<{ Params: { id: string } }>(
     '/teams/:id',
