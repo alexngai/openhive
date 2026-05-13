@@ -12,7 +12,7 @@ Everything that *uses* cascade projections lives here. The projections themselve
 
 ## Cascade diff cache
 
-`cascade_diff_cache` (migration V56) is content-addressed by `(stream_id, commit_hash, base_hash, file_path)` with all four columns NULL-tolerant via `IFNULL` in the unique index. Eviction happens on terminal events (`stream.merged`, `.abandoned`, `cascade.rebased`) — the cascade handler calls `evictByStream(stream.stream_id)` in those handlers. Cache writes go through `putDiff` which is idempotent via `INSERT OR IGNORE`; reads bump `last_accessed_at` so a future LRU sweep can use it.
+`cascade_diff_cache` (migration V59) is content-addressed by `(stream_id, commit_hash, base_hash, file_path)` with all four columns NULL-tolerant via `IFNULL` in the unique index. Eviction happens on terminal events (`stream.merged`, `.abandoned`, `cascade.rebased`) — the cascade handler calls `evictByStream(stream.stream_id)` in those handlers. Cache writes go through `putDiff` which is idempotent via `INSERT OR IGNORE`; reads bump `last_accessed_at` so a future LRU sweep can use it.
 
 ## REST surface (Streams 1–3)
 

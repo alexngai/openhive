@@ -95,7 +95,7 @@ function teamWithMailRole(): TeamTemplateContent {
       roles: ['worker'],
       topology: { root: { role: 'worker' } },
     },
-    roles: { worker: { loadout: mailCapableLoadout() } },
+    roles: { worker: { name: 'worker', loadout: mailCapableLoadout() } },
     loadouts: {},
     prompts: {},
   };
@@ -332,6 +332,7 @@ describe('dispatch mail-routing integration', () => {
         },
         roles: {
           worker: {
+            name: 'worker',
             loadout: {
               name: 'large-worker',
               capabilities: ['file.read'],

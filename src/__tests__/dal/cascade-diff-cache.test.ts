@@ -1,5 +1,5 @@
 /**
- * DAL tests for cascade_diff_cache — exercises the V56 migration and the
+ * DAL tests for cascade_diff_cache — exercises the V59 migration and the
  * NULL-safe cache key on a real SQLite instance.
  */
 

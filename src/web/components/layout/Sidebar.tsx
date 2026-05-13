@@ -2,8 +2,8 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Menu, X, CirclePile,
   User, MessageSquare, ChevronLeft, ChevronDown,
-  ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings, FileText, Send,
-  GitBranch, Bell,
+  ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings, FileText, Send, Clock,
+  GitBranch, Bell, Users,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useMapSwarms } from '../../hooks/useApi';
@@ -75,6 +75,7 @@ export function Sidebar() {
         { to: '/swarms', icon: CirclePile, label: 'Swarms', badge: onlineSwarmCount || undefined },
         { to: '/events', icon: Bell, label: 'Events' },
         { to: '/dispatch', icon: Send, label: 'Dispatch' },
+        { to: '/schedules', icon: Clock, label: 'Schedules' },
       ],
     },
     {
@@ -92,6 +93,7 @@ export function Sidebar() {
       items: [
         { to: '/memory', icon: Brain, label: 'Memory' },
         { to: '/skills', icon: Wrench, label: 'Skills' },
+        { to: '/teams', icon: Users, label: 'Teams' },
         { to: '/repos', icon: GitBranch, label: 'Repos' },
         { to: '/learning', icon: GraduationCap, label: 'Learning' },
       ],

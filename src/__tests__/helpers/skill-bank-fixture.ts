@@ -122,7 +122,9 @@ export function createTestSkillBank(options: CreateTestSkillBankOptions): string
   const resource = resourcesDAL.createResource({
     resource_type: 'skill',
     name: `test-skill-bank${nameSuffix}`,
-    git_remote_url: '',
+    // Unique-per-bank URL so multiple test banks for the same agent don't
+    // collide on (owner_agent_id, resource_type, git_remote_url) UNIQUE.
+    git_remote_url: `local://test-skill-bank${nameSuffix}/${bankDir}`,
     owner_agent_id: agentId,
     local_path: bankDir,
   });

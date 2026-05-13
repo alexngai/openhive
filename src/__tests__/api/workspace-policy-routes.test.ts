@@ -228,7 +228,7 @@ describe('GET/PATCH /map/swarms/:id/workspace-policy', () => {
       method: 'PATCH',
       url: `/api/v1/map/swarms/${swarmId}/workspace-policy`,
       headers: { 'content-type': 'application/json' },
-      payload: null,
+      payload: 'null',
     });
     expect(res.statusCode).toBe(400);
   });

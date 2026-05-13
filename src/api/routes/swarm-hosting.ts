@@ -127,7 +127,14 @@ export const SpawnSwarmSchema = z
      * Other kinds reject this field.
      */
     mode: z.enum(['rpc', 'tui']).optional(),
+    // Layer 4 — optional openteams binding. SwarmManager.spawn() materializes
+    // the loadout up front and forwards MCP scope + prompt addendum through
+    // the BootstrapToken. team_bundle_id and role flow as advisory metadata.
+    loadout_bundle_id: z.string().min(1).max(200).optional(),
+    team_bundle_id: z.string().min(1).max(200).optional(),
+    role: z.string().min(1).max(100).optional(),
   })
+
   .superRefine((data, ctx) => {
     // `mode` is codex-only — reject for any other kind so users get a
     // clear error rather than a silently-ignored field.

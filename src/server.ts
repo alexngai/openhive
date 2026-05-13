@@ -28,6 +28,7 @@ import {
 import { syncProtocolRoutes } from "./api/routes/sync-protocol.js";
 import { initSyncService } from "./sync/service.js";
 import type { SyncService } from "./sync/service.js";
+import { seedOpenteamsBundleStore } from "./openteams/seed.js";
 import { SwarmManager } from "./swarm/manager.js";
 import type { SwarmHostingConfig } from "./swarm/types.js";
 import { getOrCreateLocalAgent } from "./db/dal/agents.js";
@@ -42,16 +43,23 @@ import {
 } from "./sync/local-resource-watcher.js";
 import { markStaleSwarms, getWellKnownMapInfo } from "./map/service.js";
 import { setupOrchestrator } from "./dispatch/setup.js";
+import { setupScheduler } from "./scheduler/setup.js";
+import { isAutonomousDispatchPaused } from "./map/dispatch-policy.js";
 import { startTaskBinder, stopTaskBinder } from "./cascade/task-binder.js";
 import { installAsResolverFetcher as installCascadeDiffFetcher } from "./map/cascade-diff-protocol.js";
 import { startThreadLifecycle, stopThreadLifecycle } from "./dispatch/thread-lifecycle.js";
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
+import { findResourceById as findResourceForSchedule } from "./db/dal/syncable-resources.js";
+import { createOpenHiveSpecResolver } from "./scheduler/setup.js";
+import { takeSpawnedFallback } from "./scheduler/spawn-tracker.js";
+import { findSwarmById } from "./db/dal/map.js";
 import { createOpenHiveMailTransport } from "./dispatch/mail-transport.js";
 import { createOpenHiveMailPort } from "./dispatch/openhive-mail-port.js";
+import { setupMailCompletionObserver } from "./dispatch/mail-completion.js";
 import { setAcpAvailabilityProbe } from "./dispatch/routing.js";
 import type { AcpStreamManager } from "./dispatch/openhive-runtime.js";
 import { sendToSwarm } from "./map/sync-listener.js";
-import type { Orchestrator } from "swarm-dispatch";
+import type { Orchestrator, Scheduler } from "swarm-dispatch";
 import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
 import { initMail, getMailJsonRpc, getMailStorage, getMailEvents } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket, disconnectSessionsForAgent } from "./map/ws-map.js";
@@ -87,6 +95,27 @@ export async function createHive(
 
   // Initialize database
   initDatabase(config.database);
+
+  // Seed the openteams bundle store from authored team_template / loadout
+  // rows so `map/resources/get { type: x-openteams/* }` works immediately
+  // after restart. The store is in-memory for this iteration; once promoted
+  // to a `team_bundles` table, this pass becomes redundant.
+  try {
+    const seed = await seedOpenteamsBundleStore();
+    if (seed.loadouts || seed.teams || seed.errors.length) {
+      console.log(
+        `[openhive] openteams bundle store seeded: ${seed.loadouts} loadout(s), ${seed.teams} team(s)` +
+          (seed.errors.length ? `, ${seed.errors.length} error(s)` : ''),
+      );
+      for (const err of seed.errors) {
+        console.warn(
+          `[openhive]   seed error: ${err.resource_type} ${err.resource_id} — ${err.message}`,
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('[openhive] openteams bundle seed failed', (err as Error).message);
+  }
 
   // Set up auth mode
   if (config.auth.mode === "local") {
@@ -557,6 +586,23 @@ export async function createHive(
     });
 
     dispatchOrchestrator = setupOrchestrator({
+      // Scheduler `fallback_spawn` cleanup. When a dispatch that was
+      // backed by an auto-spawned hosted swarm reaches terminal, stop
+      // the swarm so we don't leak compute. See `src/scheduler/spawn-tracker.ts`.
+      onTerminal: async (taskId, _status) => {
+        const binding = takeSpawnedFallback(taskId);
+        if (!binding || !binding.cleanupOnTerminal) return;
+        if (!swarmManager) return;
+        try {
+          await (swarmManager as unknown as {
+            stop: (id: string, agentId?: string) => Promise<unknown>;
+          }).stop(binding.hostedSwarmId);
+        } catch (err) {
+          console.warn(
+            `[scheduler] failed to stop fallback-spawned hosted swarm ${binding.hostedSwarmId}: ${(err as Error).message}`,
+          );
+        }
+      },
       specFetcher: {
         async fetch(resourceId: string, specId: string) {
           const result = await fetchSpecForDispatch(resourceId, specId, 'system');
@@ -605,9 +651,86 @@ export async function createHive(
         /* best effort */
       }
     });
+
+    // Wire the mail-route completion observer. swarm-dispatch's
+    // MessagePort contract only has `onIncoming` (inbound new work), no
+    // `onResult`/reply observation — without this, mail-route dispatches
+    // sit at `running` until the stall timeout flips them to `failed`,
+    // never reaching `complete` on the happy path.
+    const stopMailCompletion = setupMailCompletionObserver({ getMailEvents });
+    fastify.addHook('onClose', async () => {
+      try {
+        stopMailCompletion();
+      } catch {
+        /* best effort */
+      }
+    });
+
     console.log('[openhive] Dispatch orchestrator initialized');
   } catch (err) {
     console.warn(`[openhive] Dispatch orchestrator failed: ${(err as Error).message}`);
+  }
+
+  // Initialize scheduler (cron-style recurring dispatches via swarm-dispatch)
+  let scheduler: Scheduler | null = null;
+  try {
+    scheduler = setupScheduler({
+      getSwarmStatus: (swarmId: string) => {
+        const s = findSwarmById(swarmId);
+        if (!s) return 'unknown';
+        return s.status === 'online' ? 'online' : 'offline';
+      },
+      spawnFallbackSwarm: swarmManager
+        ? async ({ adapter, name }) => {
+            const adapterMap: Record<string, 'openswarm' | 'claude-code' | 'codex'> = {
+              openswarm: 'openswarm',
+              'claude-code': 'claude-code',
+              codex: 'codex',
+            };
+            const kind = adapterMap[adapter] ?? 'openswarm';
+            // Spawn under a synthetic system owner — fallback swarms are
+            // schedule-driven, not user-initiated. SwarmManager.spawn
+            // signature: spawn(ownerAgentId, opts) → HostedSwarm
+            const hosted = await swarmManager!.spawn(
+              'system',
+              { name, kind } as Parameters<typeof swarmManager.spawn>[1],
+            );
+            if (!hosted.swarm_id) {
+              throw new Error('spawn returned no swarm_id');
+            }
+            // Wait briefly for the swarm to come online so the orchestrator's
+            // first routing attempt has a registered target.
+            const swarmId = hosted.swarm_id;
+            const deadline = Date.now() + 60_000;
+            while (Date.now() < deadline) {
+              const s = findSwarmById(swarmId);
+              if (s?.status === 'online') break;
+              await new Promise((r) => setTimeout(r, 1_000));
+            }
+            return { swarmId, hostedSwarmId: hosted.id };
+          }
+        : undefined,
+      // See `createOpenHiveSpecResolver` for the rationale (existence-only
+      // check, no auth, no opentasks resolution — matches the orchestrator's
+      // permissive enrichWithSpec semantic).
+      fetchSpec: createOpenHiveSpecResolver({
+        findResourceById: findResourceForSchedule,
+      }),
+      isAutonomousDispatchPaused,
+      tickIntervalMs: config.scheduler.tickIntervalMs,
+      maxConcurrentFires: config.scheduler.maxConcurrentFires,
+    });
+    scheduler.start();
+    fastify.addHook('onClose', async () => {
+      try {
+        await scheduler?.stop();
+      } catch {
+        /* best effort */
+      }
+    });
+    console.log('[openhive] Scheduler initialized');
+  } catch (err) {
+    console.warn(`[openhive] Scheduler failed: ${(err as Error).message}`);
   }
 
   // Serve skill.md. In server mode, strip the social-layer sections since

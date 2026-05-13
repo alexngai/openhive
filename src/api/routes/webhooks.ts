@@ -448,6 +448,33 @@ export async function webhooksRoutes(
         });
       }
 
+      // Layer 6 — for openteams kinds, pull the new commit immediately so
+      // the agent that just pushed sees the bundle reflect their change
+      // before the 2-min auto-pull would otherwise catch it. Fire-and-
+      // forget: the webhook response stays fast; rebundle failures are
+      // captured via the sync-bridge failure ring buffer.
+      if (resource.resource_type === 'team_template' || resource.resource_type === 'loadout') {
+        void (async () => {
+          try {
+            if (resource.local_path) {
+              const { pullFromRemote } = await import('../../sync/git-content.js');
+              await pullFromRemote(resource.local_path);
+            }
+            const { onLoadoutBundle, onTeamTemplateBundle } = await import('../../openteams/sync-bridge.js');
+            const fresh = resourcesDAL.findResourceById(resource.id);
+            if (fresh) {
+              await (resource.resource_type === 'loadout'
+                ? onLoadoutBundle(fresh)
+                : onTeamTemplateBundle(fresh));
+            }
+          } catch (err) {
+            console.warn(
+              `[webhook] openteams pull+rebundle failed for ${resource.id}: ${(err as Error).message}`,
+            );
+          }
+        })();
+      }
+
       return reply.status(200).send({
         ok: true,
         resource_type: resource.resource_type,

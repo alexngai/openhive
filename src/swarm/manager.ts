@@ -21,7 +21,6 @@ import { LocalProvider } from './providers/local.js';
 import { SandboxedLocalProvider } from './providers/sandboxed-local.js';
 import { resolveCredentialOverlay } from './credentials.js';
 import { findResourceById, subscribeToResource } from '../db/dal/syncable-resources.js';
-import { getDatabase } from '../db/index.js';
 import { cloneWorkspaceRepos } from './providers/workspace.js';
 import { resolveRepoForSpawn, applyRepoEnvVars, RepoResolutionError } from './resolve-repo.js';
 import { getTuiKindStrategy, isTuiKind, type TuiKindStrategy } from './tui-strategies.js';
@@ -1568,6 +1567,64 @@ export class SwarmManager {
       );
     }
 
+    // OpenTeams binding (Layer 4). Materialize the loadout up front so the
+    // sidecar receives MCP scope + prompt addendum via the bootstrap token
+    // and can apply them on first agent boot — no round-trip back to the
+    // hub needed. Failures are non-fatal: the spawn proceeds without the
+    // binding, mirroring the dispatch runtime's graceful-fallback behavior
+    // (Layer 3). team_bundle_id / role flow through as advisory metadata
+    // even when loadout materialization is absent.
+    let openteamsBinding: BootstrapToken['openteams'];
+    if (input.loadout_bundle_id || input.team_bundle_id || input.role) {
+      openteamsBinding = {
+        loadout_bundle_id: input.loadout_bundle_id,
+        team_bundle_id: input.team_bundle_id,
+        role: input.role,
+      };
+      if (input.loadout_bundle_id) {
+        try {
+          const { materializeLoadoutById } = await import('../openteams/loadout-materializer.js');
+          const materialized = await materializeLoadoutById(input.loadout_bundle_id);
+          openteamsBinding.mcp_servers = materialized.mcpServers;
+          openteamsBinding.prompt_addendum = materialized.promptAddendum;
+        } catch (err) {
+          console.warn(
+            `[swarm.manager] loadout ${input.loadout_bundle_id} materialization failed; spawn proceeds without binding: ${(err as Error).message}`,
+          );
+        }
+      }
+      // Inline the team bundle content so the spawned adapter (macro-agent
+      // bootV2) can hydrate a TeamRuntime on boot — no filesystem write
+      // needed. The bundle store already holds the canonical `{manifest,
+      // roles, loadouts, prompts}` (L2 materialization). Failures are
+      // non-fatal: spawn proceeds without team awareness, mirroring the
+      // loadout fallback above.
+      if (input.team_bundle_id) {
+        try {
+          const { getOpenteamsBundleStore } = await import('../openteams/map-handlers.js');
+          const { TEAM_RESOURCE_TYPE } = await import('openteams');
+          const bundle = await getOpenteamsBundleStore().get(TEAM_RESOURCE_TYPE, input.team_bundle_id);
+          if (bundle) {
+            const md = (bundle.metadata ?? {}) as Record<string, unknown>;
+            openteamsBinding.team_content = {
+              manifest: md.manifest as Record<string, unknown>,
+              roles: md.roles as Record<string, Record<string, unknown>> | undefined,
+              loadouts: md.loadouts as Record<string, Record<string, unknown>> | undefined,
+              prompts: md.prompts as Record<string, Record<string, unknown>> | undefined,
+            };
+          } else {
+            console.warn(
+              `[swarm.manager] team bundle ${input.team_bundle_id} not in store; spawn proceeds without team_content`,
+            );
+          }
+        } catch (err) {
+          console.warn(
+            `[swarm.manager] team ${input.team_bundle_id} materialization failed; spawn proceeds without team_content: ${(err as Error).message}`,
+          );
+        }
+      }
+    }
+
     const bootstrapToken: BootstrapToken = {
       version: 1,
       openhive_url: this.instanceUrl,
@@ -1580,6 +1637,7 @@ export class SwarmManager {
       resources: injectedResources,
       issued_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(), // 1 hour
+      openteams: openteamsBinding,
     };
 
     const tokenString = Buffer.from(JSON.stringify(bootstrapToken)).toString('base64');

@@ -258,8 +258,8 @@ function buildTeamContent(skillBankRef?: string): TeamTemplateContent {
       topology: { root: { role: 'coordinator' } },
     },
     roles: {
-      coordinator: { loadout: buildLoadoutContent(skillBankRef) },
-      'reuse-target': { loadout: buildLoadoutContent(skillBankRef) },
+      coordinator: { name: 'coordinator', loadout: buildLoadoutContent(skillBankRef) },
+      'reuse-target': { name: 'reuse-target', loadout: buildLoadoutContent(skillBankRef) },
     },
     loadouts: {},
     prompts: {},

@@ -24,6 +24,7 @@ let running = false;
  * Supports multiple config locations:
  * - OpenTasks: metadata.opentasks_config.sync.git.autoPull
  * - Generic:   metadata.sync.git.autoPull
+ * - Git block: metadata.git.autoPull
  * - Top-level: metadata.autoPull
  */
 function hasAutoPull(resource: { metadata: Record<string, unknown> | null }): boolean {
@@ -32,6 +33,10 @@ function hasAutoPull(resource: { metadata: Record<string, unknown> | null }): bo
 
   // Direct flag
   if (meta.autoPull) return true;
+
+  // Git block (e.g. metadata.git.autoPull — used by team_template rows)
+  const gitBlock = meta.git as Record<string, unknown> | undefined;
+  if (gitBlock?.autoPull) return true;
 
   // OpenTasks config path
   const otConfig = meta.opentasks_config as Record<string, unknown> | undefined;
@@ -54,7 +59,12 @@ function hasAutoPull(resource: { metadata: Record<string, unknown> | null }): bo
 /**
  * Run a single auto-pull sweep across all git-backed resources with autoPull enabled.
  */
-async function runAutoPullSweep(): Promise<void> {
+/**
+ * Run one auto-pull sweep. Exported for tests that need to trigger the
+ * cycle deterministically rather than wait for the 2-min poll. Production
+ * call sites use `startAutoPull` to schedule periodic invocations.
+ */
+export async function runAutoPullSweep(): Promise<void> {
   if (running) return; // Prevent overlapping sweeps
   running = true;
 
@@ -99,6 +109,27 @@ async function runAutoPullSweep(): Promise<void> {
             type: 'resource_synced',
             data: { resource_id: resource.id, commit_hash: result.newHead || '', source: 'auto-pull' },
           });
+
+          // Layer 6 — re-bundle openteams rows whose checkout just
+          // advanced so the in-memory MAP bundle store reflects the new
+          // hash. Other resource types (skills, memory_banks) don't have
+          // a bundle store; they rely on their own content endpoints.
+          if (resource.resource_type === 'team_template' || resource.resource_type === 'loadout') {
+            try {
+              const { onLoadoutBundle, onTeamTemplateBundle } = await import('../openteams/sync-bridge.js');
+              const { findResourceById } = await import('../db/dal/syncable-resources.js');
+              const fresh = findResourceById(resource.id);
+              if (fresh) {
+                await (resource.resource_type === 'loadout'
+                  ? onLoadoutBundle(fresh)
+                  : onTeamTemplateBundle(fresh));
+              }
+            } catch (rebundleErr) {
+              console.warn(
+                `[auto-pull] re-bundle failed for ${resource.resource_type} ${resource.id}: ${(rebundleErr as Error).message}`,
+              );
+            }
+          }
         }
       } catch (err) {
         console.warn(

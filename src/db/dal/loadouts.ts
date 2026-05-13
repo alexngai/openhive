@@ -1,14 +1,10 @@
 /**
  * DAL wrapper for `loadout` syncable resources.
  *
- * Thin layer over syncable-resources DAL that:
- *   - Stamps resource_type='loadout' on creates
- *   - Stores authored content in metadata.content
- *   - Provides typed accessors so callers don't repeat the cast
- *
- * The authored content shape matches openteams' LoadoutDefinition (see
- * references/openteams/schema/loadout.schema.json). Validation belongs in the
- * routes layer (Zod); this DAL trusts its inputs.
+ * Parallel to `team-templates.ts`. Stores the authored openteams loadout
+ * definition (`loadouts/<name>.yaml` shape) inside `metadata.content`.
+ * Layer 2 bundles this into a content-addressed `x-openteams/loadout`
+ * resource on demand.
  */
 
 import * as resources from './syncable-resources.js';
@@ -22,21 +18,31 @@ export interface LoadoutResource extends SyncableResource {
 export interface CreateLoadoutInput {
   name: string;
   description?: string;
-  content: LoadoutContent;
+  /** Inline content; optional when `gitRemoteUrl` is set (Layer 6). */
+  content?: LoadoutContent;
   ownerAgentId: string;
   visibility?: ResourceVisibility;
   metadata?: Record<string, unknown>;
+  /** Layer 6 — git-backed authoring. Same semantics as team_template. */
+  gitRemoteUrl?: string;
 }
 
 export function createLoadout(input: CreateLoadoutInput): LoadoutResource {
+  const gitBacked = typeof input.gitRemoteUrl === 'string' && input.gitRemoteUrl.length > 0;
   const created = resources.createResource({
     resource_type: 'loadout',
     name: input.name,
     description: input.description,
-    git_remote_url: `local://loadout/${input.name}`,
+    git_remote_url: gitBacked
+      ? input.gitRemoteUrl!
+      : `local://loadout/${input.name}`,
     visibility: input.visibility,
     owner_agent_id: input.ownerAgentId,
-    metadata: { ...(input.metadata ?? {}), content: input.content },
+    metadata: {
+      ...(input.metadata ?? {}),
+      ...(input.content !== undefined ? { content: input.content } : {}),
+    },
+    sync_strategy: gitBacked ? 'ls-remote' : undefined,
   });
   return created as LoadoutResource;
 }
@@ -47,20 +53,12 @@ export function getLoadout(id: string): LoadoutResource | null {
   return r as LoadoutResource;
 }
 
-/**
- * Look up a loadout by name within an owner's namespace.
- * Loadout names are unique per (owner_agent_id, resource_type='loadout', name)
- * via the existing UNIQUE constraint on syncable_resources.
- */
 export function getLoadoutByName(name: string, ownerAgentId: string): LoadoutResource | null {
   const r = resources.findResourceByName(ownerAgentId, 'loadout', name);
-  return (r as LoadoutResource | null) ?? null;
+  if (!r || r.resource_type !== 'loadout') return null;
+  return r as LoadoutResource;
 }
 
-/**
- * Extract the authored loadout content from a loadout resource's metadata.
- * Returns null if the metadata is missing or malformed.
- */
 export function getLoadoutContent(loadout: LoadoutResource): LoadoutContent | null {
   const meta = loadout.metadata as { content?: LoadoutContent } | null;
   return meta?.content ?? null;
@@ -89,12 +87,13 @@ export interface UpdateLoadoutInput {
   metadata?: Record<string, unknown>;
 }
 
-export function updateLoadout(id: string, input: UpdateLoadoutInput): LoadoutResource | null {
+export function updateLoadout(
+  id: string,
+  input: UpdateLoadoutInput,
+): LoadoutResource | null {
   const existing = getLoadout(id);
   if (!existing) return null;
 
-  // Merge content/metadata: content lives inside metadata, so we replay the
-  // existing metadata + override only the fields explicitly passed in.
   let nextMetadata: Record<string, unknown> | undefined;
   if (input.content !== undefined || input.metadata !== undefined) {
     const existingMeta = (existing.metadata as Record<string, unknown> | null) ?? {};

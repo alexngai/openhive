@@ -52,7 +52,7 @@ function teamWithInline(): TeamTemplateContent {
       roles: ['reviewer'],
       topology: { root: { role: 'reviewer' } },
     },
-    roles: { reviewer: { loadout: reviewerLoadout() } },
+    roles: { reviewer: { name: 'reviewer', loadout: reviewerLoadout() } },
     loadouts: {},
     prompts: {},
   };
@@ -68,6 +68,7 @@ function teamWithExtends(parentName: string): TeamTemplateContent {
     },
     roles: {
       reviewer: {
+        name: 'reviewer',
         loadout: {
           name: 'reviewer-extends',
           extends: parentName,
@@ -123,6 +124,7 @@ describe('loadout update propagation', () => {
 
     const updated = teamWithInline();
     updated.roles!.reviewer = {
+      name: 'reviewer',
       loadout: reviewerLoadout({ prompt_addendum: '## NEW addendum text' }),
     };
     teamTemplatesDAL.updateTeamTemplate(tmpl.id, { content: updated });
@@ -163,6 +165,7 @@ describe('loadout update propagation', () => {
 
     const updated = teamWithInline();
     updated.roles!.reviewer = {
+      name: 'reviewer',
       loadout: reviewerLoadout({
         mcp_servers: [
           { name: 'ast-grep', command: 'npx', args: ['ast-grep-mcp'] },

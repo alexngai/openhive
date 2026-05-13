@@ -59,13 +59,15 @@ function nonTrivialTeam(): TeamTemplateContent {
       },
     },
     roles: {
-      planner: { description: 'Plans the work' },
+      planner: { name: 'planner', description: 'Plans the work' },
       reviewer: {
+        name: 'reviewer',
         description: 'Reviews the work',
         // Inline loadout reference by name — must exist in `loadouts` map.
         loadout: 'reviewer-base',
       },
       implementer: {
+        name: 'implementer',
         description: 'Writes the code',
         // Inline loadout definition — directly attached.
         loadout: {
@@ -80,8 +82,8 @@ function nonTrivialTeam(): TeamTemplateContent {
       'reviewer-base': reviewerLoadout(),
     },
     prompts: {
-      planner: '# Planner\n\nDecompose tasks.',
-      reviewer: '# Reviewer\n\nReview output.',
+      planner: { primary: '# Planner\n\nDecompose tasks.' },
+      reviewer: { primary: '# Reviewer\n\nReview output.' },
     },
   };
 }
@@ -237,6 +239,7 @@ describe('openteams round-trip', () => {
         },
         roles: {
           reviewer: {
+            name: 'reviewer',
             loadout: {
               name: 'reviewer-extends',
               extends: 'reviewer-base',

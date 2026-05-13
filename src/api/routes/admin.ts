@@ -23,6 +23,8 @@ import {
 import { readConfigFile, writeConfigFile, deepMerge } from '../../config-persistence.js';
 import { getLoadedConfigPath, isConfigEditable, setLoadedConfigPath } from '../../config.js';
 import { resolveDataDir, dataDirPaths } from '../../data-dir.js';
+import { getOpenteamsBundleFailures } from '../../openteams/sync-bridge.js';
+import { listMcpRefs } from '../../openteams/mcp-registry.js';
 import {
   isAutonomousDispatchPaused,
   setAutonomousDispatchPaused,
@@ -798,6 +800,27 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
       }
       setAutonomousDispatchPaused(paused);
       return reply.send({ autonomous_dispatch_paused: isAutonomousDispatchPaused() });
+    },
+  );
+
+  /**
+   * OpenTeams bundle store health.
+   *
+   * Surfaces:
+   *   - `bundle_failures`: recent auto-bundle failures (POST/PATCH/DELETE on
+   *     /teams or /loadouts that couldn't be reflected into the bundle
+   *     store). Capped at a 200-entry ring buffer.
+   *   - `mcp_registry`: current symbolic-ref → install-spec mappings, so
+   *     operators can audit what `{ ref: '@org/x' }` entries will resolve.
+   */
+  fastify.get(
+    '/admin/openteams/health',
+    { preHandler: adminAuth },
+    async (_request, reply) => {
+      return reply.send({
+        bundle_failures: getOpenteamsBundleFailures(),
+        mcp_registry: listMcpRefs(),
+      });
     },
   );
 }

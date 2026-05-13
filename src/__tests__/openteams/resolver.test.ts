@@ -54,7 +54,7 @@ function teamWithInlineLoadout(): TeamTemplateContent {
       topology: { root: { role: 'reviewer' } },
     },
     roles: {
-      reviewer: { loadout: reviewerLoadout() },
+      reviewer: { name: 'reviewer', loadout: reviewerLoadout() },
     },
     loadouts: {},
     prompts: {},
@@ -71,6 +71,7 @@ function teamWithExtendsHubLoadout(): TeamTemplateContent {
     },
     roles: {
       reviewer: {
+        name: 'reviewer',
         loadout: {
           name: 'reviewer-extends',
           extends: 'reviewer-base',
@@ -256,7 +257,7 @@ describe('openteams resolver', () => {
             roles: ['plain'],
             topology: { root: { role: 'plain' } },
           },
-          roles: { plain: {} },
+          roles: { plain: { name: 'plain' } },
           loadouts: {},
           prompts: {},
         },

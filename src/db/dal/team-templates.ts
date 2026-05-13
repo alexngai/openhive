@@ -1,10 +1,10 @@
 /**
  * DAL wrapper for `team_template` syncable resources.
  *
- * Mirror of loadouts.ts — thin typed layer over syncable-resources DAL.
- * Authored content (manifest, roles, loadouts, prompts) is stored in
- * metadata.content; openteams' TemplateLoader consumes the same shape at
- * resolution time.
+ * Thin typed layer over `src/db/dal/syncable-resources.ts`. Stores the
+ * authored openteams team template (manifest + sidecar files) inside
+ * `metadata.content`. Layer 2 of the openteams MAP integration bundles this
+ * content into a content-addressed `x-openteams/team` resource on demand.
  */
 
 import * as resources from './syncable-resources.js';
@@ -18,21 +18,46 @@ export interface TeamTemplateResource extends SyncableResource {
 export interface CreateTeamTemplateInput {
   name: string;
   description?: string;
-  content: TeamTemplateContent;
+  /**
+   * Inline authored content. Optional when `gitRemoteUrl` is set — the
+   * row's canonical content then lives in the cloned git checkout.
+   */
+  content?: TeamTemplateContent;
   ownerAgentId: string;
   visibility?: ResourceVisibility;
   metadata?: Record<string, unknown>;
+  /**
+   * Layer 6 — git-backed authoring. Sidecar / editor pushes commits;
+   * hub lazily clones via `sync_strategy: 'ls-remote'` on first read.
+   */
+  gitRemoteUrl?: string;
 }
 
 export function createTeamTemplate(input: CreateTeamTemplateInput): TeamTemplateResource {
+  const gitBacked = typeof input.gitRemoteUrl === 'string' && input.gitRemoteUrl.length > 0;
   const created = resources.createResource({
     resource_type: 'team_template',
     name: input.name,
     description: input.description,
-    git_remote_url: `local://team_template/${input.name}`,
+    // Git-backed rows carry the canonical remote URL; in-DB rows fall
+    // back to the `local://` scheme that keeps them out of the
+    // federation auto-detect path until the Layer 1 hook fans them out.
+    git_remote_url: gitBacked
+      ? input.gitRemoteUrl!
+      : `local://team_template/${input.name}`,
     visibility: input.visibility,
     owner_agent_id: input.ownerAgentId,
-    metadata: { ...(input.metadata ?? {}), content: input.content },
+    metadata: {
+      ...(input.metadata ?? {}),
+      // Inline content stays on the row even when git-backed — gives the
+      // hub something to serve before the lazy clone completes, and acts
+      // as a fallback if the remote is unreachable.
+      ...(input.content !== undefined ? { content: input.content } : {}),
+    },
+    // ls-remote = lazy clone on first content read; auto-pull keeps the
+    // checkout fresh on a 2-min poll. Webhooks at
+    // `POST /webhooks/resource/:id` close the latency gap.
+    sync_strategy: gitBacked ? 'ls-remote' : undefined,
   });
   return created as TeamTemplateResource;
 }
@@ -48,12 +73,14 @@ export function getTeamTemplateByName(
   ownerAgentId: string,
 ): TeamTemplateResource | null {
   const r = resources.findResourceByName(ownerAgentId, 'team_template', name);
-  return (r as TeamTemplateResource | null) ?? null;
+  if (!r || r.resource_type !== 'team_template') return null;
+  return r as TeamTemplateResource;
 }
 
 /**
- * Extract authored team_template content from a resource's metadata.
- * Returns null if metadata is missing or malformed.
+ * Extract the authored content blob from a stored row. Returns `null` when
+ * `metadata.content` is absent or malformed — the caller decides whether
+ * that's a 404 or a 500.
  */
 export function getTeamTemplateContent(
   template: TeamTemplateResource,
@@ -92,6 +119,10 @@ export function updateTeamTemplate(
   const existing = getTeamTemplate(id);
   if (!existing) return null;
 
+  // Merge metadata: existing metadata ← caller's metadata ← new content.
+  // This keeps non-content keys (e.g. publisher info added later) intact
+  // while letting callers overwrite `metadata.content` either implicitly
+  // (via `input.content`) or explicitly (via `input.metadata.content`).
   let nextMetadata: Record<string, unknown> | undefined;
   if (input.content !== undefined || input.metadata !== undefined) {
     const existingMeta = (existing.metadata as Record<string, unknown> | null) ?? {};

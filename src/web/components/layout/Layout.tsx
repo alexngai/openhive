@@ -11,10 +11,18 @@ const FULL_WIDTH_EXACT = ['/'];
 // TOC + content + dispatch sidebar layout; spec list and spec create do not.
 const FULL_WIDTH_PATTERNS = [/^\/specs\/[^/]+\/[^/]+/];
 
+// Visual editors (team/loadout/etc.) want the full main-area viewport —
+// they manage their own height/width internally and break when wrapped
+// in the standard `max-w-4xl mx-auto px-4 py-4` reading column.
+function isEditorRoute(pathname: string): boolean {
+  return /\/editor\/?$/.test(pathname);
+}
+
 export function Layout() {
   const location = useLocation();
   const isFullWidth = FULL_WIDTH_ROUTES.some(r => location.pathname.startsWith(r))
     || FULL_WIDTH_EXACT.includes(location.pathname)
+    || isEditorRoute(location.pathname)
     || FULL_WIDTH_PATTERNS.some(p => p.test(location.pathname));
 
   return (

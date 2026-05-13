@@ -66,6 +66,7 @@ function teamWithReviewer(): TeamTemplateContent {
     },
     roles: {
       reviewer: {
+        name: 'reviewer',
         loadout: reviewerLoadout(),
       },
     },
@@ -336,6 +337,7 @@ describe('dispatch multi-turn / retry / continuation prompts with materialized l
         },
         roles: {
           reviewer: {
+            name: 'reviewer',
             loadout: {
               name: 'reviewer',
               capabilities: ['file.read'],

@@ -315,7 +315,14 @@ export async function stageTemplate(content: TeamTemplateContent): Promise<strin
     const promptsDir = path.join(stagingDir, 'prompts');
     await mkdir(promptsDir, { recursive: true });
     for (const [roleName, body] of Object.entries(content.prompts)) {
-      await writeFile(path.join(promptsDir, `${roleName}.md`), body, 'utf-8');
+      // openteams's PromptSection: `{ primary?: string; additional?: Array<...> }`.
+      // Stage just the primary string for now — additional sections are
+      // applied at hydration time by openteams itself.
+      const primary =
+        typeof body === 'string'
+          ? body
+          : ((body as { primary?: string }).primary ?? '');
+      await writeFile(path.join(promptsDir, `${roleName}.md`), primary, 'utf-8');
     }
   }
 

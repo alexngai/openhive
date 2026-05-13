@@ -34,6 +34,10 @@ const SwarmDetail = lazy(() => import('./pages/SwarmDetail').then(m => ({ defaul
 const Terminal = lazy(() => import('./pages/Terminal').then(m => ({ default: m.Terminal })));
 const Sessions = lazy(() => import('./pages/Sessions').then(m => ({ default: m.Sessions })));
 const Events = lazy(() => import('./pages/Events').then(m => ({ default: m.Events })));
+const TeamEditor = lazy(() => import('./pages/TeamEditor'));
+const Teams = lazy(() => import('./pages/Teams'));
+const TeamDetail = lazy(() => import('./pages/TeamDetail'));
+const LoadoutEditor = lazy(() => import('./pages/LoadoutEditor'));
 const TasksList = lazy(() => import('./pages/Tasks').then(m => ({ default: m.TaskGraphList })));
 const TaskGraph = lazy(() => import('./pages/TaskGraph').then(m => ({ default: m.TaskGraph })));
 const TaskDetail = lazy(() => import('./pages/TaskDetail').then(m => ({ default: m.TaskDetail })));
@@ -42,6 +46,8 @@ const SpecNew = lazy(() => import('./pages/SpecNew').then(m => ({ default: m.Spe
 const SpecDetail = lazy(() => import('./pages/SpecDetail').then(m => ({ default: m.SpecDetail })));
 const Dispatch = lazy(() => import('./pages/Dispatch').then(m => ({ default: m.Dispatch })));
 const DispatchDetail = lazy(() => import('./pages/DispatchDetail').then(m => ({ default: m.DispatchDetail })));
+const Schedules = lazy(() => import('./pages/Schedules').then(m => ({ default: m.Schedules })));
+const ScheduleDetail = lazy(() => import('./pages/ScheduleDetail').then(m => ({ default: m.ScheduleDetail })));
 const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
 const MemoryDetail = lazy(() => import('./pages/MemoryDetail').then(m => ({ default: m.MemoryDetail })));
 const Skills = lazy(() => import('./pages/Skills').then(m => ({ default: m.Skills })));
@@ -91,6 +97,12 @@ export default function App() {
               <Route path="threads/hosted-chat/:hostedId" element={<Sessions />} />
               <Route path="events" element={<Events />} />
               <Route path="terminal/:swarmId" element={<Terminal />} />
+              <Route path="teams" element={<Teams />} />
+              <Route path="teams/:id" element={<TeamDetail />} />
+              <Route path="teams/:id/editor" element={<TeamEditor />} />
+              {/* Loadouts list lives under the consolidated Teams page tabs. */}
+              <Route path="loadouts" element={<Navigate to="/teams?tab=loadouts" replace />} />
+              <Route path="loadouts/:id/editor" element={<LoadoutEditor />} />
               {/* Redirects from legacy routes */}
               <Route path="sessions" element={<Navigate to="/threads" replace />} />
               <Route path="sessions/:id" element={<SessionIdRedirect />} />
@@ -114,6 +126,8 @@ export default function App() {
               <Route path="specs/:resourceId/:specId" element={<SpecDetail />} />
               <Route path="dispatch" element={<Dispatch />} />
               <Route path="dispatch/:id" element={<DispatchDetail />} />
+              <Route path="schedules" element={<Schedules />} />
+              <Route path="schedules/:id" element={<ScheduleDetail />} />
               {/* Redirect legacy /dispatches URLs */}
               <Route path="dispatches" element={<Navigate to="/dispatch" replace />} />
               <Route path="dispatches/:id" element={<DispatchIdRedirect />} />

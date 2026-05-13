@@ -47,7 +47,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[?]` blo
 - **D10**: **Diff renderer = `react-diff-viewer-continued`** (or equivalent). Lazy per-file fetch on stack diffs; large-file collapse with expand-on-click.
 - **D11**: **Defer compression**, but ship `compression` column so we can flip it on per-entry without migration when needed.
 - **D12** *(new)*: **Diff request uses a request/response notification pair**, mirroring `src/map/trajectory-content.ts`. The existing `src/map/cascade-actions.ts` channel is fire-and-forget notifications only and is the wrong shape; the new `cascade/diff.request` + `cascade/diff.chunk` pair installs separately on the bridge.
-- **D13** *(revised 2026-05-11)*: **Migration slot is V56** (`V56_CASCADE_DIFF_CACHE`). The original V37 slot was used for `cascade_operations`; V38 = `cascade_pushes_and_queue`, V39 = `cascade_pr`; V40–V55 also taken. V56 is the next free slot after V55_DISPATCH_CONVERSATION. Schema version bumped 55 → 56. No `repairSchema` entry (matches V36–V39 cascade-lineage convention; ALTER-style repairs don't help brand-new tables).
+- **D13** *(revised 2026-05-13 — renumbered V56 → V59 due to upstream merge collision)*: **Migration slot is V59** (`V59_CASCADE_DIFF_CACHE`). The original V37 slot was used for `cascade_operations`; V38 = `cascade_pushes_and_queue`, V39 = `cascade_pr`; V40–V55 already taken. Originally landed as V56, but upstream merge into the `teams` branch added V56_SCHEDULES + V57_DISPATCH_LOADOUT_REFS + V58_NULLABLE_SPEC_ON_DISPATCH, so cascade-diff-cache renumbered to V59. Schema version bumped 55 → 59. No `repairSchema` entry (matches V36–V39 cascade-lineage convention; ALTER-style repairs don't help brand-new tables).
 - **D14** *(new)*: **Worktree resolution from stream id is solved by `adapter.listWorktrees().find(wt => wt.currentStream === streamId)`**, already used by `references/macro-agent/src/map/cascade-action-handler.ts:60-64`. Fallback when no live worktree: shell out against the bare repo via `adapter.getRepoPath()` (commit-level diffs don't need a checkout). OD1 closed.
 - **D15** *(new)*: **Cache key includes `file_path`**. Per-file requests dominate (the file tree in Stream 2 fetches lazily) so caching `(stream, commit, base, file)` rows wins over caching the whole-commit blob and slicing. Whole-commit fetches stay rare; revisit only if sidecar shell-out cost shows up under load.
 - **D16** *(new)*: **Stack diff range = `lowest_base..highest_head`**, computed once and fed through the single-range MAP protocol. Assumes the stack is a linear chain — which is the only shape stacked PRs make sense for. Walker rejects non-linear stacks with **HTTP 400 `non_linear_stack`**; the UI surfaces it as "this view requires a linear stack". Branching stacks are not a v1 concern.
@@ -144,7 +144,7 @@ Timeout: 60s for the initial response. Chunks delivered as fire-and-forget after
 Goal: open a stream in `Changes.tsx`, click a commit, see a unified diff for one file fetched via raw `git show` over MAP.
 
 ### Backend (openhive)
-- [x] Migration `V56_CASCADE_DIFF_CACHE` in `src/db/schema.ts` + registry entry in `src/db/index.ts`
+- [x] Migration `V59_CASCADE_DIFF_CACHE` in `src/db/schema.ts` + registry entry in `src/db/index.ts` (renumbered from V56 after upstream merge)
   - Columns: `id`, `stream_id`, `commit_hash`, `base_hash NULL`, `file_path NULL`, `diff_blob TEXT`, `files_touched JSON`, `size_bytes`, `compression DEFAULT 'none'`, `created_at`, `last_accessed_at`
   - Unique on `(stream_id, commit_hash, IFNULL(base_hash, ''), IFNULL(file_path, ''))` (SQLite NULL-safe via IFNULL)
   - Indexes on `stream_id` and `last_accessed_at` (future LRU sweep)
@@ -344,7 +344,7 @@ A single human developer's local checkout is regularly touched by multiple swarm
 | 60s timeout still insufficient for multi-MB diffs over slow links | Stream 1 tests surface this; trigger compression then |
 | `child_process.spawn` deadlock on huge git output | Cap stdout at 50 MB raw with truncation marker |
 | Cache stale after `cascade.rebased` rewrites history | `evictByStream` on rebased event — entries become unreachable anyway since key includes `commit_hash` |
-| Migration slot collision | V56 landed on 2026-05-11 as the next free slot after V55 |
+| Migration slot collision | V59 landed on 2026-05-13 after upstream merge brought V56-V58; original V56 renumbered |
 | **Stream 5**: Two swarms race the same `stream.created` event | Hub `upsertStream` runs in a transaction; first writer wins reporter role, second becomes contributor. Idempotent. |
 | **Stream 5**: Cascade event from swarm B arrives for a stream first seen via swarm A; `repo_url` lookup ambiguous | `syncable_resources.canonical_key` is repo-unique by canonical URL; both swarms resolve to the same `repo_resource_id`. If repo isn't synced to the hub yet, drop the event with a structured log entry (operator likely needs to wire repo sync first). |
 | **Stream 5**: PR-routing arbitration when N observers have GitHub creds | Deterministic pick: first observer with matching `github_repo` config in observer-table insertion order. Operators can pin via a future `pr_preferred_swarm_id` column if it becomes a real complaint. |

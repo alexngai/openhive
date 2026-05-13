@@ -47,7 +47,7 @@ function teamWithRole(): TeamTemplateContent {
       roles: ['worker'],
       topology: { root: { role: 'worker' } },
     },
-    roles: { worker: { loadout: loadoutContent() } },
+    roles: { worker: { name: 'worker', loadout: loadoutContent() } },
     loadouts: {},
     prompts: {},
   };

@@ -61,8 +61,12 @@ export interface DispatchAttempt {
 
 export interface Dispatch {
   id: string;
-  spec_resource_id: string;
-  spec_id: string;
+  /**
+   * Opentasks spec reference. Nullable since V47 — spec-less dispatches
+   * (Layer 4 `openteams.spawn` flow) carry a `loadout_bundle_id` instead.
+   */
+  spec_resource_id: string | null;
+  spec_id: string | null;
   spec_captured_at: string | null;
   target_swarm_id: string;
   status: DispatchStatus;
@@ -76,6 +80,15 @@ export interface Dispatch {
   attempt: number;
   turn_count: number;
   attempts_history: DispatchAttempt[];
+  /**
+   * Content-addressed openteams resource refs pinned at dispatch creation
+   * (V57). Hash-stickiness: subsequent edits to the authored
+   * loadout / team_template don't retroactively change in-flight dispatches.
+   * Null when the dispatch was created without an openteams binding.
+   */
+  loadout_bundle_id: string | null;
+  team_bundle_id: string | null;
+  role: string | null;
   /**
    * ACP lifecycle hint (V47). When the orchestrator routes this dispatch
    * via ACP, controls whether to spawn a fresh coordinator (`'fresh'`)
@@ -133,8 +146,8 @@ export interface Dispatch {
 
 interface DispatchRow {
   id: string;
-  spec_resource_id: string;
-  spec_id: string;
+  spec_resource_id: string | null;
+  spec_id: string | null;
   spec_captured_at: string | null;
   target_swarm_id: string;
   status: DispatchStatus;
@@ -148,6 +161,9 @@ interface DispatchRow {
   attempt: number | null;
   turn_count: number | null;
   attempts_history: string | null;
+  loadout_bundle_id: string | null;
+  team_bundle_id: string | null;
+  role: string | null;
   acp_lifecycle: string | null;
   mail_lifecycle: string | null;
   loadout_ref: string | null;
@@ -208,6 +224,9 @@ function rowToDispatch(row: DispatchRow): Dispatch {
     attempt: row.attempt ?? 0,
     turn_count: row.turn_count ?? 0,
     attempts_history: parsedAttempts,
+    loadout_bundle_id: row.loadout_bundle_id ?? null,
+    team_bundle_id: row.team_bundle_id ?? null,
+    role: row.role ?? null,
     acp_lifecycle:
       row.acp_lifecycle === 'fresh' || row.acp_lifecycle === 'reuse'
         ? row.acp_lifecycle
@@ -240,8 +259,9 @@ function rowToDispatch(row: DispatchRow): Dispatch {
 // ============================================================================
 
 export interface CreateDispatchInput {
-  spec_resource_id: string;
-  spec_id: string;
+  /** Nullable for Layer 4 spec-less spawns. */
+  spec_resource_id: string | null;
+  spec_id: string | null;
   spec_captured_at?: string | null;
   target_swarm_id: string;
   initiator_type: DispatchInitiatorType;
@@ -250,6 +270,12 @@ export interface CreateDispatchInput {
   // Status defaults to 'queued'; tests may pre-seed.
   status?: DispatchStatus;
   session_ids?: string[];
+  // openteams binding (V57) — nullable. When present these are
+  // content-addressed `sha256:<hex>` ids resolved at create time and held
+  // for the dispatch's lifetime.
+  loadout_bundle_id?: string | null;
+  team_bundle_id?: string | null;
+  role?: string | null;
   /**
    * Optional per-dispatch ACP lifecycle override. When omitted, the
    * orchestrator falls back to `config.dispatch.acp_lifecycle_default`
@@ -284,14 +310,15 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
     `INSERT INTO dispatches (
        id, spec_resource_id, spec_id, spec_captured_at, target_swarm_id,
        status, initiator_type, initiator_id, session_ids, prompt_override,
+       loadout_bundle_id, team_bundle_id, role,
        acp_lifecycle, mail_lifecycle,
        repo_id, branch, commit_sha, clone_policy, clone_path,
        created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
-    input.spec_resource_id,
-    input.spec_id,
+    input.spec_resource_id ?? null,
+    input.spec_id ?? null,
     input.spec_captured_at ?? null,
     input.target_swarm_id,
     input.status ?? 'queued',
@@ -299,6 +326,9 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
     input.initiator_id,
     JSON.stringify(input.session_ids ?? []),
     input.prompt_override ?? null,
+    input.loadout_bundle_id ?? null,
+    input.team_bundle_id ?? null,
+    input.role ?? null,
     input.acp_lifecycle ?? null,
     input.mail_lifecycle ?? null,
     input.repo_id ?? null,
@@ -688,6 +718,29 @@ export function listInProgressDispatches(): Dispatch[] {
     .prepare("SELECT * FROM dispatches WHERE status IN ('running') ORDER BY created_at ASC")
     .all() as DispatchRow[];
   return rows.map(rowToDispatch);
+}
+
+/**
+ * Find the most recently-updated non-terminal dispatch tied to a given
+ * coordination conversation. Used by the mail-completion observer to map
+ * an inbound reply turn back to its in-flight dispatch.
+ *
+ * Returns `null` if no running/queued dispatch matches.
+ */
+export function findRunningDispatchByConversation(
+  conversationId: string,
+): Dispatch | null {
+  const db = getDatabase();
+  const row = db
+    .prepare(
+      `SELECT * FROM dispatches
+         WHERE conversation_id = ?
+           AND status IN ('queued', 'running')
+         ORDER BY updated_at DESC
+         LIMIT 1`,
+    )
+    .get(conversationId) as DispatchRow | undefined;
+  return row ? rowToDispatch(row) : null;
 }
 
 // ============================================================================

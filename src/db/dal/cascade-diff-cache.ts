@@ -4,7 +4,7 @@
  *
  * Cache key: (stream_id, commit_hash, base_hash, file_path) where base_hash
  * and file_path may be NULL. SQLite NULL-safe uniqueness is enforced via
- * IFNULL in the index (see MIGRATION_V56_CASCADE_DIFF_CACHE).
+ * IFNULL in the index (see MIGRATION_V59_CASCADE_DIFF_CACHE).
  *
  * Entries are immutable. Eviction happens on stream lifecycle events
  * (merged / abandoned / rebased) via `evictByStream` — not by TTL.

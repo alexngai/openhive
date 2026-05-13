@@ -13,12 +13,18 @@ import { verifyToken } from './token-service.js';
 import { MAP_TASK_METHOD_SET, handleTaskRequest, MAPTaskRequestError, TaskDaemonError } from './task-handler.js';
 import { MAP_SPEC_METHOD_SET, handleSpecRequest, MAPSpecRequestError } from './spec-handler.js';
 import { MAP_DISPATCH_METHOD_SET, handleDispatchRequest, MAPDispatchRequestError } from './dispatch-handler.js';
+import { MAP_SCHEDULE_METHOD_SET, handleScheduleRequest, MAPScheduleRequestError } from './schedule-handler.js';
 import { TRAJECTORY_METHOD_SET } from './trajectory-types.js';
 import { handleTrajectoryRequest, TrajectoryRequestError } from './trajectory-handler.js';
 import { CASCADE_METHOD_SET, CascadeRequestError } from './cascade-types.js';
 import { handleCascadeRequest } from './cascade-handler.js';
 import { consumeCascadeToken } from './cascade-rate-limit.js';
 import { SPAWN_METHOD, handleSpawnRequest } from './spawn-handler.js';
+import {
+  getOpenteamsMapHandlers,
+  getOpenteamsResourceKinds,
+  setOpenteamsBundleEmitter,
+} from '../openteams/map-handlers.js';
 import {
   registerRepoHandlers,
   type RepoMethodServer,
@@ -115,7 +121,12 @@ class OpenHiveIAMAuthenticator {
  * need to be registered explicitly. The MAPServer's router dispatches by
  * exact method name, so we register each custom method.
  */
-function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Promise<any>> {
+/**
+ * Build the additionalHandlers map passed to `new MAPServer({...})`. Exported
+ * for the shape-check test in `src/__tests__/scheduler/map-registration.test.ts`
+ * (and as a hook for any future test that wants to verify a method is wired).
+ */
+export function buildAdditionalHandlers(config: Config): Record<string, (params: any, ctx: any) => Promise<any>> {
   const handlers: Record<string, (params: any, ctx: any) => Promise<any>> = {};
 
   // ── MAP Task Methods (standard MAP spec) ────────────────────────
@@ -167,6 +178,32 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
         return await handleDispatchRequest(method, params, { swarmId, agentId });
       } catch (err) {
         if (err instanceof MAPDispatchRequestError) {
+          throw Object.assign(new Error(err.message), { code: err.code });
+        }
+        throw err;
+      }
+    };
+  }
+
+  // ── MAP Schedule Methods (cron-style recurring dispatches) ──────
+  for (const method of MAP_SCHEDULE_METHOD_SET) {
+    handlers[method] = async (params: any, ctx: any) => {
+      const swarmId = ctx.session?.metadata?.swarmId;
+      // MAP SDK convention: the session's owning-agent id lives at
+      // metadata.hubAgentId, NOT metadata.agentId. The sibling handler
+      // blocks above (specs/tasks/dispatches) read `agentId` and "work"
+      // only because their handlers don't strictly require the value;
+      // schedules MUST persist initiator_id and would silently bind
+      // null otherwise (caught by map-live-wire.test.ts).
+      const agentId = ctx.session?.metadata?.hubAgentId;
+      try {
+        return await handleScheduleRequest(method, params, {
+          swarmId,
+          agentId,
+          maxSchedulesPerAgent: config.scheduler.maxSchedulesPerAgent,
+        });
+      } catch (err) {
+        if (err instanceof MAPScheduleRequestError) {
           throw Object.assign(new Error(err.message), { code: err.code });
         }
         throw err;
@@ -329,6 +366,24 @@ function buildAdditionalHandlers(): Record<string, (params: any, ctx: any) => Pr
     return await handleSpawnRequest(params, { swarmId, hubAgentId });
   };
 
+  // ── OpenTeams Resource Protocol (map/resources/*) ─────────────────
+  // Layer 2 of the openteams MAP-sync integration: expose
+  // `x-openteams/loadout` and `x-openteams/team` as content-addressed
+  // resources fetched by `sha256:<hex>` id. Composed handler factories
+  // come from the openteams package; the bundle store is an in-memory
+  // singleton seeded on boot from `syncable_resources` (see
+  // `src/openteams/seed.ts`).
+  //
+  // Today openhive doesn't ship its own `map/resources/list`/`get`, so
+  // the composed dispatcher owns both methods. When openhive grows its
+  // own resource kinds, pass them as the `fallback` option to
+  // openteams's `composeResourceHandlers` — the cooperative shape is
+  // already in place upstream.
+  const openteamsComposed = getOpenteamsMapHandlers();
+  for (const [method, handler] of Object.entries(openteamsComposed.handlers)) {
+    handlers[method] = handler as (params: any, ctx: any) => Promise<any>;
+  }
+
   // ── Ping/Pong ────────────────────────────────────────────────────
   // Ping is a notification (no id), handled in the notification interceptor.
   // But if sent as a request, handle it here.
@@ -348,15 +403,20 @@ export function initMapServer(config: Config): any {
 
   const isVerified = config.mapHub.trustModel === 'verified';
 
-  const additionalHandlers = buildAdditionalHandlers();
+  const additionalHandlers = buildAdditionalHandlers(config);
+  const openteamsKinds = getOpenteamsResourceKinds();
 
   mapServer = new MAPServer({
     name: config.instance.name || 'OpenHive',
     version: '0.1.0',
     additionalHandlers,
+    // Advertise resource kinds so connected agents can discover them via
+    // the standard MAP capability handshake. Merges native MAP advertised
+    // kinds (per the resource handler) with the openteams kinds the
+    // hub serves over the bundle store.
     resources: {
       enabled: true,
-      kinds: getAdvertisedKinds(),
+      kinds: [...getAdvertisedKinds(), ...openteamsKinds],
     },
     ...(isVerified
       ? {
@@ -366,6 +426,28 @@ export function initMapServer(config: Config): any {
           },
         }
       : {}),
+  });
+
+  // Bridge openteams kind-handler lifecycle events to the MAP server's
+  // event bus, so subscribers of `resource.added/updated/removed` on
+  // `x-openteams/*` types receive the same shape as native MAP resource
+  // events (matches `docs/map-integration.md:103-115`).
+  setOpenteamsBundleEmitter((event) => {
+    try {
+      mapServer.eventBus?.emit({
+        type: event.type,
+        data: {
+          resource_type: event.resource_type,
+          resource_id: event.resource_id,
+          resource_name: event.resource_name,
+          origin_hub_id: event.origin_hub_id,
+          timestamp: event.timestamp,
+        },
+      });
+    } catch (err) {
+      // Best-effort: missing event bus shouldn't crash the publish path.
+      console.warn('[openteams] failed to emit bundle event', (err as Error).message);
+    }
   });
 
   return mapServer;
@@ -383,6 +465,7 @@ export function getMapServer(): any {
  * Reset the MAPServer singleton (for tests).
  */
 export function _resetMapServer(): void {
+  setOpenteamsBundleEmitter(null);
   if (mapServer) {
     try { mapServer.close({ force: true }); } catch { /* ignore */ }
   }
