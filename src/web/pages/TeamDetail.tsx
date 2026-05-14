@@ -37,6 +37,7 @@ import {
 import { api, type SyncableResource } from '../lib/api';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
+import { EmptyState } from '../components/common/EmptyState';
 
 interface TeamRole {
   name?: string;
@@ -76,6 +77,7 @@ export default function TeamDetail() {
   const { id } = useParams<{ id: string }>();
   const [resource, setResource] = useState<SyncableResource | null>(null);
   const [bundleId, setBundleId] = useState<string | null>(null);
+  const [bundleLoading, setBundleLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -105,6 +107,8 @@ export default function TeamDetail() {
         if (!cancelled) setBundleId(r.bundle_id);
       } catch {
         // Non-fatal — content might be unavailable yet; leave bundleId null.
+      } finally {
+        if (!cancelled) setBundleLoading(false);
       }
     })();
     return () => { cancelled = true; };
@@ -114,14 +118,10 @@ export default function TeamDetail() {
     return (
       <div className="max-w-4xl mx-auto px-4 py-6">
         <BackLink />
-        <div className="card p-8 text-center">
-          <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-            Team template not found
-          </p>
-          <p className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
-            {loadError}
-          </p>
-        </div>
+        <EmptyState
+          title="Team template not found"
+          description={loadError}
+        />
       </div>
     );
   }
@@ -216,7 +216,7 @@ export default function TeamDetail() {
       </div>
 
       {/* Bundle identity */}
-      {bundleId && shortHash && (
+      {bundleId && shortHash ? (
         <div className="card p-3 flex items-center gap-3">
           <Hash className="w-4 h-4 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
           <div className="min-w-0 flex-1">
@@ -236,7 +236,19 @@ export default function TeamDetail() {
             {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
           </button>
         </div>
-      )}
+      ) : bundleLoading ? (
+        <div className="card p-3 flex items-center gap-3">
+          <Hash className="w-4 h-4 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+          <div className="min-w-0 flex-1">
+            <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+              Content-addressed bundle id
+            </div>
+            <div className="font-mono text-xs" style={{ color: 'var(--color-text-muted)' }}>
+              —
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Quick stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">

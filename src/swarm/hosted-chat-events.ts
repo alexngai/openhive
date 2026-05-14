@@ -15,6 +15,29 @@
  * is wired below.
  */
 
+/**
+ * Normalized permission flavor surfaced to the chat layer. `exec` covers
+ * shell/command execution; `patch` covers file changes; `other` covers
+ * anything else (network policy escalations, MCP elicitations, etc.) that
+ * still needs a yes/no but doesn't fit the first two buckets cleanly.
+ */
+export type HostedChatPermissionFlavor = 'exec' | 'patch' | 'other';
+
+/** Normalized permission request surfaced to the chat layer. */
+export interface HostedChatPermissionRequest {
+  /** Provider-issued request id (preserved verbatim so the reply routes back). */
+  requestId: string;
+  flavor: HostedChatPermissionFlavor;
+  /** Short user-facing description (e.g. command text or summary of patch). */
+  summary: string;
+  /** Optional longer reason supplied by the provider. */
+  reason?: string;
+  /** Original provider method, for debugging / advanced surfaces. */
+  providerMethod: string;
+  /** Original params verbatim, for advanced surfaces that want details. */
+  providerParams?: unknown;
+}
+
 /** Normalized event the frontend hosted-chat adapter consumes. */
 export type HostedChatEvent =
   | { kind: 'message.start'; itemId: string; role: 'assistant' | 'user' | 'system' }
@@ -23,6 +46,17 @@ export type HostedChatEvent =
   | { kind: 'turn.started'; turnId: string }
   | { kind: 'turn.completed'; turnId: string }
   | { kind: 'error'; message: string; code?: string | number }
+  /**
+   * Provider is asking the user to approve or deny a tool/command/patch.
+   * Renderer shows an Allow/Deny dialog. Reply via the host's
+   * `replyPermission(hostedSwarmId, requestId, decision)` path.
+   */
+  | { kind: 'permission.request'; request: HostedChatPermissionRequest }
+  /**
+   * Provider's pending permission was resolved (either by this client or a
+   * sibling tab on the same hosted swarm). Renderer dismisses the dialog.
+   */
+  | { kind: 'permission.resolved'; requestId: string; decision: 'approved' | 'denied' }
   /**
    * Escape hatch for events that don't (yet) have a normalized
    * counterpart. The frontend can render these as inert telemetry, ignore
@@ -109,6 +143,111 @@ export function translateCodexNotification(
       // thread/started, thread/status/changed, thread/tokenUsage/updated,
       // remoteControl/status/changed, etc. Drop to raw so debug panels can
       // still see them without bloating the chat list.
+      return { kind: 'raw', provider: 'codex', method, params };
+  }
+}
+
+// ============================================================================
+// Codex request translator (server → client JSON-RPC requests requiring reply)
+// ============================================================================
+
+/**
+ * Methods in codex's `ServerRequest` union that we don't auto-translate
+ * into a user-facing permission prompt. The bridge can decide to
+ * auto-reply with an error or surface them as raw events for advanced
+ * handling. Listed here for the audit trail rather than fingerprinted at
+ * use sites.
+ */
+const NON_APPROVAL_CODEX_REQUESTS = new Set([
+  'item/tool/call',
+  'account/chatgptAuthTokens/refresh',
+  'attestation/generate',
+  'item/tool/requestUserInput',
+  'mcpServer/elicitation/request',
+]);
+
+/**
+ * Translate a codex app-server JSON-RPC **request** (server-initiated,
+ * requires reply) into a normalized `HostedChatEvent`. Returns null when
+ * the method isn't a user-approval prompt — the caller decides whether to
+ * auto-reply with an error, surface it as `raw`, or ignore.
+ *
+ * Schema source: openai/codex `codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts`.
+ */
+export function translateCodexRequest(
+  method: string,
+  params: unknown,
+  requestId: string,
+): HostedChatEvent | null {
+  switch (method) {
+    case 'execCommandApproval':
+    case 'item/commandExecution/requestApproval': {
+      const p = (params ?? {}) as {
+        command?: string | string[];
+        cwd?: string;
+        reason?: string | null;
+      };
+      const cmd = Array.isArray(p.command) ? p.command.join(' ') : (p.command ?? '');
+      const summary = cmd
+        ? (p.cwd ? `${cmd}  (cwd: ${p.cwd})` : cmd)
+        : 'Run a shell command';
+      return {
+        kind: 'permission.request',
+        request: {
+          requestId,
+          flavor: 'exec',
+          summary,
+          reason: p.reason ?? undefined,
+          providerMethod: method,
+          providerParams: params,
+        },
+      };
+    }
+    case 'applyPatchApproval':
+    case 'item/fileChange/requestApproval': {
+      const p = (params ?? {}) as {
+        fileChanges?: Record<string, unknown>;
+        reason?: string | null;
+      };
+      const paths = p.fileChanges ? Object.keys(p.fileChanges) : [];
+      const summary = paths.length === 0
+        ? 'Apply file changes'
+        : paths.length === 1
+          ? `Apply patch to ${paths[0]}`
+          : `Apply patch to ${paths.length} files`;
+      return {
+        kind: 'permission.request',
+        request: {
+          requestId,
+          flavor: 'patch',
+          summary,
+          reason: p.reason ?? undefined,
+          providerMethod: method,
+          providerParams: params,
+        },
+      };
+    }
+    case 'item/permissions/requestApproval': {
+      const p = (params ?? {}) as { reason?: string | null };
+      return {
+        kind: 'permission.request',
+        request: {
+          requestId,
+          flavor: 'other',
+          summary: 'Permission escalation',
+          reason: p.reason ?? undefined,
+          providerMethod: method,
+          providerParams: params,
+        },
+      };
+    }
+    default:
+      if (NON_APPROVAL_CODEX_REQUESTS.has(method)) {
+        // Known non-approval methods — caller surfaces as raw and
+        // auto-errors via the JSON-RPC reply path.
+        return { kind: 'raw', provider: 'codex', method, params };
+      }
+      // Truly unknown — preserve in raw for debugging.
       return { kind: 'raw', provider: 'codex', method, params };
   }
 }

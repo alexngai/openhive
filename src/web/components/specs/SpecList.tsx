@@ -1,6 +1,9 @@
 import { useNavigate } from 'react-router-dom';
+import { FileText } from 'lucide-react';
 import { SpecCard } from './SpecCard';
 import type { Spec } from '../../hooks/useSpecs';
+import { PageLoader } from '../common/LoadingSpinner';
+import { EmptyState } from '../common/EmptyState';
 
 interface SpecListProps {
   specs: Spec[];
@@ -16,28 +19,16 @@ export function SpecList({
   const navigate = useNavigate();
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center p-12">
-        <div className="text-center">
-          <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-4 border-honey-500 border-t-transparent"></div>
-          <p style={{ color: 'var(--color-text-muted)' }}>Loading specs…</p>
-        </div>
-      </div>
-    );
+    return <PageLoader />;
   }
 
   if (!specs || specs.length === 0) {
     return (
-      <div className="flex items-center justify-center p-12">
-        <div className="text-center">
-          <p className="text-lg" style={{ color: 'var(--color-text-muted)' }}>
-            {emptyMessage}
-          </p>
-          <p className="mt-2 text-sm" style={{ color: 'var(--color-text-muted)' }}>
-            Specs surface from connected swarms running sudocode (or any opentasks provider that emits spec nodes).
-          </p>
-        </div>
-      </div>
+      <EmptyState
+        icon={FileText}
+        title={emptyMessage}
+        description="Specs surface from connected swarms running sudocode (or any opentasks provider that emits spec nodes)."
+      />
     );
   }
 

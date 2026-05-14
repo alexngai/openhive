@@ -10,7 +10,7 @@
  */
 
 import { useMemo } from 'react';
-import { ChatMessageList, ChatInput, useChatChannel } from 'swarmcraft/ui/embed';
+import { ChatMessageList, ChatInput, PermissionDialog, useChatChannel } from 'swarmcraft/ui/embed';
 import { useOpenHiveAdapters } from '../../adapters/openhive-adapters';
 import {
   hostedChatTarget,
@@ -55,7 +55,7 @@ export function HostedChat({ hostedSwarmId, label, providerLabel, enabled = true
             style={{ color: 'var(--color-text-muted)' }}
           >
             {providerLabel ? `· ${providerLabel}` : ''}
-            {channel.status !== 'connected' && channel.status !== 'idle' ? ` · ${channel.status}` : ''}
+            {channel.status !== 'ready' && channel.status !== 'streaming' ? ` · ${channel.status}` : ''}
           </span>
           {channel.statusDetail && (
             <span className="ml-2 text-2xs text-red-400">{channel.statusDetail}</span>
@@ -63,8 +63,14 @@ export function HostedChat({ hostedSwarmId, label, providerLabel, enabled = true
         </div>
       )}
       <div className="flex-1 min-h-0">
-        <ChatMessageList channel={channel} />
+        <ChatMessageList channel={channel} emptyMessage="No messages yet." />
       </div>
+      <PermissionDialog
+        channel={channel}
+        variant="sticky-external"
+        descriptionAs="code"
+        approveLabel="Allow"
+      />
       <div className="border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
         <ChatInput channel={channel} placeholder="Send a message…" />
       </div>

@@ -23,6 +23,7 @@ import { SwarmStatusSummary } from "../components/dashboard/SwarmStatusSummary";
 import { SyncResourcesStatus } from "../components/dashboard/SyncResourcesStatus";
 import { RecentActivity } from "../components/dashboard/RecentActivity";
 import { SpawnFormDialog, ConnectFormDialog } from "./Swarms";
+import { PageHeader } from "../components/common/PageHeader";
 
 /** Derive API/WS URLs relative to current host */
 function useSwarmCraftConfig() {
@@ -76,7 +77,7 @@ function BridgeLinks() {
         className="flex items-center gap-1 hover:text-honey-500 transition-colors"
       >
         <Activity className="w-3 h-3" />
-        <span>{sessionCount} sessions</span>
+        <span>{sessionCount} thread{sessionCount === 1 ? '' : 's'}</span>
       </Link>
     </div>
   );
@@ -138,7 +139,7 @@ function BridgeStatusBar() {
         className="flex items-center gap-1 hover:text-honey-500 transition-colors"
       >
         <Activity className="w-3 h-3" />
-        <span>{sessionCount} sessions</span>
+        <span>{sessionCount} thread{sessionCount === 1 ? '' : 's'}</span>
       </Link>
       {(memoryRes ?? 0) > 0 && (
         <Link
@@ -202,7 +203,7 @@ function StatsOverlay({ onClose }: { onClose: () => void }) {
           </h2>
           <button
             onClick={onClose}
-            className="p-1 rounded-md hover:bg-workspace-hover transition-colors"
+            className="p-1 rounded-md hover:bg-hover transition-colors"
             style={{ color: "var(--color-text-muted)" }}
           >
             <X className="w-4 h-4" />
@@ -235,7 +236,7 @@ function SwarmCraftView() {
     <div className="flex items-center gap-1.5 ml-2">
       <button
         onClick={() => setShowStats(true)}
-        className="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-medium transition-colors hover:bg-workspace-hover"
+        className="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-medium transition-colors hover:bg-hover"
         style={{ color: "var(--color-text-secondary)" }}
       >
         <BarChart3 className="w-3.5 h-3.5" />
@@ -317,7 +318,7 @@ export function Dashboard() {
   // Still loading or server not ready — show a loading indicator instead of a blank screen
   if (!features) {
     return (
-      <div className="flex flex-col h-full items-center justify-center gap-3 text-zinc-400">
+      <div className="flex flex-col h-full items-center justify-center gap-3" style={{ color: 'var(--color-text-muted)' }}>
         <Activity className="w-6 h-6 animate-pulse" />
         {isError ? (
           <p className="text-sm">Waiting for server&hellip;</p>
@@ -338,34 +339,28 @@ export function Dashboard() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header (only for non-SwarmCraft fallback) */}
-      <div
-        className="flex items-center justify-between px-4 py-3 border-b shrink-0"
-        style={{ borderColor: "var(--color-border-subtle)" }}
-      >
-        <h1
-          className="text-lg font-semibold"
-          style={{ color: "var(--color-text)" }}
-        >
-          Dashboard
-        </h1>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setFormMode("spawn")}
-            className="btn btn-primary flex items-center gap-1.5 text-xs"
-          >
-            <Zap className="w-3 h-3" />
-            Spawn
-          </button>
-          <button
-            onClick={() => setFormMode("connect")}
-            className="btn btn-secondary flex items-center gap-1.5 text-xs"
-          >
-            <Link2 className="w-3 h-3" />
-            Connect
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title="Dashboard"
+        className="shrink-0"
+        actions={
+          <>
+            <button
+              onClick={() => setFormMode("spawn")}
+              className="btn btn-primary flex items-center gap-1.5 text-xs"
+            >
+              <Zap className="w-3 h-3" />
+              Spawn
+            </button>
+            <button
+              onClick={() => setFormMode("connect")}
+              className="btn btn-secondary flex items-center gap-1.5 text-xs"
+            >
+              <Link2 className="w-3 h-3" />
+              Connect
+            </button>
+          </>
+        }
+      />
       <StatsDashboard />
       {formMode === "spawn" && (
         <SpawnFormDialog onClose={() => setFormMode("none")} />

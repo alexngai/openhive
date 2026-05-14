@@ -8,6 +8,7 @@ import { useSubscribe, useWSEvent } from '../../hooks/useWebSocket';
 import { TimeAgo } from '../common/TimeAgo';
 import { LoadingSpinner } from '../common/LoadingSpinner';
 import { AgentAvatar } from '../common/AgentAvatar';
+import { StatusChip } from '../common/StatusChip';
 import {
   useChatChannel,
   ChatMessageList,
@@ -44,7 +45,7 @@ interface ParticipantLink {
  * be viewed without a separate top-level route.
  */
 export function MailThreadView({ conversationId }: { conversationId: string }) {
-  const { data, isLoading } = useMailConversation(conversationId);
+  const { data, isLoading, isError, error } = useMailConversation(conversationId);
   const { data: sessionsData } = useSessionsList();
   const queryClient = useQueryClient();
 
@@ -175,6 +176,16 @@ export function MailThreadView({ conversationId }: { conversationId: string }) {
     );
   }
 
+  if (isError) {
+    return (
+      <div className="flex-1 flex items-center justify-center h-full">
+        <p className="text-sm" style={{ color: 'var(--color-danger)' }}>
+          Failed to load conversation{error instanceof Error ? `: ${error.message}` : '.'}
+        </p>
+      </div>
+    );
+  }
+
   const conversation = data?.conversation;
   const threads = data?.threads ?? [];
 
@@ -215,15 +226,11 @@ export function MailThreadView({ conversationId }: { conversationId: string }) {
             )}
           </h1>
           <div className="flex items-center gap-2 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
-            <span
-              className={`px-1.5 py-0.5 rounded ${
-                conversation.status === 'active'
-                  ? 'bg-emerald-500/10 text-emerald-400'
-                  : 'bg-gray-500/10 text-gray-400'
-              }`}
-            >
-              {conversation.status}
-            </span>
+            <StatusChip
+              label={conversation.status}
+              tone={conversation.status === 'active' ? 'success' : 'neutral'}
+              shape="square"
+            />
             <span>{data?.turn_count ?? 0} turn{(data?.turn_count ?? 0) !== 1 ? 's' : ''}</span>
             {threads.length > 0 && (
               <span>{threads.length} sub-thread{threads.length !== 1 ? 's' : ''}</span>

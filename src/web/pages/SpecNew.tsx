@@ -116,7 +116,7 @@ export function SpecNew() {
 
       {/* Resource picker */}
       <div className="mb-4">
-        <label className="block text-xs mb-1" style={{ color: 'var(--color-text-muted)' }}>
+        <label htmlFor="task-graph-select" className="block text-xs mb-1" style={{ color: 'var(--color-text-muted)' }}>
           Task graph
         </label>
         {opentasksResources.length === 0 ? (
@@ -131,6 +131,7 @@ export function SpecNew() {
           </div>
         ) : (
           <select
+            id="task-graph-select"
             value={resourceId}
             onChange={(e) => {
               setResourceId(e.target.value);

@@ -35,10 +35,10 @@ export function MemoryBrowser({ resourceId }: { resourceId: string }) {
                   'flex items-center gap-1 px-2 py-1 rounded text-2xs transition-colors cursor-pointer',
                   activeTab === tab.key
                     ? 'font-medium'
-                    : 'hover:bg-workspace-hover',
+                    : 'hover:bg-hover',
                 )}
                 style={activeTab === tab.key ? {
-                  color: 'var(--color-honey-500)',
+                  color: 'var(--color-accent)',
                   backgroundColor: 'var(--color-elevated)',
                 } : {
                   color: 'var(--color-text-muted)',

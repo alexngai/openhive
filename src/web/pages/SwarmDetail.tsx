@@ -28,6 +28,8 @@ import { useSwarmRealtime, useSessionsRealtime } from '../hooks/useRealtimeInval
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
 import { HostedStateBadge, MapStatusBadge, SandboxBadge } from '../components/swarm/StatusBadges';
+import { EmptyState as SharedEmptyState } from '../components/common/EmptyState';
+import { StatusChip, type StatusTone } from '../components/common/StatusChip';
 import { toast } from '../stores/toast';
 import type {
   MapSwarm, MapNode, HostedSwarm, SessionListItem,
@@ -82,12 +84,7 @@ function SectionHeading({ icon: Icon, label, count }: {
  */
 function EmptyState({ message }: { message: string }) {
   return (
-    <p
-      className="px-3 py-1.5 text-xs"
-      style={{ color: 'var(--color-text-muted)' }}
-    >
-      {message}
-    </p>
+    <SharedEmptyState title={message} card={false} size="sm" />
   );
 }
 
@@ -415,9 +412,9 @@ function useSwarmActions({
     <div
       className="mb-2 rounded-md border px-3 py-2 text-xs"
       style={{
-        borderColor: 'var(--color-border-subtle)',
-        backgroundColor: 'rgba(239, 68, 68, 0.08)',
-        color: '#fca5a5',
+        borderColor: 'var(--color-danger-border)',
+        backgroundColor: 'var(--color-danger-bg)',
+        color: 'var(--color-danger)',
       }}
     >
       {errorMessage || 'Failed to create session'}
@@ -557,26 +554,34 @@ function LogsSection({ hosted }: { hosted: HostedSwarm }) {
 
 // ─── Nodes Section ───────────────────────────────────────────────────────────
 
-const NODE_STATE_STYLES: Record<string, { bg: string; text: string }> = {
-  active:     { bg: 'bg-emerald-500/10', text: 'text-emerald-400' },
-  busy:       { bg: 'bg-amber-500/10',   text: 'text-amber-400' },
-  idle:       { bg: 'bg-blue-500/10',    text: 'text-blue-400' },
-  registered: { bg: 'bg-gray-500/10',    text: 'text-gray-400' },
-  suspended:  { bg: 'bg-orange-500/10',  text: 'text-orange-400' },
-  stopped:    { bg: 'bg-gray-500/10',    text: 'text-gray-400' },
-  failed:     { bg: 'bg-red-500/10',     text: 'text-red-400' },
-};
+function nodeStateToChip(state: string): { tone: StatusTone; label: string } {
+  switch (state) {
+    case 'online':
+    case 'active':     return { tone: 'success', label: state };
+    case 'busy':
+    case 'registered': return { tone: 'warning', label: state };
+    case 'idle':
+    case 'suspended':
+    case 'stopped':    return { tone: 'neutral', label: state };
+    case 'failed':     return { tone: 'danger',  label: state };
+    default:           return { tone: 'neutral', label: state };
+  }
+}
 
 function NodeCard({ node }: { node: MapNode }) {
   const isOffline = node.presence === 'offline';
   // When offline, don't render the last-known MAP state as if it were live —
   // show a single 'offline' pill instead. The row is also muted via opacity.
-  const style = isOffline
-    ? { bg: 'bg-gray-500/10', text: 'text-gray-400' }
-    : (NODE_STATE_STYLES[node.state] || NODE_STATE_STYLES.registered);
+  const chip = isOffline
+    ? { tone: 'neutral' as StatusTone, label: 'offline' }
+    : nodeStateToChip(node.state);
 
   return (
-    <div className={`card px-3 py-2 ${isOffline ? 'opacity-60' : ''}`}>
+    <div
+      className={`card px-3 py-2 ${isOffline ? 'opacity-60' : ''}`}
+      aria-label={isOffline ? `${node.name || node.map_agent_id} (offline)` : undefined}
+      title={isOffline ? 'Agent is offline' : undefined}
+    >
       <div className="flex items-center gap-3">
         <div
           className="w-7 h-7 rounded flex items-center justify-center shrink-0"
@@ -587,9 +592,7 @@ function NodeCard({ node }: { node: MapNode }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium truncate">{node.name || node.map_agent_id}</span>
-            <span className={`text-2xs px-1.5 py-0.5 rounded font-medium ${style.bg} ${style.text}`}>
-              {isOffline ? 'offline' : node.state}
-            </span>
+            <StatusChip tone={chip.tone} label={chip.label} shape="square" />
             {node.role && (
               <span className="text-2xs px-1.5 py-0.5 rounded capitalize" style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}>
                 {node.role}
@@ -729,7 +732,7 @@ function RegisteredAgentCard({
               // can drive directly.
               <span
                 className="text-2xs px-1.5 py-0.5 rounded font-medium"
-                style={{ backgroundColor: 'rgba(255, 165, 0, 0.12)', color: '#f59e0b' }}
+                style={{ backgroundColor: 'var(--color-accent-bg)', color: 'var(--color-accent)' }}
                 title="Infrastructure agent — bridges this swarm's lifecycle to openhive. Not a driveable worker."
               >
                 sidecar
@@ -1337,6 +1340,14 @@ function PeersSection({ swarmId }: { swarmId: string }) {
 
 // ─── Sessions Section ────────────────────────────────────────────────────────
 
+function visibilityToTone(visibility: string): StatusTone {
+  switch (visibility) {
+    case 'public': return 'success';
+    case 'shared': return 'info';
+    default:       return 'neutral';
+  }
+}
+
 function SessionCard({ session }: { session: SessionListItem }) {
   const totalTokens = session.total_input_tokens + session.total_output_tokens;
 
@@ -1360,13 +1371,7 @@ function SessionCard({ session }: { session: SessionListItem }) {
           {session.total_checkpoints > 0 && (
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" title="Active" />
           )}
-          <span className={`text-2xs px-1.5 py-0.5 rounded ${
-            session.visibility === 'public' ? 'bg-emerald-500/10 text-emerald-400'
-              : session.visibility === 'shared' ? 'bg-blue-500/10 text-blue-400'
-              : 'bg-gray-500/10 text-gray-400'
-          }`}>
-            {session.visibility}
-          </span>
+          <StatusChip tone={visibilityToTone(session.visibility)} label={session.visibility} shape="square" />
         </div>
 
         <div className="flex items-center gap-3 mt-1 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
@@ -1439,8 +1444,16 @@ function ResumableSessionRow({
 
   return (
     <div
-      className="card px-3 py-2 flex items-center gap-3 hover:ring-1 hover:ring-honey-500/20 transition-shadow cursor-pointer"
+      role="button"
+      tabIndex={0}
+      className="card px-3 py-2 flex items-center gap-3 hover:ring-1 hover:ring-honey-500/20 transition-shadow cursor-pointer text-left w-full"
       onClick={goToSession}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          goToSession();
+        }
+      }}
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">

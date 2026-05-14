@@ -46,7 +46,7 @@ function ToastItem({ toast }: { toast: ToastType }) {
       </div>
       <button
         onClick={handleClose}
-        className="flex-shrink-0 p-1 rounded hover:bg-white/10 transition-colors"
+        className="flex-shrink-0 p-1 rounded hover:bg-hover transition-colors"
         aria-label="Dismiss"
       >
         <X className="w-4 h-4" />

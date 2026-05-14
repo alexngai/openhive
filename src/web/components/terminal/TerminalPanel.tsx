@@ -471,7 +471,7 @@ export function TerminalPanel({
       }}
     >
       <div className="flex items-center gap-3">
-        <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary, #e0e0e0)' }}>
+        <span className="text-sm font-medium" style={{ color: 'var(--color-text)' }}>
           {headerLabel}
         </span>
         {swarm?.endpoint && (
@@ -484,25 +484,19 @@ export function TerminalPanel({
       <div className="flex items-center gap-2">
         <button
           onClick={() => connect(true)}
-          className="text-xs px-2 py-1 rounded transition-colors"
-          style={{ color: 'var(--color-text-muted, rgba(255,255,255,0.5))' }}
+          className="btn btn-ghost text-xs"
           title="Reconnect to existing session"
         >
           Reconnect
         </button>
         {mode === 'embedded' ? (
-          <Link
-            to="/swarms"
-            className="text-xs px-2 py-1 rounded transition-colors hover:opacity-80"
-            style={{ color: 'var(--color-text-muted, rgba(255,255,255,0.5))' }}
-          >
+          <Link to="/swarms" className="btn btn-ghost text-xs">
             &larr; Back to Swarms
           </Link>
         ) : (
           <button
             onClick={onClose}
-            className="px-2 py-1 rounded transition-colors"
-            style={{ color: 'var(--color-text-muted, rgba(255,255,255,0.5))' }}
+            className="btn btn-ghost text-xs"
             title="Close terminal"
           >
             &times;
@@ -513,18 +507,31 @@ export function TerminalPanel({
   );
 
   const errorBanner = errorMsg && (
-    <div className="px-4 py-2 bg-red-900/30 border-b border-red-500/20 text-red-300 text-xs">
+    <div
+      className="px-4 py-2 border-b text-xs"
+      style={{
+        backgroundColor: 'var(--color-danger-bg)',
+        borderColor: 'var(--color-danger-border)',
+        color: 'var(--color-danger)',
+      }}
+    >
       {errorMsg}
     </div>
   );
 
-  const terminalContainer = <div ref={containerRef} className="flex-1 min-h-0 p-1" />;
+  // The terminal canvas itself is always dark — the ghostty-web theme is
+  // fixed to #0a0a0f regardless of the app theme — so this container stays
+  // dark to match. Surrounding chrome (header, error banner) follows the
+  // app theme.
+  const terminalContainer = (
+    <div ref={containerRef} className="flex-1 min-h-0 p-1" style={{ backgroundColor: '#0a0a0f' }} />
+  );
 
   if (mode === 'embedded') {
     return (
       <div
         className="h-full flex flex-col"
-        style={{ backgroundColor: '#0a0a0f' }}
+        style={{ backgroundColor: 'var(--color-surface)' }}
       >
         {headerContent}
         {errorBanner}
@@ -536,10 +543,10 @@ export function TerminalPanel({
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-sm">
       <div
-        className="w-full max-w-5xl flex flex-col rounded-t-xl shadow-2xl border"
+        className="w-full max-w-5xl flex flex-col rounded-t-xl shadow-2xl border overflow-hidden"
         style={{
           height: '60vh',
-          backgroundColor: '#0a0a0f',
+          backgroundColor: 'var(--color-surface)',
           borderColor: 'var(--color-border-subtle, rgba(255,255,255,0.1))',
         }}
       >

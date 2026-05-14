@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Zap, ChevronDown, ChevronUp, Copy, RotateCcw, Hash, Eye, EyeOff } from 'lucide-react';
+import { EmptyState } from '../../common/EmptyState';
 import {
   useLoadoutProfiles,
   useLoadoutState,
@@ -190,13 +191,13 @@ export function LoadoutPanel({ resourceId }: { resourceId: string }) {
 
       {/* Empty state */}
       {!hasLoadout && !compileLoadout.isPending && (
-        <div className="py-6 text-center">
-          <Zap className="w-8 h-8 mx-auto mb-2" style={{ color: 'var(--color-text-muted)' }} />
-          <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>No loadout active</p>
-          <p className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
-            Select a profile or describe a task to compile a skill loadout for agent use.
-          </p>
-        </div>
+        <EmptyState
+          icon={Zap}
+          title="No loadout active"
+          description="Select a profile or describe a task to compile a skill loadout for agent use."
+          card={false}
+          size="md"
+        />
       )}
     </div>
   );

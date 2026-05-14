@@ -430,8 +430,10 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                 style={{
                   backgroundColor:
                     kind === 'openswarm'
-                      ? 'rgba(255, 165, 0, 0.08)'
+                      ? 'var(--color-accent-bg)'
                       : 'var(--color-elevated)',
+                  borderColor:
+                    kind === 'openswarm' ? 'var(--color-accent)' : undefined,
                 }}
               >
                 <div className="text-xs font-medium">OpenSwarm</div>
@@ -451,8 +453,10 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                 style={{
                   backgroundColor:
                     kind === 'claude-code'
-                      ? 'rgba(255, 165, 0, 0.08)'
+                      ? 'var(--color-accent-bg)'
                       : 'var(--color-elevated)',
+                  borderColor:
+                    kind === 'claude-code' ? 'var(--color-accent)' : undefined,
                 }}
               >
                 <div className="text-xs font-medium">Claude Code</div>
@@ -472,8 +476,10 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                 style={{
                   backgroundColor:
                     kind === 'codex'
-                      ? 'rgba(255, 165, 0, 0.08)'
+                      ? 'var(--color-accent-bg)'
                       : 'var(--color-elevated)',
+                  borderColor:
+                    kind === 'codex' ? 'var(--color-accent)' : undefined,
                 }}
               >
                 <div className="text-xs font-medium">Codex</div>
@@ -588,13 +594,13 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
             <div
               className="flex items-start gap-2 px-3 py-2 rounded-md text-xs"
               style={{
-                backgroundColor: "rgba(59, 130, 246, 0.08)",
-                border: "1px solid rgba(59, 130, 246, 0.15)",
+                backgroundColor: "var(--color-elevated)",
+                border: "1px solid var(--color-border-subtle)",
               }}
             >
-              <Shield className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" />
+              <Shield className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: "var(--color-text-secondary)" }} />
               <div>
-                <span className="font-medium text-blue-400">
+                <span className="font-medium" style={{ color: "var(--color-text)" }}>
                   Sandbox enabled
                 </span>
                 <span style={{ color: "var(--color-text-secondary)" }}>

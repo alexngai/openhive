@@ -249,7 +249,7 @@ export function SwarmKitSettings({ isAdmin }: { isAdmin: boolean }) {
         <button
           onClick={() => initAllMutation.mutate()}
           disabled={initAllMutation.isPending}
-          className="flex items-center gap-1.5 w-full text-2xs px-3 py-2 rounded-lg border border-dashed hover:bg-workspace-hover transition-colors"
+          className="card flex items-center gap-1.5 w-full text-2xs p-3 border-dashed hover:bg-hover transition-colors"
           style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
         >
           <FolderPlus className="w-3.5 h-3.5" />

@@ -171,7 +171,6 @@ export function SwarmKitPackageCard({
               style={{
                 backgroundColor: 'var(--color-elevated)',
                 color: 'var(--color-text-muted)',
-                fontSize: '9px',
               }}
             >
               not installed
@@ -184,7 +183,6 @@ export function SwarmKitPackageCard({
               style={{
                 backgroundColor: s === 'global' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(34, 197, 94, 0.1)',
                 color: s === 'global' ? 'rgb(59, 130, 246)' : 'rgb(34, 197, 94)',
-                fontSize: '9px',
               }}
             >
               {s}
@@ -196,7 +194,7 @@ export function SwarmKitPackageCard({
           <div className="flex items-center gap-1">
             <button
               onClick={handleReset}
-              className="flex items-center gap-1 text-2xs px-1.5 py-0.5 rounded hover:bg-workspace-hover"
+              className="flex items-center gap-1 text-2xs px-1.5 py-0.5 rounded hover:bg-hover"
               style={{ color: 'var(--color-text-muted)' }}
             >
               <RotateCcw className="w-3 h-3" />
@@ -229,7 +227,7 @@ export function SwarmKitPackageCard({
                 'text-2xs px-2 py-0.5 rounded transition-colors',
                 activeScope === s
                   ? 'bg-honey-500/10 text-honey-500'
-                  : 'hover:bg-workspace-hover',
+                  : 'hover:bg-hover',
               )}
               style={activeScope !== s ? { color: 'var(--color-text-muted)' } : undefined}
             >
@@ -279,7 +277,7 @@ export function SwarmKitPackageCard({
 
       {/* Config path */}
       {pkg.configPath && (
-        <p className="text-2xs mt-2" style={{ color: 'var(--color-text-muted)', fontSize: '9px' }}>
+        <p className="text-2xs mt-2" style={{ color: 'var(--color-text-muted)' }}>
           {pkg.configPath}
         </p>
       )}
@@ -316,7 +314,7 @@ function PackageConfigField({
           {isSecret && (
             <span
               className="text-2xs px-1 py-0 rounded"
-              style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'rgb(239, 68, 68)', fontSize: '9px' }}
+              style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'rgb(239, 68, 68)' }}
             >
               secret
             </span>
@@ -324,7 +322,7 @@ function PackageConfigField({
           {isLocal && (
             <span
               className="text-2xs px-1 py-0 rounded"
-              style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', color: 'rgb(59, 130, 246)', fontSize: '9px' }}
+              style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', color: 'rgb(59, 130, 246)' }}
               title="Stored in settings.local.json — machine-specific, gitignored"
             >
               local

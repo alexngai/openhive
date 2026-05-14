@@ -41,7 +41,7 @@ export class ErrorBoundary extends Component<Props, State> {
             className="w-10 h-10 rounded-md flex items-center justify-center mx-auto mb-3"
             style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)' }}
           >
-            <AlertTriangle className="w-5 h-5 text-red-500" />
+            <AlertTriangle className="w-5 h-5" style={{ color: 'var(--color-danger)' }} />
           </div>
           <h2 className="text-sm font-semibold mb-1">Something went wrong</h2>
           <p className="text-xs mb-3" style={{ color: 'var(--color-text-secondary)' }}>

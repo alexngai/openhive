@@ -134,6 +134,11 @@ export type WSEventType =
   // Provider-specific protocol details (codex JSON-RPC, future
   // alternatives) get translated to this shape inside the manager bridge.
   | 'hosted-chat.event'
+  // Inbound webhook events fanned out on channel `events:live` for the
+  // Events page's Live tab. Carries the normalized event + match count
+  // + per-swarm deliveries; broadcast regardless of matched_subs count
+  // so subscribers see "no match" events too.
+  | 'events.received'
   // MAP sync events (relayed from swarms)
   | 'memory:sync'
   | 'skill:sync'

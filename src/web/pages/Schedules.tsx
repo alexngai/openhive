@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Clock, Pause, Play, AlertTriangle, Plus } from 'lucide-react';
+import { Clock, Pause, Play, AlertTriangle, Plus, Calendar } from 'lucide-react';
 import clsx from 'clsx';
 import cronstrue from 'cronstrue';
 import {
@@ -14,6 +14,15 @@ import { useSchedulesRealtime } from '../hooks/useSchedulesRealtime';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { ListFilters, useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
 import { CreateScheduleModal } from '../components/schedules/CreateScheduleModal';
+import { JobsTabs } from '../components/dispatch/JobsTabs';
+import { StatusChip, type StatusTone } from '../components/common/StatusChip';
+import { EmptyState } from '../components/common/EmptyState';
+
+function scheduleStateToChip(active: boolean): { tone: StatusTone; label: string } {
+  return active
+    ? { tone: 'success', label: 'Active' }
+    : { tone: 'neutral', label: 'Paused' };
+}
 
 export function Schedules() {
   const [showCreate, setShowCreate] = useState(false);
@@ -53,17 +62,17 @@ export function Schedules() {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      <div className="mb-6 flex items-start justify-between gap-4">
+      <div className="mb-4 flex items-start justify-between gap-4">
         <div>
           <h1
             className="flex items-center gap-2 text-2xl font-bold"
             style={{ color: 'var(--color-text)' }}
           >
             <Clock className="h-6 w-6 text-honey-500" />
-            Schedules
+            Jobs
           </h1>
           <p className="mt-1 text-sm" style={{ color: 'var(--color-text-muted)' }}>
-            Cron-style recurring dispatches. Each fire produces one queued dispatch per target swarm.
+            Cron-style recurring jobs. Each fire produces one queued run per target swarm.
           </p>
         </div>
         <button
@@ -75,6 +84,8 @@ export function Schedules() {
           New schedule
         </button>
       </div>
+
+      <JobsTabs activeId="schedules" className="mb-4" />
 
       <ListFilters
         search={search}
@@ -91,8 +102,9 @@ export function Schedules() {
                   'rounded-md px-2.5 py-1 transition-colors',
                   pausedFilter === v
                     ? 'bg-honey-500/15 text-honey-300 ring-1 ring-honey-500/30'
-                    : 'text-zinc-400 hover:text-zinc-200',
+                    : 'hover:opacity-100',
                 )}
+                style={pausedFilter !== v ? { color: 'var(--color-text-muted)' } : undefined}
               >
                 {v.charAt(0).toUpperCase() + v.slice(1)}
               </button>
@@ -107,38 +119,41 @@ export function Schedules() {
         </div>
       )}
       {error && (
-        <div className="mt-6 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+        <div
+          className="mt-6 rounded-md border p-3 text-sm"
+          style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text)' }}
+        >
           Failed to load schedules: {(error as Error).message}
         </div>
       )}
 
       {!isLoading && !error && filtered.length === 0 && (
-        <div className="mt-12 rounded-lg border border-dashed border-zinc-700 p-8 text-center text-sm" style={{ color: 'var(--color-text-muted)' }}>
-          {schedules.length === 0
-            ? 'No schedules yet. Click "New schedule" to create one.'
-            : 'No schedules match the current filters.'}
+        <div className="mt-6">
+          <EmptyState
+            icon={Calendar}
+            title={schedules.length === 0 ? 'No schedules yet' : 'No schedules match the current filters.'}
+            description={schedules.length === 0 ? 'Create a schedule to run dispatches on a recurring cadence.' : undefined}
+            action={
+              schedules.length === 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setShowCreate(true)}
+                  className="flex items-center gap-1.5 rounded-md bg-honey-500 px-3 py-1.5 text-sm font-medium text-zinc-900 transition-colors hover:bg-honey-400"
+                >
+                  <Plus className="h-4 w-4" />
+                  New schedule
+                </button>
+              ) : undefined
+            }
+          />
         </div>
       )}
 
       {filtered.length > 0 && (
-        <div className="mt-6 overflow-hidden rounded-lg border border-zinc-800">
-          <table className="w-full text-sm">
-            <thead className="bg-zinc-900/50">
-              <tr className="text-left text-xs uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
-                <th className="px-4 py-2 font-medium">Cron</th>
-                <th className="px-4 py-2 font-medium">Spec</th>
-                <th className="px-4 py-2 font-medium">Targets</th>
-                <th className="px-4 py-2 font-medium">Next fire</th>
-                <th className="px-4 py-2 font-medium">Last fired</th>
-                <th className="px-4 py-2 font-medium">State</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-800">
-              {filtered.map((s) => (
-                <ScheduleRow key={s.id} schedule={s} />
-              ))}
-            </tbody>
-          </table>
+        <div className="mt-6 space-y-2">
+          {filtered.map((s) => (
+            <ScheduleRow key={s.id} schedule={s} />
+          ))}
         </div>
       )}
 
@@ -158,84 +173,79 @@ function ScheduleRow({ schedule }: { schedule: Schedule }) {
   } catch {
     /* keep empty if invalid */
   }
+
   return (
-    <tr
-      className="cursor-pointer transition-colors hover:bg-zinc-900/40"
-      onClick={() => {
-        window.location.href = `/schedules/${schedule.id}`;
+    <Link
+      to={`/schedules/${schedule.id}`}
+      className="block rounded-md border transition-colors hover:bg-white/5"
+      style={{
+        borderColor: 'var(--color-border-subtle)',
+        backgroundColor: 'var(--color-surface)',
       }}
     >
-      <td className="px-4 py-3 text-xs">
-        <Link
-          to={`/schedules/${schedule.id}`}
-          className="font-mono text-honey-400 hover:text-honey-300"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {schedule.cron}
-        </Link>
-        {cronDescription && (
-          <div className="mt-0.5 text-[10px] italic text-zinc-400">{cronDescription}</div>
-        )}
-        {schedule.timezone && (
-          <div className="text-[10px] text-zinc-500">{schedule.timezone}</div>
-        )}
-      </td>
-      <td className="px-4 py-3 text-xs">
-        {kind === 'dispatch_prompt' ? (
-          <>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500">prompt</div>
-            <div className="line-clamp-2 text-xs text-zinc-300">
-              {(schedule.payload as DispatchPromptPayload).prompt}
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="font-mono">
-              {(schedule.payload as DispatchSpecPayload).spec_ref.spec_id}
-            </div>
-            <div className="text-[10px] text-zinc-500">
-              {(schedule.payload as DispatchSpecPayload).spec_ref.resource_id}
-            </div>
-          </>
-        )}
-      </td>
-      <td className="px-4 py-3 text-xs">
-        {targets.length === 1
-          ? <span className="font-mono">{targets[0]}</span>
-          : <span className="text-zinc-300">{targets.length} swarms</span>}
-      </td>
-      <td className="px-4 py-3 text-xs">
-        {schedule.next_fires_at ? (
-          <TimeAgo date={schedule.next_fires_at} />
-        ) : (
-          <span className="text-zinc-500">—</span>
-        )}
-      </td>
-      <td className="px-4 py-3 text-xs">
-        {schedule.last_fired_at ? (
-          <TimeAgo date={schedule.last_fired_at} />
-        ) : (
-          <span className="text-zinc-500">never</span>
-        )}
-      </td>
-      <td className="px-4 py-3">
-        {schedule.paused ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-zinc-700/50 px-2 py-0.5 text-xs text-zinc-300">
-            <Pause className="h-3 w-3" />
-            Paused
-            {schedule.pause_reason && (
-              <span title={schedule.pause_reason}>
-                <AlertTriangle className="ml-0.5 h-3 w-3 text-amber-400" />
+      <div className="flex items-start gap-3 px-3 py-2.5">
+        {/* Cron */}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono text-xs text-honey-400">{schedule.cron}</span>
+            {schedule.timezone && (
+              <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+                {schedule.timezone}
               </span>
             )}
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300">
-            <Play className="h-3 w-3" />
-            Active
-          </span>
-        )}
-      </td>
-    </tr>
+            {cronDescription && (
+              <span className="text-2xs italic" style={{ color: 'var(--color-text-muted)' }}>
+                {cronDescription}
+              </span>
+            )}
+          </div>
+
+          <div className="mt-1 flex items-center gap-3 text-xs flex-wrap" style={{ color: 'var(--color-text-muted)' }}>
+            {/* Spec / prompt */}
+            {kind === 'dispatch_prompt' ? (
+              <span className="line-clamp-1" style={{ color: 'var(--color-text-secondary)' }}>
+                {(schedule.payload as DispatchPromptPayload).prompt}
+              </span>
+            ) : (
+              <span className="font-mono" style={{ color: 'var(--color-text-secondary)' }}>
+                {(schedule.payload as DispatchSpecPayload).spec_ref.spec_id}
+              </span>
+            )}
+            <span>·</span>
+            {/* Targets */}
+            {targets.length === 1 ? (
+              <span className="font-mono">{targets[0]}</span>
+            ) : (
+              <span>{targets.length} swarms</span>
+            )}
+            <span>·</span>
+            {/* Next fire */}
+            {schedule.next_fires_at ? (
+              <span>Next: <TimeAgo date={schedule.next_fires_at} /></span>
+            ) : (
+              <span>No next fire</span>
+            )}
+            <span>·</span>
+            {/* Last fired */}
+            {schedule.last_fired_at ? (
+              <span>Last: <TimeAgo date={schedule.last_fired_at} /></span>
+            ) : (
+              <span>never fired</span>
+            )}
+          </div>
+        </div>
+
+        {/* Status + pause reason */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {schedule.paused && schedule.pause_reason && (
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-400" title={schedule.pause_reason} />
+          )}
+          <StatusChip
+            {...scheduleStateToChip(!schedule.paused)}
+            icon={schedule.paused ? Pause : Play}
+          />
+        </div>
+      </div>
+    </Link>
   );
 }

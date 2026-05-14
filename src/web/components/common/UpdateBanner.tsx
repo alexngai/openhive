@@ -48,7 +48,7 @@ export function UpdateBanner() {
       }}
       role="status"
     >
-      <span className="text-honey-500">●</span>
+      <span className="w-1.5 h-1.5 rounded-full bg-honey-500 inline-block shrink-0" />
       <span className="flex-1 min-w-0 truncate">
         OpenHive <strong>{data.latest}</strong> is available
         {' '}(you're on {data.current}).{' '}

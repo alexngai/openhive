@@ -171,7 +171,7 @@ export function KnowledgeGraph({ resourceId }: { resourceId: string }) {
       defaultNodeColor: DEFAULT_NODE_COLOR,
       defaultEdgeColor: '#4b556340',
       labelColor: { color: '#d1d2d3' },
-      labelFont: 'Inter, system-ui, sans-serif',
+      labelFont: "'DM Sans', system-ui, sans-serif",
       labelSize: 11,
       labelRenderedSizeThreshold: 4,
       edgeLabelColor: { color: '#7a7b7e' },
@@ -218,9 +218,9 @@ export function KnowledgeGraph({ resourceId }: { resourceId: string }) {
 
         {/* Zoom controls */}
         <div className="absolute top-2 right-2 flex flex-col gap-1">
-          <button onClick={handleZoomIn} className="btn-ghost p-1 rounded cursor-pointer" style={{ backgroundColor: 'var(--color-surface)' }}><ZoomIn className="w-3.5 h-3.5" /></button>
-          <button onClick={handleZoomOut} className="btn-ghost p-1 rounded cursor-pointer" style={{ backgroundColor: 'var(--color-surface)' }}><ZoomOut className="w-3.5 h-3.5" /></button>
-          <button onClick={handleFitView} className="btn-ghost p-1 rounded cursor-pointer" style={{ backgroundColor: 'var(--color-surface)' }}><Maximize2 className="w-3.5 h-3.5" /></button>
+          <button onClick={handleZoomIn} aria-label="Zoom in" className="btn-ghost p-1 rounded cursor-pointer" style={{ backgroundColor: 'var(--color-surface)' }}><ZoomIn className="w-3.5 h-3.5" /></button>
+          <button onClick={handleZoomOut} aria-label="Zoom out" className="btn-ghost p-1 rounded cursor-pointer" style={{ backgroundColor: 'var(--color-surface)' }}><ZoomOut className="w-3.5 h-3.5" /></button>
+          <button onClick={handleFitView} aria-label="Fit" className="btn-ghost p-1 rounded cursor-pointer" style={{ backgroundColor: 'var(--color-surface)' }}><Maximize2 className="w-3.5 h-3.5" /></button>
         </div>
 
         {/* Legend */}

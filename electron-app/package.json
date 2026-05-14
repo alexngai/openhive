@@ -1,6 +1,6 @@
 {
   "name": "openhive-electron",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "Electron desktop shell for OpenHive",
   "homepage": "https://github.com/alexngai/openhive",
   "author": {
@@ -88,7 +88,10 @@
       ]
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "artifactName": "OpenHive-linux-${arch}.${ext}",
       "executableName": "openhive",
       "category": "Development",
