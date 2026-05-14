@@ -7,7 +7,7 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
-  Play,
+  RefreshCw,
 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { LoadingSpinner } from '../../components/common/LoadingSpinner';
@@ -115,7 +115,6 @@ export function SwarmKitDoctor({
                         className="block mt-0.5 text-2xs p-1 rounded"
                         style={{
                           backgroundColor: 'var(--color-elevated)',
-                          fontSize: '9px',
                           color: 'var(--color-text-secondary)',
                         }}
                       >
@@ -133,7 +132,7 @@ export function SwarmKitDoctor({
                 className="flex items-center gap-1 mt-2 text-2xs"
                 style={{ color: 'var(--color-text-muted)' }}
               >
-                <Play className="w-3 h-3" />
+                <RefreshCw className="w-3 h-3" />
                 Re-run
               </button>
             </div>

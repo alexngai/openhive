@@ -112,9 +112,13 @@ export function RepoDetail() {
   if (!repoData?.repo) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-6">
-        <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-          Repo not found.
-        </p>
+        <Link to="/repos" className="flex items-center gap-1 text-xs mb-4 hover:text-honey-500 transition-colors" style={{ color: 'var(--color-text-muted)' }}>
+          <ChevronLeft className="w-3.5 h-3.5" />
+          All repos
+        </Link>
+        <div className="card p-8 text-center">
+          <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>Repo not found.</p>
+        </div>
       </div>
     );
   }
@@ -309,7 +313,7 @@ export function RepoDetail() {
             {saveError && (
               <div
                 className="flex items-start gap-2 p-2 rounded text-2xs"
-                style={{ backgroundColor: 'rgba(244, 63, 94, 0.1)', color: 'var(--color-text)' }}
+                style={{ backgroundColor: 'var(--color-danger-bg)', color: 'var(--color-text)' }}
               >
                 <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0 mt-0.5" />
                 <span>{saveError}</span>
@@ -360,7 +364,7 @@ export function RepoDetail() {
           {lifecycleError && (
             <div
               className="flex items-start gap-2 p-2 rounded text-2xs mb-2"
-              style={{ backgroundColor: 'rgba(244, 63, 94, 0.1)', color: 'var(--color-text)' }}
+              style={{ backgroundColor: 'var(--color-danger-bg)', color: 'var(--color-text)' }}
             >
               <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0 mt-0.5" />
               <span>{lifecycleError}</span>
@@ -400,7 +404,7 @@ export function RepoDetail() {
               {mergeError && (
                 <div
                   className="flex items-start gap-2 p-2 rounded text-2xs"
-                  style={{ backgroundColor: 'rgba(244, 63, 94, 0.1)', color: 'var(--color-text)' }}
+                  style={{ backgroundColor: 'var(--color-danger-bg)', color: 'var(--color-text)' }}
                 >
                   <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0 mt-0.5" />
                   <span>{mergeError}</span>
@@ -449,7 +453,7 @@ export function RepoDetail() {
           {lifecycleError && (
             <div
               className="flex items-start gap-2 p-2 rounded text-2xs mt-2"
-              style={{ backgroundColor: 'rgba(244, 63, 94, 0.1)', color: 'var(--color-text)' }}
+              style={{ backgroundColor: 'var(--color-danger-bg)', color: 'var(--color-text)' }}
             >
               <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0 mt-0.5" />
               <span>{lifecycleError}</span>

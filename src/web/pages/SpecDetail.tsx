@@ -20,18 +20,8 @@ import { LinkedNodesPanel } from '../components/specs/LinkedNodesPanel';
 import { DispatchModal } from '../components/dispatch/DispatchModal';
 import { SpecDispatchPanel } from '../components/dispatch/SpecDispatchPanel';
 import { PageLoader } from '../components/common/LoadingSpinner';
-
-const PRIORITY_LABELS: Record<number, string> = {
-  0: 'P0', 1: 'P1', 2: 'P2', 3: 'P3', 4: 'P4',
-};
-
-const PRIORITY_COLORS: Record<number, string> = {
-  0: 'bg-red-600',
-  1: 'bg-orange-600',
-  2: 'bg-yellow-600',
-  3: 'bg-blue-600',
-  4: 'bg-gray-600',
-};
+import { StatusChip } from '../components/common/StatusChip';
+import { PRIORITY_MAP } from '../components/specs/specPriority';
 
 const TOC_PANEL_KEY = 'openhive:specs:showTocPanel';
 const SIDEBAR_PANEL_KEY = 'openhive:specs:showSidebarPanel';
@@ -229,7 +219,26 @@ export function SpecDetail() {
     );
   }
 
-  if (!data) return null;
+  if (!data) {
+    return (
+      <div className="p-6 max-w-7xl mx-auto">
+        <Link
+          to="/specs"
+          className="inline-flex items-center gap-1 text-sm mb-4"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to specs
+        </Link>
+        <div
+          className="rounded-md border p-4 text-sm"
+          style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text)' }}
+        >
+          Spec not found.
+        </div>
+      </div>
+    );
+  }
   const { spec, linked, edges } = data;
 
   const handleLink = async (targetId: string, edgeType: EdgeType, direction: 'inbound' | 'outbound') => {
@@ -259,13 +268,13 @@ export function SpecDetail() {
           className="flex shrink-0 flex-col border-b"
           style={{
             borderColor: 'var(--color-border-subtle)',
-            backgroundColor: 'var(--color-background)',
+            backgroundColor: 'var(--color-bg)',
           }}
         >
           <div className="flex items-center gap-3 px-4 py-3">
             <Link
               to="/specs"
-              className="shrink-0 rounded p-1 hover:bg-white/5"
+              className="shrink-0 rounded p-1 hover:opacity-80"
               style={{ color: 'var(--color-text-muted)' }}
               title="Back to specs"
             >
@@ -298,15 +307,11 @@ export function SpecDetail() {
 
             {/* Priority picker */}
             <div className="shrink-0 flex items-center gap-1">
-              {priority !== undefined && priority <= 3 && (
-                <span
-                  className={clsx(
-                    'rounded-full px-2 py-0.5 text-xs font-medium text-white',
-                    PRIORITY_COLORS[priority],
-                  )}
-                >
-                  {PRIORITY_LABELS[priority]}
-                </span>
+              {priority !== undefined && PRIORITY_MAP[priority] && (
+                <StatusChip
+                  tone={PRIORITY_MAP[priority].tone}
+                  label={PRIORITY_MAP[priority].label}
+                />
               )}
               <select
                 value={priority === undefined ? '' : String(priority)}
@@ -333,9 +338,10 @@ export function SpecDetail() {
               type="button"
               onClick={handleArchiveToggle}
               disabled={updateSpec.isPending}
-              className="shrink-0 inline-flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-white/5"
+              className="shrink-0 inline-flex items-center gap-1 text-xs px-2 py-1 rounded hover:opacity-80"
               style={{ color: 'var(--color-text-muted)' }}
               title={spec.archived ? 'Restore spec' : 'Archive spec'}
+              aria-label={spec.archived ? 'Restore spec' : 'Archive spec'}
             >
               {spec.archived ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
             </button>
@@ -343,9 +349,10 @@ export function SpecDetail() {
             <button
               type="button"
               onClick={() => setShowSidebar(!showSidebar)}
-              className="shrink-0 inline-flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-white/5"
+              className="shrink-0 inline-flex items-center gap-1 text-xs px-2 py-1 rounded hover:opacity-80"
               style={{ color: 'var(--color-text-muted)' }}
               title={showSidebar ? 'Hide dispatch panel' : 'Show dispatch panel'}
+              aria-label={showSidebar ? 'Hide dispatch panel' : 'Show dispatch panel'}
             >
               {showSidebar
                 ? <PanelRightClose className="h-4 w-4" />
@@ -372,7 +379,7 @@ export function SpecDetail() {
             {spec.archived && (
               <>
                 <span>·</span>
-                <span className="px-1.5 py-0.5 rounded bg-white/5">archived</span>
+                <span className="px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)' }}>archived</span>
               </>
             )}
           </div>

@@ -48,7 +48,7 @@ export function ListFilters({
   return (
     <div className="mb-4 flex flex-wrap items-center gap-3">
       <div
-        className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border min-w-[220px] flex-1 max-w-md"
+        className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border min-w-[220px] flex-1 max-w-md focus-within:ring-1 focus-within:ring-honey-500/40"
         style={{
           borderColor: 'var(--color-border-subtle)',
           backgroundColor: 'var(--color-surface)',

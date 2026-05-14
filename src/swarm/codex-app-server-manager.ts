@@ -72,6 +72,15 @@ interface InternalSession {
   /** Pending JSON-RPC request resolvers, keyed by id. */
   pendingRequests: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>;
   nextRequestId: number;
+  /**
+   * Incoming JSON-RPC requests codex sent that we haven't replied to yet.
+   * Keyed by the stringified id (the form we expose externally); value is
+   * the wire-original id (string | number). Codex's `RequestId` is a
+   * `string | number` union — if codex sends `id: 0` and we reply with
+   * `id: "0"`, codex won't match the response, so we must preserve the
+   * exact wire type.
+   */
+  incomingRequests: Map<string, string | number>;
 }
 
 const MAX_SESSIONS = 20;
@@ -121,6 +130,7 @@ export class CodexAppServerManager extends EventEmitter {
       exitCode: null,
       pendingRequests: new Map(),
       nextRequestId: 1,
+      incomingRequests: new Map(),
     };
     this.sessions.set(id, session);
 
@@ -147,6 +157,8 @@ export class CodexAppServerManager extends EventEmitter {
         p.reject(new Error(`codex app-server exited (code=${code ?? 'null'} signal=${signal ?? 'none'})`));
       }
       session.pendingRequests.clear();
+      // Drop any incoming-request ids — codex is gone, replies would race.
+      session.incomingRequests.clear();
     });
 
     // Wait for the listen URL to appear (~5s should be plenty; the probe
@@ -355,8 +367,11 @@ export class CodexAppServerManager extends EventEmitter {
       return;
     }
 
-    if (msg.id !== undefined) {
-      // Response to a request we sent
+    // Three cases:
+    //  - id + (result|error), no method  → response to a request we sent
+    //  - id + method                     → incoming request from codex (needs a reply)
+    //  - method only                     → notification (fire-and-forget)
+    if (msg.id !== undefined && msg.method === undefined) {
       const handler = session.pendingRequests.get(String(msg.id));
       if (!handler) return;
       session.pendingRequests.delete(String(msg.id));
@@ -366,7 +381,22 @@ export class CodexAppServerManager extends EventEmitter {
       return;
     }
 
-    // Notification — fan out to consumers (chat bridge, observability, etc.)
+    if (msg.id !== undefined && msg.method) {
+      // Incoming request from codex — preserve the wire-original id (which
+      // may be a number per `RequestId` in codex's schema) so the eventual
+      // response matches codex's pending-request table.
+      const wireId = msg.id;
+      const requestId = String(wireId);
+      session.incomingRequests.set(requestId, wireId);
+      this.emit('request', {
+        sessionId: session.id,
+        requestId,
+        method: msg.method,
+        params: msg.params,
+      });
+      return;
+    }
+
     if (msg.method) {
       this.emit('notification', {
         sessionId: session.id,
@@ -374,5 +404,41 @@ export class CodexAppServerManager extends EventEmitter {
         params: msg.params,
       });
     }
+  }
+
+  /**
+   * Send a successful JSON-RPC response back to codex for an incoming
+   * request. `requestId` is the id codex emitted (preserved verbatim).
+   * No-op if the session is gone or the request was already replied to.
+   */
+  replyToRequest(sessionId: string, requestId: string, result: unknown): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    const wireId = session.incomingRequests.get(requestId);
+    if (wireId === undefined) return;
+    session.incomingRequests.delete(requestId);
+    if (!session.ws || session.ws.readyState !== WebSocket.OPEN) return;
+    session.ws.send(JSON.stringify({ jsonrpc: '2.0', id: wireId, result }));
+  }
+
+  /**
+   * Send an error JSON-RPC response back to codex for an incoming request.
+   * Use when the host can't fulfil the request (e.g. unsupported method or
+   * an exception while computing the reply). No-op if the session is gone
+   * or the request was already replied to.
+   */
+  errorToRequest(
+    sessionId: string,
+    requestId: string,
+    code: number,
+    message: string,
+  ): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    const wireId = session.incomingRequests.get(requestId);
+    if (wireId === undefined) return;
+    session.incomingRequests.delete(requestId);
+    if (!session.ws || session.ws.readyState !== WebSocket.OPEN) return;
+    session.ws.send(JSON.stringify({ jsonrpc: '2.0', id: wireId, error: { code, message } }));
   }
 }

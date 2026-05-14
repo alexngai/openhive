@@ -12,7 +12,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { ChevronLeft, Plus, X, Loader2 } from 'lucide-react';
+import { ChevronLeft, Plus, X, Loader2, AlertTriangle } from 'lucide-react';
 import { api, type SyncableResource } from '../lib/api';
 import { PageLoader } from '../components/common/LoadingSpinner';
 
@@ -42,6 +42,7 @@ export default function LoadoutEditor() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<Date | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Load
   useEffect(() => {
@@ -70,8 +71,10 @@ export default function LoadoutEditor() {
       try {
         await api.patch(`/loadouts/${id}`, { content });
         setSaved(new Date());
+        setSaveError(null);
       } catch (err) {
         console.warn('[loadout-editor] save failed', err);
+        setSaveError((err as Error).message || 'Save failed');
       } finally {
         setSaving(false);
       }
@@ -92,7 +95,7 @@ export default function LoadoutEditor() {
         <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
           Failed to load loadout: {loadError}
         </p>
-        <Link to="/loadouts" className="text-xs text-honey-500 mt-2 inline-block">← Back to loadouts</Link>
+        <Link to="/teams?tab=loadouts" className="text-xs text-honey-500 mt-2 inline-block">← Back to loadouts</Link>
       </div>
     );
   }
@@ -104,7 +107,7 @@ export default function LoadoutEditor() {
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <button
-          onClick={() => navigate('/loadouts')}
+          onClick={() => navigate('/teams?tab=loadouts')}
           className="btn btn-ghost flex items-center gap-1.5"
         >
           <ChevronLeft className="w-4 h-4" />
@@ -113,6 +116,10 @@ export default function LoadoutEditor() {
         <div className="text-2xs flex items-center gap-2" style={{ color: 'var(--color-text-muted)' }}>
           {saving ? (
             <><Loader2 className="w-3 h-3 animate-spin" /> Saving…</>
+          ) : saveError ? (
+            <span className="flex items-center gap-1" style={{ color: 'var(--color-danger)' }} title={saveError}>
+              <AlertTriangle className="w-3 h-3" /> Save failed
+            </span>
           ) : saved ? (
             <>Saved {saved.toLocaleTimeString()}</>
           ) : null}
@@ -128,8 +135,9 @@ export default function LoadoutEditor() {
 
       {/* Identity */}
       <Section title="Identity">
-        <Field label="Name">
+        <Field label="Name" htmlFor="loadout-name">
           <input
+            id="loadout-name"
             type="text"
             className="input w-full"
             value={content.name}
@@ -139,8 +147,9 @@ export default function LoadoutEditor() {
             Slug used by openteams; lowercase letters, digits, hyphens, underscores.
           </p>
         </Field>
-        <Field label="Description">
+        <Field label="Description" htmlFor="loadout-description">
           <textarea
+            id="loadout-description"
             className="input w-full"
             rows={2}
             value={content.description ?? ''}
@@ -281,10 +290,10 @@ function Section({
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, htmlFor, children }: { label: string; htmlFor?: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="text-2xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+      <label htmlFor={htmlFor} className="text-2xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>
         {label}
       </label>
       {children}

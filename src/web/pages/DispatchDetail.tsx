@@ -132,7 +132,7 @@ export function DispatchDetail() {
           style={{ color: 'var(--color-text-muted)' }}
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to Dispatch
+          Back to Jobs
         </Link>
         <div
           className="rounded-md border p-4 text-sm"
@@ -141,7 +141,7 @@ export function DispatchDetail() {
             color: 'var(--color-text)',
           }}
         >
-          {error ? `Failed to load: ${error instanceof Error ? error.message : String(error)}` : 'Dispatch not found'}
+          {error ? `Failed to load: ${error instanceof Error ? error.message : String(error)}` : 'Job not found'}
         </div>
       </div>
     );
@@ -169,7 +169,7 @@ export function DispatchDetail() {
         style={{ color: 'var(--color-text-muted)' }}
       >
         <ArrowLeft className="h-4 w-4" />
-        Back to Dispatch
+        Back to Jobs
       </Link>
 
       {/* Header */}
@@ -212,14 +212,7 @@ export function DispatchDetail() {
         )}
 
         {cancelNotAcked && (
-          <div
-            className="mt-2 rounded-md border p-2 text-sm flex items-start gap-2"
-            style={{
-              borderColor: 'rgba(245, 158, 11, 0.4)',
-              backgroundColor: 'rgba(245, 158, 11, 0.05)',
-              color: 'var(--color-text)',
-            }}
-          >
+          <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-sm flex items-start gap-2" style={{ color: 'var(--color-text)' }}>
             <AlertCircle className="h-4 w-4 mt-0.5 text-amber-400" />
             <div className="flex-1">
               <div className="font-medium">Agent did not acknowledge cancel</div>
@@ -241,14 +234,7 @@ export function DispatchDetail() {
         )}
 
         {materializationError && (
-          <div
-            className="mt-2 rounded-md border p-2 text-sm flex items-start gap-2"
-            style={{
-              borderColor: 'rgba(245, 158, 11, 0.4)',
-              backgroundColor: 'rgba(245, 158, 11, 0.05)',
-              color: 'var(--color-text)',
-            }}
-          >
+          <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-sm flex items-start gap-2" style={{ color: 'var(--color-text)' }}>
             <AlertCircle className="h-4 w-4 mt-0.5 text-amber-400" />
             <div className="flex-1">
               <div className="font-medium">Loadout materialization failed</div>
@@ -635,19 +621,12 @@ function LoadoutPanel({
   const isFailed = status === 'failed';
   const isTeamRoleRef = loadoutRef?.startsWith('team:') ?? false;
   const isDirectLoadout = loadoutRef && !isTeamRoleRef;
-  const tone = isFailed
-    ? {
-        borderColor: 'rgba(245, 158, 11, 0.4)',
-        backgroundColor: 'rgba(245, 158, 11, 0.05)',
-      }
-    : {
-        borderColor: 'var(--color-border-subtle)',
-        backgroundColor: 'var(--color-surface)',
-      };
   return (
     <div
-      className="rounded-md border p-4 mb-6"
-      style={{ ...tone, color: 'var(--color-text)' }}
+      className={isFailed
+        ? 'rounded-md border border-amber-500/40 bg-amber-500/5 p-4 mb-6'
+        : 'rounded-md border p-4 mb-6'}
+      style={isFailed ? { color: 'var(--color-text)' } : { borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-surface)', color: 'var(--color-text)' }}
     >
       <div
         className="text-xs mb-2 flex items-center gap-1.5"

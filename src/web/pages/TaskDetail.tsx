@@ -13,7 +13,6 @@ import {
   ClipboardList,
   Clock,
   User,
-  Tag,
   AlertCircle,
   MessageCircle,
   Send,
@@ -25,6 +24,8 @@ import {
   useRepo,
 } from '../hooks/useApi';
 import { PageLoader } from '../components/common/LoadingSpinner';
+import { StatusChip } from '../components/common/StatusChip';
+import { taskStatusToChip } from './Tasks';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { CascadeBlock } from '../components/CascadeBlock';
 import { usePageContext } from '../components/chat-fab/usePageContext';
@@ -199,12 +200,10 @@ export function TaskDetail() {
             className="flex items-center gap-3 mt-3 text-2xs flex-wrap"
             style={{ color: 'var(--color-text-muted)' }}
           >
-            {node.status && (
-              <span className="flex items-center gap-1">
-                <Tag className="w-3 h-3" />
-                {node.status}
-              </span>
-            )}
+            {node.status && (() => {
+              const chip = taskStatusToChip(node.status);
+              return <StatusChip tone={chip.tone} label={chip.label} icon={chip.Icon} />;
+            })()}
             {node.assignee && (
               <span className="flex items-center gap-1">
                 <User className="w-3 h-3" />

@@ -10,6 +10,7 @@ export function AuthCallback() {
   const exchangeOAuthCode = useAuthStore((s) => s.exchangeOAuthCode);
   const error = useAuthStore((s) => s.error);
   const [exchanging, setExchanging] = useState(true);
+  const [localError, setLocalError] = useState<string | null>(null);
 
   useEffect(() => {
     const code = searchParams.get('code');
@@ -29,6 +30,7 @@ export function AuthCallback() {
     // Validate CSRF state
     const savedState = sessionStorage.getItem('oauth_state');
     if (savedState && state !== savedState) {
+      setLocalError('Authentication request could not be verified (state mismatch). Please try logging in again.');
       setExchanging(false);
       return;
     }
@@ -62,7 +64,7 @@ export function AuthCallback() {
       <Logo className="h-8 w-8 text-honey-500 mx-auto" />
       <h1 className="text-lg font-semibold mt-4">Authentication Failed</h1>
       <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>
-        {error || searchParams.get('error_description') || 'Unable to complete authentication.'}
+        {localError || error || searchParams.get('error_description') || 'Unable to complete authentication.'}
       </p>
       <button
         onClick={() => navigate('/login', { replace: true })}

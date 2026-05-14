@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes, Globe, GitBranch } from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
+import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes, Globe, GitBranch, Bug, Bell, ArrowUpRight } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores/auth';
 import { useThemeStore } from '../stores/theme';
@@ -8,6 +8,7 @@ import { toast } from '../stores/toast';
 import { api } from '../lib/api';
 import { useSEO } from '../hooks/useDocumentTitle';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
+import { Tabs, type TabDef } from '../components/common/Tabs';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { SwarmKitSettings } from './settings/SwarmKitSettings';
 import { SwarmHubSettings } from './settings/SwarmHubSettings';
@@ -21,7 +22,7 @@ import clsx from 'clsx';
 export function Settings() {
   const navigate = useNavigate();
   const { agent, isAuthenticated, logout } = useAuthStore();
-  const [activeTab, setActiveTab] = useState<'profile' | 'display' | 'api-keys' | 'server' | 'swarmkit' | 'swarmhub'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'display' | 'api-keys' | 'server' | 'swarmkit' | 'swarmhub' | 'debug'>('profile');
 
   useSEO({ title: 'Settings' });
 
@@ -37,7 +38,7 @@ export function Settings() {
     { id: 'api-keys' as const, label: 'API Keys', icon: Key },
     { id: 'swarmkit' as const, label: 'SwarmKit', icon: Boxes },
     { id: 'swarmhub' as const, label: 'SwarmHub', icon: Globe },
-    { id: 'git-sync' as const, label: 'Git Sync', icon: GitBranch },
+    { id: 'debug' as const, label: 'Debug', icon: Bug },
   ];
 
   return (
@@ -56,7 +57,7 @@ export function Settings() {
                     'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors',
                     activeTab === id
                       ? 'bg-honey-500/10 text-honey-500'
-                      : 'hover:bg-workspace-hover'
+                      : 'hover:bg-hover'
                   )}
                   style={activeTab !== id ? { color: 'var(--color-text-secondary)' } : undefined}
                 >
@@ -76,8 +77,69 @@ export function Settings() {
           {activeTab === 'server' && <ServerSettings isAdmin={!!agent.is_admin} />}
           {activeTab === 'swarmkit' && <SwarmKitSettings isAdmin={!!agent.is_admin} />}
           {activeTab === 'swarmhub' && <SwarmHubSettings />}
-          {activeTab === 'git-sync' && <GitSyncSettings />}
+          {activeTab === 'debug' && <DebugSettings />}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Debug — operator tools and diagnostics
+// ═══════════════════════════════════════════════════════════════
+
+interface DebugLink {
+  to: string;
+  icon: React.ElementType;
+  title: string;
+  description: string;
+}
+
+const DEBUG_LINKS: DebugLink[] = [
+  {
+    to: '/events',
+    icon: Bell,
+    title: 'Events & Delivery Log',
+    description: 'Inspect webhook subscriptions and recent event deliveries.',
+  },
+];
+
+function DebugSettings() {
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold">Debug</h2>
+        <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+          Operator tools and diagnostics. Not part of day-to-day use.
+        </p>
+      </div>
+      <div className="space-y-2">
+        {DEBUG_LINKS.map((link) => (
+          <Link
+            key={link.to}
+            to={link.to}
+            className="card card-hover flex items-start gap-3 p-3 group"
+          >
+            <div
+              className="w-8 h-8 rounded-md flex items-center justify-center shrink-0"
+              style={{ backgroundColor: 'var(--color-elevated)' }}
+            >
+              <link.icon className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">
+                {link.title}
+              </div>
+              <div className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                {link.description}
+              </div>
+            </div>
+            <ArrowUpRight
+              className="w-4 h-4 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+              style={{ color: 'var(--color-text-muted)' }}
+            />
+          </Link>
+        ))}
       </div>
     </div>
   );
@@ -412,7 +474,7 @@ function ConfigField({
           {isRestartRequired && (
             <span
               className="text-2xs px-1 py-0 rounded"
-              style={{ backgroundColor: 'rgba(245, 158, 11, 0.1)', color: 'rgb(245, 158, 11)', fontSize: '9px' }}
+              style={{ backgroundColor: 'rgba(245, 158, 11, 0.1)', color: 'rgb(245, 158, 11)' }}
               title="Requires server restart"
             >
               restart
@@ -421,7 +483,7 @@ function ConfigField({
           {isReadOnly && (
             <span
               className="text-2xs px-1 py-0 rounded"
-              style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)', fontSize: '9px' }}
+              style={{ backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }}
             >
               read-only
             </span>
@@ -429,14 +491,14 @@ function ConfigField({
           {isSecret && (
             <span
               className="text-2xs px-1 py-0 rounded"
-              style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'rgb(239, 68, 68)', fontSize: '9px' }}
+              style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'rgb(239, 68, 68)' }}
             >
               secret
             </span>
           )}
         </div>
         {description && (
-          <p className="text-2xs mb-0.5" style={{ color: 'var(--color-text-muted)', fontSize: '9px' }}>
+          <p className="text-2xs mb-0.5" style={{ color: 'var(--color-text-muted)' }}>
             {description}
           </p>
         )}
@@ -725,7 +787,7 @@ function ProfileSettings({ agent }: { agent: { name: string; email?: string | nu
 
         <form onSubmit={handleChangePassword} className="space-y-3">
           {passwordError && (
-            <div className="p-2 bg-red-500/10 border border-red-500/20 rounded-md text-red-400 text-xs">
+            <div className="p-2 rounded-md text-xs border" style={{ backgroundColor: 'var(--color-danger-bg)', borderColor: 'var(--color-danger-border)', color: 'var(--color-danger)' }}>
               {passwordError}
             </div>
           )}
@@ -831,7 +893,7 @@ function DisplaySettings() {
                 'w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-left transition-colors cursor-pointer',
                 theme === value
                   ? 'bg-honey-500/10 text-honey-500'
-                  : 'hover:bg-workspace-hover'
+                  : 'hover:bg-hover'
               )}
               style={theme !== value ? { color: 'var(--color-text-secondary)' } : undefined}
             >
@@ -861,7 +923,7 @@ function DisplaySettings() {
                 'flex flex-col items-center justify-center gap-1 px-2 py-3 rounded-md text-center transition-colors cursor-pointer',
                 textScale === value
                   ? 'bg-honey-500/10 text-honey-500'
-                  : 'hover:bg-workspace-hover'
+                  : 'hover:bg-hover'
               )}
               style={textScale !== value ? { color: 'var(--color-text-secondary)' } : undefined}
             >
@@ -1132,7 +1194,7 @@ function CreateKeyForm({
                   'px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer border',
                   scopes.includes(opt.value)
                     ? 'bg-honey-500/15 text-honey-500 border-honey-500/30'
-                    : 'border-transparent hover:bg-workspace-hover'
+                    : 'border-transparent hover:bg-hover'
                 )}
                 style={!scopes.includes(opt.value) ? {
                   color: 'var(--color-text-secondary)',
@@ -1682,21 +1744,15 @@ function GitSyncManageDialog({ resource, onClose }: { resource: GitSyncResource;
       </div>
 
       {/* Tab bar */}
-      <div className="flex border-b px-4" style={{ borderColor: 'var(--color-border-subtle)' }}>
-        {(['config', 'log'] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={clsx('px-3 py-2 text-xs font-medium border-b-2 transition-colors -mb-px', {
-              'border-honey-500 text-honey-500': tab === t,
-              'border-transparent': tab !== t,
-            })}
-            style={tab !== t ? { color: 'var(--color-text-muted)' } : undefined}
-          >
-            {t === 'config' ? 'Config & Actions' : 'Commit Log'}
-          </button>
-        ))}
-      </div>
+      <Tabs<'config' | 'log'>
+        tabs={[
+          { id: 'config', label: 'Config & Actions' },
+          { id: 'log',    label: 'Commit Log' },
+        ] satisfies TabDef<'config' | 'log'>[]}
+        activeId={tab}
+        onChange={setTab}
+        variant="underline"
+      />
 
       <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
         {tab === 'config' && (

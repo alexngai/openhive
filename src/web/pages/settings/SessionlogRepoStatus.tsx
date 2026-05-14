@@ -77,7 +77,7 @@ export function SessionlogRepoStatus({ projectRoot }: { projectRoot: string | nu
       <div className="flex items-center justify-between mb-1">
         <div
           className="text-2xs font-semibold uppercase tracking-wider"
-          style={{ color: 'var(--color-text-muted)', fontSize: '9px' }}
+          style={{ color: 'var(--color-text-muted)' }}
         >
           Session repo status
         </div>
@@ -116,9 +116,9 @@ export function SessionlogRepoStatus({ projectRoot }: { projectRoot: string | nu
         value={
           <span className="flex items-center gap-1">
             <Folder className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
-            <span className="font-mono" style={{ fontSize: '10px' }}>{data.clonePath}</span>
+            <span className="font-mono text-2xs">{data.clonePath}</span>
             {!data.clonePathExplicit && (
-              <span className="text-2xs" style={{ color: 'var(--color-text-muted)', fontSize: '9px' }}>
+              <span className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
                 (auto)
               </span>
             )}
@@ -137,7 +137,7 @@ export function SessionlogRepoStatus({ projectRoot }: { projectRoot: string | nu
         }
         label="Remote"
         value={
-          <span className="font-mono" style={{ fontSize: '10px' }}>{data.remote}</span>
+          <span className="font-mono text-2xs">{data.remote}</span>
         }
         hint={
           data.remoteReachable === true
@@ -161,7 +161,7 @@ export function SessionlogRepoStatus({ projectRoot }: { projectRoot: string | nu
         <StatusRow
           icon={<GitBranch className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />}
           label="Checkpoints branch"
-          value={<span className="font-mono" style={{ fontSize: '10px' }}>{data.checkpointsBranch}</span>}
+          value={<span className="font-mono text-2xs">{data.checkpointsBranch}</span>}
           hint={
             data.ahead !== null && data.behind !== null
               ? `${data.ahead} ahead, ${data.behind} behind`
@@ -173,7 +173,7 @@ export function SessionlogRepoStatus({ projectRoot }: { projectRoot: string | nu
       )}
 
       {data.autoPush && (
-        <div className="text-2xs pl-4" style={{ color: 'var(--color-text-muted)', fontSize: '10px' }}>
+        <div className="text-2xs pl-4" style={{ color: 'var(--color-text-muted)' }}>
           Auto-push is on — sessionlog pushes checkpoints after each commit.
         </div>
       )}
@@ -181,7 +181,7 @@ export function SessionlogRepoStatus({ projectRoot }: { projectRoot: string | nu
       {data.lastError && (
         <div
           className="text-2xs pl-4 mt-1"
-          style={{ color: 'rgb(239, 68, 68)', fontSize: '10px' }}
+          style={{ color: 'var(--color-danger)' }}
         >
           {data.lastError}
         </div>
@@ -209,7 +209,6 @@ function ActionButton({
       disabled={disabled}
       title={title}
       className="flex items-center gap-1 text-2xs px-1.5 py-0.5 rounded bg-honey-500/10 text-honey-500 hover:bg-honey-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
-      style={{ fontSize: '10px' }}
     >
       {icon}
       {label}
@@ -234,7 +233,7 @@ function StatusRow({
       <div className="flex-1 min-w-0">
         <div
           className="text-2xs"
-          style={{ color: 'var(--color-text-muted)', fontSize: '10px' }}
+          style={{ color: 'var(--color-text-muted)' }}
         >
           {label}
         </div>
@@ -242,7 +241,7 @@ function StatusRow({
         {hint && (
           <div
             className="text-2xs"
-            style={{ color: 'var(--color-text-muted)', fontSize: '9px' }}
+            style={{ color: 'var(--color-text-muted)' }}
           >
             {hint}
           </div>

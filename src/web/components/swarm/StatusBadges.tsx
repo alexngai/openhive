@@ -72,9 +72,9 @@ export function KindBadge({ kind }: { kind?: 'openswarm' | 'claude-code' | 'code
   );
 }
 
-export function SectionLabel({ children }: { children: React.ReactNode }) {
+export function SectionLabel({ children, htmlFor }: { children: React.ReactNode; htmlFor?: string }) {
   return (
-    <label className="block text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+    <label htmlFor={htmlFor} className="block text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
       {children}
     </label>
   );

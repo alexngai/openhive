@@ -90,7 +90,7 @@ export function GitSyncToggle({ resource, className = '' }: GitSyncToggleProps) 
         ? 'Sync: on'
         : 'Sync: off';
   const color = hasError
-    ? '#f87171'
+    ? 'var(--color-danger)'
     : enabled
       ? '#34d399'
       : 'var(--color-text-muted)';
@@ -126,7 +126,7 @@ export function GitSyncToggle({ resource, className = '' }: GitSyncToggleProps) 
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-medium transition-colors hover:bg-white/5"
-        style={{ color, backgroundColor: 'rgba(255, 255, 255, 0.04)' }}
+        style={{ color, backgroundColor: 'var(--color-elevated)' }}
         title={enabled ? 'Git sync enabled — commits + pushes on change' : 'Git sync disabled'}
       >
         <GitBranch className="w-3 h-3" />
@@ -137,8 +137,8 @@ export function GitSyncToggle({ resource, className = '' }: GitSyncToggleProps) 
         <div
           className="absolute right-0 mt-1 z-50 w-72 rounded-lg border p-3 shadow-lg"
           style={{
-            backgroundColor: 'var(--color-bg-panel, #1f2937)',
-            borderColor: 'var(--color-border, #374151)',
+            backgroundColor: 'var(--color-surface)',
+            borderColor: 'var(--color-border)',
           }}
         >
           <div className="text-xs font-semibold mb-2" style={{ color: 'var(--color-text)' }}>
@@ -171,7 +171,7 @@ export function GitSyncToggle({ resource, className = '' }: GitSyncToggleProps) 
           {hasError && health?.lastError && (
             <div
               className="text-2xs mt-3 p-2 rounded"
-              style={{ color: '#fca5a5', backgroundColor: 'rgba(248, 113, 113, 0.08)' }}
+              style={{ color: 'var(--color-danger)', backgroundColor: 'var(--color-danger-bg)' }}
             >
               <div className="flex items-center gap-1 font-semibold mb-1">
                 <AlertCircle className="w-3 h-3" />
@@ -182,7 +182,7 @@ export function GitSyncToggle({ resource, className = '' }: GitSyncToggleProps) 
                   </span>
                 )}
               </div>
-              <code className="block break-all" style={{ color: '#fecaca' }}>
+              <code className="block break-all" style={{ color: 'var(--color-danger)' }}>
                 {health.lastError}
               </code>
             </div>
@@ -195,7 +195,7 @@ export function GitSyncToggle({ resource, className = '' }: GitSyncToggleProps) 
           )}
 
           {enabled && resource && (
-            <div className="mt-3 pt-3 border-t" style={{ borderColor: 'var(--color-border, #374151)' }}>
+            <div className="mt-3 pt-3 border-t" style={{ borderColor: 'var(--color-border)' }}>
               <button
                 type="button"
                 disabled={syncNow.isPending}
@@ -203,7 +203,7 @@ export function GitSyncToggle({ resource, className = '' }: GitSyncToggleProps) 
                 className="w-full flex items-center justify-center gap-1 px-2 py-1.5 rounded text-2xs font-medium transition-colors"
                 style={{
                   color: 'var(--color-text)',
-                  backgroundColor: 'rgba(255, 255, 255, 0.06)',
+                  backgroundColor: 'var(--color-elevated)',
                 }}
               >
                 {syncNow.isPending ? (
@@ -217,12 +217,12 @@ export function GitSyncToggle({ resource, className = '' }: GitSyncToggleProps) 
                 )}
               </button>
               {syncNow.isError && (
-                <div className="text-2xs mt-2" style={{ color: '#f87171' }}>
+                <div className="text-2xs mt-2" style={{ color: 'var(--color-danger)' }}>
                   {(syncNow.error as Error).message}
                 </div>
               )}
               {syncNow.data && !syncNow.data.ran && (
-                <div className="text-2xs mt-2" style={{ color: '#fbbf24' }}>
+                <div className="text-2xs mt-2 text-amber-400">
                   {syncNow.data.reason ?? 'sync.now returned without running'}
                 </div>
               )}
@@ -236,18 +236,18 @@ export function GitSyncToggle({ resource, className = '' }: GitSyncToggleProps) 
           )}
 
           {mutation.isError && (
-            <div className="flex items-center gap-1 text-2xs mt-3" style={{ color: '#f87171' }}>
+            <div className="flex items-center gap-1 text-2xs mt-3" style={{ color: 'var(--color-danger)' }}>
               <XCircle className="w-3 h-3" /> {(mutation.error as Error).message}
             </div>
           )}
 
           {applyNotice?.kind === 'live' && (
-            <div className="flex items-center gap-1 text-2xs mt-3" style={{ color: '#34d399' }}>
+            <div className="flex items-center gap-1 text-2xs mt-3 text-emerald-400">
               <CheckCircle2 className="w-3 h-3" /> Applied to running daemon
             </div>
           )}
           {applyNotice?.kind === 'pending' && (
-            <div className="flex items-center gap-1 text-2xs mt-3" style={{ color: '#fbbf24' }}>
+            <div className="flex items-center gap-1 text-2xs mt-3 text-amber-400">
               <AlertCircle className="w-3 h-3" /> Saved — daemon will pick up on next restart
             </div>
           )}

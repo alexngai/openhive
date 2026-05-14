@@ -105,15 +105,25 @@ export function CreateScheduleModal({ onClose, initialSpecRef }: Props) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex max-h-[90vh] w-full max-w-xl flex-col rounded-lg border border-zinc-800 bg-zinc-900 shadow-xl">
-        <div className="flex shrink-0 items-center justify-between border-b border-zinc-800 px-5 py-3">
+      <div
+        className="flex max-h-[90vh] w-full max-w-xl flex-col rounded-lg border shadow-xl"
+        style={{
+          borderColor: 'var(--color-border-subtle)',
+          backgroundColor: 'var(--color-elevated)',
+        }}
+      >
+        <div
+          className="flex shrink-0 items-center justify-between border-b px-5 py-3"
+          style={{ borderColor: 'var(--color-border-subtle)' }}
+        >
           <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text)' }}>
             New schedule
           </h2>
           <button
             type="button"
             onClick={onClose}
-            className="rounded p-1 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
+            className="rounded p-1 transition-colors hover:bg-white/5"
+            style={{ color: 'var(--color-text-muted)' }}
           >
             <X className="h-4 w-4" />
           </button>
@@ -138,7 +148,7 @@ export function CreateScheduleModal({ onClose, initialSpecRef }: Props) {
                   type="text"
                   value={timezone}
                   onChange={(e) => setTimezone(e.target.value)}
-                  className="w-24 shrink-0 rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-sm text-zinc-100 placeholder-zinc-500 focus:border-honey-500 focus:outline-none focus:ring-1 focus:ring-honey-500"
+                  className="input w-24 shrink-0 text-sm"
                   placeholder="UTC"
                   aria-label="Timezone"
                 />
@@ -180,19 +190,19 @@ export function CreateScheduleModal({ onClose, initialSpecRef }: Props) {
             </Field>
 
             <div>
-              <label className="flex items-center gap-2 text-xs text-zinc-300">
+              <label className="flex items-center gap-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
                 <input
                   type="checkbox"
                   checked={fallbackEnabled}
                   onChange={(e) => setFallbackEnabled(e.target.checked)}
-                  className="rounded border-zinc-600 bg-zinc-800 text-honey-500"
+                  className="rounded accent-honey-500"
                 />
                 Auto-spawn fallback when all swarms are offline
                 {fallbackEnabled && (
                   <select
                     value={fallbackAdapter}
                     onChange={(e) => setFallbackAdapter(e.target.value as FallbackSpawnAdapter)}
-                    className="ml-1 rounded border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-100"
+                    className="input ml-1 px-1.5 py-0.5 text-xs"
                   >
                     <option value="openswarm">openswarm</option>
                     <option value="claude-code">claude-code</option>
@@ -214,19 +224,19 @@ export function CreateScheduleModal({ onClose, initialSpecRef }: Props) {
                   <option value="fire-all">fire-all</option>
                 </select>
               </Field>
-              <label className="flex h-[34px] items-center gap-2 text-xs text-zinc-300">
+              <label className="flex h-[34px] items-center gap-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
                 <input
                   type="checkbox"
                   checked={skipIfRunning}
                   onChange={(e) => setSkipIfRunning(e.target.checked)}
-                  className="rounded border-zinc-600 bg-zinc-800 text-honey-500"
+                  className="rounded accent-honey-500"
                 />
                 Skip if already running
               </label>
             </div>
           </div>
 
-          <div className="shrink-0 border-t border-zinc-800 px-5 py-3">
+          <div className="shrink-0 border-t px-5 py-3" style={{ borderColor: 'var(--color-border-subtle)' }}>
             {error && (
               <div className="mb-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
                 {error}
@@ -236,7 +246,8 @@ export function CreateScheduleModal({ onClose, initialSpecRef }: Props) {
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-md px-3 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800"
+                className="rounded-md px-3 py-1.5 text-sm transition-colors hover:bg-white/5"
+                style={{ color: 'var(--color-text-secondary)' }}
               >
                 Cancel
               </button>
@@ -255,8 +266,7 @@ export function CreateScheduleModal({ onClose, initialSpecRef }: Props) {
   );
 }
 
-const inputClass =
-  'w-full rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-sm text-zinc-100 placeholder-zinc-500 focus:border-honey-500 focus:outline-none focus:ring-1 focus:ring-honey-500';
+const inputClass = 'input w-full';
 
 // ── Cron plain-English description ────────────────────────────────────
 function CronDescription({ cron }: { cron: string }) {
@@ -268,7 +278,7 @@ function CronDescription({ cron }: { cron: string }) {
     return null; // invalid — CronPreviewBlock surfaces the error instead
   }
   return (
-    <p className="mt-1 text-[11px] italic text-zinc-300">{description}</p>
+    <p className="mt-1 text-2xs italic" style={{ color: 'var(--color-text-secondary)' }}>{description}</p>
   );
 }
 
@@ -278,18 +288,18 @@ function CronPreviewBlock({ cron, timezone }: { cron: string; timezone: string }
   const { data, isLoading, error } = useCronPreview(cron, { timezone: tz, count: 3 });
   if (!cron) return null;
   if (isLoading) {
-    return <p className="mt-1 text-[10px] text-zinc-500">Computing preview…</p>;
+    return <p className="mt-1 text-2xs" style={{ color: 'var(--color-text-muted)' }}>Computing preview…</p>;
   }
   if (error) {
-    return <p className="mt-1 text-[10px] text-red-400">Invalid cron expression</p>;
+    return <p className="mt-1 text-2xs text-red-400">Invalid cron expression</p>;
   }
   if (!data || data.fires.length === 0) {
-    return <p className="mt-1 text-[10px] text-zinc-500">No future fires</p>;
+    return <p className="mt-1 text-2xs" style={{ color: 'var(--color-text-muted)' }}>No future fires</p>;
   }
   return (
-    <p className="mt-1 text-[10px] text-zinc-500">
+    <p className="mt-1 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
       <span className="font-medium">Next ({data.timezone}):</span>{' '}
-      <span className="font-mono text-zinc-300">
+      <span className="font-mono" style={{ color: 'var(--color-text-secondary)' }}>
         {data.fires.map((f) => new Date(f).toLocaleString()).join(' · ')}
       </span>
     </p>
@@ -299,7 +309,10 @@ function CronPreviewBlock({ cron, timezone }: { cron: string; timezone: string }
 // ── Mode toggle: dispatch_spec vs dispatch_prompt ─────────────────────
 function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) {
   return (
-    <div className="flex rounded-md border border-zinc-700 bg-zinc-800 p-0.5 text-[11px]">
+    <div
+      className="flex rounded-md border p-0.5 text-2xs"
+      style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-surface)' }}
+    >
       <button
         type="button"
         onClick={() => onChange('spec')}
@@ -307,8 +320,9 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
           'rounded px-2.5 py-0.5 transition-colors',
           mode === 'spec'
             ? 'bg-honey-500 font-medium text-zinc-900'
-            : 'text-zinc-300 hover:bg-zinc-700',
+            : 'hover:bg-white/5',
         )}
+        style={mode !== 'spec' ? { color: 'var(--color-text-secondary)' } : undefined}
       >
         Use spec
       </button>
@@ -319,8 +333,9 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
           'rounded px-2.5 py-0.5 transition-colors',
           mode === 'prompt'
             ? 'bg-honey-500 font-medium text-zinc-900'
-            : 'text-zinc-300 hover:bg-zinc-700',
+            : 'hover:bg-white/5',
         )}
+        style={mode !== 'prompt' ? { color: 'var(--color-text-secondary)' } : undefined}
       >
         Ad-hoc prompt
       </button>
@@ -355,7 +370,7 @@ function SpecPicker({
   return (
     <div className="space-y-1.5">
       <div className="relative">
-        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2" style={{ color: 'var(--color-text-muted)' }} />
         <input
           type="text"
           value={search}
@@ -364,13 +379,16 @@ function SpecPicker({
           className={inputClass + ' pl-7'}
         />
       </div>
-      <div className="max-h-32 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-950/50">
+      <div
+        className="max-h-32 overflow-y-auto rounded-md border"
+        style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-surface)' }}
+      >
         {filtered.length === 0 ? (
-          <div className="px-3 py-4 text-center text-xs text-zinc-500">
+          <div className="px-3 py-4 text-center text-xs" style={{ color: 'var(--color-text-muted)' }}>
             {specs.length === 0 ? 'No specs available' : 'No matches'}
           </div>
         ) : (
-          <ul className="divide-y divide-zinc-800">
+          <ul className="divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
             {filtered.map((spec) => {
               const key = `${spec.resource_id}/${spec.id}`;
               const isSelected = selectedKey === key;
@@ -383,17 +401,17 @@ function SpecPicker({
                       'flex w-full items-start gap-2 px-3 py-2 text-left text-xs transition-colors',
                       isSelected
                         ? 'bg-honey-500/15 ring-1 ring-inset ring-honey-500/30'
-                        : 'hover:bg-zinc-800/60',
+                        : 'hover:bg-white/5',
                     )}
                   >
                     <div className="mt-0.5 w-4 shrink-0">
                       {isSelected && <Check className="h-3.5 w-3.5 text-honey-400" />}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium text-zinc-100">
-                        {spec.title || <em className="text-zinc-500">untitled</em>}
+                      <div className="truncate font-medium" style={{ color: 'var(--color-text)' }}>
+                        {spec.title || <em style={{ color: 'var(--color-text-muted)' }}>untitled</em>}
                       </div>
-                      <div className="truncate text-[10px] text-zinc-500">
+                      <div className="truncate text-2xs" style={{ color: 'var(--color-text-muted)' }}>
                         <span className="font-mono">{spec.id}</span>
                         <span className="mx-1">·</span>
                         <span>{spec.resource_name}</span>
@@ -489,7 +507,7 @@ function SwarmChipPicker({
       )}
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2" style={{ color: 'var(--color-text-muted)' }} />
           <input
             type="text"
             value={search}
@@ -499,20 +517,23 @@ function SwarmChipPicker({
           />
         </div>
         {inactiveCount > 0 && (
-          <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-400">
+          <label className="flex shrink-0 items-center gap-1.5 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
             <input
               type="checkbox"
               checked={showInactive}
               onChange={(e) => setShowInactive(e.target.checked)}
-              className="rounded border-zinc-600 bg-zinc-800 text-honey-500"
+              className="rounded accent-honey-500"
             />
             Show inactive ({inactiveCount})
           </label>
         )}
       </div>
-      <div className="max-h-32 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-950/50">
+      <div
+        className="max-h-32 overflow-y-auto rounded-md border"
+        style={{ borderColor: 'var(--color-border-subtle)', backgroundColor: 'var(--color-surface)' }}
+      >
         {filtered.length === 0 ? (
-          <div className="px-3 py-4 text-center text-xs text-zinc-500">
+          <div className="px-3 py-4 text-center text-xs" style={{ color: 'var(--color-text-muted)' }}>
             {swarms.length === 0
               ? 'No swarms available'
               : !showInactive && inactiveCount > 0 && swarms.filter((s) => s.status === 'online').length === 0
@@ -520,7 +541,7 @@ function SwarmChipPicker({
                 : 'No matches'}
           </div>
         ) : (
-          <ul className="divide-y divide-zinc-800">
+          <ul className="divide-y" style={{ borderColor: 'var(--color-border-subtle)' }}>
             {filtered.map((swarm) => {
               const isSelected = selectedIds.includes(swarm.id);
               return (
@@ -532,15 +553,15 @@ function SwarmChipPicker({
                       'flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors',
                       isSelected
                         ? 'bg-honey-500/15 ring-1 ring-inset ring-honey-500/30'
-                        : 'hover:bg-zinc-800/60',
+                        : 'hover:bg-white/5',
                     )}
                   >
                     <div className="w-4 shrink-0">
                       {isSelected && <Check className="h-3.5 w-3.5 text-honey-400" />}
                     </div>
                     <StatusDot status={swarm.status} />
-                    <span className="flex-1 truncate text-zinc-100">{swarm.name}</span>
-                    <span className="truncate font-mono text-[10px] text-zinc-500">
+                    <span className="flex-1 truncate" style={{ color: 'var(--color-text)' }}>{swarm.name}</span>
+                    <span className="truncate font-mono text-2xs" style={{ color: 'var(--color-text-muted)' }}>
                       {swarm.id}
                     </span>
                   </button>
@@ -582,7 +603,7 @@ function Field({
       )}
       {children}
       {hint && hint.trim() && (
-        <p className="mt-1 text-[10px] text-zinc-500">{hint}</p>
+        <p className="mt-1 text-2xs" style={{ color: 'var(--color-text-muted)' }}>{hint}</p>
       )}
     </div>
   );

@@ -2,22 +2,8 @@ import { useCallback, useState } from 'react';
 import { Copy, Check, Zap } from 'lucide-react';
 import clsx from 'clsx';
 import type { Spec } from '../../hooks/useSpecs';
-
-const PRIORITY_COLORS: Record<number, string> = {
-  0: 'bg-red-600',
-  1: 'bg-orange-600',
-  2: 'bg-yellow-600',
-  3: 'bg-blue-600',
-  4: 'bg-gray-600',
-};
-
-const PRIORITY_LABELS: Record<number, string> = {
-  0: 'P0',
-  1: 'P1',
-  2: 'P2',
-  3: 'P3',
-  4: 'P4',
-};
+import { StatusChip } from '../common/StatusChip';
+import { PRIORITY_MAP } from './specPriority';
 
 interface SpecCardProps {
   spec: Spec;
@@ -52,14 +38,7 @@ export function SpecCard({ spec, onClick }: SpecCardProps) {
   return (
     <div
       onClick={handleClick}
-      className={clsx(
-        'cursor-pointer rounded-lg border p-4 transition-shadow hover:shadow-md',
-        spec.archived && 'opacity-60',
-      )}
-      style={{
-        borderColor: 'var(--color-border-subtle)',
-        backgroundColor: 'var(--color-surface)',
-      }}
+      className={clsx('card card-hover cursor-pointer', spec.archived && 'opacity-60')}
     >
       <div className="flex flex-col gap-3">
         {/* Header: id, priority */}
@@ -80,15 +59,11 @@ export function SpecCard({ spec, onClick }: SpecCardProps) {
               {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
             </button>
           </div>
-          {spec.priority !== undefined && spec.priority <= 3 && (
-            <span
-              className={clsx(
-                'shrink-0 rounded-full px-2 py-0.5 text-xs font-medium text-white',
-                PRIORITY_COLORS[spec.priority],
-              )}
-            >
-              {PRIORITY_LABELS[spec.priority]}
-            </span>
+          {spec.priority !== undefined && PRIORITY_MAP[spec.priority] && (
+            <StatusChip
+              tone={PRIORITY_MAP[spec.priority].tone}
+              label={PRIORITY_MAP[spec.priority].label}
+            />
           )}
         </div>
 

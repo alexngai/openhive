@@ -204,7 +204,7 @@ export function RegisterRepoModal({ open, onClose }: Props) {
                     style={{
                       backgroundColor: checked ? 'var(--color-hover)' : 'transparent',
                       border: '1px solid',
-                      borderColor: checked ? 'var(--color-honey-500)' : 'var(--color-border-subtle)',
+                      borderColor: checked ? 'var(--color-accent)' : 'var(--color-border-subtle)',
                     }}
                   >
                     <input
@@ -258,7 +258,7 @@ export function RegisterRepoModal({ open, onClose }: Props) {
                         style={{
                           backgroundColor: checked ? 'var(--color-hover)' : 'transparent',
                           border: '1px solid',
-                          borderColor: checked ? 'var(--color-honey-500)' : 'var(--color-border-subtle)',
+                          borderColor: checked ? 'var(--color-accent)' : 'var(--color-border-subtle)',
                         }}
                       >
                         <input

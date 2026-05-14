@@ -8,7 +8,9 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { authMiddleware } from '../middleware/auth.js';
 import * as eventsDAL from '../../db/dal/events.js';
-import type { EventFilters } from '../../events/types.js';
+import { routeEvent } from '../../events/router.js';
+import { getChannelSubscriberCount, getConnectedClients } from '../../realtime/index.js';
+import type { EventFilters, NormalizedEvent, EventMetadata } from '../../events/types.js';
 
 export async function eventsRoutes(fastify: FastifyInstance): Promise<void> {
   // All routes require authentication
@@ -93,5 +95,46 @@ export async function eventsRoutes(fastify: FastifyInstance): Promise<void> {
     });
 
     return reply.send(result);
+  });
+
+  // ==========================================================================
+  // Test / Debug — synthesize an event and route it through the system.
+  // Used by the Events page Live tab + operators investigating routing.
+  // Admin-gated.
+  // ==========================================================================
+
+  // POST /events/test
+  fastify.post('/events/test', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!request.agent?.is_admin) {
+      return reply.status(403).send({ error: 'Admin required' });
+    }
+    const body = (request.body ?? {}) as {
+      source?: string;
+      event_type?: string;
+      action?: string;
+      metadata?: Partial<EventMetadata>;
+      raw_payload?: Record<string, unknown>;
+    };
+    const event: NormalizedEvent = {
+      source: body.source || 'test',
+      event_type: body.event_type || 'synthetic.ping',
+      action: body.action,
+      delivery_id: `test_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      metadata: body.metadata ?? {},
+      raw_payload: body.raw_payload ?? { synthetic: true, fired_by: request.agent.id },
+      timestamp: new Date().toISOString(),
+    };
+    const liveSubscribers = getChannelSubscriberCount('events:live');
+    const result = routeEvent(event);
+    return reply.send({
+      ok: true,
+      delivery_id: event.delivery_id,
+      matched_subs: result.deliveries.length,
+      swarms_notified: result.swarms_notified,
+      debug: {
+        connected_ws_clients: getConnectedClients(),
+        events_live_subscribers: liveSubscribers,
+      },
+    });
   });
 }

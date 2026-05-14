@@ -20,12 +20,11 @@ export function ThemeToggle() {
         <button
           key={value}
           onClick={() => setTheme(value)}
-          className={clsx(
-            'p-1 rounded transition-colors',
-          )}
+          className="p-1 rounded"
           style={{
             backgroundColor: theme === value ? 'var(--color-hover)' : 'transparent',
             color: theme === value ? 'var(--color-text)' : 'var(--color-text-muted)',
+            transition: 'background-color 120ms ease, color 120ms ease',
           }}
           title={label}
           aria-label={`Switch to ${label} theme`}

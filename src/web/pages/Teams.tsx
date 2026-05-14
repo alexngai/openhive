@@ -29,6 +29,7 @@ import { useResourcesRealtime } from '../hooks/useRealtimeInvalidation';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { ListFilters, useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
+import { EmptyState } from '../components/common/EmptyState';
 
 type Tab = 'templates' | 'loadouts';
 
@@ -84,7 +85,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
       className="px-3 py-2 text-xs flex items-center gap-1.5 transition-colors"
       style={{
         color: active ? 'var(--color-text)' : 'var(--color-text-muted)',
-        borderBottom: active ? '2px solid var(--color-honey-500, #f59e0b)' : '2px solid transparent',
+        borderBottom: active ? '2px solid var(--color-accent)' : '2px solid transparent',
         marginBottom: '-1px',
       }}
     >
@@ -202,13 +203,11 @@ function TemplatesTab() {
       )}
 
       {resources.length === 0 ? (
-        <div className="card p-8 text-center">
-          <Users className="w-8 h-8 mx-auto mb-2" style={{ color: 'var(--color-text-muted)' }} />
-          <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>No team templates yet</p>
-          <p className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
-            Click “New team” to author one visually.
-          </p>
-        </div>
+        <EmptyState
+          icon={Users}
+          title="No team templates yet"
+          description={'Click “New team” to author one visually.'}
+        />
       ) : filtered.length === 0 ? (
         <p className="text-xs text-center py-8" style={{ color: 'var(--color-text-muted)' }}>
           No teams match “{q}”.
@@ -335,13 +334,11 @@ function LoadoutsTab() {
       )}
 
       {resources.length === 0 ? (
-        <div className="card p-8 text-center">
-          <Layers className="w-8 h-8 mx-auto mb-2" style={{ color: 'var(--color-text-muted)' }} />
-          <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>No loadouts yet</p>
-          <p className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
-            Click “New loadout” to author one.
-          </p>
-        </div>
+        <EmptyState
+          icon={Layers}
+          title="No loadouts yet"
+          description={'Click “New loadout” to author one.'}
+        />
       ) : filtered.length === 0 ? (
         <p className="text-xs text-center py-8" style={{ color: 'var(--color-text-muted)' }}>
           No loadouts match “{q}”.

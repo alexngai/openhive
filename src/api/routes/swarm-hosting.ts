@@ -492,6 +492,46 @@ export async function swarmHostingRoutes(
     },
   );
 
+  // POST /map/hosted/:id/chat/permission/:requestId — Answer a pending
+  // provider-issued approval prompt (e.g. codex execCommandApproval).
+  // Body: { decision: 'approved' | 'denied' }. Returns 404 when no
+  // pending prompt matches the id (idempotent — a sibling tab may have
+  // answered first). The reply is forwarded to the provider's JSON-RPC
+  // channel and a permission.resolved event is fanned out so sibling
+  // tabs dismiss their dialogs.
+  fastify.post<{
+    Params: { id: string; requestId: string };
+    Body: { decision?: 'approved' | 'denied' };
+  }>(
+    '/map/hosted/:id/chat/permission/:requestId',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const manager = getManager(request);
+        const decision = request.body?.decision;
+        if (decision !== 'approved' && decision !== 'denied') {
+          return reply.status(422).send({
+            error: 'VALIDATION_ERROR',
+            message: 'decision must be "approved" or "denied"',
+          });
+        }
+        // Owner check mirrors sendChatTurn — only the spawner can answer
+        // a permission prompt for their hosted swarm.
+        const hosted = dal.findHostedSwarmById(request.params.id);
+        if (!hosted) {
+          return reply.status(404).send({ error: 'NOT_FOUND', message: 'Hosted swarm not found' });
+        }
+        if (hosted.spawned_by !== request.agent!.id) {
+          return reply.status(403).send({ error: 'NOT_OWNER', message: 'You did not spawn this swarm' });
+        }
+        manager.replyCodexPermission(request.params.id, request.params.requestId, decision);
+        return reply.status(204).send();
+      } catch (error) {
+        return handleSwarmError(error, reply);
+      }
+    },
+  );
+
   // POST /map/hosted/:id/chat/interrupt — Clean cancel of the active turn.
   // Body: { turn_id }. The session stays usable; only the in-flight turn
   // stops. Provider-agnostic — manager dispatches.

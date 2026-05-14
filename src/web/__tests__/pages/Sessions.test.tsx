@@ -209,7 +209,7 @@ describe('Sessions page', () => {
       });
 
       renderSessions();
-      expect(screen.getByText('Inactive sessions (1)')).toBeDefined();
+      expect(screen.getByText('Inactive threads (1)')).toBeDefined();
     });
 
     it('expands inactive section on click', () => {
@@ -228,9 +228,9 @@ describe('Sessions page', () => {
       });
 
       renderSessions();
-      fireEvent.click(screen.getByText('Inactive sessions (1)'));
+      fireEvent.click(screen.getByText('Inactive threads (1)'));
       expect(screen.getByText('old-project')).toBeDefined();
-      expect(screen.getByPlaceholderText('Search sessions...')).toBeDefined();
+      expect(screen.getByPlaceholderText('Search threads...')).toBeDefined();
     });
   });
 
@@ -364,7 +364,7 @@ describe('Sessions page', () => {
       // Should not be in active section
       expect(screen.getByText('No threads yet')).toBeDefined();
       // Should appear in inactive section
-      expect(screen.getByText('Inactive sessions (1)')).toBeDefined();
+      expect(screen.getByText('Inactive threads (1)')).toBeDefined();
     });
   });
 
@@ -402,7 +402,7 @@ describe('Sessions page', () => {
       });
 
       renderSessions();
-      fireEvent.click(screen.getByText('Inactive sessions (5)'));
+      fireEvent.click(screen.getByText('Inactive threads (5)'));
       const loadMoreBtn = screen.getByText('Load more');
       expect(loadMoreBtn).toBeDefined();
 

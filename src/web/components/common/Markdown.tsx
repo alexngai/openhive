@@ -46,7 +46,7 @@ export function Markdown({ content, className, inline = false }: MarkdownProps) 
 
   return (
     <div
-      className={clsx('markdown-content prose prose-invert max-w-none', className)}
+      className={clsx('markdown-content max-w-none', className)}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

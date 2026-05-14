@@ -30,7 +30,7 @@ export function SkillDetail() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-6 space-y-4">
+    <div className="max-w-4xl mx-auto px-4 py-6 space-y-4">
       <div>
         <Link to="/skills" className="flex items-center gap-1 text-xs mb-3 hover:text-honey-500 transition-colors" style={{ color: 'var(--color-text-muted)' }}>
           <ArrowLeft className="w-3.5 h-3.5" />

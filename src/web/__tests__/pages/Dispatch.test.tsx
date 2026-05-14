@@ -59,7 +59,7 @@ describe('<Dispatch /> page', () => {
       error: null,
     });
     renderPage();
-    expect(screen.getByText(/No dispatches match your filter/i)).toBeDefined();
+    expect(screen.getByText(/No jobs match your filter/i)).toBeDefined();
   });
 
   it('renders dispatch cards with status chip and swarm name', () => {

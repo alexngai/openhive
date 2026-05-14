@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Menu, X, CirclePile,
   User, MessageSquare, ChevronLeft, ChevronDown,
   ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings, FileText, Send, Clock,
-  GitBranch, Bell, Users,
+  GitBranch, Users,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useMapSwarms } from '../../hooks/useApi';
@@ -22,6 +22,7 @@ interface NavItem {
 
 interface NavGroup {
   id: string;
+  /** Empty string renders the items without a section header (used for ungrouped items). */
   label: string;
   items: NavItem[];
 }
@@ -67,15 +68,18 @@ export function Sidebar() {
 
   const navGroups: NavGroup[] = [
     {
-      id: 'command-center',
-      label: 'Control Plane',
+      id: 'overview',
+      label: '',
       items: [
         { to: '/', icon: LayoutDashboard, label: 'Overview' },
+      ],
+    },
+    {
+      id: 'agents',
+      label: 'Agents',
+      items: [
         { to: '/threads', icon: MessageSquare, label: 'Threads' },
         { to: '/swarms', icon: CirclePile, label: 'Swarms', badge: onlineSwarmCount || undefined },
-        { to: '/events', icon: Bell, label: 'Events' },
-        { to: '/dispatch', icon: Send, label: 'Dispatch' },
-        { to: '/schedules', icon: Clock, label: 'Schedules' },
       ],
     },
     {
@@ -83,13 +87,14 @@ export function Sidebar() {
       label: 'Work',
       items: [
         { to: '/specs', icon: FileText, label: 'Specs' },
+        { to: '/dispatch', icon: Send, label: 'Jobs' },
         { to: '/tasks', icon: ListTodo, label: 'Tasks' },
         { to: '/changes', icon: GitBranch, label: 'Changes' },
       ],
     },
     {
-      id: 'knowledge',
-      label: 'Resources',
+      id: 'context',
+      label: 'Context',
       items: [
         { to: '/memory', icon: Brain, label: 'Memory' },
         { to: '/skills', icon: Wrench, label: 'Skills' },
@@ -181,19 +186,23 @@ export function Sidebar() {
           /* Expanded: grouped sections */
           <div className="space-y-1">
             {navGroups.map((group) => {
-              const isExpanded = expandedSections[group.id] !== false;
+              const isUngrouped = group.label === '';
+              const isExpanded = isUngrouped || expandedSections[group.id] !== false;
               return (
                 <div key={group.id}>
-                  <button
-                    onClick={() => toggleSection(group.id)}
-                    className="sidebar-section-toggle"
-                  >
-                    <span>{group.label}</span>
-                    {isExpanded
-                      ? <ChevronDown className="w-3 h-3 shrink-0" />
-                      : <ChevronRight className="w-3 h-3 shrink-0" />
-                    }
-                  </button>
+                  {!isUngrouped && (
+                    <button
+                      onClick={() => toggleSection(group.id)}
+                      aria-expanded={isExpanded}
+                      className="sidebar-section-toggle"
+                    >
+                      <span>{group.label}</span>
+                      {isExpanded
+                        ? <ChevronDown className="w-3 h-3 shrink-0" />
+                        : <ChevronRight className="w-3 h-3 shrink-0" />
+                      }
+                    </button>
+                  )}
                   {isExpanded && (
                     <div className="space-y-0.5">
                       {group.items.map((item) => (
@@ -296,7 +305,9 @@ export function Sidebar() {
       {/* Mobile toggle */}
       <button
         onClick={() => setMobileOpen(!mobileOpen)}
-        className="lg:hidden fixed bottom-3 left-3 z-50 btn btn-primary p-2 rounded-md shadow-lg"
+        aria-label={mobileOpen ? 'Close navigation' : 'Open navigation'}
+        aria-expanded={mobileOpen}
+        className="lg:hidden fixed bottom-3 left-3 z-50 btn btn-primary p-2.5 rounded-md shadow-lg"
       >
         {mobileOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
       </button>

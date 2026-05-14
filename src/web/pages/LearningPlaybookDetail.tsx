@@ -2,7 +2,8 @@ import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, BookOpen, Zap, CheckCircle2, XCircle, AlertTriangle, Clock, GitBranch, Shield } from 'lucide-react';
 import { useLearningPlaybook } from '../hooks/useLearningApi';
 import { useLearningRealtime } from '../hooks/useRealtimeInvalidation';
-import { RefreshCw } from 'lucide-react';
+import { PageLoader } from '../components/common/LoadingSpinner';
+import { EmptyState } from '../components/common/EmptyState';
 
 export function LearningPlaybookDetail() {
   const { id } = useParams<{ id: string }>();
@@ -11,24 +12,17 @@ export function LearningPlaybookDetail() {
   useLearningRealtime();
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-20">
-        <RefreshCw className="w-5 h-5 animate-spin text-text-muted" />
-      </div>
-    );
+    return <PageLoader />;
   }
 
   if (error || !playbook) {
     return (
       <div className="space-y-4">
-        <Link to="/learning" className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary">
+        <Link to="/learning" className="flex items-center gap-1 text-xs hover:text-honey-500 transition-colors" style={{ color: 'var(--color-text-muted)' }}>
           <ArrowLeft className="w-3.5 h-3.5" />
           Back to Learning
         </Link>
-        <div className="card px-4 py-8 flex flex-col items-center gap-3 text-center">
-          <AlertTriangle className="w-8 h-8 text-text-muted" />
-          <p className="text-sm font-medium">Playbook not found</p>
-        </div>
+        <EmptyState icon={AlertTriangle} title="Playbook not found" />
       </div>
     );
   }
@@ -40,7 +34,7 @@ export function LearningPlaybookDetail() {
   return (
     <div className="space-y-4">
       {/* Back nav */}
-      <Link to="/learning" className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary">
+      <Link to="/learning" className="flex items-center gap-1 text-xs hover:text-honey-500 transition-colors" style={{ color: 'var(--color-text-muted)' }}>
         <ArrowLeft className="w-3.5 h-3.5" />
         Back to Learning
       </Link>

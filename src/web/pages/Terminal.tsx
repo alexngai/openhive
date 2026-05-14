@@ -41,7 +41,7 @@ export function Terminal() {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="card p-6 max-w-md text-center">
-          <AlertTriangle className="w-8 h-8 mx-auto mb-3 text-amber-400" />
+          <AlertTriangle className="w-8 h-8 mx-auto mb-3" style={{ color: 'var(--color-danger)' }} />
           <p className="text-sm mb-3" style={{ color: 'var(--color-text-secondary)' }}>
             {error || 'Swarm not found'}
           </p>

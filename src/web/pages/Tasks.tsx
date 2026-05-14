@@ -15,20 +15,25 @@ import { useResourcesRealtime } from '../hooks/useRealtimeInvalidation';
 import { Dialog } from '../components/common/Dialog';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { TimeAgo } from '../components/common/TimeAgo';
+import { EmptyState } from '../components/common/EmptyState';
+import { StatusChip, type StatusTone } from '../components/common/StatusChip';
 import type { SyncableResource } from '../lib/api';
 
 // ============================================================================
 // Status styling
 // ============================================================================
 
-const TASK_STATUS_STYLES: Record<string, { bg: string; text: string; icon: React.ElementType }> = {
-  open:        { bg: 'bg-blue-500/10',    text: 'text-blue-400',    icon: ListTodo },
-  in_progress: { bg: 'bg-amber-500/10',   text: 'text-amber-400',   icon: Activity },
-  blocked:     { bg: 'bg-red-500/10',      text: 'text-red-400',     icon: AlertTriangle },
-  completed:   { bg: 'bg-emerald-500/10',  text: 'text-emerald-400', icon: CheckCircle2 },
-  closed:      { bg: 'bg-emerald-500/10',  text: 'text-emerald-400', icon: CheckCircle2 },
-  failed:      { bg: 'bg-red-500/10',      text: 'text-red-400',     icon: XCircle },
-};
+export function taskStatusToChip(status: string): { tone: StatusTone; label: string; Icon: React.ElementType } {
+  switch (status) {
+    case 'open':        return { tone: 'info',    label: 'open',        Icon: ListTodo };
+    case 'in_progress': return { tone: 'warning', label: 'in progress', Icon: Activity };
+    case 'blocked':     return { tone: 'danger',  label: 'blocked',     Icon: AlertTriangle };
+    case 'completed':   return { tone: 'success', label: 'completed',   Icon: CheckCircle2 };
+    case 'closed':      return { tone: 'success', label: 'closed',      Icon: CheckCircle2 };
+    case 'failed':      return { tone: 'danger',  label: 'failed',      Icon: XCircle };
+    default:            return { tone: 'neutral', label: status,         Icon: ListTodo };
+  }
+}
 
 // ============================================================================
 // Add Task Repo Form
@@ -561,11 +566,13 @@ function TaskGraphSettingsDialog({
   const [gitSyncEnabled, setGitSyncEnabled] = useState(!!savedGitSync?.enabled);
   const [autoCommit, setAutoCommit] = useState(savedGitSync?.autoCommit !== false);
   const [autoPush, setAutoPush] = useState(!!savedGitSync?.autoPush);
+  const [autoPull, setAutoPull] = useState(!!savedGitSync?.autoPull);
 
   const gitSyncChanged = isRemoteClone && (
     gitSyncEnabled !== !!savedGitSync?.enabled ||
     (gitSyncEnabled && autoCommit !== (savedGitSync?.autoCommit !== false)) ||
-    (gitSyncEnabled && autoPush !== !!savedGitSync?.autoPush)
+    (gitSyncEnabled && autoPush !== !!savedGitSync?.autoPush) ||
+    (gitSyncEnabled && autoPull !== !!savedGitSync?.autoPull)
   );
 
   const hasChanges = name !== resource.name || description !== (resource.description || '') || gitSyncChanged;
@@ -854,16 +861,16 @@ function TaskResourceCard({
             <div className="flex items-center gap-3 mt-2">
               {Object.entries(counts).map(([status, count]) => {
                 if (!count) return null;
-                const style = TASK_STATUS_STYLES[status] ?? TASK_STATUS_STYLES.open;
-                const Icon = style.icon;
+                const chip = taskStatusToChip(status);
                 return (
-                  <span
+                  <StatusChip
                     key={status}
-                    className={`text-2xs px-1.5 py-0.5 rounded flex items-center gap-1 ${style.bg} ${style.text}`}
-                  >
-                    <Icon className="w-3 h-3" />
-                    {count} {status.replace('_', ' ')}
-                  </span>
+                    label={`${count} ${chip.label}`}
+                    tone={chip.tone}
+                    icon={chip.Icon}
+                    shape="square"
+                    size="sm"
+                  />
                 );
               })}
             </div>
@@ -976,7 +983,7 @@ export function TaskGraphList({ onNavigate }: { onNavigate?: (id: string) => voi
             <ArrowLeft className="w-4 h-4" />
           </Link>
           <div>
-            <h1 className="text-lg font-bold">Task Graphs</h1>
+            <h1 className="text-lg font-semibold">Task Graphs</h1>
             <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
               Manage OpenTasks resources.
             </p>
@@ -1011,22 +1018,20 @@ export function TaskGraphList({ onNavigate }: { onNavigate?: (id: string) => voi
         </h2>
 
         {resources.length === 0 && !showAddForm ? (
-          <div className="card p-8 text-center">
-            <Network className="w-8 h-8 mx-auto mb-2" style={{ color: 'var(--color-text-muted)' }} />
-            <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-              No task graphs yet
-            </p>
-            <p className="text-2xs mt-1 mb-3" style={{ color: 'var(--color-text-muted)' }}>
-              Add an OpenTasks directory to get started, or connect a swarm with task support.
-            </p>
-            <button
-              onClick={() => setShowAddForm(true)}
-              className="btn btn-primary text-xs inline-flex items-center gap-1.5"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              Add Task Graph
-            </button>
-          </div>
+          <EmptyState
+            icon={Network}
+            title="No task graphs yet"
+            description="Add an OpenTasks directory to get started, or connect a swarm with task support."
+            action={
+              <button
+                onClick={() => setShowAddForm(true)}
+                className="btn btn-primary text-xs inline-flex items-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add Task Graph
+              </button>
+            }
+          />
         ) : (
           <div className="space-y-2">
             {resources.map((resource) => (

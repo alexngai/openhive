@@ -4,23 +4,20 @@ import { useMemoryEntries, useMemorySearch } from '../../../hooks/useApi';
 import { Markdown } from '../../common/Markdown';
 import type { MemoryEntry } from '../../../lib/api';
 
-const TYPE_CONFIG: Record<string, { icon: React.ElementType; color: string; label: string }> = {
-  decision: { icon: Lightbulb, color: '#7c3aed', label: 'decision' },
-  bugfix: { icon: Bug, color: '#ef4444', label: 'bugfix' },
-  discovery: { icon: Zap, color: '#14b8a6', label: 'discovery' },
-  feature: { icon: Zap, color: '#3b82f6', label: 'feature' },
-  context: { icon: MessageSquare, color: '#6b7280', label: 'context' },
-  note: { icon: FileText, color: '#6b7280', label: 'note' },
+const TYPE_CONFIG: Record<string, { icon: React.ElementType; bg: string; text: string; label: string }> = {
+  decision: { icon: Lightbulb, bg: 'bg-violet-500/10', text: 'text-violet-400', label: 'decision' },
+  bugfix: { icon: Bug, bg: 'bg-red-500/10', text: 'text-red-400', label: 'bugfix' },
+  discovery: { icon: Zap, bg: 'bg-teal-500/10', text: 'text-teal-400', label: 'discovery' },
+  feature: { icon: Zap, bg: 'bg-blue-500/10', text: 'text-blue-400', label: 'feature' },
+  context: { icon: MessageSquare, bg: 'bg-gray-500/10', text: 'text-gray-400', label: 'context' },
+  note: { icon: FileText, bg: 'bg-gray-500/10', text: 'text-gray-400', label: 'note' },
 };
 
 function TypeBadge({ type }: { type: string | null }) {
   const config = TYPE_CONFIG[type || ''] || TYPE_CONFIG.note;
   const Icon = config.icon;
   return (
-    <span
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs"
-      style={{ backgroundColor: config.color + '18', color: config.color }}
-    >
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs ${config.bg} ${config.text}`}>
       <Icon className="w-2.5 h-2.5" />
       {config.label}
     </span>
@@ -45,7 +42,7 @@ function EntryCard({ entry }: { entry: MemoryEntry }) {
   return (
     <button
       onClick={() => setExpanded(!expanded)}
-      className="w-full text-left rounded-md p-2.5 transition-colors hover:bg-workspace-hover cursor-pointer"
+      className="w-full text-left rounded-md p-2.5 transition-colors hover:bg-hover cursor-pointer"
       style={{ backgroundColor: expanded ? 'var(--color-elevated)' : 'transparent' }}
     >
       {/* Header row */}
