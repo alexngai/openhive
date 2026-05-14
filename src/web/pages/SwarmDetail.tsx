@@ -412,9 +412,9 @@ function useSwarmActions({
     <div
       className="mb-2 rounded-md border px-3 py-2 text-xs"
       style={{
-        borderColor: 'var(--color-border-subtle)',
-        backgroundColor: 'rgba(239, 68, 68, 0.08)',
-        color: '#fca5a5',
+        borderColor: 'var(--color-danger-border)',
+        backgroundColor: 'var(--color-danger-bg)',
+        color: 'var(--color-danger)',
       }}
     >
       {errorMessage || 'Failed to create session'}
@@ -577,7 +577,11 @@ function NodeCard({ node }: { node: MapNode }) {
     : nodeStateToChip(node.state);
 
   return (
-    <div className={`card px-3 py-2 ${isOffline ? 'opacity-60' : ''}`}>
+    <div
+      className={`card px-3 py-2 ${isOffline ? 'opacity-60' : ''}`}
+      aria-label={isOffline ? `${node.name || node.map_agent_id} (offline)` : undefined}
+      title={isOffline ? 'Agent is offline' : undefined}
+    >
       <div className="flex items-center gap-3">
         <div
           className="w-7 h-7 rounded flex items-center justify-center shrink-0"
@@ -728,7 +732,7 @@ function RegisteredAgentCard({
               // can drive directly.
               <span
                 className="text-2xs px-1.5 py-0.5 rounded font-medium"
-                style={{ backgroundColor: 'rgba(255, 165, 0, 0.12)', color: '#f59e0b' }}
+                style={{ backgroundColor: 'var(--color-accent-bg)', color: 'var(--color-accent)' }}
                 title="Infrastructure agent — bridges this swarm's lifecycle to openhive. Not a driveable worker."
               >
                 sidecar
@@ -1336,6 +1340,14 @@ function PeersSection({ swarmId }: { swarmId: string }) {
 
 // ─── Sessions Section ────────────────────────────────────────────────────────
 
+function visibilityToTone(visibility: string): StatusTone {
+  switch (visibility) {
+    case 'public': return 'success';
+    case 'shared': return 'info';
+    default:       return 'neutral';
+  }
+}
+
 function SessionCard({ session }: { session: SessionListItem }) {
   const totalTokens = session.total_input_tokens + session.total_output_tokens;
 
@@ -1359,13 +1371,7 @@ function SessionCard({ session }: { session: SessionListItem }) {
           {session.total_checkpoints > 0 && (
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" title="Active" />
           )}
-          <span className={`text-2xs px-1.5 py-0.5 rounded ${
-            session.visibility === 'public' ? 'bg-emerald-500/10 text-emerald-400'
-              : session.visibility === 'shared' ? 'bg-blue-500/10 text-blue-400'
-              : 'bg-gray-500/10 text-gray-400'
-          }`}>
-            {session.visibility}
-          </span>
+          <StatusChip tone={visibilityToTone(session.visibility)} label={session.visibility} shape="square" />
         </div>
 
         <div className="flex items-center gap-3 mt-1 text-2xs" style={{ color: 'var(--color-text-muted)' }}>
@@ -1438,8 +1444,16 @@ function ResumableSessionRow({
 
   return (
     <div
-      className="card px-3 py-2 flex items-center gap-3 hover:ring-1 hover:ring-honey-500/20 transition-shadow cursor-pointer"
+      role="button"
+      tabIndex={0}
+      className="card px-3 py-2 flex items-center gap-3 hover:ring-1 hover:ring-honey-500/20 transition-shadow cursor-pointer text-left w-full"
       onClick={goToSession}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          goToSession();
+        }
+      }}
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">

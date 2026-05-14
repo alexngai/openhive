@@ -103,21 +103,26 @@ export function SwarmChip({
 
   const titleText = `${swarm.name} · ${swarm.status}`;
   const chipClass = clsx(
-    'inline-flex items-center rounded font-medium bg-white/5',
+    'inline-flex items-center rounded font-medium',
     sizeStyle.chip,
     className,
   );
 
   if (linkToSwarm) {
     return (
-      <Link to={`/swarms/${swarm.id}`} className={clsx(chipClass, 'hover:bg-white/10 transition-colors')} title={titleText}>
+      <Link
+        to={`/swarms/${swarm.id}`}
+        className={clsx(chipClass, 'transition-colors')}
+        style={{ backgroundColor: 'var(--color-elevated)' }}
+        title={titleText}
+      >
         {content}
       </Link>
     );
   }
 
   return (
-    <span className={chipClass} title={titleText}>
+    <span className={chipClass} style={{ backgroundColor: 'var(--color-elevated)' }} title={titleText}>
       {content}
     </span>
   );

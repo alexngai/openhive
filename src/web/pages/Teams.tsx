@@ -85,7 +85,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
       className="px-3 py-2 text-xs flex items-center gap-1.5 transition-colors"
       style={{
         color: active ? 'var(--color-text)' : 'var(--color-text-muted)',
-        borderBottom: active ? '2px solid var(--color-honey-500, #f59e0b)' : '2px solid transparent',
+        borderBottom: active ? '2px solid var(--color-accent)' : '2px solid transparent',
         marginBottom: '-1px',
       }}
     >

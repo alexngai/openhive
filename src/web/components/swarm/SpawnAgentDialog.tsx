@@ -178,8 +178,9 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
           {/* Core fields */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <SectionLabel>Role</SectionLabel>
+              <SectionLabel htmlFor="spawn-role">Role</SectionLabel>
               <select
+                id="spawn-role"
                 value={role}
                 onChange={(e) => setRole(e.target.value)}
                 className="input w-full text-xs"
@@ -190,8 +191,9 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
               </select>
             </div>
             <div>
-              <SectionLabel>Agent type</SectionLabel>
+              <SectionLabel htmlFor="spawn-agent-type">Agent type</SectionLabel>
               <select
+                id="spawn-agent-type"
                 value={agentType}
                 onChange={(e) => setAgentType(e.target.value)}
                 className="input w-full text-xs"
@@ -205,8 +207,9 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
           </div>
 
           <div>
-            <SectionLabel>Project directory (cwd)</SectionLabel>
+            <SectionLabel htmlFor="spawn-cwd">Project directory (cwd)</SectionLabel>
             <input
+              id="spawn-cwd"
               type="text"
               value={cwd}
               onChange={(e) => setCwd(e.target.value)}
@@ -225,8 +228,9 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
           </div>
 
           <div>
-            <SectionLabel>Task</SectionLabel>
+            <SectionLabel htmlFor="spawn-task">Task</SectionLabel>
             <input
+              id="spawn-task"
               type="text"
               value={task}
               onChange={(e) => setTask(e.target.value)}
@@ -236,8 +240,9 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
           </div>
 
           <div>
-            <SectionLabel>Permission mode</SectionLabel>
+            <SectionLabel htmlFor="spawn-permission-mode">Permission mode</SectionLabel>
             <select
+              id="spawn-permission-mode"
               value={permissionMode}
               onChange={(e) => setPermissionMode(e.target.value as SpawnAgentPermissionMode | '')}
               className="input w-full text-xs"
@@ -258,7 +263,7 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
           <button
             type="button"
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-1 text-2xs font-medium transition-colors"
+            className="btn btn-ghost flex items-center gap-1 text-2xs font-medium"
             style={{ color: 'var(--color-text-muted)' }}
           >
             <Settings2 className="w-3 h-3" />
@@ -273,8 +278,9 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
               {/* Model + sampling */}
               <div className="grid grid-cols-3 gap-2">
                 <div className="col-span-3">
-                  <SectionLabel>Model</SectionLabel>
+                  <SectionLabel htmlFor="spawn-model">Model</SectionLabel>
                   <input
+                    id="spawn-model"
                     type="text"
                     value={model}
                     onChange={(e) => setModel(e.target.value)}
@@ -284,8 +290,9 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
                   />
                 </div>
                 <div>
-                  <SectionLabel>Max tokens</SectionLabel>
+                  <SectionLabel htmlFor="spawn-max-tokens">Max tokens</SectionLabel>
                   <input
+                    id="spawn-max-tokens"
                     type="number"
                     value={maxTokens}
                     onChange={(e) => setMaxTokens(e.target.value)}
@@ -295,8 +302,9 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
                   />
                 </div>
                 <div>
-                  <SectionLabel>Temperature</SectionLabel>
+                  <SectionLabel htmlFor="spawn-temperature">Temperature</SectionLabel>
                   <input
+                    id="spawn-temperature"
                     type="number"
                     value={temperature}
                     onChange={(e) => setTemperature(e.target.value)}
@@ -311,8 +319,9 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
 
               {/* Topics */}
               <div>
-                <SectionLabel>Extra inbox topics</SectionLabel>
+                <SectionLabel htmlFor="spawn-topics">Extra inbox topics</SectionLabel>
                 <input
+                  id="spawn-topics"
                   type="text"
                   value={topicsRaw}
                   onChange={(e) => setTopicsRaw(e.target.value)}
@@ -323,8 +332,9 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
 
               {/* Custom prompt */}
               <div>
-                <SectionLabel>Custom prompt</SectionLabel>
+                <SectionLabel htmlFor="spawn-custom-prompt">Custom prompt</SectionLabel>
                 <textarea
+                  id="spawn-custom-prompt"
                   value={customPrompt}
                   onChange={(e) => setCustomPrompt(e.target.value)}
                   className="input w-full text-2xs min-h-[60px] resize-y"
@@ -334,8 +344,9 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
 
               {/* Env */}
               <div>
-                <SectionLabel>Env vars (JSON)</SectionLabel>
+                <SectionLabel htmlFor="spawn-env">Env vars (JSON)</SectionLabel>
                 <textarea
+                  id="spawn-env"
                   value={envRaw}
                   onChange={(e) => setEnvRaw(e.target.value)}
                   className="input w-full font-mono text-2xs min-h-[50px] resize-y"
@@ -346,8 +357,9 @@ export function SpawnAgentDialog({ swarmId, defaultCwd, onClose, onSpawned }: Sp
 
               {/* MCP servers */}
               <div>
-                <SectionLabel>MCP servers (JSON array)</SectionLabel>
+                <SectionLabel htmlFor="spawn-mcp-servers">MCP servers (JSON array)</SectionLabel>
                 <textarea
+                  id="spawn-mcp-servers"
                   value={mcpServersRaw}
                   onChange={(e) => setMcpServersRaw(e.target.value)}
                   className="input w-full font-mono text-2xs min-h-[60px] resize-y"
