@@ -131,7 +131,7 @@ export function TiptapEditor({
       editor.commands.setContent(markdownToHtml(rawMarkdown));
       setTimeout(() => { suppressUpdate.current = false; }, 0);
     }
-  }, [viewMode]);
+  }, [viewMode, editor, rawMarkdown]);
 
   // ── Render ──
 
@@ -169,13 +169,13 @@ export function TiptapEditor({
         <EditorContent
           editor={editor}
           className={clsx(
-            'prose prose-invert prose-sm max-w-none px-2.5 py-1.5 text-sm',
+            'prose prose-sm max-w-none px-2.5 py-1.5 text-sm',
             '[&_.tiptap]:outline-none [&_.tiptap]:min-h-[inherit]',
             '[&_h1]:text-xl [&_h2]:text-lg [&_h3]:text-base [&_p]:text-sm [&_li]:text-sm',
-            '[&_pre]:bg-black/20 [&_pre]:rounded [&_pre]:p-2 [&_pre]:text-sm',
-            '[&_code]:bg-white/10 [&_code]:rounded [&_code]:px-1 [&_code]:text-sm',
-            '[&_blockquote]:border-l-2 [&_blockquote]:border-white/20 [&_blockquote]:pl-2 [&_blockquote]:italic [&_blockquote]:text-sm',
-            '[&_.is-editor-empty:first-child::before]:content-[attr(data-placeholder)] [&_.is-editor-empty:first-child::before]:text-gray-600 [&_.is-editor-empty:first-child::before]:float-left [&_.is-editor-empty:first-child::before]:h-0 [&_.is-editor-empty:first-child::before]:pointer-events-none',
+            '[&_pre]:rounded [&_pre]:p-2 [&_pre]:text-sm [&_pre]:bg-[var(--color-elevated)]',
+            '[&_code]:rounded [&_code]:px-1 [&_code]:text-sm [&_code]:bg-[var(--color-elevated)]',
+            '[&_blockquote]:border-l-2 [&_blockquote]:border-border-subtle [&_blockquote]:pl-2 [&_blockquote]:italic [&_blockquote]:text-sm',
+            '[&_.is-editor-empty:first-child::before]:content-[attr(data-placeholder)] [&_.is-editor-empty:first-child::before]:text-[var(--color-text-muted)] [&_.is-editor-empty:first-child::before]:float-left [&_.is-editor-empty:first-child::before]:h-0 [&_.is-editor-empty:first-child::before]:pointer-events-none',
             !editable && 'cursor-default',
           )}
         />
@@ -186,7 +186,7 @@ export function TiptapEditor({
 
 function Btn({ active, onClick, title, children }: { active: boolean; onClick: () => void; title: string; children: React.ReactNode }) {
   return (
-    <button onClick={onClick} title={title} className={clsx('p-1 rounded', active ? 'bg-honey-500/20 text-honey-500' : 'hover:bg-white/10')} style={!active ? { color: 'var(--color-text-muted)' } : {}}>
+    <button onClick={onClick} title={title} className={clsx('p-1 rounded', active ? 'bg-honey-500/20 text-honey-500' : 'hover:bg-hover')} style={!active ? { color: 'var(--color-text-muted)' } : {}}>
       {children}
     </button>
   );

@@ -60,7 +60,7 @@ export function SwarmStatusSummary() {
         {unified.map((swarm) => (
           <div
             key={`${swarm.source}-${swarm.id}`}
-            className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-workspace-hover transition-colors"
+            className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover transition-colors"
           >
             {swarm.source === 'hosted' ? (
               <Cpu className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />

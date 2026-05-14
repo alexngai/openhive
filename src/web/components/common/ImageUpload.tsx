@@ -158,7 +158,7 @@ export function ImageUpload({
         'border-2 border-dashed rounded-lg transition-colors cursor-pointer',
         isDragging
           ? 'border-honey-500 bg-honey-500/10'
-          : 'border-[var(--color-border)] hover:border-honey-500/50',
+          : 'border-border hover:border-honey-500/50',
         compact ? 'p-4' : 'p-8',
         className
       )}

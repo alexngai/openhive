@@ -193,6 +193,7 @@ export function Sidebar() {
                   {!isUngrouped && (
                     <button
                       onClick={() => toggleSection(group.id)}
+                      aria-expanded={isExpanded}
                       className="sidebar-section-toggle"
                     >
                       <span>{group.label}</span>
@@ -304,7 +305,9 @@ export function Sidebar() {
       {/* Mobile toggle */}
       <button
         onClick={() => setMobileOpen(!mobileOpen)}
-        className="lg:hidden fixed bottom-3 left-3 z-50 btn btn-primary p-2 rounded-md shadow-lg"
+        aria-label={mobileOpen ? 'Close navigation' : 'Open navigation'}
+        aria-expanded={mobileOpen}
+        className="lg:hidden fixed bottom-3 left-3 z-50 btn btn-primary p-2.5 rounded-md shadow-lg"
       >
         {mobileOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
       </button>

@@ -6,10 +6,13 @@ interface DialogProps {
   children: ReactNode;
   /** Max width class, defaults to max-w-lg */
   maxWidth?: string;
+  /** aria-labelledby value — pass the id of the heading inside the dialog */
+  labelId?: string;
 }
 
-export function Dialog({ open, onClose, children, maxWidth = 'max-w-lg' }: DialogProps) {
+export function Dialog({ open, onClose, children, maxWidth = 'max-w-lg', labelId }: DialogProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   // Close on Escape
   useEffect(() => {
@@ -29,6 +32,34 @@ export function Dialog({ open, onClose, children, maxWidth = 'max-w-lg' }: Dialo
     return () => { document.body.style.overflow = prev; };
   }, [open]);
 
+  // Focus trap: cycle Tab/Shift+Tab within the panel
+  useEffect(() => {
+    if (!open || !panelRef.current) return;
+    const panel = panelRef.current;
+
+    // Focus the panel itself on open so screen readers announce it
+    panel.focus();
+
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return;
+      const focusable = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      ).filter((el) => el.offsetParent !== null);
+      if (focusable.length === 0) { e.preventDefault(); return; }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey) {
+        if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+      } else {
+        if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [open]);
+
   if (!open) return null;
 
   return (
@@ -39,7 +70,12 @@ export function Dialog({ open, onClose, children, maxWidth = 'max-w-lg' }: Dialo
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
       <div
-        className={`card p-0 w-full ${maxWidth} shadow-xl animate-slide-in`}
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={labelId}
+        tabIndex={-1}
+        className={`card p-0 w-full ${maxWidth} shadow-xl animate-slide-in outline-none`}
         style={{ maxHeight: '80vh', overflowY: 'auto' }}
       >
         {children}

@@ -203,7 +203,7 @@ function StatsOverlay({ onClose }: { onClose: () => void }) {
           </h2>
           <button
             onClick={onClose}
-            className="p-1 rounded-md hover:bg-workspace-hover transition-colors"
+            className="p-1 rounded-md hover:bg-hover transition-colors"
             style={{ color: "var(--color-text-muted)" }}
           >
             <X className="w-4 h-4" />
@@ -236,7 +236,7 @@ function SwarmCraftView() {
     <div className="flex items-center gap-1.5 ml-2">
       <button
         onClick={() => setShowStats(true)}
-        className="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-medium transition-colors hover:bg-workspace-hover"
+        className="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-medium transition-colors hover:bg-hover"
         style={{ color: "var(--color-text-secondary)" }}
       >
         <BarChart3 className="w-3.5 h-3.5" />
@@ -318,7 +318,7 @@ export function Dashboard() {
   // Still loading or server not ready — show a loading indicator instead of a blank screen
   if (!features) {
     return (
-      <div className="flex flex-col h-full items-center justify-center gap-3 text-zinc-400">
+      <div className="flex flex-col h-full items-center justify-center gap-3" style={{ color: 'var(--color-text-muted)' }}>
         <Activity className="w-6 h-6 animate-pulse" />
         {isError ? (
           <p className="text-sm">Waiting for server&hellip;</p>
