@@ -63,9 +63,14 @@ jobs:
         run: npm install --no-audit --no-fund --ignore-scripts
 
       # publint inspects the *built* package — exports/main/types must point
-      # at files that exist, so dist/ has to be present first.
-      - name: Build
+      # at files that exist, so dist/ has to be present first. The root build
+      # produces openhive's dist/; openhive-headless has its own build step
+      # that consumes the root's server bundle.
+      - name: Build openhive
         run: npm run build
+
+      - name: Build openhive-headless
+        run: npm -w openhive-headless run build
 
       - name: Lint openhive
         run: npx publint
