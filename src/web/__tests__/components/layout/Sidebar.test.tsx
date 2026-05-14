@@ -90,14 +90,19 @@ describe('Sidebar Navigation', () => {
     expect(link!.getAttribute('href')).toBe('/tasks');
   });
 
-  it('has the Control Plane section header', () => {
+  it('has the Agents section header', () => {
     renderSidebar();
-    expect(screen.getByText('Control Plane')).toBeDefined();
+    expect(screen.getByText('Agents')).toBeDefined();
   });
 
-  it('has the Resources section header', () => {
+  it('has the Work section header', () => {
     renderSidebar();
-    expect(screen.getByText('Resources')).toBeDefined();
+    expect(screen.getByText('Work')).toBeDefined();
+  });
+
+  it('has the Context section header', () => {
+    renderSidebar();
+    expect(screen.getByText('Context')).toBeDefined();
   });
 
   it('marks Overview link as active when on /', () => {

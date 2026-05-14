@@ -15,11 +15,13 @@
 import type {
   HostedChatServiceLike,
   HostedChatSubscriptionHandlers,
+  HostedChatPermissionPayload,
 } from 'swarmcraft/ui/embed';
 import { api } from '../lib/api';
 import { useWSStore, subscribeChannelImperatively } from '../hooks/useWebSocket';
 
-// Mirror of `HostedChatEvent` in `src/swarm/hosted-chat-events.ts`.
+// Mirror of `HostedChatEvent` in `src/swarm/hosted-chat-events.ts`. Keep
+// the union in sync — both files derive from the same backend wire shape.
 type HostedChatEvent =
   | { kind: 'message.start'; itemId: string; role: 'assistant' | 'user' | 'system' }
   | { kind: 'message.delta'; itemId: string; delta: string }
@@ -27,6 +29,8 @@ type HostedChatEvent =
   | { kind: 'turn.started'; turnId: string }
   | { kind: 'turn.completed'; turnId: string }
   | { kind: 'error'; message: string; code?: string | number }
+  | { kind: 'permission.request'; request: HostedChatPermissionPayload }
+  | { kind: 'permission.resolved'; requestId: string; decision: 'approved' | 'denied' }
   | { kind: 'raw'; provider: string; method: string; params?: unknown };
 
 interface HostedChatPayload {
@@ -70,6 +74,12 @@ function routeEvent(
     case 'error':
       h.onError(ev.message, ev.code);
       break;
+    case 'permission.request':
+      h.onPermissionRequest?.(ev.request);
+      break;
+    case 'permission.resolved':
+      h.onPermissionResolved?.(ev.requestId, ev.decision);
+      break;
     case 'raw':
       h.onRaw?.(provider, ev.method, ev.params);
       break;
@@ -94,6 +104,13 @@ export const hostedChatService: HostedChatServiceLike = {
       `/map/hosted/${hostedSwarmId}/chat/turn`,
       { text },
     ).then((r) => ({ turnId: r.turn_id }));
+  },
+
+  replyPermission: async (hostedSwarmId, requestId, decision) => {
+    await api.post(
+      `/map/hosted/${hostedSwarmId}/chat/permission/${encodeURIComponent(requestId)}`,
+      { decision },
+    );
   },
 
   subscribe: (hostedSwarmId, handlers) => {

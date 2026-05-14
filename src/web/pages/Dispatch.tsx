@@ -160,7 +160,7 @@ export function Dispatch() {
                 : 'No jobs match your search.'
           }
           description={dispatches.length === 0 ? 'Open a spec and dispatch it to send work to a swarm.' : undefined}
-          size=”md”
+          size="md"
         />
       )}
 

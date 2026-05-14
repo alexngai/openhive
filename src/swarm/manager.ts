@@ -36,7 +36,7 @@ import type { PtyManager } from '../terminal/pty-manager.js';
 import type { CodexAppServerManager } from './codex-app-server-manager.js';
 import { resolveCodexBinary } from './codex-binary.js';
 import { preTrustCodexWorkdir } from './codex-config.js';
-import { translateCodexNotification } from './hosted-chat-events.js';
+import { translateCodexNotification, translateCodexRequest } from './hosted-chat-events.js';
 import type {
   SpawnSwarmInput,
   SwarmProvisionConfig,
@@ -79,6 +79,13 @@ export class SwarmManager {
   private codexAppServerManager: CodexAppServerManager | null = null;
   private codexRpcSessions = new Map<string, string>();  // hostedSwarmId → codex session id
   private codexRpcExitHandler: ((event: { sessionId: string; exitCode: number | null; signal?: NodeJS.Signals | null }) => void) | null = null;
+  /**
+   * Codex requestId → routing context for a pending approval prompt. The
+   * REST permission-reply endpoint reads this to resolve the codex session
+   * the decision should be forwarded to. Cleared when the user (or a
+   * sibling tab) answers.
+   */
+  private codexPendingPermissions = new Map<string, { hostedSwarmId: string; sessionId: string }>();
 
   constructor(config: SwarmHostingConfig, instanceUrl: string) {
     this.config = config;
@@ -186,6 +193,89 @@ export class SwarmManager {
         },
       });
     });
+
+    // Codex server-initiated JSON-RPC requests (e.g. approval prompts).
+    // Translate to a normalized permission.request and fan out on the same
+    // hosted-chat channel. Record requestId → hostedSwarmId so the REST
+    // reply endpoint can route the user's decision back to the right
+    // codex session. Non-approval requests (auth refresh, attestation,
+    // tool call) are auto-errored with method-not-supported so codex
+    // doesn't hang waiting — surfaced as `raw` for debug visibility.
+    mgr.on('request', (event: { sessionId: string; requestId: string; method: string; params?: unknown }) => {
+      const hostedId = this.findHostedIdByCodexSessionId(event.sessionId);
+      if (!hostedId) {
+        // Session is unknown to us — error the request so codex doesn't hang.
+        mgr.errorToRequest(event.sessionId, event.requestId, -32000, 'no hosted swarm for codex session');
+        return;
+      }
+      const normalized = translateCodexRequest(event.method, event.params, event.requestId);
+      if (normalized && normalized.kind === 'permission.request') {
+        this.codexPendingPermissions.set(event.requestId, {
+          hostedSwarmId: hostedId,
+          sessionId: event.sessionId,
+        });
+        broadcastToChannel(`hosted-chat:${hostedId}`, {
+          type: 'hosted-chat.event',
+          data: {
+            hosted_swarm_id: hostedId,
+            provider: 'codex',
+            event: normalized,
+          },
+        });
+        return;
+      }
+      // Anything else: surface as raw (for debug) and auto-error so the
+      // codex side doesn't block. Once we wire QuestionDialog this branch
+      // gets narrower.
+      if (normalized) {
+        broadcastToChannel(`hosted-chat:${hostedId}`, {
+          type: 'hosted-chat.event',
+          data: {
+            hosted_swarm_id: hostedId,
+            provider: 'codex',
+            event: normalized,
+          },
+        });
+      }
+      mgr.errorToRequest(event.sessionId, event.requestId, -32601, `unsupported codex request: ${event.method}`);
+    });
+  }
+
+  /**
+   * Reply to a pending codex approval request from the host (typically
+   * driven by the REST endpoint). Looks up the codex session via the
+   * requestId mapping recorded when the request was fanned out, sends a
+   * JSON-RPC response back to codex, and broadcasts a normalized
+   * `permission.resolved` event so sibling tabs dismiss their dialogs.
+   *
+   * Throws if no pending request matches the id (idempotent retries land
+   * as 404 at the REST layer).
+   */
+  replyCodexPermission(
+    hostedSwarmId: string,
+    requestId: string,
+    decision: 'approved' | 'denied',
+  ): void {
+    if (!this.codexAppServerManager) {
+      throw new SwarmHostingError('PROVIDER_NOT_AVAILABLE', 'CodexAppServerManager is not configured');
+    }
+    const pending = this.codexPendingPermissions.get(requestId);
+    if (!pending || pending.hostedSwarmId !== hostedSwarmId) {
+      throw new SwarmHostingError('NOT_FOUND', 'No pending permission with this id for this swarm');
+    }
+    this.codexPendingPermissions.delete(requestId);
+    // Codex's ReviewDecision union accepts `approved` | `denied` as string
+    // members — match the schema exactly. `approved_for_session`/policy
+    // amendments are out of scope here; the dialog only emits the two.
+    this.codexAppServerManager.replyToRequest(pending.sessionId, requestId, { decision });
+    broadcastToChannel(`hosted-chat:${hostedSwarmId}`, {
+      type: 'hosted-chat.event',
+      data: {
+        hosted_swarm_id: hostedSwarmId,
+        provider: 'codex',
+        event: { kind: 'permission.resolved', requestId, decision },
+      },
+    });
   }
 
   /** Reverse lookup: codex session id → hosted swarm id. Linear scan is fine
@@ -280,6 +370,23 @@ export class SwarmManager {
     if (!owningHostedId) return;
 
     this.codexRpcSessions.delete(owningHostedId);
+    // Purge any pending permission prompts for this session — codex is
+    // gone, the user's reply would race on a dead WS. Sibling tabs dismiss
+    // their dialogs via the `permission.resolved` event below; we send a
+    // synthetic `denied` so neither client hangs on a stale prompt.
+    for (const [requestId, ctx] of this.codexPendingPermissions) {
+      if (ctx.sessionId === event.sessionId) {
+        this.codexPendingPermissions.delete(requestId);
+        broadcastToChannel(`hosted-chat:${owningHostedId}`, {
+          type: 'hosted-chat.event',
+          data: {
+            hosted_swarm_id: owningHostedId,
+            provider: 'codex',
+            event: { kind: 'permission.resolved', requestId, decision: 'denied' },
+          },
+        });
+      }
+    }
     const wasSignalled = event.signal != null;
     const isClean = !wasSignalled && event.exitCode === 0;
     dal.updateHostedSwarm(owningHostedId, {
