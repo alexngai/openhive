@@ -132,6 +132,41 @@ describe('generateQueryResponses', () => {
     });
   });
 
+  describe('fast gate (non-query redraw frames)', () => {
+    // An alt-screen TUI emits ESC in nearly every frame. These sequences
+    // contain ESC but no capability query — the gate must short-circuit
+    // them to '' without false positives.
+    const redrawSequences: [string, string][] = [
+      ['cursor home', '\x1b[H'],
+      ['clear screen', '\x1b[2J'],
+      ['erase to end of line', '\x1b[K'],
+      ['SGR truecolor fg', '\x1b[38;2;255;128;0m'],
+      ['SGR 256-color', '\x1b[38;5;202m'],
+      ['SGR reset', '\x1b[0m'],
+      ['cursor position', '\x1b[12;40H'],
+      ['cursor forward (CUF)', '\x1b[5C'],
+      ['scroll region', '\x1b[1;24r'],
+      ['alt screen enter', '\x1b[?1049h'],
+      ['bracketed paste enable', '\x1b[?2004h'],
+      ['save cursor', '\x1b7'],
+      ['full redraw frame', '\x1b[H\x1b[2J\x1b[38;5;82mhello\x1b[0m\x1b[K'],
+    ];
+
+    for (const [name, seq] of redrawSequences) {
+      it(`returns '' for ${name}`, () => {
+        expect(generateQueryResponses(seq, cols, rows)).toBe('');
+      });
+    }
+
+    it('still answers a query buried in a redraw frame', () => {
+      // Gate must not reject a frame that mixes redraw output with a query.
+      const data = '\x1b[H\x1b[2J\x1b[38;5;82mready\x1b[0m\x1b[>0q\x1b[K';
+      expect(generateQueryResponses(data, cols, rows)).toBe(
+        '\x1bP>|ghostty-web 0.4.0\x1b\\',
+      );
+    });
+  });
+
   describe('consecutive calls reset regex state', () => {
     it('works correctly across multiple calls', () => {
       // Regex lastIndex must be reset between calls

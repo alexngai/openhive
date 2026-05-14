@@ -188,10 +188,27 @@ export async function handleTerminalWebSocket(
     }
   }
 
-  // Set up data forwarding: PTY -> WebSocket
+  // Set up data forwarding: PTY -> WebSocket.
+  // Coalesce PTY chunks: a single TUI redraw emits many tiny chunks, and one
+  // socket.send per chunk means one WS frame per chunk. Buffer within a tick
+  // and flush once via setImmediate — far fewer frames, same latency.
+  let outBuf = '';
+  let flushScheduled = false;
+  const flush = () => {
+    flushScheduled = false;
+    if (outBuf.length === 0) return;
+    const payload = outBuf;
+    outBuf = '';
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(payload);
+    }
+  };
   const dataListener = (event: { sessionId: string; data: string }) => {
-    if (event.sessionId === sessionId && socket.readyState === WebSocket.OPEN) {
-      socket.send(event.data);
+    if (event.sessionId !== sessionId) return;
+    outBuf += event.data;
+    if (!flushScheduled) {
+      flushScheduled = true;
+      setImmediate(flush);
     }
   };
 
