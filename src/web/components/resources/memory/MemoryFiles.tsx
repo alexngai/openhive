@@ -145,7 +145,7 @@ export function MemoryFiles({ resourceId, searchQuery }: { resourceId: string; s
         <button
           key={file.path}
           onClick={() => setSelectedFile(file.path)}
-          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-workspace-hover transition-colors text-left cursor-pointer group"
+          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover transition-colors text-left cursor-pointer group"
         >
           <FileText className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
           <span className="text-xs font-mono truncate flex-1 group-hover:text-honey-500 transition-colors">{file.path}</span>

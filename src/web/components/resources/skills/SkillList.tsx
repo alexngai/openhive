@@ -236,7 +236,7 @@ export function SkillList({ resourceId, searchQuery }: { resourceId: string; sea
         <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>{skills?.length || 0} skills</div>
         <button
           onClick={() => setShowEditor(true)}
-          className="text-2xs flex items-center gap-1 px-2 py-1 rounded hover:bg-workspace-hover transition-colors cursor-pointer"
+          className="text-2xs flex items-center gap-1 px-2 py-1 rounded hover:bg-hover transition-colors cursor-pointer"
           style={{ color: 'var(--color-text-muted)' }}
         >
           <Plus className="w-3 h-3" />

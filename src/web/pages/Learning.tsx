@@ -1,7 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Brain, BookOpen, Lightbulb, Activity, Zap, Settings, ChevronRight, AlertCircle, CheckCircle2, Clock, Database, Wrench, RefreshCw } from 'lucide-react';
 import { EmptyState } from '../components/common/EmptyState';
+import { useDebouncedValue } from '../components/common/ListFilters';
+import { PageLoader } from '../components/common/LoadingSpinner';
+import { TimeAgo } from '../components/common/TimeAgo';
 import { Tabs, type TabDef } from '../components/common/Tabs';
 import {
   useLearningStats,
@@ -31,11 +34,7 @@ export function Learning() {
   const { data: stats } = useLearningStats();
 
   if (healthLoading) {
-    return (
-      <div className="flex items-center justify-center py-20">
-        <RefreshCw className="w-5 h-5 animate-spin text-text-muted" />
-      </div>
-    );
+    return <PageLoader />;
   }
 
   if (!health?.available) {
@@ -258,7 +257,7 @@ function ActivityTimeline() {
               )}
             </div>
             <span className="text-text-muted flex-shrink-0">
-              {formatTimeAgo(event.timestamp)}
+              <TimeAgo date={event.timestamp} />
             </span>
           </div>
         ))}
@@ -267,16 +266,6 @@ function ActivityTimeline() {
   );
 }
 
-function formatTimeAgo(timestamp: string): string {
-  const diff = Date.now() - new Date(timestamp).getTime();
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
 
 function StatCard({ label, value, icon: Icon }: { label: string; value: number; icon: typeof Brain }) {
   return (
@@ -374,13 +363,7 @@ function PlaybookCard({ playbook }: { playbook: Playbook }) {
 
 function KnowledgeTab() {
   const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
-
-  useEffect(() => {
-    debounceRef.current = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(debounceRef.current);
-  }, [search]);
+  const debouncedSearch = useDebouncedValue(search, 300);
 
   const { data, isLoading } = useLearningKnowledge({ search: debouncedSearch || undefined });
 

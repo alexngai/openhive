@@ -94,26 +94,26 @@ export function SwarmHubSettings() {
         <div className="card p-3">
           <div className="flex items-center gap-2 mb-2">
             <Wifi className="w-4 h-4 text-green-400" />
-            <span className="text-xs font-medium" style={{ color: 'var(--color-text-primary)' }}>Connected to SwarmHub</span>
+            <span className="text-xs font-medium" style={{ color: 'var(--color-text)' }}>Connected to SwarmHub</span>
           </div>
 
           <dl className="grid grid-cols-2 gap-2 text-xs">
             <div>
-              <dt style={{ color: 'var(--color-text-tertiary)' }}>Hive</dt>
+              <dt style={{ color: 'var(--color-text-muted)' }}>Hive</dt>
               <dd style={{ color: 'var(--color-text-secondary)' }} className="font-mono">{status.identity.slug}</dd>
             </div>
             <div>
-              <dt style={{ color: 'var(--color-text-tertiary)' }}>Tier</dt>
+              <dt style={{ color: 'var(--color-text-muted)' }}>Tier</dt>
               <dd style={{ color: 'var(--color-text-secondary)' }}>{status.identity.tier}</dd>
             </div>
             <div>
-              <dt style={{ color: 'var(--color-text-tertiary)' }}>Connected since</dt>
+              <dt style={{ color: 'var(--color-text-muted)' }}>Connected since</dt>
               <dd style={{ color: 'var(--color-text-secondary)' }}>
                 {status.connected_at ? <TimeAgo date={status.connected_at} /> : '—'}
               </dd>
             </div>
             <div>
-              <dt style={{ color: 'var(--color-text-tertiary)' }}>Last health check</dt>
+              <dt style={{ color: 'var(--color-text-muted)' }}>Last health check</dt>
               <dd style={{ color: 'var(--color-text-secondary)' }}>
                 {status.last_health_check ? <TimeAgo date={status.last_health_check} /> : '—'}
               </dd>
@@ -146,7 +146,7 @@ export function SwarmHubSettings() {
           onClick={() => disconnect.mutate()}
           disabled={disconnect.isPending}
           className="btn btn-ghost text-xs"
-          style={{ color: 'var(--color-text-tertiary)' }}
+          style={{ color: 'var(--color-text-muted)' }}
         >
           Disconnect
         </button>
@@ -159,8 +159,8 @@ export function SwarmHubSettings() {
     return (
       <div className="space-y-3">
         <div className="card p-3 space-y-3">
-          <h3 className="text-xs font-medium" style={{ color: 'var(--color-text-primary)' }}>Connect to SwarmHub</h3>
-          <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+          <h3 className="text-xs font-medium" style={{ color: 'var(--color-text)' }}>Connect to SwarmHub</h3>
+          <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
             Enter the credentials from your SwarmHub hive registration.
           </p>
 
@@ -216,10 +216,10 @@ export function SwarmHubSettings() {
     <div className="space-y-3">
       <div className="card p-3">
         <div className="flex items-center gap-2 mb-2">
-          <WifiOff className="w-4 h-4" style={{ color: 'var(--color-text-tertiary)' }} />
+          <WifiOff className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
           <span className="text-xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>Not connected to SwarmHub</span>
         </div>
-        <p className="text-xs mb-3" style={{ color: 'var(--color-text-tertiary)' }}>
+        <p className="text-xs mb-3" style={{ color: 'var(--color-text-muted)' }}>
           Connect this OpenHive instance to SwarmHub to enable remote access, webhook routing, and credential proxying.
         </p>
         <button onClick={() => setShowRegister(true)} className="btn btn-primary text-xs">

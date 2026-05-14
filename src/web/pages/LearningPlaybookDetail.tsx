@@ -18,7 +18,7 @@ export function LearningPlaybookDetail() {
   if (error || !playbook) {
     return (
       <div className="space-y-4">
-        <Link to="/learning" className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary">
+        <Link to="/learning" className="flex items-center gap-1 text-xs hover:text-honey-500 transition-colors" style={{ color: 'var(--color-text-muted)' }}>
           <ArrowLeft className="w-3.5 h-3.5" />
           Back to Learning
         </Link>
@@ -34,7 +34,7 @@ export function LearningPlaybookDetail() {
   return (
     <div className="space-y-4">
       {/* Back nav */}
-      <Link to="/learning" className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary">
+      <Link to="/learning" className="flex items-center gap-1 text-xs hover:text-honey-500 transition-colors" style={{ color: 'var(--color-text-muted)' }}>
         <ArrowLeft className="w-3.5 h-3.5" />
         Back to Learning
       </Link>
