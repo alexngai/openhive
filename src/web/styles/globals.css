@@ -54,18 +54,29 @@
   --color-light-text-secondary: #7a7670;
 
   /* Workspace surface tokens — these generate Tailwind utility classes
-     (bg-elevated, text-text-muted, etc.). The actual runtime values are
-     overridden per-theme by the `:root, .dark` / `.light` blocks below;
-     the declarations here are required so Tailwind emits the classes.
-     Values match the dark theme for sensible SSR/fallback. */
+     (bg-bg, bg-surface, bg-elevated, text-text, text-text-muted,
+     border-border, etc.). The actual runtime values are overridden
+     per-theme by the `:root, .dark` / `.light` blocks below; the
+     declarations here are required so Tailwind emits the classes.
+     Values match the dark theme for sensible SSR/fallback.
+
+     Every token here MUST also be overridden in both the `:root, .dark`
+     and `.light` blocks below — otherwise the generated utility is
+     dark-only and silently breaks light theme. */
+  --color-bg: #1a1d21;
   --color-surface: #222529;
   --color-elevated: #2c2d31;
   --color-hover: #35373b;
+  --color-border: #35373b;
   --color-border-subtle: #2c2d31;
-  --color-border-default: #35373b;
-  --color-text-primary: #d1d2d3;
+  --color-text: #d1d2d3;
   --color-text-secondary: #ababad;
   --color-text-muted: #7a7b7e;
+  /* Deprecated aliases — kept only so existing `var(--color-text-primary)`
+     / `border-default` references don't go undefined mid-migration. Prefer
+     --color-text / --color-border. Remove once all usages are migrated. */
+  --color-text-primary: #d1d2d3;
+  --color-border-default: #35373b;
 
   /* Fonts — only two live across the app: DM Sans for body/UI copy,
      DM Mono for code/terminal. Tailwind's `font-sans` + `font-mono`

@@ -2,6 +2,18 @@
 
 Pages, components, hooks, stores, adapters. Most architecturally interesting concern: the unified chat surface, which rides swarmcraft's `ui/embed` primitives.
 
+## Visual conventions
+
+Design tokens live in `src/web/styles/globals.css`. Follow these rules so the UI stays consistent and both themes keep working:
+
+- **Colors**: never hardcode hex / `rgb()` / `rgba()` / raw Tailwind palette classes (`bg-zinc-800`, `text-red-400`) for themed surfaces. Use the semantic tokens — either Tailwind utilities generated from `@theme` (`bg-bg`, `bg-surface`, `bg-elevated`, `bg-hover`, `border-border`, `border-border-subtle`, `text-text`, `text-text-secondary`, `text-text-muted`) or inline `style={{ color: 'var(--color-...)' }}`. Both are valid; the utility form is preferred. Status/danger surfaces use `--color-danger`, `--color-danger-bg`, `--color-danger-border`.
+- **`--color-accent` vs `honey-*`**: use `var(--color-accent)` (or `bg-accent` / `text-accent`) for interactive/active state — it shifts per theme. Use `text-honey-500` etc. only for fixed brand marks.
+- **Never use** `bg-workspace-*` in `hover:`/state utilities, `bg-white/N`, `bg-black/N`, or `var(--color-text-primary)` / `--color-bg-panel` / `--color-background` / `--color-text-tertiary` — they're dark-only or undefined and break light theme. Use `bg-hover` / `var(--color-hover)` instead.
+- **Spacing**: stick to the three vertical tiers documented in `globals.css` (Compact `py-1`, Default `py-1.5`, Breathing `py-2.5`). No font sizes below `text-2xs` (12px).
+- **Status pills**: render all status/priority badges through the shared `StatusChip` component (`components/common/StatusChip.tsx`) — don't hand-roll `bg-{color}-500/10 text-{color}-400` spans.
+- **Page width**: list pages use `max-w-7xl`; detail and editor pages use `max-w-4xl`. A list→detail navigation should not jump widths.
+- **Loading / empty states**: use `<PageLoader />` and `<EmptyState />` — don't hand-roll spinners. Detail pages must render a "not found" / error state, never `return null`.
+
 ## Unified chat components (Threads)
 
 All chat surfaces — the Threads list + detail (`/threads`, `/threads/:id`, `/threads/mail/:mailId`), the floating ChatFab, and SwarmDetail's Coordination Broadcast — render via swarmcraft's `ChatMessageList` + `ChatInput` + `PermissionDialog` + `ChatBubble` from `swarmcraft/ui/embed`.
