@@ -23,7 +23,7 @@ import type { SyncableResource } from '../lib/api';
 // Status styling
 // ============================================================================
 
-function taskStatusToChip(status: string): { tone: StatusTone; label: string; Icon: React.ElementType } {
+export function taskStatusToChip(status: string): { tone: StatusTone; label: string; Icon: React.ElementType } {
   switch (status) {
     case 'open':        return { tone: 'info',    label: 'open',        Icon: ListTodo };
     case 'in_progress': return { tone: 'warning', label: 'in progress', Icon: Activity };
@@ -566,11 +566,13 @@ function TaskGraphSettingsDialog({
   const [gitSyncEnabled, setGitSyncEnabled] = useState(!!savedGitSync?.enabled);
   const [autoCommit, setAutoCommit] = useState(savedGitSync?.autoCommit !== false);
   const [autoPush, setAutoPush] = useState(!!savedGitSync?.autoPush);
+  const [autoPull, setAutoPull] = useState(!!savedGitSync?.autoPull);
 
   const gitSyncChanged = isRemoteClone && (
     gitSyncEnabled !== !!savedGitSync?.enabled ||
     (gitSyncEnabled && autoCommit !== (savedGitSync?.autoCommit !== false)) ||
-    (gitSyncEnabled && autoPush !== !!savedGitSync?.autoPush)
+    (gitSyncEnabled && autoPush !== !!savedGitSync?.autoPush) ||
+    (gitSyncEnabled && autoPull !== !!savedGitSync?.autoPull)
   );
 
   const hasChanges = name !== resource.name || description !== (resource.description || '') || gitSyncChanged;

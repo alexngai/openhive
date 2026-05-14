@@ -26,7 +26,7 @@ type ViewMode = 'graph' | 'board';
 
 const LAST_GRAPHS_KEY = 'openhive-last-task-graphs';
 
-// Short color palette for graph source tags
+// Data-viz palette for graph source tags (intentionally fixed hex — not themed surfaces)
 const GRAPH_COLORS = ['#f59e0b', '#3b82f6', '#10b981', '#8b5cf6', '#ef4444', '#06b6d4'];
 
 export function TaskGraph() {
@@ -340,19 +340,24 @@ export function TaskGraph() {
         {/* Summary pills */}
         {mergedSummary && (
           <div className="ml-auto flex items-center gap-2">
-            {Object.entries(mergedSummary.task_counts).map(([status, count]) => (
-              <span
-                key={status}
-                className="text-2xs px-1.5 py-0.5 rounded-full flex items-center gap-1"
-                style={{ backgroundColor: `${STATUS_COLORS[status] || '#6b7280'}20` }}
-              >
+            {Object.entries(mergedSummary.task_counts).map(([status, count]) => {
+              const color = STATUS_COLORS[status];
+              return (
                 <span
-                  className="w-1.5 h-1.5 rounded-full"
-                  style={{ backgroundColor: STATUS_COLORS[status] || '#6b7280' }}
-                />
-                {count}
-              </span>
-            ))}
+                  key={status}
+                  className="text-2xs px-1.5 py-0.5 rounded-full flex items-center gap-1"
+                  style={color
+                    ? { backgroundColor: color, opacity: 0.85 }
+                    : { backgroundColor: 'var(--color-text-muted)', opacity: 0.2 }}
+                >
+                  <span
+                    className="w-1.5 h-1.5 rounded-full"
+                    style={color ? { backgroundColor: color } : { backgroundColor: 'var(--color-text-muted)' }}
+                  />
+                  {count}
+                </span>
+              );
+            })}
             <TaskFilterBar filters={filters} onChange={setFilters} />
             <CreateTaskForm resourceId={resourceId!} />
 
@@ -363,8 +368,7 @@ export function TaskGraph() {
                   <button
                     onClick={() => gitPull.mutate()}
                     disabled={gitPull.isPending}
-                    className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-medium transition-colors hover:bg-blue-500/15"
-                    style={{ color: '#60a5fa', backgroundColor: 'rgba(59, 130, 246, 0.08)' }}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-medium transition-colors bg-blue-500/10 hover:bg-blue-500/15 text-blue-400"
                     title={`${gitStatus!.unpulledCommits} commit${gitStatus!.unpulledCommits > 1 ? 's' : ''} to pull`}
                   >
                     {gitPull.isPending ? (
@@ -379,8 +383,7 @@ export function TaskGraph() {
                   <button
                     onClick={() => gitPush.mutate()}
                     disabled={gitPush.isPending}
-                    className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-medium transition-colors hover:bg-amber-500/15"
-                    style={{ color: '#fbbf24', backgroundColor: 'rgba(245, 158, 11, 0.08)' }}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-medium transition-colors bg-amber-500/10 hover:bg-amber-500/15 text-honey-500"
                     title={`${gitStatus!.unpushedCommits} commit${gitStatus!.unpushedCommits > 1 ? 's' : ''} to push`}
                   >
                     {gitPush.isPending ? (

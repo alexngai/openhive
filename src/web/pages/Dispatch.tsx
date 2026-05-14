@@ -155,9 +155,9 @@ export function Dispatch() {
           title={
             q
               ? `No jobs match “${q}”.`
-              : dispatches.length === 0
-                ? 'No jobs match your filter.'
-                : 'No jobs match your search.'
+              : dispatches.length > 0
+                ? 'No jobs match the active filters.'
+                : 'No dispatches yet.'
           }
           description={dispatches.length === 0 ? 'Open a spec and dispatch it to send work to a swarm.' : undefined}
           size="md"

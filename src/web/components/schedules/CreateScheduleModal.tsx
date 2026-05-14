@@ -195,7 +195,7 @@ export function CreateScheduleModal({ onClose, initialSpecRef }: Props) {
                   type="checkbox"
                   checked={fallbackEnabled}
                   onChange={(e) => setFallbackEnabled(e.target.checked)}
-                  className="rounded border-zinc-600 bg-zinc-800 text-honey-500"
+                  className="rounded accent-honey-500"
                 />
                 Auto-spawn fallback when all swarms are offline
                 {fallbackEnabled && (
@@ -229,7 +229,7 @@ export function CreateScheduleModal({ onClose, initialSpecRef }: Props) {
                   type="checkbox"
                   checked={skipIfRunning}
                   onChange={(e) => setSkipIfRunning(e.target.checked)}
-                  className="rounded border-zinc-600 bg-zinc-800 text-honey-500"
+                  className="rounded accent-honey-500"
                 />
                 Skip if already running
               </label>
@@ -522,7 +522,7 @@ function SwarmChipPicker({
               type="checkbox"
               checked={showInactive}
               onChange={(e) => setShowInactive(e.target.checked)}
-              className="rounded border-zinc-600 bg-zinc-800 text-honey-500"
+              className="rounded accent-honey-500"
             />
             Show inactive ({inactiveCount})
           </label>

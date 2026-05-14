@@ -288,10 +288,9 @@ export function Changes() {
           {/* Conflicts filter chip */}
           <button
             type="button"
-            className="text-2xs flex items-center gap-1 px-2 py-1 rounded-md border transition-colors"
+            className={`text-2xs flex items-center gap-1 px-2 py-1 rounded-md border transition-colors${conflictsOnly ? ' bg-red-500/10' : ''}`}
             style={{
               borderColor: conflictsOnly ? 'var(--color-danger)' : 'var(--color-border)',
-              backgroundColor: conflictsOnly ? 'rgba(239,68,68,0.08)' : 'transparent',
               color: conflictsOnly ? 'var(--color-danger)' : 'var(--color-text-muted)',
             }}
             onClick={() => setConflictsOnly((v) => !v)}

@@ -68,13 +68,31 @@ export function ScheduleDetail() {
       </div>
     );
   }
-  if (!data) return null;
+  if (!data) {
+    return (
+      <div className="p-6 max-w-5xl mx-auto">
+        <Link
+          to="/schedules"
+          className="inline-flex items-center gap-1 text-sm mb-4 hover:opacity-80"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          <ArrowLeft className="h-3.5 w-3.5" /> Back to schedules
+        </Link>
+        <div
+          className="rounded-md border p-4 text-sm"
+          style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text)' }}
+        >
+          Schedule not found.
+        </div>
+      </div>
+    );
+  }
 
   const { schedule, fires } = data;
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
-      <Link to="/schedules" className="mb-4 inline-flex items-center gap-1 text-sm text-honey-400 hover:text-honey-300">
+      <Link to="/schedules" className="mb-4 inline-flex items-center gap-1 text-sm hover:opacity-80" style={{ color: 'var(--color-text-muted)' }}>
         <ArrowLeft className="h-3.5 w-3.5" /> Back to schedules
       </Link>
 
@@ -325,7 +343,7 @@ function CronAndPayloadEditor({ schedule }: { schedule: Schedule }) {
   );
 }
 
-function FireHistory({ fires }: { fires: Schedule extends never ? never : ReadonlyArray<import('../hooks/useDispatch').Dispatch> }) {
+function FireHistory({ fires }: { fires: import('../hooks/useDispatch').Dispatch[] }) {
   return (
     <div
       className="rounded-lg border p-5"

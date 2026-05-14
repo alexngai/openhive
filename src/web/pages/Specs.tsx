@@ -71,13 +71,7 @@ export function Specs() {
       />
 
       {error && (
-        <div
-          className="mb-4 rounded-md border p-3 text-sm"
-          style={{
-            borderColor: 'var(--color-border-subtle)',
-            color: 'var(--color-text)',
-          }}
-        >
+        <div className="mb-4 rounded-md border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-300">
           Failed to load specs: {error instanceof Error ? error.message : String(error)}
         </div>
       )}
