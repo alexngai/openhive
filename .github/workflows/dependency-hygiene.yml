@@ -2,10 +2,13 @@ name: Dependency Hygiene
 
 # Catches the two recurring failure modes before they ship:
 #   - syncpack: the same dependency pinned to different versions across our
-#     package.json files (workspaces + the vendored repos under references/).
+#     own package.json files (root + electron-app + packages/*).
 #   - publint: a publishable package whose package.json points at files that
 #     won't be in the npm tarball (bad exports / main / files) — the empty
 #     "openteams-editor" publish was exactly this class of bug.
+#
+# Note: references/ is a local-only convenience and is not part of the repo,
+# so neither job checks out submodules — syncpack lints the workspaces only.
 
 on:
   pull_request:
@@ -23,12 +26,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          # references/ are git submodules; syncpack compares their
-          # package.json versions against ours. If a submodule is
-          # inaccessible the checkout fails loudly — drop this line to fall
-          # back to linting just the workspaces.
-          submodules: recursive
 
       - name: Setup Node
         uses: actions/setup-node@v4
