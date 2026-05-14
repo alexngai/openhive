@@ -77,6 +77,14 @@ jobs:
       - name: Stage openhive-headless dist
         run: npm -w openhive-headless run build
 
+      # Validate both packages will actually resolve once published — bad
+      # exports/main/types/files fields, or referenced files missing from the
+      # tarball. Fails here instead of shipping a broken package to npm.
+      - name: Validate packages (publint)
+        run: |
+          npx publint
+          npx publint packages/openhive-headless
+
       # On tag pushes, the tag and both package.json versions must agree.
       # Catches the "tagged v0.1.2 but forgot to bump package.json" footgun.
       - name: Verify tag matches package versions

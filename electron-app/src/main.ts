@@ -674,6 +674,15 @@ app.whenReady().then(async () => {
     recordRecentHive(defaultHive);
   } catch (err) {
     dismissSplash();
+    // Smoke test: a boot failure must exit non-zero so CI fails. Bypasses
+    // the error dialog (no one to see it) and app.quit()'s exit code 0.
+    if (process.env.OPENHIVE_SMOKE_TEST) {
+      console.error(
+        `[smoke-test] FAIL: hive did not boot — ${(err as Error).message}`,
+      );
+      app.exit(1);
+      return;
+    }
     dialog.showErrorBox(
       'OpenHive failed to start',
       (err as Error).message,
@@ -681,6 +690,19 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
+
+  // Smoke test: spawnHive resolving means the hive-child loaded `openhive`
+  // and its full dependency closure, and the Fastify server is listening —
+  // exactly the path that breaks when the packaged asar is missing a module.
+  // That is the whole check; exit cleanly so CI can assert on exit code 0
+  // without needing a display or any interaction.
+  if (process.env.OPENHIVE_SMOKE_TEST) {
+    console.log('[smoke-test] PASS: hive booted, openhive server is listening');
+    for (const { child } of hives.values()) child.kill();
+    app.exit(0);
+    return;
+  }
+
   refreshMenus();
   setupTray();
 

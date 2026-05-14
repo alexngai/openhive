@@ -1,0 +1,18 @@
+{
+  // Build-only tsconfig — used by tsup for the server bundle's .d.ts
+  // generation (see tsup.config.ts `tsconfig`). It is NOT used by
+  // `tsc --noEmit`, the IDE, or vitest — those keep using tsconfig.json.
+  //
+  // The one override: `types: ["node"]`. With no `types` field, TypeScript
+  // auto-includes every package under node_modules/@types/*. If that
+  // directory is ever inconsistent — e.g. after prune-node-modules.mjs
+  // sweeps .d.ts files and a plain `npm install` doesn't fully restore them
+  // — the dts build dies with `TS2688: Cannot find type definition file`.
+  // Pinning `types` to just `node` makes the build resolve every other
+  // @types/* package per-import (which is unaffected) instead of via the
+  // fragile global directory scan.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  }
+}
