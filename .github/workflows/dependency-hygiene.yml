@@ -1,0 +1,77 @@
+name: Dependency Hygiene
+
+# Catches the two recurring failure modes before they ship:
+#   - syncpack: the same dependency pinned to different versions across our
+#     package.json files (workspaces + the vendored repos under references/).
+#   - publint: a publishable package whose package.json points at files that
+#     won't be in the npm tarball (bad exports / main / files) — the empty
+#     "openteams-editor" publish was exactly this class of bug.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  syncpack:
+    name: syncpack (version mismatches)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # references/ are git submodules; syncpack compares their
+          # package.json versions against ours. If a submodule is
+          # inaccessible the checkout fails loudly — drop this line to fall
+          # back to linting just the workspaces.
+          submodules: recursive
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # npm bug #4828: the macOS-generated lockfile pins zero copies of some
+      # linux optional deps. Same workaround as the other workflows.
+      - name: Remove lockfile (npm bug #4828)
+        run: rm -f package-lock.json
+
+      - name: Install deps
+        run: npm install --no-audit --no-fund --ignore-scripts
+
+      - name: Check for version mismatches
+        run: npx syncpack lint
+
+  publint:
+    name: publint (publish validity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Remove lockfile (npm bug #4828)
+        run: rm -f package-lock.json
+
+      - name: Install deps
+        run: npm install --no-audit --no-fund --ignore-scripts
+
+      # publint inspects the *built* package — exports/main/types must point
+      # at files that exist, so dist/ has to be present first.
+      - name: Build
+        run: npm run build
+
+      - name: Lint openhive
+        run: npx publint
+
+      - name: Lint openhive-headless
+        run: npx publint packages/openhive-headless

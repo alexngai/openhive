@@ -8,6 +8,10 @@ export default defineConfig({
   },
   format: ['esm'],
   shims: true,
+  // Build-only tsconfig that pins `types: ["node"]` so the .d.ts build
+  // doesn't auto-scan a possibly-inconsistent node_modules/@types/ — see
+  // tsconfig.build.json for the why.
+  tsconfig: 'tsconfig.build.json',
   dts: true,
   splitting: false,
   // Server sourcemaps add ~6 MB to the bundle but are only useful when

@@ -241,6 +241,25 @@ jobs:
         # release. Otherwise publish artifacts to the (draft) release.
         run: npx electron-builder --publish ${{ inputs.bump == 'none' && 'never' || 'always' }}
 
+      # Gate the release on the packaged app actually being sound. electron-
+      # builder publishes to a *draft*; if either check fails this job fails,
+      # the `publish` job (which needs: release) is skipped, and the draft is
+      # never promoted — a broken build can't reach users.
+      #   verify-asar : the asar contains the required runtime modules.
+      #   smoke-test  : the packaged app boots — hive-child loads `openhive`
+      #                 + native modules and the Fastify server comes up.
+      - name: Install xvfb (Linux headless display)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Verify asar contents
+        working-directory: electron-app
+        run: node scripts/verify-asar.mjs
+
+      - name: Smoke test packaged app
+        working-directory: electron-app
+        run: node scripts/smoke-test.mjs
+
       # Also attach the built installers as GitHub Action artifacts so they're
       # downloadable for 90d without needing a Release. This is the only
       # output of a `bump: none` test run.

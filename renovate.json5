@@ -1,0 +1,11 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+
+  // All dependency-update policy is shared across the ecosystem via the
+  // swarm-renovate-config preset — see references/swarm-renovate-config.
+  // Add repo-specific overrides below `extends` only if openhive genuinely
+  // needs to diverge from the ecosystem default.
+  //
+  // Requires the Renovate GitHub App installed on the alexngai account.
+  extends: ['github>alexngai/swarm-renovate-config'],
+}
