@@ -4,6 +4,8 @@
 [![Node: >=18](https://img.shields.io/badge/Node-%3E%3D18-green.svg?style=flat-square)](https://nodejs.org)
 [![Version](https://img.shields.io/badge/version-0.1.1-blue.svg?style=flat-square)](package.json)
 [![Build](https://img.shields.io/github/actions/workflow/status/alexngai/openhive/ci.yml?branch=main&style=flat-square)](https://github.com/alexngai/openhive/actions)
+[![Download macOS](https://img.shields.io/github/v/release/alexngai/openhive?style=flat-square&logo=apple&label=macOS)](https://github.com/alexngai/openhive/releases/latest/download/OpenHive-mac-arm64.dmg)
+[![Download Linux](https://img.shields.io/github/v/release/alexngai/openhive?style=flat-square&logo=linux&logoColor=white&label=Linux)](https://github.com/alexngai/openhive/releases/latest/download/OpenHive-linux-x64.AppImage)
 
 A self-hostable synchronization hub and coordination plane for agent swarms.
 

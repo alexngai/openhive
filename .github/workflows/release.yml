@@ -1,24 +1,42 @@
 name: Build & Release Electron App
 
-# Triggered by pushing a tag like `v0.1.0`. Each run builds the Electron
-# app on each target platform, packages it with electron-builder, and
-# publishes the artifacts (DMG / AppImage / deb / latest-*.yml) to the
-# GitHub Release matching the tag.
+# Manually triggered (Actions tab → "Run workflow"). One run does the whole
+# release: bump the version, tag it, build + sign + notarize the Electron app
+# on each platform, publish artifacts (DMG / AppImage / deb / latest-*.yml) to
+# a GitHub Release, and promote that release from draft to published.
+#
+# There is no tag-push trigger — the workflow creates the tag itself. To cut a
+# release, dispatch this workflow and pick a `bump` type.
 #
 # Auto-update for installed apps is wired in main.ts via electron-updater,
-# which reads `build.publish` from electron-app/package.json and polls
-# this same GitHub Releases feed.
+# which reads `build.publish` from electron-app/package.json and polls this
+# same GitHub Releases feed. electron-updater cannot see *draft* releases,
+# which is why the final `publish` job promotes the draft.
 #
-# Signing + notarization are NOT configured yet — the first releases will
-# be unsigned, so macOS users must right-click → Open on first launch.
-# Add the APPLE_* / CSC_* secrets and update electron-app/package.json's
-# `mac.identity` when ready.
+# macOS signing + notarization are configured — the APPLE_* / CSC_* repo
+# secrets are set and electron-builder signs with the Developer ID in
+# electron-app/package.json's `mac.identity`.
+#
+# `bump: none` is a test mode: no version change, no tag, no release — it just
+# builds + signs and leaves the installers as 90-day job artifacts.
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
+      bump:
+        description: 'Version bump (use "explicit" with the version field, or "none" for a test build)'
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+          - explicit
+          - none
+      version:
+        description: 'Exact version, e.g. 0.2.0 — only used when bump = explicit'
+        type: string
+        default: ''
       build_macos:
         description: 'Build macOS (arm64 .dmg)'
         type: boolean
@@ -27,25 +45,84 @@ on:
         description: 'Build Linux (x64 AppImage + deb)'
         type: boolean
         default: true
-      publish:
-        description: 'Publish artifacts to GitHub Releases'
-        type: choice
-        default: always
-        options:
-          - always   # create/update draft release with artifacts
-          - never    # build + sign + notarize, no Release (artifacts stay as job artifacts for 90d)
-          - onTag    # publish only if this run is triggered by a tag push
 
 permissions:
-  contents: write   # required for electron-builder to publish releases
+  contents: write   # bump commit + tag push, and electron-builder publishing releases
+
+# Serialize runs: the version job pushes a commit to the branch, so two
+# concurrent runs would race on the fast-forward push.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  # Tag pushes always build both platforms; workflow_dispatch honors the
-  # checkboxes. We compute the matrix up front because `matrix.*` can't be
-  # referenced in `jobs.<id>.if` — GitHub's expression parser rejects it
-  # even though matrix is bound at step-level. Dynamic `include` keeps the
-  # matching job count accurate in the Actions UI (skipped jobs don't even
-  # materialize) instead of showing per-step skips.
+  # Bump the version in BOTH package.json files (root + electron-app) so the
+  # two version sources stay in lockstep, commit it, tag it, and push. When
+  # bump = none this is a no-op that just forwards the current commit so the
+  # build jobs have something to check out.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.bump.outputs.ref }}   # commit SHA the build jobs check out
+      tag: ${{ steps.bump.outputs.tag }}   # vX.Y.Z, or empty when bump = none
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Bump, commit, tag
+        id: bump
+        shell: bash
+        env:
+          BUMP: ${{ inputs.bump }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$BUMP" == "none" ]]; then
+            echo "Test build — no version bump."
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$BUMP" == "explicit" ]]; then
+            NEW="${VERSION#v}"
+            if [[ -z "$NEW" ]]; then
+              echo "bump = explicit requires the 'version' input" >&2
+              exit 1
+            fi
+            npm version "$NEW" --no-git-tag-version > /dev/null
+          else
+            RAW=$(npm version "$BUMP" --no-git-tag-version)
+            NEW="${RAW#v}"
+          fi
+
+          # Keep electron-app/package.json (what electron-updater compares
+          # against) pinned to the same version as the root.
+          npm version "$NEW" --no-git-tag-version --workspace=openhive-electron > /dev/null
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json electron-app/package.json package-lock.json
+          git commit -m "release: v$NEW"
+          git tag "v$NEW"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "v$NEW"
+
+          echo "Released v$NEW"
+          echo "tag=v$NEW" >> "$GITHUB_OUTPUT"
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  # Compute the build matrix from the workflow inputs. We compute it up front
+  # because `matrix.*` can't be referenced in `jobs.<id>.if` — GitHub's
+  # expression parser rejects it even though matrix is bound at step-level.
+  # Dynamic `include` keeps the job count accurate in the Actions UI (skipped
+  # jobs don't even materialize) instead of showing per-step skips.
   plan:
     runs-on: ubuntu-latest
     outputs:
@@ -54,21 +131,20 @@ jobs:
       - id: plan
         shell: bash
         env:
-          EVENT: ${{ github.event_name }}
           BUILD_MACOS: ${{ inputs.build_macos }}
           BUILD_LINUX: ${{ inputs.build_linux }}
         run: |
           targets='[]'
-          if [[ "$EVENT" != "workflow_dispatch" || "$BUILD_MACOS" == "true" ]]; then
+          if [[ "$BUILD_MACOS" == "true" ]]; then
             targets=$(jq -c '. + [{"os":"macos-14","label":"macos-arm64","platform":"macos"}]' <<<"$targets")
           fi
-          if [[ "$EVENT" != "workflow_dispatch" || "$BUILD_LINUX" == "true" ]]; then
+          if [[ "$BUILD_LINUX" == "true" ]]; then
             targets=$(jq -c '. + [{"os":"ubuntu-latest","label":"linux-x64","platform":"linux"}]' <<<"$targets")
           fi
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
 
   release:
-    needs: plan
+    needs: [version, plan]
     if: ${{ needs.plan.outputs.targets != '[]' }}
     strategy:
       fail-fast: false
@@ -82,6 +158,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The version job may have just pushed a bump commit — build that,
+          # not the ref the workflow was dispatched from.
+          ref: ${{ needs.version.outputs.ref }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -142,32 +222,28 @@ jobs:
           # enough because `permissions: contents: write` is set above).
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          # macOS signing + notarization. These are all optional — when
-          # the repo secrets aren't set, the variables expand to empty
-          # strings, electron-builder detects no cert, and produces
-          # an unsigned build. Once you've set up an Apple Developer ID:
-          #
-          # 1. Add these 5 secrets at Settings → Secrets and variables → Actions:
+          # macOS signing + notarization. These 5 repo secrets are set
+          # (Settings → Secrets and variables → Actions); electron-builder
+          # signs with the Developer ID in electron-app/package.json's
+          # `mac.identity` and notarizes via the APPLE_* credentials:
           #      CSC_LINK                    base64 of the .p12 cert
           #      CSC_KEY_PASSWORD            the .p12 export password
-          #      APPLE_ID                    your Apple developer email
-          #      APPLE_APP_SPECIFIC_PASSWORD the notarization password from
+          #      APPLE_ID                    Apple developer email
+          #      APPLE_APP_SPECIFIC_PASSWORD notarization password from
           #                                  appleid.apple.com
           #      APPLE_TEAM_ID               10-char Team ID
-          #
-          # 2. In electron-app/package.json, flip `"identity": null` to
-          #    `"identity": "Developer ID Application: Your Name (TEAMID)"`
-          #    and `"notarize": false` to `"notarize": true`.
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npx electron-builder --publish ${{ github.event.inputs.publish || 'always' }}
+        # bump = none is a test build: sign + notarize but don't touch any
+        # release. Otherwise publish artifacts to the (draft) release.
+        run: npx electron-builder --publish ${{ inputs.bump == 'none' && 'never' || 'always' }}
 
       # Also attach the built installers as GitHub Action artifacts so they're
-      # downloadable for 90d without needing a Release. Useful for
-      # `workflow_dispatch` runs with publish=never.
+      # downloadable for 90d without needing a Release. This is the only
+      # output of a `bump: none` test run.
       - name: Upload installers as job artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -181,3 +257,18 @@ jobs:
             release/latest-*.yml
           if-no-files-found: warn
           retention-days: 90
+
+  # electron-builder publishes each platform's artifacts to a single *draft*
+  # GitHub release. Once every matrix leg has uploaded, promote the draft to a
+  # published release so electron-updater (which can't see drafts) starts
+  # serving it. Skipped for `bump: none` test runs (tag output is empty).
+  publish:
+    needs: [version, release]
+    if: ${{ needs.version.outputs.tag != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Promote draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
