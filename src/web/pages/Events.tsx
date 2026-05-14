@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
-  Plus, Trash2, Pencil, X, Bell, Radio,
+  Plus, Trash2, Pencil, X, Bell, Radio, Activity, Pause, PlayCircle, Trash,
   ChevronDown, ChevronUp, Settings2, Check, XCircle,
   GitCommit, GitPullRequest, CircleDot, Github, MessageSquare, Play,
 } from 'lucide-react';
@@ -9,8 +9,10 @@ import {
   useDeliveryLog, useHives, useMapSwarms,
 } from '../hooks/useApi';
 import { useSwarmRealtime } from '../hooks/useRealtimeInvalidation';
+import { useSubscribe, useWSEvent } from '../hooks/useWebSocket';
 import type { EventSubscription } from '../lib/api';
 import { PageLoader, LoadingSpinner } from '../components/common/LoadingSpinner';
+import { TimeAgo } from '../components/common/TimeAgo';
 import { Tabs, type TabDef } from '../components/common/Tabs';
 import { StatusChip, type StatusTone } from '../components/common/StatusChip';
 import { toast } from '../stores/toast';
@@ -20,7 +22,7 @@ import clsx from 'clsx';
 // Shared
 // =============================================================================
 
-type Tab = 'subscriptions' | 'log';
+type Tab = 'subscriptions' | 'log' | 'live';
 type FormMode = 'none' | 'create-sub' | 'edit-sub';
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -591,6 +593,7 @@ export function Events() {
       ) : undefined,
     },
     { id: 'log', label: 'Delivery Log', icon: Bell },
+    { id: 'live', label: 'Live', icon: Activity },
   ];
 
   const closeForm = () => {
@@ -661,8 +664,176 @@ export function Events() {
             </button>
           </div>
         )
-      ) : (
+      ) : activeTab === 'log' ? (
         <DeliveryLogView />
+      ) : (
+        <LiveStreamView />
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
+// Live Stream View
+// =============================================================================
+
+/** Shape broadcast by the backend `routeEvent()` on the `events:live` channel. */
+interface LiveEventEnvelope {
+  received_at: string;
+  event: {
+    source: string;
+    event_type: string;
+    action?: string;
+    delivery_id: string;
+    metadata: Record<string, unknown>;
+    raw_payload?: unknown;
+  };
+  matched_subs: number;
+  deliveries: Array<{ swarm_id: string; status: string; error?: string }>;
+}
+
+const LIVE_BUFFER_LIMIT = 100;
+
+function LiveStreamView() {
+  // Subscribe to the live channel; refcounted so multiple openers don't leak.
+  useSubscribe(['events:live']);
+
+  const [events, setEvents] = useState<LiveEventEnvelope[]>([]);
+  const [paused, setPaused] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Pause guard via ref so the WS callback always sees the current value
+  // (state inside the callback closure would be stale).
+  const pausedRef = useRef(false);
+  pausedRef.current = paused;
+
+  const handleEvent = useCallback((raw: unknown) => {
+    if (pausedRef.current) return;
+    // The store unwraps the envelope so we get { received_at, event, ... } directly.
+    const env = raw as LiveEventEnvelope | { data?: LiveEventEnvelope };
+    const payload: LiveEventEnvelope = (env as { data?: LiveEventEnvelope }).data ?? (env as LiveEventEnvelope);
+    if (!payload?.event) return;
+    setEvents((prev) => [payload, ...prev].slice(0, LIVE_BUFFER_LIMIT));
+  }, []);
+  useWSEvent('events.received', handleEvent);
+
+  const toggleExpanded = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  return (
+    <div>
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 mb-3">
+        <button
+          onClick={() => setPaused(!paused)}
+          className={clsx(
+            'btn flex items-center gap-1.5 text-xs',
+            paused ? 'btn-primary' : 'btn-ghost',
+          )}
+          title={paused ? 'Resume the stream' : 'Pause incoming events'}
+        >
+          {paused ? <PlayCircle className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+          {paused ? 'Resume' : 'Pause'}
+        </button>
+        <button
+          onClick={() => setEvents([])}
+          disabled={events.length === 0}
+          className="btn btn-ghost flex items-center gap-1.5 text-xs"
+          title="Clear the buffer"
+        >
+          <Trash className="w-3.5 h-3.5" />
+          Clear
+        </button>
+        <span className="text-2xs ml-auto" style={{ color: 'var(--color-text-muted)' }}>
+          {events.length} / {LIVE_BUFFER_LIMIT}
+          {paused && <span className="ml-2 text-amber-400">paused</span>}
+        </span>
+      </div>
+
+      {events.length === 0 ? (
+        <div className="py-8 text-center">
+          <Activity className="w-8 h-8 mx-auto mb-2 opacity-20" style={{ color: 'var(--color-text-muted)' }} />
+          <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
+            Listening for events…
+          </p>
+          <p className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+            Inbound webhooks (matched or not) will appear here in real time.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-1">
+          {events.map((env) => {
+            const id = `${env.event.delivery_id}:${env.received_at}`;
+            const isExpanded = expanded.has(id);
+            const matchTone: StatusTone = env.matched_subs === 0 ? 'neutral' : 'success';
+            return (
+              <div key={id} className="card px-3 py-2">
+                <button
+                  onClick={() => toggleExpanded(id)}
+                  className="w-full flex items-center gap-3 text-left"
+                >
+                  <SourceBadge source={env.event.source} />
+                  <span className="text-xs font-medium truncate flex-1">
+                    {env.event.event_type}
+                    {env.event.action ? <span style={{ color: 'var(--color-text-muted)' }}>.{env.event.action}</span> : null}
+                  </span>
+                  <StatusChip
+                    label={env.matched_subs === 0 ? 'no match' : `${env.matched_subs} matched`}
+                    tone={matchTone}
+                    size="sm"
+                    shape="square"
+                  />
+                  <span className="text-2xs shrink-0" style={{ color: 'var(--color-text-muted)' }}>
+                    <TimeAgo date={env.received_at} />
+                  </span>
+                  {isExpanded
+                    ? <ChevronUp className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+                    : <ChevronDown className="w-3 h-3 shrink-0" style={{ color: 'var(--color-text-muted)' }} />}
+                </button>
+
+                {isExpanded && (
+                  <div className="mt-2 pt-2 border-t space-y-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
+                    {env.deliveries.length > 0 && (
+                      <div>
+                        <div className="text-2xs font-medium mb-1" style={{ color: 'var(--color-text-muted)' }}>
+                          Deliveries
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {env.deliveries.map((d, i) => (
+                            <StatusChip
+                              key={`${d.swarm_id}-${i}`}
+                              label={`${d.swarm_id}: ${d.status}`}
+                              tone={d.status === 'sent' ? 'success' : d.status === 'offline' ? 'warning' : 'danger'}
+                              size="sm"
+                              shape="square"
+                              title={d.error ?? undefined}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div>
+                      <div className="text-2xs font-medium mb-1" style={{ color: 'var(--color-text-muted)' }}>
+                        Payload
+                      </div>
+                      <pre
+                        className="text-2xs font-mono p-2 rounded overflow-auto max-h-64"
+                        style={{ backgroundColor: 'var(--color-surface)', color: 'var(--color-text-secondary)' }}
+                      >
+                        {JSON.stringify({ metadata: env.event.metadata, raw_payload: env.event.raw_payload }, null, 2)}
+                      </pre>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

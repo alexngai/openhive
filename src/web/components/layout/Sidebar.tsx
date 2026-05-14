@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Menu, X, CirclePile,
   User, MessageSquare, ChevronLeft, ChevronDown,
   ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings, FileText, Send, Clock,
-  GitBranch, Bell, Users,
+  GitBranch, Users,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useMapSwarms } from '../../hooks/useApi';
@@ -101,13 +101,6 @@ export function Sidebar() {
         { to: '/teams', icon: Users, label: 'Teams' },
         { to: '/repos', icon: GitBranch, label: 'Repos' },
         { to: '/learning', icon: GraduationCap, label: 'Learning' },
-      ],
-    },
-    {
-      id: 'events',
-      label: '',
-      items: [
-        { to: '/events', icon: Bell, label: 'Events' },
       ],
     },
   ];

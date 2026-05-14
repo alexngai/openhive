@@ -7,6 +7,7 @@
  */
 
 import * as eventsDAL from '../db/dal/events.js';
+import { broadcastToChannel } from '../realtime/index.js';
 import { dispatchToSwarms } from './dispatch.js';
 import type { NormalizedEvent, EventFilters, RouteResult } from './types.js';
 
@@ -30,6 +31,19 @@ export function routeEvent(event: NormalizedEvent): RouteResult {
     result.deliveries = deliveries;
     result.swarms_notified = deliveries.filter((d) => d.status === 'sent').length;
   }
+
+  // Live stream for the Events page's Live tab. Frontend ring-buffers
+  // these for "why didn't this fire" debugging. Includes unmatched events
+  // (matched_subs=0) so subscribers can see them too.
+  broadcastToChannel('events:live', {
+    type: 'events.received',
+    data: {
+      received_at: new Date().toISOString(),
+      event,
+      matched_subs: matchedSubs.length,
+      deliveries: result.deliveries,
+    },
+  });
 
   if (result.swarms_notified > 0) {
     console.log(

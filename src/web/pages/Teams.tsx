@@ -205,7 +205,7 @@ function TemplatesTab() {
       {resources.length === 0 ? (
         <EmptyState
           icon={Users}
-          title=”No team templates yet”
+          title="No team templates yet"
           description={'Click “New team” to author one visually.'}
         />
       ) : filtered.length === 0 ? (
@@ -336,7 +336,7 @@ function LoadoutsTab() {
       {resources.length === 0 ? (
         <EmptyState
           icon={Layers}
-          title=”No loadouts yet”
+          title="No loadouts yet"
           description={'Click “New loadout” to author one.'}
         />
       ) : filtered.length === 0 ? (

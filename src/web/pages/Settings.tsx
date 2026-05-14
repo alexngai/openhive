@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes, Globe, GitBranch } from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
+import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes, Globe, GitBranch, Bug, Bell, ArrowUpRight } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores/auth';
 import { useThemeStore } from '../stores/theme';
@@ -22,7 +22,7 @@ import clsx from 'clsx';
 export function Settings() {
   const navigate = useNavigate();
   const { agent, isAuthenticated, logout } = useAuthStore();
-  const [activeTab, setActiveTab] = useState<'profile' | 'display' | 'api-keys' | 'server' | 'swarmkit' | 'swarmhub'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'display' | 'api-keys' | 'server' | 'swarmkit' | 'swarmhub' | 'debug'>('profile');
 
   useSEO({ title: 'Settings' });
 
@@ -38,7 +38,7 @@ export function Settings() {
     { id: 'api-keys' as const, label: 'API Keys', icon: Key },
     { id: 'swarmkit' as const, label: 'SwarmKit', icon: Boxes },
     { id: 'swarmhub' as const, label: 'SwarmHub', icon: Globe },
-    { id: 'git-sync' as const, label: 'Git Sync', icon: GitBranch },
+    { id: 'debug' as const, label: 'Debug', icon: Bug },
   ];
 
   return (
@@ -77,8 +77,69 @@ export function Settings() {
           {activeTab === 'server' && <ServerSettings isAdmin={!!agent.is_admin} />}
           {activeTab === 'swarmkit' && <SwarmKitSettings isAdmin={!!agent.is_admin} />}
           {activeTab === 'swarmhub' && <SwarmHubSettings />}
-          {activeTab === 'git-sync' && <GitSyncSettings />}
+          {activeTab === 'debug' && <DebugSettings />}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Debug — operator tools and diagnostics
+// ═══════════════════════════════════════════════════════════════
+
+interface DebugLink {
+  to: string;
+  icon: React.ElementType;
+  title: string;
+  description: string;
+}
+
+const DEBUG_LINKS: DebugLink[] = [
+  {
+    to: '/events',
+    icon: Bell,
+    title: 'Events & Delivery Log',
+    description: 'Inspect webhook subscriptions and recent event deliveries.',
+  },
+];
+
+function DebugSettings() {
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold">Debug</h2>
+        <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+          Operator tools and diagnostics. Not part of day-to-day use.
+        </p>
+      </div>
+      <div className="space-y-2">
+        {DEBUG_LINKS.map((link) => (
+          <Link
+            key={link.to}
+            to={link.to}
+            className="card card-hover flex items-start gap-3 p-3 group"
+          >
+            <div
+              className="w-8 h-8 rounded-md flex items-center justify-center shrink-0"
+              style={{ backgroundColor: 'var(--color-elevated)' }}
+            >
+              <link.icon className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium group-hover:text-honey-500 transition-colors">
+                {link.title}
+              </div>
+              <div className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                {link.description}
+              </div>
+            </div>
+            <ArrowUpRight
+              className="w-4 h-4 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+              style={{ color: 'var(--color-text-muted)' }}
+            />
+          </Link>
+        ))}
       </div>
     </div>
   );
