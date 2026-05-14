@@ -118,6 +118,7 @@ export function ChatPanel() {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto min-h-0">
         <ChatMessageList
+          channel={channel}
           messages={messages}
           loading={channel.status === 'connecting'}
           compact

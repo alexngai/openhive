@@ -55,7 +55,7 @@ export function HostedChat({ hostedSwarmId, label, providerLabel, enabled = true
             style={{ color: 'var(--color-text-muted)' }}
           >
             {providerLabel ? `· ${providerLabel}` : ''}
-            {channel.status !== 'connected' && channel.status !== 'idle' ? ` · ${channel.status}` : ''}
+            {channel.status !== 'ready' && channel.status !== 'streaming' ? ` · ${channel.status}` : ''}
           </span>
           {channel.statusDetail && (
             <span className="ml-2 text-2xs text-red-400">{channel.statusDetail}</span>

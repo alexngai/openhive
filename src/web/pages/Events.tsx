@@ -73,7 +73,8 @@ function StatusBadge({ status }: { status: string }) {
 function EnabledDot({ enabled }: { enabled: boolean }) {
   return (
     <span
-      className={clsx('w-2 h-2 rounded-full shrink-0', enabled ? 'bg-green-400' : 'bg-gray-500')}
+      className="w-2 h-2 rounded-full shrink-0"
+      style={{ backgroundColor: enabled ? '#22c55e' : 'var(--color-text-muted)' }}
       title={enabled ? 'Enabled' : 'Disabled'}
     />
   );

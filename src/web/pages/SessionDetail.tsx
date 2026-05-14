@@ -57,7 +57,7 @@ function CheckpointRow({ checkpoint }: { checkpoint: TrajectoryCheckpoint }) {
       <div
         className="absolute left-0 top-2.5 w-2.5 h-2.5 rounded-full border-2"
         style={{
-          borderColor: 'var(--color-honey-500, #f59e0b)',
+          borderColor: 'var(--color-accent)',
           backgroundColor: 'var(--color-bg)',
         }}
       />
@@ -356,7 +356,7 @@ function TrajectoryTab({ sessionId, resourceId, hasTrajectorySupport, agentIdent
           disabled={resumeMutation.isPending}
           className="text-2xs px-2 py-0.5 rounded shrink-0 cursor-pointer disabled:cursor-wait disabled:opacity-60"
           style={{
-            backgroundColor: 'var(--color-honey-500, #f59e0b)',
+            backgroundColor: 'var(--color-accent)',
             color: 'var(--color-bg)',
           }}
         >

@@ -78,7 +78,10 @@ const STATE_TONES: Record<string, StatusTone> = {
   orphaned:   'warning',
 };
 
-/** Hex values for AgentAvatar.borderColor, which requires a CSS color string. */
+/**
+ * Hex values for AgentAvatar.borderColor, which requires a CSS color string.
+ * Known escape hatch — keep these values in sync with the tones in globals.css.
+ */
 const TONE_HEX: Record<StatusTone, string> = {
   success: '#34d399',
   warning: '#f59e0b',
@@ -164,7 +167,7 @@ function ChatHeader({ isDocked }: { isDocked: boolean }) {
           <button
             type="button"
             onClick={clearSession}
-            className="p-0.5 -ml-0.5 rounded hover:bg-white/10 shrink-0"
+            className="btn-ghost p-1 -ml-0.5 shrink-0"
             style={{ color: 'var(--color-text-muted)' }}
             title="Back"
           >
@@ -217,7 +220,7 @@ function ChatHeader({ isDocked }: { isDocked: boolean }) {
         <button
           type="button"
           onClick={toggleMode}
-          className="p-1 rounded hover:bg-white/10"
+          className="btn-ghost p-1"
           style={{ color: 'var(--color-text-muted)' }}
           title={isDocked ? 'Undock to floating' : 'Dock as sidebar'}
         >
@@ -226,7 +229,7 @@ function ChatHeader({ isDocked }: { isDocked: boolean }) {
         <button
           type="button"
           onClick={collapse}
-          className="p-1 rounded hover:bg-white/10"
+          className="btn-ghost p-1"
           style={{ color: 'var(--color-text-muted)' }}
           title="Close"
         >
@@ -264,9 +267,9 @@ function ChatBody() {
       {!sessionId && connectError && (
         <div className="px-3 py-2 border-b flex items-start gap-2 text-xs"
           style={{
-            borderColor: 'var(--color-border-subtle)',
-            backgroundColor: 'rgb(239 68 68 / 0.1)',
-            color: 'rgb(248 113 113)',
+            borderColor: 'var(--color-danger-border)',
+            backgroundColor: 'var(--color-danger-bg)',
+            color: 'var(--color-danger)',
           }}>
           <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
           <div className="flex-1 min-w-0">

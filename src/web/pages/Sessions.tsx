@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Activity, ChevronDown, ChevronRight, Clock, Cpu, FileText, Loader2, Mail,
+  Activity, Bot, ChevronDown, ChevronRight, Clock, Cpu, FileText, Loader2, Mail,
   Search, User, Users,
 } from 'lucide-react';
 import { useSessionsList, useSessionsInfinite, useMapSwarms, useMailConversations, useHostedSwarms } from '../hooks/useApi';
@@ -125,13 +125,15 @@ const STATUS_CHIP: Record<ThreadStatus, { label: string; tone: StatusTone }> = {
   'hosted-running': { label: 'running', tone: 'success' },
 };
 
+// Known escape hatch: AgentAvatar.borderColor needs a concrete color string,
+// not a CSS var. Keep these values in sync with the tones in globals.css.
 const TONE_BORDER_HEX: Record<StatusTone, string> = {
   success: '#34d399',
   warning: '#fbbf24',
   danger:  '#ef4444',
   info:    '#3b82f6',
   neutral: 'transparent',
-  accent:  '#f5a623',
+  accent:  '#f59e0b',
 };
 
 function statusBorderColor(status: ThreadStatus): string {
@@ -335,6 +337,8 @@ function ThreadsGrid({
                   ) : (
                     <Mail className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
                   )
+                ) : t.flavor === 'hosted-chat' ? (
+                  <Bot className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
                 ) : (
                   <Activity className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
                 )}
@@ -410,12 +414,15 @@ function InactiveSection({
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
 
-  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleSearch = (value: string) => {
     setSearch(value);
-    if (debounceRef[0]) clearTimeout(debounceRef[0]);
-    debounceRef[0] = setTimeout(() => setDebouncedSearch(value), 300);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => setDebouncedSearch(value), 300);
   };
+  useEffect(() => () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+  }, []);
 
   const {
     data,
@@ -676,7 +683,7 @@ export function Sessions() {
                   </div>
                   <div className="space-y-0.5">
                     {visibleActive
-                      .filter((t) => t.status !== 'live' && t.status !== 'mail-active')
+                      .filter((t) => t.status !== 'live' && t.status !== 'mail-active' && t.status !== 'hosted-running')
                       .map((t) => (
                         <ThreadRow
                           key={`${t.flavor}:${t.id}`}
