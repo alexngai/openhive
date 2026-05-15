@@ -68,8 +68,14 @@ if (!exe) {
 }
 console.log(`[smoke-test] launching: ${exe}`);
 
+// Isolate the app's data + state to a throwaway dir via Electron's
+// `--user-data-dir` switch (app.getPath('userData') honours it). This is
+// the *only* knob we use for isolation — see the cwd note below.
+const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openhive-smoke-'));
+console.log(`[smoke-test] user-data dir: ${workDir}`);
+
 // Args passed to the Electron binary itself.
-const electronArgs = [];
+const electronArgs = [`--user-data-dir=${workDir}`];
 if (process.platform === 'linux') {
   // CI Linux runners don't ship a setuid-root `chrome-sandbox` in the
   // unpacked build, so Electron's SUID sandbox aborts on launch
@@ -86,15 +92,25 @@ if (process.platform === 'linux' && !process.env.DISPLAY) {
   args = ['-a', '--server-args=-screen 0 1280x1024x24', exe, ...electronArgs];
 }
 
-// Run in an isolated temp dir: openhive resolves a relative `./data` dir
-// from cwd, so the smoke test must not depend on where it was invoked from
-// (and must not pollute the repo).
-const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openhive-smoke-'));
-console.log(`[smoke-test] working dir: ${workDir}`);
-
+// Launch with cwd `/` — exactly what Finder / `open` / a desktop launcher
+// gives a packaged app. Earlier this test ran in a writable temp cwd,
+// which *masked* a real bug: openhive's config defaults storage paths to
+// cwd-relative `./data/...`, so a writable cwd let `mkdir ./data` succeed
+// in the test while the published app (cwd `/`) failed with ENOENT. The
+// app must be cwd-independent; pinning cwd to `/` here is what proves it.
+// Two isolation knobs, both pointed at workDir:
+//   --user-data-dir   → Electron-level state (Crashpad, recent-hives.json)
+//   OPENHIVE_HOME     → the hive's own dataDir (db, iam-secret, logs).
+// main.ts's defaultHiveDataDir() reads OPENHIVE_HOME first, so this keeps
+// the test out of the user's real `~/.openhive/` while still exercising
+// the production default-resolution path.
 const child = spawn(cmd, args, {
-  cwd: workDir,
-  env: { ...process.env, OPENHIVE_SMOKE_TEST: '1' },
+  cwd: '/',
+  env: {
+    ...process.env,
+    OPENHIVE_SMOKE_TEST: '1',
+    OPENHIVE_HOME: workDir,
+  },
   stdio: ['ignore', 'inherit', 'inherit'],
 });
 

@@ -2,7 +2,7 @@ import { z } from "zod";
 import * as path from "path";
 import * as fs from "fs";
 import { createRequire } from "node:module";
-import { resolveDataDir } from "./data-dir.js";
+import { resolveDataDir, dataDirPaths } from "./data-dir.js";
 import { writeConfigFile } from "./config-persistence.js";
 
 // Storage configuration schema
@@ -808,6 +808,26 @@ export function loadConfig(configPath?: string): Config {
   }
   if (process.env.OPENHIVE_DATABASE) {
     rawConfig.database = process.env.OPENHIVE_DATABASE;
+  }
+
+  // If nothing else specified a database path, anchor the default to the
+  // resolved data dir instead of letting Zod's `.default("./data/openhive.db")`
+  // stand — that default is cwd-relative, and `initDatabase()` does
+  // `mkdir -p $(dirname path)` relative to cwd. The CLI sidesteps this by
+  // setting OPENHIVE_DATABASE absolutely in startServer(), but library
+  // embedders (Electron app, anyone using `createHive()` directly) silently
+  // pick up cwd — which is `/` under a Finder launch → ENOENT. Anchoring
+  // the default here closes that gap once and for all.
+  //
+  // Note: this also fixes the iam-secret.key location. `server.ts` derives
+  // its data dir via `dirname(dirname(db.path))` to know where to persist
+  // the secret; with a relative db path that yields `.`, so secrets land
+  // cwd-relative too. An absolute db path keeps them in <dataDir>/data/.
+  //
+  // Explicit values from the config file or OPENHIVE_DATABASE take
+  // precedence over this default — we only fill in when truly unset.
+  if (rawConfig.database === undefined) {
+    rawConfig.database = dataDirPaths(dataDir).database;
   }
   if (process.env.OPENHIVE_ADMIN_KEY) {
     rawConfig.admin = {

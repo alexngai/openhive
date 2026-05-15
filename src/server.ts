@@ -19,7 +19,7 @@ import { generateSkillMd } from "./skill.js";
 import { generateSitemap, generateRobotsTxt } from "./services/sitemap.js";
 import { initializeStorage, type StorageConfig } from "./storage/index.js";
 import { initializeLocalSessionStorage, isSessionStorageInitialized } from "./sessions/storage/index.js";
-import { resolveDataDir } from "./data-dir.js";
+import { resolveDataDir, ensureDataDir } from "./data-dir.js";
 import { initJwks } from "./auth/jwks.js";
 import {
   createNetworkProvider,
@@ -81,6 +81,23 @@ export interface HiveServer {
 export async function createHive(
   configInput?: Partial<Config> | string,
 ): Promise<HiveServer> {
+  // If the caller passed a `dataDir`, push it to OPENHIVE_HOME *before*
+  // loadConfig() runs. loadConfig() calls resolveDataDir() to anchor the
+  // default database path (and the iam-secret location derived from it)
+  // — so it needs to know the data dir at config-load time, not after
+  // the post-load Object.assign() merge below. Without this, a caller
+  // like `createHive({ dataDir: '/some/path' })` would get loadConfig's
+  // resolveDataDir() falling back to ~/.openhive, and storage paths
+  // pointing at the wrong tree until the merge ran. The CLI's
+  // startServer() sets OPENHIVE_DATABASE explicitly to compensate;
+  // doing it here means every embedder gets correct anchoring for free.
+  if (configInput && typeof configInput === "object") {
+    const dataDir = (configInput as { dataDir?: string }).dataDir;
+    if (typeof dataDir === "string") {
+      process.env.OPENHIVE_HOME = dataDir;
+    }
+  }
+
   // Load configuration
   let config: Config;
   if (typeof configInput === "string") {
@@ -92,6 +109,16 @@ export async function createHive(
   } else {
     config = loadConfig();
   }
+
+  // Ensure the data dir exists and is marked as an openhive root. This
+  // mirrors what the CLI's setup wizard does for a brand-new instance:
+  // creates <dataDir>/, <dataDir>/data/, <dataDir>/uploads/, and writes
+  // the .openhive-root marker. Idempotent — safe to call on every boot.
+  // Embedders (Electron, library callers) get the same marker the CLI
+  // writes, so a user who first launches via one and later via the other
+  // doesn't see a "looks uninitialised, run setup?" prompt against a
+  // perfectly valid dataDir.
+  ensureDataDir(resolveDataDir());
 
   // Initialize database
   initDatabase(config.database);
@@ -418,9 +445,17 @@ export async function createHive(
         }
       });
 
+      // swarmcraft's plugin defaults `kuzuDbPath` to cwd-relative
+      // `./data/kuzu` — same cwd-dependency class as the openhive DB path
+      // we just fixed. Anchor it to <dataDir>/data/kuzu (a sibling of the
+      // sqlite DB) so it works regardless of inherited cwd. With dbPath
+      // now absolute (loadConfig fix), `dirname(dbPath)` is <dataDir>/data.
+      const kuzuDbPath = path.join(path.dirname(dbPath), "kuzu");
+
       const { swarmcraftPlugin } = await import("swarmcraft/plugin");
       await fastify.register(swarmcraftPlugin, {
         database: { type: "sqlite", path: dbPath, tablePrefix: "sc_" },
+        kuzuDbPath,
         prefix: scPrefix,
         wsPath: scWsPath,
         logLevel: config.swarmcraft.logLevel || "info",
@@ -428,7 +463,13 @@ export async function createHive(
           typeof config.cors.origin === "string"
             ? config.cors.origin
             : undefined,
-        // Enable sessionlog watcher for live local agent session tracking
+        // Enable sessionlog watcher for live local agent session tracking.
+        // TODO: `repoPath: process.cwd()` is cwd-dependent and wrong under
+        // Electron (cwd `/` → watches `/.sessionlog`, finds nothing). The
+        // correct value depends on context: under the CLI cwd is usually
+        // the user's project root; under Electron there is no project root
+        // unless the user attaches one. Tracked as a follow-up; left as
+        // process.cwd() for now since it's silent (not fatal).
         sessionlog: {
           enabled: true,
           repoPath: process.cwd(),
