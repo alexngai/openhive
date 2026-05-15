@@ -1,6 +1,6 @@
 {
   "name": "openhive-electron",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Electron desktop shell for OpenHive",
   "homepage": "https://github.com/alexngai/openhive",
   "author": {
