@@ -70,7 +70,8 @@
       "node_modules/better-sqlite3/**",
       "node_modules/bcrypt/**",
       "node_modules/sharp/**",
-      "node_modules/@lydell/node-pty/**"
+      "node_modules/@lydell/node-pty/**",
+      "node_modules/@img/**"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
