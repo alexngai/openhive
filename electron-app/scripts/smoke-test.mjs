@@ -68,12 +68,22 @@ if (!exe) {
 }
 console.log(`[smoke-test] launching: ${exe}`);
 
+// Args passed to the Electron binary itself.
+const electronArgs = [];
+if (process.platform === 'linux') {
+  // CI Linux runners don't ship a setuid-root `chrome-sandbox` in the
+  // unpacked build, so Electron's SUID sandbox aborts on launch
+  // (exit 133). The smoke test is headless and throwaway — disabling
+  // the sandbox is the standard, safe workaround here.
+  electronArgs.push('--no-sandbox');
+}
+
 // Headless Linux runners have no X server; wrap in xvfb-run.
 let cmd = exe;
-let args = [];
+let args = electronArgs;
 if (process.platform === 'linux' && !process.env.DISPLAY) {
   cmd = 'xvfb-run';
-  args = ['-a', '--server-args=-screen 0 1280x1024x24', exe];
+  args = ['-a', '--server-args=-screen 0 1280x1024x24', exe, ...electronArgs];
 }
 
 // Run in an isolated temp dir: openhive resolves a relative `./data` dir
