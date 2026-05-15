@@ -164,6 +164,29 @@ interface HiveEntry {
   overrides: Record<string, unknown>;
 }
 
+/**
+ * Resolve the dataDir for the *default* hive (the one auto-opened on launch
+ * and on macOS dock-icon re-activation). Distinct from app.getPath('userData')
+ * — that's the app's Electron-level state (Crashpad, GPU cache, our own
+ * recent-hives.json) which stays at the platform-standard path so the OS
+ * treats it conventionally. The hive's own state (SQLite, IAM secret, etc.)
+ * lives wherever this resolver points.
+ *
+ *   1. OPENHIVE_HOME env var — mirrors the openhive CLI's override knob.
+ *      Used by the smoke-test to isolate; also lets a power user launch
+ *      the app pointed at any data dir from the terminal.
+ *   2. ~/.openhive/ — same default as the CLI. Means a user who has been
+ *      running `openhive serve` from a terminal will see their existing
+ *      data when they install the GUI app, and vice versa. CLI-app parity.
+ *
+ * The "Open Hive…" / "New Hive…" menu items still let the user point any
+ * subsequent hive at an arbitrary path via the file picker; only the
+ * launch default changes here.
+ */
+function defaultHiveDataDir(): string {
+  return process.env.OPENHIVE_HOME || path.join(os.homedir(), '.openhive');
+}
+
 interface WindowState {
   x?: number;
   y?: number;
@@ -668,12 +691,21 @@ app.whenReady().then(async () => {
   });
 
   showSplash();
-  const defaultHive = app.getPath('userData');
+  const defaultHive = defaultHiveDataDir();
   try {
     await spawnHive(defaultHive);
     recordRecentHive(defaultHive);
   } catch (err) {
     dismissSplash();
+    // Smoke test: a boot failure must exit non-zero so CI fails. Bypasses
+    // the error dialog (no one to see it) and app.quit()'s exit code 0.
+    if (process.env.OPENHIVE_SMOKE_TEST) {
+      console.error(
+        `[smoke-test] FAIL: hive did not boot — ${(err as Error).message}`,
+      );
+      app.exit(1);
+      return;
+    }
     dialog.showErrorBox(
       'OpenHive failed to start',
       (err as Error).message,
@@ -681,6 +713,19 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
+
+  // Smoke test: spawnHive resolving means the hive-child loaded `openhive`
+  // and its full dependency closure, and the Fastify server is listening —
+  // exactly the path that breaks when the packaged asar is missing a module.
+  // That is the whole check; exit cleanly so CI can assert on exit code 0
+  // without needing a display or any interaction.
+  if (process.env.OPENHIVE_SMOKE_TEST) {
+    console.log('[smoke-test] PASS: hive booted, openhive server is listening');
+    for (const { child } of hives.values()) child.kill();
+    app.exit(0);
+    return;
+  }
+
   refreshMenus();
   setupTray();
 
@@ -704,7 +749,7 @@ app.whenReady().then(async () => {
 
 app.on('activate', () => {
   if (hives.size === 0 && app.isReady()) {
-    void openHive(app.getPath('userData'));
+    void openHive(defaultHiveDataDir());
   }
 });
 

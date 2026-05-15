@@ -19,14 +19,16 @@
  * asar unless we strip them from the staged package.json. Stripping them
  * from the *staged* copy doesn't affect the real openhive package — the
  * real deps are already in `/Users/alexngai/GitHub/openhive/package.json`
- * and get restored when `npm install` runs.
+ * and get restored when `npm ci` runs.
  *
  * The `file:..` symlink is a dev-time convenience for editing openhive
  * source and having the electron-app pick up changes. For packaging,
  * we want an honest npm-pack-style install. This script does that swap.
  *
- * After electron-builder finishes, `npm install` (at the repo root)
- * restores the workspace symlink.
+ * After electron-builder finishes, restore with `npm ci` at the repo root
+ * (NOT `npm install` — prune-node-modules.mjs guts package internals that
+ * `npm install` won't repair; see that file's header). `npm ci` rebuilds
+ * the workspace symlink along with everything else.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -125,11 +127,17 @@ function pickDeps(source, allowList) {
 
 function stagedPackageJson(original) {
   const pkg = { ...original };
+  // Optional runtime deps may be declared in EITHER `dependencies` or
+  // `optionalDependencies` upstream. `@aws-sdk/client-s3` in particular
+  // is a hard `dependency` (because `dist/index.js` statically imports
+  // it) yet we want it staged as optional. Search both sources so a dep
+  // declared as required upstream still gets into the asar.
+  const allDeps = {
+    ...original.dependencies,
+    ...original.optionalDependencies,
+  };
   pkg.dependencies = pickDeps(original.dependencies, RUNTIME_DEPS);
-  pkg.optionalDependencies = pickDeps(
-    original.optionalDependencies,
-    OPTIONAL_RUNTIME_DEPS,
-  );
+  pkg.optionalDependencies = pickDeps(allDeps, OPTIONAL_RUNTIME_DEPS);
   // Dev deps are never copied by electron-builder, but clear them defensively
   // so the staged package.json reads cleanly.
   delete pkg.devDependencies;
@@ -210,4 +218,4 @@ for (const target of targets) {
   console.log(`[stage-openhive]   wrote trimmed package.json`);
 }
 
-console.log(`[stage-openhive] Done — run \`npm install\` at repo root to restore the workspace symlink when finished.`);
+console.log(`[stage-openhive] Done — run \`npm ci\` at repo root to restore the workspace when finished (NOT \`npm install\`).`);

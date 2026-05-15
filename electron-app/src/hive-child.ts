@@ -54,6 +54,12 @@ process.on('message', (data: InMessage) => {
     try {
       if (data.type === 'start') {
         if (typeof data.config.dataDir === 'string') {
+          // Set OPENHIVE_HOME for the rest of the process (CLI utilities,
+          // submodules that call resolveDataDir() directly). createHive()
+          // also reads `config.dataDir` and anchors storage paths against
+          // it internally, so even without this env var the data dir
+          // would be honoured — this just makes the intent visible
+          // before the dynamic import below.
           process.env.OPENHIVE_HOME = data.config.dataDir;
         }
         // Dynamic import so createHive is loaded lazily — only after we

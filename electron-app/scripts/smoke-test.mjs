@@ -1,0 +1,136 @@
+/**
+ * smoke-test — launches the *packaged* app and asserts it boots.
+ *
+ * Runs the built binary with OPENHIVE_SMOKE_TEST=1. main.ts honours that
+ * env var: it spawns the hive-child (which does `await import('openhive')`
+ * and starts the Fastify server), and on success exits 0 — on any boot
+ * failure (missing module, native module ABI mismatch, etc.) exits 1.
+ *
+ * This is the runtime counterpart to verify-asar.mjs: that one checks files
+ * are *present*, this one checks the app actually *loads* them — including
+ * the asar.unpacked native modules a static listing can't validate.
+ *
+ * Run after electron-builder, from the electron-app directory:
+ *   node scripts/smoke-test.mjs
+ * On Linux with no DISPLAY it self-wraps in xvfb-run.
+ */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const releaseDir = path.resolve(__dirname, '..', '..', 'release');
+const TIMEOUT_MS = 120_000;
+
+function fail(msg) {
+  console.error(`[smoke-test] FAIL: ${msg}`);
+  process.exit(1);
+}
+
+// Locate the packaged executable for the current platform.
+function findExecutable() {
+  if (process.platform === 'darwin') {
+    // release/<mac-dir>/OpenHive.app/Contents/MacOS/OpenHive
+    const stack = [releaseDir];
+    while (stack.length) {
+      const cur = stack.pop();
+      let entries;
+      try {
+        entries = fs.readdirSync(cur, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const e of entries) {
+        const full = path.join(cur, e.name);
+        if (e.isDirectory() && e.name.endsWith('.app')) {
+          const macOSDir = path.join(full, 'Contents', 'MacOS');
+          const bin = fs.existsSync(macOSDir) && fs.readdirSync(macOSDir)[0];
+          if (bin) return path.join(macOSDir, bin);
+        }
+        if (e.isDirectory()) stack.push(full);
+      }
+    }
+    return null;
+  }
+  if (process.platform === 'linux') {
+    // executableName "openhive" is set in package.json's build.linux config.
+    const bin = path.join(releaseDir, 'linux-unpacked', 'openhive');
+    return fs.existsSync(bin) ? bin : null;
+  }
+  fail(`unsupported platform: ${process.platform}`);
+}
+
+const exe = findExecutable();
+if (!exe) {
+  fail(`no packaged executable found under ${releaseDir} — run electron-builder first`);
+}
+console.log(`[smoke-test] launching: ${exe}`);
+
+// Isolate the app's data + state to a throwaway dir via Electron's
+// `--user-data-dir` switch (app.getPath('userData') honours it). This is
+// the *only* knob we use for isolation — see the cwd note below.
+const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openhive-smoke-'));
+console.log(`[smoke-test] user-data dir: ${workDir}`);
+
+// Args passed to the Electron binary itself.
+const electronArgs = [`--user-data-dir=${workDir}`];
+if (process.platform === 'linux') {
+  // CI Linux runners don't ship a setuid-root `chrome-sandbox` in the
+  // unpacked build, so Electron's SUID sandbox aborts on launch
+  // (exit 133). The smoke test is headless and throwaway — disabling
+  // the sandbox is the standard, safe workaround here.
+  electronArgs.push('--no-sandbox');
+}
+
+// Headless Linux runners have no X server; wrap in xvfb-run.
+let cmd = exe;
+let args = electronArgs;
+if (process.platform === 'linux' && !process.env.DISPLAY) {
+  cmd = 'xvfb-run';
+  args = ['-a', '--server-args=-screen 0 1280x1024x24', exe, ...electronArgs];
+}
+
+// Launch with cwd `/` — exactly what Finder / `open` / a desktop launcher
+// gives a packaged app. Earlier this test ran in a writable temp cwd,
+// which *masked* a real bug: openhive's config defaults storage paths to
+// cwd-relative `./data/...`, so a writable cwd let `mkdir ./data` succeed
+// in the test while the published app (cwd `/`) failed with ENOENT. The
+// app must be cwd-independent; pinning cwd to `/` here is what proves it.
+// Two isolation knobs, both pointed at workDir:
+//   --user-data-dir   → Electron-level state (Crashpad, recent-hives.json)
+//   OPENHIVE_HOME     → the hive's own dataDir (db, iam-secret, logs).
+// main.ts's defaultHiveDataDir() reads OPENHIVE_HOME first, so this keeps
+// the test out of the user's real `~/.openhive/` while still exercising
+// the production default-resolution path.
+const child = spawn(cmd, args, {
+  cwd: '/',
+  env: {
+    ...process.env,
+    OPENHIVE_SMOKE_TEST: '1',
+    OPENHIVE_HOME: workDir,
+  },
+  stdio: ['ignore', 'inherit', 'inherit'],
+});
+
+const timer = setTimeout(() => {
+  console.error(`[smoke-test] FAIL: app did not exit within ${TIMEOUT_MS / 1000}s`);
+  child.kill('SIGKILL');
+  process.exit(1);
+}, TIMEOUT_MS);
+
+child.on('error', (err) => {
+  clearTimeout(timer);
+  fail(`could not spawn the app — ${err.message}`);
+});
+
+child.on('exit', (code, signal) => {
+  clearTimeout(timer);
+  if (signal) fail(`app terminated by signal ${signal}`);
+  if (code === 0) {
+    console.log('[smoke-test] PASS: packaged app booted and exited cleanly');
+    process.exit(0);
+  }
+  fail(`app exited with code ${code}`);
+});
