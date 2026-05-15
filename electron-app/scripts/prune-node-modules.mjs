@@ -21,8 +21,14 @@
  *   - Build tooling — tsup, vite, rollup, esbuild, tsc, tailwindcss, etc.
  *   - Electron-builder tooling — shouldn't be in a packaged app at all.
  *
- * After electron-builder finishes, `npm install` (at the repo root)
- * restores everything.
+ * After electron-builder finishes, restore with `npm ci` at the repo root
+ * — NOT `npm install`. The final `sweepFiles` pass below deletes `.d.ts`
+ * files (and test dirs, source maps, etc.) from *inside* otherwise-intact
+ * package directories. `npm install` sees the directory still present and
+ * considers the package installed, so it never repairs the gutted files —
+ * the next `tsup` build then fails with "Cannot find type definition file
+ * for 'node'" because `@types/node` is now an empty husk. `npm ci` wipes
+ * node_modules first, so it always restores cleanly.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -179,8 +185,8 @@ const DELETE_PACKAGES = [
   // is sufficient here.
   //
   // If you want the disk-space saving for dev environments, restore via
-  // `npm install` after the build — which is already the documented
-  // cleanup step. Deleting them pre-build only breaks the build.
+  // `npm ci` after the build — which is already the documented cleanup
+  // step. Deleting them pre-build only breaks the build.
 
   // ---- Extraneous / dev leftovers (not reachable from package.json) ----
   'happy-dom',
@@ -629,4 +635,4 @@ sweepFiles(rootNM);
 console.log(
   `[prune-node-modules] Removed ${deletedCount} dirs (${(bytesFreed / 1024 / 1024).toFixed(1)}M), swept ${sweptCount} files/dirs (${(sweptBytes / 1024 / 1024).toFixed(1)}M)`,
 );
-console.log(`[prune-node-modules] Run \`npm install\` at repo root to restore everything.`);
+console.log(`[prune-node-modules] Run \`npm ci\` at repo root to restore everything (NOT \`npm install\` — see header comment).`);

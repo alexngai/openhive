@@ -80,9 +80,27 @@ npm -w openhive-electron run dev
 # Just rerun without rebuilding
 cd electron-app && npm run start
 
-# Package a distributable (DMG / AppImage / deb, unsigned until signing is set up)
+# Package + verify a distributable (DMG / AppImage / deb, signed + notarized)
 cd electron-app && npm run dist
+
+# Fast local verify loop — packaged .app, no signing/notarization/DMG.
+# Builds, stages, prunes, `electron-builder --dir`, then runs verify-asar
+# + smoke-test (the smoke-test launches with cwd `/`, mimicking a Finder
+# launch — so it catches cwd-relative path bugs a dev run would hide).
+cd electron-app && npm run pack
+
+# Re-run just the guards against the last build (seconds, no rebuild)
+cd electron-app && npm run verify
 ```
+
+> **Restoring after `dist` / `pack`.** Both run `stage-openhive.mjs` +
+> `prune-node-modules.mjs`, which are *destructive* to the shared
+> `node_modules` — they swap the `openhive` workspace symlink for a pruned
+> copy and strip `.d.ts` / test dirs from inside packages. Restore with
+> **`npm ci`** at the repo root, **not `npm install`**: `npm install` sees
+> the gutted package directories as still-installed and won't repair them,
+> so the next build fails (e.g. `Cannot find type definition file for
+> 'node'`). `npm ci` wipes `node_modules` first and always restores cleanly.
 
 ## Debugging
 
@@ -121,7 +139,7 @@ port so multi-hive debugging doesn't collide.
 Two approaches:
 
 **1. Point MCP's Chrome at the hive URL** (easy, ~95% of debugging).
-- Launch Electron, grab the URL from `~/Library/Application Support/OpenHive/logs/hive.log`
+- Launch Electron, grab the URL from `~/.openhive/logs/hive.log` (or wherever `defaultHiveDataDir()` resolved to — see Logs + data)
 - `mcp__.../new_page` with `http://127.0.0.1:<port>/`
 - Use `take_snapshot`, `click`, `list_network_requests`, `list_console_messages`, `evaluate_script`
 - Covers: React state, network, console, API integration. Misses: Electron IPC, preload, native menu interactions.
@@ -136,14 +154,26 @@ Two approaches:
 
 ## Logs + data
 
+Two distinct trees, deliberately separated:
+
+**Hive data** lives at `~/.openhive/` by default — same path the `openhive` CLI uses. Means a user with existing CLI data sees it in the app and vice versa. Overridable via `OPENHIVE_HOME` env var (e.g. `OPENHIVE_HOME=/tmp/hive open /Applications/OpenHive.app`). "New Hive…" / "Open Hive…" in the menu let you point individual hives at any path; only the *default* hive on launch resolves through `defaultHiveDataDir()` in `main.ts`.
+
+**App state** stays at the platform-standard `app.getPath('userData')` so Electron behaves conventionally for crash dumps, GPU cache, etc.
+
 | What | Where |
 |---|---|
-| hive-child stdout/stderr (openhive's pino + `console.log`) | `<userData>/logs/hive.log` |
+| hive-child stdout/stderr (openhive's pino + `console.log`) | `<hive-dataDir>/logs/hive.log` |
 | Supervisor stdout | Terminal where Electron was launched (invisible in packaged builds) |
-| macOS `<userData>` | `~/Library/Application Support/OpenHive/` |
-| SQLite DB | `<userData>/data/openhive.db` |
-| Session trajectory cache | `<userData>/data/sessions/` |
-| Uploads | `<userData>/uploads/` |
+| Default `<hive-dataDir>` | `~/.openhive/` (or `$OPENHIVE_HOME`) |
+| SQLite DB | `<hive-dataDir>/data/openhive.db` |
+| IAM signing secret | `<hive-dataDir>/data/iam-secret.key` |
+| Session trajectory cache | `<hive-dataDir>/data/sessions/` |
+| Uploads | `<hive-dataDir>/uploads/` |
+| Per-hive window bounds | `<hive-dataDir>/window-state.json` |
+| openhive-root marker | `<hive-dataDir>/.openhive-root` |
+| macOS `<userData>` (app-level) | `~/Library/Application Support/OpenHive/` |
+| Crash dumps | `<userData>/Crashpad/` |
+| Recent-hives MRU | `<userData>/recent-hives.json` |
 
 Every line the hive-child writes is piped to **both** the per-hive log file and
 the supervisor's stderr (see `child.stdout.on('data', ...)` in `spawnHive`).
@@ -154,7 +184,7 @@ Tail one place, see everything.
 | Name | Set by | Effect |
 |---|---|---|
 | `ELECTRON_RUN_AS_NODE=1` | Supervisor → child fork | Makes the Electron binary act as plain Node in the child |
-| `OPENHIVE_HOME` | Supervisor → child fork | Overrides openhive's data-dir auto-detect to the BrowserWindow's dataDir |
+| `OPENHIVE_HOME` | User → Electron main (and Supervisor → child fork) | Default hive's dataDir. Read by `defaultHiveDataDir()` at launch; if unset, falls back to `~/.openhive/`. Also forwarded into the hive-child so anything that calls `resolveDataDir()` inside the openhive runtime agrees. |
 | `OPENHIVE_REMOTE_DEBUG` | User → Electron main | If set, exposes Chromium's CDP at that port (e.g. `OPENHIVE_REMOTE_DEBUG=9223`) |
 | `OPENHIVE_DEBUG_HIVE` | User → Electron main | (Optional hook) pass `--inspect` to forked hive-children |
 
