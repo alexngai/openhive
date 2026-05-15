@@ -37,8 +37,23 @@ jobs:
       - name: Remove lockfile (npm bug #4828)
         run: rm -f package-lock.json
 
+      # Deleting the lockfile above forces a full fresh resolve every run,
+      # which hammers the registry — `ECONNRESET` mid-install is a recurring
+      # transient on Linux runners. Same retry shape as release.yml: up to
+      # 3 attempts with npm's own fetch retries bumped.
       - name: Install deps
-        run: npm install --no-audit --no-fund --ignore-scripts
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm install --no-audit --no-fund --ignore-scripts \
+              --fetch-retries=5 \
+              --fetch-retry-mintimeout=20000 \
+              --fetch-retry-maxtimeout=120000 && exit 0
+            echo "npm install failed (attempt $attempt/3), retrying in 15s..."
+            sleep 15
+          done
+          echo "npm install failed after 3 attempts" >&2
+          exit 1
 
       - name: Check for version mismatches
         run: npx syncpack lint
@@ -59,8 +74,23 @@ jobs:
       - name: Remove lockfile (npm bug #4828)
         run: rm -f package-lock.json
 
+      # Deleting the lockfile above forces a full fresh resolve every run,
+      # which hammers the registry — `ECONNRESET` mid-install is a recurring
+      # transient on Linux runners. Same retry shape as release.yml: up to
+      # 3 attempts with npm's own fetch retries bumped.
       - name: Install deps
-        run: npm install --no-audit --no-fund --ignore-scripts
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm install --no-audit --no-fund --ignore-scripts \
+              --fetch-retries=5 \
+              --fetch-retry-mintimeout=20000 \
+              --fetch-retry-maxtimeout=120000 && exit 0
+            echo "npm install failed (attempt $attempt/3), retrying in 15s..."
+            sleep 15
+          done
+          echo "npm install failed after 3 attempts" >&2
+          exit 1
 
       # publint inspects the *built* package — exports/main/types must point
       # at files that exist, so dist/ has to be present first. The root build

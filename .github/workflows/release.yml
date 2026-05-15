@@ -68,6 +68,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Need full history for `git pull --rebase` below: if someone pushes
+          # to main between this checkout and our push, the bump commit is
+          # rejected as non-fast-forward and the retry has to rebase. A
+          # shallow clone often lacks the merge base for that.
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -110,8 +116,30 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json electron-app/package.json package-lock.json
           git commit -m "release: v$NEW"
+
+          # Race-safe push: another push to main between this job's checkout
+          # and now would reject ours as non-fast-forward. The local change
+          # is three package.json files + lockfile — never conflicts with
+          # normal code changes — so a `git pull --rebase` lands cleanly.
+          # Retry up to 3× to also absorb subsequent pushes during the
+          # rebase window.
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              break
+            fi
+            if [[ $attempt -eq 3 ]]; then
+              echo "branch push failed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "push rejected (attempt $attempt/3) — rebasing onto origin/${GITHUB_REF_NAME} and retrying..."
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+          done
+
+          # Tag the (possibly-rebased) commit AFTER the branch push lands so
+          # the tag always points at what's actually on origin. If we tagged
+          # before the loop and then rebased, the tag would float to the
+          # old SHA.
           git tag "v$NEW"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
           git push origin "v$NEW"
 
           echo "Released v$NEW"
