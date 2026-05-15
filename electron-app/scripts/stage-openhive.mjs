@@ -125,11 +125,17 @@ function pickDeps(source, allowList) {
 
 function stagedPackageJson(original) {
   const pkg = { ...original };
+  // Optional runtime deps may be declared in EITHER `dependencies` or
+  // `optionalDependencies` upstream. `@aws-sdk/client-s3` in particular
+  // is a hard `dependency` (because `dist/index.js` statically imports
+  // it) yet we want it staged as optional. Search both sources so a dep
+  // declared as required upstream still gets into the asar.
+  const allDeps = {
+    ...original.dependencies,
+    ...original.optionalDependencies,
+  };
   pkg.dependencies = pickDeps(original.dependencies, RUNTIME_DEPS);
-  pkg.optionalDependencies = pickDeps(
-    original.optionalDependencies,
-    OPTIONAL_RUNTIME_DEPS,
-  );
+  pkg.optionalDependencies = pickDeps(allDeps, OPTIONAL_RUNTIME_DEPS);
   // Dev deps are never copied by electron-builder, but clear them defensively
   // so the staged package.json reads cleanly.
   delete pkg.devDependencies;
