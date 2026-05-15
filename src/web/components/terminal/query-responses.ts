@@ -18,10 +18,25 @@ const KITTY_GFX_RE = /\x1b_G[^\x1b]*\x1b\\/g; // \x1b_G...ST → Kitty graphics 
 export const DECRQM_SET_MODES = new Set([2004, 1049, 1004, 2027, 2026, 1000, 1002, 1003, 1006]);
 
 /**
+ * Fast gate: one scan that rules out the overwhelmingly common case. An
+ * alt-screen TUI emits ESC in essentially every redraw frame (cursor moves,
+ * SGR colors, erases), but capability queries are sent only during startup
+ * negotiation. Without this gate, generateQueryResponses runs six regex
+ * passes over every frame; with it, a non-query frame costs one `.test()`.
+ *
+ * Keep the alternation in sync with the six query patterns above — `_G` is a
+ * cheap prefix for the Kitty-graphics query (full match validated below).
+ */
+const QUERY_GATE_RE = /\x1b(?:\[\?\d+\$p|\[>0q|\[14t|\[\?u|\[c|_G)/;
+
+/**
  * Scan PTY output for terminal queries that ghostty-web won't answer,
  * and return fake responses to send back to the PTY.
  */
 export function generateQueryResponses(data: string, cols: number, rows: number): string {
+  // Bail before the six-pass scan when no query pattern is present at all.
+  if (!QUERY_GATE_RE.test(data)) return '';
+
   let responses = '';
 
   // DECRQM: \x1b[?N$p → \x1b[?N;{1=set|2=reset|0=unknown}$y

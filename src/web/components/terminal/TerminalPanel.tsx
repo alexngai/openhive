@@ -112,6 +112,12 @@ export function TerminalPanel({
   const wsRef = useRef<WebSocket | null>(null);
   const mouseCleanupRef = useRef<(() => void) | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
+  // Pending PTY output, flushed to ghostty-web once per animation frame.
+  // The server sends many small frames per TUI redraw; writing each one
+  // synchronously thrashes the WASM renderer. Batching to ~60fps coalesces
+  // them into one write per paint without adding perceptible latency.
+  const writeBufRef = useRef<string>('');
+  const writeRafRef = useRef<number | null>(null);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('disconnected');
   const [sessionInfo, setSessionInfo] = useState<TerminalSessionInfo | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -133,6 +139,11 @@ export function TerminalPanel({
     console.debug('[terminal] cleanup (v=%d): closing ws and disposing terminal', connectVersionRef.current);
     mouseCleanupRef.current?.();
     mouseCleanupRef.current = null;
+    if (writeRafRef.current !== null) {
+      cancelAnimationFrame(writeRafRef.current);
+      writeRafRef.current = null;
+    }
+    writeBufRef.current = '';
     wsRef.current?.close();
     wsRef.current = null;
     terminalRef.current?.dispose();
@@ -166,6 +177,13 @@ export function TerminalPanel({
       wsRef.current.close();
       wsRef.current = null;
     }
+    // Drop any pending output from the previous connection — a queued rAF
+    // must not write stale bytes into the fresh terminal created below.
+    if (writeRafRef.current !== null) {
+      cancelAnimationFrame(writeRafRef.current);
+      writeRafRef.current = null;
+    }
+    writeBufRef.current = '';
 
     setStatus('connecting');
     setErrorMsg(null);
@@ -352,6 +370,15 @@ export function TerminalPanel({
             console.debug('[terminal] process exited: code=%d signal=%s', msg.exitCode, msg.signal);
             activeSessionIdRef.current = null;
             setStatus('disconnected');
+            // Flush any buffered output first so the exit line lands last.
+            if (writeRafRef.current !== null) {
+              cancelAnimationFrame(writeRafRef.current);
+              writeRafRef.current = null;
+            }
+            if (writeBufRef.current.length > 0) {
+              activeTerm.write(writeBufRef.current);
+              writeBufRef.current = '';
+            }
             activeTerm.writeln(`\r\n\x1b[90m[Process exited with code ${msg.exitCode}]\x1b[0m`);
             return;
           }
@@ -366,11 +393,23 @@ export function TerminalPanel({
         }
       }
 
-      // Terminal output
-      activeTerm.write(data);
+      // Terminal output — buffer and flush once per animation frame.
+      writeBufRef.current += data;
+      if (writeRafRef.current === null) {
+        writeRafRef.current = requestAnimationFrame(() => {
+          writeRafRef.current = null;
+          const pending = writeBufRef.current;
+          writeBufRef.current = '';
+          if (pending.length > 0) {
+            terminalRef.current?.write(pending);
+          }
+        });
+      }
 
-      // Inject responses for terminal queries that ghostty-web doesn't handle
-      if (typeof data === 'string' && data.includes('\x1b')) {
+      // Inject responses for terminal capability queries that ghostty-web
+      // doesn't answer. generateQueryResponses gates internally — cheap for
+      // the common (non-query) redraw frame, so no pre-check is needed here.
+      if (typeof data === 'string') {
         const fakeResponses = generateQueryResponses(data, activeTerm.cols, activeTerm.rows);
         if (fakeResponses) {
           console.debug('[terminal] injecting %d bytes of query responses', fakeResponses.length);
