@@ -191,6 +191,14 @@ interface HiveEntry {
   dataDir: string;
   url: string;
   overrides: Record<string, unknown>;
+  /**
+   * Whether the hive-child server outlives its window. `true` → closing the
+   * window just disposes the UI; the server keeps running (a background
+   * hive). `false` → closing the window stops the hive (a transient,
+   * close-to-quit window). Also drives which hives are persisted to
+   * `settings.lastRunningHives` for restore-on-launch. See onHivesChanged().
+   */
+  keepAlive: boolean;
 }
 
 /**
@@ -341,6 +349,12 @@ type ChildMessage =
 
 const hives = new Map<string, HiveEntry>();
 
+// Set true once app quit begins. Child-exit handlers and onHivesChanged()
+// short-circuit on it: during quit every hive-child exits, and without this
+// guard their exit handlers would shrink `settings.lastRunningHives` to []
+// — destroying the very set the next launch needs to restore.
+let quitting = false;
+
 // ── Recent hives ──────────────────────────────────────────────────────
 //
 // Persisted MRU list of dataDir paths the user has opened. Surfaced as the
@@ -413,11 +427,18 @@ interface AppSettings {
   headless: boolean;
   /** Register an OS login item so OpenHive auto-starts at sign-in. */
   startAtLogin: boolean;
+  /**
+   * dataDirs of the background (keepAlive) hives that were running last.
+   * Maintained continuously by onHivesChanged() — not just at quit — so a
+   * crash still leaves an accurate set. A headless launch restores these.
+   */
+  lastRunningHives: string[];
 }
 
 const DEFAULT_SETTINGS: Readonly<AppSettings> = {
   headless: false,
   startAtLogin: false,
+  lastRunningHives: [],
 };
 
 let settings: AppSettings = { ...DEFAULT_SETTINGS };
@@ -434,6 +455,9 @@ function loadSettings(): AppSettings {
     return {
       headless: parsed.headless === true,
       startAtLogin: parsed.startAtLogin === true,
+      lastRunningHives: Array.isArray(parsed.lastRunningHives)
+        ? parsed.lastRunningHives.filter((p): p is string => typeof p === 'string')
+        : [],
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -480,6 +504,25 @@ function updateSettings(patch: Partial<AppSettings>): void {
   refreshTrayMenu();
 }
 
+/**
+ * Call after any change to the set of running hives (spawn, stop, crash,
+ * window close, keepAlive toggle). Persists the current background-hive
+ * set for restore-on-launch and rebuilds the tray so its "Running Hives"
+ * list stays accurate. Persisting continuously (rather than only at quit)
+ * means a crash still leaves a correct `lastRunningHives`.
+ *
+ * NOT called from before-quit's mass `hives.clear()` — that would wipe the
+ * set right before exit; the last per-hive change already recorded it.
+ */
+function onHivesChanged(): void {
+  if (quitting) return;  // don't persist the set as it drains during quit
+  settings.lastRunningHives = [...hives.values()]
+    .filter((entry) => entry.keepAlive)
+    .map((entry) => entry.dataDir);
+  saveSettings();
+  refreshTrayMenu();
+}
+
 /** Rebuild + reattach both the application menu and the macOS dock menu.
  *  Safe to call before app-ready (no-op until then). */
 function refreshMenus(): void {
@@ -497,19 +540,29 @@ function refreshMenus(): void {
  * action (menus, recent-hives, tray). The headless launch path boots the
  * server windowless instead by calling spawnHive directly.
  */
-async function openHive(dataDir: string): Promise<void> {
+async function openHive(
+  dataDir: string,
+  opts: { withWindow?: boolean; keepAlive?: boolean } = {},
+): Promise<void> {
+  const withWindow = opts.withWindow ?? true;
   const existing = hives.get(dataDir);
   if (existing) {
-    const window = existing.window && !existing.window.isDestroyed()
-      ? existing.window
-      : await createHiveWindow(existing);
-    if (window.isMinimized()) window.restore();
-    window.focus();
+    if (opts.keepAlive !== undefined) {
+      existing.keepAlive = opts.keepAlive;
+      onHivesChanged();
+    }
+    if (withWindow) {
+      const window = existing.window && !existing.window.isDestroyed()
+        ? existing.window
+        : await createHiveWindow(existing);
+      if (window.isMinimized()) window.restore();
+      window.focus();
+    }
     recordRecentHive(dataDir);
     return;
   }
   try {
-    await spawnHive(dataDir, {}, { withWindow: true });
+    await spawnHive(dataDir, {}, { withWindow, keepAlive: opts.keepAlive });
     recordRecentHive(dataDir);
   } catch (err) {
     dialog.showErrorBox('Could not open hive', (err as Error).message);
@@ -577,6 +630,52 @@ async function showHive(): Promise<BrowserWindow | null> {
   await openHive(defaultHiveDataDir());
   const booted = hives.values().next().value as HiveEntry | undefined;
   return booted?.window ?? null;
+}
+
+/**
+ * Surface one *specific* hive's window — focusing it, or building it on
+ * demand if the hive is running windowless. Used by the tray's per-hive
+ * "Show Window". Boots the hive first if it isn't running at all.
+ */
+async function showHiveByDir(dataDir: string): Promise<void> {
+  const entry = hives.get(dataDir);
+  if (!entry) {
+    await openHive(dataDir, { withWindow: true });
+    return;
+  }
+  const window = entry.window && !entry.window.isDestroyed()
+    ? entry.window
+    : await createHiveWindow(entry);
+  if (window.isMinimized()) window.restore();
+  window.focus();
+}
+
+/**
+ * Stop one hive: send its child the graceful stop, destroy any window, and
+ * drop it from the registry. Deleting the entry first means the child's
+ * exit handler treats the exit as intentional (no crash dialog).
+ */
+function stopHive(dataDir: string): void {
+  const entry = hives.get(dataDir);
+  if (!entry) return;
+  hives.delete(dataDir);
+  if (entry.window && !entry.window.isDestroyed()) entry.window.destroy();
+  if (entry.child.pid && !entry.child.killed) {
+    entry.child.send({ type: 'stop' });
+    // Backstop: force-kill if the graceful stop doesn't take.
+    setTimeout(() => {
+      if (!entry.child.killed) entry.child.kill();
+    }, 3000);
+  }
+  onHivesChanged();
+}
+
+/** Flip a hive's keepAlive flag (tray "Keep Running in Background"). */
+function setHiveKeepAlive(dataDir: string, value: boolean): void {
+  const entry = hives.get(dataDir);
+  if (!entry) return;
+  entry.keepAlive = value;
+  onHivesChanged();
 }
 
 // Renderer-ready tracking. A hive's renderer signals readiness via the
@@ -731,30 +830,78 @@ ipcMain.on('openhive:set-badge', (_event, raw: unknown) => {
 // Tray and drop the icon from the menu bar.
 let tray: Tray | null = null;
 
+/** Per-hive submenu for the tray "Running Hives" list. */
+function buildHiveTraySubmenu(entry: HiveEntry): MenuItemConstructorOptions[] {
+  return [
+    { label: 'Show Window', click: () => { void showHiveByDir(entry.dataDir); } },
+    { label: 'Stop', click: () => { stopHive(entry.dataDir); } },
+    {
+      label: 'Restart',
+      click: () => { void restartHive(entry.dataDir, entry.overrides); },
+    },
+    { type: 'separator' },
+    {
+      label: 'Keep Running in Background',
+      type: 'checkbox',
+      checked: entry.keepAlive,
+      toolTip: 'When off, closing this hive’s window stops its server',
+      click: (item) => { setHiveKeepAlive(entry.dataDir, item.checked); },
+    },
+  ];
+}
+
 function buildTrayMenu(): Menu {
-  return Menu.buildFromTemplate([
-    { label: 'Show OpenHive', click: () => { void showHive(); } },
-    { label: 'New Hive…', click: () => { void promptOpenHive(); } },
-    { type: 'separator' },
-    {
-      label: 'Open in Background on Launch',
-      type: 'checkbox',
-      checked: settings.headless,
-      toolTip: 'Start the hive server in the tray without opening a window',
-      click: (item) => { updateSettings({ headless: item.checked }); },
-    },
-    {
-      label: 'Open at Login',
-      type: 'checkbox',
-      checked: settings.startAtLogin,
-      // setLoginItemSettings is a no-op on Linux — disable the control
-      // there rather than offer a toggle that silently does nothing.
-      enabled: process.platform !== 'linux',
-      click: (item) => { updateSettings({ startAtLogin: item.checked }); },
-    },
-    { type: 'separator' },
-    { label: 'Quit OpenHive', click: () => app.quit() },
-  ]);
+  const items: MenuItemConstructorOptions[] = [];
+
+  // Running hives — the headless control panel. Each is a submenu of
+  // per-hive lifecycle actions; a "●" marks the ones with an open window.
+  if (hives.size > 0) {
+    items.push({ label: 'Running Hives', enabled: false });
+    for (const entry of hives.values()) {
+      const windowed = !!entry.window && !entry.window.isDestroyed();
+      items.push({
+        label: `  ${windowed ? '●' : '○'}  ${shortenPath(entry.dataDir)}`,
+        toolTip: entry.dataDir,
+        submenu: buildHiveTraySubmenu(entry),
+      });
+    }
+  } else {
+    items.push({ label: 'No hives running', enabled: false });
+  }
+  items.push({ type: 'separator' });
+
+  items.push({
+    label: 'New Hive in Background…',
+    toolTip: 'Boot a hive server with no window',
+    click: () => { void promptOpenHive({ withWindow: false }); },
+  });
+  items.push({
+    label: 'New Hive (with window)…',
+    click: () => { void promptOpenHive({ withWindow: true }); },
+  });
+  items.push({ label: 'Open Recent', submenu: buildOpenRecentSubmenu() });
+  items.push({ type: 'separator' });
+
+  items.push({
+    label: 'Open in Background on Launch',
+    type: 'checkbox',
+    checked: settings.headless,
+    toolTip: 'Start in the tray without opening a window',
+    click: (item) => { updateSettings({ headless: item.checked }); },
+  });
+  items.push({
+    label: 'Open at Login',
+    type: 'checkbox',
+    checked: settings.startAtLogin,
+    // setLoginItemSettings is a no-op on Linux — disable the control
+    // there rather than offer a toggle that silently does nothing.
+    enabled: process.platform !== 'linux',
+    click: (item) => { updateSettings({ startAtLogin: item.checked }); },
+  });
+  items.push({ type: 'separator' });
+  items.push({ label: 'Quit OpenHive', click: () => app.quit() });
+
+  return Menu.buildFromTemplate(items);
 }
 
 /** Reattach the tray context menu — call after a settings change so the
@@ -781,11 +928,17 @@ function setupTray(): void {
 
 /** "Choose folder" dialog → openHive. Shared by the menu + tray.
  *  Parents the dialog to the focused or first hive window so macOS attaches
- *  it as a sheet instead of floating it free. */
-async function promptOpenHive(): Promise<void> {
-  const parent = BrowserWindow.getFocusedWindow()
-    ?? hives.values().next().value?.window
-    ?? undefined;
+ *  it as a sheet instead of floating it free. `withWindow: false` boots the
+ *  new hive headless (tray "New Hive in Background…"); such hives are
+ *  keepAlive so closing a later-opened window doesn't stop them. */
+async function promptOpenHive(
+  opts: { withWindow?: boolean } = {},
+): Promise<void> {
+  const withWindow = opts.withWindow ?? true;
+  const firstWindow = [...hives.values()]
+    .map((e) => e.window)
+    .find((w): w is BrowserWindow => !!w && !w.isDestroyed());
+  const parent = BrowserWindow.getFocusedWindow() ?? firstWindow ?? undefined;
   const r = parent
     ? await dialog.showOpenDialog(parent, {
         properties: ['openDirectory', 'createDirectory'],
@@ -796,7 +949,10 @@ async function promptOpenHive(): Promise<void> {
         title: 'Choose a folder for the new hive',
       });
   if (r.canceled || !r.filePaths[0]) return;
-  await openHive(r.filePaths[0]);
+  await openHive(r.filePaths[0], {
+    withWindow,
+    keepAlive: withWindow ? undefined : true,
+  });
 }
 
 // ── Splash window ─────────────────────────────────────────────────────
@@ -898,26 +1054,60 @@ app.whenReady().then(async () => {
   if (!headless) showSplash();
 
   const defaultHive = defaultHiveDataDir();
-  try {
-    await spawnHive(defaultHive, {}, { withWindow: !headless });
-    recordRecentHive(defaultHive);
-  } catch (err) {
-    dismissSplash();
-    // Smoke test: a boot failure must exit non-zero so CI fails. Bypasses
-    // the error dialog (no one to see it) and app.quit()'s exit code 0.
-    if (process.env.OPENHIVE_SMOKE_TEST) {
-      console.error(
-        `[smoke-test] FAIL: hive did not boot — ${(err as Error).message}`,
+
+  if (headless) {
+    // Restore the background hives from the last session — boot them
+    // windowless + keepAlive — falling back to the default hive when there
+    // were none. Sequential: pickFreePort has a race window, so we never
+    // boot two hives concurrently. Per-hive failures are non-fatal — log
+    // and skip; the app still comes up in the tray.
+    // Dedupe — a hand-edited settings.json could list a dir twice, and a
+    // second spawnHive() for the same dataDir would orphan the first child.
+    const toBoot = settings.lastRunningHives.length > 0
+      ? [...new Set(settings.lastRunningHives)]
+      : [defaultHive];
+    let bootedAny = false;
+    for (const dir of toBoot) {
+      try {
+        await spawnHive(dir, {}, { withWindow: false, keepAlive: true });
+        recordRecentHive(dir);
+        bootedAny = true;
+      } catch (err) {
+        console.warn(
+          `[supervisor] hive failed to restore: ${dir} — ${(err as Error).message}`,
+        );
+      }
+    }
+    if (!bootedAny && Notification.isSupported()) {
+      // Stay resident in the tray either way — the user can retry from
+      // "New Hive…" — but surface that nothing came up.
+      new Notification({
+        title: 'OpenHive',
+        body: 'No hives could be started. Open one from the tray.',
+      }).show();
+    }
+  } else {
+    try {
+      await spawnHive(defaultHive, {}, { withWindow: true });
+      recordRecentHive(defaultHive);
+    } catch (err) {
+      dismissSplash();
+      // Smoke test: a boot failure must exit non-zero so CI fails. Bypasses
+      // the error dialog (no one to see it) and app.quit()'s exit code 0.
+      if (process.env.OPENHIVE_SMOKE_TEST) {
+        console.error(
+          `[smoke-test] FAIL: hive did not boot — ${(err as Error).message}`,
+        );
+        app.exit(1);
+        return;
+      }
+      dialog.showErrorBox(
+        'OpenHive failed to start',
+        (err as Error).message,
       );
-      app.exit(1);
+      app.quit();
       return;
     }
-    dialog.showErrorBox(
-      'OpenHive failed to start',
-      (err as Error).message,
-    );
-    app.quit();
-    return;
   }
 
   // Smoke test: spawnHive resolving means the hive-child loaded `openhive`
@@ -989,6 +1179,10 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async (e) => {
+  // Freeze the running-hive set: from here on, child-exit handlers must not
+  // mutate `settings.lastRunningHives` (see `quitting`). Its current value
+  // is what the next launch restores.
+  quitting = true;
   if (hives.size === 0) return;
   e.preventDefault();
   // Snapshot bounds before app.exit() — that path bypasses window 'close'
@@ -1147,21 +1341,24 @@ async function createHiveWindow(entry: HiveEntry): Promise<BrowserWindow> {
 
   window.on('closed', () => {
     const existing = hives.get(dataDir);
-    if (existing) existing.window = null;
-    if (headless) {
-      // Tray mode: closing the UI just disposes the window — the hive
-      // server keeps running and is reachable again from the tray. Re-hide
-      // the macOS dock icon once no hive window remains.
-      if (process.platform === 'darwin' && !anyHiveWindowOpen()) {
+    if (!existing) return;  // already stopped via stopHive / a crash
+    existing.window = null;
+    if (existing.keepAlive) {
+      // Background hive: closing the UI just disposes the window — the
+      // server keeps running, reachable again from the tray. Re-hide the
+      // macOS dock icon (headless mode) once no hive window remains.
+      if (headless && process.platform === 'darwin' && !anyHiveWindowOpen()) {
         app.dock?.hide();
       }
+      refreshTrayMenu();  // the "● windowed" marker changed
       return;
     }
-    // Headed mode: closing the window closes the hive.
-    if (existing?.child.pid && !existing.child.killed) {
+    // Transient hive: closing the window stops it.
+    if (existing.child.pid && !existing.child.killed) {
       existing.child.send({ type: 'stop' });
     }
     hives.delete(dataDir);
+    onHivesChanged();
   });
 
   try {
@@ -1186,6 +1383,7 @@ function handleHiveCrash(
   logPath: string,
   code: number,
   window: BrowserWindow | null,
+  keepAlive: boolean,
 ): void {
   const detail = `Hive at ${dataDir} exited (code ${code}). See ${logPath} for details.`;
 
@@ -1199,7 +1397,7 @@ function handleHiveCrash(
       })
       .then((r) => {
         if (r.response === 0) {
-          void spawnHive(dataDir, overrides, { withWindow: true });
+          void spawnHive(dataDir, overrides, { withWindow: true, keepAlive });
         } else if (!window.isDestroyed()) {
           window.close();
         }
@@ -1215,7 +1413,7 @@ function handleHiveCrash(
       body: `${path.basename(dataDir)} crashed (code ${code}). Click to restart.`,
     });
     n.on('click', () => {
-      void spawnHive(dataDir, overrides, { withWindow: false });
+      void spawnHive(dataDir, overrides, { withWindow: false, keepAlive });
     });
     n.show();
   }
@@ -1228,28 +1426,37 @@ function handleHiveCrash(
 async function spawnHive(
   dataDir: string,
   overrides: Record<string, unknown> = {},
-  options: { withWindow?: boolean } = {},
+  options: { withWindow?: boolean; keepAlive?: boolean } = {},
 ): Promise<HiveEntry> {
   const withWindow = options.withWindow ?? !headless;
+  // Default keepAlive to the global mode: a headless app's hives are
+  // background services; a headed app's hives are close-to-quit windows.
+  // "New Hive in Background…" and the restore path pass keepAlive: true.
+  const keepAlive = options.keepAlive ?? headless;
   const logPath = path.join(dataDir, 'logs', 'hive.log');
 
   const { child, url } = await spawnHiveChild(dataDir, overrides);
 
-  const entry: HiveEntry = { child, window: null, dataDir, url, overrides };
+  const entry: HiveEntry = {
+    child, window: null, dataDir, url, overrides, keepAlive,
+  };
   hives.set(dataDir, entry);
+  onHivesChanged();
 
   // Long-lived crash handler. The 'exit before ready' listener inside
   // spawnHiveChild has already settled by now; this one catches a child
   // dying *after* a successful boot.
   child.on('exit', (code) => {
+    if (quitting) return;  // app shutting down — before-quit owns cleanup
     const stillTracked = hives.get(dataDir);
-    // User-initiated close already deleted the entry; nothing to report.
+    // User-initiated close/stop already deleted the entry; nothing to do.
     if (!stillTracked) return;
     hives.delete(dataDir);
+    onHivesChanged();
     if (code === 0) return;  // clean stop — not a crash
     const window = stillTracked.window;
     if (window?.isDestroyed()) return;
-    handleHiveCrash(dataDir, overrides, logPath, code ?? -1, window);
+    handleHiveCrash(dataDir, overrides, logPath, code ?? -1, window, keepAlive);
   });
 
   if (withWindow) {
@@ -1259,6 +1466,7 @@ async function spawnHive(
       // Window failed to load — tear the whole hive down so we don't leak
       // an orphaned, unreachable child process.
       hives.delete(dataDir);
+      onHivesChanged();
       child.kill();
       throw err;
     }
@@ -1274,11 +1482,14 @@ export async function restartHive(
 ): Promise<void> {
   const existing = hives.get(dataDir);
   if (!existing) return;
-  const { window } = existing;
+  const { window, keepAlive } = existing;
   existing.child.kill();
   hives.delete(dataDir);
 
-  const next = await spawnHive(dataDir, overrides, { withWindow: false });
+  const next = await spawnHive(dataDir, overrides, {
+    withWindow: false,
+    keepAlive,
+  });
   if (window && !window.isDestroyed()) {
     next.window = window;
     await window.loadURL(next.url);

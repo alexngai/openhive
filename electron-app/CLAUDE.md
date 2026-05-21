@@ -206,7 +206,11 @@ window; headless mode just makes window creation optional.
 > The CLI flag is `--tray`, **not** `--headless` — `--headless` is a reserved
 > Chromium switch Electron would intercept before `main.ts` could read it.
 
-**Tray menu** carries two persisted toggles (written to `settings.json`):
+**Tray menu is the headless control panel.** `buildTrayMenu()` is rebuilt on
+every change to the running set (`onHivesChanged()` / `refreshTrayMenu()`):
+- *Running Hives* — one submenu per hive: Show Window · Stop · Restart, plus a
+  *Keep Running in Background* checkbox. A `●`/`○` marks whether it has a window.
+- *New Hive in Background…* (`withWindow: false`) / *New Hive (with window)…*
 - *Open in Background on Launch* → `settings.headless`
 - *Open at Login* → `settings.startAtLogin`, which drives
   `app.setLoginItemSettings({ openAtLogin, args: ['--tray'] })` so a sign-in
@@ -215,14 +219,28 @@ window; headless mode just makes window creation optional.
 
 **Window lifecycle decoupling.** `spawnHive` splits into `spawnHiveChild`
 (fork + boot the server) and `createHiveWindow` (build the BrowserWindow).
-`HiveEntry.window` is `BrowserWindow | null`. Key behavioural difference:
-in headless mode, **closing a hive window does not stop the hive** — it just
-disposes the window; the server keeps running, reachable again from the tray.
-In headed mode, closing the window still closes the hive (unchanged).
+`HiveEntry.window` is `BrowserWindow | null`. Whether a hive's server outlives
+its window is the per-hive **`HiveEntry.keepAlive`** flag — *not* the global
+`headless` flag. Closing a window stops the hive iff `!keepAlive`. `keepAlive`
+defaults to the global `headless` mode at spawn; "New Hive in Background…" and
+the restore path force it `true`; the tray checkbox toggles it live.
+
+**Multi-hive restore.** `settings.lastRunningHives` holds the dataDirs of the
+`keepAlive` hives. `onHivesChanged()` rewrites it on *every* hive add/remove
+(not just at quit — so a crash still leaves an accurate set). A headless
+launch boots that whole set windowless + `keepAlive`, **sequentially** (the
+`pickFreePort()` race forbids concurrent boots), falling back to the default
+hive when the set is empty. Headed launch is unchanged (default hive only).
+The `quitting` flag gates child-exit handlers during `before-quit` — without
+it, hives exiting on quit would drain `lastRunningHives` to `[]`.
 
 **macOS dock.** Headless launch calls `app.dock.hide()` for a true menu-bar
 app. The icon returns via `app.dock.show()` when a window opens from the tray
 and hides again when the last window closes.
+
+**Known limits:** deep links route to the first hive only (the `openhive://`
+URL contract carries no hive identity); a `lastRunningHives` entry whose folder
+was deleted boots as a fresh empty hive.
 
 **Verify locally** (server boots, no window):
 ```bash
