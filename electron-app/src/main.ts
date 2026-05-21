@@ -748,6 +748,42 @@ function setHiveKeepAlive(dataDir: string, value: boolean): void {
   onHivesChanged();
 }
 
+/**
+ * Drop a missing hive from auto-start (tray "Remove from Auto-Start").
+ * Removing it from `unavailableHives` then letting onHivesChanged()
+ * recompute `lastRunningHives` (= running ∪ unavailableHives) prunes it
+ * from the persisted set — it won't reappear next launch.
+ */
+function removeUnavailableHive(dataDir: string): void {
+  unavailableHives = unavailableHives.filter((d) => d !== dataDir);
+  onHivesChanged();
+}
+
+/**
+ * Re-check a missing hive (tray "Try Again") — e.g. after remounting the
+ * drive it lived on. Boots it windowless + keepAlive if its `.openhive-root`
+ * marker is back (spawnHive then clears it from `unavailableHives`);
+ * otherwise notifies and leaves it in the unavailable list.
+ */
+async function retryUnavailableHive(dataDir: string): Promise<void> {
+  if (!fs.existsSync(path.join(dataDir, '.openhive-root'))) {
+    if (Notification.isSupported()) {
+      new Notification({
+        title: 'OpenHive',
+        body: `Still unavailable: ${path.basename(dataDir)}`,
+      }).show();
+    }
+    return;
+  }
+  try {
+    await openHive(dataDir, { withWindow: false, keepAlive: true });
+  } catch (err) {
+    console.warn(
+      `[supervisor] retry failed for ${dataDir} — ${(err as Error).message}`,
+    );
+  }
+}
+
 // Renderer-ready tracking. A hive's renderer signals readiness via the
 // `openhive:renderer-ready` IPC once the React app has mounted *and* the
 // deep-link hook has subscribed. Cold-start deep links (clicked while the
@@ -961,6 +997,24 @@ function buildHiveTraySubmenu(entry: HiveEntry): MenuItemConstructorOptions[] {
   ];
 }
 
+/** Per-hive submenu for the tray "Unavailable Hives" list. */
+function buildUnavailableHiveSubmenu(dataDir: string): MenuItemConstructorOptions[] {
+  return [
+    { label: dataDir, enabled: false },
+    { type: 'separator' },
+    {
+      label: 'Try Again',
+      toolTip: 'Re-check the folder and boot the hive if it has reappeared',
+      click: () => { void retryUnavailableHive(dataDir); },
+    },
+    {
+      label: 'Remove from Auto-Start',
+      toolTip: 'Stop trying to restore this hive on launch',
+      click: () => { removeUnavailableHive(dataDir); },
+    },
+  ];
+}
+
 function buildTrayMenu(): Menu {
   const items: MenuItemConstructorOptions[] = [];
 
@@ -978,6 +1032,21 @@ function buildTrayMenu(): Menu {
     }
   } else {
     items.push({ label: 'No hives running', enabled: false });
+  }
+
+  // Unavailable hives — restore entries whose folder was missing this
+  // launch (deleted, or an unmounted drive). Kept visible so the user
+  // explicitly retries or removes them, rather than a heuristic guessing.
+  if (unavailableHives.length > 0) {
+    items.push({ type: 'separator' });
+    items.push({ label: 'Unavailable Hives', enabled: false });
+    for (const dir of unavailableHives) {
+      items.push({
+        label: `  ⚠  ${shortenPath(dir)}`,
+        toolTip: `${dir} — folder missing (deleted, or drive not mounted)`,
+        submenu: buildUnavailableHiveSubmenu(dir),
+      });
+    }
   }
   items.push({ type: 'separator' });
 

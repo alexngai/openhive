@@ -243,6 +243,13 @@ later launch. The check applies only to the restore set — "New Hive…" still
 creates a brand-new folder deliberately. A once-per-launch notification names
 what was skipped.
 
+Skipped hives appear under a tray **Unavailable Hives** section, each with
+*Try Again* (`retryUnavailableHive` — re-checks the marker, boots the hive if
+its folder reappeared) and *Remove from Auto-Start* (`removeUnavailableHive` —
+drops it from `unavailableHives`; the next `onHivesChanged()` then prunes it
+from `lastRunningHives` so it won't return next launch). This keeps pruning a
+deleted hive an explicit user choice rather than a heuristic.
+
 **Deep-link hive routing.** `openhive://h/<id>/<route>` targets a specific
 hive; `<id>` is a stable short slug (`HiveEntry.id`, derived from the dataDir
 basename, collision-suffixed) held in the `settings.hiveIds` registry —
@@ -257,11 +264,10 @@ puts `openhive://h/<id>/` on the clipboard.
 app. The icon returns via `app.dock.show()` when a window opens from the tray
 and hides again when the last window closes.
 
-**Planned (not yet built):** *2e* — surface `unavailableHives` in the tray as
-a section with an explicit "Remove" so the user, not a heuristic, prunes a
-permanently-deleted hive from auto-start. A "Copy link to *this view*"
-renderer affordance (current SPA route, not just the hive root) is the other
-deferred deep-link piece.
+**Planned (not yet built):** a "Copy link to *this view*" renderer affordance —
+a deep link to the current SPA route, not just the hive root (`openhive://h/<id>/`,
+which is all the tray's main-process *Copy Deep Link* can build). Needs a
+preload-bridge method exposing the hive id + current route to the renderer.
 
 **Verify locally** (server boots, no window):
 ```bash
