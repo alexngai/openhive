@@ -174,6 +174,7 @@ Two distinct trees, deliberately separated:
 | macOS `<userData>` (app-level) | `~/Library/Application Support/OpenHive/` |
 | Crash dumps | `<userData>/Crashpad/` |
 | Recent-hives MRU | `<userData>/recent-hives.json` |
+| App settings (tray-mode toggles) | `<userData>/settings.json` |
 
 Every line the hive-child writes is piped to **both** the per-hive log file and
 the supervisor's stderr (see `child.stdout.on('data', ...)` in `spawnHive`).
@@ -187,6 +188,49 @@ Tail one place, see everything.
 | `OPENHIVE_HOME` | User → Electron main (and Supervisor → child fork) | Default hive's dataDir. Read by `defaultHiveDataDir()` at launch; if unset, falls back to `~/.openhive/`. Also forwarded into the hive-child so anything that calls `resolveDataDir()` inside the openhive runtime agrees. |
 | `OPENHIVE_REMOTE_DEBUG` | User → Electron main | If set, exposes Chromium's CDP at that port (e.g. `OPENHIVE_REMOTE_DEBUG=9223`) |
 | `OPENHIVE_DEBUG_HIVE` | User → Electron main | (Optional hook) pass `--inspect` to forked hive-children |
+| `OPENHIVE_HEADLESS` | User → Electron main | `1` forces headless/tray-only launch, `0` forces headed — overrides the persisted `headless` setting for that launch. See "Headless / tray-only mode". |
+
+## Headless / tray-only mode
+
+The supervisor can boot a hive **without a window** — the Fastify server runs,
+the app sits in the system tray / menu bar, and the UI window is built on
+demand. The hive-child (the server process) was always independent of the
+window; headless mode just makes window creation optional.
+
+**Triggers** (precedence high → low):
+
+1. `--no-tray` / `OPENHIVE_HEADLESS=0` — force headed for this launch
+2. `--tray` / `OPENHIVE_HEADLESS=1` — force headless for this launch
+3. the persisted `headless` flag in `<userData>/settings.json`
+
+> The CLI flag is `--tray`, **not** `--headless` — `--headless` is a reserved
+> Chromium switch Electron would intercept before `main.ts` could read it.
+
+**Tray menu** carries two persisted toggles (written to `settings.json`):
+- *Open in Background on Launch* → `settings.headless`
+- *Open at Login* → `settings.startAtLogin`, which drives
+  `app.setLoginItemSettings({ openAtLogin, args: ['--tray'] })` so a sign-in
+  auto-start lands in the tray. No-op on Linux (no `setLoginItemSettings`
+  support — the toggle is disabled there).
+
+**Window lifecycle decoupling.** `spawnHive` splits into `spawnHiveChild`
+(fork + boot the server) and `createHiveWindow` (build the BrowserWindow).
+`HiveEntry.window` is `BrowserWindow | null`. Key behavioural difference:
+in headless mode, **closing a hive window does not stop the hive** — it just
+disposes the window; the server keeps running, reachable again from the tray.
+In headed mode, closing the window still closes the hive (unchanged).
+
+**macOS dock.** Headless launch calls `app.dock.hide()` for a true menu-bar
+app. The icon returns via `app.dock.show()` when a window opens from the tray
+and hides again when the last window closes.
+
+**Verify locally** (server boots, no window):
+```bash
+OPENHIVE_HOME=/tmp/h OPENHIVE_REMOTE_DEBUG=9223 \
+  electron dist/main.js --tray --user-data-dir=/tmp/ud
+# curl http://127.0.0.1:9223/json/list        → zero "type":"page" targets
+# curl http://127.0.0.1:<hive-port>/.well-known/openhive.json → 200
+```
 
 ## Known gotchas (debug anchors for future sessions)
 
