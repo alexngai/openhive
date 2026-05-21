@@ -288,6 +288,23 @@ jobs:
         working-directory: electron-app
         run: node scripts/smoke-test.mjs
 
+      # e2e: drives the packaged app through Playwright's _electron API —
+      # asserts the BrowserWindow renders the SPA, the preload bridge
+      # (window.openhive) reaches the renderer, and the API answers.
+      # Catches Electron-layer regressions (e.g. a sandboxed-ESM-preload
+      # break) that verify-asar + smoke-test structurally cannot see.
+      - name: E2E test packaged app
+        working-directory: electron-app
+        run: node scripts/e2e-test.mjs
+
+      # Asserts the auto-update feed is consumable: latest-mac.yml must
+      # reference a present .zip (Squirrel.Mac can't update from a .dmg),
+      # latest-linux.yml a present .AppImage. Guards the dmg-only-target
+      # regression that silently kills macOS auto-update.
+      - name: Verify update feed
+        working-directory: electron-app
+        run: node scripts/verify-update-feed.mjs
+
       # Also attach the built installers as GitHub Action artifacts so they're
       # downloadable for 90d without needing a Release. This is the only
       # output of a `bump: none` test run.
@@ -298,6 +315,7 @@ jobs:
           name: openhive-${{ matrix.label }}
           path: |
             release/*.dmg
+            release/*.zip
             release/*.AppImage
             release/*.deb
             release/*.blockmap

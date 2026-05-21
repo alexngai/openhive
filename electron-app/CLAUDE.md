@@ -39,7 +39,7 @@ belt-and-suspenders.
 
 ## Renderer ↔ main bridge (`window.openhive`)
 
-`electron-app/src/preload.ts` exposes a tightly-scoped API via
+`electron-app/src/preload.cts` exposes a tightly-scoped API via
 `contextBridge`. Always guard for `window.openhive` being undefined — the
 SPA also runs in plain browsers (`npm run dev:web`) where the bridge isn't
 present.
@@ -225,7 +225,8 @@ electron-app/
 ├── src/
 │   ├── main.ts                       # Supervisor: windows, menu, fork hive-child, auto-update
 │   ├── hive-child.ts                 # In-process openhive server via child_process.fork
-│   └── preload.ts                    # Renderer preload (empty placeholder)
+│   └── preload.cts                   # Renderer preload — window.openhive bridge.
+│                                     # .cts (→ .cjs): sandboxed preloads must be CJS.
 ├── scripts/
 │   └── fix-better-sqlite3.mjs        # postinstall: dedup nested copies, fetch Electron prebuild
 └── dist/                             # tsc output (gitignored)

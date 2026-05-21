@@ -492,7 +492,7 @@ if (!app.requestSingleInstanceLock()) {
 
 // ── IPC: renderer → main bridge ───────────────────────────────────────
 //
-// Preload (electron-app/src/preload.ts) exposes these as
+// Preload (electron-app/src/preload.cts) exposes these as
 // `window.openhive.{notify,setBadge}`. Main validates payload shape then
 // hands off to the OS.
 
@@ -735,11 +735,21 @@ app.whenReady().then(async () => {
   // reads the same config to know where to check.
   if (app.isPackaged) {
     try {
-      const { autoUpdater } = await import('electron-updater');
+      const autoUpdater = await loadAutoUpdater();
+      // Record updater wiring health on the global. The e2e test reads this
+      // via Playwright's app.evaluate(), which runs in a context with no
+      // `require` / `import()` and so can't probe electron-updater itself.
+      // True iff electron-updater resolved to a usable object — the exact
+      // thing the CJS-interop regression broke (autoUpdater came back
+      // undefined). This records the result of the *real* loadAutoUpdater()
+      // call, not a re-implementation.
+      (globalThis as Record<string, unknown>).__openhiveAutoUpdaterReady =
+        typeof autoUpdater?.checkForUpdatesAndNotify === 'function';
       autoUpdater.checkForUpdatesAndNotify().catch((err: Error) => {
         console.warn(`[supervisor] auto-update check failed: ${err.message}`);
       });
     } catch (err) {
+      (globalThis as Record<string, unknown>).__openhiveAutoUpdaterReady = false;
       console.warn(
         `[supervisor] auto-update unavailable: ${(err as Error).message}`,
       );
@@ -850,7 +860,13 @@ async function spawnHive(
     show: false,
     backgroundColor: '#0b0a0c',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      // preload.cjs, NOT .js: the renderer is sandboxed (Electron default),
+      // and a sandboxed preload is executed as CommonJS. This package is
+      // `"type": "module"`, so a `.js` emit is ESM — Electron would throw
+      // `SyntaxError: Cannot use import statement outside a module` and the
+      // whole `window.openhive` bridge would silently never appear. The
+      // source is `preload.cts`; NodeNext compiles `.cts` → `.cjs` (CJS).
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -939,6 +955,25 @@ export async function restartHive(
 // ── Menu ──────────────────────────────────────────────────────────────
 
 /**
+ * Resolve electron-updater's `autoUpdater`.
+ *
+ * electron-updater is CommonJS and exposes `autoUpdater` through an
+ * `Object.defineProperty` lazy getter (it defers loading the platform-
+ * specific updater). Node's cjs-module-lexer can't see defineProperty-based
+ * exports, so `await import('electron-updater')` yields a namespace whose
+ * named `autoUpdater` binding is `undefined` — only `.default` (the real
+ * `module.exports`) carries the getter. Destructuring the named export
+ * silently gave `undefined`, hence the runtime
+ * `Cannot read properties of undefined (reading 'checkForUpdatesAndNotify')`.
+ * Reaching through `.default` fixes it; the `?? mod` fallback keeps it
+ * working if a future electron-updater ships a proper ESM-friendly export.
+ */
+async function loadAutoUpdater() {
+  const mod = await import('electron-updater');
+  return (mod.default ?? mod).autoUpdater;
+}
+
+/**
  * Manual update check — menu-item driven. `checkForUpdatesAndNotify` on
  * app-ready handles the passive path; this one surfaces "you're on the
  * latest version" / "checking now…" for users who want to force it.
@@ -956,7 +991,7 @@ async function manualCheckForUpdates(): Promise<void> {
     return;
   }
   try {
-    const { autoUpdater } = await import('electron-updater');
+    const autoUpdater = await loadAutoUpdater();
     const result = await autoUpdater.checkForUpdates();
     const latest = result?.updateInfo?.version;
     if (!latest || latest === app.getVersion()) {
