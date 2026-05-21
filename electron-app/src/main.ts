@@ -13,6 +13,7 @@ import {
   Menu,
   Notification,
   Tray,
+  clipboard,
   crashReporter,
   dialog,
   ipcMain,
@@ -199,6 +200,8 @@ interface HiveEntry {
    * `settings.lastRunningHives` for restore-on-launch. See onHivesChanged().
    */
   keepAlive: boolean;
+  /** Stable short id for deep-link routing — `openhive://h/<id>/…`. */
+  id: string;
 }
 
 /**
@@ -433,12 +436,19 @@ interface AppSettings {
    * crash still leaves an accurate set. A headless launch restores these.
    */
   lastRunningHives: string[];
+  /**
+   * Stable hive-id registry: dataDir → short id, used by deep links
+   * (`openhive://h/<id>/…`). Persisted so a cold-start deep link can map an
+   * id back to a dataDir before that hive has booted.
+   */
+  hiveIds: Record<string, string>;
 }
 
 const DEFAULT_SETTINGS: Readonly<AppSettings> = {
   headless: false,
   startAtLogin: false,
   lastRunningHives: [],
+  hiveIds: {},
 };
 
 let settings: AppSettings = { ...DEFAULT_SETTINGS };
@@ -458,6 +468,13 @@ function loadSettings(): AppSettings {
       lastRunningHives: Array.isArray(parsed.lastRunningHives)
         ? parsed.lastRunningHives.filter((p): p is string => typeof p === 'string')
         : [],
+      hiveIds: (parsed.hiveIds && typeof parsed.hiveIds === 'object'
+        && !Array.isArray(parsed.hiveIds))
+        ? Object.fromEntries(
+            Object.entries(parsed.hiveIds as Record<string, unknown>)
+              .filter((e): e is [string, string] => typeof e[1] === 'string'),
+          )
+        : {},
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -505,22 +522,74 @@ function updateSettings(patch: Partial<AppSettings>): void {
 }
 
 /**
+ * dataDirs that were in the restore set this launch but whose hive folder
+ * was missing (deleted, or an unmounted drive). Kept *out* of the running
+ * `hives` map but folded back into `settings.lastRunningHives` by
+ * onHivesChanged() — so a transient unmount auto-recovers next launch
+ * rather than silently dropping the hive from auto-start.
+ */
+let unavailableHives: string[] = [];
+
+/**
  * Call after any change to the set of running hives (spawn, stop, crash,
- * window close, keepAlive toggle). Persists the current background-hive
- * set for restore-on-launch and rebuilds the tray so its "Running Hives"
- * list stays accurate. Persisting continuously (rather than only at quit)
- * means a crash still leaves a correct `lastRunningHives`.
+ * window close, keepAlive toggle). Persists the auto-start set for
+ * restore-on-launch and rebuilds the tray so its "Running Hives" list
+ * stays accurate. Persisting continuously (rather than only at quit) means
+ * a crash still leaves a correct `lastRunningHives`.
+ *
+ * The persisted set is (running keepAlive hives) ∪ (unavailableHives) — see
+ * `unavailableHives` for why the missing ones are retained.
  *
  * NOT called from before-quit's mass `hives.clear()` — that would wipe the
  * set right before exit; the last per-hive change already recorded it.
  */
 function onHivesChanged(): void {
   if (quitting) return;  // don't persist the set as it drains during quit
-  settings.lastRunningHives = [...hives.values()]
+  const running = [...hives.values()]
     .filter((entry) => entry.keepAlive)
     .map((entry) => entry.dataDir);
+  settings.lastRunningHives = [...new Set([...running, ...unavailableHives])];
   saveSettings();
   refreshTrayMenu();
+}
+
+// ── Hive-id registry ──────────────────────────────────────────────────
+//
+// A stable, short, URL-safe id per hive dataDir, used by deep links
+// (`openhive://h/<id>/<route>`). Persisted in settings.hiveIds (dataDir →
+// id) so a cold-start deep link can resolve an id to a dataDir before that
+// hive has booted.
+
+/** Derive a URL-safe id stub from a dataDir's basename. */
+function slugifyHiveId(dataDir: string): string {
+  const base = path.basename(dataDir)
+    .toLowerCase()
+    .replace(/^\.+/, '')          // ~/.openhive → "openhive"
+    .replace(/[^a-z0-9]+/g, '-')  // spaces / punctuation → dash
+    .replace(/^-+|-+$/g, '');     // trim leading/trailing dashes
+  return base || 'hive';
+}
+
+/** Return the hive's id, assigning + persisting a fresh one on first use.
+ *  Collisions (same basename, different dir) get a `-2`, `-3`, … suffix. */
+function ensureHiveId(dataDir: string): string {
+  const existing = settings.hiveIds[dataDir];
+  if (existing) return existing;
+  const taken = new Set(Object.values(settings.hiveIds));
+  const base = slugifyHiveId(dataDir);
+  let id = base;
+  for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
+  settings.hiveIds = { ...settings.hiveIds, [dataDir]: id };
+  saveSettings();
+  return id;
+}
+
+/** Reverse the registry: hive id → dataDir, or undefined if unknown. */
+function resolveHiveId(id: string): string | undefined {
+  for (const [dir, hid] of Object.entries(settings.hiveIds)) {
+    if (hid === id) return dir;
+  }
+  return undefined;
 }
 
 /** Rebuild + reattach both the application menu and the macOS dock menu.
@@ -637,17 +706,18 @@ async function showHive(): Promise<BrowserWindow | null> {
  * demand if the hive is running windowless. Used by the tray's per-hive
  * "Show Window". Boots the hive first if it isn't running at all.
  */
-async function showHiveByDir(dataDir: string): Promise<void> {
+async function showHiveByDir(dataDir: string): Promise<BrowserWindow | null> {
   const entry = hives.get(dataDir);
   if (!entry) {
     await openHive(dataDir, { withWindow: true });
-    return;
+    return hives.get(dataDir)?.window ?? null;
   }
   const window = entry.window && !entry.window.isDestroyed()
     ? entry.window
     : await createHiveWindow(entry);
   if (window.isMinimized()) window.restore();
   window.focus();
+  return window;
 }
 
 /**
@@ -715,17 +785,51 @@ function whenRendererReady(window: BrowserWindow): Promise<void> {
   });
 }
 
+// Resolves when whenReady has finished the initial supervisor boot (hive-id
+// registry loaded, restore set spawned). Cold-start deep links await this so
+// they can't race the restore loop into a double-spawn, nor try to resolve a
+// hive id before settings.hiveIds is populated.
+let markBootComplete: () => void = () => {};
+const bootComplete = new Promise<void>((resolve) => { markBootComplete = resolve; });
+
+/**
+ * Split an `openhive://` URL into an optional target hive id and the route
+ * URL to forward to that hive's renderer. `openhive://h/<id>/<route>`
+ * targets a specific hive; anything else has no id and targets the
+ * focused/first hive — the pre-multi-hive contract, unchanged for
+ * single-hive users. `h/` is safe to reserve: the SPA has no `/h` route.
+ */
+function parseDeepLink(url: string): { hiveId?: string; forward: string } {
+  const rest = url.slice('openhive://'.length);
+  const m = /^h\/([^/]+)(?:\/(.*))?$/.exec(rest);
+  if (m) return { hiveId: m[1], forward: `openhive://${m[2] ?? ''}` };
+  return { forward: url };
+}
+
 async function processDeepLink(url: string): Promise<void> {
   if (!url.startsWith('openhive://')) return;
-  // Ensure a window exists (building it on demand in headless mode), then
-  // route the URL once its renderer has subscribed to the deep-link channel.
-  const target = await showHive();
+  // Hold cold-start links until the supervisor's initial boot is done.
+  await bootComplete;
+
+  const { hiveId, forward } = parseDeepLink(url);
+  // Resolve the target window: a specific hive by id (booting it if it
+  // isn't running), or — for an id-less link or an unknown id — the
+  // focused/first hive.
+  let target: BrowserWindow | null;
+  if (hiveId) {
+    const dataDir = resolveHiveId(hiveId);
+    target = dataDir ? await showHiveByDir(dataDir) : await showHive();
+  } else {
+    target = await showHive();
+  }
   if (!target || target.isDestroyed()) return;
+
+  // Route the URL once the renderer has subscribed to the deep-link channel.
   await whenRendererReady(target);
   if (target.isDestroyed()) return;
   if (target.isMinimized()) target.restore();
   target.focus();
-  target.webContents.send('openhive:deep-link', url);
+  target.webContents.send('openhive:deep-link', forward);
 }
 
 function findDeepLinkInArgv(argv: string[]): string | undefined {
@@ -833,11 +937,18 @@ let tray: Tray | null = null;
 /** Per-hive submenu for the tray "Running Hives" list. */
 function buildHiveTraySubmenu(entry: HiveEntry): MenuItemConstructorOptions[] {
   return [
+    { label: `ID: ${entry.id}`, enabled: false },
+    { type: 'separator' },
     { label: 'Show Window', click: () => { void showHiveByDir(entry.dataDir); } },
     { label: 'Stop', click: () => { stopHive(entry.dataDir); } },
     {
       label: 'Restart',
       click: () => { void restartHive(entry.dataDir, entry.overrides); },
+    },
+    {
+      label: 'Copy Deep Link',
+      toolTip: `openhive://h/${entry.id}/`,
+      click: () => { clipboard.writeText(`openhive://h/${entry.id}/`); },
     },
     { type: 'separator' },
     {
@@ -1057,17 +1168,35 @@ app.whenReady().then(async () => {
 
   if (headless) {
     // Restore the background hives from the last session — boot them
-    // windowless + keepAlive — falling back to the default hive when there
-    // were none. Sequential: pickFreePort has a race window, so we never
-    // boot two hives concurrently. Per-hive failures are non-fatal — log
-    // and skip; the app still comes up in the tray.
+    // windowless + keepAlive. Sequential: pickFreePort has a race window,
+    // so we never boot two hives concurrently. Per-hive failures are
+    // non-fatal — log and skip; the app still comes up in the tray.
+    const restoring = settings.lastRunningHives.length > 0;
     // Dedupe — a hand-edited settings.json could list a dir twice, and a
     // second spawnHive() for the same dataDir would orphan the first child.
-    const toBoot = settings.lastRunningHives.length > 0
+    const toBoot = restoring
       ? [...new Set(settings.lastRunningHives)]
       : [defaultHive];
-    let bootedAny = false;
+    // Pre-scan for missing folders BEFORE booting any hive. A restore entry
+    // whose folder is gone (deleted, or an unmounted drive) must not be
+    // booted — spawnHiveChild would mkdir it and a blank hive would appear.
+    // `.openhive-root` is openhive's own sentinel, present in every
+    // initialized hive. Missing ones go to `unavailableHives` (kept, not
+    // pruned — see that var). The scan must complete before the first
+    // spawnHive(), whose onHivesChanged() reads `unavailableHives` — scan
+    // it lazily and a later-discovered miss would be dropped.
+    const bootable: string[] = [];
     for (const dir of toBoot) {
+      if (restoring && !fs.existsSync(path.join(dir, '.openhive-root'))) {
+        console.warn(`[supervisor] hive unavailable, skipped: ${dir}`);
+        unavailableHives.push(dir);
+      } else {
+        bootable.push(dir);
+      }
+    }
+
+    let bootedAny = false;
+    for (const dir of bootable) {
       try {
         await spawnHive(dir, {}, { withWindow: false, keepAlive: true });
         recordRecentHive(dir);
@@ -1078,13 +1207,35 @@ app.whenReady().then(async () => {
         );
       }
     }
-    if (!bootedAny && Notification.isSupported()) {
-      // Stay resident in the tray either way — the user can retry from
-      // "New Hive…" — but surface that nothing came up.
-      new Notification({
-        title: 'OpenHive',
-        body: 'No hives could be started. Open one from the tray.',
-      }).show();
+    // Restore set was non-empty but nothing came up — boot the default hive
+    // so the app isn't left with an empty tray.
+    if (!bootedAny && restoring) {
+      try {
+        await spawnHive(defaultHive, {}, { withWindow: false, keepAlive: true });
+        recordRecentHive(defaultHive);
+        bootedAny = true;
+      } catch (err) {
+        console.warn(
+          `[supervisor] default hive failed to boot — ${(err as Error).message}`,
+        );
+      }
+    }
+    if (Notification.isSupported()) {
+      // Stay resident in the tray regardless — surface what didn't come up.
+      if (unavailableHives.length > 0) {
+        new Notification({
+          title: 'OpenHive',
+          body: unavailableHives.length === 1
+            ? `Hive folder unavailable — skipped: ${path.basename(unavailableHives[0])}`
+            : `${unavailableHives.length} hive folders unavailable — skipped`,
+        }).show();
+      }
+      if (!bootedAny) {
+        new Notification({
+          title: 'OpenHive',
+          body: 'No hives could be started. Open one from the tray.',
+        }).show();
+      }
     }
   } else {
     try {
@@ -1132,6 +1283,9 @@ app.whenReady().then(async () => {
 
   refreshMenus();
   setupTray();
+  // Initial boot done — cold-start deep links queued on bootComplete may
+  // now resolve hive ids and route without racing the restore loop.
+  markBootComplete();
 
   // Auto-update: only in packaged builds. Skipped on `electron .` dev
   // launches (app.isPackaged === false). Publish destination is declared
@@ -1439,8 +1593,11 @@ async function spawnHive(
 
   const entry: HiveEntry = {
     child, window: null, dataDir, url, overrides, keepAlive,
+    id: ensureHiveId(dataDir),
   };
   hives.set(dataDir, entry);
+  // A dir that just booted is, by definition, available again.
+  unavailableHives = unavailableHives.filter((d) => d !== dataDir);
   onHivesChanged();
 
   // Long-lived crash handler. The 'exit before ready' listener inside

@@ -208,8 +208,9 @@ window; headless mode just makes window creation optional.
 
 **Tray menu is the headless control panel.** `buildTrayMenu()` is rebuilt on
 every change to the running set (`onHivesChanged()` / `refreshTrayMenu()`):
-- *Running Hives* — one submenu per hive: Show Window · Stop · Restart, plus a
-  *Keep Running in Background* checkbox. A `●`/`○` marks whether it has a window.
+- *Running Hives* — one submenu per hive: an `ID: <id>` header, Show Window ·
+  Stop · Restart · Copy Deep Link, plus a *Keep Running in Background*
+  checkbox. A `●`/`○` marks whether it has a window.
 - *New Hive in Background…* (`withWindow: false`) / *New Hive (with window)…*
 - *Open in Background on Launch* → `settings.headless`
 - *Open at Login* → `settings.startAtLogin`, which drives
@@ -234,13 +235,33 @@ hive when the set is empty. Headed launch is unchanged (default hive only).
 The `quitting` flag gates child-exit handlers during `before-quit` — without
 it, hives exiting on quit would drain `lastRunningHives` to `[]`.
 
+A restore entry whose folder is **missing** (deleted, or an unmounted drive —
+detected by the absence of openhive's `.openhive-root` marker) is **skipped,
+not pruned**: it's tracked in `unavailableHives`, which `onHivesChanged()`
+folds back into `lastRunningHives`, so an unmounted drive auto-recovers on a
+later launch. The check applies only to the restore set — "New Hive…" still
+creates a brand-new folder deliberately. A once-per-launch notification names
+what was skipped.
+
+**Deep-link hive routing.** `openhive://h/<id>/<route>` targets a specific
+hive; `<id>` is a stable short slug (`HiveEntry.id`, derived from the dataDir
+basename, collision-suffixed) held in the `settings.hiveIds` registry —
+parsed by `parseDeepLink()`, resolved by `resolveHiveId()`, booted on demand.
+An id-less `openhive://<route>` keeps the pre-multi-hive behavior (focused /
+first hive). `processDeepLink()` awaits `bootComplete` so a cold-start link
+can't race the restore loop. The renderer is unchanged — main strips `h/<id>`
+and forwards a clean `openhive://<route>`. Tray → per-hive *Copy Deep Link*
+puts `openhive://h/<id>/` on the clipboard.
+
 **macOS dock.** Headless launch calls `app.dock.hide()` for a true menu-bar
 app. The icon returns via `app.dock.show()` when a window opens from the tray
 and hides again when the last window closes.
 
-**Known limits:** deep links route to the first hive only (the `openhive://`
-URL contract carries no hive identity); a `lastRunningHives` entry whose folder
-was deleted boots as a fresh empty hive.
+**Planned (not yet built):** *2e* — surface `unavailableHives` in the tray as
+a section with an explicit "Remove" so the user, not a heuristic, prunes a
+permanently-deleted hive from auto-start. A "Copy link to *this view*"
+renderer affordance (current SPA route, not just the hive root) is the other
+deferred deep-link piece.
 
 **Verify locally** (server boots, no window):
 ```bash
