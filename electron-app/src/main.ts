@@ -736,10 +736,20 @@ app.whenReady().then(async () => {
   if (app.isPackaged) {
     try {
       const autoUpdater = await loadAutoUpdater();
+      // Record updater wiring health on the global. The e2e test reads this
+      // via Playwright's app.evaluate(), which runs in a context with no
+      // `require` / `import()` and so can't probe electron-updater itself.
+      // True iff electron-updater resolved to a usable object — the exact
+      // thing the CJS-interop regression broke (autoUpdater came back
+      // undefined). This records the result of the *real* loadAutoUpdater()
+      // call, not a re-implementation.
+      (globalThis as Record<string, unknown>).__openhiveAutoUpdaterReady =
+        typeof autoUpdater?.checkForUpdatesAndNotify === 'function';
       autoUpdater.checkForUpdatesAndNotify().catch((err: Error) => {
         console.warn(`[supervisor] auto-update check failed: ${err.message}`);
       });
     } catch (err) {
+      (globalThis as Record<string, unknown>).__openhiveAutoUpdaterReady = false;
       console.warn(
         `[supervisor] auto-update unavailable: ${(err as Error).message}`,
       );

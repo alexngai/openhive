@@ -181,6 +181,32 @@ try {
   });
   check('API reachable from renderer (/api/v1/auth/mode)', api.ok,
     `status ${api.status}${api.error ? ` ${api.error}` : ''}`);
+
+  // 4. Auto-updater wiring (main process — the renderer can't see this).
+  //    `app.evaluate` runs in the supervisor; it imports electron-updater
+  //    from the asar exactly as main.ts does and asserts `autoUpdater`
+  //    resolves to a real object. This is the regression guard for the
+  //    CJS-interop bug where `autoUpdater` came back `undefined` and
+  //    `checkForUpdatesAndNotify()` threw at startup — verify-update-feed
+  //    checks the release artifacts, this checks the app-side wiring.
+  // main.ts's auto-update block runs after spawnHive (so shortly after the
+  // window appears) and records whether loadAutoUpdater() yielded a usable
+  // updater on `globalThis.__openhiveAutoUpdaterReady`. Poll for it — the
+  // block may not have run yet when we get here.
+  let updaterWired;
+  const updaterDeadline = Date.now() + 20_000;
+  while (Date.now() < updaterDeadline) {
+    updaterWired = await app.evaluate(
+      () => /** @type {any} */ (globalThis).__openhiveAutoUpdaterReady,
+    );
+    if (typeof updaterWired === 'boolean') break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  check('auto-updater wired (loadAutoUpdater resolved a usable updater)',
+    updaterWired === true,
+    updaterWired === undefined
+      ? 'auto-update block never ran / set no flag within 20s'
+      : 'loadAutoUpdater() yielded no usable autoUpdater — electron-updater CJS-interop regression');
 } catch (err) {
   fail(`unexpected error — ${err.message}`);
 } finally {
