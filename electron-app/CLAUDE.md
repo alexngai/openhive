@@ -1,7 +1,9 @@
 # OpenHive Electron App
 
-Thin Electron supervisor that hosts one openhive server per window, forked
-via `node:child_process` + `ELECTRON_RUN_AS_NODE=1`.
+Thin Electron supervisor that forks one openhive server per hive
+(`node:child_process` + `ELECTRON_RUN_AS_NODE=1`). Each hive's server runs in
+its own Node process; its UI window is optional — built on demand, or never
+(headless / tray-only mode). See "Headless / tray-only mode".
 
 ## Architecture
 
@@ -19,7 +21,7 @@ electron-app/src/main.ts  (Electron main process)
             → Fastify listens on the preallocated port
             → main posts { type: 'start', config }
             ← child posts { type: 'ready', url } when hive is listening
-       → BrowserWindow.loadURL(url)
+       → BrowserWindow.loadURL(url)        ← headed only; deferred in tray mode
 ```
 
 **Why not `utilityProcess`:** Electron's `utilityProcess` runs a restricted
@@ -61,9 +63,16 @@ Renderer integration:
   counts as "unread") is design-heavy and lives in feature code as it gets
   added. The bridge is just the OS call.
 
-Cold-start deep links (URL clicked while app was closed) are gated on the
-first hive's `did-finish-load` so the IPC doesn't fire into a renderer
-that hasn't subscribed yet.
+Deep links reach a renderer over the `openhive:deep-link` IPC channel only
+once that renderer has signalled readiness — it sends an
+`openhive:renderer-ready` ping after React has mounted and the deep-link hook
+has subscribed (`did-finish-load` is too early: React's `useEffect` runs after
+the commit phase). Readiness is tracked per-`webContents`, so it stays correct
+across headless open→close→reopen cycles where the "first" window keeps
+changing identity. Cold-start links additionally await `bootComplete` so they
+can't race the restore loop. Full routing — including `openhive://h/<id>/…`
+hive targeting — is covered under "Headless / tray-only mode → Deep-link hive
+routing".
 
 ## Build + run
 
@@ -129,7 +138,7 @@ Breakpoints in `spawnHive`, menu handlers, IPC routing.
 ### Hive-child (the forked Node process)
 
 The child is a separate process from main — `--inspect` on the parent doesn't
-cover it. Pass `execArgv` to `fork()` in `main.ts#spawnHive`:
+cover it. Pass `execArgv` to `fork()` in `main.ts#spawnHiveChild`:
 
 ```ts
 execArgv: process.env.OPENHIVE_DEBUG_HIVE
@@ -183,7 +192,7 @@ Two distinct trees, deliberately separated:
 | App settings (tray-mode toggles) | `<userData>/settings.json` |
 
 Every line the hive-child writes is piped to **both** the per-hive log file and
-the supervisor's stderr (see `child.stdout.on('data', ...)` in `spawnHive`).
+the supervisor's stderr (see `child.stdout.on('data', ...)` in `spawnHiveChild`).
 Tail one place, see everything.
 
 ## Environment variables
@@ -306,7 +315,7 @@ The script then idempotently patches `lib/database.js` (guarded by a `// openhiv
 
 **ESM/CJS module resolution for the electron-app bundle.** `tsconfig.json` emits NodeNext ESM. `electron-app/package.json` has `"type": "module"` via the generated `dist-electron/package.json`... actually no, we build to `electron-app/dist/` now and the parent `electron-app/package.json` already has `"type": "module"`. When the hive-child does `await import('openhive')`, it uses the variable-specifier trick (`const specifier = 'openhive'; await import(specifier)`) to bypass TS's static type resolution — so tsc doesn't complain even when openhive's dist lacks a `.d.ts`.
 
-**Multi-hive architecture.** `app.requestSingleInstanceLock()` prevents multiple Electron app processes. Multi-hive lives inside a single Electron instance — "New Hive…" in the menu forks an additional `child_process.fork` with its own `dataDir`, own SQLite file, own Fastify listener, own BrowserWindow. Each is fully isolated; a hive crash shows a per-window restart dialog without taking down siblings.
+**Multi-hive architecture.** `app.requestSingleInstanceLock()` prevents multiple Electron app processes. Multi-hive lives inside a single Electron instance — "New Hive…" in the menu forks an additional `child_process.fork` with its own `dataDir`, own SQLite file, own Fastify listener, and (in headed mode) its own BrowserWindow. Each is fully isolated; a hive crash surfaces a restart prompt — a modal dialog when the hive has a window, an OS notification when it's headless (`handleHiveCrash`) — without taking down siblings.
 
 **`dist/` vs `dist/web/` cleanup.** `npm run build:server` runs `tsup` with `clean: true` — wipes the whole `dist/` directory, including `dist/web/`. If you rebuild just the server, the SPA is gone until you also run `npm run build:web`. `npm run build` (no suffix) runs both.
 
