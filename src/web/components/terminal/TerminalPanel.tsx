@@ -68,6 +68,12 @@ interface TerminalPanelProps {
   mode?: 'overlay' | 'embedded';
   /** Session kind: 'tui' (OpenSwarm TUI, default) or 'shell' ($SHELL in cwd). */
   sessionMode?: TerminalSessionMode;
+  /**
+   * In 'embedded' mode, suppress the header's "← Back to Swarms" link. Set
+   * when the panel is hosted inside another page (e.g. the Threads detail
+   * Terminal tab) where that navigation target makes no sense.
+   */
+  hideEmbeddedBackLink?: boolean;
 }
 
 // =============================================================================
@@ -99,6 +105,7 @@ export function TerminalPanel({
   onSessionReady,
   mode = 'overlay',
   sessionMode = 'tui',
+  hideEmbeddedBackLink = false,
 }: TerminalPanelProps) {
   // Derive WS base URL from current location
   const wsBase = useMemo(() => {
@@ -529,9 +536,11 @@ export function TerminalPanel({
           Reconnect
         </button>
         {mode === 'embedded' ? (
-          <Link to="/swarms" className="btn btn-ghost text-xs">
-            &larr; Back to Swarms
-          </Link>
+          hideEmbeddedBackLink ? null : (
+            <Link to="/swarms" className="btn btn-ghost text-xs">
+              &larr; Back to Swarms
+            </Link>
+          )
         ) : (
           <button
             onClick={onClose}

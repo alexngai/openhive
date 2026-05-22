@@ -95,6 +95,9 @@ export default function App() {
                   `hostedId` from params and renders <HostedChat /> in the
                   detail pane — same chrome as SessionDetail/MailThreadView. */}
               <Route path="threads/hosted-chat/:hostedId" element={<Sessions />} />
+              {/* TUI-kind hosted swarms (claude-code, codex-tui) — the detail
+                  pane renders an embedded terminal attached to the live PTY. */}
+              <Route path="threads/hosted-tui/:hostedId" element={<Sessions />} />
               <Route path="events" element={<Events />} />
               <Route path="terminal/:swarmId" element={<Terminal />} />
               <Route path="teams" element={<Teams />} />

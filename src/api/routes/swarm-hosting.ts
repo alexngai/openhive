@@ -326,7 +326,12 @@ export async function swarmHostingRoutes(
       created_at: h.created_at,
       updated_at: h.updated_at,
       bootstrap: h.config?.bootstrap,
-      data_dir: h.config?.data_dir,
+      // data_dir is stored as-written by manager.ts (path.join, may be
+      // relative). Absolutize for display so callers show a real path.
+      data_dir: h.config?.data_dir ? path.resolve(h.config.data_dir) : undefined,
+      // Surface workspace repos so the frontend can show repo/branch hints
+      // (e.g. on Threads terminal rows) without a per-swarm lookup.
+      workspace: h.config?.workspace,
     }));
 
     return reply.send({ data, total: result.total });

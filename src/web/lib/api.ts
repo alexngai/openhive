@@ -187,6 +187,12 @@ export interface HostedSwarm {
    * runtime fallback cwd for any spawn call that doesn't specify one.
    */
   data_dir?: string;
+  /**
+   * Workspace repos cloned into `data_dir` at spawn time (TUI kinds clone
+   * before launching the PTY). Each entry carries the git URL + optional
+   * branch.
+   */
+  workspace?: { repos: Array<{ url: string; branch?: string; path?: string }> };
   /** Kind of hosted swarm. Defaults to 'openswarm' when absent. */
   kind?: 'openswarm' | 'claude-code' | 'codex';
   /**

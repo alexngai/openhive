@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
-  Activity, Bot, ChevronDown, ChevronRight, Clock, Cpu, FileText, Loader2, Mail,
-  Search, User, Users,
+  Activity, Bot, ChevronDown, ChevronRight, Clock, Cpu, FileText, GitBranch, Loader2,
+  Mail, Search, Terminal, User, Users,
 } from 'lucide-react';
 import { useSessionsList, useSessionsInfinite, useMapSwarms, useMailConversations, useHostedSwarms } from '../hooks/useApi';
-import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
+import { useSessionsRealtime, useSwarmRealtime } from '../hooks/useRealtimeInvalidation';
 import { useSubscribe, useWSEvent } from '../hooks/useWebSocket';
 import { useQueryClient } from '@tanstack/react-query';
 import { LoadingSpinner, PageLoader } from '../components/common/LoadingSpinner';
@@ -16,6 +16,7 @@ import { useSessionAttentionStore } from '../stores/session-attention';
 import { SessionDetail } from './SessionDetail';
 import { MailThreadView } from '../components/sessions/MailThreadView';
 import { HostedChat } from '../components/hosted-chat/HostedChat';
+import { TerminalPanel } from '../components/terminal/TerminalPanel';
 import { Link } from 'react-router-dom';
 import type { SessionListItem, MapSwarm, MailConversation, HostedSwarm } from '../lib/api';
 
@@ -30,7 +31,7 @@ const STALE_MARGIN_MS = 10 * 60 * 1000; // 10 minutes
 // Thread model — unifies sessions + mail conversations
 // ============================================================================
 
-type ThreadFlavor = 'session' | 'mail' | 'dispatch' | 'hosted-chat';
+type ThreadFlavor = 'session' | 'mail' | 'dispatch' | 'hosted-chat' | 'hosted-tui';
 
 type ThreadStatus = 'live' | 'recent' | 'idle' | 'mail-active' | 'mail-completed' | 'hosted-running';
 
@@ -50,6 +51,8 @@ interface Thread {
   session?: SessionListItem;
   /** Mail-specific */
   conversation?: MailConversation;
+  /** hosted-tui only: working dir + cloned repo, shown on the sidebar row. */
+  terminal?: { cwd?: string; repo?: string; branch?: string };
 }
 
 function getSessionStatus(
@@ -186,6 +189,17 @@ function FilterChips({
 // Thread row (sidebar)
 // ============================================================================
 
+/** Last path segment of a git URL, sans `.git` — a human-readable repo name. */
+function repoNameFromUrl(url: string): string {
+  const cleaned = url.replace(/\.git$/, '').replace(/\/+$/, '');
+  return cleaned.split('/').pop() || url;
+}
+
+/** Collapse a `/Users/<name>/` or `/home/<name>/` prefix to `~/`. */
+function shortenHomePath(p: string): string {
+  return p.replace(/^\/(?:Users|home)\/[^/]+\//, '~/');
+}
+
 function ThreadRow({
   thread,
   isSelected,
@@ -220,6 +234,21 @@ function ThreadRow({
             size={24}
             borderColor={statusBorderColor(thread.status)}
           />
+        ) : thread.flavor === 'hosted-tui' || thread.flavor === 'hosted-chat' ? (
+          <div
+            className="w-6 h-6 rounded-full flex items-center justify-center"
+            style={{
+              backgroundColor: 'var(--color-elevated)',
+              border: `1.5px solid ${statusBorderColor(thread.status)}`,
+            }}
+            title={thread.flavor === 'hosted-tui' ? 'Terminal' : 'Agent chat'}
+          >
+            {thread.flavor === 'hosted-tui' ? (
+              <Terminal className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+            ) : (
+              <Bot className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
+            )}
+          </div>
         ) : isGroup ? (
           <div
             className="w-6 h-6 rounded-full flex items-center justify-center"
@@ -254,11 +283,33 @@ function ThreadRow({
         >
           {thread.title}
         </p>
-        {thread.description && (
+        {thread.terminal ? (
+          <>
+            {thread.terminal.repo && (
+              <p
+                className="text-2xs truncate leading-tight flex items-center gap-1"
+                style={{ color: 'var(--color-text-muted)' }}
+              >
+                <GitBranch className="w-2.5 h-2.5 shrink-0" />
+                {thread.terminal.repo}
+                {thread.terminal.branch ? ` · ${thread.terminal.branch}` : ''}
+              </p>
+            )}
+            {thread.terminal.cwd && (
+              <p
+                className="text-2xs truncate leading-tight font-mono"
+                style={{ color: 'var(--color-text-muted)' }}
+                title={thread.terminal.cwd}
+              >
+                {shortenHomePath(thread.terminal.cwd)}
+              </p>
+            )}
+          </>
+        ) : thread.description ? (
           <p className="text-2xs truncate leading-tight" style={{ color: 'var(--color-text-muted)' }}>
             {thread.description}
           </p>
-        )}
+        ) : null}
       </div>
     </button>
   );
@@ -524,6 +575,7 @@ function InactiveSection({
 export function Sessions() {
   const params = useParams<{ id?: string; mailId?: string; hostedId?: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { data: sessionsData, isLoading: sessionsLoading } = useSessionsList();
   const { data: mailConvs } = useMailConversations();
   const { data: swarms } = useMapSwarms();
@@ -533,6 +585,10 @@ export function Sessions() {
   // events.
   const { data: hostedSwarms } = useHostedSwarms({ state: 'running' });
   useSessionsRealtime();
+  // Keep the hosted-swarm list live: invalidates `hosted-swarms` on
+  // swarm_spawned / swarm_stopped / swarm_offline so terminal threads
+  // appear and disappear from the sidebar without a manual refresh.
+  useSwarmRealtime();
 
   // Keep mail list fresh via WebSocket
   useSubscribe(['mail:conversations']);
@@ -544,13 +600,18 @@ export function Sessions() {
 
   const selectedSessionId = params.id ?? null;
   const selectedMailId = params.mailId ?? null;
-  const selectedHostedId = params.hostedId ?? null;
+  // Both hosted routes share the `:hostedId` param — disambiguate by path.
+  const isHostedTuiRoute = location.pathname.includes('/threads/hosted-tui/');
+  const selectedHostedTuiId = isHostedTuiRoute ? (params.hostedId ?? null) : null;
+  const selectedHostedChatId = !isHostedTuiRoute ? (params.hostedId ?? null) : null;
   const selectedKey = selectedSessionId
     ? `session:${selectedSessionId}`
     : selectedMailId
       ? `mail:${selectedMailId}`
-      : selectedHostedId
-        ? `hosted-chat:${selectedHostedId}`
+      : selectedHostedTuiId
+        ? `hosted-tui:${selectedHostedTuiId}`
+      : selectedHostedChatId
+        ? `hosted-chat:${selectedHostedChatId}`
       : null;
 
   const [filter, setFilter] = useState<FilterKey>('all');
@@ -582,7 +643,7 @@ export function Sessions() {
     const hostedChatThreads: Thread[] = (hostedSwarms ?? [])
       .filter((h) => h.mode === 'rpc' && h.state === 'running')
       .map((h) => ({
-        id: `hosted-chat:${h.id}`,
+        id: h.id,
         flavor: 'hosted-chat' as ThreadFlavor,
         to: `/threads/hosted-chat/${h.id}`,
         title: h.name ?? h.id,
@@ -591,7 +652,34 @@ export function Sessions() {
         lastActivityAt: h.updated_at ?? h.created_at ?? new Date().toISOString(),
         participantCount: 1,
       }));
-    return [...sessionThreads, ...mailThreads, ...hostedChatThreads].sort(
+    // TUI-kind hosted swarms (claude-code; codex spawned as a TUI) surface
+    // as terminal threads — clicking opens an embedded terminal attached to
+    // the live PTY in the detail pane.
+    const hostedTuiThreads: Thread[] = (hostedSwarms ?? [])
+      .filter(
+        (h) =>
+          h.state === 'running' &&
+          (h.kind === 'claude-code' || (h.kind === 'codex' && h.mode === 'tui')),
+      )
+      .map((h) => {
+        const repo = h.workspace?.repos?.[0];
+        return {
+          id: h.id,
+          flavor: 'hosted-tui' as ThreadFlavor,
+          to: `/threads/hosted-tui/${h.id}`,
+          title: h.name ?? h.id,
+          description: `${h.kind ?? 'hosted'} · terminal`,
+          status: 'hosted-running' as ThreadStatus,
+          lastActivityAt: h.updated_at ?? h.created_at ?? new Date().toISOString(),
+          participantCount: 1,
+          terminal: {
+            cwd: h.data_dir,
+            repo: repo ? repoNameFromUrl(repo.url) : undefined,
+            branch: repo?.branch,
+          },
+        };
+      });
+    return [...sessionThreads, ...mailThreads, ...hostedChatThreads, ...hostedTuiThreads].sort(
       (a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
     );
   }, [sessionsData, mailConvs, swarmStatusMap, hostedSwarms]);
@@ -729,8 +817,10 @@ export function Sessions() {
           <MailThreadView conversationId={selectedMailId} />
         ) : selectedSessionId ? (
           <SessionDetail />
-        ) : selectedHostedId ? (
-          <HostedChatThreadDetail hostedSwarmId={selectedHostedId} hostedSwarms={hostedSwarms ?? []} />
+        ) : selectedHostedTuiId ? (
+          <HostedTuiThreadDetail hostedSwarmId={selectedHostedTuiId} hostedSwarms={hostedSwarms ?? []} />
+        ) : selectedHostedChatId ? (
+          <HostedChatThreadDetail hostedSwarmId={selectedHostedChatId} hostedSwarms={hostedSwarms ?? []} />
         ) : activeThreads.length > 0 ? (
           <EmptyDetail />
         ) : (sessionsData?.data ?? []).length > 0 || (mailConvs ?? []).length > 0 ? (
@@ -817,6 +907,57 @@ function HostedChatThreadDetail({
           providerLabel={hosted.kind}
         />
       </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Hosted-TUI detail (claude-code, codex-tui)
+// ============================================================================
+
+/**
+ * Right-pane view for `/threads/hosted-tui/:hostedId`. TUI-kind hosted
+ * swarms have no chat surface — the detail pane is a full-bleed embedded
+ * terminal attached to the swarm's live PTY (`TerminalPanel` resolves
+ * `terminal-info?mode=tui` → `binding:'attach'` and wires up by sessionId).
+ */
+function HostedTuiThreadDetail({
+  hostedSwarmId,
+  hostedSwarms,
+}: {
+  hostedSwarmId: string;
+  hostedSwarms: HostedSwarm[];
+}) {
+  const hosted = hostedSwarms.find((h) => h.id === hostedSwarmId);
+  if (!hosted) {
+    return (
+      <div className="p-6">
+        <div
+          className="card p-4 text-center text-xs"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          No running hosted swarm with id <code>{hostedSwarmId}</code>. It may
+          have stopped — return to{' '}
+          <Link to="/threads" className="text-honey-500 hover:underline">
+            Threads
+          </Link>
+          .
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full">
+      <TerminalPanel
+        key={hosted.id}
+        mode="embedded"
+        sessionMode="tui"
+        hideEmbeddedBackLink
+        swarm={{ swarmId: hosted.id, swarmName: hosted.name }}
+        isOpen
+        onClose={() => undefined}
+      />
     </div>
   );
 }
