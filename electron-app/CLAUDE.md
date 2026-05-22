@@ -90,7 +90,13 @@ cd electron-app && npm run dist
 cd electron-app && npm run pack
 
 # Re-run just the guards against the last build (seconds, no rebuild)
+#   verify chain: verify-asar → smoke-test → e2e-test (headed) →
+#   headless-e2e (tray-only / multi-hive / deep-link flows) → verify-update-feed
 cd electron-app && npm run verify
+
+# Run only the headless-flow tests — works against the dev build, no
+# packaging needed (uses dist/main.js when it's newer than release/):
+cd electron-app && npm run build && node scripts/headless-e2e.mjs
 ```
 
 > **Restoring after `dist` / `pack`.** Both run `stage-openhive.mjs` +
@@ -269,12 +275,16 @@ a deep link to the current SPA route, not just the hive root (`openhive://h/<id>
 which is all the tray's main-process *Copy Deep Link* can build). Needs a
 preload-bridge method exposing the hive id + current route to the renderer.
 
-**Verify locally** (server boots, no window):
+**Tests.** `scripts/headless-e2e.mjs` (in the `verify` chain) is the
+regression guard for everything above — headless boot, multi-hive restore,
+2b skip-but-keep, 2e remove/retry, deep-link hive routing. Native tray menus
+can't be clicked from Playwright, so `main.ts` exposes an `OPENHIVE_E2E`-gated
+`globalThis.__openhiveTest` (state readers + the 2e action handlers) that the
+script drives via `electronApp.evaluate()`. It runs against the packaged app
+in CI, or the dev build locally (whichever is newer; `--dev` forces dev):
+
 ```bash
-OPENHIVE_HOME=/tmp/h OPENHIVE_REMOTE_DEBUG=9223 \
-  electron dist/main.js --tray --user-data-dir=/tmp/ud
-# curl http://127.0.0.1:9223/json/list        → zero "type":"page" targets
-# curl http://127.0.0.1:<hive-port>/.well-known/openhive.json → 200
+npm run build && node scripts/headless-e2e.mjs
 ```
 
 ## Known gotchas (debug anchors for future sessions)

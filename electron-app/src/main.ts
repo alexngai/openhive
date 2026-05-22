@@ -1356,6 +1356,26 @@ app.whenReady().then(async () => {
   // now resolve hive ids and route without racing the restore loop.
   markBootComplete();
 
+  // E2E test hook — opt-in via OPENHIVE_E2E, inert (and absent) otherwise.
+  // A native tray menu can't be clicked from Playwright, so
+  // scripts/headless-e2e.mjs reaches supervisor state + the tray-action
+  // handlers through this, via electronApp.evaluate().
+  if (process.env.OPENHIVE_E2E) {
+    (globalThis as Record<string, unknown>).__openhiveTest = {
+      headless: () => headless,
+      hives: () => [...hives.values()].map((e) => ({
+        id: e.id,
+        dataDir: e.dataDir,
+        url: e.url,
+        keepAlive: e.keepAlive,
+        windowed: !!e.window && !e.window.isDestroyed(),
+      })),
+      unavailable: () => [...unavailableHives],
+      removeUnavailableHive: (dir: string) => { removeUnavailableHive(dir); },
+      retryUnavailableHive: (dir: string) => retryUnavailableHive(dir),
+    };
+  }
+
   // Auto-update: only in packaged builds. Skipped on `electron .` dev
   // launches (app.isPackaged === false). Publish destination is declared
   // in package.json's `build.publish` (GitHub Releases); electron-updater
