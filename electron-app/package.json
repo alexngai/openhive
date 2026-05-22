@@ -17,7 +17,7 @@
     "dev": "npm --prefix .. run build && npm run build && npm run start",
     "dist": "npm --prefix .. run build && npm run build && npm run build:icons && node scripts/stage-openhive.mjs && node scripts/prune-node-modules.mjs && electron-builder && npm run verify",
     "pack": "npm --prefix .. run build && npm run build && node scripts/stage-openhive.mjs && node scripts/prune-node-modules.mjs && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir && npm run verify",
-    "verify": "node scripts/verify-asar.mjs && node scripts/smoke-test.mjs && node scripts/e2e-test.mjs && node scripts/verify-update-feed.mjs",
+    "verify": "node scripts/verify-asar.mjs && node scripts/smoke-test.mjs && node scripts/e2e-test.mjs && node scripts/headless-e2e.mjs && node scripts/verify-update-feed.mjs",
     "postinstall": "node scripts/fix-better-sqlite3.mjs"
   },
   "dependencies": {
