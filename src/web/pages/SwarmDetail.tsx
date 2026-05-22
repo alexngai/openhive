@@ -447,9 +447,16 @@ function TerminalSection({ hosted }: { hosted: HostedSwarm }) {
   return (
     <div className="mt-4 grid gap-2 sm:grid-cols-2">
       <button
-        onClick={() => navigate(`/terminal/${hosted.id}`)}
+        onClick={() =>
+          // TUI-kind hosted swarms (claude-code, codex-tui) live on the
+          // Threads page — route there so the unified surface handles it.
+          // Openswarm still uses the dedicated Terminal page.
+          hosted.kind === 'claude-code' || hosted.kind === 'codex'
+            ? navigate(`/threads/hosted-tui/${hosted.id}`)
+            : navigate(`/terminal/${hosted.id}`)
+        }
         className="card card-hover px-3 py-2.5 flex items-center gap-3 text-left transition-colors group"
-        aria-label="Open TUI in a dedicated view"
+        aria-label="Open the embedded terminal"
       >
         <div
           className="w-7 h-7 rounded flex items-center justify-center shrink-0"
@@ -1006,14 +1013,18 @@ function RegisteredAgentsSection({
   }, [sessionsResp]);
 
   // Derive the swarm's effective cwd. Mirror the backend resolution chain in
-  // src/api/routes/map.ts: hosted bootstrap.cwd → swarm metadata.cwd →
-  // metadata.projectPath → capabilities.projectPath → hosted data_dir.
+  // src/api/routes/map.ts but with the TUI/codex operator-chosen `cwd`
+  // taking precedence — it's the most specific intent we have for those
+  // kinds and what the user actually sees inside the TUI:
+  //   hosted.cwd → hosted.bootstrap.cwd (openswarm) → swarm.metadata.cwd →
+  //   metadata.projectPath → capabilities.projectPath → hosted.data_dir.
   // The first hit wins. The dialog uses this as a placeholder + fallback
   // hint so the user can see exactly where an empty-cwd spawn will land.
   // The hosted data_dir is the terminal fallback because it's where the
   // runtime process literally launched — `'.'` resolves to it at the
   // OS level when no other cwd flows through.
   const projectPath =
+    hosted?.cwd ??
     hosted?.bootstrap?.cwd ??
     (swarm.metadata as any)?.cwd as string | undefined ??
     (swarm.metadata as any)?.projectPath as string | undefined ??

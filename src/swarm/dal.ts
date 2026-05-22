@@ -240,6 +240,35 @@ export function listKnownBootstrapCwds(limit: number = 50): string[] {
   return out;
 }
 
+/**
+ * Distinct top-level `config.cwd` values across hosted swarms (TUI kinds
+ * and codex-rpc). Counterpart to `listKnownBootstrapCwds` for the newer
+ * free-form working-directory field. Same ordering rules (most recent
+ * row wins, drop empties / `.` / `..`).
+ */
+export function listKnownTuiCwds(limit: number = 50): string[] {
+  const db = getDatabase();
+  const rows = db.prepare(`
+    SELECT json_extract(config, '$.cwd') AS cwd, MAX(created_at) AS created
+    FROM hosted_swarms
+    WHERE json_extract(config, '$.cwd') IS NOT NULL
+    GROUP BY cwd
+    ORDER BY created DESC
+    LIMIT ?
+  `).all(limit) as Array<{ cwd: string | null }>;
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const row of rows) {
+    const c = (row.cwd ?? '').trim();
+    if (!c || c === '.' || c === '..') continue;
+    if (seen.has(c)) continue;
+    seen.add(c);
+    out.push(c);
+  }
+  return out;
+}
+
 /** Get all hosted swarms in active states (for recovery on startup) */
 export function getActiveHostedSwarms(): HostedSwarm[] {
   const db = getDatabase();

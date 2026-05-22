@@ -91,15 +91,71 @@ export function useHostedSwarms(options?: { state?: string; mine?: boolean }) {
 }
 
 /**
- * Distinct project paths recorded across registered swarms (metadata.projectPath)
- * and hosted swarm bootstrap configs (config.bootstrap.cwd). Used by the
- * Spawn Swarm dialog's project-directory autocomplete.
+ * Source label for a known-project-path entry. The endpoint merges paths
+ * from four different sources and tags each with its origin; the
+ * WorkingDirectoryCombobox uses this to group entries by section.
+ *
+ *   • `hosted-tui`        — config.cwd on a hosted claude-code / codex row
+ *   • `hosted-bootstrap`  — config.bootstrap.cwd on a hosted openswarm row
+ *   • `registered-swarm`  — metadata.projectPath on a MAP-registered swarm
+ *   • `repo`              — local_path on a registered repo resource
+ */
+export type KnownProjectPathSource =
+  | 'hosted-tui'
+  | 'hosted-bootstrap'
+  | 'registered-swarm'
+  | 'repo';
+
+export interface KnownProjectPathEntry {
+  path: string;
+  source: KnownProjectPathSource;
+  /** Optional human-readable label (e.g. the repo name). */
+  label?: string;
+}
+
+interface KnownProjectPathsResponse {
+  paths: string[];
+  entries?: KnownProjectPathEntry[];
+}
+
+/**
+ * Distinct directories worth suggesting in the Spawn Swarm dialog's
+ * working-directory combobox. Returns both the legacy flat `paths`
+ * array (back-compat) and the richer `entries` list with source tags.
+ *
+ * `select` exposes the array directly so existing callers that treat
+ * the result as `string[]` keep working — the entries variant is
+ * available via `useKnownProjectPathEntries` below.
  */
 export function useKnownProjectPaths() {
   return useQuery({
     queryKey: ["known-project-paths"],
-    queryFn: () => api.get<{ paths: string[] }>("/map/known-project-paths"),
+    queryFn: () => api.get<KnownProjectPathsResponse>("/map/known-project-paths"),
     select: (data) => data.paths,
+    staleTime: 60_000,
+  });
+}
+
+/**
+ * Same query as `useKnownProjectPaths` but returns the source-tagged
+ * entries for grouped rendering in the combobox. Falls back to a
+ * derived list when the server response omits `entries` (e.g. an older
+ * server) so the UI still has something to show.
+ */
+export function useKnownProjectPathEntries() {
+  return useQuery({
+    queryKey: ["known-project-paths"],
+    queryFn: () => api.get<KnownProjectPathsResponse>("/map/known-project-paths"),
+    select: (data): KnownProjectPathEntry[] => {
+      if (data.entries && data.entries.length > 0) return data.entries;
+      // Older servers without `entries`: synthesize generic entries so the
+      // combobox can still render. Source tagged 'hosted-bootstrap' as a
+      // neutral default — it's the historically-canonical bucket.
+      return (data.paths ?? []).map<KnownProjectPathEntry>((p) => ({
+        path: p,
+        source: 'hosted-bootstrap',
+      }));
+    },
     staleTime: 60_000,
   });
 }
@@ -152,6 +208,14 @@ export function useSpawnSwarm() {
        * the repo directory.
        */
       repo_id?: string;
+      /**
+       * Free-form working directory for the spawned process. Valid only
+       * for non-openswarm kinds (claude-code, codex). Mutually exclusive
+       * with `repo_id` and `workspace` — the backend rejects combinations
+       * at the schema layer. When set, the TUI / codex process is spawned
+       * with this path as cwd.
+       */
+      cwd?: string;
       /**
        * Per-swarm workspace policy. Persisted at spawn time and consulted
        * by the hub on every `repo.declare` / `repo.retract` /

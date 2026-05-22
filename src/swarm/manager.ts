@@ -660,8 +660,11 @@ export class SwarmManager {
     }
 
     // 3. Re-write per-kind prelaunch files with the rotated token, then
-    //    re-trust the workdir.
+    //    re-trust the workdir(s). When the original spawn was pointed at
+    //    a free-form cwd (operator typed a path), preserve that across
+    //    restart so the TUI lands in the same project directory.
     const dataDir = path.resolve(hosted.config.data_dir);
+    const persistedCwd = hosted.config.cwd ? path.resolve(hosted.config.cwd) : undefined;
     const mapServer = this.instanceUrl.replace(/^http/, 'ws').replace(/\/?$/, '/ws/map');
     fs.mkdirSync(dataDir, { recursive: true });
     strategy.writePrelaunchFiles?.({
@@ -672,6 +675,16 @@ export class SwarmManager {
       dataDir,
     });
     strategy.preTrustWorkdir(dataDir, os.homedir());
+    if (persistedCwd && persistedCwd !== dataDir) {
+      strategy.writePrelaunchFiles?.({
+        swarmId: hosted.swarm_id,
+        hostedSwarmId: hosted.id,
+        onboardToken,
+        mapServer,
+        dataDir: persistedCwd,
+      });
+      strategy.preTrustWorkdir(persistedCwd, os.homedir());
+    }
 
     // 4. Build env (kind-specific extras + strip).
     const inheritEnv = this.config.credentials?.inherit_env !== false;
@@ -680,13 +693,15 @@ export class SwarmManager {
     Object.assign(env, strategy.extraEnv());
     for (const key of strategy.envVarsToStrip()) delete env[key];
 
-    // 5. Spawn the new PTY.
+    // 5. Spawn the new PTY. Use the persisted cwd when present so a row
+    //    spawned with an explicit working directory restarts in the same
+    //    place; otherwise fall back to dataDir (legacy behaviour).
     let ptyInfo;
     try {
       ptyInfo = this.ptyManager.create({
         command: tuiBinary,
         args: [],
-        cwd: dataDir,
+        cwd: persistedCwd ?? dataDir,
         env,
         cols: 120,
         rows: 40,
@@ -851,6 +866,12 @@ export class SwarmManager {
       input.credential_overrides,
     );
 
+    // Validate the free-form cwd up front so we fail loud before any row
+    // is persisted. Schema already enforced exclusivity with repo_id /
+    // workspace (codex-rpc accepts both today, but `cwd` is the newer
+    // override and wins per the conflict gates in the schema layer).
+    const resolvedCwd = input.cwd !== undefined ? validateSpawnCwd(input.cwd) : undefined;
+
     const provisionConfig: SwarmProvisionConfig = {
       name,
       adapter: 'codex',
@@ -865,6 +886,7 @@ export class SwarmManager {
       spawn_command_override: codexBinary,
       spawn_args_override: ['app-server', '--listen', 'ws://127.0.0.1:0'],
       mode: 'rpc',
+      ...(resolvedCwd !== undefined && { cwd: resolvedCwd }),
     };
 
     // Phase 7: persist the row.
@@ -894,12 +916,17 @@ export class SwarmManager {
         }
       }
 
-      // Phase 9: pre-trust the data_dir so codex doesn't gate on the
-      // "Trust this folder?" prompt the first time it loads. (Even though
-      // the app-server doesn't render that prompt, codex shares the trust
-      // check with its TUI; keeping this consistent prevents surprises if
-      // we ever spawn `codex resume` for the same data_dir.)
+      // Phase 9: pre-trust the working directory so codex doesn't gate on
+      // the "Trust this folder?" prompt the first time it loads. (Even
+      // though the app-server doesn't render that prompt, codex shares
+      // the trust check with its TUI; keeping this consistent prevents
+      // surprises if we ever spawn `codex resume` for the same dir.)
+      // We always trust dataDir (logs, future resume metadata land there)
+      // plus the operator-chosen cwd if set.
       preTrustCodexWorkdir(dataDir, os.homedir());
+      if (resolvedCwd && resolvedCwd !== dataDir) {
+        preTrustCodexWorkdir(resolvedCwd, os.homedir());
+      }
 
       // Phase 10: build env (mirror TUI hygiene minus the CLAUDE markers).
       const env: Record<string, string> = {};
@@ -910,12 +937,13 @@ export class SwarmManager {
       delete env.CODEX_ENTRYPOINT;
 
       // Phase 11: spawn the app-server, drive initialize → thread/start,
-      // optionally fire the initial prompt as the first turn.
+      // optionally fire the initial prompt as the first turn. cwd falls
+      // back to dataDir when no free-form cwd was supplied.
       let session;
       try {
         session = await this.codexAppServerManager.create({
           command: codexBinary,
-          cwd: dataDir,
+          cwd: resolvedCwd ?? dataDir,
           env,
           initialPrompt: input.initial_prompt,
         });
@@ -1006,8 +1034,12 @@ export class SwarmManager {
     }
 
     const dataDir = path.resolve(hosted.config.data_dir);
+    const persistedCwd = hosted.config.cwd ? path.resolve(hosted.config.cwd) : undefined;
     fs.mkdirSync(dataDir, { recursive: true });
     preTrustCodexWorkdir(dataDir, os.homedir());
+    if (persistedCwd && persistedCwd !== dataDir) {
+      preTrustCodexWorkdir(persistedCwd, os.homedir());
+    }
 
     // 2. Build env (same hygiene as spawn).
     const inheritEnv = this.config.credentials?.inherit_env !== false;
@@ -1020,11 +1052,13 @@ export class SwarmManager {
     // 3. Spawn a fresh session. Restart starts a NEW thread — codex
     // app-server doesn't expose live-thread takeover across processes
     // (proven by the resume probe), so each restart is a clean start.
+    // Re-use the persisted cwd so a row spawned with an explicit working
+    // directory restarts in the same place.
     let session;
     try {
       session = await this.codexAppServerManager.create({
         command: codexBinary,
-        cwd: dataDir,
+        cwd: persistedCwd ?? dataDir,
         env,
       });
     } catch (err) {
@@ -1317,6 +1351,13 @@ export class SwarmManager {
       }
     }
 
+    // Phase 10c: validate free-form cwd if the caller supplied one. The
+    // schema already rejected combinations with repo_id and workspace, so
+    // by here we know cwd is the sole source of working-directory truth.
+    // Validation throws SwarmHostingError on bad input — surfaces to the
+    // operator as a 4xx before any state is persisted.
+    const resolvedCwd = input.cwd !== undefined ? validateSpawnCwd(input.cwd) : undefined;
+
     const provisionConfig: SwarmProvisionConfig = {
       name,
       adapter: strategy.adapterLabel(),
@@ -1331,6 +1372,7 @@ export class SwarmManager {
       spawn_command_override: tuiBinary,
       spawn_args_override: [],
       ...(input.repo_id !== undefined && { repo_id: input.repo_id }),
+      ...(resolvedCwd !== undefined && { cwd: resolvedCwd }),
     };
 
     // Phase 11: persist the row (now that all preconditions have passed).
@@ -1381,8 +1423,12 @@ export class SwarmManager {
       }
 
       // Phase 13: per-kind prelaunch files (e.g. cc-swarm config).
-      // Written to dataDir (canonical location) AND repo cwd (if different)
-      // so the sidecar finds its config regardless of working directory.
+      // Written to dataDir (canonical location) AND any alternate cwd
+      // (repo clone target or operator-chosen free-form cwd) so the
+      // sidecar finds its config regardless of which directory the TUI
+      // opens in. cc-swarm reads `.swarm/claude-swarm/config.json`
+      // relative to cwd — without the second write the sidecar would
+      // fail to detach.
       strategy.writePrelaunchFiles?.({
         swarmId: preRegisteredSwarmId,
         hostedSwarmId,
@@ -1399,15 +1445,28 @@ export class SwarmManager {
           dataDir: repoCloneTarget.localPath,
         });
       }
+      if (resolvedCwd && resolvedCwd !== dataDir) {
+        strategy.writePrelaunchFiles?.({
+          swarmId: preRegisteredSwarmId,
+          hostedSwarmId,
+          onboardToken,
+          mapServer,
+          dataDir: resolvedCwd,
+        });
+      }
 
       // Phase 14: pre-trust the working directory in the TUI's user config
       // so the "Trust this folder?" gate doesn't block first-launch hooks.
-      // When a repo was cloned, trust both dataDir (prelaunch files) and the
-      // repo clone path (actual cwd). Best-effort: missing/invalid user
-      // config just means the user gets the prompt and dismisses it manually.
+      // We always trust dataDir (prelaunch files land there) plus any
+      // alternate cwd in use — the repo clone path or operator-chosen
+      // free-form cwd. Best-effort: missing/invalid user config just means
+      // the user gets the prompt and dismisses it manually.
       strategy.preTrustWorkdir(dataDir, os.homedir());
       if (repoCloneTarget) {
         strategy.preTrustWorkdir(repoCloneTarget.localPath, os.homedir());
+      }
+      if (resolvedCwd) {
+        strategy.preTrustWorkdir(resolvedCwd, os.homedir());
       }
 
       // Phase 15: spawn the TUI via PtyManager. Both kinds are interactive
@@ -1436,12 +1495,17 @@ export class SwarmManager {
         ptyArgs.push(input.initial_prompt);
       }
 
+      // cwd precedence: free-form resolvedCwd (operator typed a path) →
+      // repoCloneTarget.localPath (repo_id resolution) → dataDir (default).
+      // Schema enforces that resolvedCwd and repoCloneTarget can't both be
+      // set, so this chain is unambiguous.
+      const ptyCwd = resolvedCwd ?? (repoCloneTarget ? repoCloneTarget.localPath : dataDir);
       let ptyInfo;
       try {
         ptyInfo = this.ptyManager.create({
           command: tuiBinary,
           args: ptyArgs,
-          cwd: repoCloneTarget ? repoCloneTarget.localPath : dataDir,
+          cwd: ptyCwd,
           env,
           cols: 120,
           rows: 40,
@@ -2934,6 +2998,49 @@ function isPidAlive(pid: number): boolean {
     if (code === 'EPERM') return true;
     return false;
   }
+}
+
+/**
+ * Validate a user-supplied `cwd` for TUI / codex-rpc spawns.
+ *
+ * Throws `SwarmHostingError` with a clear code so the route returns a
+ * 4xx-shaped response rather than a generic 500. Returns the path
+ * normalized to absolute form (matches the resolve used downstream for
+ * `data_dir`).
+ *
+ *   • Must be a non-empty string (schema enforces this, but defensive).
+ *   • Must be absolute — relative paths would resolve against the openhive
+ *     process cwd, which is opaque to the operator and surprising.
+ *   • Must exist on disk and be a directory. We don't auto-create
+ *     arbitrary host paths; that's an operator concern.
+ */
+function validateSpawnCwd(rawCwd: string): string {
+  const trimmed = rawCwd.trim();
+  if (!trimmed) {
+    throw new SwarmHostingError('WORKSPACE_SETUP_FAILED', 'cwd must not be empty');
+  }
+  if (!path.isAbsolute(trimmed)) {
+    throw new SwarmHostingError(
+      'WORKSPACE_SETUP_FAILED',
+      `cwd must be an absolute path; got "${trimmed}"`,
+    );
+  }
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(trimmed);
+  } catch {
+    throw new SwarmHostingError(
+      'WORKSPACE_SETUP_FAILED',
+      `cwd does not exist on disk: ${trimmed}`,
+    );
+  }
+  if (!stat.isDirectory()) {
+    throw new SwarmHostingError(
+      'WORKSPACE_SETUP_FAILED',
+      `cwd is not a directory: ${trimmed}`,
+    );
+  }
+  return path.resolve(trimmed);
 }
 
 // ============================================================================

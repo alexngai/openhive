@@ -188,6 +188,14 @@ export interface HostedSwarm {
    */
   data_dir?: string;
   /**
+   * Operator-chosen working directory for the spawned TUI / codex
+   * process. Set only when the spawn request supplied a top-level `cwd`
+   * — the process opens here instead of the synthetic `data_dir`. UI
+   * surfaces this in preference to `data_dir` so the displayed path
+   * matches what the user actually sees inside the TUI.
+   */
+  cwd?: string;
+  /**
    * Workspace repos cloned into `data_dir` at spawn time (TUI kinds clone
    * before launching the PTY). Each entry carries the git URL + optional
    * branch.

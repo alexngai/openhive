@@ -673,7 +673,11 @@ export function Sessions() {
           lastActivityAt: h.updated_at ?? h.created_at ?? new Date().toISOString(),
           participantCount: 1,
           terminal: {
-            cwd: h.data_dir,
+            // Prefer the operator-chosen cwd (set when the spawn supplied
+            // a top-level `cwd`) — that's the directory the TUI actually
+            // opens in. Fall back to data_dir for rows without an
+            // explicit cwd (the synthetic spawn directory).
+            cwd: h.cwd ?? h.data_dir,
             repo: repo ? repoNameFromUrl(repo.url) : undefined,
             branch: repo?.branch,
           },
