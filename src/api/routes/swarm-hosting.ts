@@ -21,6 +21,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import { SwarmHostingError } from '../../swarm/manager.js';
 import * as dal from '../../swarm/dal.js';
 import * as mapDal from '../../db/dal/map.js';
+import { listRepos } from '../../db/dal/repos.js';
 import type { SwarmManager } from '../../swarm/manager.js';
 import type { Config } from '../../config.js';
 
@@ -127,6 +128,15 @@ export const SpawnSwarmSchema = z
      * Other kinds reject this field.
      */
     mode: z.enum(['rpc', 'tui']).optional(),
+    /**
+     * Free-form working directory the process is spawned in. Valid only
+     * for `claude-code` and `codex` (both modes). Openswarm uses its own
+     * `bootstrap.cwd` mechanism and rejects this field. Mutually exclusive
+     * with `repo_id` and `workspace` — those have their own cwd resolution.
+     * Path validation (absolute / exists / is dir) runs in the manager so
+     * fs concerns stay out of the schema layer.
+     */
+    cwd: z.string().min(1).max(2000).optional(),
     // Layer 4 — optional openteams binding. SwarmManager.spawn() materializes
     // the loadout up front and forwards MCP scope + prompt addendum through
     // the BootstrapToken. team_bundle_id and role flow as advisory metadata.
@@ -144,6 +154,36 @@ export const SpawnSwarmSchema = z
         path: ['mode'],
         message: `mode is only valid when kind="codex"; got kind="${data.kind ?? 'openswarm'}"`,
       });
+    }
+
+    // `cwd` validation: reject for openswarm (it uses bootstrap.cwd via env
+    // var bridge — having a second spelling would just confuse operators),
+    // and reject combinations that would otherwise fight over cwd resolution.
+    // The manager validates the actual path exists; we only enforce shape +
+    // exclusivity here.
+    if (data.cwd !== undefined) {
+      const kindForCwd = data.kind ?? 'openswarm';
+      if (kindForCwd === 'openswarm') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['cwd'],
+          message: 'cwd is not valid for kind="openswarm"; use bootstrap.cwd instead',
+        });
+      }
+      if (data.repo_id !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['cwd'],
+          message: 'cwd and repo_id are mutually exclusive; pick one source of truth for the working directory',
+        });
+      }
+      if (data.workspace !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['cwd'],
+          message: 'cwd and workspace are mutually exclusive; workspace clones into data_dir which conflicts with a chosen cwd',
+        });
+      }
     }
 
     // Reject openswarm-specific fields for TUI-shaped kinds (claude-code,
@@ -260,28 +300,57 @@ export async function swarmHostingRoutes(
     }
   });
 
-  // GET /map/known-project-paths — Distinct project paths recorded across
-  // swarms (metadata.projectPath) and hosted-swarm bootstrap configs
-  // (config.bootstrap.cwd). Used by the Spawn Swarm dialog's project
-  // directory autocomplete so users can pick a previously-used path.
-  // Cheap lookup; no auth required beyond the standard middleware.
+  // GET /map/known-project-paths — Distinct directories worth suggesting
+  // in the Spawn Swarm dialog's working-directory combobox. Sources:
+  //   • hosted-swarm config.cwd (claude-code / codex) — listKnownTuiCwds
+  //   • hosted-swarm bootstrap.cwd (openswarm)        — listKnownBootstrapCwds
+  //   • registered swarms' metadata.projectPath       — listKnownProjectPaths
+  //   • registered repo resources' local_path         — listRepos
+  //
+  // Returns BOTH the legacy flat `paths` array (back-compat for any
+  // existing consumer) and a new `entries` array of `{ path, source,
+  // label? }` so the frontend can group by source and show optional repo
+  // names. Cheap lookup; no auth required beyond the standard middleware.
   fastify.get('/map/known-project-paths', {
     preHandler: [authMiddleware],
   }, async (_request, reply) => {
+    const fromTui = dal.listKnownTuiCwds(50);
+    const fromBootstrap = dal.listKnownBootstrapCwds(50);
     const fromSwarms = mapDal.listKnownProjectPaths(50);
-    const fromHosted = dal.listKnownBootstrapCwds(50);
-    // Dedupe + cap. Hosted bootstrap entries typically reflect more recent
-    // user intent (the user explicitly typed the path), so they win order
-    // ties when iteration order matters for "first match" UX.
+    // listRepos returns the full table; we cap during the merge below.
+    // Registered repo counts are small (tens, not thousands) in practical
+    // openhive deployments — an unbounded read here is fine.
+    const fromRepos = listRepos({})
+      .map((r) => ({
+        path: (r.local_path ?? '').trim(),
+        // Surface the repo name as the entry's label so the combobox can
+        // render "myrepo — /Users/.../myrepo" instead of bare paths.
+        label: r.name || undefined,
+      }))
+      .filter((e) => e.path.length > 0);
+
+    type Source = 'hosted-tui' | 'hosted-bootstrap' | 'registered-swarm' | 'repo';
+    interface Entry { path: string; source: Source; label?: string }
+    const ordered: Entry[] = [
+      ...fromTui.map<Entry>((p) => ({ path: p, source: 'hosted-tui' })),
+      ...fromBootstrap.map<Entry>((p) => ({ path: p, source: 'hosted-bootstrap' })),
+      ...fromSwarms.map<Entry>((p) => ({ path: p, source: 'registered-swarm' })),
+      ...fromRepos.map<Entry>((e) => ({ path: e.path, source: 'repo', label: e.label })),
+    ];
+
+    // Dedupe by path, first source wins (hosted-tui beats repo). Cap at
+    // 50 — keeps the dropdown scannable.
     const seen = new Set<string>();
+    const entries: Entry[] = [];
     const paths: string[] = [];
-    for (const p of [...fromHosted, ...fromSwarms]) {
-      if (seen.has(p)) continue;
-      seen.add(p);
-      paths.push(p);
-      if (paths.length >= 50) break;
+    for (const e of ordered) {
+      if (seen.has(e.path)) continue;
+      seen.add(e.path);
+      entries.push(e);
+      paths.push(e.path);
+      if (entries.length >= 50) break;
     }
-    return reply.send({ paths });
+    return reply.send({ paths, entries });
   });
 
   // GET /map/hosted — List hosted swarms
@@ -326,7 +395,17 @@ export async function swarmHostingRoutes(
       created_at: h.created_at,
       updated_at: h.updated_at,
       bootstrap: h.config?.bootstrap,
-      data_dir: h.config?.data_dir,
+      // data_dir is stored as-written by manager.ts (path.join, may be
+      // relative). Absolutize for display so callers show a real path.
+      data_dir: h.config?.data_dir ? path.resolve(h.config.data_dir) : undefined,
+      // Operator-chosen working directory (TUI / codex `cwd` input). When
+      // set, the spawned process opens here instead of data_dir — the
+      // frontend prefers this for thread terminal hints so the displayed
+      // path matches what's inside the TUI.
+      cwd: h.config?.cwd ? path.resolve(h.config.cwd) : undefined,
+      // Surface workspace repos so the frontend can show repo/branch hints
+      // (e.g. on Threads terminal rows) without a per-swarm lookup.
+      workspace: h.config?.workspace,
     }));
 
     return reply.send({ data, total: result.total });
@@ -359,6 +438,9 @@ export async function swarmHostingRoutes(
       updated_at: hosted.updated_at,
       bootstrap: hosted.config?.bootstrap,
       data_dir: hosted.config?.data_dir,
+      // Already absolute when persisted (validateSpawnCwd resolves) —
+      // no need to re-resolve like data_dir.
+      cwd: hosted.config?.cwd,
     });
   });
 

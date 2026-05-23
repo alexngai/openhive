@@ -61,6 +61,7 @@ import {
   SandboxBadge,
   SectionLabel,
 } from "../components/swarm/StatusBadges";
+import { WorkingDirectoryCombobox } from "../components/swarm/WorkingDirectoryCombobox";
 import type { HostedSwarm, MapSwarm, MapRegisteredAgent } from "../lib/api";
 import { getPeerMapId } from "../lib/map";
 
@@ -215,6 +216,11 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   const [ccRepoUrl, setCcRepoUrl] = useState("");
   const [ccRepoBranch, setCcRepoBranch] = useState("");
   const [repoId, setRepoId] = useState("");
+  // Free-form working directory for non-openswarm kinds. Sent as the
+  // top-level `cwd` field; the backend validates absolute / exists.
+  // Disabled when repoId is set (the schema rejects the combination —
+  // mirrored in the UI to avoid a silent backend 422).
+  const [cwd, setCwd] = useState("");
 
   // Per-swarm workspace policy (Advanced). Defaults to 'open' (omitted
   // from the payload). When mode === 'allow_listed' the user picks one
@@ -363,6 +369,11 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
         workspace_policy = { mode: 'pinned', pinned_repo: url };
       }
 
+      // For TUI kinds + codex rpc, route the free-form working directory
+      // through the top-level `cwd` field. Omit when empty so the backend's
+      // exclusivity checks against repo_id / workspace don't trip on a
+      // blank string. Backend validates absolute path + exists.
+      const trimmedCwd = cwd.trim();
       const payload =
         isTuiKind
           ? {
@@ -373,6 +384,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               workspace: ccWorkspace,
               initial_prompt: trimmedPrompt || undefined,
               repo_id: repoId || undefined,
+              cwd: trimmedCwd || undefined,
               workspace_policy,
               ...codexModeOverride,
             }
@@ -404,19 +416,31 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Dialog open onClose={onClose} maxWidth="max-w-xl">
-      <div className="p-4">
-        <div className="flex items-center justify-between mb-3">
+    <Dialog open onClose={onClose} maxWidth="max-w-xl" bodyScrollOnly>
+      {/* Three-row layout: sticky header, scrollable body, sticky footer.
+          The form spans body + footer so the submit button stays inside
+          the form element. Body owns the only overflow region so the
+          header and the Spawn / Cancel row are always visible while the
+          fields scroll. */}
+      <form onSubmit={handleSubmit} className="flex flex-col min-h-0 flex-1">
+        {/* Header — sticky top */}
+        <div
+          className="flex items-center justify-between px-4 py-3 border-b shrink-0"
+          style={{ borderColor: 'var(--color-border-subtle)' }}
+        >
           <h2 className="text-sm font-semibold flex items-center gap-1.5">
             <Zap className="w-3.5 h-3.5 text-honey-500" />
             Spawn Swarm
           </h2>
-          <button onClick={onClose} className="btn btn-ghost p-1">
+          <button type="button" onClick={onClose} className="btn btn-ghost p-1">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-3">
+        {/* Scrollable body — the only overflow region. `min-h-0` is required
+            inside a flex column so flex-1 children can shrink past their
+            intrinsic content height and the overflow:auto actually kicks in. */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
           {/* Kind picker — drives the rest of the form's shape */}
           <div>
             <SectionLabel>Kind</SectionLabel>
@@ -667,7 +691,11 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
-          {/* Project directory + auto-spawn coordinator */}
+          {/* Project directory + auto-spawn coordinator. Openswarm-only:
+              this feeds bootstrap.cwd which the schema rejects for TUI
+              kinds. Non-openswarm kinds get their own "Working directory"
+              field above (renders the new top-level `cwd` field). */}
+          {kind === 'openswarm' && (
           <div className="space-y-2">
             <div>
               <SectionLabel>Project directory</SectionLabel>
@@ -677,13 +705,15 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setProjectDirectory(e.target.value)}
                 className="input w-full font-mono text-2xs"
                 placeholder="/path/to/your/project (optional)"
-                list="known-project-paths"
+                list="known-project-paths-openswarm"
                 autoComplete="off"
                 spellCheck={false}
               />
-              {/* Suggest paths previously used by other swarms / hosted bootstraps. */}
+              {/* Suggest paths previously used by other swarms / hosted bootstraps.
+                  Datalist id is suffixed to avoid colliding with the TUI-kind
+                  "Working directory" datalist above. */}
               {knownProjectPaths && knownProjectPaths.length > 0 && (
-                <datalist id="known-project-paths">
+                <datalist id="known-project-paths-openswarm">
                   {knownProjectPaths.map((p) => (
                     <option key={p} value={p} />
                   ))}
@@ -734,6 +764,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               </div>
             </label>
           </div>
+          )}
 
           {/* OpenTeams binding (Path B) */}
           <div>
@@ -1007,6 +1038,35 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
             </div>
           )}
 
+          {/* Working directory — free-form cwd for TUI / codex spawns. Not
+              shown for openswarm (it has its own bootstrap.cwd mechanism
+              rendered further down). Disabled when a repo resource is
+              picked because the backend rejects cwd + repo_id (the repo's
+              local_path is the cwd in that path). Built on the same
+              combobox pattern as AssigneeCombobox — grouped suggestions
+              (recent spawns / registered swarms / registered repos) plus
+              free-form entry. */}
+          {kind !== 'openswarm' && (
+            <div>
+              <SectionLabel>Working directory (optional)</SectionLabel>
+              <WorkingDirectoryCombobox
+                value={cwd}
+                onChange={setCwd}
+                disabled={!!repoId}
+                disabledHint="Using repo resource path"
+              />
+              <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                {repoId ? (
+                  <>Repo resource picked — its <code>local_path</code> is used as cwd.</>
+                ) : (
+                  <>
+                    Absolute path. Must exist. The {kind === 'claude-code' ? 'claude' : 'codex'} process is spawned with this as cwd.
+                  </>
+                )}
+              </p>
+            </div>
+          )}
+
           {/* Workspace policy — gates which repos this swarm's agents may
               declare workspaces against. Only shown when the operator
               has at least one repo resource (the policy modes need
@@ -1158,30 +1218,37 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
             </>
           )}
 
-          {/* Actions */}
-          <div className="flex items-center gap-2 pt-1">
-            <button
-              type="submit"
-              disabled={spawnMutation.isPending || !name.trim()}
-              className="btn btn-primary flex items-center gap-1.5 text-xs"
-            >
-              {spawnMutation.isPending ? (
-                <LoadingSpinner size="sm" />
-              ) : (
-                <Zap className="w-3 h-3" />
-              )}
-              Spawn
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="btn btn-ghost text-xs"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      </div>
+        </div>
+
+        {/* Footer — sticky bottom. Actions live here so the Spawn / Cancel
+            row stays visible even when the body has scrolled past the
+            first screen of fields. Top border separates it visually
+            from the scroll content above. */}
+        <div
+          className="flex items-center gap-2 px-4 py-3 border-t shrink-0"
+          style={{ borderColor: 'var(--color-border-subtle)' }}
+        >
+          <button
+            type="submit"
+            disabled={spawnMutation.isPending || !name.trim()}
+            className="btn btn-primary flex items-center gap-1.5 text-xs"
+          >
+            {spawnMutation.isPending ? (
+              <LoadingSpinner size="sm" />
+            ) : (
+              <Zap className="w-3 h-3" />
+            )}
+            Spawn
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn btn-ghost text-xs"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
     </Dialog>
   );
 }
@@ -1593,9 +1660,9 @@ function HostedSwarmCard({
   const isRunning = swarm.state === "running";
   const quickOpen: { label: string; href: string; icon: typeof Terminal } | null =
     isRunning && swarm.kind === "claude-code"
-      ? { label: "Open Claude Code TUI", href: `/terminal/${swarm.id}`, icon: Terminal }
+      ? { label: "Open Claude Code TUI", href: `/threads/hosted-tui/${swarm.id}`, icon: Terminal }
       : isRunning && swarm.kind === "codex" && swarm.mode !== "rpc"
-        ? { label: "Open Codex TUI", href: `/terminal/${swarm.id}`, icon: Terminal }
+        ? { label: "Open Codex TUI", href: `/threads/hosted-tui/${swarm.id}`, icon: Terminal }
         : isRunning && swarm.kind === "codex" && swarm.mode === "rpc"
           ? { label: "Open codex chat", href: `/threads/hosted-chat/${swarm.id}`, icon: MessageSquare }
           : null;

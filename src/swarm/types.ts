@@ -251,6 +251,18 @@ export interface SpawnSwarmInput {
   /** Boot-time agent provisioning (e.g. auto-spawn coordinator) */
   bootstrap?: SwarmBootstrap;
   /**
+   * Free-form working directory for the spawned process. Only valid for
+   * non-openswarm kinds (claude-code, codex TUI, codex RPC) — openswarm
+   * has its own cwd plumbing via `bootstrap.cwd`. Must be an absolute path
+   * that exists on disk as a directory. When set, the TUI / codex process
+   * is spawned with this as cwd instead of the synthetic `data_dir`.
+   *
+   * Mutually exclusive with `repo_id` and `workspace` (those drive their
+   * own cwd resolution). Persisted on the hosted-swarm config so restart
+   * lands in the same directory.
+   */
+  cwd?: string;
+  /**
    * Optional openteams binding. When `loadout_bundle_id` is supplied the
    * manager fetches the materialized loadout (MCP scope + prompt
    * addendum) from the openteams bundle store and forwards it through
@@ -306,6 +318,12 @@ export interface SwarmProvisionConfig {
   workspace_policy?: WorkspacePolicy;
   /** Boot-time agent provisioning (env-var bridged into the runtime) */
   bootstrap?: SwarmBootstrap;
+  /**
+   * Free-form working directory for the spawned process (TUI / codex
+   * kinds only). Echoed from `SpawnSwarmInput.cwd`; persisted so restart
+   * lands in the same directory. Always an absolute path when set.
+   */
+  cwd?: string;
   /**
    * When set, the provider spawns this command instead of its kind-default
    * (e.g. the local provider's `openswarm_command`). Used by non-openswarm
