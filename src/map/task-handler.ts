@@ -103,7 +103,8 @@ function resolveLocalPath(resource: SyncableResource): string | null {
   return canonicalPath(url);
 }
 
-function isValidOpenTasksDir(dirPath: string): boolean {
+/** Exported for testing and for the ws-map task-graph resolution chain. */
+export function isValidOpenTasksDir(dirPath: string): boolean {
   if (!existsSync(dirPath) || !statSync(dirPath).isDirectory()) return false;
   return existsSync(join(dirPath, 'config.json')) || existsSync(join(dirPath, 'graph.jsonl'));
 }

@@ -25,6 +25,7 @@ import {
 import { findResourcesByRepoUrl } from '../../db/dal/syncable-resources.js';
 import { generateChangelog, renderMarkdown } from '../../cascade/changelog.js';
 import { sendCascadeAction, type CascadeAction } from '../../map/cascade-actions.js';
+import { hasCapability, getInbound } from '../../map/connection-registry.js';
 import {
   updatePublishBranch,
   defaultPublishBranch,
@@ -442,9 +443,10 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
   //
   //   Supported actions: merge, abandon, pause, resume, resolve
   //
-  //   Returns 200 { sent: true } if the notification was dispatched, or
+  //   Returns 200 { sent: true } if the notification was dispatched,
   //   422 { sent: false, error } if the swarm is disconnected or action
-  //   is unknown.
+  //   is unknown, or 409 { sent: false, error } if the owning swarm does
+  //   not declare `cascade.canAct` (observe-only — nothing would answer).
   const VALID_ACTIONS = new Set<CascadeAction>(['merge', 'abandon', 'pause', 'resume', 'resolve', 'push', 'commit']);
 
   fastify.post<{
@@ -477,6 +479,30 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(404).send({
           error: 'Not Found',
           message: 'Cascade stream not found',
+        });
+      }
+
+      // Capability pre-check: the owning swarm must declare `cascade.canAct`
+      // to receive action requests. Belt-and-suspenders behind the UI gate —
+      // capabilities are advisory, but an observe-only swarm (e.g. cc-swarm,
+      // which declares `canAct: false`) silently no-ops any `x-cascade/request.*`
+      // we'd dispatch, so reject up front with a clear typed error instead.
+      //
+      // Only run this when the swarm IS connected — a disconnected swarm has
+      // no capabilities to read either, and "not connected" is the more
+      // fundamental failure (surfaces as 422 from sendCascadeAction below).
+      // Skipping the gate when offline preserves the existing 422 contract
+      // and prevents misleading "capability unavailable" responses for what
+      // is really a transient connectivity issue.
+      if (
+        getInbound(stream.source_swarm_id) &&
+        !hasCapability(stream.source_swarm_id, 'cascade.canAct')
+      ) {
+        return reply.status(409).send({
+          error: 'Capability Unavailable',
+          message:
+            "The swarm that owns this stream does not accept cascade actions (cascade.canAct not declared). It is observe-only.",
+          sent: false,
         });
       }
 

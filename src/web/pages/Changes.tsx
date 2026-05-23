@@ -86,6 +86,35 @@ const RECENTLY_LANDED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 type TriageBucket = 'needs-attention' | 'in-progress' | 'recently-landed';
 
+/**
+ * Per-stream cascade capability gate. The "All swarms" view mixes streams
+ * from multiple swarms, so action availability must be resolved per-stream
+ * keyed on `node.source_swarm_id` — never a single page-level value.
+ *
+ * Reads the owning swarm's aggregate `capabilities.cascade` block (a
+ * `CascadeCapability` shape declared by the runtime at MAP registration):
+ *   - `canAct`         — can drive merge/pause/resume/abandon/resolve + push/commit.
+ *   - `emitsConflicts` — emits conflict lifecycle events.
+ *
+ * Conservative by default: a swarm that declares no `cascade` block, or
+ * leaves a flag undefined, is treated as not-capable. Mirrors the chat
+ * surface's "Unavailable + reason" precedent (see src/web/CLAUDE.md).
+ */
+const CASCADE_ACT_DISABLED_REASON =
+  "This swarm reports cascade activity but doesn't accept cascade actions (observe-only).";
+
+function useCascadeCapability(node: StreamDAGNode): {
+  canAct: boolean;
+  emitsConflicts: boolean;
+} {
+  const { data: swarm } = useMapSwarm(node.source_swarm_id);
+  const cascade = (swarm?.capabilities as { cascade?: { canAct?: boolean; emitsConflicts?: boolean } } | null)?.cascade;
+  return {
+    canAct: cascade?.canAct === true,
+    emitsConflicts: cascade?.emitsConflicts === true,
+  };
+}
+
 function bucketForNode(node: StreamDAGNode): TriageBucket | null {
   if (node.status === 'conflicted' || node.open_conflict_count > 0) {
     return 'needs-attention';
@@ -1079,6 +1108,12 @@ function StreamDetailSidebar({
         </div>
       )}
 
+      {/* Conflict-reporting note — a swarm that doesn't emit conflict
+          lifecycle events never populates the conflict surfaces, so dim
+          expectations with a light note rather than showing a perpetually
+          empty conflict view. Triage buckets are left untouched. */}
+      {node && <ConflictReportingNote node={node} />}
+
       {/* Actions */}
       {node && (
         <StreamActions streamRowId={streamRowId} node={node} />
@@ -1186,6 +1221,10 @@ function StreamBranchSection({
   const [branchName, setBranchName] = useState(node.publish_branch ?? '');
   const updateBranch = useUpdatePublishBranch();
   const pushAction = useCascadeStreamAction();
+  // Push is a cascade action — gated on the owning swarm's canAct, same as
+  // merge/pause/abandon. Editing the branch *alias* is hub-local and stays
+  // available regardless (it never dispatches to the runtime).
+  const { canAct } = useCascadeCapability(node);
 
   const saveBranch = useCallback(() => {
     if (branchName.trim()) {
@@ -1220,8 +1259,8 @@ function StreamBranchSection({
               action: 'push',
               params: { target_ref: node.publish_branch ?? displayBranch },
             })}
-            disabled={pushAction.isPending}
-            title="Push to remote"
+            disabled={pushAction.isPending || !canAct}
+            title={canAct ? 'Push to remote' : CASCADE_ACT_DISABLED_REASON}
           >
             <Upload className="w-3 h-3" />
           </button>
@@ -1363,6 +1402,9 @@ function StreamCommitSection({
   const [message, setMessage] = useState('');
   const [showInput, setShowInput] = useState(false);
   const commitAction = useCascadeStreamAction();
+  // Commit dispatches an `x-cascade/request.commit` — gated on canAct like
+  // the other action requests.
+  const { canAct } = useCascadeCapability(node);
 
   const doCommit = useCallback(() => {
     if (!message.trim()) return;
@@ -1394,7 +1436,8 @@ function StreamCommitSection({
               type="button"
               className="btn-ghost text-2xs px-2 py-0.5 flex items-center gap-1"
               onClick={doCommit}
-              disabled={commitAction.isPending || !message.trim()}
+              disabled={commitAction.isPending || !message.trim() || !canAct}
+              title={canAct ? undefined : CASCADE_ACT_DISABLED_REASON}
             >
               <Save className="w-3 h-3" />
               {commitAction.isPending ? 'Committing...' : 'Commit'}
@@ -1414,11 +1457,28 @@ function StreamCommitSection({
           type="button"
           className="btn-ghost text-2xs flex items-center gap-1 px-1.5 py-0.5 w-full justify-center"
           onClick={() => setShowInput(true)}
+          disabled={!canAct}
+          title={canAct ? undefined : CASCADE_ACT_DISABLED_REASON}
         >
           <GitCommit className="w-3 h-3" />
           Commit changes
         </button>
       )}
+    </div>
+  );
+}
+
+// ─── Conflict-reporting capability note ───────────────────────────────
+
+function ConflictReportingNote({ node }: { node: StreamDAGNode }) {
+  const { emitsConflicts } = useCascadeCapability(node);
+  if (emitsConflicts) return null;
+  return (
+    <div
+      className="px-3 py-1.5 text-2xs border-b"
+      style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text-muted)' }}
+    >
+      This swarm does not report cascade conflicts.
     </div>
   );
 }
@@ -1434,6 +1494,11 @@ function StreamActions({
 }) {
   const action = useCascadeStreamAction();
   const isPending = action.isPending;
+  // Per-stream gate: an observe-only swarm (cascade.canAct !== true) silently
+  // no-ops any action request, so render the buttons disabled with a reason
+  // rather than hide them — a vanished button reads as a bug; a disabled one
+  // teaches the operator (and the model) why nothing happens.
+  const { canAct } = useCascadeCapability(node);
 
   const fire = useCallback(
     (act: CascadeAction, params?: Record<string, string>) => {
@@ -1450,6 +1515,12 @@ function StreamActions({
 
   if (isTerminal) return null;
 
+  // Buttons are disabled either while a request is in flight or when the
+  // owning swarm doesn't accept cascade actions. The capability tooltip
+  // wins so the operator sees *why* the control is dead.
+  const disabled = isPending || !canAct;
+  const gateTitle = (active: string) => (canAct ? active : CASCADE_ACT_DISABLED_REASON);
+
   return (
     <div className="px-3 py-2 border-b flex flex-wrap gap-1.5" style={{ borderColor: 'var(--color-border-subtle)' }}>
       {/* Merge — available when active and has a parent */}
@@ -1458,8 +1529,8 @@ function StreamActions({
           type="button"
           className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
           onClick={() => fire('merge')}
-          disabled={isPending}
-          title="Request merge into parent stream"
+          disabled={disabled}
+          title={gateTitle('Request merge into parent stream')}
         >
           <GitMerge className="w-3 h-3" />
           Merge
@@ -1472,8 +1543,8 @@ function StreamActions({
           type="button"
           className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
           onClick={() => fire('pause', { reason: 'operator-paused' })}
-          disabled={isPending}
-          title="Pause this change"
+          disabled={disabled}
+          title={gateTitle('Pause this change')}
         >
           <Pause className="w-3 h-3" />
           Pause
@@ -1484,8 +1555,8 @@ function StreamActions({
           type="button"
           className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
           onClick={() => fire('resume')}
-          disabled={isPending}
-          title="Resume this change"
+          disabled={disabled}
+          title={gateTitle('Resume this change')}
         >
           <Play className="w-3 h-3" />
           Resume
@@ -1501,8 +1572,10 @@ function StreamActions({
           className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
           style={{ color: 'var(--color-danger)' }}
           onClick={() => fire('resolve', { strategy: 'ours' })}
-          disabled={isPending}
-          title="Force-resolve with 'ours'. Agents usually handle conflicts themselves — use only if stuck."
+          disabled={disabled}
+          title={gateTitle(
+            "Force-resolve with 'ours'. Agents usually handle conflicts themselves — use only if stuck.",
+          )}
         >
           <Wrench className="w-3 h-3" />
           Force resolve
@@ -1515,8 +1588,8 @@ function StreamActions({
         className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
         style={{ color: 'var(--color-text-muted)' }}
         onClick={() => fire('abandon', { reason: 'operator-abandoned' })}
-        disabled={isPending}
-        title="Abandon this change"
+        disabled={disabled}
+        title={gateTitle('Abandon this change')}
       >
         <Trash2 className="w-3 h-3" />
         Abandon
@@ -1526,6 +1599,13 @@ function StreamActions({
       {isPending && (
         <span className="text-2xs animate-pulse" style={{ color: 'var(--color-text-muted)' }}>
           Sending...
+        </span>
+      )}
+
+      {/* Observe-only note — surfaces the reason once for the whole group. */}
+      {!canAct && (
+        <span className="text-2xs w-full" style={{ color: 'var(--color-text-muted)' }}>
+          {CASCADE_ACT_DISABLED_REASON}
         </span>
       )}
     </div>

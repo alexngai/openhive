@@ -519,6 +519,38 @@ export function ensureNodeWithId(input: {
   );
 }
 
+/**
+ * Ensure an `agents` row exists for a MAP-registered agent id (FK shim).
+ *
+ * The MAP-protocol registration path (`ws-map.ts`) does not project into
+ * `agents` — only the explicit REST `POST /agents` does. But several
+ * downstream paths use the MAP-registered agent's id as an FK target:
+ * `syncable_resources.owner_agent_id` references `agents(id)`, so an
+ * `autoRegisterResource(path, agentId)` call from `resolveTaskGraphResourceId`
+ * fails with `FOREIGN KEY constraint failed` when no prior REST agent row
+ * exists. The error is silently swallowed by the caller's defensive
+ * try/catch, masking the failure and leaving `defaultTaskGraph.resource_id`
+ * unpopulated — which silently breaks the cascade merge→auto-close path.
+ *
+ * Surfaced by the cc-swarm live e2e expansion in
+ * `src/__tests__/cascade/live-cc-swarm-auto-close-e2e.test.ts`.
+ *
+ * This shim writes a minimal placeholder row keyed by the MAP id, with a
+ * deterministic non-colliding name (`map:<id>`). Idempotent via
+ * `INSERT OR IGNORE`. Parallel to `ensureNodeWithId` for `map_nodes`;
+ * structurally the same as the `workspaces.agent_id` FK shim documented in
+ * `src/map/CLAUDE.md` "Wiring foot-guns" #2. The proper fix is to retire
+ * `agents.id` as an FK target for MAP-only registrations, or have the
+ * MAP-protocol registration path project into `agents`; until either lands,
+ * this shim keeps the FK happy.
+ */
+export function ensureAgentRowForRegistered(id: string): void {
+  const db = getDatabase();
+  db.prepare(`
+    INSERT OR IGNORE INTO agents (id, name) VALUES (?, ?)
+  `).run(id, `map:${id}`);
+}
+
 export function findNodeById(id: string): MapNode | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM map_nodes WHERE id = ?').get(id) as Record<string, unknown> | undefined;

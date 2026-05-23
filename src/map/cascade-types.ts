@@ -46,6 +46,11 @@ export {
   type QueueRemovedParams,
   type TaskRef,
   type EventMetadata,
+  // CascadeCapability — the per-runtime cascade capability block declared
+  // under MAP `ParticipantCapabilities.cascade` at registration. Re-exported
+  // here so hub code (route pre-checks, capability-gated UI) shares one
+  // source of truth with the runtimes that declare it.
+  type CascadeCapability,
 } from 'git-cascade';
 
 import type { EventMetadata } from 'git-cascade';

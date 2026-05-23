@@ -10,20 +10,14 @@ import type { WebSocket } from 'ws';
 
 /**
  * Cascade-related capability flags an agent may declare during MAP
- * registration. Stored under `capabilities.cascade` in the generic
- * `Record<string, unknown>` bag; this alias documents the expected shape
- * for consumers (task-binder, policy resolver). Nothing else enforces it —
- * the aggregate helper preserves arbitrary keys.
+ * registration, stored under `capabilities.cascade` in the generic
+ * `Record<string, unknown>` bag. Re-exported from `cascade-types.ts` (which
+ * re-exports it from `git-cascade`) so the hub keeps a single source of
+ * truth for the `CascadeCapability` shape — `canServeDiff`, `canAct`,
+ * `emitsConflicts`, `autoCloseOnMerge`. Nothing here enforces it; the
+ * aggregate helper preserves arbitrary keys.
  */
-export interface CascadeCapability {
-  /**
-   * When true, the agent delegates task-close decisions to the hub: when a
-   * cascade stream carrying a `task_ref` merges, the hub transitions the
-   * linked task to `completed` without requiring the agent to drive it.
-   * Per-task metadata overrides (see policy resolver).
-   */
-  autoCloseOnMerge?: boolean;
-}
+export type { CascadeCapability } from './cascade-types.js';
 
 export interface RegisteredAgent {
   id: string;
