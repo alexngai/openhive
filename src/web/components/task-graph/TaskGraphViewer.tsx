@@ -10,7 +10,7 @@
  * - Smooth camera follow on node select
  */
 
-import { useRef, useEffect, useState, useCallback, memo } from "react";
+import { useRef, useEffect, useState, useCallback, useMemo, memo } from "react";
 import Sigma from "sigma";
 import { createEdgeArrowProgram } from "sigma/rendering";
 import FA2LayoutSupervisor from "graphology-layout-forceatlas2/worker";
@@ -18,13 +18,14 @@ import type Graph from "graphology";
 import { TaskGraphSidebar, type SelectedEdge } from "./TaskGraphSidebar";
 import { STATUS_COLORS } from "./useTaskGraph";
 import NodeSquareProgram from "./NodeSquareProgram";
-import { ZoomIn, ZoomOut, Maximize2, GitFork, Palette } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize2, GitFork, Palette, LayoutPanelLeft, Circle } from "lucide-react";
 import { applySigmaPerfSettings } from "../../utils/sigmaPerf";
 import { getFA2Settings, NOVERLAP_SETTINGS } from "../../utils/sigmaLayout";
 import noverlap from "graphology-layout-noverlap";
 import { GraphActionBar, type LinkModeState } from "./GraphActionBar";
 import { useCreateTaskLink, useMapSwarms } from "../../hooks/useApi";
 import { resolveAssigneeSwarm } from "../swarm/SwarmChip";
+import { TaskGraphCardOverlay } from "./TaskGraphCardOverlay";
 import type { OpenTasksGraphNode, MapSwarm } from "../../lib/api";
 
 interface Props {
@@ -54,6 +55,37 @@ const SWARM_PALETTE = [
 ];
 
 const SWARM_UNASSIGNED_COLOR = "#4b5563";
+
+/**
+ * Card-aware noverlap pass.
+ *
+ * The default NOVERLAP_SETTINGS use each node's visible `size` (~14px for
+ * tasks) as a collision radius. With 208×64 cards rendered on top of those
+ * dots by the path-A overlay, the dot-sized margin leaves cards stacked.
+ * This helper temporarily inflates every node's `size` to a card-bounding
+ * radius, runs noverlap to push cards apart, then restores the original
+ * sizes (so sigma keeps rendering small dots). Pure / idempotent.
+ */
+function cardAwareNoverlap(graph: import("graphology").default) {
+  const CARD_BOUND = 120; // ≈ half card width + margin
+  const saved = new Map<string, number>();
+  graph.forEachNode((id, attrs) => {
+    saved.set(id, (attrs.size as number) ?? 8);
+    graph.setNodeAttribute(id, "size", CARD_BOUND);
+  });
+  try {
+    noverlap.assign(graph, {
+      maxIterations: 100,
+      ratio: 1.0,
+      margin: 28,
+      expansion: 1.08,
+    });
+  } finally {
+    for (const [id, size] of saved) {
+      graph.setNodeAttribute(id, "size", size);
+    }
+  }
+}
 
 /** Stable swarm-id → color mapping (deterministic hash into palette). */
 function swarmColorFor(swarmId: string): string {
@@ -138,6 +170,36 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
+  // Mirror of sigmaRef as state so the card-overlay child re-renders once
+  // sigma is constructed inside the mount effect.
+  const [sigmaInstance, setSigmaInstance] = useState<Sigma | null>(null);
+  const [showCards, setShowCards] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("openhive-task-card-mode") !== "off";
+    } catch {
+      return true;
+    }
+  });
+  // Mirrored ref so the FA2 settle timer (captured in a closure on mount)
+  // reads the *current* card mode without re-running the whole mount effect
+  // when the user toggles.
+  const showCardsRef = useRef(showCards);
+  showCardsRef.current = showCards;
+  // Tracks whether the FA2 settle has finished for the current graph mount.
+  // Used to fade cards in after positions stabilize instead of letting them
+  // jiggle around for 2.5s while physics runs.
+  const [cardsSettled, setCardsSettled] = useState(false);
+  const toggleShowCards = useCallback(() => {
+    setShowCards((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("openhive-task-card-mode", next ? "on" : "off");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
   const supervisorRef = useRef<FA2LayoutSupervisor | null>(null);
   // physicsRanForNodesRef removed — physics always runs on mount
   const graphRef = useRef<Graph | null>(null);
@@ -197,7 +259,9 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
   useEffect(() => {
     if (!containerRef.current || !graph || graph.order === 0) return;
 
-    // Custom node hover drawing — glow + tooltip with extra details
+    // Custom node hover drawing — glow + tooltip with extra details.
+    // Skipped when path-A cards are on: cards already carry the same info
+    // at-rest, so the canvas tooltip would just paint a duplicate on top.
     const drawNodeHover = (
       context: CanvasRenderingContext2D,
       data: {
@@ -208,6 +272,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
         label?: string | null;
       },
     ) => {
+      if (showCardsRef.current) return;
       const { x, y, size, color } = data;
       const nodeAttrs = data as Record<string, any>;
       const isSquare = nodeAttrs.type === "square";
@@ -381,6 +446,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     });
 
     sigmaRef.current = sigma;
+    setSigmaInstance(sigma);
     applySigmaPerfSettings(sigma, graph.order);
 
     // Scale edge label size with zoom (debounced to avoid re-render storms)
@@ -790,15 +856,23 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     supervisorRef.current = supervisor;
 
     supervisor.start();
+    setCardsSettled(false);
     const settleDuration =
       graph.order > 500 ? 5000 : graph.order > 100 ? 3500 : 2500;
     const settleTimer = setTimeout(() => {
       supervisor.stop();
-      // Final noverlap pass to pry apart any residual overlaps
+      // Final noverlap pass to pry apart any residual overlaps. When cards
+      // are on, run the card-aware pass instead — the default settings are
+      // tuned for dot-sized collision and leave 208×64 cards stacked.
       if (graph.order < 5000) {
-        noverlap.assign(graph, NOVERLAP_SETTINGS);
+        if (showCardsRef.current) {
+          cardAwareNoverlap(graph);
+        } else {
+          noverlap.assign(graph, NOVERLAP_SETTINGS);
+        }
         sigma.refresh();
       }
+      setCardsSettled(true);
     }, settleDuration);
 
     return () => {
@@ -808,20 +882,48 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
       document.removeEventListener("mouseup", handleMouseUp);
       sigma.kill();
       sigmaRef.current = null;
+      setSigmaInstance(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graphFingerprint]);
+
+  // Depth-visible set lifted out of the reducer so the overlay (path A)
+  // can apply the same filter to its HTML cards. Sigma's reducer and the
+  // overlay both read this single source of truth.
+  const depthVisible = useMemo<Set<string> | null>(() => {
+    if (!graph || depthFilter <= 0 || !selectedNode) return null;
+    return getNodesWithinHops(graph, selectedNode.id, depthFilter);
+  }, [graph, depthFilter, selectedNode]);
+
+  // When cards are shown, suppress sigma's labels (cards already carry the
+  // text) — flip `labelRenderedSizeThreshold` between its default (6) and an
+  // effectively-infinite value. Sigma keeps rendering the colored dots
+  // underneath each card, which become the visible signal once the user
+  // zooms far enough out that cards hide.
+  useEffect(() => {
+    const sigma = sigmaInstance;
+    if (!sigma) return;
+    sigma.setSetting("labelRenderedSizeThreshold", showCards ? 9999 : 6);
+    sigma.refresh({ skipIndexation: true });
+  }, [sigmaInstance, showCards]);
+
+  // Re-run the card-aware noverlap when the user toggles cards on *after*
+  // physics has already settled. The mount effect's settle timer handles
+  // the first-mount case for both modes; this effect only fires the late
+  // transitions. Guard against running while the FA2 supervisor is still
+  // active — touching node coords mid-physics fights the worker.
+  useEffect(() => {
+    const sigma = sigmaInstance;
+    if (!sigma || !graph || !showCards || graph.order === 0) return;
+    if (supervisorRef.current?.isRunning()) return;
+    cardAwareNoverlap(graph);
+    sigma.refresh();
+  }, [sigmaInstance, graph, showCards]);
 
   // ---------- Node/edge reducers for hover + depth filtering ----------
   useEffect(() => {
     const sigma = sigmaRef.current;
     if (!sigma || !graph) return;
-
-    // Compute depth-visible set
-    let depthVisible: Set<string> | null = null;
-    if (depthFilter > 0 && selectedNode) {
-      depthVisible = getNodesWithinHops(graph, selectedNode.id, depthFilter);
-    }
 
     sigma.setSetting(
       "nodeReducer",
@@ -910,7 +1012,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     );
 
     sigma.refresh({ skipIndexation: true });
-  }, [hoveredNode, hoveredEdge, depthFilter, selectedNode, graph, linkMode]);
+  }, [hoveredNode, hoveredEdge, depthVisible, graph, linkMode]);
 
   // Recolor graph nodes based on colorMode (status vs. swarm)
   useEffect(() => {
@@ -1117,7 +1219,44 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
           >
             <Palette className="w-4 h-4" />
           </button>
+          <button
+            onClick={toggleShowCards}
+            className="btn-ghost p-1.5 rounded"
+            style={{
+              backgroundColor: "var(--color-surface)",
+              color: showCards
+                ? "var(--color-honey-500, #f59e0b)"
+                : undefined,
+            }}
+            title={
+              showCards
+                ? "Showing rich task cards (click for dot mode)"
+                : "Showing dots only (click for card mode)"
+            }
+          >
+            {showCards ? (
+              <LayoutPanelLeft className="w-4 h-4" />
+            ) : (
+              <Circle className="w-4 h-4" />
+            )}
+          </button>
         </div>
+
+        {/* Path A — always-visible cards overlaying sigma's node dots. Pure
+            decoration (pointer-events: none); sigma still owns clicks, drag,
+            hover, link mode, and the depth filter. */}
+        {showCards && (
+          <TaskGraphCardOverlay
+            sigma={sigmaInstance}
+            graph={graph}
+            hoveredNode={hoveredNode}
+            selectedNodeId={selectedNode?.id ?? null}
+            depthVisible={depthVisible}
+            colorMode={colorMode}
+            swarms={swarms}
+            settled={cardsSettled}
+          />
+        )}
 
         {/* Color-by-swarm legend */}
         {colorMode === "swarm" && swarms && swarms.length > 0 && (

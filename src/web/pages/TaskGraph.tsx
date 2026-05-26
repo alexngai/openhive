@@ -8,7 +8,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
-import { ChevronDown, Network, LayoutGrid, Check, Settings, ArrowDownToLine, ArrowUpFromLine, RefreshCw } from 'lucide-react';
+import { ChevronDown, Network, LayoutGrid, ListTree, Check, Settings, ArrowDownToLine, ArrowUpFromLine, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import { useResource, useResourcesByType, useGitSyncStatus, useGitPull, useGitPush } from '../hooks/useApi';
 import { GitSyncToggle } from '../components/git-sync/GitSyncToggle';
@@ -16,13 +16,14 @@ import { useQueries } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { useTaskGraph, buildGraphologyGraph, STATUS_COLORS } from '../components/task-graph/useTaskGraph';
 import { TaskGraphViewer } from '../components/task-graph/TaskGraphViewer';
+import { TaskHierarchyView } from '../components/task-graph/TaskHierarchyView';
 import { TaskKanban } from '../components/task-graph/TaskKanban';
 import { CreateTaskForm } from '../components/task-graph/CreateTaskForm';
 import { TaskFilterBar, DEFAULT_FILTERS, type TaskFilters } from '../components/task-graph/TaskFilterBar';
 import { useTasksRealtime } from '../hooks/useMapTasks';
 import type { OpenTasksGraphNode, OpenTasksGraphEdge } from '../lib/api';
 
-type ViewMode = 'graph' | 'board';
+type ViewMode = 'graph' | 'board' | 'hierarchy';
 
 const LAST_GRAPHS_KEY = 'openhive-last-task-graphs';
 
@@ -335,6 +336,23 @@ export function TaskGraph() {
             <Network className="w-3 h-3" />
             Graph
           </button>
+          <button
+            onClick={() => setView('hierarchy')}
+            className={clsx(
+              'flex items-center gap-1.5 px-2.5 py-1 text-2xs transition-colors border-l',
+              view === 'hierarchy'
+                ? 'bg-honey-500/15 text-honey-500'
+                : 'hover:bg-white/5',
+            )}
+            style={{
+              borderColor: 'var(--color-border)',
+              ...(view !== 'hierarchy' ? { color: 'var(--color-text-muted)' } : {}),
+            }}
+            title="Layered top-to-bottom dependency view (active work + upstream blockers)"
+          >
+            <ListTree className="w-3 h-3" />
+            Hierarchy
+          </button>
         </div>
 
         {/* Summary pills */}
@@ -424,6 +442,27 @@ export function TaskGraph() {
             resourceId={resourceId!}
             filters={filters}
             mergedNodes={selectedIds.length > 1 ? mergedNodes : undefined}
+          />
+        ) : view === 'hierarchy' ? (
+          <TaskHierarchyView
+            allNodes={isMultiGraph ? mergedNodes : (graph
+              ? Array.from(graph.nodes()).map(
+                  (id) => (graph.getNodeAttribute(id, '_data') as import('../lib/api').OpenTasksGraphNode | undefined) ?? ({
+                    id,
+                    type: 'task',
+                  } as import('../lib/api').OpenTasksGraphNode),
+                )
+              : [])}
+            allEdges={isMultiGraph ? mergedEdges : (graph
+              ? Array.from(graph.edges()).map((eid) => ({
+                  id: eid,
+                  from_id: graph.source(eid),
+                  to_id: graph.target(eid),
+                  type: (graph.getEdgeAttribute(eid, 'edgeType') as string | undefined) ?? 'related',
+                }))
+              : [])}
+            resourceId={resourceId!}
+            colorMode="status"
           />
         ) : (isMultiGraph ? mergedGraph : graph) ? (
           <TaskGraphViewer
