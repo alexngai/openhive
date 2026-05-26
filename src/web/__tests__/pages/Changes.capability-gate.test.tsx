@@ -18,8 +18,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // Heavy / WebGL components rendered by Changes — stubbed so jsdom is happy.
-vi.mock('../../components/streams/StreamDAGView', () => ({
-  StreamDAGView: () => <div data-testid="dag-view" />,
+vi.mock('../../components/streams/StreamCascadeMap', () => ({
+  StreamCascadeMap: () => <div data-testid="cascade-map" />,
 }));
 vi.mock('../../components/cascade/DiffView', () => ({
   DiffView: () => <div data-testid="diff-view" />,

@@ -68,7 +68,7 @@ import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { EmptyState } from '../components/common/EmptyState';
 import { useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
-import { StreamDAGView } from '../components/streams/StreamDAGView';
+import { StreamCascadeMap } from '../components/streams/StreamCascadeMap';
 import { StreamStatusDot, STATUS_COLORS, STATUS_LABELS, TimelineEntry } from '../components/streams/shared';
 import { DiffView } from '../components/cascade/DiffView';
 import { StackDiffView } from '../components/cascade/StackDiffView';
@@ -80,7 +80,7 @@ import {
 } from '../components/chat-fab/context-types';
 import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
 
-type ViewMode = 'list' | 'stack' | 'dag';
+type ViewMode = 'list' | 'stack' | 'map';
 
 const RECENTLY_LANDED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -343,7 +343,7 @@ export function Changes() {
 
       {/* Main content */}
       <div className="flex flex-1 min-h-0">
-        <div className={`flex-1 ${viewMode === 'dag' ? 'overflow-hidden' : 'overflow-auto'}`}>
+        <div className={`flex-1 ${viewMode === 'map' ? 'overflow-hidden' : 'overflow-auto'}`}>
           {!dag || dag.nodes.length === 0 ? (
             <EmptyState
               icon={GitBranch}
@@ -378,7 +378,7 @@ export function Changes() {
               }
             />
           ) : (
-            <StreamDAGView
+            <StreamCascadeMap
               nodes={dag.nodes}
               edges={dag.edges}
               selectedId={selectedStreamId}
@@ -393,7 +393,7 @@ export function Changes() {
             node={dag?.nodes.find((n) => n.id === selectedStreamId) ?? null}
             onClose={() => setSelectedStreamId(null)}
             onViewStack={openStackFrom}
-            onViewGraph={() => setViewMode('dag')}
+            onViewGraph={() => setViewMode('map')}
             onShowStreamDiff={(streamRowId) =>
               setRangeDiffTarget({ mode: 'stream', rowId: streamRowId })
             }
@@ -522,7 +522,7 @@ function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode
   const items: Array<{ value: ViewMode; icon: JSX.Element; label: string; title: string }> = [
     { value: 'list',  icon: <Inbox   className="w-3.5 h-3.5" />, label: 'List',  title: 'Triaged list (default)' },
     { value: 'stack', icon: <Layers  className="w-3.5 h-3.5" />, label: 'Stack', title: 'Graphite-style stack from a root' },
-    { value: 'dag',   icon: <Network className="w-3.5 h-3.5" />, label: 'Graph', title: 'Full DAG of parent/child + merges' },
+    { value: 'map',   icon: <Network className="w-3.5 h-3.5" />, label: 'Map',   title: 'Branch map: structured DAG of parent/child + merges' },
   ];
 
   return (
@@ -1026,6 +1026,8 @@ function StackLevel({
 
 // ─── Detail Sidebar ───────────────────────────────────────────────────
 
+type SidebarTab = 'details' | 'evolution';
+
 function StreamDetailSidebar({
   streamRowId,
   node,
@@ -1043,8 +1045,7 @@ function StreamDetailSidebar({
   onShowDiff: (streamRowId: string, commitHash: string) => void;
   onShowStreamDiff: (streamRowId: string) => void;
 }) {
-  const { data: timelineResp, isLoading } = useCascadeStreamTimeline(streamRowId);
-  const timeline = timelineResp?.data ?? [];
+  const [tab, setTab] = useState<SidebarTab>('details');
 
   return (
     <div
@@ -1069,10 +1070,90 @@ function StreamDetailSidebar({
         </button>
       </div>
 
-      {/* Lineage — heuristic "where did this change come from?" */}
+      {/* Tabs */}
+      <SidebarTabs tab={tab} onChange={setTab} />
+
+      {tab === 'details' ? (
+        <SidebarDetailsTab
+          streamRowId={streamRowId}
+          node={node}
+          onViewStack={onViewStack}
+          onViewGraph={onViewGraph}
+          onShowStreamDiff={onShowStreamDiff}
+        />
+      ) : (
+        <SidebarEvolutionTab
+          streamRowId={streamRowId}
+          node={node}
+          onShowDiff={onShowDiff}
+          onShowStreamDiff={onShowStreamDiff}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Sidebar tabs ─────────────────────────────────────────────────────
+
+function SidebarTabs({
+  tab,
+  onChange,
+}: {
+  tab: SidebarTab;
+  onChange: (t: SidebarTab) => void;
+}) {
+  const items: Array<{ value: SidebarTab; label: string }> = [
+    { value: 'details', label: 'Details' },
+    { value: 'evolution', label: 'Evolution' },
+  ];
+  return (
+    <div
+      className="flex border-b shrink-0"
+      style={{ borderColor: 'var(--color-border-subtle)' }}
+    >
+      {items.map((item) => {
+        const active = item.value === tab;
+        return (
+          <button
+            key={item.value}
+            type="button"
+            className="flex-1 text-2xs py-1.5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-honey-500/60"
+            style={{
+              color: active ? 'var(--color-accent)' : 'var(--color-text-muted)',
+              borderBottom: active ? '2px solid var(--color-accent)' : '2px solid transparent',
+              marginBottom: '-1px',
+              fontWeight: active ? 600 : 400,
+            }}
+            onClick={() => onChange(item.value)}
+            aria-pressed={active}
+          >
+            {item.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Sidebar bodies ───────────────────────────────────────────────────
+
+function SidebarDetailsTab({
+  streamRowId,
+  node,
+  onViewStack,
+  onViewGraph,
+  onShowStreamDiff,
+}: {
+  streamRowId: string;
+  node: StreamDAGNode | null;
+  onViewStack: (streamRowId: string) => void;
+  onViewGraph: () => void;
+  onShowStreamDiff: (streamRowId: string) => void;
+}) {
+  return (
+    <div className="flex-1 overflow-auto">
       {node && <ChangeLineagePanel node={node} />}
 
-      {/* Meta */}
       {node && (
         <div className="px-3 py-2 text-2xs space-y-1 border-b" style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text-muted)' }}>
           <div className="flex justify-between">
@@ -1108,18 +1189,10 @@ function StreamDetailSidebar({
         </div>
       )}
 
-      {/* Conflict-reporting note — a swarm that doesn't emit conflict
-          lifecycle events never populates the conflict surfaces, so dim
-          expectations with a light note rather than showing a perpetually
-          empty conflict view. Triage buckets are left untouched. */}
       {node && <ConflictReportingNote node={node} />}
 
-      {/* Actions */}
-      {node && (
-        <StreamActions streamRowId={streamRowId} node={node} />
-      )}
+      {node && <StreamActions streamRowId={streamRowId} node={node} />}
 
-      {/* Secondary views — drill into stack or graph from here */}
       {node && (
         <div className="px-3 py-2 border-b flex items-center gap-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
           <button
@@ -1135,10 +1208,10 @@ function StreamDetailSidebar({
             type="button"
             className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
             onClick={onViewGraph}
-            title="View the full DAG centered here"
+            title="View the full branch map centered here"
           >
             <Network className="w-3 h-3" />
-            Graph
+            Map
           </button>
           <button
             type="button"
@@ -1152,7 +1225,6 @@ function StreamDetailSidebar({
         </div>
       )}
 
-      {/* Branch + PR + Commit */}
       {node && node.status !== 'merged' && node.status !== 'abandoned' && (
         <>
           <StreamBranchSection streamRowId={streamRowId} node={node} />
@@ -1160,50 +1232,109 @@ function StreamDetailSidebar({
           <StreamCommitSection streamRowId={streamRowId} node={node} />
         </>
       )}
+    </div>
+  );
+}
 
-      {/* Timeline */}
-      <div className="flex-1 overflow-auto p-3">
-        <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
-          <Clock className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-          Timeline
-        </h4>
-        {isLoading ? (
-          <div className="text-2xs animate-pulse" style={{ color: 'var(--color-text-muted)' }}>Loading...</div>
-        ) : timeline.length === 0 ? (
-          <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>No events yet.</div>
-        ) : (
+function SidebarEvolutionTab({
+  streamRowId,
+  node,
+  onShowDiff,
+  onShowStreamDiff,
+}: {
+  streamRowId: string;
+  node: StreamDAGNode | null;
+  onShowDiff: (streamRowId: string, commitHash: string) => void;
+  onShowStreamDiff: (streamRowId: string) => void;
+}) {
+  const { data: timelineResp, isLoading } = useCascadeStreamTimeline(streamRowId);
+  const timeline = timelineResp?.data ?? [];
+
+  // Commits first, then the full chronological event stream below them. The
+  // commit-first list is the primary affordance for "trace through changes" —
+  // each row jumps to its diff. Other events (merge, conflict, push, rebase)
+  // stay visible underneath so the full history is one scroll away.
+  const commits = useMemo(
+    () => timeline.filter((e) => e.type === 'commit'),
+    [timeline],
+  );
+  const nonCommits = useMemo(
+    () => timeline.filter((e) => e.type !== 'commit'),
+    [timeline],
+  );
+
+  return (
+    <div className="flex-1 overflow-auto p-3">
+      {/* Stream-diff CTA — the "what does this whole stream change?" answer.
+          Top of the tab so it's the first thing the reader sees. */}
+      {node && (
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1 w-full justify-center mb-3 border rounded"
+          style={{ borderColor: 'var(--color-border-subtle)' }}
+          onClick={() => onShowStreamDiff(streamRowId)}
+          title="Cumulative diff across all commits in this stream"
+        >
+          <ListTree className="w-3 h-3" />
+          View cumulative diff
+        </button>
+      )}
+
+      <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
+        <GitCommit className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+        Commits
+        <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>
+          {commits.length}
+        </span>
+      </h4>
+      {isLoading ? (
+        <div className="text-2xs animate-pulse" style={{ color: 'var(--color-text-muted)' }}>Loading...</div>
+      ) : commits.length === 0 ? (
+        <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>No commits yet.</div>
+      ) : (
+        <div className="space-y-0 mb-4">
+          {commits.map((event, idx) => {
+            const hash = event.data?.commit_hash as string | undefined;
+            if (!hash) return <TimelineEntry key={idx} event={event} />;
+            return (
+              <div
+                key={idx}
+                role="button"
+                tabIndex={0}
+                onClick={() => onShowDiff(streamRowId, hash)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onShowDiff(streamRowId, hash);
+                  }
+                }}
+                title={`View diff for ${hash.slice(0, 7)}`}
+                className="cursor-pointer rounded -mx-1 px-1 hover:bg-honey-500/5
+                           focus:outline-none focus-visible:ring-1 focus-visible:ring-honey-500/60"
+              >
+                <TimelineEntry event={event} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {nonCommits.length > 0 && (
+        <>
+          <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5 mt-3">
+            <Clock className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+            Other events
+            <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>
+              {nonCommits.length}
+            </span>
+          </h4>
           <div className="space-y-0">
-            {timeline.map((event, idx) => {
-              const isCommit = event.type === 'commit';
-              const hash = isCommit
-                ? ((event.data?.commit_hash as string | undefined) ?? undefined)
-                : undefined;
-              if (!isCommit || !hash) {
-                return <TimelineEntry key={idx} event={event} />;
-              }
-              return (
-                <div
-                  key={idx}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onShowDiff(streamRowId, hash)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      onShowDiff(streamRowId, hash);
-                    }
-                  }}
-                  title={`View diff for ${hash.slice(0, 7)}`}
-                  className="cursor-pointer rounded -mx-1 px-1 hover:bg-honey-500/5
-                             focus:outline-none focus-visible:ring-1 focus-visible:ring-honey-500/60"
-                >
-                  <TimelineEntry event={event} />
-                </div>
-              );
-            })}
+            {nonCommits.map((event, idx) => (
+              <TimelineEntry key={idx} event={event} />
+            ))}
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }
