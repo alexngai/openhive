@@ -30,6 +30,10 @@ export interface ScopeOptions {
 export interface ScopeResult {
   nodes: OpenTasksGraphNode[];
   edges: OpenTasksGraphEdge[];
+  /** The original seed set — nodes that passed the activeStatus filter on
+   *  their own merits (not just as upstream blockers). Useful for visually
+   *  distinguishing seeds from ancestors in the rendered view. */
+  seedIds: Set<string>;
 }
 
 const DEFAULT_ACTIVE = new Set(['open', 'in_progress', 'blocked']);
@@ -126,5 +130,5 @@ export function scopeActiveWork(
     (e) => visible.has(e.from_id) && visible.has(e.to_id),
   );
 
-  return { nodes: outNodes, edges: outEdges };
+  return { nodes: outNodes, edges: outEdges, seedIds: new Set(seed) };
 }

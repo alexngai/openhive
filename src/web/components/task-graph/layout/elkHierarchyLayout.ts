@@ -19,10 +19,13 @@ import type {
 } from '../../../lib/api';
 import { rankingEndpoints } from './scopeActiveWork';
 import { CLUSTER_NODE_TYPE } from './leafClustering';
+// Mirror the shared TaskNodeCard dimensions so cards in Hierarchy look
+// identical to the path-A overlay cards.
+import { CARD_WIDTH, CARD_HEIGHT } from '../TaskNodeCard';
 
-export const HIERARCHY_CARD_WIDTH = 208;
-export const HIERARCHY_CARD_HEIGHT = 80;
-export const HIERARCHY_CLUSTER_HEIGHT = 56;
+export const HIERARCHY_CARD_WIDTH = CARD_WIDTH;
+export const HIERARCHY_CARD_HEIGHT = CARD_HEIGHT;
+export const HIERARCHY_CLUSTER_HEIGHT = 60;
 
 export interface HierarchyLayoutPosition {
   x: number;

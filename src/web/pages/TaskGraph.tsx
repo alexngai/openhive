@@ -6,12 +6,13 @@
  * Board (kanban) and Graph (sigma.js DAG) views.
  */
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { ChevronDown, Network, LayoutGrid, ListTree, Check, Settings, ArrowDownToLine, ArrowUpFromLine, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import { useResource, useResourcesByType, useGitSyncStatus, useGitPull, useGitPush } from '../hooks/useApi';
 import { GitSyncToggle } from '../components/git-sync/GitSyncToggle';
+import { PageLoader } from '../components/common/LoadingSpinner';
 import { useQueries } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { useTaskGraph, buildGraphologyGraph, STATUS_COLORS } from '../components/task-graph/useTaskGraph';
@@ -39,6 +40,14 @@ export function TaskGraph() {
   const setView = (v: ViewMode) => { setViewState(v); localStorage.setItem('openhive-task-view', v); };
   const [filters, setFilters] = useState<TaskFilters>(DEFAULT_FILTERS);
   const [showGraphPicker, setShowGraphPicker] = useState(false);
+  // Lifted selection so switching views preserves the sidebar target. Each
+  // viewer reads `selectedTaskId` and reports clicks via `handleSelectTask`.
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const handleSelectTask = useCallback(
+    (node: import('../lib/api').OpenTasksGraphNode | null) =>
+      setSelectedTaskId(node?.id ?? null),
+    [],
+  );
 
   // All available task graphs (including federated MAP-backed graphs — full CRUD
   // is wired through to the owning swarm via opentasks/graph.* MAP methods).
@@ -209,16 +218,7 @@ export function TaskGraph() {
 
   const isLoading = graphsListLoading || (resourceId && (resourceLoading || graphLoading));
 
-  if (isLoading) {
-    return (
-      <div className="h-full flex items-center justify-center" style={{ backgroundColor: 'var(--color-bg)' }}>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full bg-gray-500/30 animate-pulse" />
-          <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>Loading tasks...</span>
-        </div>
-      </div>
-    );
-  }
+  if (isLoading) return <PageLoader />;
 
   if (!resourceId || (!resource && !resourceLoading)) {
     return (
@@ -245,7 +245,7 @@ export function TaskGraph() {
         <div className="relative">
           <button
             onClick={() => setShowGraphPicker(!showGraphPicker)}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-white/5 transition-colors"
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-hover transition-colors"
           >
             {selectedIds.length === 1 ? (
               <>
@@ -282,13 +282,13 @@ export function TaskGraph() {
                     <button
                       key={g.id}
                       onClick={() => toggleGraph(g.id)}
-                      className="w-full text-left px-3 py-2 text-xs hover:bg-white/5 flex items-center gap-2 transition-colors"
+                      className="w-full text-left px-3 py-2 text-xs hover:bg-hover flex items-center gap-2 transition-colors"
                     >
                       <div
                         className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${isSelected ? 'border-transparent' : ''}`}
                         style={isSelected ? { backgroundColor: color } : { borderColor: 'var(--color-border)' }}
                       >
-                        {isSelected && <Check className="w-3 h-3 text-black" />}
+                        {isSelected && <Check className="w-3 h-3 text-white" />}
                       </div>
                       <span className="truncate flex-1">{g.name}</span>
                       <span className="text-2xs font-mono" style={{ color: 'var(--color-text-muted)' }}>
@@ -309,11 +309,12 @@ export function TaskGraph() {
         >
           <button
             onClick={() => setView('board')}
+            title="Board — kanban grouped by status"
             className={clsx(
               'flex items-center gap-1.5 px-2.5 py-1 text-2xs transition-colors',
               view === 'board'
-                ? 'bg-honey-500/15 text-honey-500'
-                : 'hover:bg-white/5',
+                ? 'bg-accent/15 text-accent'
+                : 'hover:bg-hover',
             )}
             style={view !== 'board' ? { color: 'var(--color-text-muted)' } : undefined}
           >
@@ -322,11 +323,12 @@ export function TaskGraph() {
           </button>
           <button
             onClick={() => setView('graph')}
+            title="Network — explore relationships with physics + drag"
             className={clsx(
               'flex items-center gap-1.5 px-2.5 py-1 text-2xs transition-colors border-l',
               view === 'graph'
-                ? 'bg-honey-500/15 text-honey-500'
-                : 'hover:bg-white/5',
+                ? 'bg-accent/15 text-accent'
+                : 'hover:bg-hover',
             )}
             style={{
               borderColor: 'var(--color-border)',
@@ -334,21 +336,24 @@ export function TaskGraph() {
             }}
           >
             <Network className="w-3 h-3" />
-            Graph
+            Network
           </button>
           <button
             onClick={() => setView('hierarchy')}
             className={clsx(
               'flex items-center gap-1.5 px-2.5 py-1 text-2xs transition-colors border-l',
               view === 'hierarchy'
-                ? 'bg-honey-500/15 text-honey-500'
-                : 'hover:bg-white/5',
+                ? 'bg-accent/15 text-accent'
+                : 'hover:bg-hover',
             )}
             style={{
               borderColor: 'var(--color-border)',
               ...(view !== 'hierarchy' ? { color: 'var(--color-text-muted)' } : {}),
             }}
             title="Layered top-to-bottom dependency view (active work + upstream blockers)"
+            // Stable selector used by the Network view's a11y skip-link to
+            // route keyboard users into Hierarchy without coupling to prose.
+            data-view-switch="hierarchy"
           >
             <ListTree className="w-3 h-3" />
             Hierarchy
@@ -360,18 +365,21 @@ export function TaskGraph() {
           <div className="ml-auto flex items-center gap-2">
             {Object.entries(mergedSummary.task_counts).map(([status, count]) => {
               const color = STATUS_COLORS[status];
+              // Translucent fill (~16%) tinted by status color; text in the
+              // same color reads cleanly against `--color-surface`. Drops the
+              // redundant inner dot that had been invisible against the
+              // 85%-opaque pill background.
               return (
                 <span
                   key={status}
-                  className="text-2xs px-1.5 py-0.5 rounded-full flex items-center gap-1"
-                  style={color
-                    ? { backgroundColor: color, opacity: 0.85 }
-                    : { backgroundColor: 'var(--color-text-muted)', opacity: 0.2 }}
+                  className="text-2xs px-1.5 py-0.5 rounded-full flex items-center"
+                  style={
+                    color
+                      ? { backgroundColor: `${color}29`, color }
+                      : { backgroundColor: 'var(--color-elevated)', color: 'var(--color-text-muted)' }
+                  }
+                  title={status}
                 >
-                  <span
-                    className="w-1.5 h-1.5 rounded-full"
-                    style={color ? { backgroundColor: color } : { backgroundColor: 'var(--color-text-muted)' }}
-                  />
                   {count}
                 </span>
               );
@@ -386,7 +394,7 @@ export function TaskGraph() {
                   <button
                     onClick={() => gitPull.mutate()}
                     disabled={gitPull.isPending}
-                    className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-medium transition-colors bg-blue-500/10 hover:bg-blue-500/15 text-blue-400"
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-medium transition-colors bg-elevated hover:bg-hover text-text border border-border-subtle"
                     title={`${gitStatus!.unpulledCommits} commit${gitStatus!.unpulledCommits > 1 ? 's' : ''} to pull`}
                   >
                     {gitPull.isPending ? (
@@ -401,7 +409,7 @@ export function TaskGraph() {
                   <button
                     onClick={() => gitPush.mutate()}
                     disabled={gitPush.isPending}
-                    className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-medium transition-colors bg-amber-500/10 hover:bg-amber-500/15 text-honey-500"
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-medium transition-colors bg-accent/10 hover:bg-accent/15 text-accent"
                     title={`${gitStatus!.unpushedCommits} commit${gitStatus!.unpushedCommits > 1 ? 's' : ''} to push`}
                   >
                     {gitPush.isPending ? (
@@ -414,7 +422,10 @@ export function TaskGraph() {
                 )}
                 {!hasUnpulled && !hasUnpushed && gitStatus && (
                   <span className="text-2xs flex items-center gap-1" style={{ color: 'var(--color-text-muted)' }}>
-                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    <div
+                      className="w-1.5 h-1.5 rounded-full"
+                      style={{ backgroundColor: 'var(--color-success, #22c55e)' }}
+                    />
                     Synced
                   </span>
                 )}
@@ -442,6 +453,8 @@ export function TaskGraph() {
             resourceId={resourceId!}
             filters={filters}
             mergedNodes={selectedIds.length > 1 ? mergedNodes : undefined}
+            selectedTaskId={selectedTaskId}
+            onSelectTask={handleSelectTask}
           />
         ) : view === 'hierarchy' ? (
           <TaskHierarchyView
@@ -463,6 +476,9 @@ export function TaskGraph() {
               : [])}
             resourceId={resourceId!}
             colorMode="status"
+            graphSources={graphSources}
+            selectedTaskId={selectedTaskId}
+            onSelectTask={handleSelectTask}
           />
         ) : (isMultiGraph ? mergedGraph : graph) ? (
           <TaskGraphViewer
@@ -471,6 +487,8 @@ export function TaskGraph() {
             edges={isMultiGraph ? mergedEdges : undefined}
             allNodes={isMultiGraph ? mergedNodes : undefined}
             graphSources={graphSources}
+            selectedTaskId={selectedTaskId}
+            onSelectTask={handleSelectTask}
           />
         ) : (
           <div className="h-full flex items-center justify-center">

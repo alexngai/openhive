@@ -21,26 +21,11 @@ import type Sigma from 'sigma';
 import type Graph from 'graphology';
 import { TaskNodeCard, CARD_WIDTH, CARD_HEIGHT } from './TaskNodeCard';
 import { resolveAssigneeSwarm } from '../swarm/SwarmChip';
+import { swarmColorFor, SWARM_UNASSIGNED_COLOR } from './swarmPalette';
 import type { OpenTasksGraphNode, MapSwarm } from '../../lib/api';
 
 /** Above this camera ratio (zoomed out), cards hide. */
 const HIDE_RATIO = 2.5;
-
-/** Stable swarm-id → color mapping. Kept in sync with TaskGraphViewer's palette. */
-const SWARM_PALETTE = [
-  '#f59e0b', '#3b82f6', '#10b981', '#8b5cf6',
-  '#ec4899', '#06b6d4', '#ef4444', '#84cc16',
-  '#f97316', '#14b8a6',
-];
-const SWARM_UNASSIGNED_COLOR = '#4b5563';
-
-function swarmColorFor(swarmId: string): string {
-  let h = 0;
-  for (let i = 0; i < swarmId.length; i++) {
-    h = ((h << 5) - h + swarmId.charCodeAt(i)) | 0;
-  }
-  return SWARM_PALETTE[Math.abs(h) % SWARM_PALETTE.length];
-}
 
 interface TaskGraphCardOverlayProps {
   sigma: Sigma | null;
@@ -88,6 +73,23 @@ function TaskGraphCardOverlayInner({
     });
     return out;
   }, [graph]);
+
+  // Keep the ref Map in sync with the live `nodes` set: drop entries for
+  // nodes that have left the graph (the ref callback below only writes `el`,
+  // it no longer inserts entries — that would be a render-phase side effect
+  // and would leak the entry on subsequent removal).
+  useEffect(() => {
+    const live = new Set(nodes.map((n) => n.id));
+    const map = cardRefsRef.current;
+    for (const id of map.keys()) {
+      if (!live.has(id)) map.delete(id);
+    }
+    for (const node of nodes) {
+      const existing = map.get(node.id);
+      if (existing) existing.node = node;
+      else map.set(node.id, { el: null, node });
+    }
+  }, [nodes]);
 
   // Precompute the hovered node's neighbor set — cards outside it get dimmed.
   useEffect(() => {
@@ -191,12 +193,11 @@ function TaskGraphCardOverlayInner({
           <div
             key={nodeId}
             ref={(el) => {
+              // Ref callback only writes `el` onto an entry that the sync
+              // effect above already created — no insertion here, so removed
+              // nodes don't leak entries.
               const existing = cardRefsRef.current.get(nodeId);
-              if (existing) {
-                existing.el = el;
-              } else {
-                cardRefsRef.current.set(nodeId, { el, node });
-              }
+              if (existing) existing.el = el;
             }}
             style={{
               position: 'absolute',

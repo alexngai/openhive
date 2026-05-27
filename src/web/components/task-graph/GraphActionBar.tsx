@@ -114,21 +114,30 @@ export function GraphActionBar({ resourceId, linkMode, onLinkModeChange, linkTyp
 
   return (
     <>
-      {/* Floating action bar */}
+      {/* Floating action bar. Background + border use semantic tokens so the
+          bar reads cleanly on both themes; action-tinted button accents are
+          kept (translucent hex over neutral bg) since the color cue is the
+          information channel — `var()` references won't work inside an SVG
+          marker or canvas paint anyway. */}
       <div
-        className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-1.5 p-1.5 rounded-lg"
+        className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-1.5 p-1.5 rounded-lg shadow-lg"
         style={{
-          backgroundColor: 'rgba(12, 12, 14, 0.9)',
-          border: '1px solid rgba(255, 255, 255, 0.06)',
-          boxShadow: '0 4px 24px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.04)',
+          backgroundColor: 'var(--color-surface)',
+          border: '1px solid var(--color-border-subtle)',
         }}
       >
         {linkMode.active ? (
           /* --- Link mode indicator --- */
           <div className="flex items-center gap-2 px-2">
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-              <span className="text-xs text-amber-400 font-semibold">
+              <span
+                className="w-2 h-2 rounded-full animate-pulse"
+                style={{ backgroundColor: 'var(--color-accent)' }}
+              />
+              <span
+                className="text-xs font-semibold"
+                style={{ color: 'var(--color-accent)' }}
+              >
                 {linkMode.step === 'pick-source'
                   ? 'Select source node'
                   : 'Select target node'}
@@ -137,7 +146,10 @@ export function GraphActionBar({ resourceId, linkMode, onLinkModeChange, linkTyp
             {linkMode.step === 'pick-target' && (
               <span
                 className="text-2xs px-2 py-0.5 rounded max-w-[160px] truncate"
-                style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)', color: '#fbbf24' }}
+                style={{
+                  backgroundColor: 'var(--color-accent-bg, rgba(245, 158, 11, 0.12))',
+                  color: 'var(--color-accent)',
+                }}
               >
                 from: {linkMode.sourceNode.title || linkMode.sourceNode.id}
               </span>
@@ -146,7 +158,10 @@ export function GraphActionBar({ resourceId, linkMode, onLinkModeChange, linkTyp
               value={linkType}
               onChange={(e) => onLinkTypeChange(e.target.value)}
               className="text-xs py-1 px-2 rounded border-0 cursor-pointer"
-              style={{ backgroundColor: 'rgba(255, 255, 255, 0.06)', color: '#d1d5db' }}
+              style={{
+                backgroundColor: 'var(--color-elevated)',
+                color: 'var(--color-text)',
+              }}
               onClick={(e) => e.stopPropagation()}
             >
               {LINK_TYPES.map((t) => (
@@ -157,69 +172,38 @@ export function GraphActionBar({ resourceId, linkMode, onLinkModeChange, linkTyp
               onClick={handleCancelLink}
               className="w-9 h-9 flex items-center justify-center rounded transition-all hover:scale-105 active:scale-95"
               style={{
-                background: 'linear-gradient(180deg, rgba(239, 68, 68, 0.25) 0%, rgba(185, 28, 28, 0.35) 100%)',
-                border: '1px solid rgba(239, 68, 68, 0.3)',
-                boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 2px 4px rgba(0, 0, 0, 0.3)',
+                backgroundColor: 'var(--color-danger-bg, rgba(239, 68, 68, 0.1))',
+                border: '1px solid var(--color-danger-border, rgba(239, 68, 68, 0.3))',
               }}
               title="Cancel"
+              aria-label="Cancel link mode"
             >
-              <X className="w-4 h-4 text-red-400" />
+              <X className="w-4 h-4" style={{ color: 'var(--color-danger)' }} />
             </button>
           </div>
         ) : (
-          /* --- Square icon buttons --- */
+          /* --- Square icon buttons. Each kept as a tinted chip so the color
+              cue still distinguishes action type, but routed through tokens
+              + low-alpha accent backgrounds that work on both themes. */
           <>
-            <div className="relative group/btn">
-              <button
-                onClick={() => setTaskOpen(true)}
-                className="w-11 h-11 flex items-center justify-center rounded-md transition-all hover:scale-105 active:scale-95 hover:brightness-125"
-                style={{
-                  background: 'linear-gradient(180deg, rgba(59, 130, 246, 0.2) 0%, rgba(29, 78, 216, 0.35) 100%)',
-                  border: '1px solid rgba(59, 130, 246, 0.25)',
-                  boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 2px 4px rgba(0, 0, 0, 0.3)',
-                }}
-                title="New Task"
-              >
-                <CircleCheckBig className="w-5 h-5 text-blue-400" />
-              </button>
-              <span className="absolute -top-8 left-1/2 -translate-x-1/2 text-2xs font-medium px-2 py-0.5 rounded whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity pointer-events-none" style={{ backgroundColor: 'rgba(0,0,0,0.85)', color: '#93c5fd' }}>
-                New Task
-              </span>
-            </div>
-            <div className="relative group/btn">
-              <button
-                onClick={handleStartLink}
-                className="w-11 h-11 flex items-center justify-center rounded-md transition-all hover:scale-105 active:scale-95 hover:brightness-125"
-                style={{
-                  background: 'linear-gradient(180deg, rgba(245, 158, 11, 0.2) 0%, rgba(180, 83, 9, 0.35) 100%)',
-                  border: '1px solid rgba(245, 158, 11, 0.25)',
-                  boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 2px 4px rgba(0, 0, 0, 0.3)',
-                }}
-                title="Link Nodes"
-              >
-                <Link2 className="w-5 h-5 text-amber-400" />
-              </button>
-              <span className="absolute -top-8 left-1/2 -translate-x-1/2 text-2xs font-medium px-2 py-0.5 rounded whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity pointer-events-none" style={{ backgroundColor: 'rgba(0,0,0,0.85)', color: '#fbbf24' }}>
-                Link Nodes
-              </span>
-            </div>
-            <div className="relative group/btn">
-              <button
-                onClick={() => setCtxOpen(true)}
-                className="w-11 h-11 flex items-center justify-center rounded-md transition-all hover:scale-105 active:scale-95 hover:brightness-125"
-                style={{
-                  background: 'linear-gradient(180deg, rgba(16, 185, 129, 0.2) 0%, rgba(4, 120, 87, 0.35) 100%)',
-                  border: '1px solid rgba(16, 185, 129, 0.25)',
-                  boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 2px 4px rgba(0, 0, 0, 0.3)',
-                }}
-                title="Add Context"
-              >
-                <FileText className="w-5 h-5 text-emerald-400" />
-              </button>
-              <span className="absolute -top-8 left-1/2 -translate-x-1/2 text-2xs font-medium px-2 py-0.5 rounded whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity pointer-events-none" style={{ backgroundColor: 'rgba(0,0,0,0.85)', color: '#34d399' }}>
-                Add Context
-              </span>
-            </div>
+            <ActionPill
+              accent="#3b82f6"
+              icon={<CircleCheckBig className="w-5 h-5" />}
+              label="New Task"
+              onClick={() => setTaskOpen(true)}
+            />
+            <ActionPill
+              accent="var(--color-accent)"
+              icon={<Link2 className="w-5 h-5" />}
+              label="Link Nodes"
+              onClick={handleStartLink}
+            />
+            <ActionPill
+              accent="#10b981"
+              icon={<FileText className="w-5 h-5" />}
+              label="Add Context"
+              onClick={() => setCtxOpen(true)}
+            />
           </>
         )}
       </div>
@@ -229,7 +213,7 @@ export function GraphActionBar({ resourceId, linkMode, onLinkModeChange, linkTyp
         <form onSubmit={handleCreateTask}>
           <div className="flex items-center justify-between p-4 border-b border-[var(--color-border-subtle)]">
             <span className="text-sm font-semibold">New Task</span>
-            <button type="button" onClick={() => setTaskOpen(false)} className="p-1 rounded hover:bg-white/5">
+            <button type="button" onClick={() => setTaskOpen(false)} className="p-1 rounded hover:bg-hover">
               <X className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
             </button>
           </div>
@@ -257,7 +241,7 @@ export function GraphActionBar({ resourceId, linkMode, onLinkModeChange, linkTyp
               </select>
             </div>
             {createTask.isError && (
-              <p className="text-xs text-red-400">{createTask.error instanceof Error ? createTask.error.message : 'Failed to create task'}</p>
+              <p className="text-xs">{createTask.error instanceof Error ? createTask.error.message : 'Failed to create task'}</p>
             )}
           </div>
           <div className="flex justify-end gap-2 p-4 border-t border-[var(--color-border-subtle)]">
@@ -277,14 +261,14 @@ export function GraphActionBar({ resourceId, linkMode, onLinkModeChange, linkTyp
               <FileText className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
               New Context
             </span>
-            <button type="button" onClick={() => setCtxOpen(false)} className="p-1 rounded hover:bg-white/5">
+            <button type="button" onClick={() => setCtxOpen(false)} className="p-1 rounded hover:bg-hover">
               <X className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
             </button>
           </div>
           <div className="p-4 space-y-4">
             <div className="flex gap-1 text-xs">
-              <button type="button" onClick={() => setCtxMode('inline')} className={`px-3 py-1 rounded-md transition-colors ${ctxMode === 'inline' ? 'bg-honey-500/15 text-honey-500' : 'hover:bg-white/5'}`} style={ctxMode !== 'inline' ? { color: 'var(--color-text-muted)' } : {}}>Inline</button>
-              <button type="button" onClick={() => setCtxMode('file')} className={`px-3 py-1 rounded-md transition-colors ${ctxMode === 'file' ? 'bg-honey-500/15 text-honey-500' : 'hover:bg-white/5'}`} style={ctxMode !== 'file' ? { color: 'var(--color-text-muted)' } : {}}>File</button>
+              <button type="button" onClick={() => setCtxMode('inline')} className={`px-3 py-1 rounded-md transition-colors ${ctxMode === 'inline' ? 'bg-accent/15 text-accent' : 'hover:bg-hover'}`} style={ctxMode !== 'inline' ? { color: 'var(--color-text-muted)' } : {}}>Inline</button>
+              <button type="button" onClick={() => setCtxMode('file')} className={`px-3 py-1 rounded-md transition-colors ${ctxMode === 'file' ? 'bg-accent/15 text-accent' : 'hover:bg-hover'}`} style={ctxMode !== 'file' ? { color: 'var(--color-text-muted)' } : {}}>File</button>
             </div>
             {ctxMode === 'inline' ? (
               <>
@@ -311,7 +295,7 @@ export function GraphActionBar({ resourceId, linkMode, onLinkModeChange, linkTyp
               </>
             )}
             {(createInlineCtx.error || createFileCtx.error) && (
-              <p className="text-xs text-red-400">{((createInlineCtx.error || createFileCtx.error) as Error)?.message || 'Failed to create context'}</p>
+              <p className="text-xs">{((createInlineCtx.error || createFileCtx.error) as Error)?.message || 'Failed to create context'}</p>
             )}
           </div>
           <div className="flex justify-end gap-2 p-4 border-t border-[var(--color-border-subtle)]">
@@ -323,6 +307,50 @@ export function GraphActionBar({ resourceId, linkMode, onLinkModeChange, linkTyp
         </form>
       </Dialog>
     </>
+  );
+}
+
+/** Action button used by GraphActionBar — flat tinted chip with theme-token
+ *  background + neutral border, the action accent restricted to the icon and
+ *  the hover tint. Works on both light and dark themes since the action
+ *  color is only applied at low alpha to text/border. */
+function ActionPill({
+  accent,
+  icon,
+  label,
+  onClick,
+}: {
+  accent: string;
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <div className="relative group/btn">
+      <button
+        onClick={onClick}
+        className="w-11 h-11 flex items-center justify-center rounded-md transition-all hover:scale-105 active:scale-95"
+        style={{
+          backgroundColor: 'var(--color-elevated)',
+          border: `1px solid ${accent}40`,
+          color: accent,
+        }}
+        title={label}
+        aria-label={label}
+      >
+        {icon}
+      </button>
+      <span
+        className="absolute -top-8 left-1/2 -translate-x-1/2 text-2xs font-medium px-2 py-0.5 rounded whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity pointer-events-none"
+        style={{
+          backgroundColor: 'var(--color-elevated)',
+          border: '1px solid var(--color-border-subtle)',
+          color: 'var(--color-text)',
+        }}
+      >
+        {label}
+      </span>
+    </div>
   );
 }
 

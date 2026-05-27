@@ -16,8 +16,12 @@ import { AlertTriangle, Flag, Hash, User as UserIcon, Zap } from 'lucide-react';
 import type { OpenTasksGraphNode, MapSwarm } from '../../lib/api';
 import { STATUS_COLORS } from './useTaskGraph';
 
-export const CARD_WIDTH = 208;
-export const CARD_HEIGHT = 64;
+export const CARD_WIDTH = 224;
+// Bumped from 64 → 88 so every text row can sit at the project's 11/12px
+// floor without clipping. Keeps the card readable and WCAG-friendly at the
+// cost of a slightly taller node — layout passes (dagre/elk noverlap) already
+// read these constants, so changing them here flows through everywhere.
+export const CARD_HEIGHT = 88;
 
 /** Resolved swarm passed in from the host so the card itself does no lookups. */
 export interface TaskCardSwarmInfo {
@@ -38,6 +42,10 @@ export interface TaskNodeCardProps {
   swarm?: TaskCardSwarmInfo | null;
   /** When true, the left status stripe is colored by swarm instead of status. */
   swarmColored?: boolean;
+  /** True when this card is only in scope because it's an upstream blocker
+   *  of an active task (not active itself). Renders at reduced opacity + a
+   *  small "blocker" badge so the user knows why it appears. */
+  isAncestor?: boolean;
 }
 
 const PRIORITY_LABELS: Record<number, { letter: string; tone: string }> = {
@@ -72,6 +80,7 @@ function TaskNodeCardInner({
   sourceColor,
   swarm,
   swarmColored,
+  isAncestor,
 }: TaskNodeCardProps) {
   const status = node.status ?? 'open';
   const statusColor = STATUS_COLORS[status] ?? STATUS_COLORS.open;
@@ -115,7 +124,7 @@ function TaskNodeCardInner({
           : hovered
             ? '0 4px 12px rgba(0,0,0,0.3)'
             : '0 1px 2px rgba(0,0,0,0.15)',
-        opacity: dimmed ? 0.25 : isAuxiliary ? 0.85 : 1,
+        opacity: dimmed ? 0.25 : isAncestor ? 0.65 : isAuxiliary ? 0.85 : 1,
         transition: 'opacity 120ms, box-shadow 120ms, border-color 120ms',
         overflow: 'hidden',
         display: 'flex',
@@ -161,7 +170,7 @@ function TaskNodeCardInner({
           )}
           <span
             style={{
-              fontSize: 11.5,
+              fontSize: 12,
               fontWeight: 600,
               whiteSpace: 'nowrap',
               overflow: 'hidden',
@@ -176,7 +185,7 @@ function TaskNodeCardInner({
           {priorityInfo && (
             <span
               style={{
-                fontSize: 9.5,
+                fontSize: 11,
                 fontWeight: 700,
                 padding: '0 4px',
                 borderRadius: 3,
@@ -187,6 +196,23 @@ function TaskNodeCardInner({
               title={`Priority ${priorityInfo.letter}`}
             >
               {priorityInfo.letter}
+            </span>
+          )}
+          {isAncestor && (
+            <span
+              style={{
+                fontSize: 11,
+                padding: '0 4px',
+                borderRadius: 3,
+                background: 'var(--color-elevated)',
+                color: 'var(--color-text-muted)',
+                flexShrink: 0,
+                textTransform: 'uppercase',
+                letterSpacing: 0.3,
+              }}
+              title="In scope because an active task depends on it"
+            >
+              blocker
             </span>
           )}
           {status === 'blocked' && (
@@ -203,7 +229,7 @@ function TaskNodeCardInner({
             display: 'flex',
             alignItems: 'center',
             gap: 6,
-            fontSize: 9.5,
+            fontSize: 11,
             color: 'var(--color-text-muted)',
             minWidth: 0,
           }}
@@ -252,7 +278,7 @@ function TaskNodeCardInner({
             display: 'flex',
             alignItems: 'center',
             gap: 6,
-            fontSize: 9.5,
+            fontSize: 11,
             color: 'var(--color-text-muted)',
             minWidth: 0,
           }}

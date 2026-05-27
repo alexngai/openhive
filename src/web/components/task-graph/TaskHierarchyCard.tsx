@@ -28,6 +28,9 @@ export interface TaskHierarchyCardData {
   swarm: TaskCardSwarmInfo | null;
   sourceColor?: string | null;
   colorMode: 'status' | 'swarm';
+  /** True when this node is only in view because an active task depends on
+   *  it (not active itself). Used for the "blocker" visual tag on cards. */
+  isAncestor?: boolean;
   /** Cluster expansion handler — only meaningful for cluster nodes. */
   onToggleCluster?: (clusterId: string) => void;
 }
@@ -58,6 +61,7 @@ function TaskHierarchyCardInner({ data, selected }: NodeProps<TaskHierarchyCardD
           sourceColor={data.sourceColor ?? null}
           swarm={data.swarm}
           swarmColored={data.colorMode === 'swarm'}
+          isAncestor={data.isAncestor}
         />
       </div>
     </>
@@ -89,11 +93,25 @@ function ClusterCard({
         style={{ opacity: 0, background: 'transparent', border: 'none' }}
         isConnectable={false}
       />
-      <button
-        type="button"
+      {/* role=button (not <button>) — the React Flow node wrapper above
+          already has role=button; nesting a real button would emit invalid
+          ARIA and double-activate. Keep tabIndex={0} so keyboard users can
+          still reach the cluster — RF's wrapper focuses the *node* but does
+          not dispatch Enter to nested handlers, so we own keyboard activation
+          here via the onKeyDown below. */}
+      <div
+        role="button"
+        tabIndex={0}
         onClick={(e) => {
           e.stopPropagation();
           onToggle?.(node.id);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            onToggle?.(node.id);
+          }
         }}
         style={{
           width: HIERARCHY_CARD_WIDTH,
@@ -114,6 +132,7 @@ function ClusterCard({
           fontSize: 12,
         }}
         title="Click to expand"
+        aria-label={`Expand cluster: ${node.title || node.id}`}
       >
         <span
           style={{
@@ -136,7 +155,7 @@ function ClusterCard({
         >
           expand
         </span>
-      </button>
+      </div>
     </>
   );
 }
@@ -151,20 +170,5 @@ export function resolveSourceColor(
   return sc ?? null;
 }
 
-/** Reused from the path-A overlay — same palette so cards across views match. */
-const SWARM_PALETTE = [
-  '#f59e0b', '#3b82f6', '#10b981', '#8b5cf6',
-  '#ec4899', '#06b6d4', '#ef4444', '#84cc16',
-  '#f97316', '#14b8a6',
-];
-const SWARM_UNASSIGNED_COLOR = '#4b5563';
-
-export function swarmColorFor(swarmId: string): string {
-  let h = 0;
-  for (let i = 0; i < swarmId.length; i++) {
-    h = ((h << 5) - h + swarmId.charCodeAt(i)) | 0;
-  }
-  return SWARM_PALETTE[Math.abs(h) % SWARM_PALETTE.length];
-}
-
-export { SWARM_UNASSIGNED_COLOR };
+// Re-export from the shared palette so existing imports keep working.
+export { swarmColorFor, SWARM_UNASSIGNED_COLOR } from './swarmPalette';

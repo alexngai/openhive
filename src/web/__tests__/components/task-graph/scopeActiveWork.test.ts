@@ -170,6 +170,80 @@ describe('scopeActiveWork', () => {
     expect(scopeActiveWork(nodes, []).nodes).toEqual([]);
   });
 
+  describe('seedIds return field', () => {
+    it('returns an empty seedIds when nothing is active', () => {
+      const nodes = [task('A', 'completed'), task('B', 'failed')];
+      expect(scopeActiveWork(nodes, []).seedIds.size).toBe(0);
+    });
+
+    it('seedIds contains the active tasks (not ancestors)', () => {
+      // C depends-on B depends-on A; only C is active. seedIds should be
+      // {C}, not {A, B, C} — A + B are ancestors pulled in for context.
+      const nodes = [
+        task('A', 'completed'),
+        task('B', 'completed'),
+        task('C', 'in_progress'),
+      ];
+      const edges = [
+        edge('C', 'B', 'depends-on'),
+        edge('B', 'A', 'depends-on'),
+      ];
+      const res = scopeActiveWork(nodes, edges);
+      expect(Array.from(res.seedIds).sort()).toEqual(['C']);
+      // Sanity: ancestors are visible but not in the seed set.
+      expect(res.nodes.map((n) => n.id).sort()).toEqual(['A', 'B', 'C']);
+    });
+
+    it('seedIds reflects every node that passed the active filter', () => {
+      const nodes = [
+        task('A', 'open'),
+        task('B', 'in_progress'),
+        task('C', 'blocked'),
+        task('D', 'completed'),
+      ];
+      const res = scopeActiveWork(nodes, []);
+      expect(Array.from(res.seedIds).sort()).toEqual(['A', 'B', 'C']);
+    });
+
+    it('seedIds excludes archived nodes even if their status is active', () => {
+      const nodes = [
+        task('A', 'in_progress'),
+        task('B', 'in_progress', { archived: true }),
+      ];
+      const res = scopeActiveWork(nodes, []);
+      expect(Array.from(res.seedIds)).toEqual(['A']);
+    });
+
+    it('seedIds excludes non-task types by default', () => {
+      const nodes = [
+        task('A', 'in_progress'),
+        { id: 'N', type: 'note', title: 'note', status: 'open' } as OpenTasksGraphNode,
+      ];
+      const res = scopeActiveWork(nodes, []);
+      expect(Array.from(res.seedIds)).toEqual(['A']);
+    });
+
+    it('seedIds equals nodes set when includeTerminal is true', () => {
+      const nodes = [
+        task('A', 'in_progress'),
+        task('B', 'completed'),
+        task('C', 'failed'),
+      ];
+      const res = scopeActiveWork(nodes, [], { includeTerminal: true });
+      // includeTerminal makes everything a seed — no upstream-only entries.
+      expect(Array.from(res.seedIds).sort()).toEqual(['A', 'B', 'C']);
+      expect(res.seedIds.size).toBe(res.nodes.length);
+    });
+
+    it('seedIds is a Set instance (allows .has(id) lookup)', () => {
+      const nodes = [task('A', 'in_progress')];
+      const res = scopeActiveWork(nodes, []);
+      expect(res.seedIds).toBeInstanceOf(Set);
+      expect(res.seedIds.has('A')).toBe(true);
+      expect(res.seedIds.has('Z')).toBe(false);
+    });
+  });
+
   it('is stable across runs for the same input', () => {
     const nodes = [
       task('A', 'in_progress'),
