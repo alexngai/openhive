@@ -14,6 +14,7 @@ import { createAgent } from './db/dal/agents.js';
 import { nanoid } from 'nanoid';
 import { registerNetworkCommands } from './cli/network.js';
 import { registerAdminHttpCommands } from './cli/admin/index.js';
+import { forwardClaudeHook } from './cli/claude-hook.js';
 import {
   resolveDataDir,
   ensureDataDir,
@@ -705,62 +706,16 @@ dbCmd
   });
 
 // Hook commands — invoked by spawned TUIs (Claude Code, etc.) via the
-// `--settings` payload openhive injects at spawn time. Each invocation
-// reads the agent's stdin JSON payload + the three OPENHIVE_* env vars
-// the spawn pipeline set (OPENHIVE_HUB_URL, OPENHIVE_HOSTED_SWARM_ID,
-// OPENHIVE_HOOK_TOKEN) and POSTs to /api/v1/map/hosted/:id/hook/:event.
-// Silent on success — claude inspects the exit code, not stdout.
+// `--settings` payload openhive injects at spawn time. The actual
+// forwarding logic lives in `./cli/claude-hook.ts` so it's testable in
+// isolation (importing this file runs `program.parse()`).
 const hook = program.command('hook').description('Lifecycle hook callbacks for spawned TUIs');
 
 hook
   .command('claude <event>')
   .description('Forward a Claude Code hook event to the hub (stop, prompt-submit, notification)')
   .action(async (event: string) => {
-    const hubUrl = process.env.OPENHIVE_HUB_URL;
-    const hostedId = process.env.OPENHIVE_HOSTED_SWARM_ID;
-    const token = process.env.OPENHIVE_HOOK_TOKEN;
-    // No env → not running under openhive. Exit 0 so hooks installed
-    // globally don't break standalone `claude` runs.
-    if (!hubUrl || !hostedId || !token) {
-      process.exit(0);
-    }
-
-    // Claude pipes a JSON payload on stdin. Read it but be tolerant —
-    // some hook variants send nothing. We forward whatever we got
-    // verbatim so the route can pick out session_id / transcript_path
-    // / cwd without us knowing the schema.
-    const chunks: Buffer[] = [];
-    for await (const chunk of process.stdin) {
-      chunks.push(chunk as Buffer);
-      if (chunks.reduce((n, b) => n + b.length, 0) > 64 * 1024) break;
-    }
-    const raw = Buffer.concat(chunks).toString('utf8').trim();
-    let payload: unknown = {};
-    if (raw) {
-      try { payload = JSON.parse(raw); } catch { payload = { raw }; }
-    }
-
-    const url = `${hubUrl.replace(/\/$/, '')}/api/v1/map/hosted/${encodeURIComponent(hostedId)}/hook/${encodeURIComponent(event)}`;
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload ?? {}),
-        // Don't let a hung hub stall the agent's turn render.
-        signal: AbortSignal.timeout(3000),
-      });
-      // 204 expected; any 2xx is fine. Non-2xx is logged but not fatal —
-      // claude treats a non-zero exit as a hook failure and surfaces it
-      // in the TUI, which would be louder than the missed dot is worth.
-      if (!res.ok) {
-        console.error(`[openhive hook] ${event} → ${res.status}`);
-      }
-    } catch (err) {
-      console.error(`[openhive hook] ${event} failed: ${(err as Error).message}`);
-    }
+    await forwardClaudeHook(event, { env: process.env, stdin: process.stdin });
     process.exit(0);
   });
 
