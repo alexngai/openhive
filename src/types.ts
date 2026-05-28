@@ -126,6 +126,12 @@ export type WSEventType =
   // Swarm hosting events
   | 'swarm_spawned'
   | 'swarm_stopped'
+  // Spawned-TUI lifecycle hook callbacks (fired by claude-code's Stop /
+  // UserPromptSubmit / Notification hooks via the `--settings` payload
+  // openhive injects at spawn). Fanned out on `global`; data carries
+  // `hosted_swarm_id` so the threads panel can key the attention dot.
+  | 'hosted_tui.turn_ended'
+  | 'hosted_tui.turn_started'
   // Programmatic-mode hosted-swarm chat events. Fanned out per-swarm on
   // channel `hosted-chat:<hosted_swarm_id>`. The data carries a
   // NORMALIZED event shape (kind: 'message.start' | 'message.delta' |

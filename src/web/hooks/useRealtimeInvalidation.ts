@@ -189,6 +189,24 @@ export function useSessionsRealtime() {
       }
     }
   }, [markNeedsAttention, findSessionsBySwarm]));
+
+  // hosted_tui.turn_ended — fired by the spawned Claude Code TUI's Stop /
+  // Notification hooks via the `--settings` payload openhive injects at
+  // spawn (POST /api/v1/map/hosted/:id/hook/:event). The hosted swarm id
+  // is also the Thread.id for hosted-tui rows, so attention keys on it
+  // directly. Cleared when the user opens the thread or a new prompt
+  // starts.
+  useWSEvent('hosted_tui.turn_ended', useCallback((data: any) => {
+    const hostedId = data?.hosted_swarm_id;
+    if (!hostedId) return;
+    markNeedsAttention(hostedId, data.swarm_id || '', 'idle');
+  }, [markNeedsAttention]));
+
+  useWSEvent('hosted_tui.turn_started', useCallback((data: any) => {
+    const hostedId = data?.hosted_swarm_id;
+    if (!hostedId) return;
+    useSessionAttentionStore.getState().clearAttention(hostedId);
+  }, []));
 }
 
 // ── Learning Engine ──

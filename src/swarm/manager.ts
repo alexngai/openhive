@@ -1485,12 +1485,23 @@ export class SwarmManager {
       if (inheritEnv) Object.assign(env, process.env as Record<string, string>);
       if (credentialOverlay) Object.assign(env, credentialOverlay);
       Object.assign(env, strategy.extraEnv());
+      // Hook callbacks (e.g. claude Stop → `openhive hook claude stop`)
+      // read these env vars to route into POST /map/hosted/:id/hook/:event.
+      // The token is the same onboard credential cc-swarm already uses —
+      // verified against `bootstrap_token_hash` on the row.
+      Object.assign(env, {
+        OPENHIVE_HUB_URL: this.instanceUrl,
+        OPENHIVE_HOSTED_SWARM_ID: hosted.id,
+        OPENHIVE_HOOK_TOKEN: onboardToken,
+      });
       for (const key of strategy.envVarsToStrip()) delete env[key];
 
-      // Both `claude` and `codex` accept an initial prompt as the first
-      // positional arg, opening their TUI with it prefilled. Empty/unset
-      // → no positional, the TUI opens at an empty prompt input.
+      // Hook settings go FIRST so claude parses them as flags before the
+      // optional positional prompt. `--settings <json>` merges additively
+      // with the user's own ~/.claude/settings.json.
       const ptyArgs: string[] = [];
+      const hookSettings = strategy.buildHookSettings?.();
+      if (hookSettings) ptyArgs.push(...hookSettings.args);
       if (input.initial_prompt && input.initial_prompt.trim().length > 0) {
         ptyArgs.push(input.initial_prompt);
       }

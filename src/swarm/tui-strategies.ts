@@ -105,6 +105,18 @@ export interface TuiKindStrategy {
    * as `config.adapter` on the row, which legacy code occasionally reads.
    */
   adapterLabel(): string;
+
+  /**
+   * Optional inline-settings payload appended to the TUI argv (e.g. claude's
+   * `--settings <json>`). Lets openhive register lifecycle hooks that fire
+   * back into the hub for turn-end notifications, without depending on a
+   * user-installed wrapper. Returning null skips injection.
+   *
+   * The hook commands assume the openhive CLI is on PATH and read
+   * OPENHIVE_HUB_URL / OPENHIVE_HOSTED_SWARM_ID / OPENHIVE_HOOK_TOKEN from
+   * env (injected alongside `extraEnv()` by the spawn pipeline).
+   */
+  buildHookSettings?(): { args: string[] } | null;
 }
 
 // ============================================================================
@@ -139,6 +151,24 @@ export function makeClaudeCodeStrategy(opts: {
     sidecarRegistrationTimeoutMs: 60_000,
     signalSidecar: opts.signalSidecar,
     adapterLabel: () => 'claude-code',
+    buildHookSettings: () => {
+      // Claude Code's `--settings <json>` merges additively with the user's
+      // own ~/.claude/settings.json, so existing sessionlog hooks keep
+      // firing alongside ours. `preferredNotifChannel` silences claude's
+      // own OSC-9 terminal notifications so the embedded TUI doesn't
+      // double-fire — the hub-side broadcast is the single source of
+      // truth for the threads-panel dot.
+      const cmd = 'openhive hook claude';
+      const settings = {
+        preferredNotifChannel: 'notifications_disabled',
+        hooks: {
+          Stop: [{ matcher: '', hooks: [{ type: 'command', command: `${cmd} stop`, timeout: 5 }] }],
+          UserPromptSubmit: [{ matcher: '', hooks: [{ type: 'command', command: `${cmd} prompt-submit`, timeout: 5 }] }],
+          Notification: [{ matcher: '', hooks: [{ type: 'command', command: `${cmd} notification`, timeout: 5 }] }],
+        },
+      };
+      return { args: ['--settings', JSON.stringify(settings)] };
+    },
   };
 }
 

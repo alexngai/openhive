@@ -26,6 +26,7 @@ import {
   buildClaudeSwarmConfig,
   writeClaudeSwarmConfig,
 } from '../../swarm/claude-code-config.js';
+import { getTuiKindStrategy } from '../../swarm/tui-strategies.js';
 import type { SwarmHostingConfig } from '../../swarm/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
@@ -123,6 +124,28 @@ describe('claude-code spawn helpers', () => {
       expect(fs.existsSync(path.join(dataDir, '.swarm', 'claude-swarm'))).toBe(true);
       fs.rmSync(dataDir, { recursive: true, force: true });
     });
+  });
+});
+
+describe('claude-code hook settings injection', () => {
+  it('emits Stop / UserPromptSubmit / Notification hooks pointing at the openhive CLI', () => {
+    const strategy = getTuiKindStrategy('claude-code', { signalSidecar: () => false });
+    const settings = strategy?.buildHookSettings?.();
+    expect(settings).toBeTruthy();
+    expect(settings!.args[0]).toBe('--settings');
+    const parsed = JSON.parse(settings!.args[1]);
+
+    // Silences claude's OSC-9 channel so we're the only notification source.
+    expect(parsed.preferredNotifChannel).toBe('notifications_disabled');
+
+    // Each hook event maps to `openhive hook claude <event>` so the CLI
+    // can forward to POST /api/v1/map/hosted/:id/hook/:event.
+    const stopCmd = parsed.hooks.Stop[0].hooks[0].command;
+    const promptCmd = parsed.hooks.UserPromptSubmit[0].hooks[0].command;
+    const notifyCmd = parsed.hooks.Notification[0].hooks[0].command;
+    expect(stopCmd).toBe('openhive hook claude stop');
+    expect(promptCmd).toBe('openhive hook claude prompt-submit');
+    expect(notifyCmd).toBe('openhive hook claude notification');
   });
 });
 

@@ -210,7 +210,11 @@ function ThreadRow({
   onClick: () => void;
 }) {
   const { hasAttention, clearAttention } = useSessionAttentionStore();
-  const needsAttention = thread.flavor === 'session' && hasAttention(thread.id);
+  // hosted-tui rows key attention on their hosted_swarm_id (see
+  // useSessionsRealtime / `hosted_tui.turn_ended`). Sessions key on
+  // sessionId. Mail/dispatch don't surface a turn-end signal today.
+  const needsAttention =
+    (thread.flavor === 'session' || thread.flavor === 'hosted-tui') && hasAttention(thread.id);
 
   const handleClick = () => {
     if (needsAttention) clearAttention(thread.id);
@@ -932,6 +936,11 @@ function HostedTuiThreadDetail({
   hostedSwarmId: string;
   hostedSwarms: HostedSwarm[];
 }) {
+  const { hasAttention, clearAttention } = useSessionAttentionStore();
+  useEffect(() => {
+    if (hostedSwarmId && hasAttention(hostedSwarmId)) clearAttention(hostedSwarmId);
+  }, [hostedSwarmId, hasAttention, clearAttention]);
+
   const hosted = hostedSwarms.find((h) => h.id === hostedSwarmId);
   if (!hosted) {
     return (

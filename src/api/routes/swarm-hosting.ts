@@ -16,12 +16,14 @@
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { authMiddleware } from '../middleware/auth.js';
 import { SwarmHostingError } from '../../swarm/manager.js';
 import * as dal from '../../swarm/dal.js';
 import * as mapDal from '../../db/dal/map.js';
 import { listRepos } from '../../db/dal/repos.js';
+import { broadcastToChannel } from '../../realtime/index.js';
 import type { SwarmManager } from '../../swarm/manager.js';
 import type { Config } from '../../config.js';
 
@@ -632,6 +634,61 @@ export async function swarmHostingRoutes(
       } catch (error) {
         return handleSwarmError(error, reply);
       }
+    },
+  );
+
+  // POST /map/hosted/:id/hook/:event — Lifecycle callback from a spawned
+  // TUI agent. Currently fed by Claude Code's native hooks system (Stop,
+  // UserPromptSubmit, Notification) via the `--settings` JSON we inject at
+  // spawn time. Auth uses the same onboard token the row's sidecar uses
+  // (verified against bootstrap_token_hash) — no end-user session needed.
+  // Fans out a `hosted_tui.turn_ended` (or matching) event on the `global`
+  // WS channel so the threads panel can light up the attention dot.
+  fastify.post<{ Params: { id: string; event: string }; Body: Record<string, unknown> }>(
+    '/map/hosted/:id/hook/:event',
+    async (request, reply) => {
+      const hosted = dal.findHostedSwarmById(request.params.id);
+      if (!hosted) {
+        return reply.status(404).send({ error: 'NOT_FOUND', message: 'Hosted swarm not found' });
+      }
+      const authz = request.headers.authorization ?? '';
+      const token = authz.toLowerCase().startsWith('bearer ') ? authz.slice(7).trim() : '';
+      if (!token || !hosted.bootstrap_token_hash) {
+        return reply.status(401).send({ error: 'UNAUTHORIZED', message: 'Missing bearer token' });
+      }
+      const presented = createHash('sha256').update(token).digest('hex');
+      if (presented !== hosted.bootstrap_token_hash) {
+        return reply.status(401).send({ error: 'UNAUTHORIZED', message: 'Invalid bearer token' });
+      }
+
+      const event = request.params.event;
+      const body = request.body ?? {};
+      // Whitelist the event names we actually act on. Unknown events are
+      // accepted (204) so adding a new claude hook on the agent side
+      // doesn't 4xx during rollout — the broadcast below just no-ops.
+      const turnEndEvents = new Set(['stop', 'notification']);
+      const promptEvents = new Set(['prompt-submit']);
+
+      if (turnEndEvents.has(event)) {
+        broadcastToChannel('global', {
+          type: 'hosted_tui.turn_ended',
+          data: {
+            hosted_swarm_id: hosted.id,
+            swarm_id: hosted.swarm_id,
+            event,
+            session_id: typeof body.session_id === 'string' ? body.session_id : undefined,
+            transcript_path: typeof body.transcript_path === 'string' ? body.transcript_path : undefined,
+            cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
+          },
+        });
+      } else if (promptEvents.has(event)) {
+        broadcastToChannel('global', {
+          type: 'hosted_tui.turn_started',
+          data: { hosted_swarm_id: hosted.id, swarm_id: hosted.swarm_id, event },
+        });
+      }
+
+      return reply.status(204).send();
     },
   );
 
