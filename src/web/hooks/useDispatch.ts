@@ -22,7 +22,7 @@ export interface DispatchAttempt {
   /** Transport that delivered this attempt (V49). Populated by the adapter
    *  that performed delivery — `acp` from the runtime, `mail` from the
    *  mail port. Absent on attempts that never reached delivery. */
-  transport?: 'acp' | 'mail';
+  transport?: 'acp' | 'mail' | 'codex';
   /** Resolved target agent id at delivery time (V49). */
   agent_id?: string;
   /** Routing decision from swarm-dispatch (V49): `spawn` = fresh agent

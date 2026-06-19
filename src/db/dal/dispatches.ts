@@ -43,7 +43,7 @@ export interface DispatchAttempt {
    * for ACP, `openhive-mail-port.ts` for mail. Absent on attempts that
    * never reached delivery (claim races, immediate failures).
    */
-  transport?: 'acp' | 'mail';
+  transport?: 'acp' | 'mail' | 'codex';
   /**
    * Resolved target agent id at delivery time. For ACP fresh: the
    * spawned coordinator's id; for ACP reuse: the picked existing agent.
@@ -668,7 +668,7 @@ export function recordLoadoutResolution(
 export function recordAttemptDelivery(
   id: string,
   attempt: number,
-  delivery: { transport?: 'acp' | 'mail'; agent_id?: string; via?: 'spawn' | 'route' },
+  delivery: { transport?: 'acp' | 'mail' | 'codex'; agent_id?: string; via?: 'spawn' | 'route' },
 ): void {
   const db = getDatabase();
   const row = db

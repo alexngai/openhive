@@ -104,11 +104,17 @@ describe('<DispatchModal />', () => {
     });
   });
 
-  it('lists only online + ACP/mail-capable swarms by default', () => {
+  it('lists only online + ACP/mail-capable or Codex executor swarms by default', () => {
     mockUseMapSwarms.mockReturnValue({
       data: [
         makeSwarm({ id: 'sw_acp', name: 'acp-swarm', capabilities: { protocols: ['acp'] } }),
         makeSwarm({ id: 'sw_mail', name: 'mail-swarm', capabilities: { mail: { canCreate: true } } }),
+        makeSwarm({
+          id: 'sw_codex',
+          name: 'codex-executor',
+          capabilities: {},
+          metadata: { kind: 'swarm-codex' },
+        }),
         makeSwarm({ id: 'sw_offline', name: 'down', status: 'offline' }),
         makeSwarm({ id: 'sw_dumb', name: 'no-caps', capabilities: {} }),
       ],
@@ -116,8 +122,31 @@ describe('<DispatchModal />', () => {
     renderModal();
     expect(screen.getByText('acp-swarm')).toBeDefined();
     expect(screen.getByText('mail-swarm')).toBeDefined();
+    expect(screen.getByText('codex-executor')).toBeDefined();
     expect(screen.queryByText('down')).toBeNull();
     expect(screen.queryByText('no-caps')).toBeNull();
+  });
+
+  it('warns that selected Codex executor dispatches use danger-full-access unless overridden', () => {
+    mockUseMapSwarms.mockReturnValue({
+      data: [
+        makeSwarm({
+          id: 'sw_codex',
+          name: 'codex-executor',
+          capabilities: { dispatch: { executors: ['swarm-codex'] } },
+        }),
+      ],
+    });
+    renderModal();
+
+    expect(screen.queryByText(/full filesystem access/i)).toBeNull();
+    expect(screen.getByText('Codex')).toBeDefined();
+
+    fireEvent.click(screen.getByText('codex-executor').closest('label')!);
+
+    expect(screen.getByText(/Codex dispatch uses full filesystem access by default/i)).toBeDefined();
+    expect(screen.getByText('danger-full-access')).toBeDefined();
+    expect(screen.getByText('dispatch.codex_executor.sandbox')).toBeDefined();
   });
 
   it('includes ineligible swarms (disabled) when "show offline" is on', () => {
@@ -139,7 +168,7 @@ describe('<DispatchModal />', () => {
     mockUseMapSwarms.mockReturnValue({ data: [] });
     renderModal();
     expect(
-      screen.getByText(/No online swarms with ACP or mail capability/i),
+      screen.getByText(/No online swarms with ACP, mail, or Codex executor capability/i),
     ).toBeDefined();
   });
 

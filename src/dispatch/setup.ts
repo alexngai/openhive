@@ -12,6 +12,10 @@ import { createOpenHiveDispatchSource } from './openhive-source.js';
 import type { SpecContentFetcher, DispatchSourceDeps } from './openhive-source.js';
 import { createOpenHiveAgentRuntime } from './openhive-runtime.js';
 import type { OpenHiveRuntimeDeps } from './openhive-runtime.js';
+import {
+  createOpenHiveSwarmCodexRuntime,
+  type SwarmCodexDispatchRuntime,
+} from './swarm-codex-runtime.js';
 import { createOpenHiveRoster } from './openhive-roster.js';
 import { openHivePromptBuilder } from './prompt.js';
 import { broadcastToChannel } from '../realtime/index.js';
@@ -62,6 +66,11 @@ export interface SetupOrchestratorOptions {
    * - New-agent invites on retry dispatched events
    */
   getMailJsonRpc?: () => MailJsonRpcServer;
+  /**
+   * Register cleanup owned by optional runtime branches. Server bootstrap
+   * passes Fastify's onClose hook here without making setup.ts import Fastify.
+   */
+  registerCleanup?: (cleanup: () => void | Promise<void>) => void;
 }
 
 export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator {
@@ -72,7 +81,15 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
     sourceDeps.getMailJsonRpc = opts.getMailJsonRpc as DispatchSourceDeps['getMailJsonRpc'];
   }
   const source = createOpenHiveDispatchSource(opts.specFetcher, claimantId, sourceDeps);
-  const runtime = createOpenHiveAgentRuntime(opts.runtimeDeps);
+  let runtime = createOpenHiveAgentRuntime(opts.runtimeDeps);
+  if (opts.dispatchConfig?.codex_executor?.enabled) {
+    const codexRuntime: SwarmCodexDispatchRuntime = createOpenHiveSwarmCodexRuntime({
+      baseRuntime: runtime,
+      config: opts.dispatchConfig.codex_executor,
+    });
+    runtime = codexRuntime;
+    opts.registerCleanup?.(() => codexRuntime.stopAll());
+  }
   const roster = createOpenHiveRoster();
 
   const cfg = opts.dispatchConfig;
@@ -100,6 +117,15 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
     continuationPolicy: (task, turnCount, _lastExit) => {
       const maxTurns = cfg?.continuation?.maxTurns ?? 20;
       if (turnCount >= maxTurns) return 'release';
+
+      // Local swarm-codex dispatches are one-shot repo edits. A clean Codex
+      // exit means the worker is done; continuing the still-open dispatch
+      // would re-enter the normal prefer-route path and can fail with
+      // no_mail_transport even though cascade artifacts were already recorded.
+      const dispatch = dispatchesDAL.findDispatchById(task.id);
+      if (dispatch?.attempts_history.some((attempt) => attempt.transport === 'codex')) {
+        return 'release';
+      }
 
       const pending = (task.metadata?.pendingThreadMessages as number) ?? 0;
       if (pending > 0) {

@@ -310,8 +310,10 @@ Two remaining unknowns we settle by writing code, not by debating:
   **What `mode: 'rpc'` unlocks** that TUI mode and `claude-code` architecturally can't:
     - Live mid-session injection from openhive chat (`turn/start`, `turn/steer`)
     - Full streaming output through openhive's existing chat surface (no JSONL scrape)
-    - Programmatic dispatch hand-off to a codex agent
+    - Programmatic chat/control hand-off to a codex agent
     - Built-in observability notifications (rate limits, token usage, MCP startup, thread status — fire automatically)
+
+  **Dispatch executor decision (2026-06-18): hosted `kind: 'codex'` is not the autonomous-dispatch sidecar.** The dispatch path uses a separate `swarm-codex` executor target wired through `src/dispatch/swarm-codex-runtime.ts`, which consumes `swarm-codex`'s `createCodexDispatchRuntime()` directly. That keeps OpenHive's existing `swarm-dispatch` orchestrator, retry policy, event bridge, and terminal-state writes authoritative. A target swarm must be explicitly marked with `metadata.kind = "swarm-codex"` or an equivalent dispatch capability; hosted `kind: 'codex'` TUI/RPC rows remain interactive chat/session surfaces. Repo dispatches resolve their working directory from `dispatch.clone_path` first, then the linked repo resource's `local_path`. The runtime opens swarm-codex coordination with MAP + git-cascade enabled, uses the first linked OpenTasks task as the v1 cascade attribution ref, and refreshes attribution programmatically because live probes showed Codex `PostToolUse` hooks do not fire inside nested `codex mcp-server` role threads. Dispatch workers default to Codex `danger-full-access` because git-cascade needs real commits and Codex `workspace-write` blocks `.git/index.lock`; operators can override `dispatch.codex_executor.sandbox` when they provide another commit-capable sandbox boundary. Codex-delivered attempts are one-shot: after a clean Codex exit, the continuation policy releases the dispatch instead of entering the normal multi-turn mail/ACP route path.
 - **`gemini`** — gemini CLI; integration shape TBD when the use case arrives. Likely fits `TuiKindStrategy` directly with a new `makeGeminiStrategy()` and minimal changes elsewhere.
 
 ---
@@ -409,10 +411,12 @@ Tests: at least one integration test per kind exercising spawn → terminal-info
 | Manager | `getLogs()` codex-rpc branch | Returns "(codex-rpc output streams live via JSON-RPC notifications into openhive chat — no scrollback buffer)". |
 | Helpers | `CodexAppServerManager` (`src/swarm/codex-app-server-manager.ts`) | Singleton analog to `PtyManager` for codex-rpc. Spawns `codex app-server --listen ws://127.0.0.1:0`, parses listen URL from stderr (gotcha: not stdout), opens WS, drives `initialize` + `initialized` + `thread/start`, exposes `sendTurn`, `interrupt`, `destroy`, emits per-session `notification` events for the chat bridge to fan out. |
 | Tests | `src/__tests__/swarm/live-codex-rpc-e2e.test.ts` | 5 tests, ~7s, gated on `LIVE_AGENT_E2E=true`. Codex `mode: 'rpc'`: spawn → thread-id captured → sendTurn → streaming `item/agentMessage/delta` → turn/completed → getLogs hint → stop → forced-crash. Zero mocks. Real model call asserts streaming. |
+| Dispatch | `swarm-codex` executor branch (`src/dispatch/swarm-codex-runtime.ts`) | Optional `dispatch.codex_executor.enabled` branch. Routes only explicitly marked `swarm-codex` targets, resolves repo cwd from dispatch/repo bindings, creates a swarm-codex `CoordinationPlane` with MAP + git-cascade, and spawns Codex workers through `createCodexDispatchRuntime()` under OpenHive's existing orchestrator. Attempts record `transport: 'codex'`; default sandbox is commit-capable `danger-full-access`. |
+| Tests | `src/__tests__/dispatch/swarm-codex-runtime.test.ts`, `src/__tests__/dispatch/routing.test.ts` | Hermetic unit coverage for explicit target detection, MAP URL shaping, repo path resolution, runtime delegation, delivery recording, and task-ref resolver wiring. Broader `src/__tests__/dispatch` server suite covers compatibility with existing ACP/mail dispatch. |
 
 ### Deferred / future
 
-- **Codex / gemini kinds.** The `kind` enum is open; a new entry plus its own `spawnX()` method drops in alongside the existing two without re-architecting.
+- **Gemini and other future CLI kinds.** The `kind` enum is open; a new entry plus its own strategy drops in alongside the existing TUI kinds without re-architecting.
 - **Live mid-session injection** from openhive chat into a running claude TUI. Out per "Limits we're accepting" — codex's RPC may admit this when that kind lands.
 - **`inject_resources` for claude-code.** Currently warned-and-dropped during spawn.
 - **Hot-restart for claude-code.** Always cold-restart; the bootstrap is config-file + plugin-hook, not a long-running daemon. Hot bounce isn't meaningful here.

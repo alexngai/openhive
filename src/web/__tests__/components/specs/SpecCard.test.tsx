@@ -45,9 +45,9 @@ describe('<SpecCard />', () => {
     expect(preview.textContent).toMatch(/…$/);
   });
 
-  it('omits priority chip when priority is 4 (lowest)', () => {
+  it('renders neutral priority chip when priority is 4 (lowest)', () => {
     render(<SpecCard spec={makeSpec({ priority: 4 })} />);
-    expect(screen.queryByText('P4')).toBeNull();
+    expect(screen.getByText('P4')).toBeDefined();
   });
 
   it('shows swarm chip when swarm_name is set', () => {

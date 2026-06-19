@@ -7,6 +7,9 @@
  * task that the orchestrator will fail at claim time.
  *
  * Route priority mirrors the orchestrator's `prefer-route` behaviour:
+ *   - Codex executor targets win when the hub has the local swarm-codex
+ *     executor branch enabled. These targets are hub-local workers, not
+ *     inbound ACP/mail agents.
  *   - ACP (spawn path) wins when an ACP-capable agent exists AND the stream
  *     manager is available on the hub.
  *   - Mail fallback wins when any agent on the swarm declares `mail.canJoin`
@@ -20,14 +23,20 @@
 import { findAcpAgentInfo, hasCapability } from '../map/connection-registry.js';
 
 type AcpAvailabilityProbe = () => boolean;
+type CodexExecutorProbe = (swarmId: string) => boolean;
 
 let acpAvailable: AcpAvailabilityProbe = () => false;
+let codexExecutorAvailable: CodexExecutorProbe = () => false;
 
 export function setAcpAvailabilityProbe(probe: AcpAvailabilityProbe): void {
   acpAvailable = probe;
 }
 
-export type DispatchRoute = 'acp' | 'mail' | 'none';
+export function setCodexExecutorProbe(probe: CodexExecutorProbe): void {
+  codexExecutorAvailable = probe;
+}
+
+export type DispatchRoute = 'codex' | 'acp' | 'mail' | 'none';
 
 export interface RouteDecision {
   route: DispatchRoute;
@@ -35,6 +44,8 @@ export interface RouteDecision {
 }
 
 export function canRouteToSwarm(swarmId: string): RouteDecision {
+  if (codexExecutorAvailable(swarmId)) return { route: 'codex' };
+
   const acpAgent = findAcpAgentInfo(swarmId);
   if (acpAgent) {
     if (acpAvailable()) return { route: 'acp' };
@@ -62,4 +73,5 @@ export function canRouteToSwarm(swarmId: string): RouteDecision {
 /** Test helper. */
 export function _resetDispatchRouting(): void {
   acpAvailable = () => false;
+  codexExecutorAvailable = () => false;
 }
