@@ -649,8 +649,8 @@ CREATE INDEX IF NOT EXISTS idx_cascade_diff_cache_accessed ON cascade_diff_cache
 CREATE TABLE IF NOT EXISTS dispatches (
   id TEXT PRIMARY KEY,
   -- spec_ref (D12): { resource_id, spec_id, captured_at }
-  spec_resource_id TEXT NOT NULL,
-  spec_id TEXT NOT NULL,
+  spec_resource_id TEXT,
+  spec_id TEXT,
   spec_captured_at TEXT,
   -- target
   target_swarm_id TEXT NOT NULL,

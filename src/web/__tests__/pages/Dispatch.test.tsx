@@ -60,7 +60,7 @@ describe('<Dispatch /> page', () => {
     });
     renderPage();
     expect(screen.getByText(/No dispatches yet/i)).toBeDefined();
-    expect(screen.getByText(/Open a spec and dispatch it/i)).toBeDefined();
+    expect(screen.getByText(/Open a spec and dispatch it to send work to a swarm/i)).toBeDefined();
   });
 
   it('renders dispatch cards with status chip and swarm name', () => {

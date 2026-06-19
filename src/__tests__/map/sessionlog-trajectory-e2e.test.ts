@@ -3,7 +3,7 @@
  *
  * Exercises the complete flow using a real Fastify server with /ws/map:
  * 1. WebSocket connection survives heartbeat cycles
- * 2. cc-swarm's buildTrajectoryCheckpoint() wire format is accepted
+ * 2. swarm-codex's buildTrajectoryCheckpoint() wire format is accepted
  * 3. Trajectory handler auto-creates session resources
  * 4. Checkpoints are stored with correct data via DAL
  * 5. Stats aggregate across multiple checkpoints
@@ -32,19 +32,11 @@ import { initializeLocalSessionStorage } from '../../sessions/storage/index.js';
 import { handleTrajectoryRequest } from '../../map/trajectory-handler.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-// cc-swarm real function — import from references/ (published package doesn't export src/)
-// @ts-expect-error — .mjs import from references
-import { buildTrajectoryCheckpoint } from '../../../references/claude-code-swarm/src/sessionlog.mjs';
+// @ts-expect-error swarm-codex is an ESM JS package without declarations.
+import { buildTrajectoryCheckpoint } from 'swarm-codex';
 
 vi.mock('../../realtime/index.js', () => ({
   broadcastToChannel: vi.fn(),
-}));
-
-// Mock cc-swarm config for buildTrajectoryCheckpoint
-vi.mock('../../../references/claude-code-swarm/src/config.mjs', () => ({
-  readConfig: () => ({ sessionlog: { enabled: true, sync: 'metrics', mode: 'plugin' } }),
-  resolveTeamName: () => 'e2e-team',
-  resolveScope: () => 'swarm:e2e-team',
 }));
 
 // ============================================================================
@@ -133,6 +125,7 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
       rateLimit: { enabled: false },
       cors: { enabled: false },
       mapHub: { enabled: true, trustModel: 'open' },
+      sessionlog: { sessionDirs: [path.join(TEST_ROOT, 'sessionlog-sessions')] },
     });
 
     app = Fastify({ logger: false });
@@ -206,7 +199,7 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
     resourceId = response.result.resource_id;
   });
 
-  // ── 3. Wire format — cc-swarm buildTrajectoryCheckpoint ────────
+  // ── 3. Wire format — swarm-codex buildTrajectoryCheckpoint ─────
 
   it('stores cc-swarm wire format checkpoint correctly', async () => {
     // Real sessionlog state → real buildTrajectoryCheckpoint → real trajectory handler
@@ -228,7 +221,7 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
       },
     };
 
-    const checkpoint = buildTrajectoryCheckpoint(sessionlogState, 'metrics', {});
+    const checkpoint = buildTrajectoryCheckpoint(sessionlogState, 'metrics', { teamName: 'e2e-team' });
 
     // Verify wire format shape before sending
     expect(checkpoint.agent).toBe('e2e-team-sidecar');
@@ -465,7 +458,7 @@ describe('Sessionlog Trajectory E2E: full server flow', () => {
     resourcesDAL.updateResource(r.resource_id, { metadata: {} });
 
     // Create mock sessionlog state file + transcript
-    const sessionlogDir = path.join(process.cwd(), '.git', 'sessionlog-sessions');
+    const sessionlogDir = path.join(TEST_ROOT, 'sessionlog-sessions');
     const transcriptDir = path.join(TEST_ROOT, 'transcripts');
     const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
 

@@ -56,8 +56,9 @@ import { findSwarmById } from "./db/dal/map.js";
 import { createOpenHiveMailTransport } from "./dispatch/mail-transport.js";
 import { createOpenHiveMailPort } from "./dispatch/openhive-mail-port.js";
 import { setupMailCompletionObserver } from "./dispatch/mail-completion.js";
-import { setAcpAvailabilityProbe } from "./dispatch/routing.js";
+import { setAcpAvailabilityProbe, setCodexExecutorProbe } from "./dispatch/routing.js";
 import type { AcpStreamManager } from "./dispatch/openhive-runtime.js";
+import { isSwarmCodexExecutorTarget } from "./dispatch/swarm-codex-runtime.js";
 import { sendToSwarm } from "./map/sync-listener.js";
 import type { Orchestrator, Scheduler } from "swarm-dispatch";
 import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
@@ -675,12 +676,32 @@ export async function createHive(
         acpLifecycleDefault: config.dispatch.acp_lifecycle_default,
       },
       messagePort,
-      dispatchConfig: config.dispatch,
+      dispatchConfig: {
+        ...config.dispatch,
+        codex_executor: {
+          ...config.dispatch.codex_executor,
+          map_server:
+            config.dispatch.codex_executor.map_server
+            ?? `ws://127.0.0.1:${config.port}/ws/map`,
+        },
+      },
+      registerCleanup: (cleanup) => {
+        fastify.addHook('onClose', async () => {
+          await cleanup();
+        });
+      },
       getMailJsonRpc,
     });
     setAcpAvailabilityProbe(() => {
       const sc = (fastify as unknown as { swarmcraft?: { acpStreamManager?: AcpStreamManager } }).swarmcraft;
       return !!sc?.acpStreamManager;
+    });
+    setCodexExecutorProbe((swarmId) => {
+      if (!config.dispatch.codex_executor.enabled) return false;
+      return isSwarmCodexExecutorTarget(
+        findSwarmById(swarmId),
+        config.dispatch.codex_executor.target_kind,
+      );
     });
     // Tear down the mail transport on server close so we don't leak the
     // mail.turn.added listener + ingress subscription across reloads (tests,
@@ -1742,4 +1763,3 @@ function getInlineAdminHtml(config: Config): string {
 </body>
 </html>`;
 }
-

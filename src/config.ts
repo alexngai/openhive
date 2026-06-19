@@ -662,6 +662,38 @@ export const ConfigSchema = z.object({
        * `mail_lifecycle` field takes precedence over this default.
        */
       mail_lifecycle_default: z.enum(["fresh", "reuse"]).default("reuse"),
+      /**
+       * Optional local Codex executor branch backed by the swarm-codex plugin.
+       * Disabled by default so existing ACP/mail dispatch behavior is unchanged.
+       */
+      codex_executor: z
+        .object({
+          enabled: z.boolean().default(false),
+          /**
+           * MAP swarm marker required for this branch. A target swarm must carry
+           * metadata/capabilities identifying this kind; hosted kind="codex"
+           * alone is intentionally not enough.
+           */
+          target_kind: z.string().default("swarm-codex"),
+          /** MAP WebSocket URL used by the local executor sidecar. */
+          map_server: z.string().optional(),
+          /** Optional token query param for non-local MAP hubs. */
+          map_token: z.string().optional(),
+          command: z.string().default("codex"),
+          driver: z.enum(["mcp", "exec"]).default("mcp"),
+          /**
+           * Codex sandbox for local dispatch workers. The default is intentionally
+           * full access: git-cascade is commit-based, and Codex's workspace-write
+           * sandbox blocks writes to `.git/index.lock`, so `git add` / `git commit`
+           * cannot complete under the narrower sandbox.
+           */
+          sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"]).default("danger-full-access"),
+          timeoutMs: z.number().int().positive().default(300_000),
+          attributionRefreshMs: z.number().int().positive().default(2_000),
+          concurrency_per_repo: z.number().int().positive().default(1),
+          role_map: z.record(z.unknown()).default({}),
+        })
+        .default({}),
       /** Continuation turn budgets. */
       continuation: z
         .object({

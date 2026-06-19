@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   canRouteToSwarm,
   setAcpAvailabilityProbe,
+  setCodexExecutorProbe,
   _resetDispatchRouting,
 } from '../../dispatch/routing.js';
 import {
@@ -71,6 +72,19 @@ describe('canRouteToSwarm', () => {
     setAcpAvailabilityProbe(() => true);
 
     expect(canRouteToSwarm('swarm-acp')).toEqual({ route: 'acp' });
+  });
+
+  it('routes explicit swarm-codex executor targets before ACP/mail probes', () => {
+    registerSwarm('swarm-acp', [
+      {
+        id: 'coordinator',
+        capabilities: { protocols: ['acp'], mail: { canJoin: true } },
+      },
+    ]);
+    setAcpAvailabilityProbe(() => true);
+    setCodexExecutorProbe((swarmId) => swarmId === 'swarm-acp');
+
+    expect(canRouteToSwarm('swarm-acp')).toEqual({ route: 'codex' });
   });
 
   it('falls back to mail when ACP manager is unavailable but mail capability exists', () => {

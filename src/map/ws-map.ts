@@ -359,24 +359,33 @@ function createNotificationInterceptor(
   ws: WebSocket,
   swarmId: string,
 ): { cleanup: () => void } {
-  const handler = (data: Buffer | string) => {
+  const originalEmit = ws.emit;
+
+  const touchHeartbeat = () => {
+    const conn = getAllInbound().get(swarmId);
+    if (conn) {
+      conn.lastMessageAt = new Date().toISOString();
+    }
+    debouncedHeartbeat(swarmId);
+  };
+
+  const handleMessage = (data: Buffer | string): boolean => {
     try {
       const msg = JSON.parse(data.toString());
-
 
       // Handle trajectory/checkpoint requests before they reach the MAPServer.
       // These are JSON-RPC requests (have id) sent by the sidecar's callExtension.
       if (msg.method === 'trajectory/checkpoint' && msg.id != null) {
         console.log(`[ws-map] trajectory/checkpoint from ${swarmId}, id=${msg.id}`);
         handleTrajectoryCheckpoint(msg.params as Record<string, unknown>, swarmId, ws, msg.id);
-        // Note: MAPServer will also see this message (we can't prevent it from
-        // the on('message') handler), but it will return an "unknown method" error
-        // which the sidecar ignores since it already got our success response first.
+        touchHeartbeat();
+        return true;
       }
 
       // Only intercept notifications (no `id` field) that are OpenHive-specific
-      if (msg.id != null) return; // Let requests pass through to MAPServer
+      if (msg.id != null) return false; // Let standard requests pass through to MAPServer
 
+      let handled = true;
       if (isMapSyncMessage(msg)) {
         handleSyncMessage(msg, swarmId);
       } else if (isMapTaskEvent(msg)) {
@@ -449,22 +458,33 @@ function createNotificationInterceptor(
         if (fromAgentId && envelope && typeof envelope === 'object' && getAgentOnSwarm(swarmId, fromAgentId)) {
           pushDispatchMapReply({ swarmId, fromAgentId, message: envelope });
         }
+      } else {
+        handled = false;
       }
-      // Other notifications pass through to MAPServer (it will ignore unknown ones)
 
-      // Update heartbeat on any message (debounced to reduce DB writes)
-      const conn = getAllInbound().get(swarmId);
-      if (conn) {
-        conn.lastMessageAt = new Date().toISOString();
-      }
-      debouncedHeartbeat(swarmId);
+      if (handled) touchHeartbeat();
+      return handled;
     } catch {
-      // Non-JSON — ignore
+      // Non-JSON should be handled by MAPServer.
+      return false;
     }
   };
 
-  ws.on('message', handler);
-  return { cleanup: () => ws.removeListener('message', handler) };
+  (ws as unknown as { emit: typeof ws.emit }).emit = function patchedEmit(
+    eventName: string | symbol,
+    ...args: unknown[]
+  ): boolean {
+    if (eventName === 'message' && args.length > 0 && handleMessage(args[0] as Buffer | string)) {
+      return true;
+    }
+    return originalEmit.call(ws, eventName as string, ...args);
+  } as typeof ws.emit;
+
+  return {
+    cleanup: () => {
+      (ws as unknown as { emit: typeof ws.emit }).emit = originalEmit;
+    },
+  };
 }
 
 // ============================================================================

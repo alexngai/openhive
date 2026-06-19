@@ -45,7 +45,7 @@ describe('<SpecCard />', () => {
     expect(preview.textContent).toMatch(/…$/);
   });
 
-  it('renders priority chip when priority is 4 (lowest)', () => {
+  it('renders neutral priority chip when priority is 4 (lowest)', () => {
     render(<SpecCard spec={makeSpec({ priority: 4 })} />);
     expect(screen.getByText('P4')).toBeDefined();
   });
