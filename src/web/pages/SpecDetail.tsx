@@ -22,6 +22,7 @@ import { SpecDispatchPanel } from '../components/dispatch/SpecDispatchPanel';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { StatusChip } from '../components/common/StatusChip';
 import { PRIORITY_MAP } from '../components/specs/specPriority';
+import { LineageRail } from '../components/pipeline/LineageRail';
 
 const TOC_PANEL_KEY = 'openhive:specs:showTocPanel';
 const SIDEBAR_PANEL_KEY = 'openhive:specs:showSidebarPanel';
@@ -361,10 +362,10 @@ export function SpecDetail() {
           </div>
 
           {/* Sub-header meta row */}
-          <div
-            className="flex items-center gap-2 px-4 pb-2 text-xs"
-            style={{ color: 'var(--color-text-muted)' }}
-          >
+	          <div
+	            className="flex items-center gap-2 px-4 pb-2 text-xs"
+	            style={{ color: 'var(--color-text-muted)' }}
+	          >
             <FileText className="h-3 w-3 text-honey-500" />
             <span>{spec.resource_name}</span>
             {spec.swarm_name && (
@@ -381,9 +382,19 @@ export function SpecDetail() {
                 <span>·</span>
                 <span className="px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)' }}>archived</span>
               </>
-            )}
-          </div>
-        </div>
+	            )}
+	          </div>
+	          <div className="px-4 pb-3">
+	            <LineageRail
+	              anchor={{
+	                kind: 'spec',
+	                resourceId: spec.resource_id,
+	                specId: spec.id,
+	                title: spec.title,
+	              }}
+	            />
+	          </div>
+	        </div>
 
         {saveError && (
           <div

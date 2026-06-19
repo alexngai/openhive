@@ -36,10 +36,16 @@ vi.mock('../../hooks/useRealtimeInvalidation', () => ({
   useCascadeStreamsRealtime: vi.fn(),
 }));
 vi.mock('../../hooks/useDispatch', () => ({
+  useDispatch: () => ({ data: undefined }),
   useDispatchList: () => ({ data: { data: [] } }),
 }));
 vi.mock('../../hooks/useSpecs', () => ({
   useSpec: () => ({ data: undefined }),
+}));
+vi.mock('../../hooks/useSchedules', () => ({
+  useSchedules: () => ({ data: { data: [] } }),
+  getPayloadKind: (payload: { kind?: string }) =>
+    payload.kind === 'dispatch_prompt' ? 'dispatch_prompt' : 'dispatch_spec',
 }));
 
 // One active stream owned by `swarm-observe` (the gate target).

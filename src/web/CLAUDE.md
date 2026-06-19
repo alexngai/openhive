@@ -20,6 +20,16 @@ All chat surfaces — the Threads list + detail (`/threads`, `/threads/:id`, `/t
 
 Sessions + mail conversations were consolidated into a single **Threads** concept: one list mixes interactive ACP sessions, async mail threads, and autonomous dispatch runs; the detail page adapts based on flavor. OpenHive converts its `SessionEvent[]` into swarmcraft's `ChatMessage[]` via `src/web/lib/chat/session-events.ts`; `enrich-user-turns.ts` + `useAgentLookup` decorate user messages with resolved openhive Agent identity.
 
+## Navigation vocabulary
+
+The sidebar is intentionally grouped by user mental model rather than route names:
+
+- **Fleet**: Swarms, then Threads.
+- **Work**: Specs → Jobs → Tasks → Changes, plus Schedules.
+- **Library**: Memory, Skills, Teams, Repos, Learning.
+
+The Work label **Jobs** maps to the existing `/dispatch` route and `Dispatch*.tsx` pages. Keep that route stable for compatibility unless adding a deliberate `/jobs` redirect.
+
 ## Chat (Unified across Sessions, Messages, Agent, SwarmDetail)
 
 All four chat surfaces (Sessions trajectory, Messages conversation, Agent profile, SwarmDetail coordination) share a single contract defined in `swarmcraft/ui/embed` and consumed via `useChatChannel({ target, adapters, resolveCapabilities })`. Chat mode is determined by MAP capabilities published during agent registration, following the MAP `ParticipantCapabilities` schema.
@@ -136,7 +146,7 @@ Chat bubbles get the same identity via `decorateWithAgentIdentity` in `openhive-
 
 ### ChatFab connect surface
 
-`src/web/components/chat-fab/ChatFabStore.ts` exposes `connectAndOpen(swarmId, agentId, label?, peerMapId?)`. The `peerMapId` is required when the caller has only the SwarmCraft-projected id (`oh-node-{swarmId}-{mapAgentId}`); the hub registry routes ACP by the raw `mapAgentId`. `Dashboard.tsx`'s `onStartChat` strips the projection prefix and passes the result as `peer_map_id` in the POST body — without it `/sessions/acp-connect` 404s on the projected id.
+`src/web/components/chat-fab/ChatFabStore.ts` exposes `connectAndOpen(swarmId, agentId, label?, peerMapId?, cwd?)`. The `peerMapId` is required when the caller has only the SwarmCraft-projected id (`oh-node-{swarmId}-{mapAgentId}`); the hub registry routes ACP by the raw `mapAgentId`. `cwd` is forwarded for hosted swarms whose agent process should open in the user-selected project directory. Dashboard and swarm roster entry points should call this shared helper instead of routing users through `/threads`.
 
 `ChatBody` (`ChatFab.tsx`) reads `connecting` and `connectError` from the store. While connecting + no session: full-panel spinner with `Connecting to {label}...`. On error: red dismissable banner above the picker (`Couldn't open chat — {error}`). The dismiss action calls `clearSession` which also clears the error.
 

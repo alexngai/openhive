@@ -25,6 +25,7 @@ import {
   tasksContextItem,
 } from '../components/chat-fab/context-types';
 import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
+import { LineageRail } from '../components/pipeline/LineageRail';
 
 export function DispatchDetail() {
   const { id } = useParams<{ id: string }>();
@@ -171,6 +172,7 @@ export function DispatchDetail() {
         <ArrowLeft className="h-4 w-4" />
         Back to Jobs
       </Link>
+      <LineageRail anchor={{ kind: 'dispatch', dispatchId: d.id }} className="mb-4" />
 
       {/* Header */}
       <div className="mb-6">
@@ -441,12 +443,12 @@ export function DispatchDetail() {
           </div>
           <ul className="space-y-1.5">
             {relatedChanges.map((n) => (
-              <li key={n.id}>
-                <Link
-                  to="/changes"
-                  className="flex items-center gap-2 text-sm hover:opacity-80"
-                  style={{ color: 'var(--color-text)' }}
-                >
+	              <li key={n.id}>
+	                <Link
+	                  to={`/changes?stream=${encodeURIComponent(n.id)}`}
+	                  className="flex items-center gap-2 text-sm hover:opacity-80"
+	                  style={{ color: 'var(--color-text)' }}
+	                >
                   <StreamStatusDot status={n.status} />
                   <span className="truncate">{n.name || n.stream_id}</span>
                   <code

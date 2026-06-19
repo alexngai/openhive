@@ -22,7 +22,11 @@ export function LoadingSpinner({ size = 'md', className }: LoadingSpinnerProps) 
 
 export function PageLoader() {
   return (
-    <div className="flex items-center justify-center py-12">
+    <div
+      className="flex items-center justify-center py-12"
+      role="status"
+      aria-label="Loading"
+    >
       <LoadingSpinner size="lg" />
     </div>
   );

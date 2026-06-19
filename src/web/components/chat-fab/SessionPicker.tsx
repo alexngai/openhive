@@ -17,7 +17,7 @@ import { useState } from 'react';
 import { Zap, Plus, Loader2, Radio, RotateCw, Play, Server } from 'lucide-react';
 import { AgentAvatar } from '../common/AgentAvatar';
 import clsx from 'clsx';
-import { useMapSwarmsForPicker, useConnectAcp, useHostedSwarms, useRestartSwarm } from '../../hooks/useApi';
+import { useMapSwarmsForPicker, useHostedSwarms, useRestartSwarm } from '../../hooks/useApi';
 import { useSwarmRealtime } from '../../hooks/useRealtimeInvalidation';
 import { useChatFabStore } from './ChatFabStore';
 import type { MapSwarm, HostedSwarm } from '../../lib/api';
@@ -139,8 +139,8 @@ export function SessionPicker() {
   // a swarm comes online or a coordinator gets spawned inside one.
   useSwarmRealtime();
   const { data: swarms = [] } = useMapSwarmsForPicker({ status: 'online' });
-  const connectAcp = useConnectAcp();
   const setSession = useChatFabStore((s) => s.setSession);
+  const connectAndOpen = useChatFabStore((s) => s.connectAndOpen);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [spawnFor, setSpawnFor] = useState<MapSwarm | null>(null);
@@ -177,42 +177,21 @@ export function SessionPicker() {
 
     try {
       if (mode === 'acp') {
-        const result = await connectAcp.mutateAsync({ swarmId: swarm.id, agentId: targetId });
-        setSession(
-          result.session_resource_id,
+        await connectAndOpen(
           swarm.id,
+          agent.id,
           displayName,
-          {
-            acpStreamId: result.acp_stream_id,
-            acpSessionId: result.acp_session_id,
-          },
-          agentRef,
+          targetId !== agent.id ? targetId : undefined,
         );
       } else {
-        // Mail: try ACP-connect first (some backends auto-upgrade when the
-        // target declares mail); on failure fall back to a bare mail
-        // session resource id so useChatChannel picks mail mode.
-        try {
-          const result = await connectAcp.mutateAsync({ swarmId: swarm.id, agentId: targetId });
-          setSession(
-            result.session_resource_id,
-            swarm.id,
-            displayName,
-            {
-              acpStreamId: result.acp_stream_id,
-              acpSessionId: result.acp_session_id,
-            },
-            agentRef,
-          );
-        } catch {
-          setSession(
-            `mail:${swarm.id}:${agent.id}`,
-            swarm.id,
-            displayName,
-            undefined,
-            agentRef,
-          );
-        }
+        setSession(
+          `mail:${swarm.id}:${agent.id}`,
+          swarm.id,
+          displayName,
+          undefined,
+          agentRef,
+          'mail',
+        );
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -321,7 +300,7 @@ export function SessionPicker() {
                         className="text-2xs shrink-0 px-1.5 py-0.5 rounded"
                         style={{ color: 'var(--color-text-muted)', backgroundColor: 'var(--color-surface)' }}
                       >
-                        {mode}
+                        {mode.toUpperCase()}
                       </span>
                       <Radio className="h-3 w-3 text-emerald-400 shrink-0" />
                     </button>
