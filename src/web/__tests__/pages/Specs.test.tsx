@@ -39,9 +39,8 @@ describe('<Specs /> page', () => {
 
   it('shows loading state while fetching', () => {
     mockUseSpecs.mockReturnValue({ data: undefined, isLoading: true, error: null });
-    const { container } = renderPage();
-    expect(container.querySelector('.animate-spin')).not.toBeNull();
-    expect(screen.queryByText(/No specs found/i)).toBeNull();
+    renderPage();
+    expect(screen.getByRole('status', { name: /loading/i })).toBeDefined();
   });
 
   it('shows empty state when no specs exist', () => {

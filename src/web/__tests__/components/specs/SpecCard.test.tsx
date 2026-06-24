@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { SpecCard } from '../../../components/specs/SpecCard';
 import type { Spec } from '../../../hooks/useSpecs';
 
@@ -68,7 +68,7 @@ describe('<SpecCard />', () => {
     expect(onClick.mock.calls[0]?.[0]?.id).toBe('s-aaa');
   });
 
-  it('does not propagate click when the copy-id button is clicked', () => {
+  it('does not propagate click when the copy-id button is clicked', async () => {
     const onClick = vi.fn();
     Object.assign(navigator, {
       clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -76,7 +76,9 @@ describe('<SpecCard />', () => {
 
     render(<SpecCard spec={makeSpec()} onClick={onClick} />);
     const copyBtn = screen.getByTitle(/Copy ID/i);
-    fireEvent.click(copyBtn);
+    await act(async () => {
+      fireEvent.click(copyBtn);
+    });
     expect(onClick).not.toHaveBeenCalled();
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('s-aaa');
   });

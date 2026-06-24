@@ -24,6 +24,7 @@ import { SyncResourcesStatus } from "../components/dashboard/SyncResourcesStatus
 import { RecentActivity } from "../components/dashboard/RecentActivity";
 import { SpawnFormDialog, ConnectFormDialog } from "./Swarms";
 import { PageHeader } from "../components/common/PageHeader";
+import { ErrorBoundary } from "../components/common/ErrorBoundary";
 
 /** Derive API/WS URLs relative to current host */
 function useSwarmCraftConfig() {
@@ -81,6 +82,42 @@ function BridgeLinks() {
       </Link>
     </div>
   );
+}
+
+function SwarmCraftFallback() {
+  return (
+    <div className="h-full flex items-center justify-center px-6">
+      <div
+        className="max-w-md rounded-md border p-4 text-sm"
+        style={{
+          borderColor: "var(--color-border-subtle)",
+          backgroundColor: "var(--color-surface)",
+          color: "var(--color-text)",
+        }}
+      >
+        <div className="font-semibold mb-1">Swarm graph unavailable</div>
+        <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+          This browser could not initialize the graph canvas. The dashboard
+          stats and the rest of OpenHive are still available.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function hasWebGLSupport(): boolean {
+  if (typeof window === "undefined" || typeof document === "undefined") return true;
+  if (!("WebGLRenderingContext" in window)) return false;
+  try {
+    const canvas = document.createElement("canvas");
+    return !!(
+      canvas.getContext("webgl2") ||
+      canvas.getContext("webgl") ||
+      canvas.getContext("experimental-webgl")
+    );
+  } catch {
+    return false;
+  }
 }
 
 function BridgeStatusBar() {
@@ -226,6 +263,7 @@ function SwarmCraftView() {
   const config = useSwarmCraftConfig();
   const tasksOverride = useTasksOverride();
   const connectAndOpen = useChatFabStore((s) => s.connectAndOpen);
+  const canRenderGraph = useMemo(() => hasWebGLSupport(), []);
   const [showStats, setShowStats] = useState(false);
   const [formMode, setFormMode] = useState<"none" | "spawn" | "connect">(
     "none",
@@ -259,30 +297,47 @@ function SwarmCraftView() {
   );
 
   return (
-    <div className="flex-1 min-h-0 relative">
-      <SwarmCraftApp
-        config={config}
-        autoConnect
-        initialViewMode="exploring"
-        defaultPanelOpen={false}
-        tasksOverride={tasksOverride}
-        embedded
-        headerLeftContent={headerLeft}
-        headerRightContent={headerRight}
-        onStartChat={(agentId, swarmId) => {
-          if (!swarmId) return;
-          // SwarmCraft hands us OpenHive's projection id
-          // (`oh-node-{swarmId}-{mapAgentId}`); strip the namespace so we can
-          // pass the raw MAP agent id as `peer_map_id` to /sessions/acp-connect,
-          // which routes ACP through the swarm's own MAP server. Without this,
-          // the hub registry lookup 404s on the projected id.
-          const prefix = `oh-node-${swarmId}-`;
-          const peerMapId = agentId.startsWith(prefix)
-            ? agentId.slice(prefix.length)
-            : undefined;
-          connectAndOpen(swarmId, agentId, undefined, peerMapId);
+    <div className="flex-1 min-h-0 relative flex flex-col">
+      <div
+        className="shrink-0 px-4 py-3 border-b"
+        style={{
+          borderColor: "var(--color-border-subtle)",
+          backgroundColor: "var(--color-bg)",
         }}
-      />
+      >
+        <StatsOverview />
+      </div>
+      <div className="flex-1 min-h-0">
+        {canRenderGraph ? (
+          <ErrorBoundary fallback={<SwarmCraftFallback />}>
+            <SwarmCraftApp
+              config={config}
+              autoConnect
+              initialViewMode="exploring"
+              defaultPanelOpen={false}
+              tasksOverride={tasksOverride}
+              embedded
+              headerLeftContent={headerLeft}
+              headerRightContent={headerRight}
+              onStartChat={(agentId, swarmId) => {
+                if (!swarmId) return;
+                // SwarmCraft hands us OpenHive's projection id
+                // (`oh-node-{swarmId}-{mapAgentId}`); strip the namespace so we can
+                // pass the raw MAP agent id as `peer_map_id` to /sessions/acp-connect,
+                // which routes ACP through the swarm's own MAP server. Without this,
+                // the hub registry lookup 404s on the projected id.
+                const prefix = `oh-node-${swarmId}-`;
+                const peerMapId = agentId.startsWith(prefix)
+                  ? agentId.slice(prefix.length)
+                  : undefined;
+                connectAndOpen(swarmId, agentId, undefined, peerMapId);
+              }}
+            />
+          </ErrorBoundary>
+        ) : (
+          <SwarmCraftFallback />
+        )}
+      </div>
       {showStats && <StatsOverlay onClose={() => setShowStats(false)} />}
       {formMode === "spawn" && (
         <SpawnFormDialog onClose={() => setFormMode("none")} />

@@ -51,6 +51,16 @@ export function HostedChat({ hostedSwarmId, label, providerLabel, enabled = true
         >
           {label}
           <span
+            className="ml-2 rounded px-1.5 py-0.5 text-2xs font-semibold uppercase"
+            style={{
+              color: 'var(--color-accent)',
+              backgroundColor: 'var(--color-accent-bg)',
+            }}
+            title="Chat transport: hosted RPC"
+          >
+            hosted
+          </span>
+          <span
             className="ml-2 text-2xs"
             style={{ color: 'var(--color-text-muted)' }}
           >

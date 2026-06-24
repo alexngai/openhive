@@ -12,7 +12,6 @@ import {
   useEventSubscriptions, useDeliveryLog,
   useConnectionHealth,
   useSpawnAgent,
-  useConnectAcp,
   useStopAgent,
   useResumableSessions,
   useResumeAllSessions,
@@ -51,6 +50,7 @@ import { getPeerMapId } from '../lib/map';
 import { usePageContext } from '../components/chat-fab/usePageContext';
 import { swarmContextItem } from '../components/chat-fab/context-types';
 import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
+import { useChatFabStore } from '../components/chat-fab/ChatFabStore';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -671,8 +671,9 @@ function RegisteredAgentCard({
   openChanges: StreamDAGNode[];
   activeSessionsCount: number;
 }) {
-  const navigate = useNavigate();
-  const connectAcp = useConnectAcp();
+  const connectAndOpen = useChatFabStore((s) => s.connectAndOpen);
+  const connecting = useChatFabStore((s) => s.connecting);
+  const connectError = useChatFabStore((s) => s.connectError);
   const stopAgent = useStopAgent();
 
   const caps = agent.capabilities ?? {};
@@ -686,20 +687,13 @@ function RegisteredAgentCard({
   const targetAgentId = getPeerMapId(agent.metadata) ?? agent.id;
 
   const handleChat = async () => {
-    try {
-      const result = await connectAcp.mutateAsync({
-        swarmId,
-        cwd: projectPath,
-        agentId: targetAgentId,
-      });
-      const params = new URLSearchParams({
-        streamId: result.acp_stream_id,
-        sessionId: result.acp_session_id,
-      });
-      navigate(`/threads/${result.session_resource_id}?${params}`);
-    } catch {
-      // Error state is rendered below via the mutation's isError flag
-    }
+    await connectAndOpen(
+      swarmId,
+      agent.id,
+      agent.name || agent.id,
+      targetAgentId !== agent.id ? targetAgentId : undefined,
+      projectPath,
+    );
   };
 
   const handleStop = async () => {
@@ -792,11 +786,11 @@ function RegisteredAgentCard({
           {supportsAcp && (
             <button
               onClick={handleChat}
-              disabled={connectAcp.isPending}
+              disabled={connecting}
               className="btn btn-primary inline-flex items-center gap-1 px-2 py-1 text-2xs disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:bg-honey-500"
               title="Start ACP session with this agent"
             >
-              {connectAcp.isPending ? (
+              {connecting ? (
                 <Loader2 className="w-3 h-3 animate-spin" />
               ) : (
                 <Zap className="w-3 h-3" />
@@ -816,9 +810,9 @@ function RegisteredAgentCard({
           )}
         </div>
       </div>
-      {connectAcp.isError && (
+      {connectError && (
         <div className="mt-1.5 text-2xs text-red-400">
-          {(connectAcp.error as Error)?.message || 'Failed to create session'}
+          {connectError}
         </div>
       )}
     </div>

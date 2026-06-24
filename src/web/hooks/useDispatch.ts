@@ -100,10 +100,13 @@ export interface UseDispatchListOptions {
   target_swarm_id?: string;
   spec_resource_id?: string;
   spec_id?: string;
+  task_resource_id?: string;
+  task_node_id?: string;
   initiator_id?: string;
   initiator_type?: DispatchInitiatorType;
   limit?: number;
   offset?: number;
+  enabled?: boolean;
 }
 
 export function useDispatchList(options: UseDispatchListOptions = {}) {
@@ -115,6 +118,8 @@ export function useDispatchList(options: UseDispatchListOptions = {}) {
   if (options.target_swarm_id) params.set('target_swarm_id', options.target_swarm_id);
   if (options.spec_resource_id) params.set('spec_resource_id', options.spec_resource_id);
   if (options.spec_id) params.set('spec_id', options.spec_id);
+  if (options.task_resource_id) params.set('task_resource_id', options.task_resource_id);
+  if (options.task_node_id) params.set('task_node_id', options.task_node_id);
   if (options.initiator_id) params.set('initiator_id', options.initiator_id);
   if (options.initiator_type) params.set('initiator_type', options.initiator_type);
   params.set('limit', String(options.limit ?? 50));
@@ -123,6 +128,7 @@ export function useDispatchList(options: UseDispatchListOptions = {}) {
   return useQuery({
     queryKey: ['dispatches', { ...options }],
     queryFn: () => api.get<DispatchesResponse>(`/dispatches?${params.toString()}`),
+    enabled: options.enabled ?? true,
     staleTime: 15_000,
   });
 }

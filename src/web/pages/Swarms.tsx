@@ -41,7 +41,6 @@ import {
   useConnectSwarm,
   useHives,
   useSpawnAgent,
-  useConnectAcp,
   useKnownProjectPaths,
   useResourcesByType,
   useRepos,
@@ -64,6 +63,7 @@ import {
 import { WorkingDirectoryCombobox } from "../components/swarm/WorkingDirectoryCombobox";
 import type { HostedSwarm, MapSwarm, MapRegisteredAgent } from "../lib/api";
 import { getPeerMapId } from "../lib/map";
+import { useChatFabStore } from "../components/chat-fab/ChatFabStore";
 
 const PROVIDERS = [
   { value: "local", label: "Local", desc: "Sidecar process on this machine" },
@@ -1486,8 +1486,8 @@ function InlineAgentRow({
   agent: MapRegisteredAgent;
   projectPath?: string;
 }) {
-  const navigate = useNavigate();
-  const connectAcp = useConnectAcp();
+  const connectAndOpen = useChatFabStore((s) => s.connectAndOpen);
+  const connecting = useChatFabStore((s) => s.connecting);
 
   const protocols = Array.isArray(agent.capabilities?.protocols)
     ? (agent.capabilities!.protocols as string[])
@@ -1501,21 +1501,14 @@ function InlineAgentRow({
   const handleChat = async (e: React.MouseEvent) => {
     // Prevent the parent swarm card from navigating to the detail page.
     e.stopPropagation();
-    if (!supportsAcp || connectAcp.isPending) return;
-    try {
-      const result = await connectAcp.mutateAsync({
-        swarmId,
-        agentId: targetAgentId,
-        cwd: projectPath,
-      });
-      const params = new URLSearchParams({
-        streamId: result.acp_stream_id,
-        sessionId: result.acp_session_id,
-      });
-      navigate(`/threads/${result.session_resource_id}?${params}`);
-    } catch (err) {
-      toast.error("Chat failed", (err as Error).message);
-    }
+    if (!supportsAcp || connecting) return;
+    await connectAndOpen(
+      swarmId,
+      agent.id,
+      agent.name || agent.id,
+      targetAgentId !== agent.id ? targetAgentId : undefined,
+      projectPath,
+    );
   };
 
   // The whole row becomes the CTA when the agent supports ACP. We make the
@@ -1525,7 +1518,7 @@ function InlineAgentRow({
 
   const content = (
     <>
-      {connectAcp.isPending ? (
+      {connecting ? (
         <LoadingSpinner size="sm" />
       ) : (
         <User
@@ -1605,7 +1598,6 @@ function HostedSwarmCard({
   const restartMutation = useRestartSwarm();
   const removeMutation = useRemoveSwarm();
   const spawnAgent = useSpawnAgent();
-  const connectAcp = useConnectAcp();
 
   // If there's a linked MAP swarm record (the same macro-agent process seen by
   // SwarmCraft via outbound MAP, or the sidecar's inbound registration), use

@@ -1,0 +1,23 @@
+/**
+ * Task Hierarchy view CSS overrides.
+ *
+ * React Flow's default node focus ring is barely visible against the dark
+ * theme. Replace it with an accent-token outline so keyboard users can
+ * actually see what's focused.
+ */
+
+.react-flow__node-taskCard:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* React Flow draws its own focus ring as a CSS outline on the wrapping
+ * `.react-flow__node`. Suppress it when our custom one is active so the
+ * styling stays clean. */
+.react-flow__node-taskCard:focus {
+  outline: none;
+}
+.react-flow__node-taskCard:focus-visible {
+  outline: 2px solid var(--color-accent);
+}

@@ -10,7 +10,7 @@
  * - Smooth camera follow on node select
  */
 
-import { useRef, useEffect, useState, useCallback, memo } from "react";
+import { useRef, useEffect, useState, useCallback, useMemo, memo } from "react";
 import Sigma from "sigma";
 import { createEdgeArrowProgram } from "sigma/rendering";
 import FA2LayoutSupervisor from "graphology-layout-forceatlas2/worker";
@@ -18,50 +18,80 @@ import type Graph from "graphology";
 import { TaskGraphSidebar, type SelectedEdge } from "./TaskGraphSidebar";
 import { STATUS_COLORS } from "./useTaskGraph";
 import NodeSquareProgram from "./NodeSquareProgram";
-import { ZoomIn, ZoomOut, Maximize2, GitFork, Palette } from "lucide-react";
+import { GitFork, Palette, LayoutPanelLeft, Circle } from "lucide-react";
 import { applySigmaPerfSettings } from "../../utils/sigmaPerf";
 import { getFA2Settings, NOVERLAP_SETTINGS } from "../../utils/sigmaLayout";
 import noverlap from "graphology-layout-noverlap";
 import { GraphActionBar, type LinkModeState } from "./GraphActionBar";
 import { useCreateTaskLink, useMapSwarms } from "../../hooks/useApi";
 import { resolveAssigneeSwarm } from "../swarm/SwarmChip";
+import { TaskGraphCardOverlay } from "./TaskGraphCardOverlay";
+import { StatusLegend, GraphSourcesLegend } from "./MapLegends";
+import { MapControls } from "./MapControls";
+import { swarmColorFor, SWARM_UNASSIGNED_COLOR } from "./swarmPalette";
+import { useThemeStore } from "../../stores/theme";
 import type { OpenTasksGraphNode, MapSwarm } from "../../lib/api";
 
 interface Props {
   graph: Graph;
   resourceId: string;
+  /** Legacy single-purpose callback. Kept for callers that don't lift state.
+   *  Prefer `selectedTaskId` + `onSelectTask` for controlled selection. */
   onNodeSelect?: (node: OpenTasksGraphNode | null) => void;
   edges?: import("../../lib/api").OpenTasksGraphEdge[];
   allNodes?: OpenTasksGraphNode[];
   /** Map of graph ID → display name, for multi-graph legend */
   graphSources?: Map<string, { name: string; color: string }>;
+  /** Controlled selection: id owned by `TaskGraph.tsx` so view-switching
+   *  preserves the sidebar target. When undefined, falls back to internal
+   *  state so standalone callers keep working. */
+  selectedTaskId?: string | null;
+  onSelectTask?: (node: OpenTasksGraphNode | null) => void;
 }
 
 const MAX_LABEL_LENGTH = 28;
 
-/** Palette used for "color by swarm" mode. */
-const SWARM_PALETTE = [
-  "#f59e0b",
-  "#3b82f6",
-  "#10b981",
-  "#8b5cf6",
-  "#ec4899",
-  "#06b6d4",
-  "#ef4444",
-  "#84cc16",
-  "#f97316",
-  "#14b8a6",
-];
+/** Resolve a CSS custom-property value to a concrete color string. Used by
+ * the sigma constructor (which accepts strings only — not `var(...)` refs)
+ * so labels and edges respect the current theme on initial mount.
+ */
+function resolveSigmaToken(name: string, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  return (
+    getComputedStyle(document.documentElement).getPropertyValue(name).trim() ||
+    fallback
+  );
+}
 
-const SWARM_UNASSIGNED_COLOR = "#4b5563";
-
-/** Stable swarm-id → color mapping (deterministic hash into palette). */
-function swarmColorFor(swarmId: string): string {
-  let h = 0;
-  for (let i = 0; i < swarmId.length; i++) {
-    h = ((h << 5) - h + swarmId.charCodeAt(i)) | 0;
+/**
+ * Card-aware noverlap pass.
+ *
+ * The default NOVERLAP_SETTINGS use each node's visible `size` (~14px for
+ * tasks) as a collision radius. With 208×64 cards rendered on top of those
+ * dots by the path-A overlay, the dot-sized margin leaves cards stacked.
+ * This helper temporarily inflates every node's `size` to a card-bounding
+ * radius, runs noverlap to push cards apart, then restores the original
+ * sizes (so sigma keeps rendering small dots). Pure / idempotent.
+ */
+function cardAwareNoverlap(graph: import("graphology").default) {
+  const CARD_BOUND = 130; // ≈ half card width (224/2 = 112) + 16 margin
+  const saved = new Map<string, number>();
+  graph.forEachNode((id, attrs) => {
+    saved.set(id, (attrs.size as number) ?? 8);
+    graph.setNodeAttribute(id, "size", CARD_BOUND);
+  });
+  try {
+    noverlap.assign(graph, {
+      maxIterations: 100,
+      ratio: 1.0,
+      margin: 28,
+      expansion: 1.08,
+    });
+  } finally {
+    for (const [id, size] of saved) {
+      graph.setNodeAttribute(id, "size", size);
+    }
   }
-  return SWARM_PALETTE[Math.abs(h) % SWARM_PALETTE.length];
 }
 
 /** Truncate label text with ellipsis */
@@ -135,9 +165,57 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
   edges = [],
   allNodes = [],
   graphSources,
+  selectedTaskId,
+  onSelectTask,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
+  // Mirror of sigmaRef as state so the card-overlay child re-renders once
+  // sigma is constructed inside the mount effect.
+  const [sigmaInstance, setSigmaInstance] = useState<Sigma | null>(null);
+  const [showCards, setShowCards] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("openhive-task-card-mode") !== "off";
+    } catch {
+      return true;
+    }
+  });
+  // Mirrored ref so the FA2 settle timer (captured in a closure on mount)
+  // reads the *current* card mode without re-running the whole mount effect
+  // when the user toggles.
+  const showCardsRef = useRef(showCards);
+  showCardsRef.current = showCards;
+  // Tracks whether the FA2 settle has finished for the current graph mount.
+  // Used to fade cards in after positions stabilize instead of letting them
+  // jiggle around for 2.5s while physics runs.
+  const [cardsSettled, setCardsSettled] = useState(false);
+  // Watch the theme store so canvas-painted tooltips + sigma labels can
+  // re-resolve their tokens on light/dark switch. Sigma was constructed once
+  // at mount with concrete hex values; without this, those values cache and
+  // the wrong theme bleeds through after toggling.
+  const resolvedTheme = useThemeStore((s) => s.resolvedTheme);
+  // Shared mutable token bag the canvas-painted drawers read at frame time.
+  // `useRef` so the closures captured in the sigma mount effect always see
+  // the latest hex values without needing to re-build sigma.
+  const sigmaThemeRef = useRef({
+    tooltipBg: "rgba(28, 29, 32, 0.93)",
+    tooltipBorder: "#2c2d31",
+    tooltipTitle: "#e5e6e8",
+    tooltipMuted: "#9ca3af",
+    accentHex: "#f59e0b",
+    tooltipFont: "system-ui, sans-serif",
+  });
+  const toggleShowCards = useCallback(() => {
+    setShowCards((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("openhive-task-card-mode", next ? "on" : "off");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
   const supervisorRef = useRef<FA2LayoutSupervisor | null>(null);
   // physicsRanForNodesRef removed — physics always runs on mount
   const graphRef = useRef<Graph | null>(null);
@@ -152,8 +230,35 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     const edgeCount = graph.size;
     return `${nodes}|${edgeCount}`;
   })();
-  const [selectedNode, setSelectedNode] = useState<OpenTasksGraphNode | null>(
-    null,
+  // Controlled-with-fallback selection. When `selectedTaskId` is provided we
+  // derive selectedNode from it (looking the data up in the graph); when not,
+  // we keep the legacy internal state path so standalone usage still works.
+  const [internalSelected, setInternalSelected] =
+    useState<OpenTasksGraphNode | null>(null);
+  const controlled = selectedTaskId !== undefined;
+  const selectedNode = useMemo<OpenTasksGraphNode | null>(() => {
+    if (!controlled) return internalSelected;
+    if (!selectedTaskId || !graph?.hasNode(selectedTaskId)) return null;
+    return (
+      (graph.getNodeAttribute(selectedTaskId, "_data") as
+        | OpenTasksGraphNode
+        | undefined) ?? null
+    );
+  }, [controlled, selectedTaskId, graph, internalSelected]);
+  // Mirror onSelectTask through a ref so closures captured inside the sigma
+  // mount effect (sigma.on(...) handlers) always see the latest controlled
+  // callback — useState's setter is stable, useCallback's isn't.
+  const onSelectTaskRef = useRef(onSelectTask);
+  onSelectTaskRef.current = onSelectTask;
+  const setSelectedNode = useCallback(
+    (node: OpenTasksGraphNode | null) => {
+      // Update internal state when uncontrolled. The legacy onNodeSelect /
+      // controlled onSelectTask callbacks are fired by their respective ref
+      // mirrors at the original call sites (onNodeSelectRef + onSelectTaskRef
+      // calls right after every setSelectedNode), so we don't double-fire here.
+      if (!controlled) setInternalSelected(node);
+    },
+    [controlled],
   );
   const [selectedEdge, setSelectedEdge] = useState<SelectedEdge | null>(null);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
@@ -197,7 +302,27 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
   useEffect(() => {
     if (!containerRef.current || !graph || graph.order === 0) return;
 
-    // Custom node hover drawing — glow + tooltip with extra details
+    // Seed the theme ref with current resolved tokens. The dedicated effect
+    // below subscribes to `resolvedTheme` and re-resolves on every flip, so
+    // the closures captured here always read `.current` and get the latest
+    // colors. (Sigma draw callbacks run at full FPS and can't accept
+    // `var(--...)` strings, so we have to keep concrete hex values handy.)
+    sigmaThemeRef.current = {
+      tooltipBg: resolveSigmaToken("--color-surface", "#1c1d20") + "ee",
+      tooltipBorder: resolveSigmaToken("--color-border-subtle", "#35373b"),
+      tooltipTitle: resolveSigmaToken("--color-text", "#e5e6e8"),
+      tooltipMuted: resolveSigmaToken("--color-text-muted", "#9ca3af"),
+      accentHex: resolveSigmaToken("--color-accent", "#f59e0b"),
+      tooltipFont:
+        typeof window === "undefined"
+          ? "system-ui, sans-serif"
+          : getComputedStyle(document.documentElement).fontFamily ||
+            "system-ui, sans-serif",
+    };
+
+    // Custom node hover drawing — glow + tooltip with extra details.
+    // Skipped when path-A cards are on: cards already carry the same info
+    // at-rest, so the canvas tooltip would just paint a duplicate on top.
     const drawNodeHover = (
       context: CanvasRenderingContext2D,
       data: {
@@ -208,6 +333,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
         label?: string | null;
       },
     ) => {
+      if (showCardsRef.current) return;
       const { x, y, size, color } = data;
       const nodeAttrs = data as Record<string, any>;
       const isSquare = nodeAttrs.type === "square";
@@ -257,14 +383,18 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
       if (assignee) details.push(`@${assignee}`);
       if (sourceName) details.push(sourceName);
 
+      // Theme tokens — read from the ref so a runtime theme switch is picked
+      // up at the next frame without needing to rebuild sigma.
+      const theme = sigmaThemeRef.current;
+
       // Measure tooltip dimensions
       const padding = 8;
       const lineHeight = 14;
       const titleFontSize = 12;
       const detailFontSize = 10;
-      context.font = `600 ${titleFontSize}px Inter, system-ui, sans-serif`;
+      context.font = `600 ${titleFontSize}px ${theme.tooltipFont}`;
       const titleWidth = context.measureText(fullLabel).width;
-      context.font = `${detailFontSize}px Inter, system-ui, sans-serif`;
+      context.font = `${detailFontSize}px ${theme.tooltipFont}`;
       const detailWidths = details.map((d) => context.measureText(d).width);
       const maxWidth = Math.max(titleWidth, ...detailWidths) + padding * 2;
       const tooltipHeight =
@@ -273,26 +403,27 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
       const tooltipX = x - maxWidth / 2;
       const tooltipY = y + size + 8;
 
-      // Background
-      context.fillStyle = "rgba(20, 21, 23, 0.92)";
+      // Background — theme-resolved surface + alpha. Border uses the muted
+      // border token so the tooltip reads cleanly on both themes.
+      context.fillStyle = theme.tooltipBg;
       context.beginPath();
       const r = 6;
       context.roundRect(tooltipX, tooltipY, maxWidth, tooltipHeight, r);
       context.fill();
-      context.strokeStyle = "rgba(255, 255, 255, 0.08)";
+      context.strokeStyle = theme.tooltipBorder;
       context.lineWidth = 1;
       context.stroke();
 
       // Title (full, untruncated)
-      context.font = `600 ${titleFontSize}px Inter, system-ui, sans-serif`;
-      context.fillStyle = "#e5e6e8";
+      context.font = `600 ${titleFontSize}px ${theme.tooltipFont}`;
+      context.fillStyle = theme.tooltipTitle;
       context.textAlign = "left";
       context.textBaseline = "top";
       context.fillText(fullLabel, tooltipX + padding, tooltipY + padding);
 
       // Detail lines
-      context.font = `${detailFontSize}px Inter, system-ui, sans-serif`;
-      context.fillStyle = "#9ca3af";
+      context.font = `${detailFontSize}px ${theme.tooltipFont}`;
+      context.fillStyle = theme.tooltipMuted;
       details.forEach((line, i) => {
         context.fillText(
           line,
@@ -364,12 +495,14 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
         square: NodeSquareProgram,
       },
       defaultNodeColor: STATUS_COLORS.open,
-      defaultEdgeColor: "#6b728090",
-      labelColor: { color: "#d1d2d3" },
-      labelFont: "Inter, system-ui, sans-serif",
+      defaultEdgeColor: resolveSigmaToken("--color-border", "#6b7280") + "90",
+      labelColor: { color: resolveSigmaToken("--color-text", "#d1d2d3") },
+      // Inter is banned per src/web/CLAUDE.md; pull the page's font stack
+      // directly so sigma labels match the rest of the UI.
+      labelFont: getComputedStyle(document.documentElement).fontFamily || "system-ui, sans-serif",
       labelSize: 11,
-      labelRenderedSizeThreshold: 6,
-      edgeLabelColor: { color: "#7a7b7e" },
+      labelRenderedSizeThreshold: showCardsRef.current ? 9999 : 6,
+      edgeLabelColor: { color: resolveSigmaToken("--color-text-muted", "#7a7b7e") },
       enableEdgeEvents: true,
       minEdgeThickness: 0.5,
       defaultDrawNodeLabel: drawNodeLabel as any,
@@ -381,6 +514,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     });
 
     sigmaRef.current = sigma;
+    setSigmaInstance(sigma);
     applySigmaPerfSettings(sigma, graph.order);
 
     // Scale edge label size with zoom (debounced to avoid re-render storms)
@@ -471,8 +605,11 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
       },
     );
 
-    // ---------- Preview arrow for link mode ----------
-    sigma.on("afterRender", () => {
+    // ---------- Preview arrow for link mode + edge hover tooltip ----------
+    // Hold a named ref so cleanup can remove the exact listener. The previous
+    // anonymous handler stacked on every remount (HMR, graph swap) and each
+    // copy kept clearing/repainting the mouse overlay canvas.
+    const linkPreviewAfterRender = () => {
       // Always clear the overlay canvas first
       const canvases = sigma.getCanvases();
       const canvas = canvases.mouse;
@@ -536,10 +673,14 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
 
       ctx.save();
 
-      // Dashed line
+      // Dashed line — accent color tinted at 60% / 80% so it reads against
+      // either theme. Hex+alpha (e.g. `#f59e0b99`) is the canvas equivalent
+      // of rgba(255, 191, 36, 0.6). Read from the theme ref every frame so
+      // a theme flip is picked up on next paint.
+      const linkTheme = sigmaThemeRef.current;
       ctx.beginPath();
       ctx.setLineDash([6, 4]);
-      ctx.strokeStyle = "rgba(251, 191, 36, 0.6)";
+      ctx.strokeStyle = linkTheme.accentHex + "99";
       ctx.lineWidth = 2;
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);
@@ -548,7 +689,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
       // Arrowhead
       const headLen = 10;
       ctx.setLineDash([]);
-      ctx.fillStyle = "rgba(251, 191, 36, 0.8)";
+      ctx.fillStyle = linkTheme.accentHex + "cc";
       ctx.beginPath();
       ctx.moveTo(x2 + ux * headLen, y2 + uy * headLen);
       ctx.lineTo(x2 - uy * headLen * 0.5, y2 + ux * headLen * 0.5);
@@ -590,39 +731,42 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
         const fontSize = 11;
         const detailSize = 10;
         const padding = 8;
-        ctx.font = `600 ${fontSize}px Inter, system-ui, sans-serif`;
+        // Re-read every paint so theme switches show up live.
+        const edgeTheme = sigmaThemeRef.current;
+        ctx.font = `600 ${fontSize}px ${edgeTheme.tooltipFont}`;
         const labelW = ctx.measureText(label).width;
-        ctx.font = `${detailSize}px Inter, system-ui, sans-serif`;
+        ctx.font = `${detailSize}px ${edgeTheme.tooltipFont}`;
         const typeW = ctx.measureText(typeLine).width;
         const boxW = Math.max(labelW, typeW) + padding * 2;
         const boxH = padding * 2 + fontSize + detailSize + 4;
         const bx = mx - boxW / 2;
         const by = my - boxH - 8;
 
-        // Background
-        ctx.fillStyle = "rgba(20, 21, 23, 0.92)";
+        // Background — same token-resolved values as drawNodeHover.
+        ctx.fillStyle = edgeTheme.tooltipBg;
         ctx.beginPath();
         ctx.roundRect(bx, by, boxW, boxH, 6);
         ctx.fill();
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+        ctx.strokeStyle = edgeTheme.tooltipBorder;
         ctx.lineWidth = 1;
         ctx.stroke();
 
         // Label
-        ctx.font = `600 ${fontSize}px Inter, system-ui, sans-serif`;
-        ctx.fillStyle = "#e5e6e8";
+        ctx.font = `600 ${fontSize}px ${edgeTheme.tooltipFont}`;
+        ctx.fillStyle = edgeTheme.tooltipTitle;
         ctx.textAlign = "left";
         ctx.textBaseline = "top";
         ctx.fillText(label, bx + padding, by + padding);
 
         // Type
-        ctx.font = `${detailSize}px Inter, system-ui, sans-serif`;
-        ctx.fillStyle = "#9ca3af";
+        ctx.font = `${detailSize}px ${edgeTheme.tooltipFont}`;
+        ctx.fillStyle = edgeTheme.tooltipMuted;
         ctx.fillText(typeLine, bx + padding, by + padding + fontSize + 4);
 
         ctx.restore();
       }
-    });
+    };
+    sigma.on("afterRender", linkPreviewAfterRender);
 
     // ---------- Node click ----------
     sigma.on("clickNode", ({ node }) => {
@@ -667,6 +811,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
       setSelectedNode(data);
       setSelectedEdge(null);
       onNodeSelectRef.current?.(data);
+      onSelectTaskRef.current?.(data);
 
       // Smooth camera follow — convert raw graph coords to framed graph coords
       const viewportPos = sigma.graphToViewport({
@@ -699,11 +844,13 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
         });
         setSelectedNode(null);
         onNodeSelectRef.current?.(null);
+        onSelectTaskRef.current?.(null);
         return;
       }
       setSelectedNode(null);
       setSelectedEdge(null);
       onNodeSelectRef.current?.(null);
+      onSelectTaskRef.current?.(null);
     });
 
     // ---------- Node drag ----------
@@ -790,38 +937,116 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     supervisorRef.current = supervisor;
 
     supervisor.start();
+    setCardsSettled(false);
     const settleDuration =
       graph.order > 500 ? 5000 : graph.order > 100 ? 3500 : 2500;
     const settleTimer = setTimeout(() => {
       supervisor.stop();
-      // Final noverlap pass to pry apart any residual overlaps
+      // Final noverlap pass to pry apart any residual overlaps. When cards
+      // are on, run the card-aware pass instead — the default settings are
+      // tuned for dot-sized collision and leave 208×64 cards stacked.
       if (graph.order < 5000) {
-        noverlap.assign(graph, NOVERLAP_SETTINGS);
+        if (showCardsRef.current) {
+          cardAwareNoverlap(graph);
+        } else {
+          noverlap.assign(graph, NOVERLAP_SETTINGS);
+        }
         sigma.refresh();
       }
+      setCardsSettled(true);
     }, settleDuration);
 
     return () => {
       if (settleTimer) clearTimeout(settleTimer);
+      sigma.off("afterRender", linkPreviewAfterRender);
       supervisor.kill();
       supervisorRef.current = null;
       document.removeEventListener("mouseup", handleMouseUp);
       sigma.kill();
       sigmaRef.current = null;
+      setSigmaInstance(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graphFingerprint]);
+
+  // Depth-visible set lifted out of the reducer so the overlay (path A)
+  // can apply the same filter to its HTML cards. Sigma's reducer and the
+  // overlay both read this single source of truth.
+  const depthVisible = useMemo<Set<string> | null>(() => {
+    if (!graph || depthFilter <= 0 || !selectedNode) return null;
+    return getNodesWithinHops(graph, selectedNode.id, depthFilter);
+  }, [graph, depthFilter, selectedNode]);
+
+  // When cards are shown, suppress sigma's labels (cards already carry the
+  // text) — flip `labelRenderedSizeThreshold` between its default (6) and an
+  // effectively-infinite value. Sigma keeps rendering the colored dots
+  // underneath each card, which become the visible signal once the user
+  // zooms far enough out that cards hide.
+  useEffect(() => {
+    const sigma = sigmaInstance;
+    if (!sigma) return;
+    sigma.setSetting("labelRenderedSizeThreshold", showCards ? 9999 : 6);
+    sigma.refresh({ skipIndexation: true });
+  }, [sigmaInstance, showCards]);
+
+  // Theme reactivity. Sigma was built once with `labelColor` / `defaultEdgeColor`
+  // baked in; canvas-painted tooltips + the link-mode arrow read from
+  // `sigmaThemeRef.current` at frame time. On theme flip we re-resolve every
+  // token, mutate the ref, and push the sigma-level colors via setSetting +
+  // refresh so the labels repaint immediately. Without this the old theme's
+  // hexes bleed through after toggling.
+  useEffect(() => {
+    sigmaThemeRef.current = {
+      tooltipBg: resolveSigmaToken("--color-surface", "#1c1d20") + "ee",
+      tooltipBorder: resolveSigmaToken("--color-border-subtle", "#35373b"),
+      tooltipTitle: resolveSigmaToken("--color-text", "#e5e6e8"),
+      tooltipMuted: resolveSigmaToken("--color-text-muted", "#9ca3af"),
+      accentHex: resolveSigmaToken("--color-accent", "#f59e0b"),
+      tooltipFont:
+        typeof window === "undefined"
+          ? "system-ui, sans-serif"
+          : getComputedStyle(document.documentElement).fontFamily ||
+            "system-ui, sans-serif",
+    };
+    const sigma = sigmaInstance;
+    if (!sigma) return;
+    sigma.setSetting("labelColor", {
+      color: resolveSigmaToken("--color-text", "#d1d2d3"),
+    });
+    sigma.setSetting(
+      "defaultEdgeColor",
+      resolveSigmaToken("--color-border", "#6b7280") + "90",
+    );
+    sigma.setSetting("edgeLabelColor", {
+      color: resolveSigmaToken("--color-text-muted", "#7a7b7e"),
+    });
+    sigma.setSetting(
+      "labelFont",
+      typeof window === "undefined"
+        ? "system-ui, sans-serif"
+        : getComputedStyle(document.documentElement).fontFamily ||
+            "system-ui, sans-serif",
+    );
+    sigma.refresh({ skipIndexation: true });
+  }, [sigmaInstance, resolvedTheme]);
+
+  // Re-run the card-aware noverlap when the user toggles cards on *after*
+  // physics has already settled. The mount effect's settle timer handles
+  // the first-mount case for both modes; this effect only fires the late
+  // transitions. Guard against running while the FA2 supervisor is still
+  // active — touching node coords mid-physics fights the worker.
+  useEffect(() => {
+    const sigma = sigmaInstance;
+    if (!sigma || !graph || !showCards || graph.order === 0) return;
+    if (supervisorRef.current?.isRunning()) return;
+    cardAwareNoverlap(graph);
+    sigma.refresh();
+  }, [sigmaInstance, graph, showCards]);
 
   // ---------- Node/edge reducers for hover + depth filtering ----------
   useEffect(() => {
     const sigma = sigmaRef.current;
     if (!sigma || !graph) return;
-
-    // Compute depth-visible set
-    let depthVisible: Set<string> | null = null;
-    if (depthFilter > 0 && selectedNode) {
-      depthVisible = getNodesWithinHops(graph, selectedNode.id, depthFilter);
-    }
 
     sigma.setSetting(
       "nodeReducer",
@@ -910,7 +1135,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     );
 
     sigma.refresh({ skipIndexation: true });
-  }, [hoveredNode, hoveredEdge, depthFilter, selectedNode, graph, linkMode]);
+  }, [hoveredNode, hoveredEdge, depthVisible, graph, linkMode]);
 
   // Recolor graph nodes based on colorMode (status vs. swarm)
   useEffect(() => {
@@ -981,6 +1206,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
     };
     setSelectedNode(data);
     onNodeSelect?.(data);
+    onSelectTask?.(data);
 
     // Animate camera to it
     const viewportPos = sigma.graphToViewport({
@@ -993,7 +1219,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
       { x: framedPos.x, y: framedPos.y, ratio: Math.min(camera.ratio, 0.7) },
       { duration: 400 },
     );
-  }, [graph, onNodeSelect]);
+  }, [graph, onNodeSelect, onSelectTask, setSelectedNode]);
 
   const handleNodeCreated = useCallback(
     (nodeId: string) => {
@@ -1009,6 +1235,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
         };
         setSelectedNode(data);
         onNodeSelect?.(data);
+        onSelectTask?.(data);
         const viewportPos = sigma.graphToViewport({
           x: nodeData.x as number,
           y: nodeData.y as number,
@@ -1027,21 +1254,23 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
         pendingFocusRef.current = nodeId;
       }
     },
-    [graph, onNodeSelect],
+    [graph, onNodeSelect, onSelectTask, setSelectedNode],
   );
 
   const handleCloseSidebar = useCallback(() => {
     setSelectedNode(null);
     setSelectedEdge(null);
     onNodeSelect?.(null);
+    onSelectTask?.(null);
     setDepthFilter(0);
-  }, [onNodeSelect]);
+  }, [onNodeSelect, onSelectTask, setSelectedNode]);
 
   const handleSidebarSelectNode = useCallback(
     (node: OpenTasksGraphNode) => {
       setSelectedNode(node);
       setSelectedEdge(null);
       onNodeSelect?.(node);
+      onSelectTask?.(node);
 
       // Animate camera to the node
       const sigma = sigmaRef.current;
@@ -1064,7 +1293,7 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
           );
       }
     },
-    [graph, onNodeSelect],
+    [graph, onNodeSelect, onSelectTask, setSelectedNode],
   );
 
   return (
@@ -1074,35 +1303,61 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
         className="flex-1 relative overflow-hidden"
         style={{ backgroundColor: "var(--color-bg)" }}
       >
+        {/* A11y bypass — sigma's canvas is opaque to keyboard / screen
+            readers. We surface a focus-visible hint pointing keyboard users
+            to the Hierarchy view (real React Flow nodes, real focus order).
+            Visually hidden until focused; the sighted-keyboard user sees a
+            pill at the top of the canvas with the suggestion. */}
+        <button
+          type="button"
+          className="sr-only focus:not-sr-only focus-visible:not-sr-only"
+          style={{
+            position: "absolute",
+            top: 8,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 30,
+            padding: "6px 10px",
+            borderRadius: 4,
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-accent)",
+            color: "var(--color-accent)",
+            fontSize: 12,
+          }}
+          onClick={() => {
+            // Stable `data-view-switch="hierarchy"` selector — not coupled
+            // to the tooltip prose. Falls through silently if mounted
+            // outside the TaskGraph page chrome.
+            const hierarchyBtn = document.querySelector<HTMLButtonElement>(
+              'button[data-view-switch="hierarchy"]',
+            );
+            hierarchyBtn?.click();
+          }}
+        >
+          Network view is a canvas. Switch to Hierarchy view for keyboard
+          navigation.
+        </button>
         <div
           ref={containerRef}
           className="w-full h-full overflow-hidden"
           style={{ cursor: linkMode.active ? "crosshair" : "grab" }}
+          role="img"
+          aria-label="Task graph network visualization. Use the Hierarchy or Board view for keyboard access."
         />
 
-        {/* Controls overlay */}
-        <div className="absolute bottom-3 left-3 flex flex-col gap-1">
-          <button
-            onClick={handleZoomIn}
-            className="btn-ghost p-1.5 rounded"
-            style={{ backgroundColor: "var(--color-surface)" }}
-          >
-            <ZoomIn className="w-4 h-4" />
-          </button>
-          <button
-            onClick={handleZoomOut}
-            className="btn-ghost p-1.5 rounded"
-            style={{ backgroundColor: "var(--color-surface)" }}
-          >
-            <ZoomOut className="w-4 h-4" />
-          </button>
-          <button
-            onClick={handleFitView}
-            className="btn-ghost p-1.5 rounded"
-            style={{ backgroundColor: "var(--color-surface)" }}
-          >
-            <Maximize2 className="w-4 h-4" />
-          </button>
+        {/* Controls overlay — shared with Hierarchy view via MapControls.
+            The Palette + Card-mode toggles below are sigma-specific and
+            stack underneath the zoom controls in the same column. */}
+        <MapControls
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+          onFitView={handleFitView}
+        />
+        {/* Anchored above the MapControls stack (≈ 3 buttons × 32px each
+            + gaps + bottom-3 anchor ≈ 120px). `paddingTop` on an absolutely
+            positioned element does nothing for its own offset — use `bottom`
+            so this column actually clears the controls below it. */}
+        <div className="absolute left-3 flex flex-col gap-1" style={{ bottom: 132 }}>
           <button
             onClick={toggleColorMode}
             className="btn-ghost p-1.5 rounded"
@@ -1110,14 +1365,59 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
               backgroundColor: "var(--color-surface)",
               color:
                 colorMode === "swarm"
-                  ? "var(--color-honey-500, #f59e0b)"
+                  ? "var(--color-accent)"
                   : undefined,
             }}
             title={`Color by: ${colorMode === "swarm" ? "swarm" : "status"} (click to toggle)`}
+            aria-label={`Color by ${colorMode}. Click to toggle.`}
+            aria-pressed={colorMode === "swarm"}
           >
             <Palette className="w-4 h-4" />
           </button>
+          <button
+            onClick={toggleShowCards}
+            className="btn-ghost p-1.5 rounded"
+            style={{
+              backgroundColor: "var(--color-surface)",
+              color: showCards
+                ? "var(--color-accent)"
+                : undefined,
+            }}
+            title={
+              showCards
+                ? "Showing rich task cards (click for dot mode)"
+                : "Showing dots only (click for card mode)"
+            }
+            aria-label={
+              showCards
+                ? "Card mode is on. Click to switch to dots."
+                : "Dot mode is on. Click to switch to cards."
+            }
+            aria-pressed={showCards}
+          >
+            {showCards ? (
+              <LayoutPanelLeft className="w-4 h-4" />
+            ) : (
+              <Circle className="w-4 h-4" />
+            )}
+          </button>
         </div>
+
+        {/* Path A — always-visible cards overlaying sigma's node dots. Pure
+            decoration (pointer-events: none); sigma still owns clicks, drag,
+            hover, link mode, and the depth filter. */}
+        {showCards && (
+          <TaskGraphCardOverlay
+            sigma={sigmaInstance}
+            graph={graph}
+            hoveredNode={hoveredNode}
+            selectedNodeId={selectedNode?.id ?? null}
+            depthVisible={depthVisible}
+            colorMode={colorMode}
+            swarms={swarms}
+            settled={cardsSettled}
+          />
+        )}
 
         {/* Color-by-swarm legend */}
         {colorMode === "swarm" && swarms && swarms.length > 0 && (
@@ -1143,13 +1443,15 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
                 <span className="truncate max-w-[120px]">{s.name}</span>
                 <span className="opacity-50">·</span>
                 <span
-                  className={
-                    s.status === "online"
-                      ? "text-emerald-400"
-                      : s.status === "unreachable"
-                        ? "text-amber-400"
-                        : "opacity-50"
-                  }
+                  className={s.status === "offline" ? "opacity-50" : ""}
+                  style={{
+                    color:
+                      s.status === "online"
+                        ? "var(--color-success, #22c55e)"
+                        : s.status === "unreachable"
+                          ? "var(--color-accent)"
+                          : "var(--color-text-muted)",
+                  }}
                 >
                   {s.status}
                 </span>
@@ -1211,73 +1513,12 @@ export const TaskGraphViewer = memo(function TaskGraphViewer({
           </div>
         )}
 
-        {/* Legends — stacked top-left */}
+        {/* Legends — stacked top-left. Shared with Hierarchy view via
+            MapLegends so cards in either view decode the same way. */}
         <div className="absolute top-3 left-3 flex flex-col gap-2">
-          {/* Status legend */}
-          <div
-            className="p-2 rounded text-2xs space-y-1"
-            style={{
-              backgroundColor: "var(--color-surface)",
-              border: "1px solid var(--color-border-subtle)",
-            }}
-          >
-            <div
-              className="text-2xs font-medium mb-1"
-              style={{ color: "var(--color-text-muted)" }}
-            >
-              Status
-            </div>
-            {Object.entries(STATUS_COLORS).map(([status, color]) => (
-              <div key={status} className="flex items-center gap-1.5">
-                <div
-                  className="w-2.5 h-2.5 rounded-full"
-                  style={{
-                    backgroundColor: color,
-                    boxShadow: `0 0 6px ${hexToRgba(color, 0.5)}`,
-                  }}
-                />
-                <span style={{ color: "var(--color-text-muted)" }}>
-                  {status.replace("_", " ")}
-                </span>
-              </div>
-            ))}
-          </div>
-
-          {/* Graph sources legend (multi-graph) */}
+          <StatusLegend />
           {graphSources && graphSources.size > 1 && (
-            <div
-              className="p-2 rounded text-2xs space-y-1"
-              style={{
-                backgroundColor: "var(--color-surface)",
-                border: "1px solid var(--color-border-subtle)",
-              }}
-            >
-              <div
-                className="text-2xs font-medium mb-1"
-                style={{ color: "var(--color-text-muted)" }}
-              >
-                Graphs
-              </div>
-              {Array.from(graphSources.entries()).map(
-                ([id, { name, color }]) => (
-                  <div key={id} className="flex items-center gap-1.5">
-                    <div
-                      className="w-2.5 h-2.5 rounded-full border-2"
-                      style={{
-                        borderColor: color,
-                        backgroundColor: "transparent",
-                      }}
-                    />
-                    <span
-                      className="truncate max-w-[120px]"
-                      style={{ color: "var(--color-text-muted)" }}
-                    >
-                      {name}
-                    </span>
-                  </div>
-                ),
-              )}
-            </div>
+            <GraphSourcesLegend graphSources={graphSources} />
           )}
         </div>
 

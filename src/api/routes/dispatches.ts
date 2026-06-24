@@ -53,6 +53,8 @@ export async function dispatchesRoutes(
       target_swarm_id?: string;
       spec_resource_id?: string;
       spec_id?: string;
+      task_resource_id?: string;
+      task_node_id?: string;
       initiator_id?: string;
       initiator_type?: string;
       limit?: number;
@@ -68,6 +70,8 @@ export async function dispatchesRoutes(
     if (request.query.target_swarm_id) opts.target_swarm_id = request.query.target_swarm_id;
     if (request.query.spec_resource_id) opts.spec_resource_id = request.query.spec_resource_id;
     if (request.query.spec_id) opts.spec_id = request.query.spec_id;
+    if (request.query.task_resource_id) opts.task_resource_id = request.query.task_resource_id;
+    if (request.query.task_node_id) opts.task_node_id = request.query.task_node_id;
     if (request.query.initiator_id) opts.initiator_id = request.query.initiator_id;
     if (
       request.query.initiator_type &&
