@@ -589,4 +589,24 @@ describe('experiments routes — review hardening', () => {
     });
     expect(detail.json().runs[0].worker_token_hash).toBeUndefined();
   });
+
+  it('worker PATCH may not set a terminal status (409 — use finalize/cancel)', async () => {
+    const exp = (await createExperiment()).json().experiment;
+    const run = (await createRun(exp.id)).json();
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.run.id}`,
+      headers: { authorization: `Bearer ${run.worker_token}` },
+      payload: { status: 'complete' },
+    });
+    expect(res.statusCode).toBe(409);
+    // a non-terminal PATCH still works
+    const ok = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.run.id}`,
+      headers: { authorization: `Bearer ${run.worker_token}` },
+      payload: { status: 'running' },
+    });
+    expect(ok.statusCode).toBe(200);
+  });
 });

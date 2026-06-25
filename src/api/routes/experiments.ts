@@ -325,6 +325,13 @@ export async function experimentsRoutes(
       }
       const parsed = UpdateRunBodySchema.safeParse(request.body);
       if (!parsed.success) return badRequest(reply, parsed.error.issues);
+      // Terminal transitions go through finalize/cancel (which clear the token);
+      // a worker PATCH may only set non-terminal status.
+      if (parsed.data.status && TERMINAL.has(parsed.data.status)) {
+        return reply
+          .status(409)
+          .send({ error: 'Conflict', message: 'use finalize or cancel for terminal transitions' });
+      }
       const updated = dal.updateRun(run.id, parsed.data);
       if (!updated) {
         return reply.status(404).send({ error: 'Not Found', message: 'run not found' });

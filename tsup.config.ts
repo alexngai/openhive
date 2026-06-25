@@ -20,5 +20,7 @@ export default defineConfig({
   clean: true,
   target: 'node18',
   outDir: 'dist',
-  external: ['better-sqlite3', '@google-cloud/storage'],
+  // `autonomation` is an OPTIONAL peer dep loaded only by the experiment worker
+  // via a dynamic import — never bundle it, so the hub builds/runs without it.
+  external: ['better-sqlite3', '@google-cloud/storage', 'autonomation'],
 });

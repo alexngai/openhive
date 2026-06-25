@@ -12,19 +12,46 @@ verifiability rules, and the resolved decisions ([D1]–[D9]).
 
 ## Status
 
-Stage A, first slice: the data model + DAL. Routes, the ingest projection, the
-`OpenHiveExperimentTracker`, the hosted-swarm runner worker, the scheduler
-payload, and the UI are subsequent slices (see the design doc §16).
+Stage A: data model + DAL (slice 1), the API + ingest projection (slice 2), and
+the runner worker + tracker (slice 3) are landed. The hosted-swarm launcher, the
+scheduler payload, and the UI are subsequent slices (see the design doc §16).
 
 ## Files
 
-The DAL lives at **`src/db/dal/experiments.ts`** (house rule: all database access
-goes through `src/db/dal/`). Subsystem business logic — launcher, ingest
-projection, tracker, worker, lifecycle — will live here in `src/experiments/` in
-later slices. `src/db/dal/experiments.ts` provides CRUD + projection helpers for
-the four tables, following the `src/db/dal/schedules.ts` conventions:
-prefixed-nanoid ids (`exp_`/`exrun_`/`excand_`/`exev_`), ISO-8601 string
-timestamps, JSON `TEXT` columns, all access via `getDatabase()`.
+- **`src/db/dal/experiments.ts`** — the DAL (house rule: all DB access via
+  `src/db/dal/`). CRUD + projection helpers for the four tables; `schedules.ts`
+  conventions (prefixed-nanoid ids `exp_`/`exrun_`/`excand_`/`exev_`, ISO-8601
+  timestamps, JSON `TEXT`, all via `getDatabase()`).
+- **`src/api/routes/experiments.ts`** + **`src/api/schemas/experiments.ts`** —
+  operator routes + worker-write routes (PATCH run, POST events, POST finalize)
+  behind a row-scoped per-run token; registered in `src/api/index.ts`.
+- **`src/experiments/ingest.ts`** — the projection: live events → candidate rows
+  + monotonic incumbent; the finalization handler (run lock/claim + score cards).
+- **`src/realtime/experiment-events.ts`** — `broadcastExperimentLifecycleEvent`
+  fans out to `map:experiments` + `experiment:<id>`.
+- **`src/experiments/run-token.ts`** — the per-run worker token (`ohw_`, sha256,
+  constant-time verify); minted on run create, cleared on finalize/cancel.
+- **`src/experiments/worker/`** — the runner worker (autonomation-side process):
+  - `openhive-tracker.ts` — `OpenHiveExperimentTracker implements ExperimentTracker`
+    (autonomation interface imported **type-only**), POSTs the live event firehose.
+  - `hub-client.ts` — the HTTP client (PATCH run / POST events / POST finalize);
+    `fetchImpl` injectable for tests.
+  - `run-experiment-worker.ts` — orchestration: **dynamically** imports
+    `autonomation/experiment`, builds the runner via
+    `createExperimentRunnerFromDeployment`, wires the tracker, runs the loop, and
+    POSTs the finalization (content_hash from the plan lock, claim_strength + the
+    train/held-out seesaw read from `runner.lineage`).
+  - Driven by the `openhive experiment-worker` CLI subcommand (`src/cli.ts`).
+
+## Optional `autonomation` dependency
+
+`autonomation` is an **optional peer dependency** (`peerDependenciesMeta.optional`)
+— the hub never loads it. The tracker imports its **types only** (erased at build);
+the worker loads the runtime via a **dynamic import** with a graceful
+"install autonomation to manage experiments" error. It is `external` in
+`tsup.config.ts` so the bundle never pulls it. For local dev, symlink it
+(`node_modules/autonomation → ../autonomation/packages/ts-sdk`) so `tsc` resolves
+the type-only imports.
 
 ## Data model (migrations V60–V63)
 
@@ -49,3 +76,23 @@ timestamps, JSON `TEXT` columns, all access via `getDatabase()`.
 - No SQL foreign keys (house convention — matches `dispatches`/`schedules`), hence
   no `ON DELETE` cascade: a future delete/lifecycle route must cascade
   runs/candidates/events in app code.
+- The worker PATCH route is non-terminal only; terminal transitions go through
+  `finalize`/`cancel` (which set the terminal state **and** clear the per-run
+  token). A setup failure in the worker still finalizes the run as `failed` so it
+  is never left stuck `running`. The tracker flush is serialized and restores the
+  un-sent batch on failure (no lost events / seq gaps).
+
+## Known limitations (Stage A)
+
+- **Deployment path only.** The worker builds the runner via
+  `createExperimentRunnerFromDeployment` (the cleanly-exported, file-path-driven
+  entry that yields a real `content_hash` + claims gate). The lightweight
+  `createExperimentRunner` path is deferred — it would require autonomation to
+  export a config→runner factory (we will not replicate its CLI-internal wiring).
+- **Single-process per run; no resume.** The tracker assigns `seq` from 0 in the
+  worker process. If a worker is restarted against the same run (a future resume
+  feature), `seq` would collide with already-ingested rows on `uq_exev_seq` and the
+  restart's early events would be dropped as idempotent dups. Resume must seed
+  `seq` from the hub's `max_seq` — out of scope until the launcher slice wires
+  restart/resume. A failed worker today finalizes the run `failed` (terminal), not
+  resumes it.

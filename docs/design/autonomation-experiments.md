@@ -126,20 +126,23 @@ cycle.
 | Hub control plane (`src/experiments/`) | `ExperimentTracker`, `ExperimentEvent`, `ExperimentEventType`, `ExperimentRunMetadata`, `ExperimentRunSummary`, `ExperimentStopReason`, `ExperimentRunResult` | **type-only** (`import type …`) — erased at build, no runtime dep |
 | Runner worker (the hosted process) | `createExperimentRunner`, `createExperimentRunnerFromDeployment`, `experimentTrackerObserver`, the runtime | **full runtime** dependency |
 
-**Prerequisite:** `node_modules/autonomation` does not exist in `openhive-2` today
-and there is no `package.json` entry. Add it before any of the worker code
-compiles. Dev wiring follows the repo's multi-repo convention — symlink the
-package so edits are live:
+**LANDED:** `autonomation` is declared as an **optional peer dependency**
+(`peerDependencies` + `peerDependenciesMeta.autonomation.optional`) and marked
+`external` in `tsup.config.ts`. The hub never loads it: the tracker imports the
+interface **type-only** (erased), and the worker loads the runtime via a dynamic
+`import('autonomation/experiment')` (verified in `dist/cli.js`; autonomation
+internals are not bundled; the hub library has no autonomation reference).
+
+**Build-time vs runtime.** autonomation is *runtime-optional* but *build-time
+required*: `tsc` (whole-project) must resolve the type-only import, so a
+contributor building openhive-with-experiments needs autonomation present. Dev
+wiring follows the repo's multi-repo convention — symlink it so edits are live:
 
 ```bash
-# from openhive-2/
-ln -s ../autonomation/packages/ts-sdk node_modules/autonomation
+# from openhive-2/  (idempotent)
+ln -sfn /path/to/autonomation/packages/ts-sdk node_modules/autonomation
 ls -la node_modules/autonomation   # should show the symlink target
 ```
-
-`package.json` gains a `file:`/workspace ref in dev (autonomation is at `0.0.1`;
-do **not** pin `^1.0.0`). The hub build stays clean because its imports are
-type-only.
 
 **The hub cannot ship a runner-options object over the wire.**
 `ExperimentRunnerOptions` carries live JS objects/functions — `evolver`
@@ -753,9 +756,11 @@ A **named subsystem with explicit policy surfaces + kill-switch** (the
    `src/realtime/experiment-events.ts` fan-out helper.
 4. `OpenHiveExperimentTracker` (type-only import of the interface) +
    the finalization POST client.
-5. Runner worker subcommand embedding `createExperimentRunner` /
-   `…FromDeployment` + the tracker + finalization; wire the `autonomation` dep
-   (symlink in dev).
+5. **LANDED** — `openhive experiment-worker` subcommand (`src/experiments/worker/`)
+   embedding `createExperimentRunnerFromDeployment` + the tracker + finalization;
+   `autonomation` as an optional peer dep (dynamic import, `tsup` external).
+   *Deployment path only* — the lightweight `createExperimentRunner` path is
+   deferred (needs an autonomation config→runner factory export).
 6. `src/experiments/launcher.ts` (run request → hosted swarm) — add the
    `autonomation-runner` kind + `spawnAutonomationRunner` (LocalProvider verbatim
    spawn, **no health port**), the manager dispatch/revive arms, and the Zod enum
