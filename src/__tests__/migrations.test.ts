@@ -255,5 +255,55 @@ CREATE TABLE IF NOT EXISTS ingest_keys (
 
       closeDatabase();
     });
+
+    it('creates the experiment tables on a V59→V63 upgrade', () => {
+      // Simulate a pre-V60 DB: full schema minus the experiment tables, pinned at v59.
+      const dbPath = testDbPath(TEST_ROOT, 'experiments-upgrade-e2e.db');
+      const rawDb = new Database(dbPath);
+      rawDb.pragma('foreign_keys = ON');
+      rawDb.exec(CREATE_TABLES);
+      rawDb.exec('DROP TABLE IF EXISTS experiment_events');
+      rawDb.exec('DROP TABLE IF EXISTS experiment_candidates');
+      rawDb.exec('DROP TABLE IF EXISTS experiment_runs');
+      rawDb.exec('DROP TABLE IF EXISTS experiments');
+      rawDb.prepare('INSERT INTO schema_version (version) VALUES (?)').run(59);
+      rawDb.close();
+
+      // initDatabase sees version 59 < SCHEMA_VERSION and runs migrations 60→63
+      // through runMigrations (the naive-';'-split upgrade path).
+      initDatabase(dbPath);
+      const db = getDatabase();
+
+      const tables = (
+        db
+          .prepare(
+            `SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'experiment%'`,
+          )
+          .all() as { name: string }[]
+      ).map((r) => r.name);
+      expect(tables).toEqual(
+        expect.arrayContaining([
+          'experiments',
+          'experiment_runs',
+          'experiment_candidates',
+          'experiment_events',
+        ]),
+      );
+
+      // The partial-unique content_hash index must also be created on the split path.
+      const idx = db
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type='index' AND name = 'uq_experiments_chash'`,
+        )
+        .get() as { name: string } | undefined;
+      expect(idx?.name).toBe('uq_experiments_chash');
+
+      const ver = db.prepare('SELECT version FROM schema_version').get() as {
+        version: number;
+      };
+      expect(ver.version).toBe(63);
+
+      closeDatabase();
+    });
   });
 });

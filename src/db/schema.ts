@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 59;
+export const SCHEMA_VERSION = 63;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -755,6 +755,130 @@ CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(paused, next_fires_at)
 CREATE INDEX IF NOT EXISTS idx_schedules_hive ON schedules(hive_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_initiator ON schedules(initiator_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_spec ON schedules(payload);
+
+-- ============================================================================
+-- Experiments (V60-V63 — autonomation experiment control plane)
+-- See docs/design/autonomation-experiments.md. Four tables: the optimization
+-- line (experiments), one loop invocation hosted as a hosted swarm
+-- (experiment_runs), the candidate-lineage projection (experiment_candidates),
+-- and the append-only live event log (experiment_events). content_hash is the
+-- experiment's natural key when present; NULL = exploratory/fast-iteration run.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS experiments (
+  id                     TEXT PRIMARY KEY,
+  hive_id                TEXT NOT NULL DEFAULT '',
+  name                   TEXT NOT NULL,
+  description            TEXT,
+  content_hash           TEXT,
+  objective_metric       TEXT NOT NULL,
+  objective_direction    TEXT NOT NULL DEFAULT 'increase'
+    CHECK (objective_direction IN ('increase', 'decrease')),
+  objective_min_delta    REAL NOT NULL DEFAULT 0,
+  claims                 TEXT,
+  config                 TEXT NOT NULL DEFAULT '{}',
+  repo_resource_id       TEXT,
+  status                 TEXT NOT NULL DEFAULT 'draft'
+    CHECK (status IN ('draft', 'active', 'paused', 'archived')),
+  incumbent_candidate_id TEXT,
+  initiator_type         TEXT NOT NULL DEFAULT 'user'
+    CHECK (initiator_type IN ('user', 'agent')),
+  initiator_id           TEXT NOT NULL DEFAULT '',
+  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_experiments_hive ON experiments(hive_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_experiments_chash
+  ON experiments(content_hash) WHERE content_hash IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS experiment_runs (
+  id                   TEXT PRIMARY KEY,
+  experiment_id        TEXT NOT NULL,
+  autonomation_run_id  TEXT,
+  hosted_swarm_id      TEXT,
+  worker_token_hash    TEXT,
+  content_hash         TEXT,
+  env_fingerprint      TEXT,
+  repo_root            TEXT,
+  experiment_branch    TEXT,
+  experiment_worktree  TEXT,
+  start_point          TEXT,
+  status               TEXT NOT NULL DEFAULT 'queued'
+    CHECK (status IN ('queued', 'running', 'complete', 'failed', 'cancelled')),
+  stop_reason          TEXT,
+  stop_message         TEXT,
+  claim_strength       TEXT,
+  cycles               INTEGER NOT NULL DEFAULT 0,
+  total_proposed       INTEGER NOT NULL DEFAULT 0,
+  total_admitted       INTEGER NOT NULL DEFAULT 0,
+  total_promoted       INTEGER NOT NULL DEFAULT 0,
+  candidate_failures   INTEGER NOT NULL DEFAULT 0,
+  summary              TEXT,
+  initiator_type       TEXT NOT NULL DEFAULT 'user'
+    CHECK (initiator_type IN ('user', 'agent', 'schedule')),
+  initiator_id         TEXT NOT NULL DEFAULT '',
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  started_at           TEXT,
+  finished_at          TEXT,
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_exrun_experiment ON experiment_runs(experiment_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_exrun_hosted ON experiment_runs(hosted_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_exrun_arunid ON experiment_runs(autonomation_run_id);
+
+CREATE TABLE IF NOT EXISTS experiment_candidates (
+  id                   TEXT PRIMARY KEY,
+  experiment_id        TEXT NOT NULL,
+  run_id               TEXT NOT NULL,
+  candidate_ref        TEXT NOT NULL,
+  parent_candidate_id  TEXT,
+  cycle_index          INTEGER,
+  proposer             TEXT,
+  status               TEXT NOT NULL
+    CHECK (status IN ('baseline', 'admitted', 'keep', 'discard', 'crash', 'no_candidate')),
+  base_commit          TEXT,
+  head_commit          TEXT,
+  changed_paths        TEXT,
+  patch_ref            TEXT,
+  overlay              TEXT,
+  content_hash         TEXT,
+  score_train          REAL,
+  score_held_out       REAL,
+  scores               TEXT,
+  promoted             INTEGER NOT NULL DEFAULT 0,
+  rationale            TEXT,
+  failure_reason       TEXT,
+  dispatch_id          TEXT,
+  cascade_stream_id    TEXT,
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_excand_ref ON experiment_candidates(run_id, candidate_ref);
+CREATE INDEX IF NOT EXISTS idx_excand_experiment ON experiment_candidates(experiment_id, promoted);
+CREATE INDEX IF NOT EXISTS idx_excand_parent ON experiment_candidates(parent_candidate_id);
+
+CREATE TABLE IF NOT EXISTS experiment_events (
+  id                   TEXT PRIMARY KEY,
+  experiment_id        TEXT NOT NULL,
+  run_id               TEXT NOT NULL,
+  autonomation_run_id  TEXT,
+  seq                  INTEGER NOT NULL,
+  type                 TEXT NOT NULL,
+  cycle_index          INTEGER,
+  candidate_ref        TEXT,
+  metric               TEXT,
+  score                REAL,
+  message              TEXT,
+  payload              TEXT NOT NULL DEFAULT '{}',
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  received_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_exev_seq ON experiment_events(run_id, seq);
+CREATE INDEX IF NOT EXISTS idx_exev_run ON experiment_events(run_id, created_at);
 `;
 
 export const SEED_DATA = `
@@ -2209,6 +2333,139 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_cascade_diff_cache_key
   ON cascade_diff_cache(stream_id, commit_hash, IFNULL(base_hash, ''), IFNULL(file_path, ''));
 CREATE INDEX IF NOT EXISTS idx_cascade_diff_cache_stream ON cascade_diff_cache(stream_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_diff_cache_accessed ON cascade_diff_cache(last_accessed_at);
+`;
+
+// Migration V60: experiments — the optimization line (autonomation control plane).
+// See docs/design/autonomation-experiments.md §4.1. content_hash is the natural
+// key when present (partial-unique index); NULL = exploratory/fast-iteration run.
+export const MIGRATION_V60_EXPERIMENTS = `
+CREATE TABLE IF NOT EXISTS experiments (
+  id                     TEXT PRIMARY KEY,
+  hive_id                TEXT NOT NULL DEFAULT '',
+  name                   TEXT NOT NULL,
+  description            TEXT,
+  content_hash           TEXT,
+  objective_metric       TEXT NOT NULL,
+  objective_direction    TEXT NOT NULL DEFAULT 'increase'
+    CHECK (objective_direction IN ('increase', 'decrease')),
+  objective_min_delta    REAL NOT NULL DEFAULT 0,
+  claims                 TEXT,
+  config                 TEXT NOT NULL DEFAULT '{}',
+  repo_resource_id       TEXT,
+  status                 TEXT NOT NULL DEFAULT 'draft'
+    CHECK (status IN ('draft', 'active', 'paused', 'archived')),
+  incumbent_candidate_id TEXT,
+  initiator_type         TEXT NOT NULL DEFAULT 'user'
+    CHECK (initiator_type IN ('user', 'agent')),
+  initiator_id           TEXT NOT NULL DEFAULT '',
+  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_experiments_hive ON experiments(hive_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_experiments_chash
+  ON experiments(content_hash) WHERE content_hash IS NOT NULL;
+`;
+
+// Migration V61: experiment_runs — one loop invocation, hosted as a hosted swarm.
+// See docs/design/autonomation-experiments.md §4.2.
+export const MIGRATION_V61_EXPERIMENT_RUNS = `
+CREATE TABLE IF NOT EXISTS experiment_runs (
+  id                   TEXT PRIMARY KEY,
+  experiment_id        TEXT NOT NULL,
+  autonomation_run_id  TEXT,
+  hosted_swarm_id      TEXT,
+  worker_token_hash    TEXT,
+  content_hash         TEXT,
+  env_fingerprint      TEXT,
+  repo_root            TEXT,
+  experiment_branch    TEXT,
+  experiment_worktree  TEXT,
+  start_point          TEXT,
+  status               TEXT NOT NULL DEFAULT 'queued'
+    CHECK (status IN ('queued', 'running', 'complete', 'failed', 'cancelled')),
+  stop_reason          TEXT,
+  stop_message         TEXT,
+  claim_strength       TEXT,
+  cycles               INTEGER NOT NULL DEFAULT 0,
+  total_proposed       INTEGER NOT NULL DEFAULT 0,
+  total_admitted       INTEGER NOT NULL DEFAULT 0,
+  total_promoted       INTEGER NOT NULL DEFAULT 0,
+  candidate_failures   INTEGER NOT NULL DEFAULT 0,
+  summary              TEXT,
+  initiator_type       TEXT NOT NULL DEFAULT 'user'
+    CHECK (initiator_type IN ('user', 'agent', 'schedule')),
+  initiator_id         TEXT NOT NULL DEFAULT '',
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  started_at           TEXT,
+  finished_at          TEXT,
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_exrun_experiment ON experiment_runs(experiment_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_exrun_hosted ON experiment_runs(hosted_swarm_id);
+CREATE INDEX IF NOT EXISTS idx_exrun_arunid ON experiment_runs(autonomation_run_id);
+`;
+
+// Migration V62: experiment_candidates — the candidate-lineage projection.
+// See docs/design/autonomation-experiments.md §4.3. score_train/score_held_out
+// come from the finalization lineage snapshot (the seesaw), not the event stream.
+export const MIGRATION_V62_EXPERIMENT_CANDIDATES = `
+CREATE TABLE IF NOT EXISTS experiment_candidates (
+  id                   TEXT PRIMARY KEY,
+  experiment_id        TEXT NOT NULL,
+  run_id               TEXT NOT NULL,
+  candidate_ref        TEXT NOT NULL,
+  parent_candidate_id  TEXT,
+  cycle_index          INTEGER,
+  proposer             TEXT,
+  status               TEXT NOT NULL
+    CHECK (status IN ('baseline', 'admitted', 'keep', 'discard', 'crash', 'no_candidate')),
+  base_commit          TEXT,
+  head_commit          TEXT,
+  changed_paths        TEXT,
+  patch_ref            TEXT,
+  overlay              TEXT,
+  content_hash         TEXT,
+  score_train          REAL,
+  score_held_out       REAL,
+  scores               TEXT,
+  promoted             INTEGER NOT NULL DEFAULT 0,
+  rationale            TEXT,
+  failure_reason       TEXT,
+  dispatch_id          TEXT,
+  cascade_stream_id    TEXT,
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_excand_ref ON experiment_candidates(run_id, candidate_ref);
+CREATE INDEX IF NOT EXISTS idx_excand_experiment ON experiment_candidates(experiment_id, promoted);
+CREATE INDEX IF NOT EXISTS idx_excand_parent ON experiment_candidates(parent_candidate_id);
+`;
+
+// Migration V63: experiment_events — append-only live telemetry (source of truth
+// for the candidate projection). See docs/design/autonomation-experiments.md §4.4.
+export const MIGRATION_V63_EXPERIMENT_EVENTS = `
+CREATE TABLE IF NOT EXISTS experiment_events (
+  id                   TEXT PRIMARY KEY,
+  experiment_id        TEXT NOT NULL,
+  run_id               TEXT NOT NULL,
+  autonomation_run_id  TEXT,
+  seq                  INTEGER NOT NULL,
+  type                 TEXT NOT NULL,
+  cycle_index          INTEGER,
+  candidate_ref        TEXT,
+  metric               TEXT,
+  score                REAL,
+  message              TEXT,
+  payload              TEXT NOT NULL DEFAULT '{}',
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  received_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_exev_seq ON experiment_events(run_id, seq);
+CREATE INDEX IF NOT EXISTS idx_exev_run ON experiment_events(run_id, created_at);
 `;
 
 // Populate FTS tables from existing data
