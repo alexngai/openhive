@@ -57,22 +57,17 @@ export interface SetupSchedulerOptions {
   spawnFallbackSwarm?: FireHandlerDeps['spawnFallbackSwarm'];
   /** Optional override for the scheduled-experiment runner (defaults to the launcher). */
   runScheduledExperiment?: FireHandlerDeps['runScheduledExperiment'];
-  /** Hub base URL the launched experiment worker dials (e.g. http://127.0.0.1:7836). */
-  experimentHubUrl?: string;
   tickIntervalMs?: number;
   maxConcurrentFires?: number;
 }
 
 export function setupScheduler(opts: SetupSchedulerOptions): Scheduler {
   const store = createScheduleStore();
+  // The launcher dials the hub base URL the server set post-listen (the actual
+  // bound port), so no hubUrl override is threaded here.
   const runScheduledExperiment: FireHandlerDeps['runScheduledExperiment'] =
     opts.runScheduledExperiment ??
-    ((payload, scheduleId) =>
-      launcherRunScheduledExperiment(
-        payload,
-        scheduleId,
-        opts.experimentHubUrl ? { hubUrl: opts.experimentHubUrl } : {},
-      ));
+    ((payload, scheduleId) => launcherRunScheduledExperiment(payload, scheduleId));
   const fireHandler = createOpenHiveFireHandler({
     fetchSpec: opts.fetchSpec,
     isAutonomousDispatchPaused: opts.isAutonomousDispatchPaused,

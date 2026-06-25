@@ -12,7 +12,7 @@
 
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
-import { createAuthOrAdminKey } from '../middleware/auth.js';
+import { createAuthOrAdminKey, createAdminAuth } from '../middleware/auth.js';
 import * as dal from '../../db/dal/experiments.js';
 import { mintRunToken, verifyRunToken } from '../../experiments/run-token.js';
 import { ingestEvents, finalizeRun } from '../../experiments/ingest.js';
@@ -48,6 +48,9 @@ export async function experimentsRoutes(
   options: { config: Config },
 ): Promise<void> {
   const authOrAdminKey = createAuthOrAdminKey(options.config);
+  // launch/cancel spawn or kill OS processes — admin-only (operator override),
+  // not any-authenticated-agent.
+  const adminAuth = createAdminAuth(options.config);
   const adminKey = options.config.admin.key;
 
   /**
@@ -290,7 +293,7 @@ export async function experimentsRoutes(
 
   fastify.post<{ Params: { id: string; runId: string } }>(
     '/experiments/:id/runs/:runId/cancel',
-    { preHandler: authOrAdminKey },
+    { preHandler: adminAuth },
     async (request, reply) => {
       const run = resolveRun(request.params.id, request.params.runId);
       if (!run) {
@@ -315,7 +318,7 @@ export async function experimentsRoutes(
 
   fastify.post<{ Params: { id: string; runId: string } }>(
     '/experiments/:id/runs/:runId/launch',
-    { preHandler: authOrAdminKey },
+    { preHandler: adminAuth },
     async (request, reply) => {
       const experiment = dal.findExperimentById(request.params.id);
       if (!experiment) {
@@ -325,15 +328,15 @@ export async function experimentsRoutes(
       if (!run) {
         return reply.status(404).send({ error: 'Not Found', message: 'run not found' });
       }
-      if (run.status !== 'queued') {
+      // Atomically claim the queued run so two concurrent launches can't both
+      // spawn a worker; a lost race / already-launched run 409s.
+      if (!dal.claimRunForLaunch(run.id)) {
         return reply
           .status(409)
-          .send({ error: 'Conflict', message: 'run is not queued' });
+          .send({ error: 'Conflict', message: 'run is not queued or already launched' });
       }
       try {
-        const result = launchRun(experiment, run, {
-          hubUrl: `http://127.0.0.1:${options.config.port}`,
-        });
+        const result = launchRun(experiment, dal.findRunById(run.id)!);
         const updated = dal.findRunById(run.id)!;
         broadcastExperimentLifecycleEvent(experiment.id, {
           type: 'experiment.run_started',
@@ -341,6 +344,7 @@ export async function experimentsRoutes(
         });
         return reply.send({ run: publicRun(updated), pid: result.pid });
       } catch (err) {
+        dal.releaseRunLaunchClaim(request.params.runId); // spawn refused — release the claim
         return reply.status(400).send({ error: 'Bad Request', message: (err as Error).message });
       }
     },

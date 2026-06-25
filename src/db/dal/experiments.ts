@@ -531,6 +531,31 @@ export function updateRun(id: string, input: UpdateRunInput): ExperimentRun | nu
   return findRunById(id);
 }
 
+/**
+ * Atomically claim a queued run for launch — sets a `launching` marker only if
+ * the run is still `queued` with no marker. A lost race changes 0 rows. Returns
+ * true if this caller won the claim (prevents a double-launch TOCTOU).
+ */
+export function claimRunForLaunch(id: string): boolean {
+  const db = getDatabase();
+  const res = db
+    .prepare(
+      `UPDATE experiment_runs SET hosted_swarm_id = 'launching', updated_at = ?
+         WHERE id = ? AND status = 'queued' AND hosted_swarm_id IS NULL`,
+    )
+    .run(nowIso(), id);
+  return res.changes > 0;
+}
+
+/** Release a launch claim (e.g. when the spawn fails before the real marker is set). */
+export function releaseRunLaunchClaim(id: string): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE experiment_runs SET hosted_swarm_id = NULL, updated_at = ?
+       WHERE id = ? AND hosted_swarm_id = 'launching'`,
+  ).run(nowIso(), id);
+}
+
 // ============================================================================
 // experiment_candidates (projection)
 // ============================================================================

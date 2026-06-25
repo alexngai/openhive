@@ -12,9 +12,11 @@ verifiability rules, and the resolved decisions ([D1]–[D9]).
 
 ## Status
 
-Stage A: data model + DAL (slice 1), the API + ingest projection (slice 2), and
-the runner worker + tracker (slice 3) are landed. The hosted-swarm launcher, the
-scheduler payload, and the UI are subsequent slices (see the design doc §16).
+Stage A: the data model + DAL (slice 1), the API + ingest projection (slice 2),
+the runner worker + tracker (slice 3), and the process-host launcher + scheduler
+`experiment` payload (slice 4) are landed. The UI is the remaining slice; the
+lightweight (non-deployment) runner awaits the autonomation
+`createExperimentRunnerFromConfig` factory (see the design doc §16).
 
 ## Files
 
@@ -46,9 +48,16 @@ scheduler payload, and the UI are subsequent slices (see the design doc §16).
   (not the hosted-swarm manager — see the design-doc revision log). `launchRun`
   mints a fresh per-run token, persists its hash, and spawns the worker as a
   detached child (token-in-env, never argv), tracked in-memory for `cancel = kill`.
-  `POST /experiments/:id/runs/:runId/launch` (operator) drives it; `cancel` kills
-  the process. Spawn is injectable (`setLauncherSpawnForTest`). Deployment path
-  only until the autonomation `createExperimentRunnerFromConfig` factory lands.
+  `POST /experiments/:id/runs/:runId/{launch,cancel}` (**admin-only** — they spawn
+  or kill OS processes) drive it; launch atomically claims the `queued` run
+  (`claimRunForLaunch`) so concurrent launches can't double-spawn, and `cancel`
+  falls back to the persisted `proc:<pid>` marker when the process isn't tracked
+  (e.g. after a hub restart). The worker dials the hub's **actual bound port**
+  (`setHubBaseUrl`, set post-`listen` — may differ from `config.port`). A spawn
+  error finalizes the run `failed`. The scheduler `experiment` payload-kind drives
+  the same launcher via `runScheduledExperiment` (recurring runs). Spawn is
+  injectable (`setLauncherSpawnForTest`). Deployment path only until the
+  autonomation `createExperimentRunnerFromConfig` factory lands.
 
 ## Optional `autonomation` dependency
 

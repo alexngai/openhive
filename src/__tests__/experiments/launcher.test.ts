@@ -16,6 +16,7 @@ import {
   cancelRunProcess,
   isRunProcessTracked,
   runScheduledExperiment,
+  setHubBaseUrl,
   setLauncherSpawnForTest,
 } from '../../experiments/launcher.js';
 
@@ -26,18 +27,21 @@ const ADMIN = { 'x-admin-key': ADMIN_KEY };
 
 let app: FastifyInstance;
 
-// A fake child process — captures exit listeners, no real OS process.
+// A fake child process — captures exit/error listeners, no real OS process.
 function fakeChild(pid = 4242): ChildProcess {
   const exitCbs: Array<() => void> = [];
+  const errorCbs: Array<(e: Error) => void> = [];
   return {
     pid,
     unref() {},
-    on(ev: string, cb: () => void) {
-      if (ev === 'exit') exitCbs.push(cb);
+    on(ev: string, cb: (e?: Error) => void) {
+      if (ev === 'exit') exitCbs.push(cb as () => void);
+      if (ev === 'error') errorCbs.push(cb as (e: Error) => void);
       return this;
     },
-    // expose for the test to fire exit
+    // expose for the test to fire exit / error
     __fireExit: () => exitCbs.forEach((c) => c()),
+    __fireError: (e: Error) => errorCbs.forEach((c) => c(e)),
   } as unknown as ChildProcess;
 }
 
@@ -152,8 +156,75 @@ describe('launcher — launchRun / cancelRunProcess', () => {
     expect(cancelRunProcess(run.id)).toBe(true);
     expect(killSpy).toHaveBeenCalledWith(-(res.pid as number), 'SIGTERM');
     expect(isRunProcessTracked(run.id)).toBe(false);
-    expect(cancelRunProcess(run.id)).toBe(false); // idempotent
     killSpy.mockRestore();
+  });
+
+  it('cancelRunProcess falls back to the persisted proc marker when untracked', () => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    const exp = makeDeploymentExperiment();
+    const run = dal.createRun({ experiment_id: exp.id });
+    // Simulate a launched-then-restarted hub: marker persisted, registry empty.
+    dal.updateRun(run.id, { hosted_swarm_id: 'proc:4242' });
+    expect(isRunProcessTracked(run.id)).toBe(false);
+    expect(cancelRunProcess(run.id)).toBe(true);
+    expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
+    killSpy.mockRestore();
+  });
+
+  it('cancelRunProcess returns false for an untracked run with no marker', () => {
+    const exp = makeDeploymentExperiment();
+    const run = dal.createRun({ experiment_id: exp.id });
+    expect(cancelRunProcess(run.id)).toBe(false);
+  });
+
+  it('drops invalid run controls (negative / zero / non-integer)', () => {
+    const spy = spawnSpy();
+    setLauncherSpawnForTest(spy.fn);
+    const exp = makeDeploymentExperiment();
+    const run = dal.createRun({ experiment_id: exp.id });
+    launchRun(exp, run, { spawn: spy.fn }, { cycles: -3, budgetSeconds: 0 });
+    const argv = spy.calls[0].argv;
+    expect(argv).not.toContain('--cycles');
+    expect(argv).not.toContain('--budget-seconds');
+  });
+
+  it('forwards valid run controls to the worker argv', () => {
+    const spy = spawnSpy();
+    const exp = makeDeploymentExperiment();
+    const run = dal.createRun({ experiment_id: exp.id });
+    launchRun(exp, run, { spawn: spy.fn }, { cycles: 5, budgetSeconds: 120 });
+    const argv = spy.calls[0].argv;
+    expect(argv).toEqual(expect.arrayContaining(['--cycles', '5', '--budget-seconds', '120']));
+  });
+
+  it('a spawn error finalizes the run failed', () => {
+    let captured: ChildProcess | undefined;
+    const spawnFn = ((_cmd: string, _argv: string[], _opts: unknown) => {
+      captured = fakeChild(7000);
+      return captured;
+    }) as never;
+    const exp = makeDeploymentExperiment();
+    const run = dal.createRun({ experiment_id: exp.id });
+    launchRun(exp, run, { spawn: spawnFn });
+    (captured as unknown as { __fireError: (e: Error) => void }).__fireError(
+      new Error('ENOENT'),
+    );
+    const after = dal.findRunById(run.id)!;
+    expect(after.status).toBe('failed');
+    expect(after.stop_reason).toBe('spawn-error');
+    expect(isRunProcessTracked(run.id)).toBe(false);
+  });
+
+  it('launchRun dials the hub base URL set by setHubBaseUrl', () => {
+    const spy = spawnSpy();
+    setHubBaseUrl('http://127.0.0.1:65000');
+    const exp = makeDeploymentExperiment();
+    const run = dal.createRun({ experiment_id: exp.id });
+    launchRun(exp, run, { spawn: spy.fn });
+    const argv = spy.calls[0].argv;
+    const i = argv.indexOf('--hub-url');
+    expect(argv[i + 1]).toBe('http://127.0.0.1:65000');
+    setHubBaseUrl('http://127.0.0.1'); // reset module state
   });
 });
 
@@ -200,6 +271,47 @@ describe('launcher — POST /runs/:runId/launch route', () => {
       headers: ADMIN,
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects a double-launch of the same run (409)', async () => {
+    setLauncherSpawnForTest(spawnSpy().fn);
+    const exp = makeDeploymentExperiment();
+    const run = dal.createRun({ experiment_id: exp.id });
+    const first = await app.inject({
+      method: 'POST',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.id}/launch`,
+      headers: ADMIN,
+    });
+    expect(first.statusCode).toBe(200);
+    // second launch — still 'queued' but already has a process marker → 409
+    const second = await app.inject({
+      method: 'POST',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.id}/launch`,
+      headers: ADMIN,
+    });
+    expect(second.statusCode).toBe(409);
+  });
+
+  it('rejects launch without the admin key (admin-only)', async () => {
+    const exp = makeDeploymentExperiment();
+    const run = dal.createRun({ experiment_id: exp.id });
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.id}/launch`,
+    });
+    expect([401, 403]).toContain(res.statusCode);
+    // and the run was not claimed/launched
+    expect(dal.findRunById(run.id)!.hosted_swarm_id).toBeNull();
+  });
+
+  it('rejects cancel without the admin key (admin-only)', async () => {
+    const exp = makeDeploymentExperiment();
+    const run = dal.createRun({ experiment_id: exp.id });
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.id}/cancel`,
+    });
+    expect([401, 403]).toContain(res.statusCode);
   });
 
   it('cancel kills the launched process', async () => {

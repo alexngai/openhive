@@ -95,7 +95,6 @@ export interface DispatchPromptPayload {
 export interface ExperimentScheduleRunControls {
   cycles?: number;
   budgetSeconds?: number;
-  stopAfterNoPromotion?: number;
 }
 
 export interface ExperimentRunPayload {

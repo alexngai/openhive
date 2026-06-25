@@ -59,7 +59,6 @@ const ExperimentRunPayloadSchema = z.object({
     .object({
       cycles: z.number().int().positive().optional(),
       budgetSeconds: z.number().int().positive().optional(),
-      stopAfterNoPromotion: z.number().int().positive().optional(),
     })
     .optional(),
 });

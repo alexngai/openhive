@@ -44,6 +44,15 @@ export function setLauncherSpawnForTest(fn: typeof nodeSpawn | null): void {
   defaultSpawn = fn ?? nodeSpawn;
 }
 
+// The hub base URL the worker dials. Set by the server AFTER `listen` so it
+// reflects the actual BOUND port (the server may auto-increment on EADDRINUSE),
+// not just the configured one. Defaults to loopback with no port until set.
+let hubBaseUrl = 'http://127.0.0.1';
+
+export function setHubBaseUrl(url: string): void {
+  hubBaseUrl = url;
+}
+
 export interface LaunchResult {
   pid?: number;
   hosted_marker: string;
@@ -69,7 +78,7 @@ export function launchRun(
   const spawn = deps.spawn ?? defaultSpawn;
   const cliEntry = deps.cliEntry ?? process.argv[1];
   const execPath = deps.execPath ?? process.execPath;
-  const hubUrl = deps.hubUrl ?? 'http://127.0.0.1';
+  const hubUrl = deps.hubUrl ?? hubBaseUrl;
 
   const config = (experiment.config ?? {}) as DeploymentConfig;
   const dep = config.deployment;
@@ -101,8 +110,14 @@ export function launchRun(
     '--metric',
     experiment.objective_metric,
   ];
-  if (controls?.cycles !== undefined) argv.push('--cycles', String(controls.cycles));
-  if (controls?.budgetSeconds !== undefined) {
+  if (typeof controls?.cycles === 'number' && Number.isInteger(controls.cycles) && controls.cycles > 0) {
+    argv.push('--cycles', String(controls.cycles));
+  }
+  if (
+    typeof controls?.budgetSeconds === 'number' &&
+    Number.isFinite(controls.budgetSeconds) &&
+    controls.budgetSeconds > 0
+  ) {
     argv.push('--budget-seconds', String(controls.budgetSeconds));
   }
 
@@ -117,23 +132,53 @@ export function launchRun(
   child.on('exit', () => {
     if (runProcesses.get(run.id) === child) runProcesses.delete(run.id);
   });
+  child.on('error', (err) => {
+    // Spawn failure — the worker will never self-report; finalize the run failed.
+    if (runProcesses.get(run.id) === child) runProcesses.delete(run.id);
+    dal.updateRun(run.id, {
+      status: 'failed',
+      stop_reason: 'spawn-error',
+      stop_message: (err as Error).message,
+      finished_at: new Date().toISOString(),
+    });
+  });
 
   const marker = `proc:${child.pid ?? 'unknown'}`;
   dal.updateRun(run.id, { hosted_swarm_id: marker });
   return { pid: child.pid, hosted_marker: marker };
 }
 
-/** Kill a launched worker process group. Returns true if one was tracked. */
+/**
+ * Kill a launched worker process group. Returns true if a kill was attempted.
+ * Falls back to the stored `proc:<pid>` marker when the process isn't tracked
+ * in this hub instance (e.g. after a restart), so cancel still works.
+ */
 export function cancelRunProcess(runId: string): boolean {
   const child = runProcesses.get(runId);
-  if (!child) return false;
-  try {
-    if (child.pid) process.kill(-child.pid, 'SIGTERM'); // negative pid → the detached group
-  } catch {
-    /* already gone */
+  if (child) {
+    try {
+      if (child.pid) process.kill(-child.pid, 'SIGTERM'); // negative pid → the detached group
+    } catch {
+      /* already gone */
+    }
+    runProcesses.delete(runId);
+    return true;
   }
-  runProcesses.delete(runId);
-  return true;
+  // Not tracked here — best-effort kill via the persisted marker.
+  const marker = dal.findRunById(runId)?.hosted_swarm_id;
+  const m = typeof marker === 'string' ? marker.match(/^proc:(\d+)$/) : null;
+  if (m) {
+    const pid = Number(m[1]);
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        process.kill(-pid, 'SIGTERM');
+        return true;
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  return false;
 }
 
 /** Whether a live worker process is tracked for this run (in this hub process). */

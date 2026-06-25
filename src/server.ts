@@ -44,6 +44,7 @@ import {
 import { markStaleSwarms, getWellKnownMapInfo } from "./map/service.js";
 import { setupOrchestrator } from "./dispatch/setup.js";
 import { setupScheduler } from "./scheduler/setup.js";
+import { setHubBaseUrl as setExperimentHubBaseUrl } from "./experiments/launcher.js";
 import { isAutonomousDispatchPaused } from "./map/dispatch-policy.js";
 import { startTaskBinder, stopTaskBinder } from "./cascade/task-binder.js";
 import { installAsResolverFetcher as installCascadeDiffFetcher } from "./map/cascade-diff-protocol.js";
@@ -781,7 +782,6 @@ export async function createHive(
       isAutonomousDispatchPaused,
       tickIntervalMs: config.scheduler.tickIntervalMs,
       maxConcurrentFires: config.scheduler.maxConcurrentFires,
-      experimentHubUrl: `http://127.0.0.1:${config.port}`,
     });
     scheduler.start();
     fastify.addHook('onClose', async () => {
@@ -1256,6 +1256,14 @@ export async function createHive(
         const resolvedHost = config.host === "0.0.0.0" ? "127.0.0.1" : config.host;
         const resolvedUrl = config.instance.url || `http://${resolvedHost}:${boundPort}`;
         swarmManager.setInstanceUrl(resolvedUrl);
+      }
+
+      // The experiment worker is launched on the same host and dials loopback
+      // on the ACTUAL bound port (may differ from config.port after an
+      // EADDRINUSE auto-increment above).
+      {
+        const boundPort = (fastify.server.address() as { port: number } | null)?.port ?? port;
+        setExperimentHubBaseUrl(`http://127.0.0.1:${boundPort}`);
       }
 
       // Write port file for dev tools (e.g. Vite proxy)
