@@ -14,10 +14,15 @@ verifiability rules, and the resolved decisions ([D1]–[D9]).
 
 Stage A: the data model + DAL (slice 1), the API + ingest projection (slice 2),
 the runner worker + tracker (slice 3), the process-host launcher + scheduler
-`experiment` payload (slice 4), and **both runner paths** — deployment
+`experiment` payload (slice 4), **both runner paths** — deployment
 (content-hash-locked, verifiable) and lightweight **inline-config**
-(fast-iteration) — are landed. The UI is the remaining slice (see the design
-doc §16).
+(fast-iteration) — and the **management UI** (slice 5: list → experiment hub →
+run detail, monitoring + launch/cancel/pause/resume/archive, in `src/web/pages/Experiment*.tsx`)
+are landed. **Stage A is complete.** The UI is read-mostly: it never exposes a
+keep/discard control (promotion is recorded from autonomation), surfaces
+verifiability honestly (locked vs exploratory, claim regime, the train/held-out
+overfit signal), and degrades null content_hash / claim_strength / held-out to
+"exploratory / not available".
 
 ## Files
 

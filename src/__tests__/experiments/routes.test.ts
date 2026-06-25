@@ -214,6 +214,40 @@ describe('experiments routes — run + worker auth', () => {
     expect(res.json().run.cycles).toBe(3);
   });
 
+  it('GET /runs/:runId returns the run; 404 unknown run + 404 cross-experiment', async () => {
+    const expA = (await createExperiment()).json().experiment;
+    const expB = (await createExperiment({ content_hash: 'sha256:rundetail-b' })).json()
+      .experiment;
+    const run = (await createRun(expA.id)).json();
+
+    // happy path: the run is returned and the hash is stripped
+    const ok = await app.inject({
+      method: 'GET',
+      url: `/api/v1/experiments/${expA.id}/runs/${run.run.id}`,
+      headers: ADMIN,
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().run.id).toBe(run.run.id);
+    expect(ok.json().run.experiment_id).toBe(expA.id);
+    expect(ok.json().run.worker_token_hash).toBeUndefined();
+
+    // unknown run → 404
+    const missing = await app.inject({
+      method: 'GET',
+      url: `/api/v1/experiments/${expA.id}/runs/exrun_nope`,
+      headers: ADMIN,
+    });
+    expect(missing.statusCode).toBe(404);
+
+    // run A under experiment B's path → 404 (scoped to experiment)
+    const mismatch = await app.inject({
+      method: 'GET',
+      url: `/api/v1/experiments/${expB.id}/runs/${run.run.id}`,
+      headers: ADMIN,
+    });
+    expect(mismatch.statusCode).toBe(404);
+  });
+
   it('POST /runs/cancel marks the run cancelled', async () => {
     const exp = (await createExperiment()).json().experiment;
     const run = (await createRun(exp.id)).json();

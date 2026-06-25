@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Menu, X, CirclePile,
   User, MessageSquare, ChevronLeft, ChevronDown,
   ChevronRight, ListTodo, Brain, Wrench, GraduationCap, FileText, Send, Clock,
-  GitBranch, Users, Activity,
+  GitBranch, Users, Activity, FlaskConical,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useMapSwarms } from '../../hooks/useApi';
@@ -88,6 +88,7 @@ export function Sidebar() {
         { to: '/dispatch', icon: Send, label: 'Jobs' },
         { to: '/tasks', icon: ListTodo, label: 'Tasks' },
         { to: '/changes', icon: GitBranch, label: 'Changes' },
+        { to: '/experiments', icon: FlaskConical, label: 'Experiments' },
         { to: '/schedules', icon: Clock, label: 'Schedules' },
       ],
     },

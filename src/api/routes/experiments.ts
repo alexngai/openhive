@@ -259,6 +259,18 @@ export async function experimentsRoutes(
     },
   );
 
+  fastify.get<{ Params: { id: string; runId: string } }>(
+    '/experiments/:id/runs/:runId',
+    { preHandler: authOrAdminKey },
+    async (request, reply) => {
+      const run = resolveRun(request.params.id, request.params.runId);
+      if (!run) {
+        return reply.status(404).send({ error: 'Not Found', message: 'run not found' });
+      }
+      return reply.send({ run: publicRun(run) });
+    },
+  );
+
   fastify.get<{ Params: { id: string } }>(
     '/experiments/:id/candidates',
     { preHandler: authOrAdminKey },
