@@ -15,6 +15,7 @@ import {
   launchRun,
   cancelRunProcess,
   isRunProcessTracked,
+  runScheduledExperiment,
   setLauncherSpawnForTest,
 } from '../../experiments/launcher.js';
 
@@ -223,5 +224,35 @@ describe('launcher — POST /runs/:runId/launch route', () => {
     expect(isRunProcessTracked(run.id)).toBe(false);
     expect(killSpy).toHaveBeenCalled();
     killSpy.mockRestore();
+  });
+});
+
+describe('launcher — runScheduledExperiment', () => {
+  it('resolves the experiment, creates a queued run, and launches it with controls', () => {
+    const spy = spawnSpy();
+    setLauncherSpawnForTest(spy.fn);
+    const exp = makeDeploymentExperiment();
+    const res = runScheduledExperiment(
+      { experiment_ref: exp.id, run_controls: { cycles: 7 } },
+      'sch_1',
+    );
+    expect(res?.runId).toMatch(/^exrun_/);
+    const run = dal.findRunById(res!.runId)!;
+    expect(run.initiator_type).toBe('schedule');
+    expect(run.initiator_id).toBe('schedule:sch_1');
+    expect(spy.calls.length).toBe(1);
+    expect(spy.calls[0].argv).toEqual(expect.arrayContaining(['--cycles', '7']));
+  });
+
+  it('skips a paused experiment (returns null, no run)', () => {
+    setLauncherSpawnForTest(spawnSpy().fn);
+    const exp = makeDeploymentExperiment();
+    dal.updateExperiment(exp.id, { status: 'paused' });
+    expect(runScheduledExperiment({ experiment_ref: exp.id }, 'sch_1')).toBeNull();
+    expect(dal.listRunsForExperiment(exp.id).total).toBe(0);
+  });
+
+  it('returns null for a missing experiment', () => {
+    expect(runScheduledExperiment({ experiment_ref: 'exp_missing' }, 'sch_1')).toBeNull();
   });
 });

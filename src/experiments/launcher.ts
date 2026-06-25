@@ -55,10 +55,16 @@ export interface LaunchResult {
  * run. Throws if the experiment has no deployment config (lightweight path
  * pending the autonomation factory).
  */
+export interface LaunchControls {
+  cycles?: number;
+  budgetSeconds?: number;
+}
+
 export function launchRun(
   experiment: dal.Experiment,
   run: dal.ExperimentRun,
   deps: LauncherDeps = {},
+  controls?: LaunchControls,
 ): LaunchResult {
   const spawn = deps.spawn ?? defaultSpawn;
   const cliEntry = deps.cliEntry ?? process.argv[1];
@@ -95,6 +101,10 @@ export function launchRun(
     '--metric',
     experiment.objective_metric,
   ];
+  if (controls?.cycles !== undefined) argv.push('--cycles', String(controls.cycles));
+  if (controls?.budgetSeconds !== undefined) {
+    argv.push('--budget-seconds', String(controls.budgetSeconds));
+  }
 
   const child = spawn(execPath, argv, {
     detached: true,
@@ -129,4 +139,44 @@ export function cancelRunProcess(runId: string): boolean {
 /** Whether a live worker process is tracked for this run (in this hub process). */
 export function isRunProcessTracked(runId: string): boolean {
   return runProcesses.has(runId);
+}
+
+export interface ScheduledExperimentPayload {
+  experiment_ref: string;
+  run_controls?: LaunchControls;
+}
+
+/**
+ * Fire a scheduled experiment: resolve the experiment, create a `queued` run,
+ * and launch the worker. Returns the new run id, or null if the experiment is
+ * missing or not active (paused/archived experiments are skipped). On a launch
+ * failure the run is finalized `failed` and the error rethrown (the scheduler
+ * fire handler logs it).
+ */
+export function runScheduledExperiment(
+  payload: ScheduledExperimentPayload,
+  scheduleId: string,
+  deps: LauncherDeps = {},
+): { runId: string } | null {
+  const experiment = dal.findExperimentById(payload.experiment_ref);
+  if (!experiment) return null;
+  if (experiment.status === 'paused' || experiment.status === 'archived') return null;
+
+  const run = dal.createRun({
+    experiment_id: experiment.id,
+    initiator_type: 'schedule',
+    initiator_id: `schedule:${scheduleId}`,
+  });
+  try {
+    launchRun(experiment, run, deps, payload.run_controls);
+  } catch (err) {
+    dal.updateRun(run.id, {
+      status: 'failed',
+      stop_reason: 'launch-error',
+      stop_message: (err as Error).message,
+      finished_at: new Date().toISOString(),
+    });
+    throw err;
+  }
+  return { runId: run.id };
 }

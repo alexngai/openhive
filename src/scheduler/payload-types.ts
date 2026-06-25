@@ -87,9 +87,27 @@ export interface DispatchPromptPayload {
   fallback_spawn?: FallbackSpawn;
 }
 
+/**
+ * Recurring experiment run (autonomation control plane). No spec / target
+ * swarms — the fire handler resolves the experiment, creates a `queued` run,
+ * and launches the runner worker. See `src/experiments/`.
+ */
+export interface ExperimentScheduleRunControls {
+  cycles?: number;
+  budgetSeconds?: number;
+  stopAfterNoPromotion?: number;
+}
+
+export interface ExperimentRunPayload {
+  kind: 'experiment';
+  experiment_ref: string; // experiments.id
+  run_controls?: ExperimentScheduleRunControls;
+}
+
 export type OpenHiveSchedulePayload =
   | DispatchSpecPayload
-  | DispatchPromptPayload;
+  | DispatchPromptPayload
+  | ExperimentRunPayload;
 
 /**
  * The discriminated-union resolver. Old payloads (no `kind` field) are
@@ -98,9 +116,12 @@ export type OpenHiveSchedulePayload =
  */
 export function getPayloadKind(
   payload: OpenHiveSchedulePayload,
-): 'dispatch_spec' | 'dispatch_prompt' {
+): 'dispatch_spec' | 'dispatch_prompt' | 'experiment' {
   if ('kind' in payload && payload.kind === 'dispatch_prompt') {
     return 'dispatch_prompt';
+  }
+  if ('kind' in payload && payload.kind === 'experiment') {
+    return 'experiment';
   }
   return 'dispatch_spec';
 }
@@ -114,13 +135,17 @@ export function isValidPayload(p: unknown): p is OpenHiveSchedulePayload {
   if (!p || typeof p !== 'object') return false;
   const o = p as Record<string, unknown>;
 
-  // Common: target_swarm_ids array, non-empty, all strings.
+  // Discriminate first — the experiment kind has no target_swarm_ids.
+  const kind = typeof o.kind === 'string' ? o.kind : 'dispatch_spec';
+
+  if (kind === 'experiment') {
+    return typeof o.experiment_ref === 'string' && o.experiment_ref.length > 0;
+  }
+
+  // Dispatch kinds: target_swarm_ids array, non-empty, all strings.
   if (!Array.isArray(o.target_swarm_ids)) return false;
   if (o.target_swarm_ids.length === 0) return false;
   if (!o.target_swarm_ids.every((s) => typeof s === 'string')) return false;
-
-  // Discriminate.
-  const kind = typeof o.kind === 'string' ? o.kind : 'dispatch_spec';
 
   if (kind === 'dispatch_prompt') {
     return typeof o.prompt === 'string' && o.prompt.length > 0;

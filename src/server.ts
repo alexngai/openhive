@@ -781,6 +781,7 @@ export async function createHive(
       isAutonomousDispatchPaused,
       tickIntervalMs: config.scheduler.tickIntervalMs,
       maxConcurrentFires: config.scheduler.maxConcurrentFires,
+      experimentHubUrl: `http://127.0.0.1:${config.port}`,
     });
     scheduler.start();
     fastify.addHook('onClose', async () => {
