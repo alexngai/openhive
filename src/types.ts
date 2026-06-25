@@ -217,7 +217,14 @@ export type WSEventType =
   | 'schedule.deleted'
   | 'schedule.paused'
   | 'schedule.resumed'
-  | 'schedule.fired';
+  | 'schedule.fired'
+  // Experiment control-plane events (see realtime/experiment-events.ts).
+  // `map:experiments` (fleet) + `experiment:<id>` (per-experiment) channels.
+  | 'experiment.updated'
+  | 'experiment.run_started'
+  | 'experiment.run_updated'
+  | 'experiment.run_finished'
+  | 'experiment.candidate';
 
 export interface WSEvent {
   type: WSEventType;

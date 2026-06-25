@@ -460,15 +460,22 @@ in `src/api/index.ts` (alongside `schedulesRoutes`).
 | Method + path | Purpose | Auth (preHandler) |
 |---|---|---|
 | `POST /experiments` | create/upsert an experiment line | operator (`createAuthOrAdminKey`) |
-| `GET /experiments` · `GET /experiments/:id` | list / detail | operator |
+| `GET /experiments` · `GET /experiments/:id` | list / detail (detail embeds recent runs) | operator |
+| `PATCH /experiments/:id` | update fields/status | operator |
 | `POST /experiments/:id/pause` · `/resume` · `/archive` | operator lifecycle | operator |
-| `POST /experiments/:id/runs` | launch a run (insert `queued` row + start hosted swarm) | operator / scheduler |
+| `POST /experiments/:id/runs` | launch a run (insert `queued` row + mint per-run token; Stage A returns it, the launcher injects it) | operator / scheduler |
+| `GET /experiments/:id/runs` | list runs | operator |
 | `PATCH /experiments/:id/runs/:runId` | run start/finish (tracker `start`/`finish`) | **worker key** |
 | `POST /experiments/:id/runs/:runId/events` | append event(s) (tracker `log`, batched) | **worker key** |
 | `POST /experiments/:id/runs/:runId/finalize` | finalization payload (claim_strength, content_hash, env_fingerprint, lineage) | **worker key** |
 | `POST /experiments/:id/runs/:runId/cancel` | operator cancel → hosted-swarm stop | operator |
 | `GET /experiments/:id/runs/:runId/events` | telemetry tail (paginated by `seq`) | operator |
 | `GET /experiments/:id/candidates` | lineage projection | operator |
+
+**Terminal-state semantics (§5):** `finalize` and `cancel` move the run to a
+terminal state (`complete`/`failed`/`cancelled`) **and clear `worker_token_hash`**,
+so the per-run token dies with the run. `events`/`finalize` against a terminal run
+return `409` — a late or replayed POST cannot resurrect a closed run.
 
 **[D6] — worker auth (RESOLVED: launch-minted token now, ingest-key scope later).**
 For **hub-launched** runs (Stage A), the launcher mints a one-time per-run token,
