@@ -27,8 +27,12 @@ export interface LauncherDeps {
   hubUrl?: string;
 }
 
-interface DeploymentConfig {
+interface ExperimentLaunchConfig {
   deployment?: { deploymentPath?: string; runPath?: string };
+  /** Inline autonomation DOMAIN config — the lightweight (non-deployment) path. */
+  inline?: Record<string, unknown>;
+  /** Base dir for resolving relative paths in `inline` (defaults to its repoRoot). */
+  configBaseDir?: string;
 }
 
 // run_id → the live worker process (in-memory; lost on hub restart, where the
@@ -80,12 +84,14 @@ export function launchRun(
   const execPath = deps.execPath ?? process.execPath;
   const hubUrl = deps.hubUrl ?? hubBaseUrl;
 
-  const config = (experiment.config ?? {}) as DeploymentConfig;
+  const config = (experiment.config ?? {}) as ExperimentLaunchConfig;
   const dep = config.deployment;
-  if (!dep?.deploymentPath || !dep?.runPath) {
+  const hasDeployment = Boolean(dep?.deploymentPath && dep?.runPath);
+  const hasInline = config.inline != null;
+  if (hasDeployment === hasInline) {
     throw new Error(
-      'launchRun: experiment.config.deployment.{deploymentPath,runPath} is required ' +
-        '(deployment path; the lightweight path is pending the autonomation config→runner factory)',
+      'launchRun: experiment.config must provide EXACTLY ONE of ' +
+        'deployment.{deploymentPath,runPath} (deployment path) or `inline` (lightweight config)',
     );
   }
 
@@ -103,13 +109,19 @@ export function launchRun(
     experiment.id,
     '--run-id',
     run.id,
-    '--deployment',
-    dep.deploymentPath,
-    '--run',
-    dep.runPath,
     '--metric',
     experiment.objective_metric,
   ];
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, OPENHIVE_WORKER_TOKEN: token };
+  if (hasDeployment) {
+    argv.push('--deployment', dep!.deploymentPath!, '--run', dep!.runPath!);
+  } else {
+    // Lightweight inline config — passed via env (not argv): it can be large, and
+    // argv is visible in `ps`.
+    childEnv.OPENHIVE_EXPERIMENT_CONFIG = JSON.stringify(config.inline);
+    const base = config.configBaseDir ?? (config.inline as { repoRoot?: string }).repoRoot;
+    if (base) argv.push('--config-base', base);
+  }
   if (typeof controls?.cycles === 'number' && Number.isInteger(controls.cycles) && controls.cycles > 0) {
     argv.push('--cycles', String(controls.cycles));
   }
@@ -124,7 +136,7 @@ export function launchRun(
   const child = spawn(execPath, argv, {
     detached: true,
     stdio: ['ignore', 'ignore', 'ignore'],
-    env: { ...process.env, OPENHIVE_WORKER_TOKEN: token },
+    env: childEnv,
   });
   child.unref();
 

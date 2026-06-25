@@ -15,6 +15,7 @@ import { HubClient } from '../../experiments/worker/hub-client.js';
 import {
   runExperimentWorker,
   type AutonomationExperimentModule,
+  type AutonomationExperimentConfigModule,
 } from '../../experiments/worker/run-experiment-worker.js';
 
 const TEST_ROOT = testRoot('experiments-worker');
@@ -329,7 +330,69 @@ function fakeAutonomation(
   };
 }
 
+// A faked autonomation/experiment-config module (the lightweight path). Builds a
+// runner from an inline config object, drives the injected observers, and returns
+// NO `deploymentRun` (→ content_hash null, no lineage subtree).
+function fakeAutonomationConfig(): AutonomationExperimentConfigModule {
+  let observers: Array<{ onEvent?: (ev: unknown) => Promise<void> }> = [];
+  return {
+    async createExperimentRunnerFromConfigObject(_raw, _base, opts) {
+      observers = (opts?.observers as typeof observers) ?? [];
+      return {
+        runner: {
+          async initializeBaseline() {},
+          async runWithControls() {
+            const emit = async (ev: Record<string, unknown>) => {
+              for (const obs of observers) await obs.onEvent?.(ev);
+            };
+            await emit({ type: 'experiment_start', runId: 'arun_cfg', repoRoot: '/t', experimentBranch: 'b', experimentWorktree: 'w', startPoint: 'sp', message: 's' });
+            await emit({ type: 'candidate_admitted', candidateId: 'c1', cycleIndex: 1, message: 'a' });
+            await emit({ type: 'promotion_keep', candidateId: 'c1', metric: 'eval.score', score: 0.6, message: 'k' });
+            await emit({ type: 'experiment_complete', message: 'd', cycles: 1, proposed: 1, admitted: 1, totalPromoted: 1 });
+            return { failed: false, stopReason: 'cycle-budget', cycles: [1], totalProposed: 1, totalAdmitted: 1, totalPromoted: 1, candidateFailures: 0 };
+          },
+          lineage: { async bySubtree() { return []; } },
+        },
+        // no deploymentRun → content_hash null, subtree undefined (lightweight)
+      };
+    },
+  };
+}
+
 describe('runExperimentWorker (orchestration, faked autonomation)', () => {
+  it('lightweight inline-config path: builds via the config module; content_hash + score cards degrade to null', async () => {
+    const { experimentId, runId, token } = await makeExperimentAndRun();
+    const result = await runExperimentWorker({
+      hubUrl: HUB,
+      apiKey: token,
+      experimentId,
+      runId,
+      config: { repoRoot: '/t', objective: { metric: 'eval.score', direction: 'increase' } },
+      configBaseDir: '/t',
+      objectiveMetric: 'eval.score',
+      fetchImpl: FETCH(),
+      loadAutonomation: async () => fakeAutonomation(), // for experimentTrackerObserver
+      loadAutonomationConfig: async () => fakeAutonomationConfig(),
+    });
+    expect(result.status).toBe('complete');
+
+    const run = await getRun(experimentId, runId);
+    expect(run.status).toBe('complete');
+    expect(run.content_hash).toBeNull(); // no deployment lock on the lightweight path
+
+    // live events still streamed (4) and projected a candidate; but no finalization
+    // score cards (subtree undefined → lineage extraction skipped).
+    const events = (
+      await app.inject({ method: 'GET', url: `/api/v1/experiments/${experimentId}/runs/${runId}/events`, headers: ADMIN })
+    ).json().data as unknown[];
+    expect(events.length).toBe(4);
+    const cands = await getCandidates(experimentId);
+    expect(cands[0].candidate_ref).toBe('c1');
+    expect(cands[0].status).toBe('keep');
+    expect(cands[0].score_train).toBeNull();
+    expect(cands[0].score_held_out).toBeNull();
+  });
+
   it('runs the loop, streams live events, and posts the finalization (lock + claim + seesaw)', async () => {
     const { experimentId, runId, token } = await makeExperimentAndRun();
     const result = await runExperimentWorker({

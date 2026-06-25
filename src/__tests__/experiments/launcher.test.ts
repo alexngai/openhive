@@ -98,6 +98,15 @@ function makeDeploymentExperiment() {
   });
 }
 
+function makeInlineExperiment() {
+  return dal.createExperiment({
+    name: 'inline me',
+    objective_metric: 'eval.score',
+    objective_direction: 'increase',
+    config: { inline: { repoRoot: '/repo', objective: { metric: 'eval.score', direction: 'increase' } } },
+  });
+}
+
 describe('launcher — launchRun / cancelRunProcess', () => {
   it('spawns the worker with token-in-env (not argv) and records the run', () => {
     const spy = spawnSpy();
@@ -366,5 +375,52 @@ describe('launcher — runScheduledExperiment', () => {
 
   it('returns null for a missing experiment', () => {
     expect(runScheduledExperiment({ experiment_ref: 'exp_missing' }, 'sch_1')).toBeNull();
+  });
+});
+
+describe('launcher — lightweight inline-config path', () => {
+  it('passes the inline config via env (not argv) + --config-base; no --deployment/--run', () => {
+    const spy = spawnSpy();
+    const exp = makeInlineExperiment();
+    const run = dal.createRun({ experiment_id: exp.id });
+    launchRun(exp, run, { spawn: spy.fn, hubUrl: 'http://127.0.0.1:7799' });
+    const call = spy.calls[0];
+    // config travels in env, never argv
+    expect(call.env.OPENHIVE_EXPERIMENT_CONFIG).toBeDefined();
+    expect(JSON.parse(call.env.OPENHIVE_EXPERIMENT_CONFIG).repoRoot).toBe('/repo');
+    expect(call.argv).not.toContain('--deployment');
+    expect(call.argv).not.toContain('--run');
+    // base derived from the inline config's repoRoot
+    expect(call.argv).toEqual(expect.arrayContaining(['--config-base', '/repo']));
+    // worker token still in env (not argv)
+    expect(call.env.OPENHIVE_WORKER_TOKEN).toBeDefined();
+    expect(call.argv).not.toContain(call.env.OPENHIVE_WORKER_TOKEN);
+  });
+
+  it('throws when the config provides neither deployment nor inline', () => {
+    const spy = spawnSpy();
+    const exp = dal.createExperiment({
+      name: 'empty',
+      objective_metric: 'eval.score',
+      objective_direction: 'increase',
+      config: {},
+    });
+    const run = dal.createRun({ experiment_id: exp.id });
+    expect(() => launchRun(exp, run, { spawn: spy.fn })).toThrow(/EXACTLY ONE/);
+  });
+
+  it('throws when the config provides BOTH deployment and inline', () => {
+    const spy = spawnSpy();
+    const exp = dal.createExperiment({
+      name: 'both',
+      objective_metric: 'eval.score',
+      objective_direction: 'increase',
+      config: {
+        deployment: { deploymentPath: '/d', runPath: '/r' },
+        inline: { repoRoot: '/x' },
+      },
+    });
+    const run = dal.createRun({ experiment_id: exp.id });
+    expect(() => launchRun(exp, run, { spawn: spy.fn })).toThrow(/EXACTLY ONE/);
   });
 });

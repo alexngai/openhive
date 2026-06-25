@@ -58,21 +58,51 @@ export interface AutonomationExperimentModule {
   scoreFromCard(card: unknown, metric: string, aggregate: string): number | undefined;
 }
 
+// The lightweight (non-deployment) path: `autonomation/experiment-config`. Builds
+// a runner from an inline DOMAIN config object, observers injected. Its return
+// nests any deployment runner under `deploymentRun` (undefined for a pure
+// non-deployment config), so content_hash / substrate live there when present.
+interface AutonomationConfigRunner {
+  runner: AutonomationRunner;
+  deploymentRun?: {
+    plan?: { lock?: { contentHash?: string } };
+    substrate?: { id?: string };
+  };
+}
+
+export interface AutonomationExperimentConfigModule {
+  createExperimentRunnerFromConfigObject(
+    raw: unknown,
+    base: string,
+    opts?: { observers?: unknown[]; journal?: unknown },
+  ): Promise<AutonomationConfigRunner>;
+}
+
 export interface RunExperimentWorkerOptions {
   hubUrl: string;
   apiKey: string; // per-run worker token
   experimentId: string;
   runId: string;
-  deploymentPath: string;
-  runPath: string;
+  // Deployment path (the verifiable, content-hash-locked path). Mutually
+  // exclusive with `config` (the lightweight inline-config path).
+  deploymentPath?: string;
+  runPath?: string;
+  // Lightweight path: an inline autonomation DOMAIN config object. When set, the
+  // worker builds the runner via `autonomation/experiment-config` and content_hash
+  // / held-out scores degrade to null (no deployment lock / claims gate).
+  config?: unknown;
+  /** Base dir for resolving relative paths in `config` (defaults to cwd). */
+  configBaseDir?: string;
   /** Objective metric id used to extract scalar scores from lineage cards. */
   objectiveMetric: string;
   objectiveAggregate?: 'mean' | 'sum' | 'min' | 'max';
   controls?: Record<string, unknown>; // autonomation ExperimentRunControls
   envFingerprint?: unknown;
   fetchImpl?: typeof fetch;
-  /** Test seam — override the autonomation module loader. */
+  /** Test seam — override the autonomation deployment-module loader. */
   loadAutonomation?: () => Promise<AutonomationExperimentModule>;
+  /** Test seam — override the autonomation experiment-config-module loader. */
+  loadAutonomationConfig?: () => Promise<AutonomationExperimentConfigModule>;
 }
 
 export interface RunExperimentWorkerResult {
@@ -88,6 +118,20 @@ async function defaultLoadAutonomation(): Promise<AutonomationExperimentModule> 
     throw new Error(
       'The `openhive experiment-worker` requires the optional `autonomation` package. ' +
         'Install it to manage experiments (it is an optional peer dependency). ' +
+        `Underlying import error: ${(err as Error).message}`,
+    );
+  }
+}
+
+async function defaultLoadAutonomationConfig(): Promise<AutonomationExperimentConfigModule> {
+  try {
+    return (await import(
+      'autonomation/experiment-config'
+    )) as unknown as AutonomationExperimentConfigModule;
+  } catch (err) {
+    throw new Error(
+      'The `openhive experiment-worker` lightweight (inline-config) path requires the ' +
+        'optional `autonomation` package. Install it to manage experiments. ' +
         `Underlying import error: ${(err as Error).message}`,
     );
   }
@@ -110,16 +154,38 @@ export async function runExperimentWorker(
   // here (missing package, bad deployment, baseline error) finalizes the run as
   // 'failed' so it isn't left stuck 'running', then propagates.
   let auto!: AutonomationExperimentModule;
-  let built!: AutonomationDeploymentRunner;
+  let runner!: AutonomationRunner;
+  // content_hash + lineage subtree are resolved per path: the deployment path
+  // yields them from the plan lock / substrate; the lightweight path nests any
+  // deployment runner under `deploymentRun` (else both stay null/undefined).
+  let contentHash: string | null = null;
+  let subtree: string | undefined;
   try {
     auto = await (opts.loadAutonomation ?? defaultLoadAutonomation)();
     const observer = auto.experimentTrackerObserver({ trackers: [tracker], failurePolicy: 'warn' });
-    built = await auto.createExperimentRunnerFromDeployment({
-      deploymentPath: opts.deploymentPath,
-      runPath: opts.runPath,
-      observers: [observer],
-    });
-    await built.runner.initializeBaseline();
+    if (opts.config !== undefined) {
+      // Lightweight path: an inline domain config (no deployment lock / claims gate).
+      const autoConfig = await (opts.loadAutonomationConfig ?? defaultLoadAutonomationConfig)();
+      const built = await autoConfig.createExperimentRunnerFromConfigObject(
+        opts.config,
+        opts.configBaseDir ?? process.cwd(),
+        { observers: [observer] },
+      );
+      runner = built.runner;
+      contentHash = built.deploymentRun?.plan?.lock?.contentHash ?? null;
+      subtree = built.deploymentRun?.substrate?.id;
+    } else {
+      // Deployment path: the verifiable, content-hash-locked runner.
+      const built = await auto.createExperimentRunnerFromDeployment({
+        deploymentPath: opts.deploymentPath,
+        runPath: opts.runPath,
+        observers: [observer],
+      });
+      runner = built.runner;
+      contentHash = built.plan?.lock?.contentHash ?? null;
+      subtree = built.substrate?.id;
+    }
+    await runner.initializeBaseline();
   } catch (setupErr) {
     await client
       .finalize({
@@ -137,7 +203,7 @@ export async function runExperimentWorker(
   let failed = false;
   let errMessage: string | undefined;
   try {
-    result = await built.runner.runWithControls(opts.controls ?? {});
+    result = await runner.runWithControls(opts.controls ?? {});
     failed = Boolean(result?.failed);
   } catch (err) {
     failed = true;
@@ -147,12 +213,12 @@ export async function runExperimentWorker(
     await tracker.flush();
   }
 
-  // Finalization — the verifiability channel the tracker can't carry.
-  const contentHash = built.plan?.lock?.contentHash ?? null;
+  // Finalization — the verifiability channel the tracker can't carry. On the
+  // lightweight path `contentHash` is null (no deployment lock).
   const aggregate = opts.objectiveAggregate ?? 'mean';
   let candidates: FinalizeCandidatePayload[] = [];
   try {
-    candidates = await extractCandidates(built, auto, opts.objectiveMetric, aggregate);
+    candidates = await extractCandidates(runner, subtree, auto, opts.objectiveMetric, aggregate);
   } catch (err) {
     // Best-effort: live promotion events already projected the candidate rows;
     // the train/held-out seesaw is the enhancement.
@@ -186,13 +252,13 @@ export async function runExperimentWorker(
 
 /** Best-effort per-candidate score-card extraction from the runner's lineage. */
 async function extractCandidates(
-  built: AutonomationDeploymentRunner,
+  runner: AutonomationRunner,
+  subtree: string | undefined,
   auto: AutonomationExperimentModule,
   metric: string,
   aggregate: string,
 ): Promise<FinalizeCandidatePayload[]> {
-  const subtree = built.substrate?.id;
-  const lineage = built.runner.lineage;
+  const lineage = runner.lineage;
   if (!subtree || !lineage?.bySubtree) return [];
 
   const entries = await lineage.bySubtree(subtree);

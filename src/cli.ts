@@ -722,8 +722,9 @@ program
     '--worker-token <token>',
     'Per-run worker token (or set OPENHIVE_WORKER_TOKEN)',
   )
-  .requiredOption('--deployment <path>', 'Deployment YAML path')
-  .requiredOption('--run <path>', 'Run YAML path')
+  .option('--deployment <path>', 'Deployment YAML path (deployment path)')
+  .option('--run <path>', 'Run YAML path (deployment path)')
+  .option('--config-base <dir>', 'Base dir for resolving inline-config relative paths')
   .requiredOption('--metric <id>', 'Objective metric id (for lineage score extraction)')
   .option('--aggregate <agg>', 'Score aggregate (mean|sum|min|max)', 'mean')
   .option('--cycles <n>', 'Max cycles')
@@ -733,6 +734,25 @@ program
     if (!token) {
       console.error(
         'A worker token is required (--worker-token or OPENHIVE_WORKER_TOKEN).',
+      );
+      process.exit(1);
+    }
+    // The inline (lightweight) domain config is passed via env, not argv — it can
+    // be large, and argv is visible in `ps`.
+    let inlineConfig: unknown;
+    if (process.env.OPENHIVE_EXPERIMENT_CONFIG) {
+      try {
+        inlineConfig = JSON.parse(process.env.OPENHIVE_EXPERIMENT_CONFIG);
+      } catch (err) {
+        console.error(`OPENHIVE_EXPERIMENT_CONFIG is not valid JSON: ${(err as Error).message}`);
+        process.exit(1);
+      }
+    }
+    const hasDeployment = Boolean(options.deployment && options.run);
+    if (hasDeployment === (inlineConfig !== undefined)) {
+      console.error(
+        'Provide EXACTLY ONE config source: --deployment + --run (deployment path), ' +
+          'or the OPENHIVE_EXPERIMENT_CONFIG env var (inline lightweight config).',
       );
       process.exit(1);
     }
@@ -747,8 +767,9 @@ program
         apiKey: token,
         experimentId: options.experimentId,
         runId: options.runId,
-        deploymentPath: options.deployment,
-        runPath: options.run,
+        ...(inlineConfig !== undefined
+          ? { config: inlineConfig, configBaseDir: options.configBase }
+          : { deploymentPath: options.deployment, runPath: options.run }),
         objectiveMetric: options.metric,
         objectiveAggregate: options.aggregate,
         controls,

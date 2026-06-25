@@ -13,10 +13,11 @@ verifiability rules, and the resolved decisions ([D1]–[D9]).
 ## Status
 
 Stage A: the data model + DAL (slice 1), the API + ingest projection (slice 2),
-the runner worker + tracker (slice 3), and the process-host launcher + scheduler
-`experiment` payload (slice 4) are landed. The UI is the remaining slice; the
-lightweight (non-deployment) runner awaits the autonomation
-`createExperimentRunnerFromConfig` factory (see the design doc §16).
+the runner worker + tracker (slice 3), the process-host launcher + scheduler
+`experiment` payload (slice 4), and **both runner paths** — deployment
+(content-hash-locked, verifiable) and lightweight **inline-config**
+(fast-iteration) — are landed. The UI is the remaining slice (see the design
+doc §16).
 
 ## Files
 
@@ -56,8 +57,10 @@ lightweight (non-deployment) runner awaits the autonomation
   (`setHubBaseUrl`, set post-`listen` — may differ from `config.port`). A spawn
   error finalizes the run `failed`. The scheduler `experiment` payload-kind drives
   the same launcher via `runScheduledExperiment` (recurring runs). Spawn is
-  injectable (`setLauncherSpawnForTest`). Deployment path only until the
-  autonomation `createExperimentRunnerFromConfig` factory lands.
+  injectable (`setLauncherSpawnForTest`). `experiment.config` selects the path
+  (XOR): `deployment.{deploymentPath,runPath}` → the deployment worker, or
+  `inline` (an autonomation domain config) → the lightweight worker, passed to
+  the child via the `OPENHIVE_EXPERIMENT_CONFIG` env var (not argv).
 
 ## Optional `autonomation` dependency
 
@@ -100,11 +103,17 @@ the type-only imports.
 
 ## Known limitations (Stage A)
 
-- **Deployment path only.** The worker builds the runner via
-  `createExperimentRunnerFromDeployment` (the cleanly-exported, file-path-driven
-  entry that yields a real `content_hash` + claims gate). The lightweight
-  `createExperimentRunner` path is deferred — it would require autonomation to
-  export a config→runner factory (we will not replicate its CLI-internal wiring).
+- **Two runner paths; lightweight trades away verifiability.** The deployment
+  path (`createExperimentRunnerFromDeployment`) yields a real `content_hash` +
+  claims gate + held-out scores. The lightweight path (autonomation's
+  `autonomation/experiment-config` → `createExperimentRunnerFromConfigObject`,
+  fed the experiment's inline domain config) is for fast iteration: it has **no
+  deployment lock → `content_hash` is null**, no pre-registered claims gate
+  (`claim_strength` null), and no `gateCard` → no held-out scores; lineage
+  candidates need a `deploymentRun` substrate, so a pure inline run's candidates
+  come from live events only. Use deployment for verifiable/comparable/promotable
+  runs. The worker injects its own tracker as an observer on both paths (the
+  config factory takes injected observers — monitoring is the hub's job).
 - **Single-process per run; no resume.** The tracker assigns `seq` from 0 in the
   worker process. If a worker is restarted against the same run (a future resume
   feature), `seq` would collide with already-ingested rows on `uq_exev_seq` and the
