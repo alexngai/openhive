@@ -17,6 +17,7 @@ import * as dal from '../../db/dal/experiments.js';
 import { mintRunToken, verifyRunToken } from '../../experiments/run-token.js';
 import { ingestEvents, finalizeRun } from '../../experiments/ingest.js';
 import { broadcastExperimentLifecycleEvent } from '../../realtime/experiment-events.js';
+import { launchRun, cancelRunProcess } from '../../experiments/launcher.js';
 import {
   CreateExperimentBodySchema,
   UpdateExperimentBodySchema,
@@ -295,6 +296,7 @@ export async function experimentsRoutes(
       if (!run) {
         return reply.status(404).send({ error: 'Not Found', message: 'run not found' });
       }
+      cancelRunProcess(run.id); // kill the launched worker process, if any
       const updated = dal.updateRun(run.id, {
         status: 'cancelled',
         worker_token_hash: null, // §4.2: the token dies with the run
@@ -308,6 +310,39 @@ export async function experimentsRoutes(
         data: { experiment_id: request.params.id, run_id: run.id, status: 'cancelled' },
       });
       return reply.send({ run: publicRun(updated) });
+    },
+  );
+
+  fastify.post<{ Params: { id: string; runId: string } }>(
+    '/experiments/:id/runs/:runId/launch',
+    { preHandler: authOrAdminKey },
+    async (request, reply) => {
+      const experiment = dal.findExperimentById(request.params.id);
+      if (!experiment) {
+        return reply.status(404).send({ error: 'Not Found', message: 'experiment not found' });
+      }
+      const run = resolveRun(request.params.id, request.params.runId);
+      if (!run) {
+        return reply.status(404).send({ error: 'Not Found', message: 'run not found' });
+      }
+      if (run.status !== 'queued') {
+        return reply
+          .status(409)
+          .send({ error: 'Conflict', message: 'run is not queued' });
+      }
+      try {
+        const result = launchRun(experiment, run, {
+          hubUrl: `http://127.0.0.1:${options.config.port}`,
+        });
+        const updated = dal.findRunById(run.id)!;
+        broadcastExperimentLifecycleEvent(experiment.id, {
+          type: 'experiment.run_started',
+          data: { experiment_id: experiment.id, run_id: run.id, pid: result.pid },
+        });
+        return reply.send({ run: publicRun(updated), pid: result.pid });
+      } catch (err) {
+        return reply.status(400).send({ error: 'Bad Request', message: (err as Error).message });
+      }
     },
   );
 

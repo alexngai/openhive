@@ -42,6 +42,13 @@ scheduler payload, and the UI are subsequent slices (see the design doc §16).
     POSTs the finalization (content_hash from the plan lock, claim_strength + the
     train/held-out seesaw read from `runner.lineage`).
   - Driven by the `openhive experiment-worker` CLI subcommand (`src/cli.ts`).
+- **`src/experiments/launcher.ts`** — the run launcher: a **dedicated process-host**
+  (not the hosted-swarm manager — see the design-doc revision log). `launchRun`
+  mints a fresh per-run token, persists its hash, and spawns the worker as a
+  detached child (token-in-env, never argv), tracked in-memory for `cancel = kill`.
+  `POST /experiments/:id/runs/:runId/launch` (operator) drives it; `cancel` kills
+  the process. Spawn is injectable (`setLauncherSpawnForTest`). Deployment path
+  only until the autonomation `createExperimentRunnerFromConfig` factory lands.
 
 ## Optional `autonomation` dependency
 
