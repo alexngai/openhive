@@ -55,7 +55,11 @@ overfit signal), and degrades null content_hash / claim_strength / held-out to
   mints a fresh per-run token, persists its hash, and spawns the worker as a
   detached child (token-in-env, never argv), tracked in-memory for `cancel = kill`.
   `POST /experiments/:id/runs/:runId/{launch,cancel}` (**admin-only** — they spawn
-  or kill OS processes) drive it; launch atomically claims the `queued` run
+  or kill OS processes; the operator authenticates with the admin key, an
+  `is_admin` agent, or local-auth `trustLocalMode` — `npm run dev` sets
+  `OPENHIVE_ADMIN_TRUST_LOCAL_MODE=1` so the dev UI can launch, and a self-host on
+  `0.0.0.0` must opt in the same way or the UI's launch/cancel return 401) drive
+  it; launch atomically claims the `queued` run
   (`claimRunForLaunch`) so concurrent launches can't double-spawn, and `cancel`
   falls back to the persisted `proc:<pid>` marker when the process isn't tracked
   (e.g. after a hub restart). The worker dials the hub's **actual bound port**
