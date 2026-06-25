@@ -52,6 +52,10 @@ import {
   MIGRATION_V57_DISPATCH_LOADOUT_REFS,
   MIGRATION_V58_NULLABLE_SPEC_ON_DISPATCH,
   MIGRATION_V59_CASCADE_DIFF_CACHE,
+  MIGRATION_V60_EXPERIMENTS,
+  MIGRATION_V61_EXPERIMENT_RUNS,
+  MIGRATION_V62_EXPERIMENT_CANDIDATES,
+  MIGRATION_V63_EXPERIMENT_EVENTS,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -376,6 +380,13 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // merged / abandoned / rebased. See docs/design/cascade-diff-and-stacked-prs.md.
   // Renumbered from V56 due to merge collision with V56_SCHEDULES.
   59: MIGRATION_V59_CASCADE_DIFF_CACHE,
+  // Versions 60-63: autonomation experiment control plane — experiments,
+  // experiment_runs, experiment_candidates, experiment_events.
+  // See docs/design/autonomation-experiments.md.
+  60: MIGRATION_V60_EXPERIMENTS,
+  61: MIGRATION_V61_EXPERIMENT_RUNS,
+  62: MIGRATION_V62_EXPERIMENT_CANDIDATES,
+  63: MIGRATION_V63_EXPERIMENT_EVENTS,
 };
 
 /** Get the SQL for a specific migration version.

@@ -16,6 +16,7 @@ import {
   createOpenHiveFireHandler,
   type FireHandlerDeps,
 } from './fire-handler.js';
+import { runScheduledExperiment as launcherRunScheduledExperiment } from '../experiments/launcher.js';
 
 /**
  * Default `fetchSpec` resolver for OpenHive's scheduler.
@@ -54,17 +55,25 @@ export interface SetupSchedulerOptions {
   getSwarmStatus?: FireHandlerDeps['getSwarmStatus'];
   /** Optional — enables `fallback_spawn` execution. */
   spawnFallbackSwarm?: FireHandlerDeps['spawnFallbackSwarm'];
+  /** Optional override for the scheduled-experiment runner (defaults to the launcher). */
+  runScheduledExperiment?: FireHandlerDeps['runScheduledExperiment'];
   tickIntervalMs?: number;
   maxConcurrentFires?: number;
 }
 
 export function setupScheduler(opts: SetupSchedulerOptions): Scheduler {
   const store = createScheduleStore();
+  // The launcher dials the hub base URL the server set post-listen (the actual
+  // bound port), so no hubUrl override is threaded here.
+  const runScheduledExperiment: FireHandlerDeps['runScheduledExperiment'] =
+    opts.runScheduledExperiment ??
+    ((payload, scheduleId) => launcherRunScheduledExperiment(payload, scheduleId));
   const fireHandler = createOpenHiveFireHandler({
     fetchSpec: opts.fetchSpec,
     isAutonomousDispatchPaused: opts.isAutonomousDispatchPaused,
     getSwarmStatus: opts.getSwarmStatus,
     spawnFallbackSwarm: opts.spawnFallbackSwarm,
+    runScheduledExperiment,
   });
 
   const scheduler = createScheduler({

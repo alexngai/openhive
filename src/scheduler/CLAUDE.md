@@ -4,8 +4,8 @@ OpenHive-specific glue for the `swarm-dispatch` scheduler module (cron-style rec
 
 ## File roles
 
-- **`payload-types.ts`** — `OpenHiveSchedulePayload` shape (`spec_ref`, `target_swarm_ids`, `lifecycle`, etc.) plus `isValidPayload` structural guard. Library's `Schedule.payload` is `unknown`; we narrow here.
-- **`fire-handler.ts`** — `createOpenHiveFireHandler(deps)`. The seam between scheduler and dispatches. On fire: validate payload → resolve spec (auto-pause on missing) → fan out to N `queued` dispatch rows (one per `target_swarm_id`) → broadcast `schedule.fired` on `map:schedules` WS channel. Respects `autonomousDispatchPaused` kill switch.
+- **`payload-types.ts`** — `OpenHiveSchedulePayload`, a `kind`-discriminated union: `dispatch_spec` (legacy, `kind` optional) · `dispatch_prompt` · `experiment` (`experiment_ref` + optional `run_controls`, **no** `spec`/`target_swarm_ids`). Plus `getPayloadKind` and the `isValidPayload` structural guard (discriminates `kind` *before* the `target_swarm_ids` check so the experiment kind validates). Library's `Schedule.payload` is `unknown`; we narrow here.
+- **`fire-handler.ts`** — `createOpenHiveFireHandler(deps)`. The seam between scheduler and dispatches. On fire (after the `autonomousDispatchPaused` kill-switch check): the `experiment` kind branches first → `deps.runScheduledExperiment` (resolve experiment → create a `queued` run → launch the worker; see `src/experiments/launcher.ts`) → broadcast and return. Otherwise: validate payload → resolve spec (auto-pause on missing) → fan out to N `queued` dispatch rows (one per `target_swarm_id`) → broadcast `schedule.fired` on the `map:schedules` WS channel. Runner failures are swallowed (never throw) so the scheduler advances on cadence.
 - **`setup.ts`** — `setupScheduler(opts)`. Composes the library `createScheduler` with the DAL-backed store, fire handler, and `isFireRunning` probe. Returns a `Scheduler` that `server.ts` starts/stops alongside the dispatch orchestrator.
 
 ## End-to-end flow
