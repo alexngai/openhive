@@ -119,7 +119,7 @@
     "@slack/web-api": "^7.14.1"
   },
   "peerDependencies": {
-    "autonomation": "*"
+    "autonomation": ">=0.0.2"
   },
   "peerDependenciesMeta": {
     "autonomation": {
