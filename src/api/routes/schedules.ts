@@ -19,7 +19,7 @@
  * calls (PR 4) are blocked by it, matching the dispatches pattern.
  */
 
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, type FastifyReply } from 'fastify';
 import { evaluateCron, expandCron, isValidCron } from 'swarm-dispatch';
 import { createAuthOrAdminKey } from '../middleware/auth.js';
 import * as schedulesDAL from '../../db/dal/schedules.js';
@@ -31,6 +31,19 @@ import {
   ListSchedulesQuerySchema,
 } from '../schemas/schedules.js';
 import type { Config } from '../../config.js';
+import type { OpenHiveSchedule } from '../../db/dal/schedules.js';
+
+function canMutateSchedule(request: { agent?: { id: string } }, schedule: OpenHiveSchedule): boolean {
+  // Admin-key auth bypasses authMiddleware and leaves request.agent unset.
+  return !request.agent || schedule.initiator_id === request.agent.id;
+}
+
+function sendScheduleForbidden(reply: FastifyReply) {
+  return reply.status(403).send({
+    error: 'Forbidden',
+    message: 'Only the schedule owner can mutate it',
+  });
+}
 
 export async function schedulesRoutes(
   fastify: FastifyInstance,
@@ -225,6 +238,9 @@ export async function schedulesRoutes(
           .status(404)
           .send({ error: 'Not Found', message: 'Schedule not found' });
       }
+      if (!canMutateSchedule(request, existing)) {
+        return sendScheduleForbidden(reply);
+      }
 
       const parsed = UpdateScheduleBodySchema.safeParse(request.body);
       if (!parsed.success) {
@@ -277,12 +293,16 @@ export async function schedulesRoutes(
     '/schedules/:id',
     { preHandler: authOrAdminKey },
     async (request, reply) => {
-      const ok = schedulesDAL.deleteSchedule(request.params.id);
-      if (!ok) {
+      const existing = schedulesDAL.findScheduleById(request.params.id);
+      if (!existing) {
         return reply
           .status(404)
           .send({ error: 'Not Found', message: 'Schedule not found' });
       }
+      if (!canMutateSchedule(request, existing)) {
+        return sendScheduleForbidden(reply);
+      }
+      schedulesDAL.deleteSchedule(request.params.id);
       broadcastToChannel('map:schedules', {
         type: 'schedule.deleted',
         data: { schedule_id: request.params.id },
@@ -298,13 +318,17 @@ export async function schedulesRoutes(
     '/schedules/:id/pause',
     { preHandler: authOrAdminKey },
     async (request, reply) => {
-      const reason = request.body?.reason ?? null;
-      const updated = schedulesDAL.pauseSchedule(request.params.id, reason);
-      if (!updated) {
+      const existing = schedulesDAL.findScheduleById(request.params.id);
+      if (!existing) {
         return reply
           .status(404)
           .send({ error: 'Not Found', message: 'Schedule not found' });
       }
+      if (!canMutateSchedule(request, existing)) {
+        return sendScheduleForbidden(reply);
+      }
+      const reason = request.body?.reason ?? null;
+      const updated = schedulesDAL.pauseSchedule(request.params.id, reason);
       broadcastToChannel('map:schedules', {
         type: 'schedule.paused',
         data: { schedule_id: request.params.id, reason },
@@ -328,6 +352,9 @@ export async function schedulesRoutes(
         return reply
           .status(404)
           .send({ error: 'Not Found', message: 'Schedule not found' });
+      }
+      if (!canMutateSchedule(request, existing)) {
+        return sendScheduleForbidden(reply);
       }
       const next = evaluateCron(existing.cron, {
         now: new Date(),
