@@ -198,12 +198,26 @@ export function getSessionStats(sessionResourceId: string): SessionStats {
 /**
  * List all session resources with checkpoint stats, for the sessions list page.
  */
-export function listAllSessions(limit = 50, offset = 0, swarmId?: string, search?: string): { data: SessionListItem[]; total: number } {
+export function listAllSessions(
+  limit = 50,
+  offset = 0,
+  swarmId?: string,
+  search?: string,
+  accessAgentId?: string,
+): { data: SessionListItem[]; total: number } {
   const db = getDatabase();
 
   const filters: string[] = [];
   const filterParams: unknown[] = [];
 
+  if (accessAgentId) {
+    filters.push(`(
+      r.owner_agent_id = ?
+      OR r.id IN (SELECT resource_id FROM resource_subscriptions WHERE agent_id = ?)
+      OR r.visibility = 'public'
+    )`);
+    filterParams.push(accessAgentId, accessAgentId);
+  }
   if (swarmId) {
     filters.push("r.id IN (SELECT DISTINCT session_resource_id FROM trajectory_checkpoints WHERE source_swarm_id = ?)");
     filterParams.push(swarmId);

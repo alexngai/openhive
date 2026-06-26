@@ -1404,12 +1404,13 @@ export async function sessionsRoutes(
   // List all sessions with trajectory checkpoint stats
   fastify.get<{ Querystring: { limit?: number; offset?: number; swarm_id?: string; search?: string } }>(
     '/sessions/overview',
+    { preHandler: authMiddleware },
     async (request, reply) => {
       const limit = Math.min(Number(request.query.limit) || 50, 100);
       const offset = Number(request.query.offset) || 0;
       const swarmId = request.query.swarm_id || undefined;
       const search = request.query.search?.trim() || undefined;
-      const result = trajectoryDAL.listAllSessions(limit, offset, swarmId, search);
+      const result = trajectoryDAL.listAllSessions(limit, offset, swarmId, search, request.agent!.id);
       return reply.send(result);
     }
   );
@@ -1417,12 +1418,19 @@ export async function sessionsRoutes(
   // List trajectory checkpoints for a session
   fastify.get<{ Params: { id: string }; Querystring: { limit?: number; offset?: number } }>(
     '/sessions/:id/trajectory-checkpoints',
+    { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
       if (!resource || resource.resource_type !== 'session') {
         return reply.status(404).send({
           error: 'Not Found',
           message: 'Session not found',
+        });
+      }
+      if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          message: 'You do not have access to this session',
         });
       }
 
@@ -1436,12 +1444,19 @@ export async function sessionsRoutes(
   // Get trajectory stats for a session
   fastify.get<{ Params: { id: string } }>(
     '/sessions/:id/trajectory-stats',
+    { preHandler: authMiddleware },
     async (request, reply) => {
       const resource = resourcesDAL.findResourceById(request.params.id);
       if (!resource || resource.resource_type !== 'session') {
         return reply.status(404).send({
           error: 'Not Found',
           message: 'Session not found',
+        });
+      }
+      if (!resourcesDAL.canAccessResource(request.agent!.id, resource)) {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          message: 'You do not have access to this session',
         });
       }
 
