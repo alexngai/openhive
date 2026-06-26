@@ -49,6 +49,7 @@ interface MockCounters {
   /** Outbound MAP connection state. Toggle to simulate the socket dropping
    *  under a live stream — liveness check should detect this. */
   mapConnected: Map<string, boolean>;
+  newSessionInputs: Array<{ cwd: string; mcpServers: unknown[] }>;
 }
 
 function createMockAcpManager(counters: MockCounters) {
@@ -87,8 +88,9 @@ function createMockAcpManager(counters: MockCounters) {
       const s = counters.streams.get(streamId);
       if (s) s.initialized = true;
     },
-    newSession: async (_streamId: string, _opts: unknown) => {
+    newSession: async (_streamId: string, opts: { cwd: string; mcpServers: unknown[] }) => {
       counters.newSession++;
+      counters.newSessionInputs.push(opts);
       return { sessionId: `mock-session-${++nextSessionSeq}` };
     },
   };
@@ -167,6 +169,7 @@ describe('E2E: /sessions/acp-connect multi-tab session sharing', () => {
       newSession: 0,
       streams: new Map(),
       mapConnected: new Map([[SWARM_ID, true]]),
+      newSessionInputs: [],
     };
 
     app = Fastify({ logger: false });
@@ -195,6 +198,7 @@ describe('E2E: /sessions/acp-connect multi-tab session sharing', () => {
     counters.initialize = 0;
     counters.newSession = 0;
     counters.streams.clear();
+    counters.newSessionInputs = [];
     counters.mapConnected.clear();
     counters.mapConnected.set(SWARM_ID, true);
     getDatabase().prepare(`DELETE FROM syncable_resources WHERE resource_type = 'session'`).run();
@@ -243,6 +247,37 @@ describe('E2E: /sessions/acp-connect multi-tab session sharing', () => {
     // Manager was NOT called for the second request.
     expect(counters.createStream).toBe(1);
     expect(counters.newSession).toBe(1);
+  });
+
+  it('does not reuse a live ACP session for a different cwd', async () => {
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/acp-connect',
+      payload: { swarm_id: SWARM_ID, agent_id: ACP_AGENT_ID, cwd: '/workspace/project-a' },
+    });
+    expect(first.statusCode).toBe(200);
+    const firstBody = JSON.parse(first.body);
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/acp-connect',
+      payload: { swarm_id: SWARM_ID, agent_id: ACP_AGENT_ID, cwd: '/workspace/project-b' },
+    });
+    expect(second.statusCode).toBe(200);
+    const secondBody = JSON.parse(second.body);
+
+    expect(secondBody.created).toBe(true);
+    expect(secondBody.session_resource_id).not.toBe(firstBody.session_resource_id);
+    expect(secondBody.acp_session_id).not.toBe(firstBody.acp_session_id);
+    expect(secondBody.acp_stream_id).not.toBe(firstBody.acp_stream_id);
+    expect(counters.newSession).toBe(2);
+    expect(counters.newSessionInputs.map((input) => input.cwd)).toEqual([
+      '/workspace/project-a',
+      '/workspace/project-b',
+    ]);
+
+    const secondResource = resourcesDAL.findResourceById(secondBody.session_resource_id);
+    expect((secondResource?.metadata as Record<string, unknown>).projectPath).toBe('/workspace/project-b');
   });
 
   it('concurrent connects share the in-flight Promise (manager runs once)', async () => {
