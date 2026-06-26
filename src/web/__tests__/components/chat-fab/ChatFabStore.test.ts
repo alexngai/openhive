@@ -12,8 +12,9 @@
  * `setSession` and `clearSession`, and survives the mode toggle.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useChatFabStore, type ChatFabResume } from '../../../components/chat-fab/ChatFabStore';
+import { api } from '../../../lib/api';
 
 function resetStore() {
   useChatFabStore.setState({
@@ -21,7 +22,10 @@ function resetStore() {
     sessionId: null,
     swarmId: null,
     sessionLabel: null,
+    agentRef: null,
     resume: null,
+    transportMode: null,
+    view: 'picker',
     mode: 'floating',
     connecting: false,
     connectError: null,
@@ -29,7 +33,10 @@ function resetStore() {
 }
 
 describe('ChatFabStore resume plumbing', () => {
-  beforeEach(resetStore);
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    resetStore();
+  });
 
   it('setSession persists resume info when provided', () => {
     const resume: ChatFabResume = {
@@ -95,5 +102,29 @@ describe('ChatFabStore resume plumbing', () => {
     useChatFabStore.getState().collapse();
     useChatFabStore.getState().toggle();
     expect(useChatFabStore.getState().resume).not.toBeNull();
+  });
+
+  it('connectMailAndOpen opens the real session resource returned by the API', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValueOnce({
+      session_resource_id: 'res-mail-1',
+      created: true,
+    });
+
+    await useChatFabStore.getState().connectMailAndOpen('swarm-mail', 'agent-mail', 'Mailer');
+
+    expect(post).toHaveBeenCalledWith('/sessions/mail-connect', {
+      swarm_id: 'swarm-mail',
+      agent_id: 'agent-mail',
+    });
+
+    const s = useChatFabStore.getState();
+    expect(s.sessionId).toBe('res-mail-1');
+    expect(s.sessionId).not.toMatch(/^mail:/);
+    expect(s.swarmId).toBe('swarm-mail');
+    expect(s.sessionLabel).toBe('Mailer');
+    expect(s.agentRef).toEqual({ swarmId: 'swarm-mail', agentId: 'agent-mail' });
+    expect(s.resume).toBeNull();
+    expect(s.transportMode).toBe('mail');
+    expect(s.view).toBe('chat');
   });
 });
