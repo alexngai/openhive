@@ -173,6 +173,56 @@ describe('handleTaskStatusChanged', () => {
     });
   });
 
+  it('reopens closed linked threads when previous status is missing', async () => {
+    mockFindResource.mockReturnValue({
+      id: 'res-1',
+      metadata: {
+        dispatch_threads: [{ dispatch_id: 'd1', conversation_id: 'conv-d1' }],
+      },
+    });
+    mockGetMailStorage.mockReturnValue({
+      getConversation: vi.fn().mockReturnValue({
+        id: 'conv-d1',
+        status: 'completed',
+      }),
+    });
+
+    await handleTaskStatusChanged({
+      task_id: 'task-1',
+      status: 'open',
+      resource_id: 'res-1',
+    });
+
+    expect(mockRpc.handleRequest).toHaveBeenCalledOnce();
+    expect(mockRpc.handleRequest.mock.calls[0][0]).toMatchObject({
+      method: 'mail/reopen',
+      params: { id: 'conv-d1' },
+    });
+  });
+
+  it('does not reopen active linked threads when previous status is missing', async () => {
+    mockFindResource.mockReturnValue({
+      id: 'res-1',
+      metadata: {
+        dispatch_threads: [{ dispatch_id: 'd1', conversation_id: 'conv-d1' }],
+      },
+    });
+    mockGetMailStorage.mockReturnValue({
+      getConversation: vi.fn().mockReturnValue({
+        id: 'conv-d1',
+        status: 'active',
+      }),
+    });
+
+    await handleTaskStatusChanged({
+      task_id: 'task-1',
+      status: 'open',
+      resource_id: 'res-1',
+    });
+
+    expect(mockRpc.handleRequest).not.toHaveBeenCalled();
+  });
+
   it('no-ops when resource_id is missing', async () => {
     await handleTaskStatusChanged({
       task_id: 'task-1',
