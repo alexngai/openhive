@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { authMiddleware, createAdminAuth, createAuthOrAdminKey } from '../middleware/auth.js';
+import { createAdminAuth, createAuthOrAdminKey } from '../middleware/auth.js';
 import { KNOWN_CAPABILITIES, isKnownCapability } from '../middleware/capabilities.js';
 import { revokeToken, isTokenServiceInitialized } from '../../map/token-service.js';
 import { delegateForSpawn, ScopeNotGrantedError } from '../../map/delegate-for-spawn.js';
@@ -710,7 +710,7 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
   );
 
   // GET /admin/git-sync-status — overview of all git-backed resources and their pull status
-  fastify.get('/admin/git-sync-status', { preHandler: authMiddleware }, async (_request, reply) => {
+  fastify.get('/admin/git-sync-status', { preHandler: adminAuth }, async (_request, reply) => {
     const { getDatabase } = await import('../../db/index.js');
     const { getGitSyncStatus } = await import('../../sync/git-content.js');
 
