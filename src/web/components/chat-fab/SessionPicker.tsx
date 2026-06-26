@@ -139,8 +139,8 @@ export function SessionPicker() {
   // a swarm comes online or a coordinator gets spawned inside one.
   useSwarmRealtime();
   const { data: swarms = [] } = useMapSwarmsForPicker({ status: 'online' });
-  const setSession = useChatFabStore((s) => s.setSession);
   const connectAndOpen = useChatFabStore((s) => s.connectAndOpen);
+  const connectMailAndOpen = useChatFabStore((s) => s.connectMailAndOpen);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [spawnFor, setSpawnFor] = useState<MapSwarm | null>(null);
@@ -168,13 +168,6 @@ export function SessionPicker() {
     const targetId = getPeerMapId(agent.metadata) ?? agent.id;
     const displayName = agent.name ?? agent.id;
 
-    // agentRef carries the *hub* agent id (pre-peer-map), which is what
-    // `registered_agents[].id` surfaces on the swarm detail. The header
-    // also falls back to matching `metadata.peerMapId`, so passing
-    // either is fine; we pass agent.id for consistency across ACP and
-    // mail fallbacks.
-    const agentRef = { swarmId: swarm.id, agentId: agent.id };
-
     try {
       if (mode === 'acp') {
         await connectAndOpen(
@@ -184,14 +177,7 @@ export function SessionPicker() {
           targetId !== agent.id ? targetId : undefined,
         );
       } else {
-        setSession(
-          `mail:${swarm.id}:${agent.id}`,
-          swarm.id,
-          displayName,
-          undefined,
-          agentRef,
-          'mail',
-        );
+        await connectMailAndOpen(swarm.id, agent.id, displayName);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

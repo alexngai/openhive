@@ -149,6 +149,16 @@ export interface ChatFabState {
     peerMapId?: string,
     cwd?: string,
   ) => Promise<void>;
+  /**
+   * Create or reuse a mail-backed session resource, then open it in the chat.
+   * The returned session id is a real syncable_resources row, so the shared
+   * mail adapter can send via /sessions/:id/chat.
+   */
+  connectMailAndOpen: (
+    swarmId: string,
+    agentId: string,
+    label?: string,
+  ) => Promise<void>;
 }
 
 export const useChatFabStore = create<ChatFabState>((set) => ({
@@ -311,5 +321,32 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
         }
       }
     }
+  },
+
+  connectMailAndOpen: async (swarmId, agentId, label) => {
+    const result = await api.post<{
+      session_resource_id: string;
+      created: boolean;
+    }>('/sessions/mail-connect', {
+      swarm_id: swarmId,
+      agent_id: agentId,
+    });
+
+    set((s) => {
+      if (s.sessionId && s.sessionId !== result.session_resource_id) {
+        useChatFabStagedChipsStore.getState().clearChips();
+      }
+      return {
+        open: true,
+        sessionId: result.session_resource_id,
+        swarmId,
+        sessionLabel: label ?? 'Agent',
+        agentRef: { swarmId, agentId },
+        resume: null,
+        transportMode: 'mail',
+        connectError: null,
+        view: 'chat',
+      };
+    });
   },
 }));

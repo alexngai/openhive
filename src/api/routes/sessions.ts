@@ -163,6 +163,22 @@ function isAcpStreamLive(
   return true;
 }
 
+function findRegisteredAgentName(swarmId: string, agentId: string): string | undefined {
+  const inboundConn = getInbound(swarmId);
+  if (!inboundConn) return undefined;
+
+  const direct = inboundConn.registeredAgents.get(agentId);
+  if (direct?.name) return direct.name;
+
+  for (const entry of inboundConn.registeredAgents.values()) {
+    const peer = getPeerMapId(entry.metadata);
+    if ((peer === agentId || entry.id === agentId) && entry.name) {
+      return entry.name;
+    }
+  }
+  return undefined;
+}
+
 // ============================================================================
 // Local Sessionlog Transcript Lookup
 // ============================================================================
@@ -1463,6 +1479,56 @@ export async function sessionsRoutes(
       const stats = trajectoryDAL.getSessionStats(resource.id);
       return reply.send(stats);
     }
+  );
+
+  // Create or reuse a mail-backed session resource for ChatFab's mail mode.
+  // The actual mail conversation is still created lazily on first send by
+  // /sessions/:id/chat; this endpoint just gives the frontend a real session
+  // id instead of a synthetic `mail:*` identifier.
+  fastify.post<{ Body: { swarm_id: string; agent_id: string } }>(
+    '/sessions/mail-connect',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { swarm_id, agent_id } = request.body || ({} as any);
+      if (!swarm_id) {
+        return reply.status(400).send({ error: 'swarm_id is required' });
+      }
+      if (!agent_id) {
+        return reply.status(400).send({ error: 'agent_id is required' });
+      }
+
+      const swarm = findSwarmById(swarm_id);
+      if (!swarm) {
+        return reply.status(404).send({ error: 'Swarm not found' });
+      }
+
+      const agentName = findRegisteredAgentName(swarm_id, agent_id) ?? agent_id;
+      const remoteUrl = `map://mail/${encodeURIComponent(swarm_id)}/${encodeURIComponent(agent_id)}`;
+      const { resource, created } = resourcesDAL.upsertDiscoveredResource({
+        resource_type: 'session',
+        name: `Mail: ${agentName} @ ${swarm.name}`,
+        description: `Mail session with ${agentName} on ${swarm.name}`,
+        git_remote_url: remoteUrl,
+        owner_agent_id: request.agent!.id,
+        scope: 'manual',
+        metadata: {
+          project: 'mail',
+          source_swarm_id: swarm_id,
+          mail_target_agent_id: agent_id,
+          transport: 'mail',
+        },
+      });
+
+      broadcastToChannel('global', {
+        type: 'trajectory:sync',
+        data: { session_resource_id: resource.id },
+      });
+
+      return reply.send({
+        session_resource_id: resource.id,
+        created,
+      });
+    },
   );
 
   // Open an ACP session against an already-registered ACP-capable agent on

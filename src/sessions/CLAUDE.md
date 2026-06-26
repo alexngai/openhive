@@ -31,7 +31,7 @@ Content is converted via Claude JSONL adapter → ACP events (user messages, ass
 - `src/map/trajectory-content.ts` — On-demand content fetcher: sends `trajectory/content.request` to connected swarms, handles responses, capability-gated
 - `src/map/trajectory-types.ts` — Method set and request/response types
 - `src/sessions/adapters/claude.ts` — Converts Claude Code JSONL transcripts to ACP events, aggregates non-content entries, pairs tool results with tool calls
-- `src/api/routes/sessions.ts` — `/sessions/:id/events` endpoint with 5-tier content resolution, caching to session storage
+- `src/api/routes/sessions.ts` — `/sessions/:id/events` endpoint with 5-tier content resolution, auth-gated trajectory overview/checkpoint APIs, `/sessions/acp-connect`, and `/sessions/mail-connect` for ChatFab session creation
 - `src/api/routes/session-chat.ts` — `POST /sessions/:id/chat` endpoint for bi-directional session chat (lazy conversation creation + mail turn delivery)
 - `src/db/dal/trajectory-checkpoints.ts` — Checkpoint CRUD and stats aggregation
 - `src/web/pages/Sessions.tsx` — Session list with enriched names

@@ -112,7 +112,7 @@ When an ACP agent requests tool approval, SwarmCraft emits `acp.permission.reque
 
 ### Multi-tab session sharing (Option 1B)
 
-`/sessions/acp-connect` is idempotent per `(owner_agent_id, source_swarm_id, acp_target_agent_id)`. The first connect creates the ACP stream + session and persists `acpStreamId`, `sessionId`, `acp_target_agent_id` on the session resource metadata. Subsequent connects (additional browser tabs, same user, same target) hit `findLiveAcpSession` (`src/db/dal/syncable-resources.ts`), confirm the streamId is still in `acpStreamManager.streams`, and return the cached IDs without touching the manager. A per-key `inflightAcpConnects` Promise cache in `src/api/routes/sessions.ts` makes concurrent POSTs share one create — only the leader runs `createStream`, followers piggyback.
+`/sessions/acp-connect` is idempotent per `(owner_agent_id, source_swarm_id, acp_target_agent_id, projectPath)`. The first connect creates the ACP stream + session and persists `acpStreamId`, `sessionId`, `acp_target_agent_id`, and `projectPath` on the session resource metadata. Subsequent connects (additional browser tabs, same user, same target, same cwd) hit `findLiveAcpSession` (`src/db/dal/syncable-resources.ts`), confirm the streamId is still in `acpStreamManager.streams`, and return the cached IDs without touching the manager. A per-key `inflightAcpConnects` Promise cache in `src/api/routes/sessions.ts` makes concurrent POSTs share one create — only the leader runs `createStream`, followers piggyback.
 
 Cross-tab sync is automatic once both tabs subscribe to the same `(streamId, sessionId)`: every `acp.session.update` event fans out from SwarmCraft's `acp` topic → OpenHive's `global` channel via the bridge in `src/server.ts`. Late-joining tabs replay history through `loadSession`.
 
@@ -147,6 +147,8 @@ Chat bubbles get the same identity via `decorateWithAgentIdentity` in `openhive-
 ### ChatFab connect surface
 
 `src/web/components/chat-fab/ChatFabStore.ts` exposes `connectAndOpen(swarmId, agentId, label?, peerMapId?, cwd?)`. The `peerMapId` is required when the caller has only the SwarmCraft-projected id (`oh-node-{swarmId}-{mapAgentId}`); the hub registry routes ACP by the raw `mapAgentId`. `cwd` is forwarded for hosted swarms whose agent process should open in the user-selected project directory. Dashboard and swarm roster entry points should call this shared helper instead of routing users through `/threads`.
+
+Mail-mode picker rows use `connectMailAndOpen(swarmId, agentId, label?)`, which calls `POST /sessions/mail-connect` to create or reuse a real mail-backed session resource before opening the ChatFab. Do not set synthetic ids like `mail:{swarm}:{agent}` as a `SessionTarget`: the shared mail adapter sends SessionTarget turns to `/sessions/:id/chat`, which requires an actual session resource id.
 
 `ChatBody` (`ChatFab.tsx`) reads `connecting` and `connectError` from the store. While connecting + no session: full-panel spinner with `Connecting to {label}...`. On error: red dismissable banner above the picker (`Couldn't open chat — {error}`). The dismiss action calls `clearSession` which also clears the error.
 
