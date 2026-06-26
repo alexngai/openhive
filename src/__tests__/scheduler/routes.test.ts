@@ -19,6 +19,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import { schedulesRoutes } from '../../api/routes/schedules.js';
 import * as schedulesDAL from '../../db/dal/schedules.js';
+import * as agentsDAL from '../../db/dal/agents.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 import type { Config } from '../../config.js';
 
@@ -37,6 +38,7 @@ const testConfig: Pick<Config, 'admin' | 'scheduler'> = {
 
 async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify();
+  app.decorateRequest('agent');
   await app.register(schedulesRoutes, { config: testConfig as Config });
   await app.ready();
   return app;
@@ -45,6 +47,14 @@ async function buildApp(): Promise<FastifyInstance> {
 const adminHeaders = { 'x-admin-key': ADMIN_KEY, 'content-type': 'application/json' };
 // DELETE requests don't carry a body — Fastify rejects content-type:json without one.
 const adminHeadersBodyless = { 'x-admin-key': ADMIN_KEY };
+
+function bearerHeaders(apiKey: string) {
+  return { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' };
+}
+
+function bearerHeadersBodyless(apiKey: string) {
+  return { authorization: `Bearer ${apiKey}` };
+}
 
 function validCreateBody(overrides: Record<string, unknown> = {}) {
   return {
@@ -355,6 +365,34 @@ describe('PATCH /schedules/:id', () => {
       await app.close();
     }
   });
+
+  it('rejects updates from a non-owner agent', async () => {
+    const owner = await agentsDAL.createAgent({ name: 'schedule-owner' });
+    const stranger = await agentsDAL.createAgent({ name: 'schedule-stranger' });
+    const app = await buildApp();
+    try {
+      const create = await app.inject({
+        method: 'POST',
+        url: '/schedules',
+        headers: bearerHeaders(owner.apiKey),
+        payload: validCreateBody({ cron: '0 * * * *' }),
+      });
+      expect(create.statusCode).toBe(201);
+      const original = (create.json() as { schedule: schedulesDAL.OpenHiveSchedule }).schedule;
+
+      const res = await app.inject({
+        method: 'PATCH',
+        url: `/schedules/${original.id}`,
+        headers: bearerHeaders(stranger.apiKey),
+        payload: { cron: '7 * * * *' },
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(schedulesDAL.findScheduleById(original.id)?.cron).toBe('0 * * * *');
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe('DELETE /schedules/:id', () => {
@@ -390,6 +428,33 @@ describe('DELETE /schedules/:id', () => {
         headers: adminHeadersBodyless,
       });
       expect(res.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects deletes from a non-owner agent', async () => {
+    const owner = await agentsDAL.createAgent({ name: 'schedule-delete-owner' });
+    const stranger = await agentsDAL.createAgent({ name: 'schedule-delete-stranger' });
+    const app = await buildApp();
+    try {
+      const create = await app.inject({
+        method: 'POST',
+        url: '/schedules',
+        headers: bearerHeaders(owner.apiKey),
+        payload: validCreateBody(),
+      });
+      expect(create.statusCode).toBe(201);
+      const id = (create.json() as { schedule: { id: string } }).schedule.id;
+
+      const res = await app.inject({
+        method: 'DELETE',
+        url: `/schedules/${id}`,
+        headers: bearerHeadersBodyless(stranger.apiKey),
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(schedulesDAL.findScheduleById(id)).not.toBeNull();
     } finally {
       await app.close();
     }
@@ -561,6 +626,64 @@ describe('pause / resume', () => {
         payload: {},
       });
       expect(res.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects pause from a non-owner agent', async () => {
+    const owner = await agentsDAL.createAgent({ name: 'schedule-pause-owner' });
+    const stranger = await agentsDAL.createAgent({ name: 'schedule-pause-stranger' });
+    const app = await buildApp();
+    try {
+      const create = await app.inject({
+        method: 'POST',
+        url: '/schedules',
+        headers: bearerHeaders(owner.apiKey),
+        payload: validCreateBody(),
+      });
+      expect(create.statusCode).toBe(201);
+      const id = (create.json() as { schedule: { id: string } }).schedule.id;
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/schedules/${id}/pause`,
+        headers: bearerHeaders(stranger.apiKey),
+        payload: { reason: 'not yours' },
+      });
+
+      expect(res.statusCode).toBe(403);
+      const schedule = schedulesDAL.findScheduleById(id);
+      expect(schedule?.paused).toBe(false);
+      expect(schedule?.pause_reason).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects resume from a non-owner agent', async () => {
+    const owner = await agentsDAL.createAgent({ name: 'schedule-resume-owner' });
+    const stranger = await agentsDAL.createAgent({ name: 'schedule-resume-stranger' });
+    const app = await buildApp();
+    try {
+      const create = await app.inject({
+        method: 'POST',
+        url: '/schedules',
+        headers: bearerHeaders(owner.apiKey),
+        payload: validCreateBody({ paused: true }),
+      });
+      expect(create.statusCode).toBe(201);
+      const id = (create.json() as { schedule: { id: string } }).schedule.id;
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/schedules/${id}/resume`,
+        headers: bearerHeaders(stranger.apiKey),
+        payload: {},
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(schedulesDAL.findScheduleById(id)?.paused).toBe(true);
     } finally {
       await app.close();
     }
