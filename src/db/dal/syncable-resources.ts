@@ -221,21 +221,29 @@ export function findLiveAcpSession(opts: {
   ownerAgentId: string;
   swarmId: string;
   acpTargetAgentId: string;
+  projectPath?: string;
 }): SyncableResource | null {
   const db = getDatabase();
   // Match via metadata JSON fields. SQLite's json_extract is sufficient and
   // cheap at our scale (sessions are O(N_users * N_swarms * N_agents)).
+  const projectPathSql = opts.projectPath !== undefined
+    ? "      AND json_extract(metadata, '$.projectPath') = ?\n"
+    : '';
+  const params = opts.projectPath !== undefined
+    ? [opts.ownerAgentId, opts.swarmId, opts.acpTargetAgentId, opts.projectPath]
+    : [opts.ownerAgentId, opts.swarmId, opts.acpTargetAgentId];
   const row = db.prepare(`
     SELECT * FROM syncable_resources
     WHERE resource_type = 'session'
       AND owner_agent_id = ?
       AND json_extract(metadata, '$.source_swarm_id') = ?
       AND json_extract(metadata, '$.acp_target_agent_id') = ?
+${projectPathSql}
       AND json_extract(metadata, '$.acpStreamId') IS NOT NULL
       AND json_extract(metadata, '$.sessionId') IS NOT NULL
     ORDER BY updated_at DESC
     LIMIT 1
-  `).get(opts.ownerAgentId, opts.swarmId, opts.acpTargetAgentId) as Record<string, unknown> | undefined;
+  `).get(...params) as Record<string, unknown> | undefined;
   return row ? rowToResource(row) : null;
 }
 

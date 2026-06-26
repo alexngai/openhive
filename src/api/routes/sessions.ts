@@ -1567,7 +1567,7 @@ export async function sessionsRoutes(
         // ── Multi-tab session sharing (Option 1B) ─────────────────────────
         // Before doing the (expensive) createStream + newSession dance, see
         // if this user already has a live ACP session targeting this exact
-        // (swarm, acpAgent) pair. If yes, return the existing IDs so a
+        // (swarm, acpAgent, cwd) tuple. If yes, return the existing IDs so a
         // second/third tab attaches to the *same* ACP session and sees the
         // *same* live conversation via the existing WS event fan-out.
         //
@@ -1576,11 +1576,11 @@ export async function sessionsRoutes(
         // and we must fall through to recreate. The `streams.has(...)` check
         // catches that.
         //
-        // The per-(owner, swarm, acpAgent) in-flight mutex below makes the
+        // The per-(owner, swarm, acpAgent, cwd) in-flight mutex below makes the
         // lookup-then-create critical section atomic: if two tabs POST
         // simultaneously, only the first runs the create; the second
         // piggybacks on the same promise.
-        const inflightKey = `${request.agent!.id}:${swarm_id}:${acpAgent}`;
+        const inflightKey = `${request.agent!.id}:${swarm_id}:${acpAgent}:${targetCwd}`;
         let inflight = inflightAcpConnects.get(inflightKey);
         if (!inflight) {
           inflight = (async () => {
@@ -1588,6 +1588,7 @@ export async function sessionsRoutes(
               ownerAgentId: request.agent!.id,
               swarmId: swarm_id,
               acpTargetAgentId: acpAgent,
+              projectPath: targetCwd,
             });
             const existingStreamId = existing?.metadata?.acpStreamId as string | undefined;
             const existingSessionId = existing?.metadata?.sessionId as string | undefined;
