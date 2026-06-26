@@ -147,14 +147,24 @@ export async function handleTaskStatusChanged(
     for (const ref of threadRefs) {
       await closeThread(ref.conversation_id);
     }
-  } else if (
-    REOPEN_STATUSES.has(event.status) &&
-    event.previous &&
-    TERMINAL_STATUSES.has(event.previous)
-  ) {
-    // Reopen threads when task moves from terminal → active
-    for (const ref of threadRefs) {
-      await reopenThread(ref.conversation_id);
+  } else if (REOPEN_STATUSES.has(event.status)) {
+    if (event.previous && TERMINAL_STATUSES.has(event.previous)) {
+      // Reopen threads when task moves from terminal → active
+      for (const ref of threadRefs) {
+        await reopenThread(ref.conversation_id);
+      }
+      return;
+    }
+
+    if (!event.previous) {
+      // Some hub-driven task updates cannot report the previous task status.
+      // In that case, the linked conversation status tells us whether there is
+      // actually a closed dispatch thread to reopen.
+      for (const ref of threadRefs) {
+        if (isThreadClosed(ref.conversation_id)) {
+          await reopenThread(ref.conversation_id);
+        }
+      }
     }
   }
 }
@@ -178,6 +188,16 @@ async function reopenThread(conversationId: string): Promise<void> {
     await invokeMailMethod(mailRpc, 'mail/reopen', { id: conversationId });
   } catch {
     // Best effort — conversation may already be active or not exist.
+  }
+}
+
+function isThreadClosed(conversationId: string): boolean {
+  try {
+    const storage = getMailStorage();
+    const conversation = storage.getConversation(conversationId);
+    return !!conversation && conversation.status !== 'active';
+  } catch {
+    return false;
   }
 }
 
