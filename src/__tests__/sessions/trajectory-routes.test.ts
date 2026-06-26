@@ -30,6 +30,7 @@ function createTestConfig(): Config {
 
 async function createTestApp(config: Config): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
+  app.decorateRequest('agent');
   await app.register(
     async (api) => {
       await api.register(sessionsRoutes, { config });
@@ -42,17 +43,26 @@ async function createTestApp(config: Config): Promise<FastifyInstance> {
 describe('Trajectory Session Routes', () => {
   let app: FastifyInstance;
   let agentId: string;
+  let agentApiKey: string;
+  let strangerApiKey: string;
   let sessionId1: string;
   let sessionId2: string;
 
   beforeAll(async () => {
     initDatabase(TEST_DB_PATH);
 
-    const { agent } = await agentsDAL.createAgent({
+    const { agent, apiKey } = await agentsDAL.createAgent({
       name: 'traj-route-agent',
       description: 'Agent for trajectory route tests',
     });
     agentId = agent.id;
+    agentApiKey = apiKey;
+
+    const stranger = await agentsDAL.createAgent({
+      name: 'traj-route-stranger',
+      description: 'Agent without session access',
+    });
+    strangerApiKey = stranger.apiKey;
 
     // Create session resources
     const s1 = resourcesDAL.createResource({
@@ -101,10 +111,20 @@ describe('Trajectory Session Routes', () => {
   // ═══════════════════════════════════════════════════════════════
 
   describe('GET /sessions/overview', () => {
+    it('should reject unauthenticated overview requests', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/sessions/overview',
+      });
+
+      expect(res.statusCode).toBe(401);
+    });
+
     it('should return all sessions with checkpoint stats', async () => {
       const res = await app.inject({
         method: 'GET',
         url: '/api/v1/sessions/overview',
+        headers: { Authorization: `Bearer ${agentApiKey}` },
       });
 
       expect(res.statusCode).toBe(200);
@@ -131,6 +151,7 @@ describe('Trajectory Session Routes', () => {
       const res = await app.inject({
         method: 'GET',
         url: '/api/v1/sessions/overview?limit=1&offset=0',
+        headers: { Authorization: `Bearer ${agentApiKey}` },
       });
 
       expect(res.statusCode).toBe(200);
@@ -143,10 +164,24 @@ describe('Trajectory Session Routes', () => {
       const res = await app.inject({
         method: 'GET',
         url: '/api/v1/sessions/overview?limit=999',
+        headers: { Authorization: `Bearer ${agentApiKey}` },
       });
 
       expect(res.statusCode).toBe(200);
       // Just verify it doesn't error out — the controller clamps to 100
+    });
+
+    it('should not list private sessions owned by another agent', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/sessions/overview',
+        headers: { Authorization: `Bearer ${strangerApiKey}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.data.find((s: { id: string }) => s.id === sessionId1)).toBeUndefined();
+      expect(body.data.find((s: { id: string }) => s.id === sessionId2)).toBeUndefined();
     });
   });
 
@@ -159,6 +194,7 @@ describe('Trajectory Session Routes', () => {
       const res = await app.inject({
         method: 'GET',
         url: `/api/v1/sessions/${sessionId1}/trajectory-checkpoints`,
+        headers: { Authorization: `Bearer ${agentApiKey}` },
       });
 
       expect(res.statusCode).toBe(200);
@@ -180,6 +216,7 @@ describe('Trajectory Session Routes', () => {
       const res = await app.inject({
         method: 'GET',
         url: `/api/v1/sessions/${sessionId2}/trajectory-checkpoints`,
+        headers: { Authorization: `Bearer ${agentApiKey}` },
       });
 
       expect(res.statusCode).toBe(200);
@@ -192,6 +229,7 @@ describe('Trajectory Session Routes', () => {
       const res = await app.inject({
         method: 'GET',
         url: `/api/v1/sessions/${sessionId1}/trajectory-checkpoints?limit=2&offset=0`,
+        headers: { Authorization: `Bearer ${agentApiKey}` },
       });
 
       expect(res.statusCode).toBe(200);
@@ -203,6 +241,7 @@ describe('Trajectory Session Routes', () => {
       const res2 = await app.inject({
         method: 'GET',
         url: `/api/v1/sessions/${sessionId1}/trajectory-checkpoints?limit=2&offset=2`,
+        headers: { Authorization: `Bearer ${agentApiKey}` },
       });
 
       const body2 = res2.json();
@@ -214,6 +253,7 @@ describe('Trajectory Session Routes', () => {
       const res = await app.inject({
         method: 'GET',
         url: '/api/v1/sessions/nonexistent/trajectory-checkpoints',
+        headers: { Authorization: `Bearer ${agentApiKey}` },
       });
 
       expect(res.statusCode).toBe(404);
@@ -231,9 +271,29 @@ describe('Trajectory Session Routes', () => {
       const res = await app.inject({
         method: 'GET',
         url: `/api/v1/sessions/${mem.id}/trajectory-checkpoints`,
+        headers: { Authorization: `Bearer ${agentApiKey}` },
       });
 
       expect(res.statusCode).toBe(404);
+    });
+
+    it('should reject unauthenticated checkpoint requests', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/sessions/${sessionId1}/trajectory-checkpoints`,
+      });
+
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('should reject checkpoint reads from an agent without resource access', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/sessions/${sessionId1}/trajectory-checkpoints`,
+        headers: { Authorization: `Bearer ${strangerApiKey}` },
+      });
+
+      expect(res.statusCode).toBe(403);
     });
   });
 
@@ -246,6 +306,7 @@ describe('Trajectory Session Routes', () => {
       const res = await app.inject({
         method: 'GET',
         url: `/api/v1/sessions/${sessionId1}/trajectory-stats`,
+        headers: { Authorization: `Bearer ${agentApiKey}` },
       });
 
       expect(res.statusCode).toBe(200);
@@ -266,6 +327,7 @@ describe('Trajectory Session Routes', () => {
       const res = await app.inject({
         method: 'GET',
         url: `/api/v1/sessions/${sessionId2}/trajectory-stats`,
+        headers: { Authorization: `Bearer ${agentApiKey}` },
       });
 
       expect(res.statusCode).toBe(200);
@@ -282,9 +344,20 @@ describe('Trajectory Session Routes', () => {
       const res = await app.inject({
         method: 'GET',
         url: '/api/v1/sessions/nonexistent/trajectory-stats',
+        headers: { Authorization: `Bearer ${agentApiKey}` },
       });
 
       expect(res.statusCode).toBe(404);
+    });
+
+    it('should reject stats reads from an agent without resource access', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/sessions/${sessionId1}/trajectory-stats`,
+        headers: { Authorization: `Bearer ${strangerApiKey}` },
+      });
+
+      expect(res.statusCode).toBe(403);
     });
   });
 });
