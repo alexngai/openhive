@@ -11,6 +11,12 @@
 
 ### Revision log
 
+- **2026-06-27 — bug scan follow-up.** A systematic scan of the landed Stage A
+  experiment scheduling/UI paths found several regressions around the
+  `kind: "experiment"` schedule payload, lifecycle gating, schedule ownership,
+  and decrease-objective scoring. See
+  [`../bug-reports/2026-06-27-experiment-regressions.md`](../bug-reports/2026-06-27-experiment-regressions.md)
+  for root-cause evidence and reproduction steps.
 - **2026-06-24 — pressure-test pass (17-agent adversarial review of both codebases).** Two load-bearing reframes adopted (all 12 high/critical findings survived adversarial verification):
   1. **A run is hosted as an OpenHive *hosted swarm* (`src/swarm`), not a dispatch.** The dispatch orchestrator's stall-timeout (5 min, frozen at spawn for the ACP runtime), blind retry (`maxRetries=3` re-runs the whole loop), single global concurrency counter (`global=5`), and coding-agent-only runtimes all actively break a multi-hour run. The hosted-swarm manager already has the correct long-lived-process lifecycle. **Dispatch is reserved for the short, retry-safe inner evolve/eval units in Stage B.**
   2. **Verifiability fields arrive via a worker *finalization POST*, not the tracker.** `content_hash`, `claim_strength`, and the train-vs-held-out score cards are *not* reachable through the `ExperimentTracker` interface (events + finish-summary). The worker reads autonomation's public outputs (`runWithControls()` return value + `runner.lineage`) at run end and POSTs them — zero autonomation changes. `env_fingerprint` is **worker-computed** (autonomation produces nothing like it).
