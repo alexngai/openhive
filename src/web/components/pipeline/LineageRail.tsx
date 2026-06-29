@@ -4,7 +4,12 @@ import { FileText, GitBranch, ListTodo, Send, Clock } from 'lucide-react';
 import clsx from 'clsx';
 import { useCascadeDAG, type StreamDAGNode } from '../../hooks/useApi';
 import { useDispatch, useDispatchList, type Dispatch } from '../../hooks/useDispatch';
-import { useSchedules, getPayloadKind, type Schedule } from '../../hooks/useSchedules';
+import {
+  useSchedules,
+  getPayloadKind,
+  type DispatchSpecPayload,
+  type Schedule,
+} from '../../hooks/useSchedules';
 import { useSpec } from '../../hooks/useSpecs';
 
 type LineageStage = 'spec' | 'job' | 'task' | 'change' | 'schedule';
@@ -39,7 +44,7 @@ function shortId(value: string | null | undefined, size = 10): string {
 
 function scheduleSpecRef(schedule: Schedule) {
   if (getPayloadKind(schedule.payload) !== 'dispatch_spec') return null;
-  return schedule.payload.spec_ref;
+  return (schedule.payload as DispatchSpecPayload).spec_ref;
 }
 
 function firstDispatch(dispatches: Dispatch[] | undefined): Dispatch | undefined {
