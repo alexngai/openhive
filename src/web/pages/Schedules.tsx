@@ -9,6 +9,7 @@ import {
   type Schedule,
   type DispatchSpecPayload,
   type DispatchPromptPayload,
+  type ExperimentRunPayload,
 } from '../hooks/useSchedules';
 import { useSchedulesRealtime } from '../hooks/useSchedulesRealtime';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -22,6 +23,24 @@ function scheduleStateToChip(active: boolean): { tone: StatusTone; label: string
   return active
     ? { tone: 'success', label: 'Active' }
     : { tone: 'neutral', label: 'Paused' };
+}
+
+function scheduleSearchTerms(schedule: Schedule): string[] {
+  const kind = getPayloadKind(schedule.payload);
+  if (kind === 'dispatch_prompt') {
+    const payload = schedule.payload as DispatchPromptPayload;
+    return [payload.prompt, ...payload.target_swarm_ids];
+  }
+  if (kind === 'experiment') {
+    const payload = schedule.payload as ExperimentRunPayload;
+    return ['experiment', payload.experiment_ref];
+  }
+  const payload = schedule.payload as DispatchSpecPayload;
+  return [
+    payload.spec_ref.spec_id,
+    payload.spec_ref.resource_id,
+    ...payload.target_swarm_ids,
+  ];
 }
 
 export function Schedules() {
@@ -41,20 +60,11 @@ export function Schedules() {
   const filtered = useMemo(
     () =>
       schedules.filter((s) => {
-        const kind = getPayloadKind(s.payload);
-        const extras: string[] =
-          kind === 'dispatch_prompt'
-            ? [(s.payload as DispatchPromptPayload).prompt]
-            : [
-                (s.payload as DispatchSpecPayload).spec_ref.spec_id,
-                (s.payload as DispatchSpecPayload).spec_ref.resource_id,
-              ];
         return matchesSearch(
           q,
           s.id,
           s.cron,
-          ...extras,
-          ...(s.payload.target_swarm_ids ?? []),
+          ...scheduleSearchTerms(s),
         );
       }),
     [schedules, q],
@@ -72,7 +82,7 @@ export function Schedules() {
             Jobs
           </h1>
           <p className="mt-1 text-sm" style={{ color: 'var(--color-text-muted)' }}>
-            Cron-style recurring jobs. Each fire produces one queued run per target swarm.
+            Cron-style recurring jobs. Each fire dispatches work or launches an experiment run.
           </p>
         </div>
         <button
@@ -165,8 +175,11 @@ export function Schedules() {
 }
 
 function ScheduleRow({ schedule }: { schedule: Schedule }) {
-  const targets = schedule.payload.target_swarm_ids ?? [];
   const kind = getPayloadKind(schedule.payload);
+  const targets =
+    kind === 'experiment'
+      ? []
+      : (schedule.payload as DispatchPromptPayload | DispatchSpecPayload).target_swarm_ids;
   let cronDescription = '';
   try {
     cronDescription = cronstrue.toString(schedule.cron, { use24HourTimeFormat: false });
@@ -201,10 +214,17 @@ function ScheduleRow({ schedule }: { schedule: Schedule }) {
           </div>
 
           <div className="mt-1 flex items-center gap-3 text-xs flex-wrap" style={{ color: 'var(--color-text-muted)' }}>
-            {/* Spec / prompt */}
+            {/* Work */}
             {kind === 'dispatch_prompt' ? (
               <span className="line-clamp-1" style={{ color: 'var(--color-text-secondary)' }}>
                 {(schedule.payload as DispatchPromptPayload).prompt}
+              </span>
+            ) : kind === 'experiment' ? (
+              <span className="inline-flex items-center gap-1">
+                <span style={{ color: 'var(--color-text-secondary)' }}>Experiment</span>
+                <span className="font-mono" style={{ color: 'var(--color-text-secondary)' }}>
+                  {(schedule.payload as ExperimentRunPayload).experiment_ref}
+                </span>
               </span>
             ) : (
               <span className="font-mono" style={{ color: 'var(--color-text-secondary)' }}>
@@ -213,7 +233,9 @@ function ScheduleRow({ schedule }: { schedule: Schedule }) {
             )}
             <span>·</span>
             {/* Targets */}
-            {targets.length === 1 ? (
+            {kind === 'experiment' ? (
+              <span>experiment runner</span>
+            ) : targets.length === 1 ? (
               <span className="font-mono">{targets[0]}</span>
             ) : (
               <span>{targets.length} swarms</span>
