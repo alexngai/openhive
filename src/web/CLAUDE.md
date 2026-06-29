@@ -30,6 +30,12 @@ The sidebar is intentionally grouped by user mental model rather than route name
 
 The Work label **Jobs** maps to the existing `/dispatch` route and `Dispatch*.tsx` pages. Keep that route stable for compatibility unless adding a deliberate `/jobs` redirect.
 
+Schedule UI surfaces (`/schedules`, `/schedules/:id`, and lineage helpers) must
+branch through `getPayloadKind()` from `hooks/useSchedules.ts`. The backend
+supports three schedule payload kinds: legacy/spec dispatch, ad-hoc prompt
+dispatch, and `experiment` runs (which do not have `target_swarm_ids` or
+`spec_ref`).
+
 ## Chat (Unified across Sessions, Messages, Agent, SwarmDetail)
 
 All four chat surfaces (Sessions trajectory, Messages conversation, Agent profile, SwarmDetail coordination) share a single contract defined in `swarmcraft/ui/embed` and consumed via `useChatChannel({ target, adapters, resolveCapabilities })`. Chat mode is determined by MAP capabilities published during agent registration, following the MAP `ParticipantCapabilities` schema.
