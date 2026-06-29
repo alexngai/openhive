@@ -790,12 +790,14 @@ export interface AppendEventInput {
  * delivery from the worker) is ignored idempotently and the existing row
  * returned, so a retried POST never double-writes the firehose.
  */
-export function appendEvent(input: AppendEventInput): ExperimentEvent {
+export type AppendEventResult = ExperimentEvent & { inserted: boolean };
+
+export function appendEvent(input: AppendEventInput): AppendEventResult {
   const db = getDatabase();
   const existing = db
     .prepare('SELECT * FROM experiment_events WHERE run_id = ? AND seq = ?')
     .get(input.run_id, input.seq) as Record<string, unknown> | undefined;
-  if (existing) return rowToEvent(existing);
+  if (existing) return { ...rowToEvent(existing), inserted: false };
 
   const id = `exev_${nanoid()}`;
   db.prepare(
@@ -819,12 +821,15 @@ export function appendEvent(input: AppendEventInput): ExperimentEvent {
     input.created_at ?? nowIso(),
     nowIso(),
   );
-  return rowToEvent(
-    db.prepare('SELECT * FROM experiment_events WHERE id = ?').get(id) as Record<
-      string,
-      unknown
-    >,
-  );
+  return {
+    ...rowToEvent(
+      db.prepare('SELECT * FROM experiment_events WHERE id = ?').get(id) as Record<
+        string,
+        unknown
+      >,
+    ),
+    inserted: true,
+  };
 }
 
 export function listEventsForRun(

@@ -332,6 +332,8 @@ describe('experiments DAL — events (append-only)', () => {
     });
     expect(retry.id).toBe(first.id); // same row returned
     expect(retry.payload).toEqual({ a: 1 }); // original wins
+    expect(first.inserted).toBe(true);
+    expect(retry.inserted).toBe(false);
     expect(exp.listEventsForRun(run.id)).toHaveLength(1);
   });
 

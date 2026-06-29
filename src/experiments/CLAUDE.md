@@ -94,7 +94,9 @@ the type-only imports.
 
 - The hub never writes a keep/discard decision; candidate rows are a projection of
   the runner's reported `promotion_keep`/`promotion_discard` events.
-- `experiment_events` is append-only; `appendEvent` is idempotent on `(run_id, seq)`.
+- `experiment_events` is append-only; `appendEvent` is idempotent on `(run_id, seq)`
+  and reports whether it inserted a new row. Projection code must skip duplicate
+  seqs so retried event bodies cannot mutate candidate/incumbent state.
 - `content_hash` uniqueness is partial (`WHERE content_hash IS NOT NULL`), so any
   number of exploratory (null-hash) experiments coexist while a locked config maps
   to exactly one experiment (`upsertExperimentByContentHash`).

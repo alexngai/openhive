@@ -308,6 +308,23 @@ describe('experiments routes — event ingest + tail', () => {
       { seq: 2, type: 'promotion_keep', candidateId: 'c1' },
     ]);
     expect(retry.statusCode).toBe(200);
+    expect(retry.json().applied).toBe(0);
+
+    // A duplicate seq with a conflicting body must not re-project from the
+    // retried request. The stored event row remains the source of truth.
+    const conflictingRetry = await post([
+      { seq: 2, type: 'promotion_discard', candidateId: 'c1', reason: 'late duplicate' },
+    ]);
+    expect(conflictingRetry.statusCode).toBe(200);
+    expect(conflictingRetry.json().applied).toBe(0);
+
+    const afterRetry = await app.inject({
+      method: 'GET',
+      url: `/api/v1/experiments/${exp.id}/candidates`,
+      headers: ADMIN,
+    });
+    expect(afterRetry.json().data[0].status).toBe('keep');
+    expect(afterRetry.json().data[0].promoted).toBe(true);
 
     const tail = await app.inject({
       method: 'GET',
@@ -317,6 +334,7 @@ describe('experiments routes — event ingest + tail', () => {
     expect(tail.json().data).toHaveLength(3); // no duplicates
     expect(tail.json().max_seq).toBe(2);
     expect(tail.json().data.map((e: { seq: number }) => e.seq)).toEqual([0, 1, 2]);
+    expect(tail.json().data[2].type).toBe('promotion_keep');
   });
 
   it('GET events tail respects after_seq', async () => {
