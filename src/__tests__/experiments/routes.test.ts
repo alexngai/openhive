@@ -337,6 +337,74 @@ describe('experiments routes — event ingest + tail', () => {
     });
     expect(tail.json().data.map((e: { seq: number }) => e.seq)).toEqual([1, 2]);
   });
+
+  it('duplicate event seq retries do not project a changed payload', async () => {
+    const exp = (await createExperiment()).json().experiment;
+    const run = (await createRun(exp.id)).json();
+    const auth = { authorization: `Bearer ${run.worker_token}` };
+
+    const first = await app.inject({
+      method: 'POST',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.run.id}/events`,
+      headers: auth,
+      payload: { events: [{ seq: 0, type: 'cycle_start' }] },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().applied).toBe(1);
+
+    const retry = await app.inject({
+      method: 'POST',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.run.id}/events`,
+      headers: auth,
+      payload: { events: [{ seq: 0, type: 'promotion_keep', candidateId: 'ghost' }] },
+    });
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json().applied).toBe(0);
+
+    const cands = await app.inject({
+      method: 'GET',
+      url: `/api/v1/experiments/${exp.id}/candidates`,
+      headers: ADMIN,
+    });
+    expect(cands.json().total).toBe(0);
+
+    const tail = await app.inject({
+      method: 'GET',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.run.id}/events`,
+      headers: ADMIN,
+    });
+    expect(tail.json().data).toHaveLength(1);
+    expect(tail.json().data[0].type).toBe('cycle_start');
+  });
+
+  it('empty event tail max_seq lets pollers fetch the first seq 0 event', async () => {
+    const exp = (await createExperiment()).json().experiment;
+    const run = (await createRun(exp.id)).json();
+
+    const empty = await app.inject({
+      method: 'GET',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.run.id}/events`,
+      headers: ADMIN,
+    });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json().data).toHaveLength(0);
+    expect(empty.json().max_seq).toBe(-1);
+
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.run.id}/events`,
+      headers: { authorization: `Bearer ${run.worker_token}` },
+      payload: { events: [{ seq: 0, type: 'cycle_start' }] },
+    });
+
+    const afterEmpty = await app.inject({
+      method: 'GET',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.run.id}/events?after_seq=${empty.json().max_seq}`,
+      headers: ADMIN,
+    });
+    expect(afterEmpty.json().data.map((e: { seq: number }) => e.seq)).toEqual([0]);
+    expect(afterEmpty.json().max_seq).toBe(0);
+  });
 });
 
 describe('experiments routes — finalize', () => {

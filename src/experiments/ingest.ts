@@ -45,7 +45,7 @@ export function ingestEvents(run: dal.ExperimentRun, events: IngestEvent[]): Ing
   let candidatesTouched = 0;
 
   for (const ev of events) {
-    dal.appendEvent({
+    const appended = dal.appendEventWithResult({
       experiment_id: run.experiment_id,
       run_id: run.id,
       autonomation_run_id: run.autonomation_run_id,
@@ -59,6 +59,7 @@ export function ingestEvents(run: dal.ExperimentRun, events: IngestEvent[]): Ing
       payload: ev,
       created_at: ev.timestamp,
     });
+    if (!appended.inserted) continue;
     applied++;
 
     const status = EVENT_STATUS[ev.type];

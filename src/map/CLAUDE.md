@@ -83,10 +83,17 @@ The wire `visibility` field always carries column-level `'shared'` for federated
 **1. `additionalHandlers` only routes JSON-RPC requests, not notifications.**
 The MAP SDK splits dispatch by id presence: `id` → `additionalHandlers`, no-id → a separate `_notificationHandler`. OpenHive registers `OpenHiveRepoHandler` via `additionalHandlers`, so agent-side transports must use `connection.callExtension(method, params)` (request) for the four `x-workspace/repo.*` methods, **not** `sendNotification`. The package's `RepoClientTransport.notify(...)` is a fire-and-forget shape — adapt it via `notify: (m, p) => connection.callExtension(m, p).then(() => undefined)`. See `references/macro-agent/src/map/sidecar.ts`.
 
-**2. `workspaces.agent_id` FK gap.**
+**2. Shared `map/resources/*` registration must route by resource kind.**
+OpenHive native resources (`x-workspace/repo`, memory banks, skills, etc.) and
+OpenTeams bundles (`x-openteams/loadout`, `x-openteams/team`) share the MAP
+Resource Protocol methods. `buildAdditionalHandlers()` must wrap the shared
+`map/resources/list|get` methods by `params.type`; registering one dispatcher
+after the other will shadow resource kinds owned by the first.
+
+**3. `workspaces.agent_id` FK gap.**
 `workspaces.agent_id` references `map_nodes(id)`. The MAP-protocol `agent.registered` path doesn't currently project into `map_nodes` (only the explicit REST `POST /map/nodes` endpoint does — see `src/map/service.ts:registerNode`). Without intervention, every sidecar's first declare would `FOREIGN KEY constraint failed`. The handler defensively calls `ensureNodeWithId({ id: ctx.agentId, swarm_id, map_agent_id })` before inserting the binding. Trajectory bootstrap does the same. Contained to the workspaces feature; if the broader registration path ever projects into `map_nodes`, the shim becomes a no-op (`INSERT OR IGNORE`).
 
-**3. Status column was added in V51 — explicit-column SQL queries must enumerate it.**
+**4. Status column was added in V51 — explicit-column SQL queries must enumerate it.**
 `SELECT *` over a long-running better-sqlite3 connection caches column metadata at first prepare; tests using `sqlite3` CLI directly will see the column, but live `findRepoById` won't until the process restarts. More importantly, helpers like `repos.ts:rowToResource` enumerate fields explicitly and **must list status** — a forgotten field doesn't typecheck (now that `SyncableResource.status` is required) but used to silently null-out in API responses. Caught during browser smoke; covered now by route tests asserting on `res.json().repo.status`.
 
 ### Repo / workspace key files

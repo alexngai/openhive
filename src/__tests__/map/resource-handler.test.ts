@@ -16,6 +16,8 @@ import {
   toInternalType,
   getAdvertisedKinds,
 } from '../../map/resource-handler.js';
+import { buildAdditionalHandlers } from '../../map/map-server-setup.js';
+import type { Config } from '../../config.js';
 
 const TEST_ROOT = testRoot('resource-handler');
 const TEST_DB_PATH = testDbPath(TEST_ROOT, 'resource-handler.db');
@@ -23,6 +25,9 @@ const TEST_DB_PATH = testDbPath(TEST_ROOT, 'resource-handler.db');
 const OWNER_ID = 'agent_owner';
 const OTHER_AGENT = 'agent_other';
 const SWARM_ID = 'swarm_test';
+const stubConfig = {
+  scheduler: { maxSchedulesPerAgent: 100 },
+} as unknown as Config;
 
 function ctxFor(agentId: string) {
   return { session: { metadata: { agentId, swarmId: SWARM_ID } } };
@@ -320,6 +325,27 @@ describe('MAP Resource Handler', () => {
 
       expect(result.id).toBe('mem_pub');
       expect(result.type).toBe('x-minimem/memory-bank');
+    });
+  });
+
+  describe('MAPServer additionalHandlers registration', () => {
+    it('routes OpenHive resource kinds after OpenTeams handlers are registered', async () => {
+      seedRepo('repo_registered', 'registered-repo', 'https://github.com/test/registered', OWNER_ID);
+      const handlers = buildAdditionalHandlers(stubConfig);
+
+      const list = (await handlers['map/resources/list'](
+        { type: 'x-workspace/repo' },
+        ctxFor(OWNER_ID),
+      )) as { resources: Array<{ id: string; type: string }> };
+      expect(list.resources).toEqual([
+        expect.objectContaining({ id: 'repo_registered', type: 'x-workspace/repo' }),
+      ]);
+
+      const get = (await handlers['map/resources/get'](
+        { type: 'x-workspace/repo', id: 'repo_registered' },
+        ctxFor(OWNER_ID),
+      )) as { id: string; type: string };
+      expect(get).toEqual(expect.objectContaining({ id: 'repo_registered', type: 'x-workspace/repo' }));
     });
   });
 });

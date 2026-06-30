@@ -141,7 +141,12 @@ export const EventsTailQuerySchema = z.object({
   after_seq: z
     .string()
     .optional()
-    .transform((v) => (v === undefined ? undefined : Math.max(Number(v) || 0, 0))),
+    .transform((v) => {
+      if (v === undefined) return undefined;
+      const parsed = Number(v);
+      if (!Number.isFinite(parsed)) return 0;
+      return Math.max(Math.trunc(parsed), -1);
+    }),
   limit: z
     .string()
     .optional()

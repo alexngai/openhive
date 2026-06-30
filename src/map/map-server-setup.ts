@@ -374,14 +374,32 @@ export function buildAdditionalHandlers(config: Config): Record<string, (params:
   // singleton seeded on boot from `syncable_resources` (see
   // `src/openteams/seed.ts`).
   //
-  // Today openhive doesn't ship its own `map/resources/list`/`get`, so
-  // the composed dispatcher owns both methods. When openhive grows its
-  // own resource kinds, pass them as the `fallback` option to
-  // openteams's `composeResourceHandlers` — the cooperative shape is
-  // already in place upstream.
+  // OpenHive also owns native resource kinds (repos, memory banks, etc.).
+  // The shared MAP Resource Protocol methods route by `params.type` so
+  // neither dispatcher shadows the other.
   const openteamsComposed = getOpenteamsMapHandlers();
+  const openteamsResourceKinds = new Set(getOpenteamsResourceKinds());
+  const openhiveResourceList = handlers['map/resources/list'];
+  const openhiveResourceGet = handlers['map/resources/get'];
   for (const [method, handler] of Object.entries(openteamsComposed.handlers)) {
-    handlers[method] = handler as (params: any, ctx: any) => Promise<any>;
+    const openteamsHandler = handler as (params: any, ctx: any) => Promise<any>;
+    if (method === 'map/resources/list') {
+      handlers[method] = async (params: any, ctx: any) => {
+        return openteamsResourceKinds.has(params?.type)
+          ? openteamsHandler(params, ctx)
+          : openhiveResourceList(params, ctx);
+      };
+      continue;
+    }
+    if (method === 'map/resources/get') {
+      handlers[method] = async (params: any, ctx: any) => {
+        return openteamsResourceKinds.has(params?.type)
+          ? openteamsHandler(params, ctx)
+          : openhiveResourceGet(params, ctx);
+      };
+      continue;
+    }
+    handlers[method] = openteamsHandler;
   }
 
   // ── Ping/Pong ────────────────────────────────────────────────────

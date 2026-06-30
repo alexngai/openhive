@@ -12,12 +12,11 @@
  * on boot from authored content in `syncable_resources` (see `seed.ts`) and
  * kept in sync on write via `sync-bridge.ts`.
  *
- * Cooperation with future openhive-owned MAP resource kinds: the openteams
- * `composeResourceHandlers` accepts a `fallback: { list, get }` option that
- * routes unknown `params.type` values to a host dispatcher. We don't pass
- * a fallback here today because openhive's MAP server doesn't register its
- * own `map/resources/list/get` yet — when it does, swap in the fallback
- * without rewiring callers.
+ * Cooperation with OpenHive-owned MAP resource kinds happens in
+ * `map-server-setup.ts`: the MAP server wraps the shared
+ * `map/resources/list|get` methods and routes by `params.type`, while this
+ * module remains focused on the OpenTeams kinds and per-kind publish/remove
+ * verbs.
  */
 
 import {

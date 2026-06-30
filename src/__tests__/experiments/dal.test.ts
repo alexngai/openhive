@@ -301,6 +301,8 @@ describe('experiments DAL — events (append-only)', () => {
     const e = exp.createExperiment(makeExperiment());
     const run = exp.createRun({ experiment_id: e.id });
 
+    expect(exp.maxSeqForRun(run.id)).toBe(-1);
+
     const ev = exp.appendEvent({
       experiment_id: e.id,
       run_id: run.id,
@@ -333,6 +335,23 @@ describe('experiments DAL — events (append-only)', () => {
     expect(retry.id).toBe(first.id); // same row returned
     expect(retry.payload).toEqual({ a: 1 }); // original wins
     expect(exp.listEventsForRun(run.id)).toHaveLength(1);
+  });
+
+  it('appendEventWithResult reports whether the row was newly inserted', () => {
+    const e = exp.createExperiment(makeExperiment());
+    const run = exp.createRun({ experiment_id: e.id });
+
+    const first = exp.appendEventWithResult({
+      experiment_id: e.id, run_id: run.id, seq: 0, type: 'cycle_start', payload: {},
+    });
+    const retry = exp.appendEventWithResult({
+      experiment_id: e.id, run_id: run.id, seq: 0, type: 'promotion_keep', payload: {},
+      candidate_ref: 'ghost',
+    });
+
+    expect(first.inserted).toBe(true);
+    expect(retry.inserted).toBe(false);
+    expect(retry.event.id).toBe(first.event.id);
   });
 
   it('listEventsForRun orders by seq and respects afterSeq', () => {
