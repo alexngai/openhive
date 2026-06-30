@@ -15,6 +15,8 @@ if (dumpPath) {
   const captured = {
     MACRO_BOOTSTRAP_COORDINATOR: process.env.MACRO_BOOTSTRAP_COORDINATOR ?? null,
     MACRO_BOOTSTRAP_CWD: process.env.MACRO_BOOTSTRAP_CWD ?? null,
+    SWARM_RUNNER_BOOTSTRAP_TOKEN: process.env.SWARM_RUNNER_BOOTSTRAP_TOKEN ? 'set' : null,
+    SWARM_RUNNER_DATA_DIR: process.env.SWARM_RUNNER_DATA_DIR ?? null,
     OPENSWARM_BOOTSTRAP_TOKEN: process.env.OPENSWARM_BOOTSTRAP_TOKEN ? 'set' : null,
     OPENSWARM_DATA_DIR: process.env.OPENSWARM_DATA_DIR ?? null,
   };

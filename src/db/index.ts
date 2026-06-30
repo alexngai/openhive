@@ -219,7 +219,7 @@ const MIGRATION_REGISTRY: Record<number, string> = {
   14: MIGRATION_V14_SYNC,
   // Version 15: Key rotation support — versioned signing keys
   15: MIGRATION_V15_SYNC,
-  // Version 16: Hosted swarms — spawn and manage OpenSwarm instances
+  // Version 16: Hosted swarms — spawn and manage SwarmRunner instances
   16: MIGRATION_V16_HOSTED_SWARMS,
   // Version 17: Channel Bridge — external platform integration
   17: MIGRATION_V17_BRIDGE,
@@ -340,7 +340,7 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // just over the live WS event.
   49: MIGRATION_V49_DISPATCH_LOADOUT_RESOLUTION,
   // Version 50: hosted_swarms.kind — generalize the spawn pipeline beyond
-  // OpenSwarm. Existing rows default to 'openswarm'. See
+  // SwarmRunner. Existing rows default to 'swarm-runner'. See
   // docs/HOSTED_SWARM_KINDS_DESIGN.md.
   50: MIGRATION_V50_HOSTED_SWARM_KIND,
   // Version 51: Drop the kind CHECK constraint so new kinds (codex, gemini,
@@ -472,7 +472,8 @@ function repairSchema(database: Database.Database): void {
     "CREATE INDEX IF NOT EXISTS idx_map_nodes_presence ON map_nodes(presence)",
     "ALTER TABLE agents ADD COLUMN capabilities TEXT",
     "ALTER TABLE agents ADD COLUMN grant_version INTEGER DEFAULT 0",
-    "ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'openswarm'",
+    "ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'swarm-runner'",
+    "UPDATE hosted_swarms SET kind = 'swarm-runner' WHERE kind = 'openswarm'",
     "ALTER TABLE syncable_resources ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
     "CREATE INDEX IF NOT EXISTS idx_syncable_resources_status ON syncable_resources(status)",
     "ALTER TABLE dispatches ADD COLUMN repo_id TEXT",

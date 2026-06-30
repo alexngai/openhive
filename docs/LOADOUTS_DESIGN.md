@@ -748,7 +748,7 @@ Sized so each slice ships independently with a demo-able outcome.
 5. **End-to-end author-to-dispatch tests** — author content via DAL/REST → enrich dispatch task → assert prompt embeds skills + addendum. Variants: `team_role_ref` and `loadout_ref`.
 6. **Update propagation tests** — edit content → next materialize call sees the update. Catches cache-invalidation regressions.
 7. **openteams round-trip test** — author via OpenHive → stage to tmpdir → openteams' `TemplateLoader.loadAsync` parses it correctly. Catches drift between OpenHive storage and openteams loader.
-8. **Full-stack hub→macro-agent test** — gated on `FULL_STACK_E2E=true`. Real OpenHive + OpenSwarm + macro-agent. Asserts the materialized loadout's distinctive markers reach the live agent's prompt.
+8. **Full-stack hub→macro-agent test** — gated on `FULL_STACK_E2E=true`. Real OpenHive + SwarmRunner + macro-agent. Asserts the materialized loadout's distinctive markers reach the live agent's prompt.
 
 ### Future (out of scope here)
 

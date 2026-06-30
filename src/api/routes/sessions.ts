@@ -1769,7 +1769,7 @@ export async function sessionsRoutes(
 
       // After cold-restart, SwarmCraft's cached MAP client still thinks it's
       // connected (status='connected'), but the underlying WebSocket died when
-      // the previous openswarm process exited. Its next RPC will fail with
+      // the previous swarm-runner process exited. Its next RPC will fail with
       // "Connection closed". Force a disconnect so the next getClient() either
       // returns null (and we wait for re-connect below) or returns a fresh
       // client after swarmcraft's bridge auto-reconnects on swarm_registered.

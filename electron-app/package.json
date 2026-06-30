@@ -94,9 +94,9 @@
         "!**/vendor/ripgrep/x64-darwin/**",
         "!**/vendor/ripgrep/x64-linux/**",
         "!**/vendor/ripgrep/x64-win32/**",
-        "!**/node_modules/@openswarm/cli-linux-*/**",
-        "!**/node_modules/@openswarm/cli-win32-*/**",
-        "!**/node_modules/@openswarm/cli-darwin-x64/**"
+        "!**/node_modules/@swarmkit-ai/swarm-runner-cli-linux-*/**",
+        "!**/node_modules/@swarmkit-ai/swarm-runner-cli-win32-*/**",
+        "!**/node_modules/@swarmkit-ai/swarm-runner-cli-darwin-x64/**"
       ]
     },
     "linux": {
@@ -114,8 +114,8 @@
         "!**/vendor/ripgrep/arm64-win32/**",
         "!**/vendor/ripgrep/x64-darwin/**",
         "!**/vendor/ripgrep/x64-win32/**",
-        "!**/node_modules/@openswarm/cli-darwin-*/**",
-        "!**/node_modules/@openswarm/cli-win32-*/**"
+        "!**/node_modules/@swarmkit-ai/swarm-runner-cli-darwin-*/**",
+        "!**/node_modules/@swarmkit-ai/swarm-runner-cli-win32-*/**"
       ]
     }
   }

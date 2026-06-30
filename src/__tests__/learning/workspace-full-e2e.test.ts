@@ -29,8 +29,8 @@ const TEST_ROOT = testRoot('learning-full-e2e');
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 const CLI_PATH = path.join(PROJECT_ROOT, 'bin/openhive.js');
 
-// Use real OpenSwarm if available, fall back to mock
-const OPENSWARM_PATH = process.env.OPENSWARM_COMMAND || 'openswarm serve';
+// Use real SwarmRunner if available, fall back to mock
+const SWARM_RUNNER_PATH = process.env.SWARM_RUNNER_COMMAND || 'swarm-runner serve';
 
 const SERVER_PORT = 19899;
 const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`;
@@ -106,7 +106,7 @@ describeIf('Full E2E: CLI + Mock Swarm + Workspace Dispatch', () => {
       swarmHosting: {
         enabled: true,
         default_provider: 'local',
-        openswarm_command: OPENSWARM_PATH,
+        swarm_runner_command: SWARM_RUNNER_PATH,
         data_dir: path.join(TEST_ROOT, 'swarms'),
         port_range: [19800, 19810],
         max_swarms: 3,
@@ -252,7 +252,7 @@ describeIf('Full E2E: CLI + Mock Swarm + Workspace Dispatch', () => {
     // the swarm's workspace.result WS response while batch runs
     const { status, data } = await api('POST', '/learning/batch', undefined, {
       admin: true,
-      timeout: 180_000, // 3min for real OpenSwarm startup + agentic dispatch
+      timeout: 180_000, // 3min for real SwarmRunner startup + agentic dispatch
     });
     console.log(`[full-e2e] Batch result: ${JSON.stringify(data).substring(0, 500)}`);
     expect(status).toBe(200);

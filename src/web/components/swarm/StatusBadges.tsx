@@ -56,8 +56,8 @@ export function SandboxBadge() {
   );
 }
 
-export function KindBadge({ kind }: { kind?: 'openswarm' | 'claude-code' | 'codex' }) {
-  if (!kind || kind === 'openswarm') return null;
+export function KindBadge({ kind }: { kind?: 'swarm-runner' | 'claude-code' | 'codex' }) {
+  if (!kind || kind === 'swarm-runner') return null;
   const label = kind === 'claude-code' ? 'Claude Code' : 'Codex';
   // Codex gets a distinct color so the two TUI kinds aren't visually
   // identical at a glance on the swarm cards.

@@ -11,7 +11,7 @@ Step-by-step verification of everything shipped on this branch:
 - Stream 1 — per-commit diff drawer
 - Stream 2 — per-stream + stack diff (with non-linear error surface)
 - Stream 3 — "Open PR stack" walker (idempotency, D18 propagation, D19, D21, D22)
-- Stream 4 — openswarm dead-code revert
+- Stream 4 — swarm-runner dead-code revert
 - Post-Stream-4 fixes:
   - F2 — walker transactional snapshot
   - F3 / D23 — `paused` transparent, `conflicted` active

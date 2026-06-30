@@ -31,14 +31,14 @@ No UI. No embedded terminal attach. No SIGTERM-on-stop UX polish. Just **the spa
 
 **Changes:**
 - `src/swarm/manager.ts`:
-  - Rename `async spawn()` body → `async spawnOpenswarm()` (private)
+  - Rename `async spawn()` body → `async spawnSwarmRunner()` (private)
   - New `async spawn()` becomes a 3-line dispatcher:
     ```ts
     async spawn(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
-      if ((input.kind ?? 'openswarm') === 'claude-code') {
+      if ((input.kind ?? 'swarm-runner') === 'claude-code') {
         return this.spawnClaudeCode(agentId, input);  // throws "not implemented" until PR 4
       }
-      return this.spawnOpenswarm(agentId, input);
+      return this.spawnSwarmRunner(agentId, input);
     }
     private async spawnClaudeCode(_a: string, _i: SpawnSwarmInput): Promise<HostedSwarm> {
       throw new SwarmHostingError('NOT_IMPLEMENTED', 'kind=claude-code is not yet implemented');
@@ -47,11 +47,11 @@ No UI. No embedded terminal attach. No SIGTERM-on-stop UX polish. Just **the spa
 - `src/swarm/types.ts`:
   - Add optional `kind?: HostedSwarmKind` to `SpawnSwarmInput`
 - `src/api/schemas/` (or wherever `SpawnSwarmSchema` lives):
-  - Add `kind: z.enum(['openswarm', 'claude-code']).optional().default('openswarm')` to the spawn payload schema
+  - Add `kind: z.enum(['swarm-runner', 'claude-code']).optional().default('swarm-runner')` to the spawn payload schema
 
 **Acceptance:**
 - All 482 existing tests still pass
-- Manual: spawn an openswarm via UI / curl → identical behavior to before
+- Manual: spawn an swarm-runner via UI / curl → identical behavior to before
 - Manual: curl `kind: 'claude-code'` returns a 5xx with the `NOT_IMPLEMENTED` error message (not "kind not allowed" or anything else)
 
 **Estimated effort:** ~2 hours
@@ -60,7 +60,7 @@ No UI. No embedded terminal attach. No SIGTERM-on-stop UX polish. Just **the spa
 
 ### PR 3 — Provider command override (additive)
 
-**Goal:** add fields the local provider can use to spawn an arbitrary command instead of `openswarm`. No callers use them yet — pure provider extension.
+**Goal:** add fields the local provider can use to spawn an arbitrary command instead of `swarm-runner`. No callers use them yet — pure provider extension.
 
 **Changes:**
 - `src/swarm/types.ts` (`SwarmProvisionConfig`):
@@ -68,14 +68,14 @@ No UI. No embedded terminal attach. No SIGTERM-on-stop UX polish. Just **the spa
   - Add `spawn_args_override?: string[]`
   - Add JSDoc explaining: when set, replaces the provider's default command/args; when unset, provider uses its kind-default
 - `src/swarm/providers/local.ts`:
-  - In the command-build path, prefer `config.spawn_command_override` over `this.openswarmCommand` if set
+  - In the command-build path, prefer `config.spawn_command_override` over `this.swarmRunnerCommand` if set
   - Same for args — replace, don't append
   - One branch in the existing build function
 
 **Acceptance:**
 - All existing tests still pass
 - New unit test: pass a `SwarmProvisionConfig` with overrides set, assert the spawned command line has the overrides not the default
-- Manual: spawn an openswarm with empty overrides → unchanged behavior
+- Manual: spawn an swarm-runner with empty overrides → unchanged behavior
 
 **Estimated effort:** ~1 hour
 
@@ -87,14 +87,14 @@ No UI. No embedded terminal attach. No SIGTERM-on-stop UX polish. Just **the spa
 
 **Phase-by-phase outline** (numbered to match the 13-phase decomposition in the refactor plan):
 
-- **(1) Validation** — shared with `spawnOpenswarm`; extract a private `validateSpawnLimits(providerType)` helper that both methods call
+- **(1) Validation** — shared with `spawnSwarmRunner`; extract a private `validateSpawnLimits(providerType)` helper that both methods call
 - **(2) Skip port allocation** — claude-code doesn't bind a server
-- **(3) Generate `hostedSwarmId` + `dataDir`** — same as openswarm; extract helper or duplicate (probably duplicate for v1; extract in milestone B if it bothers us)
-- **(4) Hive validation** — same as openswarm
+- **(3) Generate `hostedSwarmId` + `dataDir`** — same as swarm-runner; extract helper or duplicate (probably duplicate for v1; extract in milestone B if it bothers us)
+- **(4) Hive validation** — same as swarm-runner
 - **(5) Skip injected resources** for v1; document the limit
 - **(6) MAP pre-registration with placeholder endpoint** — `endpoint = "internal:cc:<hostedSwarmId>"`. Confirms the schema accepts non-`ws://` prefixes; if not, use NULL and document
 - **(7) Mint slim onboard token** — call `delegateForSpawn` directly to get the credential; no `BootstrapToken` envelope wrapping
-- **(8) Resolve credentials** — simpler than openswarm; only what cc-swarm needs (the onboard token as `map.auth.credential`)
+- **(8) Resolve credentials** — simpler than swarm-runner; only what cc-swarm needs (the onboard token as `map.auth.credential`)
 - **(9) Create DB row** with `kind: 'claude-code'`, `provider: 'local'`, `assigned_port: null`
 - **(10) Write prelaunch file** at `<dataDir>/.swarm/claude-swarm/config.json`:
   ```json

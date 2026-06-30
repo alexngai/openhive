@@ -14,10 +14,10 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import Fastify, { FastifyInstance } from 'fastify';
 import * as path from 'path';
 
-const RESOLVED_TUI = '/safe/path/@openswarm/cli-darwin-arm64/openswarm';
+const RESOLVED_TUI = '/safe/path/@swarmkit-ai/swarm-runner-cli-darwin-arm64/swarm-runner';
 
 vi.mock('../../terminal/resolve-tui.js', () => ({
-  resolveOpenSwarmTuiBinary: vi.fn(() => RESOLVED_TUI),
+  resolveSwarmRunnerTuiBinary: vi.fn(() => RESOLVED_TUI),
 }));
 
 import { initDatabase, closeDatabase } from '../../db/index.js';
@@ -25,7 +25,7 @@ import * as agentsDAL from '../../db/dal/agents.js';
 import * as hostedDal from '../../swarm/dal.js';
 import { swarmHostingRoutes } from '../../api/routes/swarm-hosting.js';
 import { ConfigSchema, type Config } from '../../config.js';
-import { resolveOpenSwarmTuiBinary } from '../../terminal/resolve-tui.js';
+import { resolveSwarmRunnerTuiBinary } from '../../terminal/resolve-tui.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 const TEST_ROOT = testRoot('terminal-info');
@@ -124,7 +124,7 @@ describe('GET /map/hosted/:id/terminal-info', () => {
   });
 
   beforeEach(() => {
-    vi.mocked(resolveOpenSwarmTuiBinary).mockReturnValue(RESOLVED_TUI);
+    vi.mocked(resolveSwarmRunnerTuiBinary).mockReturnValue(RESOLVED_TUI);
   });
 
   it('returns 404 when the hosted swarm does not exist', async () => {
@@ -166,7 +166,7 @@ describe('GET /map/hosted/:id/terminal-info', () => {
       expect(body.command).toBe(RESOLVED_TUI);
       expect(body.endpoint).toBe(`ws://127.0.0.1:${HUB_PORT}/ws/map`);
       // The swarm's assigned port (19501) MUST NOT leak into the args — the
-      // openswarm `serve` gateway has no MAP server there. Regression guard
+      // swarm-runner `serve` gateway has no MAP server there. Regression guard
       // for the original bug where TUI was sent to a dead port.
       expect(body.args).toEqual(['--url', `ws://127.0.0.1:${HUB_PORT}/ws/map`, '--auto-connect']);
       expect(body.args.join(' ')).not.toContain('19501');
@@ -174,7 +174,7 @@ describe('GET /map/hosted/:id/terminal-info', () => {
     });
 
     it('marks available:false when the TUI binary cannot be resolved', async () => {
-      vi.mocked(resolveOpenSwarmTuiBinary).mockReturnValueOnce(null);
+      vi.mocked(resolveSwarmRunnerTuiBinary).mockReturnValueOnce(null);
       const swarm = makeRunningSwarm({ spawnedBy: agent.id });
       const res = await app.inject({
         method: 'GET',

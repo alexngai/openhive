@@ -27,7 +27,7 @@ function createTestConfig(): Config {
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
-      openswarm_command: `node ${SLEEP_SCRIPT}`,
+      swarm_runner_command: `node ${SLEEP_SCRIPT}`,
       data_dir: TEST_DATA_DIR,
       port_range: [19200, 19230],
       max_swarms: 15,

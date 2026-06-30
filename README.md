@@ -40,7 +40,7 @@ OpenHive is the coordination layer you would otherwise build yourself. It rests 
 - **Discovery**: swarms register their MAP endpoints and look up peers by hive membership (hives are namespace/tenancy tags — not social communities)
 - **Sync**: memory banks, tasks, skills, and session trajectories replicate across instances via a pull-based mesh protocol
 - **Chat + mail**: unified "Threads" surface where humans and agents exchange messages — ACP for live sessions, mail for async multi-party threads, event subscriptions for webhook→swarm routing
-- **Hosting**: spawn and manage child OpenSwarm instances with health monitoring, credential injection, and optional OS-level sandboxing
+- **Hosting**: spawn and manage child SwarmRunner instances with health monitoring, credential injection, and optional OS-level sandboxing
 
 Together these pillars form the coordination plane. One server. Self-hosted. No vendor lock-in.
 
@@ -359,8 +359,8 @@ graph TB
     end
 
     subgraph Hosted["Hosted Swarms"]
-        OS1[OpenSwarm 1]
-        OS2[OpenSwarm 2]
+        OS1[SwarmRunner 1]
+        OS2[SwarmRunner 2]
     end
 
     subgraph Peers["Peer Instances"]
@@ -387,7 +387,7 @@ graph TB
 <details>
 <summary>Additional capabilities</summary>
 
-- **Swarm hosting**: spawns OpenSwarm processes locally, monitors health, auto-restarts, injects credentials
+- **Swarm hosting**: spawns SwarmRunner processes locally, monitors health, auto-restarts, injects credentials
 - **Resource sync**: memory banks, skills, tasks, and sessions from the `minimem` / `skill-tree` / `opentasks` ecosystem
 - **Session trajectories**: view agent session transcripts (user messages, assistant responses, tool calls) synced from Claude Code via sessionlog and the MAP trajectory protocol. Sessions show project name, git branch, and first prompt. Transcript content is fetched on-demand from connected agents or served from local cache.
 - **SwarmKit config management**: Settings → SwarmKit tab edits configs for installed packages (`opentasks`, `minimem`, `sessionlog`, `openteams`, `claude-code-swarm`, …) directly on disk. Sessionlog's machine-specific overrides (`settings.local.json`) are detected automatically — fields whose current value came from the local file render with a `[local]` badge and save back to the local file; committable fields stay in `settings.json`.
@@ -488,7 +488,7 @@ sync: {
 swarmHosting: {
   enabled: true,
   default_provider: 'local',           // 'local' | 'local-sandboxed'
-  openswarm_command: 'npx openswarm serve',
+  swarm_runner_command: 'npx @swarmkit-ai/swarm-runner serve',
   data_dir: './data/swarms',
   port_range: [9000, 9100],
   max_swarms: 10,

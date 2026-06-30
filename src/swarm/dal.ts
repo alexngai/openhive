@@ -6,6 +6,7 @@
 
 import { nanoid } from 'nanoid';
 import { getDatabase } from '../db/index.js';
+import { normalizeHostedSwarmKind } from './types.js';
 import type {
   HostedSwarm,
   HostedSwarmKind,
@@ -25,6 +26,7 @@ export function generateHostedSwarmId(): string {
 function parseRow(row: Record<string, unknown>): HostedSwarm {
   return {
     ...row,
+    kind: normalizeHostedSwarmKind(row.kind as HostedSwarmKind | 'openswarm' | null | undefined),
     config: row.config ? JSON.parse(row.config as string) : null,
   } as HostedSwarm;
 }
@@ -42,7 +44,7 @@ function serializeConfig(config: SwarmProvisionConfig): string {
 export interface CreateHostedSwarmInput {
   provider: HostingProviderType;
   spawned_by: string;
-  /** Defaults to 'openswarm' so existing callers keep working unchanged. */
+  /** Defaults to 'swarm-runner' so existing callers keep working unchanged. */
   kind?: HostedSwarmKind;
   assigned_port?: number;
   bootstrap_token_hash?: string;
@@ -58,7 +60,7 @@ export interface CreateHostedSwarmInput {
 export function createHostedSwarm(input: CreateHostedSwarmInput): HostedSwarm {
   const db = getDatabase();
   const id = input.id ?? generateHostedSwarmId();
-  const kind: HostedSwarmKind = input.kind ?? 'openswarm';
+  const kind = normalizeHostedSwarmKind(input.kind);
 
   db.prepare(`
     INSERT INTO hosted_swarms (id, kind, provider, state, assigned_port, bootstrap_token_hash, config, spawned_by)

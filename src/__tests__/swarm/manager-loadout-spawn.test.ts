@@ -5,13 +5,13 @@
  * the materialized MCP scope + prompt addendum reach the spawned swarm's
  * `BootstrapToken`. The token is base64-encoded JSON inside
  * `hosted.config.bootstrap_token` — decoding it gives us the same envelope
- * the openswarm sidecar would consume.
+ * the swarm-runner sidecar would consume.
  *
  * Backwards compat: spawns without openteams fields produce a token with
  * `openteams === undefined`.
  *
  * Modeled on `manager.test.ts` — real SwarmManager, sleep-server.js stub
- * so the spawn doesn't need a real OpenSwarm runtime.
+ * so the spawn doesn't need a real SwarmRunner runtime.
  */
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
@@ -51,7 +51,7 @@ function createTestConfig(): SwarmHostingConfig {
   return {
     enabled: true,
     default_provider: 'local',
-    openswarm_command: `node ${SLEEP_SCRIPT}`,
+    swarm_runner_command: `node ${SLEEP_SCRIPT}`,
     data_dir: TEST_DATA_DIR,
     port_range: [19200, 19220],
     max_swarms: 10,

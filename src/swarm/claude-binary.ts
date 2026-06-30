@@ -7,7 +7,7 @@
  * and PATH; if none match we return null and the caller surfaces a clear
  * error from the spawn pipeline ("claude not found — install Claude Code").
  *
- * Pattern mirrors src/terminal/resolve-tui.ts (OpenSwarm TUI resolver).
+ * Pattern mirrors src/terminal/resolve-tui.ts (SwarmRunner TUI resolver).
  */
 
 import { execSync } from 'node:child_process';

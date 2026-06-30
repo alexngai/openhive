@@ -121,7 +121,7 @@ export class SandboxedLocalProvider implements HostingProvider {
   readonly type = 'local-sandboxed' as const;
 
   private processes = new Map<string, ManagedProcess>();
-  private openswarmCommand: string;
+  private swarmRunnerCommand: string;
   private defaultPolicy: SwarmSandboxPolicy | undefined;
   private sandboxAvailable: boolean;
 
@@ -131,10 +131,10 @@ export class SandboxedLocalProvider implements HostingProvider {
   private exitHandler: () => void;
 
   constructor(
-    openswarmCommand: string,
+    swarmRunnerCommand: string,
     defaultPolicy?: SwarmSandboxPolicy,
   ) {
-    this.openswarmCommand = openswarmCommand;
+    this.swarmRunnerCommand = swarmRunnerCommand;
     this.defaultPolicy = defaultPolicy;
 
     const { available, warnings } = checkSandboxAvailability();
@@ -187,7 +187,7 @@ export class SandboxedLocalProvider implements HostingProvider {
     }
 
     // Parse the command
-    const parts = this.openswarmCommand.split(/\s+/);
+    const parts = this.swarmRunnerCommand.split(/\s+/);
     let bin = parts[0];
     const baseArgs = parts.slice(1);
 
@@ -209,6 +209,8 @@ export class SandboxedLocalProvider implements HostingProvider {
     if (config.resolved_credentials) {
       Object.assign(env, config.resolved_credentials);
     }
+    env.SWARM_RUNNER_BOOTSTRAP_TOKEN = config.bootstrap_token;
+    env.SWARM_RUNNER_DATA_DIR = dataDir;
     env.OPENSWARM_BOOTSTRAP_TOKEN = config.bootstrap_token;
     env.OPENSWARM_DATA_DIR = dataDir;
 
@@ -307,7 +309,7 @@ export class SandboxedLocalProvider implements HostingProvider {
     if (child.exitCode !== null) {
       const logs = managed.logBuffer.slice(-10).join('\n');
       throw new Error(
-        `Sandboxed OpenSwarm process exited immediately (code=${child.exitCode}). ` +
+        `Sandboxed SwarmRunner process exited immediately (code=${child.exitCode}). ` +
         `Command: ${bin} ${args.join(' ')}\n` +
         `Recent output:\n${logs}`
       );

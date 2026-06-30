@@ -2,27 +2,27 @@
  * Security regression tests for `isAllowedCommand` in src/terminal/terminal-ws.ts.
  *
  * The pre-fix implementation accepted any command path that contained the
- * substring `@openswarm/cli-`, so a forged path like
- *   /tmp/evil/@openswarm/cli-x/openswarm
+ * substring `@swarmkit-ai/swarm-runner-cli-`, so a forged path like
+ *   /tmp/evil/@swarmkit-ai/swarm-runner-cli-x/swarm-runner
  * passed the allowlist. The current implementation requires an exact match
- * against the path returned by `resolveOpenSwarmTuiBinary()`. These tests
+ * against the path returned by `resolveSwarmRunnerTuiBinary()`. These tests
  * pin that contract.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const RESOLVED_TUI_PATH = '/safe/path/@openswarm/cli-darwin-arm64/openswarm';
+const RESOLVED_TUI_PATH = '/safe/path/@swarmkit-ai/swarm-runner-cli-darwin-arm64/swarm-runner';
 
 vi.mock('../../terminal/resolve-tui.js', () => ({
-  resolveOpenSwarmTuiBinary: vi.fn(() => RESOLVED_TUI_PATH),
+  resolveSwarmRunnerTuiBinary: vi.fn(() => RESOLVED_TUI_PATH),
 }));
 
 import { isAllowedCommand } from '../../terminal/terminal-ws.js';
-import { resolveOpenSwarmTuiBinary } from '../../terminal/resolve-tui.js';
+import { resolveSwarmRunnerTuiBinary } from '../../terminal/resolve-tui.js';
 
 describe('isAllowedCommand', () => {
   beforeEach(() => {
-    vi.mocked(resolveOpenSwarmTuiBinary).mockReturnValue(RESOLVED_TUI_PATH);
+    vi.mocked(resolveSwarmRunnerTuiBinary).mockReturnValue(RESOLVED_TUI_PATH);
   });
 
   describe('standard shells (exact match)', () => {
@@ -57,17 +57,17 @@ describe('isAllowedCommand', () => {
     });
   });
 
-  describe('OpenSwarm TUI binary', () => {
+  describe('SwarmRunner TUI binary', () => {
     it('accepts the resolved TUI binary path', () => {
       expect(isAllowedCommand(RESOLVED_TUI_PATH)).toBe(true);
     });
 
-    it('rejects forged paths that contain the @openswarm/cli- substring', () => {
-      // Regression: pre-fix code used `command.includes('@openswarm/cli-')`,
+    it('rejects forged paths that contain the @swarmkit-ai/swarm-runner-cli- substring', () => {
+      // Regression: pre-fix code used `command.includes('@swarmkit-ai/swarm-runner-cli-')`,
       // so an attacker-controlled path with that substring passed.
-      expect(isAllowedCommand('/tmp/evil/@openswarm/cli-x/openswarm')).toBe(false);
-      expect(isAllowedCommand('/tmp/@openswarm/cli-darwin-arm64/openswarm')).toBe(false);
-      expect(isAllowedCommand('@openswarm/cli-darwin-arm64/openswarm')).toBe(false);
+      expect(isAllowedCommand('/tmp/evil/@swarmkit-ai/swarm-runner-cli-x/swarm-runner')).toBe(false);
+      expect(isAllowedCommand('/tmp/@swarmkit-ai/swarm-runner-cli-darwin-arm64/swarm-runner')).toBe(false);
+      expect(isAllowedCommand('@swarmkit-ai/swarm-runner-cli-darwin-arm64/swarm-runner')).toBe(false);
     });
 
     it('rejects paths that share a prefix but do not match exactly', () => {
@@ -76,7 +76,7 @@ describe('isAllowedCommand', () => {
     });
 
     it('rejects when no TUI binary is resolved', () => {
-      vi.mocked(resolveOpenSwarmTuiBinary).mockReturnValueOnce(null);
+      vi.mocked(resolveSwarmRunnerTuiBinary).mockReturnValueOnce(null);
       expect(isAllowedCommand(RESOLVED_TUI_PATH)).toBe(false);
     });
   });

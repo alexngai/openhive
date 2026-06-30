@@ -284,8 +284,8 @@ describe('fire handler — fallback_spawn', () => {
 
   function seedScheduleWithFallback(
     targets: string[],
-    fallback: { adapter: 'openswarm' | 'claude-code' | 'codex'; cleanup_on_terminal?: boolean } = {
-      adapter: 'openswarm',
+    fallback: { adapter: 'swarm-runner' | 'claude-code' | 'codex'; cleanup_on_terminal?: boolean } = {
+      adapter: 'swarm-runner',
     },
   ) {
     return schedules.createSchedule({
@@ -333,7 +333,7 @@ describe('fire handler — fallback_spawn', () => {
       getSwarmStatus: () => 'offline',
       spawnFallbackSwarm: async ({ adapter, name }) => {
         spawnCalled = true;
-        expect(adapter).toBe('openswarm');
+        expect(adapter).toBe('swarm-runner');
         expect(name).toContain(`sched-spawn-${s.id}`);
         return { swarmId: 'spawned_swarm_xyz', hostedSwarmId: 'h-spawned-xyz' };
       },
@@ -370,7 +370,7 @@ describe('fire handler — fallback_spawn', () => {
 
   it('cleanup_on_terminal=false produces a binding that opts out of cleanup', async () => {
     const s = seedScheduleWithFallback(['swarm_off'], {
-      adapter: 'openswarm',
+      adapter: 'swarm-runner',
       cleanup_on_terminal: false,
     });
     const handler = createOpenHiveFireHandler({

@@ -2,19 +2,19 @@
 
 **Status:** Implemented end-to-end for `kind: 'claude-code'` and `kind: 'codex'` (TUI parity). The strategy-pattern refactor (Approach B from the manager refactor plan) has shipped — the manager has one shared TUI spawn pipeline (`spawnTuiKind`) that both kinds drive via per-kind strategy objects (`src/swarm/tui-strategies.ts`). Adding a third TUI-shaped kind is a single new strategy implementation. Codex's programmatic-mode (`codex app-server`) is documented as the next kind/mode but not yet shipped. See `## Implementation status` below for the per-piece breakdown and live-e2e coverage.
 **Date:** 2026-05-05 (updated 2026-05-06)
-**Scope:** Generalize the hosted-swarm pipeline so OpenHive can spawn and manage agent processes that aren't OpenSwarm — Claude Code first, with the architecture extending to codex / gemini / other CLIs later. Keep the existing OpenSwarm flow working unchanged.
+**Scope:** Generalize the hosted-swarm pipeline so OpenHive can spawn and manage agent processes that aren't SwarmRunner — Claude Code first, with the architecture extending to codex / gemini / other CLIs later. Keep the existing SwarmRunner flow working unchanged.
 
 **Out of scope:**
 - Live programmatic injection into a running interactive Claude Code session (TUI binary doesn't support multi-driver IPC; see "Limits we're accepting").
 - Codex / gemini implementations. The kind system is designed to admit them, but the only kind we ship in this round is `claude-code`.
-- Replacing macro-agent / cc-swarm / openswarm. Those keep their roles; we're widening the pipeline that wraps them.
+- Replacing macro-agent / cc-swarm / swarm-runner. Those keep their roles; we're widening the pipeline that wraps them.
 - Mobile/web access to running agents. happy solves this differently and we explicitly chose not to embed it.
 
 ---
 
 ## TL;DR
 
-Today every hosted swarm is OpenSwarm-shaped — same `openswarm_command`, same bootstrap-token handshake, same MAP-registration assumption. To support Claude Code, codex, and similar agent CLIs we add a `kind` field to the hosted-swarm record and route each kind through its own spawn-plan resolver. For the `claude-code` kind, OpenHive spawns the `claude` binary alone in a PTY the embedded terminal attaches to, after writing a project-local `.swarm/claude-swarm/config.json` file pointing cc-swarm's plugin at the openhive hub. cc-swarm is a **Claude Code plugin** (already installed on the host); its `SessionStart` hook fires from inside `claude`, detaches a MAP sidecar process, and the sidecar registers with the hub. Users see and use the real Claude Code TUI; OpenHive observes via cc-swarm's sidecar. **No PTY-level injection from OpenHive chat into a live TUI in v1.**
+Today every hosted swarm is SwarmRunner-shaped — same `swarm_runner_command`, same bootstrap-token handshake, same MAP-registration assumption. To support Claude Code, codex, and similar agent CLIs we add a `kind` field to the hosted-swarm record and route each kind through its own spawn-plan resolver. For the `claude-code` kind, OpenHive spawns the `claude` binary alone in a PTY the embedded terminal attaches to, after writing a project-local `.swarm/claude-swarm/config.json` file pointing cc-swarm's plugin at the openhive hub. cc-swarm is a **Claude Code plugin** (already installed on the host); its `SessionStart` hook fires from inside `claude`, detaches a MAP sidecar process, and the sidecar registers with the hub. Users see and use the real Claude Code TUI; OpenHive observes via cc-swarm's sidecar. **No PTY-level injection from OpenHive chat into a live TUI in v1.**
 
 ---
 
@@ -22,10 +22,10 @@ Today every hosted swarm is OpenSwarm-shaped — same `openswarm_command`, same 
 
 Two product asks are bumping into the same wall:
 
-1. **"Run claude-code-swarm directly under OpenHive."** cc-swarm already integrates (registers MAP, emits trajectory, speaks ACP), but you can't spawn it through the swarms UI today — `default_provider: 'local'` hardcodes `openswarm_command` and assumes the spawned binary will dial in via openswarm's bootstrap-token handshake. Without that, the lifecycle stays in `provisioning` forever.
-2. **"Manage Claude Code sessions visibly inside OpenHive."** Operators want a Claude Code TUI accessible from the browser the same way OpenSwarm is, with lifecycle controls (stop/restart/logs), trajectory in the Threads list, and a single hub-of-record for what's running where.
+1. **"Run claude-code-swarm directly under OpenHive."** cc-swarm already integrates (registers MAP, emits trajectory, speaks ACP), but you can't spawn it through the swarms UI today — `default_provider: 'local'` hardcodes `swarm_runner_command` and assumes the spawned binary will dial in via swarm-runner's bootstrap-token handshake. Without that, the lifecycle stays in `provisioning` forever.
+2. **"Manage Claude Code sessions visibly inside OpenHive."** Operators want a Claude Code TUI accessible from the browser the same way SwarmRunner is, with lifecycle controls (stop/restart/logs), trajectory in the Threads list, and a single hub-of-record for what's running where.
 
-Both unlock the same primitive: **OpenHive as a fleet manager for *kinds* of agent processes**, not a fleet manager for OpenSwarm.
+Both unlock the same primitive: **OpenHive as a fleet manager for *kinds* of agent processes**, not a fleet manager for SwarmRunner.
 
 A `kind` field also unblocks codex (different binary, different RPC, but conceptually the same hosted-swarm shape) and any future agent CLI.
 
@@ -40,7 +40,7 @@ The Claude Code TUI binary is interactive-only. It doesn't expose an IPC RPC the
 
 We accept this and **don't promise live injection in v1**. OpenHive *manages* and *observes* the Claude Code session; the user *drives* it through the embedded terminal. Autonomous dispatch can use `claude --resume -p` against idle sessions as a best-effort, explicitly labeled.
 
-The SDK path (claude-agent-sdk / claude-agent-acp) is already covered by macro-agent under OpenSwarm and remains the right answer when programmatic driving is needed. The `claude-code` kind is for the case where the user wants the *actual* Claude Code product (Max plan billing, full feature set) under OpenHive's management, accepting the interaction limits.
+The SDK path (claude-agent-sdk / claude-agent-acp) is already covered by macro-agent under SwarmRunner and remains the right answer when programmatic driving is needed. The `claude-code` kind is for the case where the user wants the *actual* Claude Code product (Max plan billing, full feature set) under OpenHive's management, accepting the interaction limits.
 
 ---
 
@@ -48,28 +48,28 @@ The SDK path (claude-agent-sdk / claude-agent-acp) is already covered by macro-a
 
 - Add a `kind` field to hosted swarms that routes spawn behavior cleanly.
 - Ship `kind: 'claude-code'` end-to-end: spawn → terminal → trajectory in Threads → lifecycle (stop/restart/logs).
-- Keep `kind: 'openswarm'` (the current behavior) working with no functional change.
+- Keep `kind: 'swarm-runner'` (the current behavior) working with no functional change.
 - Make the design admit `kind: 'codex'`, `kind: 'gemini'`, and `kind: 'cc-swarm'` as future entries without re-architecting.
 - Be explicit about what each kind can and can't do, so the UI can shape itself accordingly.
 
 ## Non-goals
 
 - Live mid-session injection from OpenHive chat into Claude Code TUI.
-- Replacing the macro-agent / openswarm SDK-driven path. Different kind, different use case.
+- Replacing the macro-agent / swarm-runner SDK-driven path. Different kind, different use case.
 - Multi-user concurrent driving of the same TUI (one driver at a time; queueing is a future concern).
 
 ---
 
 ## Current state
 
-- `src/db/dal/` `hosted_swarms` table — no `kind` column today; behavior is implicitly OpenSwarm.
-- `src/swarm/manager.ts` — `spawn()` builds an OpenSwarm-specific bootstrap token, calls the provider, expects MAP-side registration (matched via `bootstrap_token_hash`) within a timeout to flip lifecycle from `provisioning` → `running`.
-- `src/swarm/providers/local.ts` — runs `config.openswarm_command` (a single string from `SwarmHostingConfig`), no per-kind branching.
-- `src/api/routes/swarm-hosting.ts:359-431` — `terminal-info` resolves the OpenSwarm TUI binary unconditionally.
+- `src/db/dal/` `hosted_swarms` table — no `kind` column today; behavior is implicitly SwarmRunner.
+- `src/swarm/manager.ts` — `spawn()` builds an SwarmRunner-specific bootstrap token, calls the provider, expects MAP-side registration (matched via `bootstrap_token_hash`) within a timeout to flip lifecycle from `provisioning` → `running`.
+- `src/swarm/providers/local.ts` — runs `config.swarm_runner_command` (a single string from `SwarmHostingConfig`), no per-kind branching.
+- `src/api/routes/swarm-hosting.ts:359-431` — `terminal-info` resolves the SwarmRunner TUI binary unconditionally.
 - `src/web/components/swarm/SpawnSwarmDialog.tsx` (and the spawn dialog rendered from `Swarms.tsx`) — provider/adapter pickers, no kind picker.
 - cc-swarm exists in `references/cc-swarm/` (submodule) and already integrates with OpenHive when run standalone — it registers a MAP agent, configures Claude Code hooks, projects trajectory.
 
-The pipeline is OpenSwarm-baked at every layer (DB, manager, provider, route, UI). Generalization touches all of them but each touch is small.
+The pipeline is SwarmRunner-baked at every layer (DB, manager, provider, route, UI). Generalization touches all of them but each touch is small.
 
 ---
 
@@ -81,14 +81,14 @@ Add `kind` to the `hosted_swarms` table (migration). Type: a TypeScript enum / s
 
 ```ts
 export type HostedSwarmKind =
-  | 'openswarm'   // current behavior, default for backwards compat
+  | 'swarm-runner'   // current behavior, default for backwards compat
   | 'claude-code' // claude TUI + cc-swarm sidecar (cc-swarm is the sidecar, not a separate kind)
   // future:
   // | 'codex'
   // | 'gemini'
 ```
 
-Defaults: existing rows default to `'openswarm'`. New spawns require kind in the API; UI defaults to whatever was selected last (or `'openswarm'`).
+Defaults: existing rows default to `'swarm-runner'`. New spawns require kind in the API; UI defaults to whatever was selected last (or `'swarm-runner'`).
 
 ### 2. Spawn-plan resolver
 
@@ -118,7 +118,7 @@ export interface SpawnProcess {
 }
 
 export type LifecyclePolicy =
-  | { kind: 'map-registration'; expectedAgentRole?: string; timeoutMs: number }      // openswarm: wait for inbound MAP register
+  | { kind: 'map-registration'; expectedAgentRole?: string; timeoutMs: number }      // swarm-runner: wait for inbound MAP register
   | { kind: 'sidecar-registers'; sidecarId: string; timeoutMs: number }              // claude-code: cc-swarm sidecar registers
   | { kind: 'process-up'; processIds: string[] };                                    // raw: just check both processes are alive
 ```
@@ -129,7 +129,7 @@ export type LifecyclePolicy =
 
 **Status update — 2026-05-06:** Initial design proposed multi-process spawning through `LocalProvider`. Actual implementation diverges: claude-code spawns route through `PtyManager` directly (see `src/swarm/manager.ts` — `spawnClaudeCode` and `setPtyManager`), NOT through `LocalProvider.provision()`. 
 
-Reason discovered during PR 4 live-test: `claude` is an interactive TUI and crashes under `child_process.spawn` (no TTY). `PtyManager` wraps node-pty and gives it a real TTY, so the PTY is long-lived and can be attached to by the embedded terminal. OpenHive's existing `LocalProvider` continues to handle OpenSwarm spawning unchanged; `PtyManager` is the separate path for claude-code only.
+Reason discovered during PR 4 live-test: `claude` is an interactive TUI and crashes under `child_process.spawn` (no TTY). `PtyManager` wraps node-pty and gives it a real TTY, so the PTY is long-lived and can be attached to by the embedded terminal. OpenHive's existing `LocalProvider` continues to handle SwarmRunner spawning unchanged; `PtyManager` is the separate path for claude-code only.
 
 Downstream consequence: `instanceToHostedId` and `hostedToInstanceId` mappings are NOT populated for claude-code rows, so anything that goes through `getInstanceId()` is a no-op for claude-code. This includes `getLogs`, `restart`, `reviveHostedSwarms` — those need explicit kind branches.
 
@@ -137,7 +137,7 @@ The DB schema for the hosted-swarms row stays a single row. Per-process state is
 
 ### 4. Terminal binding
 
-Today `terminal-info` is hard-coded to spawn an OpenSwarm TUI in a new openhive-owned PTY (separate from the spawned subprocess). For `claude-code`, the embedded terminal needs to attach to the *actual* Claude Code TUI subprocess.
+Today `terminal-info` is hard-coded to spawn an SwarmRunner TUI in a new openhive-owned PTY (separate from the spawned subprocess). For `claude-code`, the embedded terminal needs to attach to the *actual* Claude Code TUI subprocess.
 
 Two architectural options:
 
@@ -145,11 +145,11 @@ Two architectural options:
 
 **B. cc-swarm owns the Claude Code PTY; embedded terminal connects through cc-swarm.** cc-swarm forwards bytes between the Claude Code child and OpenHive's WS. Adds a forwarding hop; gains the option of cc-swarm interposing on input later (for live injection v2).
 
-**Decision: A for v1.** It's strictly simpler and matches how OpenSwarm's terminal works today. If we ever want cc-swarm-mediated injection, we can swap to B without breaking the UX. The plan should make this a `TerminalBindingHint` field so the choice is per-kind, not architectural.
+**Decision: A for v1.** It's strictly simpler and matches how SwarmRunner's terminal works today. If we ever want cc-swarm-mediated injection, we can swap to B without breaking the UX. The plan should make this a `TerminalBindingHint` field so the choice is per-kind, not architectural.
 
 ```ts
 export type TerminalBindingHint =
-  | { kind: 'spawn-tui-on-connect'; resolveCommand: () => Promise<TuiInfo> }   // openswarm today
+  | { kind: 'spawn-tui-on-connect'; resolveCommand: () => Promise<TuiInfo> }   // swarm-runner today
   | { kind: 'attach-to-process'; processId: string }                            // claude-code v1 — Option A
   | { kind: 'sidecar-mediated'; sidecarId: string };                             // future — Option B
 ```
@@ -202,7 +202,7 @@ OpenHive does NOT need to install hooks itself — cc-swarm's plugin manifest re
 #### Prerequisites the operator must satisfy
 
 - **cc-swarm installed as a Claude Code plugin** on the openhive host — `claude plugin add /path/to/claude-code-swarm` (or the published equivalent). This is one-time setup, not per-spawn.
-- **`claude` binary available** on the openhive host's PATH (or at a known location resolvable like the OpenSwarm TUI is today).
+- **`claude` binary available** on the openhive host's PATH (or at a known location resolvable like the SwarmRunner TUI is today).
 - **Claude Code logged in** under the operator's user (`claude login`). See "Resolved decisions" #1 for failure handling.
 
 OpenHive surfaces a clear error if any of these are missing rather than spinning in `provisioning`. We do NOT attempt to auto-install the cc-swarm plugin or auto-login Claude Code from the spawn path — those are documented host setup.
@@ -227,7 +227,7 @@ Per-kind rules for what counts as "running" vs "stopped" vs "failed":
 
 | Kind | Running when… | Stopped when… | Failed when… |
 |---|---|---|---|
-| `openswarm` | OpenSwarm registers via MAP within timeout | Operator clicks Stop, process exits cleanly | Registration timeout, process crash before registration |
+| `swarm-runner` | SwarmRunner registers via MAP within timeout | Operator clicks Stop, process exits cleanly | Registration timeout, process crash before registration |
 | `claude-code` | cc-swarm sidecar registers via MAP within timeout *and* `claude` PTY is up | `claude` exits with code 0 (operator stop or user typed `/exit`) | `claude` exits non-zero (crash, auth failure, plugin not installed); sidecar fails to register within timeout |
 
 **`claude` is the only process OpenHive directly spawns**, but the manager still treats the cc-swarm sidecar (detached internally by `claude`'s plugin runtime) as a dependent. When `claude` exits — for any reason — the manager:
@@ -238,7 +238,7 @@ Per-kind rules for what counts as "running" vs "stopped" vs "failed":
 
 This keeps the sidecar from outliving the TUI session. cc-swarm's own 30-minute idle-timeout is the second-line safety net, but OpenHive doesn't rely on it.
 
-A user-driven exit of the TUI **is** a normal terminal state for `claude-code`, unlike `openswarm` where the daemon is meant to keep running until told to stop. The lifecycle policy interprets `claude`'s exit code: 0 → `stopped`, non-zero → `failed`.
+A user-driven exit of the TUI **is** a normal terminal state for `claude-code`, unlike `swarm-runner` where the daemon is meant to keep running until told to stop. The lifecycle policy interprets `claude`'s exit code: 0 → `stopped`, non-zero → `failed`.
 
 ### 7. Terminal-info contract changes
 
@@ -248,7 +248,7 @@ GET /map/hosted/:id/terminal-info?mode=tui|shell
 
 becomes per-kind aware:
 
-- For `openswarm`, `mode=tui` returns the OpenSwarm TUI command (current behavior).
+- For `swarm-runner`, `mode=tui` returns the SwarmRunner TUI command (current behavior).
 - For `claude-code`, `mode=tui` returns the binding hint `{ kind: 'attach-to-process', processId: 'tui' }`. The frontend uses a different code path: it tells `/ws/terminal` to attach to an existing PTY rather than spawn a new one.
 - `mode=shell` keeps the same shape across kinds (drop into `$SHELL` in the swarm's data dir, sandboxed).
 
@@ -262,16 +262,16 @@ type TerminalInfoResponse =
 
 ### 8. UI changes
 
-- Spawn dialog: **Kind** picker as the first field. Per-kind, the rest of the form re-shapes (e.g. `claude-code` shows project-dir + initial-prompt; `openswarm` keeps adapter + bootstrap-coordinator).
+- Spawn dialog: **Kind** picker as the first field. Per-kind, the rest of the form re-shapes (e.g. `claude-code` shows project-dir + initial-prompt; `swarm-runner` keeps adapter + bootstrap-coordinator).
 - Swarm list: kind shown as a small chip on each card.
-- SwarmDetail: kind-specific section labels — "Open TUI" stays for `openswarm`, becomes "Open Claude Code" or similar for `claude-code`. Logs section identical.
+- SwarmDetail: kind-specific section labels — "Open TUI" stays for `swarm-runner`, becomes "Open Claude Code" or similar for `claude-code`. Logs section identical.
 
 The spawn-dialog re-shaping is the main UX work; the rest is small.
 
 ### 9. API changes (compatibility)
 
-- `POST /map/hosted/spawn` accepts an optional `kind` field (defaults to `'openswarm'`).
-- Existing callers that don't pass kind keep getting OpenSwarm behavior.
+- `POST /map/hosted/spawn` accepts an optional `kind` field (defaults to `'swarm-runner'`).
+- Existing callers that don't pass kind keep getting SwarmRunner behavior.
 - Response shape unchanged (the row now carries `kind` but consumers that ignore the field are unaffected).
 
 ---
@@ -296,7 +296,7 @@ Two remaining unknowns we settle by writing code, not by debating:
 
 1. **`claude --resume <sid> -p "<msg>"` against an idle session.** Does it work cleanly when the TUI process is paused/idle but still alive (sharing the same `.jsonl` file), or does it race? Small isolated test in the spike: spawn `claude`, wait until idle, run `--resume -p` from a separate process, observe whether the message lands and whether the running TUI sees it. If clean → unlocks autonomous dispatch turn injection for v1. If messy → drop from v1, document.
 
-2. **Multi-tab terminal access semantics for `claude-code`.** OpenHive's terminal supports multi-tab attach for openswarm TUI — verify the same works when the underlying PTY is a `claude` subprocess. Same-user multi-device is the target use case; concurrent typing producing garbled stdin is a known/accepted limitation, but anything worse (e.g. tab disconnect kills the session) is a blocker we'd want to know about.
+2. **Multi-tab terminal access semantics for `claude-code`.** OpenHive's terminal supports multi-tab attach for swarm-runner TUI — verify the same works when the underlying PTY is a `claude` subprocess. Same-user multi-device is the target use case; concurrent typing producing garbled stdin is a known/accepted limitation, but anything worse (e.g. tab disconnect kills the session) is a blocker we'd want to know about.
 
 ---
 
@@ -324,7 +324,7 @@ Two remaining unknowns we settle by writing code, not by debating:
 
 **Deliberately deferred from the spike:**
 - Codex / gemini.
-- Spawn dialog re-shaping per kind (use a hardcoded button "Spawn Claude Code" alongside the existing OpenSwarm flow).
+- Spawn dialog re-shaping per kind (use a hardcoded button "Spawn Claude Code" alongside the existing SwarmRunner flow).
 - Autonomous-dispatch turn injection.
 - Lifecycle-state polish for clean `/exit` (treat any non-zero or operator-stop as the only outcomes for now).
 
@@ -335,7 +335,7 @@ Two remaining unknowns we settle by writing code, not by debating:
 1. Add `kind` column to `hosted_swarms` (migration + DAL).
 2. Implement `resolveSpawnPlan('claude-code', opts)` — one `claude` process + one prelaunch file (`.swarm/claude-swarm/config.json`).
 3. Teach the local provider to execute prelaunch-file writes before spawning. The multi-process plumbing isn't needed for `claude-code` v1 (single process), but keep `processes: SpawnProcess[]` shape for forward compatibility.
-4. Resolve the `claude` binary on PATH (similar pattern to `resolveOpenSwarmTuiBinary`); surface a clear error if not found.
+4. Resolve the `claude` binary on PATH (similar pattern to `resolveSwarmRunnerTuiBinary`); surface a clear error if not found.
 5. Document the operator prerequisite: `claude plugin add /path/to/claude-code-swarm` must have been run once. Spike does NOT auto-install the plugin.
 6. Extend `terminal-info` to return the `attach-to-process` shape for `claude-code`.
 7. Teach the WS handler to attach to an existing PTY by `processId` (via `swarmManager.getProcessPty(hostedId, processId)` or similar).
@@ -359,7 +359,7 @@ Two remaining unknowns we settle by writing code, not by debating:
 - `src/db/schema.ts` — migration for `hosted_swarms.kind`
 - `src/swarm/dal.ts` — `kind` in `CreateHostedSwarmInput`, `HostedSwarm`
 - `src/swarm/types.ts` — `HostedSwarmKind`, `SpawnPlan`, lifecycle policies
-- `src/swarm/spawn-plans/{openswarm,claude-code}.ts` — new (per-kind resolvers)
+- `src/swarm/spawn-plans/{swarm-runner,claude-code}.ts` — new (per-kind resolvers)
 - `src/swarm/manager.ts` — call `resolveSpawnPlan`, hand plan to provider
 - `src/swarm/providers/local.ts` — execute multi-process plans, expose `getProcessPty`
 - `src/api/routes/swarm-hosting.ts` — `kind` in spawn payload, terminal-info per-kind
@@ -382,7 +382,7 @@ Tests: at least one integration test per kind exercising spawn → terminal-info
 |---|---|---|
 | DB | `hosted_swarms.kind` (V50 + V51) | V50 added the column with a CHECK constraint; V51 dropped the constraint so new kinds can be added without a migration. Validation moved to Zod. |
 | Manager | TUI-kind strategy pattern (`src/swarm/tui-strategies.ts`) | Per-kind strategy objects (`makeClaudeCodeStrategy`, `makeCodexStrategy`) implement `TuiKindStrategy`. The manager has ONE shared spawn/stop/restart pipeline (`spawnTuiKind`, `stopTuiKind`, `restartTuiKind`); all kind-specific behavior (binary resolution, prelaunch files, env hygiene, sidecar wait, workdir trust) lives in the strategy. Adding a new TUI kind is a single new strategy. |
-| Manager | `spawn()` dispatcher | `isTuiKind(kind)` → resolve strategy → `spawnTuiKind(agentId, input, strategy)`. Openswarm continues through the original `spawnOpenswarm()`. |
+| Manager | `spawn()` dispatcher | `isTuiKind(kind)` → resolve strategy → `spawnTuiKind(agentId, input, strategy)`. SwarmRunner continues through the original `spawnSwarmRunner()`. |
 | Manager | `stopTuiKind()` | Destroys PTY, signals per-kind sidecar (only for kinds with `hasSidecar: true`), MAP swarm → offline |
 | Manager | `restartTuiKind()` | Cold-restart only; rotates onboard token, re-writes prelaunch files via strategy, re-spawns against the same row. Sidecar wait gated on `hasSidecar`. |
 | Manager | `reviveHostedSwarms()` TUI branch | Marks TUI rows `stopped` on hub restart with operator-actionable diagnostic; best-effort sidecar SIGTERM only for kinds with one |
@@ -391,14 +391,14 @@ Tests: at least one integration test per kind exercising spawn → terminal-info
 | Manager | `handleClaudePtyExit()` | Kind-agnostic; reads kind from row. Maps clean exit → `stopped`, non-zero exit OR signal kill → `failed` (Deviation 5). Sidecar SIGTERM only for kinds with one. |
 | Helpers (claude-code) | `resolveClaudeBinary()`, `buildClaudeSwarmConfig()` / `writeClaudeSwarmConfig()`, `preTrustClaudeWorkdir()` | PATH + known locations probe; cc-swarm prelaunch config writer (`auth.token` + `swarmId` per Deviation 1); pre-mark data_dir trusted in `~/.claude.json` (per Deviation 4) |
 | Helpers (codex) | `resolveCodexBinary()`, `preTrustCodexWorkdir()` | PATH + known locations probe; pre-mark data_dir trusted in `~/.codex/config.toml` via `[projects."<realpath>"] trust_level = "trusted"` stanza |
-| API | `POST /map/hosted/spawn` | Accepts `kind ∈ {openswarm, claude-code, codex}`; superrefine rejects openswarm-only fields for TUI kinds with kind-aware error messages |
+| API | `POST /map/hosted/spawn` | Accepts `kind ∈ {swarm-runner, claude-code, codex}`; superrefine rejects swarm-runner-only fields for TUI kinds with kind-aware error messages |
 | API | `GET /map/hosted/:id/terminal-info?mode=tui` | Returns `binding: 'attach'` with live PtyManager `sessionId` for any TUI kind |
 | API | `GET /map/hosted/:id/logs` | Surfaces the TUI scrollback hint as plain text |
 | API | `POST /map/hosted/:id/stop` and `/restart` | Branch through manager dispatchers (kind-agnostic) |
 | API | `initial_prompt` field on spawn payload | Passed to the TUI binary as positional arg; both `claude` and `codex` accept this and open with the prompt prefilled |
 | API | `workspace.repos` for TUI kinds | Clones into `data_dir` before PTY spawn (reuses `cloneWorkspaceRepos`); the TUI opens with the cloned tree under cwd |
 | Terminal | `terminal-ws.ts` `?sessionId=` attach mode | Existing path; works for any PtyManager session the manager owns |
-| UI | Spawn dialog kind picker | Three-card chooser (OpenSwarm, Claude Code, Codex); openswarm-only fields hidden for TUI kinds; per-kind prerequisite hint |
+| UI | Spawn dialog kind picker | Three-card chooser (SwarmRunner, Claude Code, Codex); swarm-runner-only fields hidden for TUI kinds; per-kind prerequisite hint |
 | UI | `KindBadge` chip | Renders "Claude Code" (violet) or "Codex" (emerald) on swarm cards |
 | UI | `TerminalPanel` `binding: 'attach'` handling | Reads `sessionId` from terminal-info, passes through `?sessionId=` query |
 | UI | Initial-prompt textarea + single-repo URL/branch inputs | Shown for TUI kinds (claude-code + codex) |
@@ -421,7 +421,7 @@ Tests: at least one integration test per kind exercising spawn → terminal-info
 - **`inject_resources` for claude-code.** Currently warned-and-dropped during spawn.
 - **Hot-restart for claude-code.** Always cold-restart; the bootstrap is config-file + plugin-hook, not a long-running daemon. Hot bounce isn't meaningful here.
 - **Multi-tab attach to the same claude PTY.** Mechanically should work via `?sessionId=` (multiple WS clients attaching to one PtyManager session is supported by `terminal-ws.ts`), but not yet asserted by a test.
-- **Strategy-pattern refactor (Approach B from the manager refactor plan).** The duplication between `spawnOpenswarm` and `spawnClaudeCode` is real but bounded; we'll extract when codex lands and three call sites can inform the interface shape.
+- **Strategy-pattern refactor (Approach B from the manager refactor plan).** The duplication between `spawnSwarmRunner` and `spawnClaudeCode` is real but bounded; we'll extract when codex lands and three call sites can inform the interface shape.
 
 ### Deviations from the original design (cumulative)
 

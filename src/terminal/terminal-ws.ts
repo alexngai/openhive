@@ -20,7 +20,7 @@
 
 import { WebSocket } from 'ws';
 import type { PtyManager, TerminalSessionConfig, TerminalSandboxConfig } from './pty-manager.js';
-import { resolveOpenSwarmTuiBinary } from './resolve-tui.js';
+import { resolveSwarmRunnerTuiBinary } from './resolve-tui.js';
 
 interface TerminalWSClient {
   socket: WebSocket;
@@ -32,12 +32,12 @@ interface TerminalWSClient {
 const activeClients: Map<string, TerminalWSClient> = new Map();
 
 /** Only allow environment variable keys matching these prefixes */
-const ALLOWED_ENV_PREFIXES = ['MAP_', 'OPENSWARM_', 'OPENHIVE_', 'TERM', 'LANG', 'LC_'];
+const ALLOWED_ENV_PREFIXES = ['MAP_', 'SWARM_RUNNER_', 'OPENSWARM_', 'OPENHIVE_', 'TERM', 'LANG', 'LC_'];
 
 /**
  * Only allow commands matching these patterns (security). Exported for unit
  * testing — the substring-vulnerable predecessor would accept any path
- * containing `@openswarm/cli-`, so we lock down to exact-match ground truth.
+ * containing `@swarmkit-ai/swarm-runner-cli-`, so we lock down to exact-match ground truth.
  */
 export function isAllowedCommand(command: string): boolean {
   // Standard shells (exact match)
@@ -48,10 +48,10 @@ export function isAllowedCommand(command: string): boolean {
   if (process.env.SHELL && command === process.env.SHELL) {
     return true;
   }
-  // OpenSwarm TUI: exact match against the resolved binary path. Substring
-  // checks are unsafe — a path like /tmp/evil/@openswarm/cli-x/openswarm
-  // passes a `.includes('@openswarm/cli-')` check.
-  const resolvedTui = resolveOpenSwarmTuiBinary();
+  // SwarmRunner TUI: exact match against the resolved binary path. Substring
+  // checks are unsafe — a path like /tmp/evil/@swarmkit-ai/swarm-runner-cli-x/swarm-runner
+  // passes a `.includes('@swarmkit-ai/swarm-runner-cli-')` check.
+  const resolvedTui = resolveSwarmRunnerTuiBinary();
   if (resolvedTui && command === resolvedTui) {
     return true;
   }

@@ -15,7 +15,7 @@
  *   5. stop() destroys the PTY, signals the sidecar, and lands the row
  *      at state 'stopped' with MAP swarm marked offline.
  *   6. getLogs() returns the claude-code-specific scrollback hint
- *      rather than the misleading openswarm fallback.
+ *      rather than the misleading swarm-runner fallback.
  *
  * Prerequisites (operator setup, not auto-provisioned):
  *   - `claude` binary on PATH
@@ -99,8 +99,8 @@ function createTestConfig(): Config {
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
-      // Used only by openswarm path; claude-code resolves its own binary.
-      openswarm_command: 'echo unused',
+      // Used only by swarm-runner path; claude-code resolves its own binary.
+      swarm_runner_command: 'echo unused',
       data_dir: TEST_DATA_DIR,
       port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
       max_swarms: 2,

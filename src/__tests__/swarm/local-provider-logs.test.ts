@@ -40,9 +40,9 @@ describe('resolveLogPath', () => {
     expect(p).toBe(path.join(os.tmpdir(), 'openhive-swarm-logs', 'swarm-9000.log'));
   });
 
-  it('"data_dir" places the file at <dataDir>/openswarm.log', () => {
+  it('"data_dir" places the file at <dataDir>/swarm-runner.log', () => {
     expect(resolveLogPath('data_dir', DATA_DIR, INSTANCE)).toBe(
-      path.join(DATA_DIR, 'openswarm.log'),
+      path.join(DATA_DIR, 'swarm-runner.log'),
     );
   });
 
@@ -119,7 +119,7 @@ describe('LocalProvider.restart() port reassignment', () => {
 
   it('throws PortInUseError when the original port is still bound on restart', async () => {
     // The command runs the sleep-server fixture with `--port <N>` so it
-    // behaves like a real openswarm child for the provider's lifecycle
+    // behaves like a real swarm-runner child for the provider's lifecycle
     // (spawn, stdout, health endpoint). We don't actually care about
     // health here — just that provision/deprovision work and then restart
     // trips the port probe.

@@ -37,7 +37,7 @@
  *
  * ─── Constraints ────────────────────────────────────────────────────────────
  * REQUIRES: LIVE_AGENT_E2E=true
- * REQUIRES: real macro-agent (references/macro-agent built + available via npx openswarm)
+ * REQUIRES: real macro-agent (references/macro-agent built + available via npx @swarmkit-ai/swarm-runner)
  * REQUIRES: Claude Max plan or ANTHROPIC_API_KEY (the sidecar itself uses the API)
  *
  * Run:
@@ -181,7 +181,7 @@ function createTestConfig(): Config {
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
-      openswarm_command: 'npx openswarm serve',
+      swarm_runner_command: 'npx @swarmkit-ai/swarm-runner serve',
       data_dir: TEST_DATA_DIR,
       port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
       max_swarms: 2,

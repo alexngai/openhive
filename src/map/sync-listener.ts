@@ -223,15 +223,15 @@ function relaySyncMessage(msg: MapSyncMessage, sourceSwarmId: string): void {
 // ============================================================================
 
 /**
- * Derive the real MAP server URL from an openswarm base endpoint.
+ * Derive the real MAP server URL from an swarm-runner base endpoint.
  *
- * openswarm exposes three ports per instance:
+ * swarm-runner exposes three ports per instance:
  *   base     → gateway (WS, not the MAP server)
  *   base + 1 → HTTP health check
  *   base + 2 → actual MAP server at path `/map`
  *
  * `swarm.map_endpoint` is stored as the base URL (e.g. `ws://127.0.0.1:9000`).
- * If it already has a `/map` path or a non-openswarm shape, we leave it alone.
+ * If it already has a `/map` path or a non-swarm-runner shape, we leave it alone.
  * Mirrors the logic in `src/swarmcraft/swarm-bridge.ts#deriveMapServerUrl`.
  */
 function deriveMapServerUrl(baseEndpoint: string): string {

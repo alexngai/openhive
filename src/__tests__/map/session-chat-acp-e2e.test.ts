@@ -3,7 +3,7 @@
  *
  * Tests the full ACP streaming flow for session chat:
  *
- *   1. Spawn real OpenSwarm with macro-agent (has ACP server)
+ *   1. Spawn real SwarmRunner with macro-agent (has ACP server)
  *   2. Connect to swarm's MAP server as a client
  *   3. Create ACP stream to the swarm's agent
  *   4. Send prompt, receive streaming response
@@ -96,7 +96,7 @@ function createTestConfig(): Config {
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
-      openswarm_command: 'npx openswarm serve',
+      swarm_runner_command: 'npx @swarmkit-ai/swarm-runner serve',
       data_dir: TEST_DATA_DIR,
       port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
       max_swarms: 2,
@@ -167,8 +167,8 @@ describeIf('Live Agent E2E — ACP Session Chat', () => {
     await app.listen({ port: SERVER_PORT, host: '127.0.0.1' });
     console.log(`[acp-chat] Server listening on port ${SERVER_PORT}`);
 
-    // Spawn real OpenSwarm with macro-agent
-    console.log('[acp-chat] Spawning real OpenSwarm...');
+    // Spawn real SwarmRunner with macro-agent
+    console.log('[acp-chat] Spawning real SwarmRunner...');
     const hosted = await swarmManager.spawn(testAgent.id, {
       name: 'acp-chat-swarm',
       adapter: 'macro-agent',

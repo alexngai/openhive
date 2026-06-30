@@ -1,7 +1,7 @@
 /**
  * Local Sidecar Hosting Provider
  *
- * Spawns OpenSwarm instances as child processes on the same host.
+ * Spawns SwarmRunner instances as child processes on the same host.
  * Follows the same pattern as HeadscaleManager (src/headscale/manager.ts).
  */
 
@@ -29,7 +29,7 @@ interface ManagedProcess {
   /**
    * Append-only log file path. Location depends on LogConfig.dir:
    *   "tmp"      → ${os.tmpdir()}/openhive-swarm-logs/<instanceId>.log
-   *   "data_dir" → <data_dir>/openswarm.log
+   *   "data_dir" → <data_dir>/swarm-runner.log
    *   <path>     → <path>/<instanceId>.log
    * Empty string when file logging is disabled.
    */
@@ -105,7 +105,7 @@ export class LocalProvider implements HostingProvider {
   readonly type = 'local' as const;
 
   private processes = new Map<string, ManagedProcess>();
-  private openswarmCommand: string;
+  private swarmRunnerCommand: string;
   private logConfig: LogConfig;
 
   /** Called when a managed process exits (for immediate crash detection) */
@@ -113,8 +113,8 @@ export class LocalProvider implements HostingProvider {
 
   private exitHandler: () => void;
 
-  constructor(openswarmCommand: string, logConfig?: Partial<LogConfig>) {
-    this.openswarmCommand = openswarmCommand;
+  constructor(swarmRunnerCommand: string, logConfig?: Partial<LogConfig>) {
+    this.swarmRunnerCommand = swarmRunnerCommand;
     this.logConfig = {
       enabled: logConfig?.enabled ?? true,
       dir: logConfig?.dir ?? 'tmp',
@@ -153,10 +153,10 @@ export class LocalProvider implements HostingProvider {
 
     // Resolve the binary + args. Two paths:
     //   1. spawn_command_override set → take the override + override_args
-    //      verbatim; no openswarm-specific flags appended. Used by
-    //      non-openswarm kinds (claude-code, future codex/gemini) so the
+    //      verbatim; no swarm-runner-specific flags appended. Used by
+    //      non-swarm-runner kinds (claude-code, future codex/gemini) so the
     //      provider stays kind-agnostic.
-    //   2. Default → split this.openswarmCommand and append openswarm's
+    //   2. Default → split this.swarmRunnerCommand and append swarm-runner's
     //      hosting-server flags (--port, --host, --adapter).
     let bin: string;
     let args: string[];
@@ -164,12 +164,12 @@ export class LocalProvider implements HostingProvider {
       bin = config.spawn_command_override;
       args = config.spawn_args_override ?? [];
     } else {
-      // Parse the command (could be 'npx openswarm', 'node /path/to/bin', etc.)
-      const parts = this.openswarmCommand.split(/\s+/);
+      // Parse the command (could be 'npx @swarmkit-ai/swarm-runner', 'node /path/to/bin', etc.)
+      const parts = this.swarmRunnerCommand.split(/\s+/);
       bin = parts[0];
       const baseArgs = parts.slice(1);
 
-      // Build args for OpenSwarm's hosting server
+      // Build args for SwarmRunner's hosting server
       args = [
         ...baseArgs,
         '--port', String(config.assigned_port),
@@ -189,13 +189,15 @@ export class LocalProvider implements HostingProvider {
     if (config.resolved_credentials) {
       Object.assign(env, config.resolved_credentials);
     }
+    env.SWARM_RUNNER_BOOTSTRAP_TOKEN = config.bootstrap_token;
+    env.SWARM_RUNNER_DATA_DIR = dataDir;
     env.OPENSWARM_BOOTSTRAP_TOKEN = config.bootstrap_token;
     env.OPENSWARM_DATA_DIR = dataDir;
 
     // Bootstrap-coordinator pass-through. macro-agent's bootV2 reads these
     // env vars and spawns a default coordinator when set, so the swarm is
     // chat-ready without an explicit _macro/spawnAgent call. Going through
-    // env (not openswarm CLI args) avoids modifying openswarm's whitelisted
+    // env (not swarm-runner CLI args) avoids modifying swarm-runner's whitelisted
     // bootConfig pass-through.
     if (config.bootstrap?.coordinator) {
       env.MACRO_BOOTSTRAP_COORDINATOR = 'true';
@@ -218,7 +220,7 @@ export class LocalProvider implements HostingProvider {
     // any openhive instance that itself runs inside a Claude Code session
     // (e.g. during development) cannot spawn hosted macro-agent swarms.
     //
-    // Safe to strip unconditionally: the spawned openswarm is a new root
+    // Safe to strip unconditionally: the spawned swarm-runner is a new root
     // process — it's not nested inside our Claude Code session in any
     // meaningful sense.
     delete env.CLAUDECODE;
@@ -244,7 +246,7 @@ export class LocalProvider implements HostingProvider {
     }
 
     // Spawn as a new process group leader (detached: true) so we can
-    // kill the entire tree (openswarm + its subprocesses) via -pid.
+    // kill the entire tree (swarm-runner + its subprocesses) via -pid.
     const child = spawn(bin, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env,
@@ -325,7 +327,7 @@ export class LocalProvider implements HostingProvider {
     if (child.exitCode !== null) {
       const logs = managed.logBuffer.slice(-10).join('\n');
       throw new Error(
-        `OpenSwarm process exited immediately (code=${child.exitCode}). ` +
+        `SwarmRunner process exited immediately (code=${child.exitCode}). ` +
         `Command: ${bin} ${args.join(' ')}\n` +
         `Recent output:\n${logs}`
       );
@@ -541,7 +543,7 @@ export class LocalProvider implements HostingProvider {
 /**
  * Resolve a `LogConfig.dir` value to a concrete file path.
  *   "tmp"      → ${os.tmpdir()}/openhive-swarm-logs/<hostedSwarmKey>.log
- *   "data_dir" → <dataDir>/openswarm.log
+ *   "data_dir" → <dataDir>/swarm-runner.log
  *   absolute   → <dir>/<hostedSwarmKey>.log
  *
  * `hostedSwarmKey` is `basename(dataDir)` — OpenHive keeps `dataDir` stable
@@ -559,7 +561,7 @@ export function resolveLogPath(dir: string, dataDir: string, instanceId: string)
     return path.join(os.tmpdir(), 'openhive-swarm-logs', `${hostedSwarmKey}.log`);
   }
   if (dir === 'data_dir') {
-    return path.join(dataDir, 'openswarm.log');
+    return path.join(dataDir, 'swarm-runner.log');
   }
   return path.join(dir, `${hostedSwarmKey}.log`);
 }

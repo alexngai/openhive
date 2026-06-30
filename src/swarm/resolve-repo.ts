@@ -1,7 +1,7 @@
 /**
  * Shared repo resolution for swarm spawn paths.
  *
- * Both the openswarm and TUI spawn pipelines need to resolve a `repo_id`
+ * Both the swarm-runner and TUI spawn pipelines need to resolve a `repo_id`
  * into WORKSPACE_* env vars. This module extracts that logic so both paths
  * stay in sync.
  *

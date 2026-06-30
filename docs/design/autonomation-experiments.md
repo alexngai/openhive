@@ -14,7 +14,7 @@
 - **2026-06-24 — pressure-test pass (17-agent adversarial review of both codebases).** Two load-bearing reframes adopted (all 12 high/critical findings survived adversarial verification):
   1. **A run is hosted as an OpenHive *hosted swarm* (`src/swarm`), not a dispatch.** The dispatch orchestrator's stall-timeout (5 min, frozen at spawn for the ACP runtime), blind retry (`maxRetries=3` re-runs the whole loop), single global concurrency counter (`global=5`), and coding-agent-only runtimes all actively break a multi-hour run. The hosted-swarm manager already has the correct long-lived-process lifecycle. **Dispatch is reserved for the short, retry-safe inner evolve/eval units in Stage B.**
   2. **Verifiability fields arrive via a worker *finalization POST*, not the tracker.** `content_hash`, `claim_strength`, and the train-vs-held-out score cards are *not* reachable through the `ExperimentTracker` interface (events + finish-summary). The worker reads autonomation's public outputs (`runWithControls()` return value + `runner.lineage`) at run end and POSTs them — zero autonomation changes. `env_fingerprint` is **worker-computed** (autonomation produces nothing like it).
-- **2026-06-24 — [D8] resolved (6-agent check, both skeptics upheld the verdict).** Hosting a non-agent runner kind is **moderate** — bounded, additive, **no structural surgery, no DB migration** (`MIGRATION_V51` already dropped the `hosted_swarms.kind` CHECK → free TEXT column). The kind union (`openswarm | claude-code | codex`) is closed but additive (no `assertNever`/exhaustive switch anywhere); `LocalProvider` already has a verbatim-command spawn primitive (currently dead from the manager, must be newly wired); the **one real gate is the OpenSwarm-specific `/health` probe**, which a non-agent process must skip (codex-rpc already does, by allocating no port). Full change-list in §13 [D8].
+- **2026-06-24 — [D8] resolved (6-agent check, both skeptics upheld the verdict).** Hosting a non-agent runner kind is **moderate** — bounded, additive, **no structural surgery, no DB migration** (`MIGRATION_V51` already dropped the `hosted_swarms.kind` CHECK → free TEXT column). The kind union (`swarm-runner | claude-code | codex`) is closed but additive (no `assertNever`/exhaustive switch anywhere); `LocalProvider` already has a verbatim-command spawn primitive (currently dead from the manager, must be newly wired); the **one real gate is the SwarmRunner-specific `/health` probe**, which a non-agent process must skip (codex-rpc already does, by allocating no port). Full change-list in §13 [D8].
 - **2026-06-24 — launcher: dedicated process-host, not the hosted-swarm manager (supersedes the §2/§14 "run = hosted swarm" framing for the runner).** Reading the actual `src/swarm/manager.ts` showed its machinery exists to manage **MAP-registered agent swarms** (MAP pre-registration, HTTP `/health` polling, credential overlays) — an autonomation runner is none of those: it's a self-reporting compute process with no port, no health endpoint, no MAP identity, that PATCH/events/finalizes itself. So `src/experiments/launcher.ts` spawns the worker as a **detached child process** (token-in-env, PID-tracked, `cancel = kill -group`) via a generic seam — **zero core-manager surgery**. The [D8] hosted-swarm `autonomation-runner` kind remains available later if fleet-level lifecycle management is wanted. Decision made jointly with the user ("expand the interface for flexibility"); the autonomation side gains a `createExperimentRunnerFromConfig` factory (the lightweight/fast-iteration path) as the matching interface expansion.
 - **2026-06-24 — slice 4 landed + hardened (launcher + scheduler `experiment` payload; adversarial review, 1 HIGH + 1 MEDIUM upheld + 4 MEDIUMs fixed).** The launch/cancel routes are **admin-only** (they spawn/kill OS processes — `createAuthOrAdminKey` would let any authenticated agent spawn a detached worker). Launch uses an **atomic DB claim** (`claimRunForLaunch`: conditional UPDATE on `status='queued' AND hosted_swarm_id IS NULL`) so concurrent launches can't double-spawn. The worker dials the hub's **actual bound port** via `setHubBaseUrl` set post-`listen` (`config.port` is wrong after an `EADDRINUSE` auto-increment). `cancel` falls back to the persisted `proc:<pid>` marker when the process isn't tracked (hub restart). Run-controls are validated (positive-int) before reaching argv; a spawn error finalizes the run `failed`; the validated-but-ignored `stopAfterNoPromotion` control was dropped. Deferred (documented): a reconciliation sweep for runs whose worker dies mid-run after a restart.
 - **2026-06-24 — decisions resolved ([D1], [D2], [D6], [D7], [D9]).** Experiment **identity is content-hash-keyed (unique when present) with a free human label**; experiments are **not** bound to each other — the incremental "evolved candidates" story lives in the **candidate git lineage within an experiment** (`parent_candidate_id` + each ChangeSnapshot's commits + the promotion chain), not an experiment-to-experiment edge ([D2]). `content_hash` is **nullable** — lightweight runs are *exploratory* (fast-iteration default); a target adopts a deployment config to become content-keyed ([D9], confirmed: `createExperimentRunnerFromDeployment` drives a real run, exposes `plan.lock.contentHash` + a `gateFromClaims(plan.claims)` gate). Worker auth: hub-launched runs use a **launch-minted per-run token** (C); externally-launched runs get an `experiments`-scoped ingest key (A) later ([D6]). Worker ships as an `openhive experiment-worker` **subcommand** ([D1]); changeSnapshot stays **opaque** ([D7]).
@@ -180,13 +180,13 @@ pause, lineage, live tail) integrates progressively into the OpenHive UI over ti
 `autonomation-runner` kind is bounded, additive work — no structural surgery and
 **no DB migration** (the `hosted_swarms.kind` CHECK was already dropped in
 `MIGRATION_V51`; the column is free TEXT). The existing kinds are
-`openswarm | claude-code | codex` (`src/swarm/types.ts:418-422`); the union is
+`swarm-runner | claude-code | codex` (`src/swarm/types.ts:418-422`); the union is
 closed but additive (no `assertNever`/exhaustive switch anywhere, so a new member
-compiles cleanly and every kind-dispatch site falls through to the openswarm path
+compiles cleanly and every kind-dispatch site falls through to the swarm-runner path
 by default). `LocalProvider` already has the generic "run a command verbatim and
 keep it alive" primitive (`spawn_command_override` + detached spawn + generic
 exit-code→state mapping, `local.ts:163-166,248-253,396-410`) — but it is currently
-*unexercised* from the manager (only `spawnOpenswarm` calls `provider.provision`)
+*unexercised* from the manager (only `spawnSwarmRunner` calls `provider.provision`)
 and must be newly wired. The one real gate is the **health check**; full
 change-list in §13 [D8].
 
@@ -668,15 +668,15 @@ A **named subsystem with explicit policy surfaces + kill-switch** (the
   Change-list:
   - *kind union* — add the literal to `HostedSwarmKind` (`types.ts:418-422`);
     compiles cleanly (no exhaustiveness guard exists).
-  - *manager dispatch* — add an explicit arm in `spawn()` **before** the openswarm
+  - *manager dispatch* — add an explicit arm in `spawn()` **before** the swarm-runner
     fallthrough (`manager.ts:1177`) → a new `spawnAutonomationRunner` helper; add
     awareness in `stop`/`restart`/`getLogs`/`reviveHostedSwarms` (~8 if-chain
-    sites; no compiler safety net, so a missed site silently behaves as openswarm).
+    sites; no compiler safety net, so a missed site silently behaves as swarm-runner).
   - *provider* — wire `spawnAutonomationRunner` through `LocalProvider.provision`
     feeding `spawn_command_override`/`spawn_args_override` (the verbatim-command
     primitive); this provision-with-override path is dead from the manager today
     and must be newly exercised. Sandbox support needs the same branch added to
-    `SandboxedLocalProvider` (it currently hardwires openswarm flags).
+    `SandboxedLocalProvider` (it currently hardwires swarm-runner flags).
   - *health (the real gate)* — the spawn-time + periodic probe hardcodes
     `GET 127.0.0.1:(port+1)/health` and flips to `unhealthy` after
     `max_health_failures` (`manager.ts:2360-2389,2948-2977`). Make the runner
@@ -690,7 +690,7 @@ A **named subsystem with explicit policy surfaces + kill-switch** (the
   - *UI* — ~6 frontend kind/adapter enum edits (spawn dialog, scheduler fallback,
     badge); suppress the chat affordance (`sendChatTurn` throws `NOT_IMPLEMENTED`
     for non-chat kinds).
-  - *residual risk* — `reviveHostedSwarms` re-provisions as openswarm on hub
+  - *residual risk* — `reviveHostedSwarms` re-provisions as swarm-runner on hub
     restart unless given a skip/own-revive branch.
 - **[D9] Canonical worker entry — RESOLVED: both, fast-iteration first.** Lightweight
   path (null lock) is the early default for speed; targets adopt a deployment config
@@ -704,10 +704,10 @@ A **named subsystem with explicit policy surfaces + kill-switch** (the
 
 - **Swarm hosting (`src/swarm`) — the run host.** Long-lived-process lifecycle
   (`provisioning→running→unhealthy→stopped→failed`, restart counts, exit-mapping,
-  optional auto-restart). Existing kinds are `openswarm | claude-code | codex`;
+  optional auto-restart). Existing kinds are `swarm-runner | claude-code | codex`;
   adding a non-agent `autonomation-runner` kind is bounded work (§13 [D8]) — the
   `kind` column is free TEXT (no migration), `LocalProvider` already runs arbitrary
-  commands verbatim, and the only real gate is bypassing the OpenSwarm-specific
+  commands verbatim, and the only real gate is bypassing the SwarmRunner-specific
   `/health` probe. This is what runs the worker.
 - **Dispatch (`src/dispatch`) — the *inner-unit* host in Stage B only.** The
   orchestrator's stall-timeout (`lastActivityAt` is frozen at spawn on the ACP

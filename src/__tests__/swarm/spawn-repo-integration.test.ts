@@ -73,7 +73,7 @@ function buildManager(stub: StubProvider): SwarmManager {
   const config = {
     enabled: true,
     default_provider: 'local' as const,
-    openswarm_command: 'true',  // unused — provider is stubbed
+    swarm_runner_command: 'true',  // unused — provider is stubbed
     data_dir: path.join(TEST_ROOT, 'data'),
     port_range: [40000, 40100] as [number, number],
     max_swarms: 10,

@@ -14,9 +14,15 @@
 import { describe, it, expect } from 'vitest';
 import { SpawnSwarmSchema } from '../../api/routes/swarm-hosting.js';
 
-const baseInput = { kind: 'openswarm' as const, name: 'schema-test' };
+const baseInput = { kind: 'swarm-runner' as const, name: 'schema-test' };
 
 describe('SpawnSwarmSchema — workspace_policy validation', () => {
+  it('normalizes legacy kind=openswarm to kind=swarm-runner', () => {
+    const r = SpawnSwarmSchema.safeParse({ kind: 'openswarm', name: 'legacy-kind' });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.kind).toBe('swarm-runner');
+  });
+
   // ── Acceptance: well-formed policies ──────────────────────────────────────
 
   it("accepts mode='open' with no other fields", () => {
@@ -150,9 +156,9 @@ describe('SpawnSwarmSchema — cwd validation', () => {
     expect(rTui.success).toBe(true);
   });
 
-  it("rejects cwd for kind='openswarm' (use bootstrap.cwd instead)", () => {
+  it("rejects cwd for kind='swarm-runner' (use bootstrap.cwd instead)", () => {
     const r = SpawnSwarmSchema.safeParse({
-      kind: 'openswarm',
+      kind: 'swarm-runner',
       name: 'cwd-test',
       cwd: '/Users/alex/projects/myrepo',
     });

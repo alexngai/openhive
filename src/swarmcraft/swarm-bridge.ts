@@ -640,7 +640,7 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
 /**
  * Derive the MAP server URL from a swarm's base endpoint.
  *
- * Hosted swarms (OpenSwarm + macro-agent) expose:
+ * Hosted swarms (SwarmRunner + macro-agent) expose:
  *   - ACP WebSocket on the base port ({endpoint}/acp)
  *   - MAP server on base port + 2 ({endpoint_port+2}/map)
  *
@@ -723,7 +723,7 @@ async function connectMapClient(
 /**
  * Candidate health-check URLs derived from a swarm's MAP endpoint.
  *
- * openswarm/macro-agent layouts:
+ * swarm-runner/macro-agent layouts:
  *   gateway HTTP at base port, management HTTP at base+1, MAP WS at base+2.
  *   /health is exposed on multiple of these; we probe the most-likely set.
  *
