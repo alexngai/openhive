@@ -34,7 +34,7 @@ Add an optional cognitive-core (Atlas) extension to the macro-agent, enabling le
 
 When `adapter_config.atlas.enabled` is true, the macro-agent should initialize a cognitive-core Atlas instance during startup.
 
-**Bootstrap token config (received via `OPENSWARM_BOOTSTRAP_TOKEN`):**
+**Bootstrap token config (received via `SWARM_RUNNER_BOOTSTRAP_TOKEN`):**
 
 ```typescript
 {

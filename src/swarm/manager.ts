@@ -2,7 +2,7 @@
  * Swarm Manager
  *
  * Orchestrates the spawning, lifecycle management, and health monitoring
- * of hosted OpenSwarm instances. Bridges hosting providers with the MAP hub.
+ * of hosted SwarmRunner instances. Bridges hosting providers with the MAP hub.
  */
 
 import { createHash } from 'crypto';
@@ -92,7 +92,7 @@ export class SwarmManager {
     this.instanceUrl = instanceUrl;
 
     // Initialize local provider with exit handler
-    const command = this.resolveOpenswarmCommand(config.openswarm_command);
+    const command = this.resolveSwarmRunnerCommand(config.swarm_runner_command);
     const localProvider = new LocalProvider(command, config.logs);
     localProvider.onProcessExit = (instanceId, code, signal) => {
       this.handleProcessExit(instanceId, code, signal);
@@ -1087,9 +1087,9 @@ export class SwarmManager {
   }
 
   /**
-   * Resolve the openswarm command to an executable form.
+   * Resolve the swarm-runner command to an executable form.
    *
-   * We resolve the openswarm bin entry directly to avoid the npx indirection,
+   * We resolve the swarm-runner bin entry directly to avoid the npx indirection,
    * which can cause pid tracking issues (npx spawns a child node process,
    * then exits, making us think the server stopped).
    *
@@ -1098,22 +1098,22 @@ export class SwarmManager {
    * 2. src/hosting/index.ts exists → run with tsx (development)
    * 3. Fall back to configured command as-is
    */
-  private resolveOpenswarmCommand(configured: string): string {
-    if (configured !== 'npx openswarm serve') {
+  private resolveSwarmRunnerCommand(configured: string): string {
+    if (configured !== 'npx @swarmkit-ai/swarm-runner serve') {
       return configured;
     }
 
     try {
       const require_ = createRequire(import.meta.url);
-      const pkgPath = require_.resolve('openswarm/package.json');
+      const pkgPath = require_.resolve('@swarmkit-ai/swarm-runner/package.json');
       const pkgDir = path.dirname(pkgPath);
-      const binEntry = path.join(pkgDir, 'bin', 'openswarm.mjs');
+      const binEntry = path.join(pkgDir, 'bin', 'swarm-runner.mjs');
 
       // Production: dist/server.mjs exists, run the bin entry directly with node
       const serverBundle = path.join(pkgDir, 'dist', 'server.mjs');
       if (fs.existsSync(serverBundle) && fs.existsSync(binEntry)) {
         const resolved = `node ${binEntry} serve`;
-        console.log(`[swarm-manager] Resolved openswarm command: ${resolved}`);
+        console.log(`[swarm-manager] Resolved swarm-runner command: ${resolved}`);
         return resolved;
       }
 
@@ -1126,10 +1126,10 @@ export class SwarmManager {
         return resolved;
       }
 
-      console.warn('[swarm-manager] Could not resolve openswarm package');
+      console.warn('[swarm-manager] Could not resolve @swarmkit-ai/swarm-runner package');
       return configured;
     } catch {
-      console.warn('[swarm-manager] Could not resolve openswarm package, using: ' + configured);
+      console.warn('[swarm-manager] Could not resolve @swarmkit-ai/swarm-runner package, using: ' + configured);
       return configured;
     }
   }
@@ -1139,7 +1139,7 @@ export class SwarmManager {
   // ==========================================================================
 
   /**
-   * Spawn a new OpenSwarm instance.
+   * Spawn a new SwarmRunner instance.
    *
    * Flow:
    * 1. Validate limits (max swarms, port availability)
@@ -1152,11 +1152,11 @@ export class SwarmManager {
    */
   /**
    * Public entry point. Dispatches to the per-kind spawn pipeline. Existing
-   * callers that don't pass kind get the openswarm pipeline (preserves the
+   * callers that don't pass kind get the swarm-runner pipeline (preserves the
    * pre-V50 contract). See docs/HOSTED_SWARM_KINDS_DESIGN.md.
    */
   async spawn(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
-    const kind = input.kind ?? 'openswarm';
+    const kind = input.kind ?? 'swarm-runner';
 
     // codex has two modes; the dispatcher branches BEFORE the TUI strategy
     // lookup so `mode: 'rpc'` doesn't accidentally fall through to the TUI
@@ -1174,7 +1174,7 @@ export class SwarmManager {
       }
       return this.spawnTuiKind(agentId, input, strategy);
     }
-    return this.spawnOpenswarm(agentId, input);
+    return this.spawnSwarmRunner(agentId, input);
   }
 
   /**
@@ -1196,7 +1196,7 @@ export class SwarmManager {
    * registers with the openhive hub. We wait for that registration to
    * flip the row to `running`.
    *
-   * Differences from spawnOpenswarm:
+   * Differences from spawnSwarmRunner:
    *   - No port allocation (claude binds nothing)
    *   - Slim onboard token (no BootstrapToken envelope; cc-swarm reads
    *     `map.auth.credential` from the prelaunch config directly)
@@ -1218,7 +1218,7 @@ export class SwarmManager {
       length: 3,
     });
 
-    // Phase 1: max-swarms validation (shared semantics with openswarm path).
+    // Phase 1: max-swarms validation (shared semantics with swarm-runner path).
     const activeCount = dal.countActiveHostedSwarms();
     if (activeCount >= this.config.max_swarms) {
       throw new SwarmHostingError(
@@ -1325,7 +1325,7 @@ export class SwarmManager {
 
     const mapServer = this.instanceUrl.replace(/^http/, 'ws').replace(/\/?$/, '/ws/map');
 
-    // Phase 10: build provision config. Most fields are openswarm-meaningful
+    // Phase 10: build provision config. Most fields are swarm-runner-meaningful
     // and have no analog for TUI kinds; we set them to defensible empties.
     const inheritEnv = this.config.credentials?.inherit_env !== false;
     const credentialOverlay = resolveCredentialOverlay(
@@ -1335,7 +1335,7 @@ export class SwarmManager {
     );
 
     // Phase 10b: resolve repo_id → WORKSPACE_* env vars + clone target.
-    // Same contract as the openswarm path (shared helper) but here the
+    // Same contract as the swarm-runner path (shared helper) but here the
     // provider owns the clone — the TUI process starts IN the repo dir.
     let repoCloneTarget: { url: string; branch: string; localPath: string; existsLocally: boolean } | undefined;
     if (input.repo_id) {
@@ -1548,7 +1548,7 @@ export class SwarmManager {
 
       dal.updateHostedSwarm(hosted.id, { state: 'running', error: null });
 
-      // Phase 17: broadcast (same shape openswarm uses).
+      // Phase 17: broadcast (same shape swarm-runner uses).
       broadcastToChannel('map:discovery', {
         type: 'swarm_spawned',
         data: {
@@ -1592,12 +1592,12 @@ export class SwarmManager {
   }
 
   /**
-   * openswarm kind (existing behavior, unchanged). Was named `spawn()` before
-   * the kind-dispatcher was added; renamed for clarity. All openswarm-specific
+   * swarm-runner kind (existing behavior, unchanged). Was named `spawn()` before
+   * the kind-dispatcher was added; renamed for clarity. All swarm-runner-specific
    * logic — bootstrap-token envelopes, port allocation, MAP pre-registration
    * with `ws://127.0.0.1:<port>` shape — lives here.
    */
-  private async spawnOpenswarm(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
+  private async spawnSwarmRunner(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
     // Generate a name if none provided
     const name = input.name ?? uniqueNamesGenerator({
       dictionaries: [adjectives, colors, animals],
@@ -2135,7 +2135,7 @@ export class SwarmManager {
       return this.restartCodexRpc(hostedInitial);
     }
 
-    // TUI kinds route through PtyManager, not LocalProvider — the openswarm
+    // TUI kinds route through PtyManager, not LocalProvider — the swarm-runner
     // restart machinery (port reuse, provider.restart, autoRestart) doesn't
     // apply. Branch early to a dedicated cold-restart path that tears down
     // the existing PTY/sidecar and re-boots the TUI against the SAME row
@@ -2333,7 +2333,7 @@ export class SwarmManager {
       // LocalProvider. Their liveness comes from the PTY exit handler
       // (handleClaudePtyExit) and, for sidecar-bearing kinds, the
       // sidecar's MAP registration — not an HTTP probe. The default
-      // openswarm probe (port+1/health) doesn't apply: there's no port
+      // swarm-runner probe (port+1/health) doesn't apply: there's no port
       // and no HTTP server. Skip explicitly.
       if (isTuiKind(hosted.kind)) continue;
 
@@ -2359,7 +2359,7 @@ export class SwarmManager {
 
         // If running, try HTTP health check on the gateway port
         if (hosted.assigned_port && status.state === 'running') {
-          const httpPort = hosted.assigned_port + 1; // OpenSwarm gateway HTTP is port+1
+          const httpPort = hosted.assigned_port + 1; // SwarmRunner gateway HTTP is port+1
           const healthy = await this.checkHttpHealth(httpPort);
 
           if (healthy) {
@@ -2401,7 +2401,7 @@ export class SwarmManager {
   /**
    * Revive hosted swarms that were in active states when openhive last ran.
    *
-   * On a server restart, openswarm child processes have almost always died
+   * On a server restart, swarm-runner child processes have almost always died
    * with the parent (detached children get killed by the exit handler;
    * anything that somehow survives is a detached orphan we can't adopt into
    * the provider's in-memory instance map anyway). Meanwhile the
@@ -2424,7 +2424,7 @@ export class SwarmManager {
    *     common path.
    *
    * Runs sequentially to cap startup resource churn. If N swarms all
-   * revive at once we spawn N openswarm processes + N Claude Code
+   * revive at once we spawn N swarm-runner processes + N Claude Code
    * subprocesses, which isn't free.
    */
   async reviveHostedSwarms(): Promise<{ revived: number; orphaned: number; failed: number }> {
@@ -2946,7 +2946,7 @@ export class SwarmManager {
   }
 
   private async waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
-    const httpPort = port + 1; // OpenSwarm gateway HTTP is on port+1
+    const httpPort = port + 1; // SwarmRunner gateway HTTP is on port+1
     const start = Date.now();
     const interval = 1000;
 

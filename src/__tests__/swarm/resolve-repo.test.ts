@@ -1,6 +1,6 @@
 /**
  * Tests for the shared resolveRepoForSpawn helper used by both
- * openswarm and TUI spawn paths.
+ * swarm-runner and TUI spawn paths.
  */
 
 import * as fs from 'fs';

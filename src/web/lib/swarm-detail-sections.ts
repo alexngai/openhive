@@ -1,7 +1,7 @@
 /**
  * SwarmDetail section registry.
  *
- * SwarmDetail was originally shaped around openswarm's "fleet of agents"
+ * SwarmDetail was originally shaped around swarm-runner's "fleet of agents"
  * model — multiple MAP-registered agents, dispatchable specs, coordination
  * broadcasts, etc. For hosted-swarm kinds that own ONE process (claude-code
  * TUI, codex TUI, codex RPC), most of those sections are noise: there's no
@@ -40,7 +40,7 @@ interface SwarmShape {
 }
 
 interface HostedShape {
-  kind?: 'openswarm' | 'claude-code' | 'codex';
+  kind?: 'swarm-runner' | 'claude-code' | 'codex';
   mode?: 'tui' | 'rpc';
 }
 
@@ -58,12 +58,12 @@ export function getSwarmDetailSections(
   hosted: HostedShape | undefined | null,
   swarm: SwarmShape,
 ): ReadonlySet<SwarmDetailSectionId> {
-  const kind = hosted?.kind ?? 'openswarm';
+  const kind = hosted?.kind ?? 'swarm-runner';
   const mode = hosted?.mode;
 
-  // openswarm: the historical full layout. Every section makes sense
+  // swarm-runner: the historical full layout. Every section makes sense
   // because there's a real fleet, real mesh, real coordination surface.
-  if (kind === 'openswarm') {
+  if (kind === 'swarm-runner') {
     return new Set<SwarmDetailSectionId>([
       'active-work',
       'terminal',

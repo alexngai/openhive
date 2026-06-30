@@ -23,7 +23,7 @@ export interface ScheduleLifecycleHints {
   mail?: 'fresh' | 'reuse';
 }
 
-export type FallbackSpawnAdapter = 'openswarm' | 'claude-code' | 'codex';
+export type FallbackSpawnAdapter = 'swarm-runner' | 'claude-code' | 'codex';
 
 export interface FallbackSpawn {
   adapter: FallbackSpawnAdapter;

@@ -166,8 +166,8 @@ const emptyRepo = (): WorkspaceRepoEntry => ({
 export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   // Which kind of swarm to spawn. claude-code uses a different pipeline
   // (claude TUI + cc-swarm plugin sidecar) and a much smaller config
-  // surface than openswarm. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
-  const [kind, setKind] = useState<'openswarm' | 'claude-code' | 'codex'>('openswarm');
+  // surface than swarm-runner. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+  const [kind, setKind] = useState<'swarm-runner' | 'claude-code' | 'codex'>('swarm-runner');
   // codex-only: which surface to spawn. 'rpc' (default) opens openhive's
   // chat as the canonical driver; 'tui' attaches the embedded terminal
   // to a real codex TUI process. The two modes operate on independent
@@ -193,7 +193,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   );
   // Boot-time agent provisioning (opt-in). When `bootstrapCoordinator` is
   // true, openhive sets MACRO_BOOTSTRAP_COORDINATOR + MACRO_BOOTSTRAP_CWD on
-  // the spawned openswarm process so macro-agent's bootV2 fires a default
+  // the spawned swarm-runner process so macro-agent's bootV2 fires a default
   // coordinator at `projectDirectory` — no separate _macro/spawnAgent call.
   const [projectDirectory, setProjectDirectory] = useState("");
   const [bootstrapCoordinator, setBootstrapCoordinator] = useState(false);
@@ -216,7 +216,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   const [ccRepoUrl, setCcRepoUrl] = useState("");
   const [ccRepoBranch, setCcRepoBranch] = useState("");
   const [repoId, setRepoId] = useState("");
-  // Free-form working directory for non-openswarm kinds. Sent as the
+  // Free-form working directory for non-swarm-runner kinds. Sent as the
   // top-level `cwd` field; the backend validates absolute / exists.
   // Disabled when repoId is set (the schema rejects the combination —
   // mirrored in the UI to avoid a silent backend 422).
@@ -318,7 +318,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
     }
 
     try {
-      // For claude-code, drop openswarm-specific fields entirely; the
+      // For claude-code, drop swarm-runner-specific fields entirely; the
       // server ignores them but sending nothing keeps the audit/log
       // surface honest.
       const trimmedRepoUrl = ccRepoUrl.trim();
@@ -447,20 +447,20 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => setKind('openswarm')}
+                onClick={() => setKind('swarm-runner')}
                 className={`flex-1 px-3 py-2 rounded-md border text-left transition-colors ${
-                  kind === 'openswarm' ? 'border-honey-500' : 'border-transparent'
+                  kind === 'swarm-runner' ? 'border-honey-500' : 'border-transparent'
                 }`}
                 style={{
                   backgroundColor:
-                    kind === 'openswarm'
+                    kind === 'swarm-runner'
                       ? 'var(--color-accent-bg)'
                       : 'var(--color-elevated)',
                   borderColor:
-                    kind === 'openswarm' ? 'var(--color-accent)' : undefined,
+                    kind === 'swarm-runner' ? 'var(--color-accent)' : undefined,
                 }}
               >
-                <div className="text-xs font-medium">OpenSwarm</div>
+                <div className="text-xs font-medium">SwarmRunner</div>
                 <div
                   className="text-2xs mt-0.5"
                   style={{ color: 'var(--color-text-muted)' }}
@@ -650,10 +650,10 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
             />
           </div>
 
-          {/* Openswarm-only fields. claude-code spawns are intentionally
+          {/* SwarmRunner-only fields. claude-code spawns are intentionally
               minimal — the cc-swarm plugin handles bootstrap, no adapter
               choice or workspace cloning is exposed in v1. */}
-          {kind === 'openswarm' && (
+          {kind === 'swarm-runner' && (
           <>
           {/* Row 3: Adapter + Hive */}
           <div className="flex gap-3">
@@ -691,11 +691,11 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
-          {/* Project directory + auto-spawn coordinator. Openswarm-only:
+          {/* Project directory + auto-spawn coordinator. SwarmRunner-only:
               this feeds bootstrap.cwd which the schema rejects for TUI
-              kinds. Non-openswarm kinds get their own "Working directory"
+              kinds. Non-swarm-runner kinds get their own "Working directory"
               field above (renders the new top-level `cwd` field). */}
-          {kind === 'openswarm' && (
+          {kind === 'swarm-runner' && (
           <div className="space-y-2">
             <div>
               <SectionLabel>Project directory</SectionLabel>
@@ -705,7 +705,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setProjectDirectory(e.target.value)}
                 className="input w-full font-mono text-2xs"
                 placeholder="/path/to/your/project (optional)"
-                list="known-project-paths-openswarm"
+                list="known-project-paths-swarm-runner"
                 autoComplete="off"
                 spellCheck={false}
               />
@@ -713,7 +713,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                   Datalist id is suffixed to avoid colliding with the TUI-kind
                   "Working directory" datalist above. */}
               {knownProjectPaths && knownProjectPaths.length > 0 && (
-                <datalist id="known-project-paths-openswarm">
+                <datalist id="known-project-paths-swarm-runner">
                   {knownProjectPaths.map((p) => (
                     <option key={p} value={p} />
                   ))}
@@ -1006,7 +1006,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
           </>
           )}
 
-          {/* Repo resource selector — applies to all kinds. For openswarm
+          {/* Repo resource selector — applies to all kinds. For swarm-runner
               the manager only injects WORKSPACE_* env vars (the sidecar is
               expected to clone). For claude-code/codex the provider does
               the mount-or-clone and overrides cwd. */}
@@ -1031,7 +1031,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                 ))}
               </select>
               <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-                {kind === 'openswarm'
+                {kind === 'swarm-runner'
                   ? 'Sets WORKSPACE_* env vars on the swarm process; the sidecar handles the actual clone.'
                   : 'Mount an existing local checkout or clone from the repo’s remote URL.'}
               </p>
@@ -1039,14 +1039,14 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
           )}
 
           {/* Working directory — free-form cwd for TUI / codex spawns. Not
-              shown for openswarm (it has its own bootstrap.cwd mechanism
+              shown for swarm-runner (it has its own bootstrap.cwd mechanism
               rendered further down). Disabled when a repo resource is
               picked because the backend rejects cwd + repo_id (the repo's
               local_path is the cwd in that path). Built on the same
               combobox pattern as AssigneeCombobox — grouped suggestions
               (recent spawns / registered swarms / registered repos) plus
               free-form entry. */}
-          {kind !== 'openswarm' && (
+          {kind !== 'swarm-runner' && (
             <div>
               <SectionLabel>Working directory (optional)</SectionLabel>
               <WorkingDirectoryCombobox
@@ -2093,7 +2093,7 @@ type FormMode = "none" | "spawn" | "connect";
  *                       the per-card "Remove" button accepts).
  *
  * The hooks are wired per-id, so we fan out the mutations here with
- * bounded concurrency (sequential) to avoid N openswarm processes
+ * bounded concurrency (sequential) to avoid N swarm-runner processes
  * racing for ports on bulk restart. React Query's invalidation on
  * each mutation success keeps the list fresh.
  */

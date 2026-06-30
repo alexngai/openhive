@@ -450,7 +450,7 @@ function TerminalSection({ hosted }: { hosted: HostedSwarm }) {
         onClick={() =>
           // TUI-kind hosted swarms (claude-code, codex-tui) live on the
           // Threads page — route there so the unified surface handles it.
-          // Openswarm still uses the dedicated Terminal page.
+          // SwarmRunner still uses the dedicated Terminal page.
           hosted.kind === 'claude-code' || hosted.kind === 'codex'
             ? navigate(`/threads/hosted-tui/${hosted.id}`)
             : navigate(`/terminal/${hosted.id}`)
@@ -477,7 +477,7 @@ function TerminalSection({ hosted }: { hosted: HostedSwarm }) {
               ? 'Attach to the running Claude Code TUI.'
               : hosted.kind === 'codex'
                 ? 'Attach to the running Codex TUI.'
-                : 'OpenSwarm TUI tunneled through this hub.'}
+                : 'SwarmRunner TUI tunneled through this hub.'}
           </div>
         </div>
         <ChevronRight
@@ -969,7 +969,7 @@ function RegisteredAgentsSection({
   const allAgents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined ?? [];
   // Render sidecars in the cards list — for kinds where the sidecar is
   // the only agent (claude-code), hiding it leaves the section eternally
-  // empty. Sort sidecars LAST so worker fleets (openswarm) render natural
+  // empty. Sort sidecars LAST so worker fleets (swarm-runner) render natural
   // ordering up top with infrastructure at the bottom; for claude-code
   // the sidecar is just the only visible card.
   const agents = useMemo(
@@ -1010,7 +1010,7 @@ function RegisteredAgentsSection({
   // src/api/routes/map.ts but with the TUI/codex operator-chosen `cwd`
   // taking precedence — it's the most specific intent we have for those
   // kinds and what the user actually sees inside the TUI:
-  //   hosted.cwd → hosted.bootstrap.cwd (openswarm) → swarm.metadata.cwd →
+  //   hosted.cwd → hosted.bootstrap.cwd (swarm-runner) → swarm.metadata.cwd →
   //   metadata.projectPath → capabilities.projectPath → hosted.data_dir.
   // The first hit wins. The dialog uses this as a placeholder + fallback
   // hint so the user can see exactly where an empty-cwd spawn will land.

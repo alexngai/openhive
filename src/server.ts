@@ -745,12 +745,13 @@ export async function createHive(
       },
       spawnFallbackSwarm: swarmManager
         ? async ({ adapter, name }) => {
-            const adapterMap: Record<string, 'openswarm' | 'claude-code' | 'codex'> = {
-              openswarm: 'openswarm',
+            const adapterMap: Record<string, 'swarm-runner' | 'claude-code' | 'codex'> = {
+              openswarm: 'swarm-runner',
+              'swarm-runner': 'swarm-runner',
               'claude-code': 'claude-code',
               codex: 'codex',
             };
-            const kind = adapterMap[adapter] ?? 'openswarm';
+            const kind = adapterMap[adapter] ?? 'swarm-runner';
             // Spawn under a synthetic system owner — fallback swarms are
             // schedule-driven, not user-initiated. SwarmManager.spawn
             // signature: spawn(ownerAgentId, opts) → HostedSwarm

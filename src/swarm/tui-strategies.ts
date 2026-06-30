@@ -173,7 +173,7 @@ export function makeCodexStrategy(): TuiKindStrategy {
 
 /**
  * Returns the strategy for a TUI-shaped kind. Returns null for kinds that
- * aren't TUI-shaped (e.g. openswarm, which routes through LocalProvider).
+ * aren't TUI-shaped (e.g. swarm-runner, which routes through LocalProvider).
  */
 export function getTuiKindStrategy(
   kind: HostedSwarmKind,

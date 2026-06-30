@@ -201,8 +201,8 @@ export interface HostedSwarm {
    * branch.
    */
   workspace?: { repos: Array<{ url: string; branch?: string; path?: string }> };
-  /** Kind of hosted swarm. Defaults to 'openswarm' when absent. */
-  kind?: 'openswarm' | 'claude-code' | 'codex';
+  /** Kind of hosted swarm. Defaults to 'swarm-runner' when absent. */
+  kind?: 'swarm-runner' | 'claude-code' | 'codex';
   /**
    * For kind='codex' only — which surface this swarm spawned with.
    * 'rpc' rows are driven through openhive chat (POST /codex/turn);

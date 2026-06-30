@@ -384,10 +384,10 @@ The fix is Electron's standard pattern: use `process.execPath` (the Electron bin
 
 ```ts
 // Before
-spawn('node', [openswarmBin, 'serve'], { env: process.env, ... });
+spawn('node', [swarm-runnerBin, 'serve'], { env: process.env, ... });
 
 // After
-spawn(process.execPath, [openswarmBin, 'serve'], {
+spawn(process.execPath, [swarm-runnerBin, 'serve'], {
   env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
   ...
 });
@@ -501,7 +501,7 @@ Both should work; default to option 1 for dev velocity.
 2. **Instance model — supervisor + one utilityProcess per hive.** Single-instance Electron app focuses the existing window on second launch. Multi-hive is a natural consequence of the process-per-hive design: "New Hive…" in the menu forks another child. One hive is the default UX; additional hives are a menu click away.
 3. **App name and icon — using existing placeholders for now.** We have icons available; a final `.icns` / `.ico` / `.png` set can land before public release.
 4. **SwarmHub mode switching — respawn the hive child.** Supervisor kills the utilityProcess and forks a new one with the updated config. OS-level teardown sidesteps the in-process singleton audit entirely. See [SwarmHub mode switching](#swarmhub-mode-switching-respawn-the-hive-child).
-5. **Hidden child-process deps — none surprising.** Grep confirms the spawn/exec call sites are only `opentasks`, `openswarm` (via swarm providers), `git`, and `headscale`/`tailscale` version probes (CLI-only, not server). Node-child spawns are fixed via `process.execPath` (see [Compatibility work](#compatibility-work)); `git` relies on the user's system install (unchanged from CLI).
+5. **Hidden child-process deps — none surprising.** Grep confirms the spawn/exec call sites are only `opentasks`, `swarm-runner` (via swarm providers), `git`, and `headscale`/`tailscale` version probes (CLI-only, not server). Node-child spawns are fixed via `process.execPath` (see [Compatibility work](#compatibility-work)); `git` relies on the user's system install (unchanged from CLI).
 6. **Platform scope — macOS and Linux only.** Windows is not a v1 target. Three features (opentasks daemon IPC over Unix sockets, PTY terminal via `sh -c`, sandboxed swarm provider) are fundamentally Unix-only; porting them to Windows is a separate body of work we're not taking on.
 
 ## SwarmHub mode switching (respawn the hive child)

@@ -10,9 +10,9 @@ function makeConfig(portRange: [number, number]): SwarmHostingConfig {
   return {
     enabled: true,
     default_provider: 'local',
-    // Any string other than the literal 'npx openswarm serve' is returned
-    // as-is by resolveOpenswarmCommand, so this avoids bin-resolution.
-    openswarm_command: 'node --version',
+    // Any string other than the literal 'npx @swarmkit-ai/swarm-runner serve' is returned
+    // as-is by resolveSwarmRunnerCommand, so this avoids bin-resolution.
+    swarm_runner_command: 'node --version',
     data_dir: '/tmp/openhive-test-swarms',
     port_range: portRange,
     max_swarms: 10,

@@ -62,7 +62,7 @@ function createTestConfig(): Config {
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
-      openswarm_command: `node ${LEARNING_SWARM_SCRIPT}`,
+      swarm_runner_command: `node ${LEARNING_SWARM_SCRIPT}`,
       data_dir: TEST_DATA_DIR,
       port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
       max_swarms: 3,

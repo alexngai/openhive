@@ -75,7 +75,7 @@
     "nanoid": "^5.0.9",
     "nodemailer": "^7.0.13",
     "openhive-types": "^0.2.0",
-    "openswarm": "^0.1.17",
+    "@swarmkit-ai/swarm-runner": "^0.1.18",
     "opentasks": "^0.1.3",
     "pg": "^8.18.0",
     "sharp": "^0.34.5",

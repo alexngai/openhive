@@ -96,7 +96,7 @@ export function useHostedSwarms(options?: { state?: string; mine?: boolean }) {
  * WorkingDirectoryCombobox uses this to group entries by section.
  *
  *   • `hosted-tui`        — config.cwd on a hosted claude-code / codex row
- *   • `hosted-bootstrap`  — config.bootstrap.cwd on a hosted openswarm row
+ *   • `hosted-bootstrap`  — config.bootstrap.cwd on a hosted swarm-runner row
  *   • `registered-swarm`  — metadata.projectPath on a MAP-registered swarm
  *   • `repo`              — local_path on a registered repo resource
  */
@@ -167,11 +167,11 @@ export function useSpawnSwarm() {
     mutationFn: (data: {
       /**
        * What kind of agent process to spawn. Defaults server-side to
-       * 'openswarm' for backwards compatibility. 'claude-code' routes to
+       * 'swarm-runner' for backwards compatibility. 'claude-code' routes to
        * a different spawn pipeline (claude TUI + cc-swarm plugin sidecar).
        * See docs/HOSTED_SWARM_KINDS_DESIGN.md.
        */
-      kind?: 'openswarm' | 'claude-code' | 'codex';
+      kind?: 'swarm-runner' | 'claude-code' | 'codex';
       name: string;
       description?: string;
       adapter?: string;
@@ -193,7 +193,7 @@ export function useSpawnSwarm() {
       };
       // OpenTeams (Path B) — content-addressed bundle ids; the spawn
       // route materializes the team/loadout from the bundle store and
-      // inlines it in the OPENSWARM_BOOTSTRAP_TOKEN.
+      // inlines it in the SWARM_RUNNER_BOOTSTRAP_TOKEN.
       team_bundle_id?: string;
       loadout_bundle_id?: string;
       role?: string;
@@ -210,7 +210,7 @@ export function useSpawnSwarm() {
       repo_id?: string;
       /**
        * Free-form working directory for the spawned process. Valid only
-       * for non-openswarm kinds (claude-code, codex). Mutually exclusive
+       * for non-swarm-runner kinds (claude-code, codex). Mutually exclusive
        * with `repo_id` and `workspace` — the backend rejects combinations
        * at the schema layer. When set, the TUI / codex process is spawned
        * with this path as cwd.

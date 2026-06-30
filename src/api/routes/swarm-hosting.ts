@@ -1,7 +1,7 @@
 /**
  * Swarm Hosting API Routes
  *
- * REST API for spawning, managing, and monitoring OpenSwarm instances
+ * REST API for spawning, managing, and monitoring SwarmRunner instances
  * hosted by this OpenHive instance.
  *
  * Routes:
@@ -86,11 +86,16 @@ export const WorkspacePolicySchema = z
 // Exported so it can be unit-tested in isolation. Importing test code
 // should treat this as the source of truth for the request shape — the
 // route's HTTP plumbing (auth, manager lookup) is deliberately separate.
+const HostedSwarmKindSchema = z.preprocess(
+  (value) => (value === 'openswarm' ? 'swarm-runner' : value),
+  z.enum(['swarm-runner', 'claude-code', 'codex']),
+);
+
 export const SpawnSwarmSchema = z
   .object({
-    // Defaults to 'openswarm' to preserve the existing API contract for clients
+    // Defaults to 'swarm-runner' to preserve the existing API contract for clients
     // that don't pass kind. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
-    kind: z.enum(['openswarm', 'claude-code', 'codex']).optional().default('openswarm'),
+    kind: HostedSwarmKindSchema.optional().default('swarm-runner'),
     name: z.string().min(1).max(100).optional(),
     description: z.string().max(500).optional(),
     adapter: z.string().max(100).optional(),
@@ -130,7 +135,7 @@ export const SpawnSwarmSchema = z
     mode: z.enum(['rpc', 'tui']).optional(),
     /**
      * Free-form working directory the process is spawned in. Valid only
-     * for `claude-code` and `codex` (both modes). Openswarm uses its own
+     * for `claude-code` and `codex` (both modes). SwarmRunner uses its own
      * `bootstrap.cwd` mechanism and rejects this field. Mutually exclusive
      * with `repo_id` and `workspace` — those have their own cwd resolution.
      * Path validation (absolute / exists / is dir) runs in the manager so
@@ -152,22 +157,22 @@ export const SpawnSwarmSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['mode'],
-        message: `mode is only valid when kind="codex"; got kind="${data.kind ?? 'openswarm'}"`,
+        message: `mode is only valid when kind="codex"; got kind="${data.kind ?? 'swarm-runner'}"`,
       });
     }
 
-    // `cwd` validation: reject for openswarm (it uses bootstrap.cwd via env
+    // `cwd` validation: reject for swarm-runner (it uses bootstrap.cwd via env
     // var bridge — having a second spelling would just confuse operators),
     // and reject combinations that would otherwise fight over cwd resolution.
     // The manager validates the actual path exists; we only enforce shape +
     // exclusivity here.
     if (data.cwd !== undefined) {
-      const kindForCwd = data.kind ?? 'openswarm';
-      if (kindForCwd === 'openswarm') {
+      const kindForCwd = data.kind ?? 'swarm-runner';
+      if (kindForCwd === 'swarm-runner') {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['cwd'],
-          message: 'cwd is not valid for kind="openswarm"; use bootstrap.cwd instead',
+          message: 'cwd is not valid for kind="swarm-runner"; use bootstrap.cwd instead',
         });
       }
       if (data.repo_id !== undefined) {
@@ -186,10 +191,10 @@ export const SpawnSwarmSchema = z
       }
     }
 
-    // Reject openswarm-specific fields for TUI-shaped kinds (claude-code,
+    // Reject swarm-runner-specific fields for TUI-shaped kinds (claude-code,
     // codex). They route through PtyManager (no provider config, no
     // adapter, no bootstrap-coordinator) — these fields are dead. Keep
-    // the schema permissive for openswarm. Workspace IS supported (clones
+    // the schema permissive for swarm-runner. Workspace IS supported (clones
     // land under data_dir before the PTY spawn). The error message names
     // the kind so the operator sees which validation tripped.
     if (data.kind !== 'claude-code' && data.kind !== 'codex') return;
@@ -199,8 +204,8 @@ export const SpawnSwarmSchema = z
     const adapterConfigMsg = data.kind === 'claude-code'
       ? 'no adapter for claude-code'
       : 'no adapter for codex';
-    const hiveMsg = 'hive-bound credentials are openswarm-specific';
-    const bootstrapMsg = 'macro-agent bootstrap-coordinator is openswarm-specific';
+    const hiveMsg = 'hive-bound credentials are swarm-runner-specific';
+    const bootstrapMsg = 'macro-agent bootstrap-coordinator is swarm-runner-specific';
     const credsMsg = `${data.kind} uses operator local creds; no overrides`;
     const blocked: Array<[keyof typeof data, string]> = [
       ['adapter', adapterMsg],
@@ -303,7 +308,7 @@ export async function swarmHostingRoutes(
   // GET /map/known-project-paths — Distinct directories worth suggesting
   // in the Spawn Swarm dialog's working-directory combobox. Sources:
   //   • hosted-swarm config.cwd (claude-code / codex) — listKnownTuiCwds
-  //   • hosted-swarm bootstrap.cwd (openswarm)        — listKnownBootstrapCwds
+  //   • hosted-swarm bootstrap.cwd (swarm-runner)        — listKnownBootstrapCwds
   //   • registered swarms' metadata.projectPath       — listKnownProjectPaths
   //   • registered repo resources' local_path         — listRepos
   //
@@ -453,7 +458,7 @@ export async function swarmHostingRoutes(
       const hosted = await manager.stop(request.params.id, request.agent!.id);
 
       // SwarmCraft's outbound MAP client to this swarm's MAP server still holds
-      // a now-dead WebSocket (the openswarm process just exited). Without
+      // a now-dead WebSocket (the swarm-runner process just exited). Without
       // explicit disconnect, a subsequent spawn against this swarm (after
       // restart or a fresh spawn reusing the same swarm_id) would try to use
       // the stale client and fail with "Connection closed". Force disconnect
@@ -655,7 +660,7 @@ export async function swarmHostingRoutes(
 
   // GET /map/hosted/:id/terminal-info — Resolve the terminal session config
   // for a hosted swarm. Two modes:
-  //   ?mode=tui   (default) — OpenSwarm TUI tunneled into the browser PTY
+  //   ?mode=tui   (default) — SwarmRunner TUI tunneled into the browser PTY
   //                          (or, for kind=claude-code, attach to the
   //                          existing claude PTY session by sessionId)
   //   ?mode=shell           — User's $SHELL in the swarm's data dir, sandboxed
@@ -702,7 +707,7 @@ export async function swarmHostingRoutes(
       }
 
       // Point the TUI at openhive's own MAP hub, not the hosted swarm's
-      // assigned port. The openswarm `serve` gateway exposes /health, /metrics,
+      // assigned port. The swarm-runner `serve` gateway exposes /health, /metrics,
       // /api/stats — it has no MAP WebSocket bound to assigned_port. MAP traffic
       // for hosted swarms flows inbound to this hub via the sidecar pattern, so
       // the TUI must dial the hub to see anything useful.
@@ -740,8 +745,8 @@ export async function swarmHostingRoutes(
 
       // TUI mode (default).
       try {
-        const { resolveOpenSwarmTuiBinary } = await import('../../terminal/resolve-tui.js');
-        const binaryPath = resolveOpenSwarmTuiBinary();
+        const { resolveSwarmRunnerTuiBinary } = await import('../../terminal/resolve-tui.js');
+        const binaryPath = resolveSwarmRunnerTuiBinary();
 
         console.log(
           '[terminal-info] swarm=%s mode=tui hub=%s binary=%s',

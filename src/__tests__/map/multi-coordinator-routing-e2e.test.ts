@@ -134,7 +134,7 @@ describeIf('E2E — Multi-Coordinator ACP Routing through OpenHive', () => {
       swarmHosting: {
         enabled: true,
         default_provider: 'local',
-        openswarm_command: 'npx openswarm serve',
+        swarm_runner_command: 'npx @swarmkit-ai/swarm-runner serve',
         data_dir: TEST_DATA_DIR,
         port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
         max_swarms: 2,
@@ -222,7 +222,7 @@ describeIf('E2E — Multi-Coordinator ACP Routing through OpenHive', () => {
       if (conn.registeredAgents.size > 0) swarmId = id;
     }
 
-    // Reconnect MAP client to the macro-agent's MAP server (port+2 by openswarm convention)
+    // Reconnect MAP client to the macro-agent's MAP server (port+2 by swarm-runner convention)
     // so acp-connect's `_macro/spawnAgent` and `acpStreamManager.newSession` calls can route.
     const mapPort = assignedPort + 2;
 

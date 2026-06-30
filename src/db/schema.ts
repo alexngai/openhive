@@ -1179,12 +1179,12 @@ ALTER TABLE dispatches ADD COLUMN loadout_error TEXT;
 `;
 
 // Migration V50: Hosted swarm kind — generalize the spawn pipeline beyond
-// OpenSwarm. Existing rows default to 'openswarm' so the current behavior is
+// SwarmRunner. Existing rows default to 'swarm-runner' so the current behavior is
 // preserved. New kinds (claude-code, future codex/gemini) carry different
 // spawn-plan resolvers. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
 export const MIGRATION_V50_HOSTED_SWARM_KIND = `
-ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'openswarm'
-  CHECK (kind IN ('openswarm', 'claude-code'));
+ALTER TABLE hosted_swarms ADD COLUMN kind TEXT NOT NULL DEFAULT 'swarm-runner'
+  CHECK (kind IN ('swarm-runner', 'claude-code'));
 `;
 
 // Migration V56: Schedules table for swarm-dispatch scheduler integration.
@@ -1240,7 +1240,7 @@ CREATE TABLE hosted_swarms_v51 (
   spawned_by TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
-  kind TEXT NOT NULL DEFAULT 'openswarm'
+  kind TEXT NOT NULL DEFAULT 'swarm-runner'
 );
 INSERT INTO hosted_swarms_v51
   (id, swarm_id, provider, state, pid, container_id, deployment_id,
@@ -1248,7 +1248,8 @@ INSERT INTO hosted_swarms_v51
    spawned_by, created_at, updated_at, kind)
   SELECT id, swarm_id, provider, state, pid, container_id, deployment_id,
          bootstrap_token_hash, assigned_port, endpoint, config, error,
-         spawned_by, created_at, updated_at, kind
+         spawned_by, created_at, updated_at,
+         CASE WHEN kind = 'openswarm' THEN 'swarm-runner' ELSE kind END
   FROM hosted_swarms;
 DROP TABLE hosted_swarms;
 ALTER TABLE hosted_swarms_v51 RENAME TO hosted_swarms;
@@ -1676,9 +1677,9 @@ ALTER TABLE hive_events ADD COLUMN key_version INTEGER DEFAULT 1;
 ALTER TABLE hive_sync_peers ADD COLUMN peer_key_version INTEGER DEFAULT 1;
 `;
 
-// Migration V16: Hosted swarms — spawn and manage OpenSwarm instances
+// Migration V16: Hosted swarms — spawn and manage SwarmRunner instances
 export const MIGRATION_V16_HOSTED_SWARMS = `
--- Hosted swarms: OpenSwarm instances spawned and managed by this OpenHive instance
+-- Hosted swarms: SwarmRunner instances spawned and managed by this OpenHive instance
 CREATE TABLE IF NOT EXISTS hosted_swarms (
   id TEXT PRIMARY KEY,
   -- Links to the MAP hub swarm record (NULL until the swarm registers)

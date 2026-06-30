@@ -1,18 +1,18 @@
 /**
- * Full Stack E2E: OpenHive → OpenSwarm → macro-agent
+ * Full Stack E2E: OpenHive → SwarmRunner → macro-agent
  *
- * Tests the complete flow from OpenHive hub to a real OpenSwarm instance
+ * Tests the complete flow from OpenHive hub to a real SwarmRunner instance
  * running macro-agent as the adapter:
  *
  *   1. Boot OpenHive Fastify server with SwarmManager
- *   2. Spawn a hosted swarm (real OpenSwarm + macro-agent)
+ *   2. Spawn a hosted swarm (real SwarmRunner + macro-agent)
  *   3. Wait for health check
  *   4. Connect to the swarm's MAP server via ClientConnection
  *   5. List agents, create ACP stream, prompt agent
  *   6. Verify session updates stream back
  *
  * REQUIRES: FULL_STACK_E2E=true (skipped by default — spawns real processes)
- * REQUIRES: OpenSwarm built (references/openswarm/dist/server.mjs)
+ * REQUIRES: SwarmRunner built (references/swarm-runner/dist/server.mjs)
  * REQUIRES: macro-agent built (references/macro-agent/dist/)
  *
  * Run:
@@ -48,10 +48,10 @@ const PORT_RANGE_MIN = 19600;
 const PORT_RANGE_MAX = 19610;
 const SERVER_PORT = 19699;
 
-// Path to the npm-installed OpenSwarm binary (published package)
-const OPENSWARM_BIN = path.resolve(
+// Path to the npm-installed SwarmRunner binary (published package)
+const SWARM_RUNNER_BIN = path.resolve(
   __dirname,
-  '../../../node_modules/openswarm/bin/openswarm.mjs',
+  '../../../node_modules/@swarmkit-ai/swarm-runner/bin/swarm-runner.mjs',
 );
 
 // ============================================================================
@@ -72,7 +72,7 @@ function createTestConfig(): Config {
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
-      openswarm_command: `node ${OPENSWARM_BIN} serve`,
+      swarm_runner_command: `node ${SWARM_RUNNER_BIN} serve`,
       data_dir: TEST_DATA_DIR,
       port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
       max_swarms: 2,
@@ -102,7 +102,7 @@ async function waitFor(
 // Tests
 // ============================================================================
 
-describeFn('Full Stack E2E: OpenHive → OpenSwarm → macro-agent', () => {
+describeFn('Full Stack E2E: OpenHive → SwarmRunner → macro-agent', () => {
   let app: FastifyInstance;
   let swarmManager: SwarmManager;
   let config: Config;
@@ -112,9 +112,9 @@ describeFn('Full Stack E2E: OpenHive → OpenSwarm → macro-agent', () => {
 
   beforeAll(async () => {
     // Check prerequisites
-    if (!fs.existsSync(OPENSWARM_BIN)) {
+    if (!fs.existsSync(SWARM_RUNNER_BIN)) {
       throw new Error(
-        `OpenSwarm binary not found at ${OPENSWARM_BIN}. Build it first: cd references/openswarm && npm run build:server`,
+        `SwarmRunner binary not found at ${SWARM_RUNNER_BIN}. Build it first: cd references/swarm-runner && npm run build:server`,
       );
     }
 

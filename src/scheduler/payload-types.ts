@@ -37,7 +37,7 @@ export interface ScheduleLifecycleHints {
   mail?: MailLifecycle;
 }
 
-export type FallbackSpawnAdapter = 'openswarm' | 'claude-code' | 'codex';
+export type FallbackSpawnAdapter = 'swarm-runner' | 'claude-code' | 'codex';
 
 /**
  * Auto-spawn fallback policy. When ALL configured `target_swarm_ids` are

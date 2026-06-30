@@ -19,7 +19,7 @@ function createTestConfig(overrides?: Partial<SwarmHostingConfig>): SwarmHosting
   return {
     enabled: true,
     default_provider: 'local',
-    openswarm_command: `node ${SLEEP_SCRIPT}`,
+    swarm_runner_command: `node ${SLEEP_SCRIPT}`,
     data_dir: TEST_DATA_DIR,
     port_range: [19100, 19110],
     max_swarms: 3,
@@ -309,7 +309,7 @@ describe('SwarmManager', () => {
         expect(revived.state).toBe('running');
 
         // Bootstrap field survives the round trip — the re-provisioned
-        // openswarm process gets the same env vars exported.
+        // swarm-runner process gets the same env vars exported.
         const afterRestart = swarmDAL.findHostedSwarmById(hosted.id);
         expect(afterRestart?.config?.bootstrap).toEqual({
           coordinator: true,
@@ -496,12 +496,12 @@ describe('SwarmHostingError', () => {
 });
 
 /**
- * The kind dispatcher (`SwarmManager.spawn` → `spawnOpenswarm` |
+ * The kind dispatcher (`SwarmManager.spawn` → `spawnSwarmRunner` |
  * `spawnClaudeCode`) is the seam introduced when the hosted-swarm pipeline
- * was generalized beyond OpenSwarm. These tests pin its behavior:
+ * was generalized beyond SwarmRunner. These tests pin its behavior:
  *   - 'claude-code' goes to the (currently stub) claude-code path
- *   - omitted kind defaults to openswarm
- * The actual openswarm and claude-code spawns are exercised by other tests;
+ *   - omitted kind defaults to swarm-runner
+ * The actual swarm-runner and claude-code spawns are exercised by other tests;
  * here we just assert the routing.
  */
 describe('SwarmManager.spawn — kind dispatcher', () => {
@@ -531,18 +531,18 @@ describe('SwarmManager.spawn — kind dispatcher', () => {
   // The kind=claude-code path is exercised end-to-end by
   // src/__tests__/swarm/claude-code-spawn.test.ts, which mocks the binary
   // resolver and asserts the error paths cleanly. The dispatcher behavior
-  // for the default openswarm path is covered below.
+  // for the default swarm-runner path is covered below.
 
-  it('treats omitted kind as openswarm (default path)', async () => {
-    // We don't run a full openswarm spawn — that's covered elsewhere — we
+  it('treats omitted kind as swarm-runner (default path)', async () => {
+    // We don't run a full swarm-runner spawn — that's covered elsewhere — we
     // just want to assert the dispatcher does NOT route to the claude-code
-    // stub. We force the openswarm path to fail early (max_swarms=0) and
-    // assert the error code is the expected openswarm-path failure, NOT
+    // stub. We force the swarm-runner path to fail early (max_swarms=0) and
+    // assert the error code is the expected swarm-runner-path failure, NOT
     // NOT_IMPLEMENTED.
     const config: SwarmHostingConfig = {
       enabled: true,
       default_provider: 'local',
-      openswarm_command: `node ${SLEEP_SCRIPT}`,
+      swarm_runner_command: `node ${SLEEP_SCRIPT}`,
       data_dir: TEST_DATA_DIR,
       port_range: [19140, 19145],
       max_swarms: 0,

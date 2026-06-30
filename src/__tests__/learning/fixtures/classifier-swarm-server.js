@@ -18,7 +18,7 @@ const portIdx = process.argv.indexOf('--port');
 const port = portIdx !== -1 ? parseInt(process.argv[portIdx + 1], 10) : 9999;
 const healthPort = port + 1;
 
-const bootstrapToken = process.env.OPENSWARM_BOOTSTRAP_TOKEN;
+const bootstrapToken = process.env.SWARM_RUNNER_BOOTSTRAP_TOKEN;
 let hubWs = null;
 
 // ===========================================================================

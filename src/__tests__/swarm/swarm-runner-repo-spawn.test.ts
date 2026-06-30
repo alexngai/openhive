@@ -1,15 +1,15 @@
 /**
- * Unit test: openswarm spawn path with repo_id (env-var injection only).
+ * Unit test: swarm-runner spawn path with repo_id (env-var injection only).
  *
- * Openswarm spawns route through LocalProvider, which copies
+ * SwarmRunner spawns route through LocalProvider, which copies
  * `config.resolved_credentials` into the child process env. The TUI
- * Phase 3c work also gave openswarm a `repo_id` resolution step:
+ * Phase 3c work also gave swarm-runner a `repo_id` resolution step:
  *
  *   1. resolveRepoForSpawn → applyRepoEnvVars(credentialOverlay, …)
  *   2. credentialOverlay flows into provisionConfig.resolved_credentials
  *   3. LocalProvider.provision merges resolved_credentials into env
  *
- * Unlike the TUI path, openswarm does NOT clone or override cwd — the
+ * Unlike the TUI path, swarm-runner does NOT clone or override cwd — the
  * spawned sidecar reads WORKSPACE_* on connect and emits
  * `x-workspace/repo.declare` itself.
  *
@@ -35,8 +35,8 @@ import { SwarmManager } from '../../swarm/manager.js';
 import type { SwarmHostingConfig, SwarmProvisionConfig } from '../../swarm/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-const TEST_ROOT = testRoot('openswarm-repo-spawn');
-const TEST_DB_PATH = testDbPath(TEST_ROOT, 'openswarm-repo-spawn.db');
+const TEST_ROOT = testRoot('swarm-runner-repo-spawn');
+const TEST_DB_PATH = testDbPath(TEST_ROOT, 'swarm-runner-repo-spawn.db');
 const TEST_DATA_DIR = `${TEST_ROOT}/data`;
 
 // ── Mock provider ───────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ function makeConfig(): SwarmHostingConfig {
   return {
     enabled: true,
     default_provider: 'local',
-    openswarm_command: 'echo unused',
+    swarm_runner_command: 'echo unused',
     data_dir: TEST_DATA_DIR,
     port_range: [19500, 19510],
     max_swarms: 5,
@@ -84,7 +84,7 @@ function buildManager(mockProvider: MockLocalProvider): SwarmManager {
   // Replace the registered 'local' provider with our mock.
   (mgr as any).providers.set('local', mockProvider);
   // Skip the 30s waitForHealth that polls the assigned port — there's no
-  // real openswarm process behind the mock provider, so health never
+  // real swarm-runner process behind the mock provider, so health never
   // succeeds. The path under test (repo_id → provisionConfig) finishes
   // before waitForHealth runs.
   (mgr as any).waitForHealth = async () => true;
@@ -93,7 +93,7 @@ function buildManager(mockProvider: MockLocalProvider): SwarmManager {
 
 // ── Setup ────────────────────────────────────────────────────────────────────
 
-describe('openswarm spawn — repo_id env-var injection', () => {
+describe('swarm-runner spawn — repo_id env-var injection', () => {
   let agentId: string;
   let repoId: string;
 
@@ -103,15 +103,15 @@ describe('openswarm spawn — repo_id env-var injection', () => {
     initTokenService(undefined, TEST_ROOT);
 
     const { agent } = await agentsDAL.createAgent({
-      name: 'openswarm-repo-spawn-agent',
+      name: 'swarm-runner-repo-spawn-agent',
       is_admin: true,
     });
     agentId = agent.id;
 
     const repo = reposDAL.upsertRepoByCanonicalUrl(
-      canonicalizeRepoUrl('https://github.com/test-org/openswarm-repo.git'),
+      canonicalizeRepoUrl('https://github.com/test-org/swarm-runner-repo.git'),
       {
-        name: 'openswarm-repo',
+        name: 'swarm-runner-repo',
         origin: 'user_defined',
         owner_agent_id: agentId,
         default_branch: 'main',
@@ -142,7 +142,7 @@ describe('openswarm spawn — repo_id env-var injection', () => {
 
     try {
       await mgr.spawn(agentId, {
-        kind: 'openswarm',
+        kind: 'swarm-runner',
         name: 'env-test',
         repo_id: repoId,
       });
@@ -152,12 +152,12 @@ describe('openswarm spawn — repo_id env-var injection', () => {
 
       // Provider sees the env vars in resolved_credentials.
       const creds = config.resolved_credentials ?? {};
-      expect(creds.WORKSPACE_REPO_URL).toBe('https://github.com/test-org/openswarm-repo');
+      expect(creds.WORKSPACE_REPO_URL).toBe('https://github.com/test-org/swarm-runner-repo');
       expect(creds.WORKSPACE_BRANCH).toBe('main');
       expect(creds.WORKSPACE_LOCAL_PATH).toBeTruthy();
 
       // No clone happens at the manager level — workspace.repos stays unset.
-      // (LocalProvider would clone if config.workspace.repos existed; openswarm
+      // (LocalProvider would clone if config.workspace.repos existed; swarm-runner
       //  with bare repo_id leaves cloning to the sidecar.)
       expect(config.workspace).toBeUndefined();
     } finally {
@@ -173,7 +173,7 @@ describe('openswarm spawn — repo_id env-var injection', () => {
 
     try {
       const hosted = await mgr.spawn(agentId, {
-        kind: 'openswarm',
+        kind: 'swarm-runner',
         name: 'audit-test',
         repo_id: repoId,
       });
@@ -197,7 +197,7 @@ describe('openswarm spawn — repo_id env-var injection', () => {
     try {
       await expect(
         mgr.spawn(agentId, {
-          kind: 'openswarm',
+          kind: 'swarm-runner',
           name: 'bad-repo',
           repo_id: 'repo_nonexistent',
         }),
@@ -220,7 +220,7 @@ describe('openswarm spawn — repo_id env-var injection', () => {
 
     try {
       await mgr.spawn(agentId, {
-        kind: 'openswarm',
+        kind: 'swarm-runner',
         name: 'no-repo',
       });
 
@@ -241,7 +241,7 @@ describe('openswarm spawn — repo_id env-var injection', () => {
     // second agent that doesn't own it and isn't subscribed should not be
     // able to spawn against the repo_id, even if they know the id.
     const { agent: stranger } = await agentsDAL.createAgent({
-      name: 'openswarm-repo-stranger',
+      name: 'swarm-runner-repo-stranger',
     });
     const mockProvider = new MockLocalProvider();
     const mgr = buildManager(mockProvider);
@@ -249,7 +249,7 @@ describe('openswarm spawn — repo_id env-var injection', () => {
     try {
       await expect(
         mgr.spawn(stranger.id, {
-          kind: 'openswarm',
+          kind: 'swarm-runner',
           name: 'stranger-spawn',
           repo_id: repoId,
         }),

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Simple test fixture: stays alive, serves a health endpoint, and optionally prints output.
-// Used by LocalProvider and SwarmManager tests as a stand-in for OpenSwarm.
+// Used by LocalProvider and SwarmManager tests as a stand-in for SwarmRunner.
 //
-// Accepts --port <N> and serves /health on port N+1 (matching OpenSwarm gateway behavior).
+// Accepts --port <N> and serves /health on port N+1 (matching SwarmRunner gateway behavior).
 
 import http from 'node:http';
 
@@ -18,7 +18,7 @@ if (mode) {
   }
 }
 
-// Serve /health on port+1 (OpenSwarm gateway convention)
+// Serve /health on port+1 (SwarmRunner gateway convention)
 if (port) {
   const healthPort = port + 1;
   const server = http.createServer((req, res) => {

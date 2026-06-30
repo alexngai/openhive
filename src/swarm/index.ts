@@ -1,7 +1,7 @@
 /**
  * Swarm Hosting Module
  *
- * Enables OpenHive to spawn and manage OpenSwarm instances.
+ * Enables OpenHive to spawn and manage SwarmRunner instances.
  * Supports local sidecar processes with extensibility for
  * Docker, Fly.io, SSH, and Kubernetes providers.
  */

@@ -72,7 +72,7 @@ export function Terminal() {
         // TUI kinds (claude-code, codex) have no MAP endpoint and no port
         // — the embedded terminal attaches by sessionId, not by URL. Only
         // synthesize the ws://127.0.0.1:<port> fallback when we actually
-        // have a port (openswarm). Without this guard we'd display
+        // have a port (swarm-runner). Without this guard we'd display
         // "ws://127.0.0.1:null" in the header for TUI kinds.
         endpoint:
           swarm.endpoint

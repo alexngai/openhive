@@ -79,7 +79,7 @@ const RUNTIME_DEPS = new Set([
   'nanoid',
   'nodemailer',
   'openhive-types',
-  'openswarm',
+  'swarm-runner',
   'pg',
   'sharp',
   'skill-tree',

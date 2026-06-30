@@ -254,16 +254,24 @@ export const ConfigSchema = z.object({
     })
     .default({ enabled: false }),
 
-  // Swarm hosting: spawn and manage OpenSwarm instances
+  // Swarm hosting: spawn and manage Swarm Runner instances
   swarmHosting: z
-    .object({
+    .preprocess((raw) => {
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        const value = raw as Record<string, unknown>;
+        if (value.swarm_runner_command === undefined && value.openswarm_command !== undefined) {
+          return { ...value, swarm_runner_command: value.openswarm_command };
+        }
+      }
+      return raw;
+    }, z.object({
       enabled: z.boolean().default(true),
       /** Default hosting provider */
       default_provider: z
         .enum(["local", "local-sandboxed", "docker", "fly", "ssh", "k8s"])
         .default("local"),
-      /** Command to run OpenSwarm (e.g. 'npx openswarm' or path to binary) */
-      openswarm_command: z.string().default("npx openswarm serve"),
+      /** Command to run Swarm Runner (e.g. 'npx @swarmkit-ai/swarm-runner' or path to binary) */
+      swarm_runner_command: z.string().default("npx @swarmkit-ai/swarm-runner serve"),
       /** Base directory for swarm instance data */
       data_dir: z.string().default("./data/swarms"),
       /** Port range for locally spawned swarms [min, max] */
@@ -286,7 +294,7 @@ export const ConfigSchema = z.object({
        * the usual window for debugging crash-recover loops. Set `enabled: false` to
        * disable disk persistence entirely (in-memory ring buffer still works but
        * its contents are lost on every subprocess respawn). Use `dir: "data_dir"`
-       * to co-locate logs with the swarm's state (`<data_dir>/openswarm.log`) so
+       * to co-locate logs with the swarm's state (`<data_dir>/swarm-runner.log`) so
        * they survive reboots, or give an absolute path for a custom location.
        */
       logs: z
@@ -377,7 +385,7 @@ export const ConfigSchema = z.object({
             .default({}),
         })
         .default({ enabled: false }),
-    })
+    }))
     .default({}),
 
   // SwarmCraft: MAP client for monitoring and steering coding agents

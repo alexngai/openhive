@@ -22,8 +22,13 @@ export const ScheduleLifecycleHintsSchema = z.object({
   mail: z.enum(['fresh', 'reuse']).optional(),
 });
 
+const FallbackSpawnAdapterSchema = z.preprocess(
+  (value) => (value === 'openswarm' ? 'swarm-runner' : value),
+  z.enum(['swarm-runner', 'claude-code', 'codex']),
+);
+
 export const FallbackSpawnSchema = z.object({
-  adapter: z.enum(['openswarm', 'claude-code', 'codex']),
+  adapter: FallbackSpawnAdapterSchema,
   cleanup_on_terminal: z.boolean().optional().default(true),
 });
 

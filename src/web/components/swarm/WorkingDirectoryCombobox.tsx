@@ -42,7 +42,7 @@ const SECTIONS: Array<{
   Icon: typeof Folder;
 }> = [
   { source: 'hosted-tui',        label: 'Recent (Claude Code / Codex)', Icon: History },
-  { source: 'hosted-bootstrap',  label: 'Recent (OpenSwarm)',           Icon: History },
+  { source: 'hosted-bootstrap',  label: 'Recent (SwarmRunner)',           Icon: History },
   { source: 'registered-swarm',  label: 'Registered swarms',            Icon: Zap },
   { source: 'repo',              label: 'Registered repos',             Icon: FolderGit2 },
 ];
