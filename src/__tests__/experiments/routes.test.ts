@@ -165,6 +165,30 @@ describe('experiments routes — run + worker auth', () => {
     expect(body.run.worker_token_hash).toBeUndefined(); // sanitized
   });
 
+  it('POST /runs rejects paused and archived experiments', async () => {
+    const paused = (await createExperiment({ content_hash: 'sha256:paused-run' })).json()
+      .experiment;
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/experiments/${paused.id}/pause`,
+      headers: ADMIN,
+    });
+    const pausedRun = await createRun(paused.id);
+    expect(pausedRun.statusCode).toBe(409);
+    expect(pausedRun.json().message).toMatch(/paused/);
+
+    const archived = (await createExperiment({ content_hash: 'sha256:archived-run' })).json()
+      .experiment;
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/experiments/${archived.id}/archive`,
+      headers: ADMIN,
+    });
+    const archivedRun = await createRun(archived.id);
+    expect(archivedRun.statusCode).toBe(409);
+    expect(archivedRun.json().message).toMatch(/archived/);
+  });
+
   it('worker routes accept the run token, reject a wrong token and a cross-run token', async () => {
     const exp = (await createExperiment()).json().experiment;
     const runA = (await createRun(exp.id)).json();
@@ -317,6 +341,28 @@ describe('experiments routes — event ingest + tail', () => {
     expect(tail.json().data).toHaveLength(3); // no duplicates
     expect(tail.json().max_seq).toBe(2);
     expect(tail.json().data.map((e: { seq: number }) => e.seq)).toEqual([0, 1, 2]);
+
+    // A divergent duplicate retry must not project candidate state that was
+    // never appended to the event firehose.
+    const divergentRetry = await post([{ seq: 2, type: 'promotion_keep', candidateId: 'c2' }]);
+    expect(divergentRetry.statusCode).toBe(200);
+    expect(divergentRetry.json().applied).toBe(0);
+    const afterDivergent = await app.inject({
+      method: 'GET',
+      url: `/api/v1/experiments/${exp.id}/candidates`,
+      headers: ADMIN,
+    });
+    expect(afterDivergent.json().data.map((c: { candidate_ref: string }) => c.candidate_ref)).toEqual([
+      'c1',
+    ]);
+    const detailAfterDivergent = await app.inject({
+      method: 'GET',
+      url: `/api/v1/experiments/${exp.id}`,
+      headers: ADMIN,
+    });
+    expect(detailAfterDivergent.json().experiment.incumbent_candidate_id).toBe(
+      cands.json().data[0].id,
+    );
   });
 
   it('GET events tail respects after_seq', async () => {
@@ -336,6 +382,18 @@ describe('experiments routes — event ingest + tail', () => {
       headers: ADMIN,
     });
     expect(tail.json().data.map((e: { seq: number }) => e.seq)).toEqual([1, 2]);
+  });
+
+  it('GET events tail reports max_seq -1 before seq 0 exists', async () => {
+    const exp = (await createExperiment()).json().experiment;
+    const run = (await createRun(exp.id)).json();
+    const tail = await app.inject({
+      method: 'GET',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.run.id}/events`,
+      headers: ADMIN,
+    });
+    expect(tail.json().data).toEqual([]);
+    expect(tail.json().max_seq).toBe(-1);
   });
 });
 
@@ -537,8 +595,8 @@ describe('experiments routes — review hardening', () => {
       headers: { authorization: `Bearer ${run.worker_token}` },
       payload: {
         candidates: [
-          { candidate_ref: 'base', status: 'baseline', score_held_out: 0.5 },
           { candidate_ref: 'c1', parent_candidate_ref: 'base', promoted: true, score_held_out: 0.7 },
+          { candidate_ref: 'base', status: 'baseline', score_held_out: 0.5 },
           { candidate_ref: 'orphan', parent_candidate_ref: 'ghost' },
         ],
       },

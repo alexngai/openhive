@@ -297,6 +297,13 @@ describe('experiments DAL — candidates (projection)', () => {
 });
 
 describe('experiments DAL — events (append-only)', () => {
+  it('maxSeqForRun returns -1 before the worker writes seq 0', () => {
+    const e = exp.createExperiment(makeExperiment());
+    const run = exp.createRun({ experiment_id: e.id });
+
+    expect(exp.maxSeqForRun(run.id)).toBe(-1);
+  });
+
   it('appendEvent stores and parses payload; maxSeqForRun tracks the high-water mark', () => {
     const e = exp.createExperiment(makeExperiment());
     const run = exp.createRun({ experiment_id: e.id });
@@ -324,12 +331,16 @@ describe('experiments DAL — events (append-only)', () => {
     const e = exp.createExperiment(makeExperiment());
     const run = exp.createRun({ experiment_id: e.id });
 
-    const first = exp.appendEvent({
+    const firstResult = exp.appendEventWithResult({
       experiment_id: e.id, run_id: run.id, seq: 7, type: 'cycle_start', payload: { a: 1 },
     });
-    const retry = exp.appendEvent({
+    const retryResult = exp.appendEventWithResult({
       experiment_id: e.id, run_id: run.id, seq: 7, type: 'cycle_start', payload: { a: 999 },
     });
+    const first = firstResult.event;
+    const retry = retryResult.event;
+    expect(firstResult.inserted).toBe(true);
+    expect(retryResult.inserted).toBe(false);
     expect(retry.id).toBe(first.id); // same row returned
     expect(retry.payload).toEqual({ a: 1 }); // original wins
     expect(exp.listEventsForRun(run.id)).toHaveLength(1);

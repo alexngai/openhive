@@ -206,7 +206,7 @@ describe('launcher — launchRun / cancelRunProcess', () => {
     expect(argv).toEqual(expect.arrayContaining(['--cycles', '5', '--budget-seconds', '120']));
   });
 
-  it('a spawn error finalizes the run failed', () => {
+  it('a spawn error finalizes the run failed, clears the token, and blocks reopen', async () => {
     let captured: ChildProcess | undefined;
     const spawnFn = ((_cmd: string, _argv: string[], _opts: unknown) => {
       captured = fakeChild(7000);
@@ -221,7 +221,16 @@ describe('launcher — launchRun / cancelRunProcess', () => {
     const after = dal.findRunById(run.id)!;
     expect(after.status).toBe('failed');
     expect(after.stop_reason).toBe('spawn-error');
+    expect(after.worker_token_hash).toBeNull();
     expect(isRunProcessTracked(run.id)).toBe(false);
+
+    const reopen = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/experiments/${exp.id}/runs/${run.id}`,
+      headers: ADMIN,
+      payload: { status: 'running' },
+    });
+    expect(reopen.statusCode).toBe(409);
   });
 
   it('launchRun dials the hub base URL set by setHubBaseUrl', () => {
@@ -299,6 +308,35 @@ describe('launcher — POST /runs/:runId/launch route', () => {
       headers: ADMIN,
     });
     expect(second.statusCode).toBe(409);
+  });
+
+  it('rejects launch for paused and archived experiments before claiming the run', async () => {
+    const spy = spawnSpy();
+    setLauncherSpawnForTest(spy.fn);
+    const paused = makeDeploymentExperiment();
+    dal.updateExperiment(paused.id, { status: 'paused' });
+    const pausedRun = dal.createRun({ experiment_id: paused.id });
+    const pausedRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/experiments/${paused.id}/runs/${pausedRun.id}/launch`,
+      headers: ADMIN,
+    });
+    expect(pausedRes.statusCode).toBe(409);
+    expect(pausedRes.json().message).toMatch(/paused/);
+    expect(dal.findRunById(pausedRun.id)!.hosted_swarm_id).toBeNull();
+
+    const archived = makeDeploymentExperiment();
+    dal.updateExperiment(archived.id, { status: 'archived' });
+    const archivedRun = dal.createRun({ experiment_id: archived.id });
+    const archivedRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/experiments/${archived.id}/runs/${archivedRun.id}/launch`,
+      headers: ADMIN,
+    });
+    expect(archivedRes.statusCode).toBe(409);
+    expect(archivedRes.json().message).toMatch(/archived/);
+    expect(dal.findRunById(archivedRun.id)!.hosted_swarm_id).toBeNull();
+    expect(spy.calls).toHaveLength(0);
   });
 
   it('rejects launch without the admin key (admin-only)', async () => {
