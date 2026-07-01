@@ -37,15 +37,16 @@ export interface IngestResult {
 }
 
 /**
- * Append + project a batch of live events. `appendEvent` is idempotent on
- * `(run_id, seq)`, so a retried POST is safe.
+ * Append + project a batch of live events. Event idempotency must cover both
+ * the append-only row and the downstream projection: duplicate `(run_id, seq)`
+ * retries return the stored row and are not replayed into candidate state.
  */
 export function ingestEvents(run: dal.ExperimentRun, events: IngestEvent[]): IngestResult {
   let applied = 0;
   let candidatesTouched = 0;
 
   for (const ev of events) {
-    dal.appendEvent({
+    const append = dal.appendEventWithResult({
       experiment_id: run.experiment_id,
       run_id: run.id,
       autonomation_run_id: run.autonomation_run_id,
@@ -59,6 +60,7 @@ export function ingestEvents(run: dal.ExperimentRun, events: IngestEvent[]): Ing
       payload: ev,
       created_at: ev.timestamp,
     });
+    if (!append.inserted) continue;
     applied++;
 
     const status = EVENT_STATUS[ev.type];
@@ -146,13 +148,8 @@ export function finalizeRun(
   }
 
   let promotedHubId: string | undefined;
+  const finalizedByRef = new Map<string, dal.ExperimentCandidate>();
   for (const c of payload.candidates ?? []) {
-    let parentHubId: string | null | undefined;
-    if (c.parent_candidate_ref) {
-      const parent = dal.findCandidate(run.id, c.parent_candidate_ref);
-      parentHubId = parent ? parent.id : null;
-    }
-
     // Derive a status only when inserting a never-before-seen candidate; on an
     // existing (event-projected) row, omit status to preserve its terminal state.
     const exists = dal.findCandidate(run.id, c.candidate_ref) !== null;
@@ -163,7 +160,6 @@ export function finalizeRun(
       run_id: run.id,
       candidate_ref: c.candidate_ref,
       status,
-      parent_candidate_id: parentHubId,
       cycle_index: c.cycle_index,
       proposer: c.proposer,
       base_commit: c.base_commit,
@@ -178,7 +174,24 @@ export function finalizeRun(
       rationale: c.rationale,
       failure_reason: c.failure_reason,
     });
+    finalizedByRef.set(c.candidate_ref, cand);
     if (c.promoted) promotedHubId = cand.id;
+  }
+
+  for (const c of payload.candidates ?? []) {
+    if (!c.parent_candidate_ref) continue;
+    const child = finalizedByRef.get(c.candidate_ref) ?? dal.findCandidate(run.id, c.candidate_ref);
+    if (!child) continue;
+    const parent =
+      finalizedByRef.get(c.parent_candidate_ref) ??
+      dal.findCandidate(run.id, c.parent_candidate_ref);
+    const updated = dal.upsertCandidate({
+      experiment_id: run.experiment_id,
+      run_id: run.id,
+      candidate_ref: c.candidate_ref,
+      parent_candidate_id: parent ? parent.id : null,
+    });
+    finalizedByRef.set(c.candidate_ref, updated);
   }
 
   if (promotedHubId) {

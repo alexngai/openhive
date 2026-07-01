@@ -149,6 +149,7 @@ export function launchRun(
     if (runProcesses.get(run.id) === child) runProcesses.delete(run.id);
     dal.updateRun(run.id, {
       status: 'failed',
+      worker_token_hash: null,
       stop_reason: 'spawn-error',
       stop_message: (err as Error).message,
       finished_at: new Date().toISOString(),
@@ -229,6 +230,7 @@ export function runScheduledExperiment(
   } catch (err) {
     dal.updateRun(run.id, {
       status: 'failed',
+      worker_token_hash: null,
       stop_reason: 'launch-error',
       stop_message: (err as Error).message,
       finished_at: new Date().toISOString(),

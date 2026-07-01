@@ -95,6 +95,9 @@ the type-only imports.
 - The hub never writes a keep/discard decision; candidate rows are a projection of
   the runner's reported `promotion_keep`/`promotion_discard` events.
 - `experiment_events` is append-only; `appendEvent` is idempotent on `(run_id, seq)`.
+- Event idempotency protects the projection too: duplicate `(run_id, seq)` retries
+  return the existing event with `inserted=false` and **must not** mutate
+  candidates/incumbents from the retry body.
 - `content_hash` uniqueness is partial (`WHERE content_hash IS NOT NULL`), so any
   number of exploratory (null-hash) experiments coexist while a locked config maps
   to exactly one experiment (`upsertExperimentByContentHash`).
@@ -104,11 +107,18 @@ the type-only imports.
 - No SQL foreign keys (house convention — matches `dispatches`/`schedules`), hence
   no `ON DELETE` cascade: a future delete/lifecycle route must cascade
   runs/candidates/events in app code.
-- The worker PATCH route is non-terminal only; terminal transitions go through
-  `finalize`/`cancel` (which set the terminal state **and** clear the per-run
-  token). A setup failure in the worker still finalizes the run as `failed` so it
-  is never left stuck `running`. The tracker flush is serialized and restores the
-  un-sent batch on failure (no lost events / seq gaps).
+- Manual run creation/launch and scheduled launches treat `paused`/`archived`
+  experiments as stopped. Resume before creating or launching new runs.
+- The worker PATCH route is non-terminal only and also refuses writes to runs
+  that are already terminal; terminal transitions go through `finalize`/`cancel`
+  (which set the terminal state **and** clear the per-run token). Launcher
+  failures clear the per-run token when marking a run `failed`. A setup failure
+  in the worker still finalizes the run as `failed` so it is never left stuck
+  `running`. The tracker flush is serialized and restores the un-sent batch on
+  failure (no lost events / seq gaps).
+- Finalization resolves candidate parent links after all payload candidates are
+  upserted, so a child can safely appear before its parent in the worker's
+  lineage snapshot.
 
 ## Known limitations (Stage A)
 

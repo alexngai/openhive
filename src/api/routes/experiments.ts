@@ -108,6 +108,19 @@ export async function experimentsRoutes(
   const publicRuns = (runs: dal.ExperimentRun[]) => runs.map(publicRun);
 
   const TERMINAL: ReadonlySet<dal.RunStatus> = new Set(['complete', 'failed', 'cancelled']);
+  const NON_RUNNABLE_EXPERIMENTS: ReadonlySet<dal.ExperimentStatus> = new Set([
+    'paused',
+    'archived',
+  ]);
+
+  function rejectIfExperimentStopped(experiment: dal.Experiment, reply: FastifyReply) {
+    if (!NON_RUNNABLE_EXPERIMENTS.has(experiment.status)) return false;
+    reply.status(409).send({
+      error: 'Conflict',
+      message: `experiment is ${experiment.status}; resume it before creating or launching runs`,
+    });
+    return true;
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Experiments (operator)
@@ -215,6 +228,7 @@ export async function experimentsRoutes(
       if (!experiment) {
         return reply.status(404).send({ error: 'Not Found', message: 'experiment not found' });
       }
+      if (rejectIfExperimentStopped(experiment, reply)) return;
       const parsed = CreateRunBodySchema.safeParse(request.body ?? {});
       if (!parsed.success) return badRequest(reply, parsed.error.issues);
       const body = parsed.data;
@@ -336,6 +350,7 @@ export async function experimentsRoutes(
       if (!experiment) {
         return reply.status(404).send({ error: 'Not Found', message: 'experiment not found' });
       }
+      if (rejectIfExperimentStopped(experiment, reply)) return;
       const run = resolveRun(request.params.id, request.params.runId);
       if (!run) {
         return reply.status(404).send({ error: 'Not Found', message: 'run not found' });
@@ -357,6 +372,7 @@ export async function experimentsRoutes(
         return reply.send({ run: publicRun(updated), pid: result.pid });
       } catch (err) {
         dal.releaseRunLaunchClaim(request.params.runId); // spawn refused — release the claim
+        dal.updateRun(request.params.runId, { worker_token_hash: null });
         return reply.status(400).send({ error: 'Bad Request', message: (err as Error).message });
       }
     },
@@ -376,6 +392,11 @@ export async function experimentsRoutes(
       }
       const parsed = UpdateRunBodySchema.safeParse(request.body);
       if (!parsed.success) return badRequest(reply, parsed.error.issues);
+      if (TERMINAL.has(run.status)) {
+        return reply
+          .status(409)
+          .send({ error: 'Conflict', message: 'run is in a terminal state' });
+      }
       // Terminal transitions go through finalize/cancel (which clear the token);
       // a worker PATCH may only set non-terminal status.
       if (parsed.data.status && TERMINAL.has(parsed.data.status)) {

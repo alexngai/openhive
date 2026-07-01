@@ -785,17 +785,22 @@ export interface AppendEventInput {
   created_at?: string;
 }
 
+export interface AppendEventResult {
+  event: ExperimentEvent;
+  inserted: boolean;
+}
+
 /**
  * Append a live event. (run_id, seq) is unique; a duplicate seq (at-least-once
  * delivery from the worker) is ignored idempotently and the existing row
  * returned, so a retried POST never double-writes the firehose.
  */
-export function appendEvent(input: AppendEventInput): ExperimentEvent {
+export function appendEventWithResult(input: AppendEventInput): AppendEventResult {
   const db = getDatabase();
   const existing = db
     .prepare('SELECT * FROM experiment_events WHERE run_id = ? AND seq = ?')
     .get(input.run_id, input.seq) as Record<string, unknown> | undefined;
-  if (existing) return rowToEvent(existing);
+  if (existing) return { event: rowToEvent(existing), inserted: false };
 
   const id = `exev_${nanoid()}`;
   db.prepare(
@@ -819,12 +824,19 @@ export function appendEvent(input: AppendEventInput): ExperimentEvent {
     input.created_at ?? nowIso(),
     nowIso(),
   );
-  return rowToEvent(
-    db.prepare('SELECT * FROM experiment_events WHERE id = ?').get(id) as Record<
-      string,
-      unknown
-    >,
-  );
+  return {
+    event: rowToEvent(
+      db.prepare('SELECT * FROM experiment_events WHERE id = ?').get(id) as Record<
+        string,
+        unknown
+      >,
+    ),
+    inserted: true,
+  };
+}
+
+export function appendEvent(input: AppendEventInput): ExperimentEvent {
+  return appendEventWithResult(input).event;
 }
 
 export function listEventsForRun(
@@ -842,11 +854,11 @@ export function listEventsForRun(
   return rows.map(rowToEvent);
 }
 
-/** Highest `seq` recorded for a run, or 0 if none. */
+/** Highest `seq` recorded for a run, or -1 if none (worker seq starts at 0). */
 export function maxSeqForRun(runId: string): number {
   const db = getDatabase();
   const row = db
     .prepare('SELECT MAX(seq) as m FROM experiment_events WHERE run_id = ?')
     .get(runId) as { m: number | null };
-  return row.m ?? 0;
+  return row.m ?? -1;
 }
