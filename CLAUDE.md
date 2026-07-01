@@ -11,7 +11,7 @@ Single Fastify server (TypeScript) with several functional layers:
 - **Work pipeline**: specs → dispatches → tasks. An orchestrator polls `dispatches` and routes to agents via ACP or mail.
 - **Cross-instance sync**: pull-based mesh protocol (JSON-RPC 2.0) for federating **resources** (memory banks, skills, sessions, repos) and **coordination messages** across instances.
 
-Additional systems: swarm hosting (spawn/manage OpenSwarm processes), session trajectories (on-demand transcript serving from connected agents), platform bridges (Slack, Discord — inbound path currently no-op after social layer removal; outbound infra retained), mesh networking (Tailscale/Headscale).
+Additional systems: swarm hosting (spawn/manage SwarmRunner processes), session trajectories (on-demand transcript serving from connected agents), platform bridges (Slack, Discord — inbound path currently no-op after social layer removal; outbound infra retained), mesh networking (Tailscale/Headscale).
 
 ## Tech Stack
 

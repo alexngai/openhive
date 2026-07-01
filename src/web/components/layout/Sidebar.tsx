@@ -2,12 +2,11 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Menu, X, CirclePile,
   User, MessageSquare, ChevronLeft, ChevronDown,
-  ChevronRight, ListTodo, Brain, Wrench, GraduationCap, Settings, FileText, Send, Clock,
-  GitBranch, Users,
+  ChevronRight, ListTodo, Brain, Wrench, GraduationCap, FileText, Send, Clock,
+  GitBranch, Users, Activity, FlaskConical,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useMapSwarms } from '../../hooks/useApi';
-import { useInstanceFeatures } from '../../hooks/useInstanceFeatures';
 import { useAuthStore } from '../../stores/auth';
 import { useState, useCallback } from 'react';
 import clsx from 'clsx';
@@ -62,7 +61,6 @@ export function Sidebar() {
     });
   }, []);
 
-  const { features } = useInstanceFeatures();
   const { data: mapSwarms } = useMapSwarms();
   const onlineSwarmCount = mapSwarms?.filter((s) => s.status === 'online').length ?? 0;
 
@@ -75,11 +73,11 @@ export function Sidebar() {
       ],
     },
     {
-      id: 'agents',
-      label: 'Agents',
+      id: 'fleet',
+      label: 'Fleet',
       items: [
-        { to: '/threads', icon: MessageSquare, label: 'Threads' },
         { to: '/swarms', icon: CirclePile, label: 'Swarms', badge: onlineSwarmCount || undefined },
+        { to: '/threads', icon: MessageSquare, label: 'Threads' },
       ],
     },
     {
@@ -90,17 +88,26 @@ export function Sidebar() {
         { to: '/dispatch', icon: Send, label: 'Jobs' },
         { to: '/tasks', icon: ListTodo, label: 'Tasks' },
         { to: '/changes', icon: GitBranch, label: 'Changes' },
+        { to: '/experiments', icon: FlaskConical, label: 'Experiments' },
+        { to: '/schedules', icon: Clock, label: 'Schedules' },
       ],
     },
     {
-      id: 'context',
-      label: 'Context',
+      id: 'library',
+      label: 'Library',
       items: [
         { to: '/memory', icon: Brain, label: 'Memory' },
         { to: '/skills', icon: Wrench, label: 'Skills' },
         { to: '/teams', icon: Users, label: 'Teams' },
         { to: '/repos', icon: GitBranch, label: 'Repos' },
         { to: '/learning', icon: GraduationCap, label: 'Learning' },
+      ],
+    },
+    {
+      id: 'utility',
+      label: '',
+      items: [
+        { to: '/events', icon: Activity, label: 'Events' },
       ],
     },
   ];

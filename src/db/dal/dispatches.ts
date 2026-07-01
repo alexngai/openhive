@@ -43,7 +43,7 @@ export interface DispatchAttempt {
    * for ACP, `openhive-mail-port.ts` for mail. Absent on attempts that
    * never reached delivery (claim races, immediate failures).
    */
-  transport?: 'acp' | 'mail';
+  transport?: 'acp' | 'mail' | 'codex';
   /**
    * Resolved target agent id at delivery time. For ACP fresh: the
    * spawned coordinator's id; for ACP reuse: the picked existing agent.
@@ -363,6 +363,8 @@ export interface ListDispatchesOptions {
   target_swarm_id?: string;
   spec_resource_id?: string;
   spec_id?: string;
+  task_resource_id?: string;
+  task_node_id?: string;
   initiator_id?: string;
   initiator_type?: DispatchInitiatorType;
   limit?: number;
@@ -393,6 +395,18 @@ export function listDispatches(
   if (options.spec_id) {
     where.push('spec_id = ?');
     params.push(options.spec_id);
+  }
+  if (options.task_resource_id) {
+    where.push(
+      `EXISTS (
+        SELECT 1 FROM dispatch_linked_tasks dlt
+        WHERE dlt.dispatch_id = dispatches.id
+          AND dlt.resource_id = ?
+          ${options.task_node_id ? 'AND dlt.node_id = ?' : ''}
+      )`,
+    );
+    params.push(options.task_resource_id);
+    if (options.task_node_id) params.push(options.task_node_id);
   }
   if (options.initiator_id) {
     where.push('initiator_id = ?');
@@ -668,7 +682,7 @@ export function recordLoadoutResolution(
 export function recordAttemptDelivery(
   id: string,
   attempt: number,
-  delivery: { transport?: 'acp' | 'mail'; agent_id?: string; via?: 'spawn' | 'route' },
+  delivery: { transport?: 'acp' | 'mail' | 'codex'; agent_id?: string; via?: 'spawn' | 'route' },
 ): void {
   const db = getDatabase();
   const row = db

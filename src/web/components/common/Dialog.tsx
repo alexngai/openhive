@@ -8,9 +8,27 @@ interface DialogProps {
   maxWidth?: string;
   /** aria-labelledby value — pass the id of the heading inside the dialog */
   labelId?: string;
+  /**
+   * When true, the dialog panel becomes a flex column with no panel-level
+   * scroll. The consumer is expected to render header / body / footer
+   * sections and mark the body with `flex-1 min-h-0 overflow-y-auto` so
+   * only the middle scrolls. Used by tall forms (e.g. Spawn Swarm) where
+   * the header + actions row should stay visible while content scrolls.
+   *
+   * Default (false) keeps the legacy behaviour: the entire panel scrolls
+   * as one unit when content exceeds the 80vh cap.
+   */
+  bodyScrollOnly?: boolean;
 }
 
-export function Dialog({ open, onClose, children, maxWidth = 'max-w-lg', labelId }: DialogProps) {
+export function Dialog({
+  open,
+  onClose,
+  children,
+  maxWidth = 'max-w-lg',
+  labelId,
+  bodyScrollOnly = false,
+}: DialogProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -75,8 +93,19 @@ export function Dialog({ open, onClose, children, maxWidth = 'max-w-lg', labelId
         aria-modal="true"
         aria-labelledby={labelId}
         tabIndex={-1}
-        className={`card p-0 w-full ${maxWidth} shadow-xl animate-slide-in outline-none`}
-        style={{ maxHeight: '80vh', overflowY: 'auto' }}
+        className={`card p-0 w-full ${maxWidth} shadow-xl animate-slide-in outline-none ${
+          bodyScrollOnly ? 'flex flex-col' : ''
+        }`}
+        // bodyScrollOnly: panel is a flex column with no panel-level scroll;
+        //   children own which section scrolls. The 80vh cap stays so the
+        //   panel still respects viewport height.
+        // default: legacy — entire panel scrolls as one unit when content
+        //   exceeds 80vh.
+        style={
+          bodyScrollOnly
+            ? { maxHeight: '80vh' }
+            : { maxHeight: '80vh', overflowY: 'auto' }
+        }
       >
         {children}
       </div>

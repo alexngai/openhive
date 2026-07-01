@@ -117,7 +117,7 @@ describe('LocalProvider', () => {
       ).rejects.toThrow(/exited immediately/);
     });
 
-    it('honors spawn_command_override + spawn_args_override (replaces openswarm command)', async () => {
+    it('honors spawn_command_override + spawn_args_override (replaces swarm-runner command)', async () => {
       // Constructor default points at sleep-server; the override should
       // instead spawn env-dump.js. env-dump only writes env.json when it
       // actually runs, so file existence proves the override path took.
@@ -156,9 +156,9 @@ describe('LocalProvider', () => {
       }
     }, 10000);
 
-    it('falls back to openswarm command when override is unset', async () => {
+    it('falls back to swarm-runner command when override is unset', async () => {
       // Pure regression guard: omitting the override fields keeps the
-      // existing behavior. We use env-dump as the openswarm command (so
+      // existing behavior. We use env-dump as the swarm-runner command (so
       // env.json appears unconditionally) and verify the provision call
       // succeeds + env was captured.
       provider = new LocalProvider(`node ${ENV_DUMP_SCRIPT}`);
@@ -184,7 +184,7 @@ describe('LocalProvider', () => {
         }
 
         expect(fs.existsSync(dumpPath)).toBe(true);
-        // Endpoint reflects the openswarm-shaped --port arg the provider
+        // Endpoint reflects the swarm-runner-shaped --port arg the provider
         // appended when no override was set.
         expect(result.endpoint).toBe('ws://127.0.0.1:19005');
         await provider.deprovision(result.instance_id);
@@ -476,6 +476,10 @@ describe('LocalProvider', () => {
       );
       expect(env.MACRO_BOOTSTRAP_COORDINATOR).toBeNull();
       expect(env.MACRO_BOOTSTRAP_CWD).toBeNull();
+      expect(env.SWARM_RUNNER_BOOTSTRAP_TOKEN).toBe('set');
+      expect(env.SWARM_RUNNER_DATA_DIR).toBe(path.join(TEST_DATA_DIR, 'no-bootstrap'));
+      expect(env.OPENSWARM_BOOTSTRAP_TOKEN).toBe('set');
+      expect(env.OPENSWARM_DATA_DIR).toBe(path.join(TEST_DATA_DIR, 'no-bootstrap'));
     }, 10000);
 
     it('sets MACRO_BOOTSTRAP_COORDINATOR=true when bootstrap.coordinator is true', async () => {

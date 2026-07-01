@@ -234,14 +234,14 @@ Goal: "Open PR stack" on a root stream → openhive walks descendants, opens one
 
 **Status: ✅ Complete (2026-05-11).** Chunked-rpc factoring deferred — see note below.
 
-- [x] Removed `_macro/diffStacks/{list,get,create,createPR}` stubs from `references/openswarm/src/worker/streams.ts`. The methods were never implemented in macro-agent (no `_macro/diffStacks/*` handlers anywhere), so the openswarm caller path was dead from day one.
-- [x] Removed downstream openswarm dead code that depended on the stubs:
+- [x] Removed `_macro/diffStacks/{list,get,create,createPR}` stubs from `references/swarm-runner/src/worker/streams.ts`. The methods were never implemented in macro-agent (no `_macro/diffStacks/*` handlers anywhere), so the swarm-runner caller path was dead from day one.
+- [x] Removed downstream swarm-runner dead code that depended on the stubs:
   - `fetchDiffStacks` poller + caller in `context/stream-sync.tsx`
   - `refreshDiffStacks` action + `useGitDiffStacks` accessor in `context/sync.tsx`
   - `diffStacks` store field + initial value in `types/store.ts`
   - `useGitDiffStacks` import + `diffStacks().length` render + `p` keybinding + `p PR` help text in `routes/session/streams.tsx`
   - `TUIDiffStack` import lines in three files (interface itself retained — type-level dead code, harmless, future re-implementations can use it as a contract)
-- [x] Deleted `references/openswarm/src/component/create-pr-dialog.tsx`. It called the never-implemented `map.diffStacks.createPR`; repointing at the hub `POST /cascade/streams/:id/pr` would have been a redesign (the dialog's diff-stack concept doesn't map to openhive streams). The new PR flow lives in the openhive web UI ("Open PR stack" button from Stream 3).
+- [x] Deleted `references/swarm-runner/src/component/create-pr-dialog.tsx`. It called the never-implemented `map.diffStacks.createPR`; repointing at the hub `POST /cascade/streams/:id/pr` would have been a redesign (the dialog's diff-stack concept doesn't map to openhive streams). The new PR flow lives in the openhive web UI ("Open PR stack" button from Stream 3).
 - [x] Confirmed `references/macro-agent/src/map/server.ts` has no handler reference for the deleted `_macro/diffStacks/*` methods (verified via grep — no matches anywhere in macro-agent).
 - [⏸️] **Skipped: factor `src/map/chunked-rpc.ts` from `sync-client.ts` (OD2)**. The cascade-diff protocol uses the same chunking idiom (inline ≤ 512 KB → streamed in 1 MB base64 chunks → sha256 final), but the actual code paths are short and well-tested in their current form. Factoring would touch three modules (`sync-client.ts`, `trajectory-content.ts`, the new `cascade-diff-protocol.ts`) with proven behavior to swap in a shared helper that doesn't yet have a third caller demanding it. Re-evaluate if a fourth caller appears or if the current copies drift.
 - [x] Updated `src/cascade/CLAUDE.md` with the new `diff-types`, `diff-resolver`, `stack-resolver`, `pr-stack-walker` modules + the `cascade_diff_cache` table semantics + the four REST endpoints introduced across Streams 1–3.

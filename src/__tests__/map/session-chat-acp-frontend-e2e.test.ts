@@ -106,7 +106,7 @@ describeIf('Live Agent E2E — ACP via SwarmCraft Frontend Path', () => {
       swarmHosting: {
         enabled: true,
         default_provider: 'local',
-        openswarm_command: 'npx openswarm serve',
+        swarm_runner_command: 'npx @swarmkit-ai/swarm-runner serve',
         data_dir: TEST_DATA_DIR,
         port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
         max_swarms: 2,
@@ -182,8 +182,8 @@ describeIf('Live Agent E2E — ACP via SwarmCraft Frontend Path', () => {
     await app.listen({ port: SERVER_PORT, host: '127.0.0.1' });
     console.log(`[acp-fe] Server listening on port ${SERVER_PORT}`);
 
-    // Spawn real OpenSwarm BEFORE bridge tries auto-connect
-    console.log('[acp-fe] Spawning real OpenSwarm...');
+    // Spawn real SwarmRunner BEFORE bridge tries auto-connect
+    console.log('[acp-fe] Spawning real SwarmRunner...');
     const hosted = await swarmManager.spawn(testAgentId, {
       name: 'acp-fe-swarm',
       adapter: 'macro-agent',

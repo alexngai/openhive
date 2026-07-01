@@ -3,7 +3,7 @@
  * Drag-and-drop cards between columns to change task status.
  */
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   Circle, PlayCircle, AlertTriangle, CheckCircle2,
 } from 'lucide-react';
@@ -20,6 +20,7 @@ import { TaskGraphSidebar } from './TaskGraphSidebar';
 import { applyTaskFilters } from './TaskFilterBar';
 import { useTasksRealtime } from '../../hooks/useMapTasks';
 import { SwarmChip } from '../swarm/SwarmChip';
+import { PageLoader } from '../common/LoadingSpinner';
 import type { OpenTasksGraphNode } from '../../lib/api';
 
 // ============================================================================
@@ -30,21 +31,22 @@ interface KanbanColumn {
   key: string;
   label: string;
   icon: React.ElementType;
-  color: string;
-  bgAccent: string;
+  /** Hex accent used for the column header dot, empty-state icon tint, and
+   *  any other status-tied chrome. Mirrors `STATUS_COLORS` semantics. */
   borderColor: string;
   statuses: string[];
   /** The status to set when a card is dropped here */
   dropStatus: string;
 }
 
+// Column accent hexes mirror STATUS_COLORS so cross-view status semantics
+// stay aligned. The renderer applies these as inline styles, not raw
+// Tailwind palette classes (which would break light theme).
 const COLUMNS: KanbanColumn[] = [
   {
     key: 'open',
     label: 'Open',
     icon: Circle,
-    color: 'text-gray-400',
-    bgAccent: 'bg-gray-500/10',
     borderColor: '#6b7280',
     statuses: ['open'],
     dropStatus: 'open',
@@ -53,8 +55,6 @@ const COLUMNS: KanbanColumn[] = [
     key: 'in_progress',
     label: 'In Progress',
     icon: PlayCircle,
-    color: 'text-blue-400',
-    bgAccent: 'bg-blue-500/10',
     borderColor: '#3b82f6',
     statuses: ['in_progress'],
     dropStatus: 'in_progress',
@@ -63,8 +63,6 @@ const COLUMNS: KanbanColumn[] = [
     key: 'blocked',
     label: 'Blocked',
     icon: AlertTriangle,
-    color: 'text-red-400',
-    bgAccent: 'bg-red-500/10',
     borderColor: '#ef4444',
     statuses: ['blocked'],
     dropStatus: 'blocked',
@@ -73,8 +71,6 @@ const COLUMNS: KanbanColumn[] = [
     key: 'done',
     label: 'Done',
     icon: CheckCircle2,
-    color: 'text-emerald-400',
-    bgAccent: 'bg-emerald-500/10',
     borderColor: '#22c55e',
     statuses: ['closed', 'completed'],
     dropStatus: 'closed',
@@ -165,18 +161,27 @@ function DraggableTaskCard({
       {/* Priority + meta */}
       <div className="flex items-center gap-2 mt-2">
         {node.priority != null && node.priority > 0 && (
-          <span
-            className={clsx(
-              'text-2xs px-1.5 py-0.5 rounded font-medium',
-              node.priority >= 3
-                ? 'bg-red-500/10 text-red-400'
-                : node.priority >= 2
-                  ? 'bg-amber-500/10 text-amber-400'
-                  : 'bg-gray-500/10 text-gray-400',
-            )}
-          >
-            {PRIORITY_LABELS[node.priority] || `P${node.priority}`}
-          </span>
+          (() => {
+            // Translucent-tint chip — same palette as TaskNodeCard's priority
+            // chip (low→gray, med→blue, high→amber, critical→red) so the
+            // Kanban and Graph/Hierarchy cards stay legible at a glance.
+            const tone =
+              node.priority >= 4
+                ? '#ef4444'
+                : node.priority >= 3
+                  ? '#f59e0b'
+                  : node.priority >= 2
+                    ? '#3b82f6'
+                    : '#6b7280';
+            return (
+              <span
+                className="text-2xs px-1.5 py-0.5 rounded font-medium"
+                style={{ backgroundColor: `${tone}29`, color: tone }}
+              >
+                {PRIORITY_LABELS[node.priority] || `P${node.priority}`}
+              </span>
+            );
+          })()
         )}
         <span className="text-2xs font-mono" style={{ color: 'var(--color-text-muted)' }}>
           {node.id.length > 12 ? node.id.slice(-8) : node.id}
@@ -236,7 +241,7 @@ function DroppableColumn({
         onClick={(e) => { if (e.target === e.currentTarget) onSelectNode(null); }}
         className={clsx(
           'flex-1 space-y-2 p-2 rounded-lg overflow-y-auto transition-colors duration-200',
-          isOver && 'ring-2 ring-honey-500/30',
+          isOver && 'ring-2 ring-accent/30',
         )}
         style={{
           backgroundColor: isOver ? 'var(--color-surface)' : 'var(--color-elevated)',
@@ -245,9 +250,12 @@ function DroppableColumn({
         {nodes.length === 0 ? (
           <div className={clsx(
             'flex items-center justify-center py-8 rounded-lg transition-colors',
-            isOver && 'bg-honey-500/5',
+            isOver && 'bg-accent/5',
           )}>
-            <Icon className={clsx('w-5 h-5 opacity-20', column.color)} />
+            <Icon
+              className="w-5 h-5 opacity-30"
+              style={{ color: column.borderColor }}
+            />
           </div>
         ) : (
           nodes.map((node) => (
@@ -274,12 +282,21 @@ interface TaskKanbanProps {
   filters?: import('./TaskFilterBar').TaskFilters;
   /** Pre-merged nodes from multiple graphs (when multi-graph mode is active) */
   mergedNodes?: OpenTasksGraphNode[];
+  /** Lifted selection — owned by TaskGraph.tsx so view-switch keeps target. */
+  selectedTaskId?: string | null;
+  onSelectTask?: (node: OpenTasksGraphNode | null) => void;
 }
 
-export function TaskKanban({ resourceId, filters, mergedNodes }: TaskKanbanProps) {
+export function TaskKanban({
+  resourceId,
+  filters,
+  mergedNodes,
+  selectedTaskId,
+  onSelectTask,
+}: TaskKanbanProps) {
   const { data: graphData, isLoading } = useOpenTasksGraph(resourceId);
   const updateStatus = useUpdateOpenTaskStatus(resourceId);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const selectedNodeId = selectedTaskId ?? null;
   const [activeNode, setActiveNode] = useState<OpenTasksGraphNode | null>(null);
   const [overColumnKey, setOverColumnKey] = useState<string | null>(null);
   useTasksRealtime();
@@ -315,15 +332,18 @@ export function TaskKanban({ resourceId, filters, mergedNodes }: TaskKanbanProps
 
   const graphEdges = graphData?.edges || [];
 
-  const handleSelectNode = (node: OpenTasksGraphNode | null) => {
-    setSelectedNodeId(node?.id ?? null);
-  };
+  const handleSelectNode = useCallback(
+    (node: OpenTasksGraphNode | null) => {
+      onSelectTask?.(node);
+    },
+    [onSelectTask],
+  );
 
   const handleDragStart = (event: DragStartEvent) => {
     const node = event.active.data.current?.node as OpenTasksGraphNode | undefined;
     if (node) {
       setActiveNode(node);
-      setSelectedNodeId(null); // deselect on drag
+      onSelectTask?.(null); // deselect on drag
     }
   };
 
@@ -383,16 +403,7 @@ export function TaskKanban({ resourceId, filters, mergedNodes }: TaskKanbanProps
     setOverColumnKey(null);
   };
 
-  if (isLoading) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full bg-gray-500/30 animate-pulse" />
-          <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>Loading tasks...</span>
-        </div>
-      </div>
-    );
-  }
+  if (isLoading) return <PageLoader />;
 
   if (nodes.length === 0) {
     return (
@@ -420,8 +431,8 @@ export function TaskKanban({ resourceId, filters, mergedNodes }: TaskKanbanProps
           onDragCancel={handleDragCancel}
         >
           <div
-            className="flex-1 flex gap-3 p-4 overflow-x-auto [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-white/20"
-            onClick={(e) => { if (e.target === e.currentTarget) setSelectedNodeId(null); }}
+            className="flex-1 flex gap-3 p-4 overflow-x-auto [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-border-subtle"
+            onClick={(e) => { if (e.target === e.currentTarget) onSelectTask?.(null); }}
           >
         {columnData.map(({ column, nodes: colNodes }) => (
           <DroppableColumn
@@ -459,7 +470,7 @@ export function TaskKanban({ resourceId, filters, mergedNodes }: TaskKanbanProps
         <TaskGraphSidebar
           node={selectedNode}
           resourceId={resourceId}
-          onClose={() => setSelectedNodeId(null)}
+          onClose={() => onSelectTask?.(null)}
           edges={graphEdges}
           allNodes={sourceNodes}
         />

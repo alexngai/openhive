@@ -1,13 +1,13 @@
 /**
  * Live Agent E2E Tests for Swarm-Delegated Skill Classification
  *
- * Spawns a REAL OpenSwarm with macro-agent adapter, which spawns real
+ * Spawns a REAL SwarmRunner with macro-agent adapter, which spawns real
  * Claude Code agents to classify skills. This tests the full production
  * flow end-to-end with actual AI inference.
  *
  * Requirements:
- *   - openswarm installed with cognitive workspace handler
- *     (the base openswarm does NOT handle x-openhive/learning.workspace.execute —
+ *   - swarm-runner installed with cognitive workspace handler
+ *     (the base swarm-runner does NOT handle x-openhive/learning.workspace.execute —
  *      it needs the macro-agent cognitive integration from references/macro-agent)
  *   - LIVE_AGENT_E2E=true to enable
  *   - Claude Max plan or ANTHROPIC_API_KEY set (macro-agent inherits Claude Code auth)
@@ -18,7 +18,7 @@
  * Note: Each classification takes 5-15 seconds (real Claude API calls).
  * The full suite may take 1-2 minutes.
  *
- * If the swarm connects but classification times out, the openswarm instance
+ * If the swarm connects but classification times out, the swarm-runner instance
  * likely doesn't have the workspace.execute handler installed.
  */
 
@@ -66,8 +66,8 @@ function createTestConfig(): Config {
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
-      // Use the real openswarm command — SwarmManager resolves it
-      openswarm_command: 'npx openswarm serve',
+      // Use the real swarm-runner command — SwarmManager resolves it
+      swarm_runner_command: 'npx @swarmkit-ai/swarm-runner serve',
       data_dir: TEST_DATA_DIR,
       port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
       max_swarms: 3,
@@ -203,8 +203,8 @@ describeIf('Live Agent E2E — Real Swarm Classification', () => {
     await app.listen({ port: SERVER_PORT, host: '127.0.0.1' });
     console.log(`[live-agent] Server listening on port ${SERVER_PORT}`);
 
-    // Spawn a REAL OpenSwarm with macro-agent
-    console.log('[live-agent] Spawning real OpenSwarm...');
+    // Spawn a REAL SwarmRunner with macro-agent
+    console.log('[live-agent] Spawning real SwarmRunner...');
     const hosted = await swarmManager.spawn(testAgent.id, {
       name: 'live-classifier',
       adapter: 'macro-agent',

@@ -14,9 +14,15 @@
 import { describe, it, expect } from 'vitest';
 import { SpawnSwarmSchema } from '../../api/routes/swarm-hosting.js';
 
-const baseInput = { kind: 'openswarm' as const, name: 'schema-test' };
+const baseInput = { kind: 'swarm-runner' as const, name: 'schema-test' };
 
 describe('SpawnSwarmSchema — workspace_policy validation', () => {
+  it('normalizes legacy kind=openswarm to kind=swarm-runner', () => {
+    const r = SpawnSwarmSchema.safeParse({ kind: 'openswarm', name: 'legacy-kind' });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.kind).toBe('swarm-runner');
+  });
+
   // ── Acceptance: well-formed policies ──────────────────────────────────────
 
   it("accepts mode='open' with no other fields", () => {
@@ -113,6 +119,102 @@ describe('SpawnSwarmSchema — workspace_policy validation', () => {
     const r = SpawnSwarmSchema.safeParse({
       ...baseInput,
       workspace_policy: { mode: 'pinned', pinned_repo: longUrl },
+    });
+    expect(r.success).toBe(false);
+  });
+});
+
+describe('SpawnSwarmSchema — cwd validation', () => {
+  // The cwd field is the free-form working directory for TUI / codex
+  // spawns. The schema enforces shape + exclusivity; filesystem checks
+  // (absolute / exists / is dir) live in the manager so the schema stays
+  // pure. These tests pin the schema-layer rules.
+
+  it("accepts cwd for kind='claude-code'", () => {
+    const r = SpawnSwarmSchema.safeParse({
+      kind: 'claude-code',
+      name: 'cwd-test',
+      cwd: '/Users/alex/projects/myrepo',
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("accepts cwd for kind='codex' (any mode)", () => {
+    const rRpc = SpawnSwarmSchema.safeParse({
+      kind: 'codex',
+      name: 'cwd-test',
+      cwd: '/Users/alex/projects/myrepo',
+    });
+    expect(rRpc.success).toBe(true);
+
+    const rTui = SpawnSwarmSchema.safeParse({
+      kind: 'codex',
+      name: 'cwd-test',
+      mode: 'tui',
+      cwd: '/Users/alex/projects/myrepo',
+    });
+    expect(rTui.success).toBe(true);
+  });
+
+  it("rejects cwd for kind='swarm-runner' (use bootstrap.cwd instead)", () => {
+    const r = SpawnSwarmSchema.safeParse({
+      kind: 'swarm-runner',
+      name: 'cwd-test',
+      cwd: '/Users/alex/projects/myrepo',
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const issue = r.error.issues.find((i) => i.path.includes('cwd'));
+      expect(issue?.message).toContain('bootstrap.cwd');
+    }
+  });
+
+  it("rejects cwd + repo_id combination (mutually exclusive)", () => {
+    const r = SpawnSwarmSchema.safeParse({
+      kind: 'claude-code',
+      name: 'cwd-test',
+      cwd: '/Users/alex/projects/myrepo',
+      repo_id: 'repo_abc123',
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const issue = r.error.issues.find(
+        (i) => i.path.includes('cwd') && i.message.includes('mutually exclusive'),
+      );
+      expect(issue?.message).toContain('repo_id');
+    }
+  });
+
+  it("rejects cwd + workspace combination (mutually exclusive)", () => {
+    const r = SpawnSwarmSchema.safeParse({
+      kind: 'claude-code',
+      name: 'cwd-test',
+      cwd: '/Users/alex/projects/myrepo',
+      workspace: { repos: [{ url: 'https://github.com/foo/bar' }] },
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const issue = r.error.issues.find(
+        (i) => i.path.includes('cwd') && i.message.includes('mutually exclusive'),
+      );
+      expect(issue?.message).toContain('workspace');
+    }
+  });
+
+  it("accepts an omitted cwd (default behaviour: data_dir or repo path)", () => {
+    const r = SpawnSwarmSchema.safeParse({
+      kind: 'claude-code',
+      name: 'cwd-test',
+    });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.cwd).toBeUndefined();
+  });
+
+  it("rejects an empty-string cwd (schema enforces min(1))", () => {
+    const r = SpawnSwarmSchema.safeParse({
+      kind: 'claude-code',
+      name: 'cwd-test',
+      cwd: '',
     });
     expect(r.success).toBe(false);
   });

@@ -2,7 +2,7 @@
  * Swarm Manager
  *
  * Orchestrates the spawning, lifecycle management, and health monitoring
- * of hosted OpenSwarm instances. Bridges hosting providers with the MAP hub.
+ * of hosted SwarmRunner instances. Bridges hosting providers with the MAP hub.
  */
 
 import { createHash } from 'crypto';
@@ -92,7 +92,7 @@ export class SwarmManager {
     this.instanceUrl = instanceUrl;
 
     // Initialize local provider with exit handler
-    const command = this.resolveOpenswarmCommand(config.openswarm_command);
+    const command = this.resolveSwarmRunnerCommand(config.swarm_runner_command);
     const localProvider = new LocalProvider(command, config.logs);
     localProvider.onProcessExit = (instanceId, code, signal) => {
       this.handleProcessExit(instanceId, code, signal);
@@ -660,8 +660,11 @@ export class SwarmManager {
     }
 
     // 3. Re-write per-kind prelaunch files with the rotated token, then
-    //    re-trust the workdir.
+    //    re-trust the workdir(s). When the original spawn was pointed at
+    //    a free-form cwd (operator typed a path), preserve that across
+    //    restart so the TUI lands in the same project directory.
     const dataDir = path.resolve(hosted.config.data_dir);
+    const persistedCwd = hosted.config.cwd ? path.resolve(hosted.config.cwd) : undefined;
     const mapServer = this.instanceUrl.replace(/^http/, 'ws').replace(/\/?$/, '/ws/map');
     fs.mkdirSync(dataDir, { recursive: true });
     strategy.writePrelaunchFiles?.({
@@ -672,6 +675,16 @@ export class SwarmManager {
       dataDir,
     });
     strategy.preTrustWorkdir(dataDir, os.homedir());
+    if (persistedCwd && persistedCwd !== dataDir) {
+      strategy.writePrelaunchFiles?.({
+        swarmId: hosted.swarm_id,
+        hostedSwarmId: hosted.id,
+        onboardToken,
+        mapServer,
+        dataDir: persistedCwd,
+      });
+      strategy.preTrustWorkdir(persistedCwd, os.homedir());
+    }
 
     // 4. Build env (kind-specific extras + strip).
     const inheritEnv = this.config.credentials?.inherit_env !== false;
@@ -680,13 +693,15 @@ export class SwarmManager {
     Object.assign(env, strategy.extraEnv());
     for (const key of strategy.envVarsToStrip()) delete env[key];
 
-    // 5. Spawn the new PTY.
+    // 5. Spawn the new PTY. Use the persisted cwd when present so a row
+    //    spawned with an explicit working directory restarts in the same
+    //    place; otherwise fall back to dataDir (legacy behaviour).
     let ptyInfo;
     try {
       ptyInfo = this.ptyManager.create({
         command: tuiBinary,
         args: [],
-        cwd: dataDir,
+        cwd: persistedCwd ?? dataDir,
         env,
         cols: 120,
         rows: 40,
@@ -851,6 +866,12 @@ export class SwarmManager {
       input.credential_overrides,
     );
 
+    // Validate the free-form cwd up front so we fail loud before any row
+    // is persisted. Schema already enforced exclusivity with repo_id /
+    // workspace (codex-rpc accepts both today, but `cwd` is the newer
+    // override and wins per the conflict gates in the schema layer).
+    const resolvedCwd = input.cwd !== undefined ? validateSpawnCwd(input.cwd) : undefined;
+
     const provisionConfig: SwarmProvisionConfig = {
       name,
       adapter: 'codex',
@@ -865,6 +886,7 @@ export class SwarmManager {
       spawn_command_override: codexBinary,
       spawn_args_override: ['app-server', '--listen', 'ws://127.0.0.1:0'],
       mode: 'rpc',
+      ...(resolvedCwd !== undefined && { cwd: resolvedCwd }),
     };
 
     // Phase 7: persist the row.
@@ -894,12 +916,17 @@ export class SwarmManager {
         }
       }
 
-      // Phase 9: pre-trust the data_dir so codex doesn't gate on the
-      // "Trust this folder?" prompt the first time it loads. (Even though
-      // the app-server doesn't render that prompt, codex shares the trust
-      // check with its TUI; keeping this consistent prevents surprises if
-      // we ever spawn `codex resume` for the same data_dir.)
+      // Phase 9: pre-trust the working directory so codex doesn't gate on
+      // the "Trust this folder?" prompt the first time it loads. (Even
+      // though the app-server doesn't render that prompt, codex shares
+      // the trust check with its TUI; keeping this consistent prevents
+      // surprises if we ever spawn `codex resume` for the same dir.)
+      // We always trust dataDir (logs, future resume metadata land there)
+      // plus the operator-chosen cwd if set.
       preTrustCodexWorkdir(dataDir, os.homedir());
+      if (resolvedCwd && resolvedCwd !== dataDir) {
+        preTrustCodexWorkdir(resolvedCwd, os.homedir());
+      }
 
       // Phase 10: build env (mirror TUI hygiene minus the CLAUDE markers).
       const env: Record<string, string> = {};
@@ -910,12 +937,13 @@ export class SwarmManager {
       delete env.CODEX_ENTRYPOINT;
 
       // Phase 11: spawn the app-server, drive initialize → thread/start,
-      // optionally fire the initial prompt as the first turn.
+      // optionally fire the initial prompt as the first turn. cwd falls
+      // back to dataDir when no free-form cwd was supplied.
       let session;
       try {
         session = await this.codexAppServerManager.create({
           command: codexBinary,
-          cwd: dataDir,
+          cwd: resolvedCwd ?? dataDir,
           env,
           initialPrompt: input.initial_prompt,
         });
@@ -1006,8 +1034,12 @@ export class SwarmManager {
     }
 
     const dataDir = path.resolve(hosted.config.data_dir);
+    const persistedCwd = hosted.config.cwd ? path.resolve(hosted.config.cwd) : undefined;
     fs.mkdirSync(dataDir, { recursive: true });
     preTrustCodexWorkdir(dataDir, os.homedir());
+    if (persistedCwd && persistedCwd !== dataDir) {
+      preTrustCodexWorkdir(persistedCwd, os.homedir());
+    }
 
     // 2. Build env (same hygiene as spawn).
     const inheritEnv = this.config.credentials?.inherit_env !== false;
@@ -1020,11 +1052,13 @@ export class SwarmManager {
     // 3. Spawn a fresh session. Restart starts a NEW thread — codex
     // app-server doesn't expose live-thread takeover across processes
     // (proven by the resume probe), so each restart is a clean start.
+    // Re-use the persisted cwd so a row spawned with an explicit working
+    // directory restarts in the same place.
     let session;
     try {
       session = await this.codexAppServerManager.create({
         command: codexBinary,
-        cwd: dataDir,
+        cwd: persistedCwd ?? dataDir,
         env,
       });
     } catch (err) {
@@ -1053,9 +1087,9 @@ export class SwarmManager {
   }
 
   /**
-   * Resolve the openswarm command to an executable form.
+   * Resolve the swarm-runner command to an executable form.
    *
-   * We resolve the openswarm bin entry directly to avoid the npx indirection,
+   * We resolve the swarm-runner bin entry directly to avoid the npx indirection,
    * which can cause pid tracking issues (npx spawns a child node process,
    * then exits, making us think the server stopped).
    *
@@ -1064,22 +1098,22 @@ export class SwarmManager {
    * 2. src/hosting/index.ts exists → run with tsx (development)
    * 3. Fall back to configured command as-is
    */
-  private resolveOpenswarmCommand(configured: string): string {
-    if (configured !== 'npx openswarm serve') {
+  private resolveSwarmRunnerCommand(configured: string): string {
+    if (configured !== 'npx @swarmkit-ai/swarm-runner serve') {
       return configured;
     }
 
     try {
       const require_ = createRequire(import.meta.url);
-      const pkgPath = require_.resolve('openswarm/package.json');
+      const pkgPath = require_.resolve('@swarmkit-ai/swarm-runner/package.json');
       const pkgDir = path.dirname(pkgPath);
-      const binEntry = path.join(pkgDir, 'bin', 'openswarm.mjs');
+      const binEntry = path.join(pkgDir, 'bin', 'swarm-runner.mjs');
 
       // Production: dist/server.mjs exists, run the bin entry directly with node
       const serverBundle = path.join(pkgDir, 'dist', 'server.mjs');
       if (fs.existsSync(serverBundle) && fs.existsSync(binEntry)) {
         const resolved = `node ${binEntry} serve`;
-        console.log(`[swarm-manager] Resolved openswarm command: ${resolved}`);
+        console.log(`[swarm-manager] Resolved swarm-runner command: ${resolved}`);
         return resolved;
       }
 
@@ -1092,10 +1126,10 @@ export class SwarmManager {
         return resolved;
       }
 
-      console.warn('[swarm-manager] Could not resolve openswarm package');
+      console.warn('[swarm-manager] Could not resolve @swarmkit-ai/swarm-runner package');
       return configured;
     } catch {
-      console.warn('[swarm-manager] Could not resolve openswarm package, using: ' + configured);
+      console.warn('[swarm-manager] Could not resolve @swarmkit-ai/swarm-runner package, using: ' + configured);
       return configured;
     }
   }
@@ -1105,7 +1139,7 @@ export class SwarmManager {
   // ==========================================================================
 
   /**
-   * Spawn a new OpenSwarm instance.
+   * Spawn a new SwarmRunner instance.
    *
    * Flow:
    * 1. Validate limits (max swarms, port availability)
@@ -1118,11 +1152,11 @@ export class SwarmManager {
    */
   /**
    * Public entry point. Dispatches to the per-kind spawn pipeline. Existing
-   * callers that don't pass kind get the openswarm pipeline (preserves the
+   * callers that don't pass kind get the swarm-runner pipeline (preserves the
    * pre-V50 contract). See docs/HOSTED_SWARM_KINDS_DESIGN.md.
    */
   async spawn(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
-    const kind = input.kind ?? 'openswarm';
+    const kind = input.kind ?? 'swarm-runner';
 
     // codex has two modes; the dispatcher branches BEFORE the TUI strategy
     // lookup so `mode: 'rpc'` doesn't accidentally fall through to the TUI
@@ -1140,7 +1174,7 @@ export class SwarmManager {
       }
       return this.spawnTuiKind(agentId, input, strategy);
     }
-    return this.spawnOpenswarm(agentId, input);
+    return this.spawnSwarmRunner(agentId, input);
   }
 
   /**
@@ -1162,7 +1196,7 @@ export class SwarmManager {
    * registers with the openhive hub. We wait for that registration to
    * flip the row to `running`.
    *
-   * Differences from spawnOpenswarm:
+   * Differences from spawnSwarmRunner:
    *   - No port allocation (claude binds nothing)
    *   - Slim onboard token (no BootstrapToken envelope; cc-swarm reads
    *     `map.auth.credential` from the prelaunch config directly)
@@ -1184,7 +1218,7 @@ export class SwarmManager {
       length: 3,
     });
 
-    // Phase 1: max-swarms validation (shared semantics with openswarm path).
+    // Phase 1: max-swarms validation (shared semantics with swarm-runner path).
     const activeCount = dal.countActiveHostedSwarms();
     if (activeCount >= this.config.max_swarms) {
       throw new SwarmHostingError(
@@ -1291,7 +1325,7 @@ export class SwarmManager {
 
     const mapServer = this.instanceUrl.replace(/^http/, 'ws').replace(/\/?$/, '/ws/map');
 
-    // Phase 10: build provision config. Most fields are openswarm-meaningful
+    // Phase 10: build provision config. Most fields are swarm-runner-meaningful
     // and have no analog for TUI kinds; we set them to defensible empties.
     const inheritEnv = this.config.credentials?.inherit_env !== false;
     const credentialOverlay = resolveCredentialOverlay(
@@ -1301,7 +1335,7 @@ export class SwarmManager {
     );
 
     // Phase 10b: resolve repo_id → WORKSPACE_* env vars + clone target.
-    // Same contract as the openswarm path (shared helper) but here the
+    // Same contract as the swarm-runner path (shared helper) but here the
     // provider owns the clone — the TUI process starts IN the repo dir.
     let repoCloneTarget: { url: string; branch: string; localPath: string; existsLocally: boolean } | undefined;
     if (input.repo_id) {
@@ -1317,6 +1351,13 @@ export class SwarmManager {
       }
     }
 
+    // Phase 10c: validate free-form cwd if the caller supplied one. The
+    // schema already rejected combinations with repo_id and workspace, so
+    // by here we know cwd is the sole source of working-directory truth.
+    // Validation throws SwarmHostingError on bad input — surfaces to the
+    // operator as a 4xx before any state is persisted.
+    const resolvedCwd = input.cwd !== undefined ? validateSpawnCwd(input.cwd) : undefined;
+
     const provisionConfig: SwarmProvisionConfig = {
       name,
       adapter: strategy.adapterLabel(),
@@ -1331,6 +1372,7 @@ export class SwarmManager {
       spawn_command_override: tuiBinary,
       spawn_args_override: [],
       ...(input.repo_id !== undefined && { repo_id: input.repo_id }),
+      ...(resolvedCwd !== undefined && { cwd: resolvedCwd }),
     };
 
     // Phase 11: persist the row (now that all preconditions have passed).
@@ -1381,8 +1423,12 @@ export class SwarmManager {
       }
 
       // Phase 13: per-kind prelaunch files (e.g. cc-swarm config).
-      // Written to dataDir (canonical location) AND repo cwd (if different)
-      // so the sidecar finds its config regardless of working directory.
+      // Written to dataDir (canonical location) AND any alternate cwd
+      // (repo clone target or operator-chosen free-form cwd) so the
+      // sidecar finds its config regardless of which directory the TUI
+      // opens in. cc-swarm reads `.swarm/claude-swarm/config.json`
+      // relative to cwd — without the second write the sidecar would
+      // fail to detach.
       strategy.writePrelaunchFiles?.({
         swarmId: preRegisteredSwarmId,
         hostedSwarmId,
@@ -1399,15 +1445,28 @@ export class SwarmManager {
           dataDir: repoCloneTarget.localPath,
         });
       }
+      if (resolvedCwd && resolvedCwd !== dataDir) {
+        strategy.writePrelaunchFiles?.({
+          swarmId: preRegisteredSwarmId,
+          hostedSwarmId,
+          onboardToken,
+          mapServer,
+          dataDir: resolvedCwd,
+        });
+      }
 
       // Phase 14: pre-trust the working directory in the TUI's user config
       // so the "Trust this folder?" gate doesn't block first-launch hooks.
-      // When a repo was cloned, trust both dataDir (prelaunch files) and the
-      // repo clone path (actual cwd). Best-effort: missing/invalid user
-      // config just means the user gets the prompt and dismisses it manually.
+      // We always trust dataDir (prelaunch files land there) plus any
+      // alternate cwd in use — the repo clone path or operator-chosen
+      // free-form cwd. Best-effort: missing/invalid user config just means
+      // the user gets the prompt and dismisses it manually.
       strategy.preTrustWorkdir(dataDir, os.homedir());
       if (repoCloneTarget) {
         strategy.preTrustWorkdir(repoCloneTarget.localPath, os.homedir());
+      }
+      if (resolvedCwd) {
+        strategy.preTrustWorkdir(resolvedCwd, os.homedir());
       }
 
       // Phase 15: spawn the TUI via PtyManager. Both kinds are interactive
@@ -1436,12 +1495,17 @@ export class SwarmManager {
         ptyArgs.push(input.initial_prompt);
       }
 
+      // cwd precedence: free-form resolvedCwd (operator typed a path) →
+      // repoCloneTarget.localPath (repo_id resolution) → dataDir (default).
+      // Schema enforces that resolvedCwd and repoCloneTarget can't both be
+      // set, so this chain is unambiguous.
+      const ptyCwd = resolvedCwd ?? (repoCloneTarget ? repoCloneTarget.localPath : dataDir);
       let ptyInfo;
       try {
         ptyInfo = this.ptyManager.create({
           command: tuiBinary,
           args: ptyArgs,
-          cwd: repoCloneTarget ? repoCloneTarget.localPath : dataDir,
+          cwd: ptyCwd,
           env,
           cols: 120,
           rows: 40,
@@ -1484,7 +1548,7 @@ export class SwarmManager {
 
       dal.updateHostedSwarm(hosted.id, { state: 'running', error: null });
 
-      // Phase 17: broadcast (same shape openswarm uses).
+      // Phase 17: broadcast (same shape swarm-runner uses).
       broadcastToChannel('map:discovery', {
         type: 'swarm_spawned',
         data: {
@@ -1528,12 +1592,12 @@ export class SwarmManager {
   }
 
   /**
-   * openswarm kind (existing behavior, unchanged). Was named `spawn()` before
-   * the kind-dispatcher was added; renamed for clarity. All openswarm-specific
+   * swarm-runner kind (existing behavior, unchanged). Was named `spawn()` before
+   * the kind-dispatcher was added; renamed for clarity. All swarm-runner-specific
    * logic — bootstrap-token envelopes, port allocation, MAP pre-registration
    * with `ws://127.0.0.1:<port>` shape — lives here.
    */
-  private async spawnOpenswarm(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
+  private async spawnSwarmRunner(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
     // Generate a name if none provided
     const name = input.name ?? uniqueNamesGenerator({
       dictionaries: [adjectives, colors, animals],
@@ -2071,7 +2135,7 @@ export class SwarmManager {
       return this.restartCodexRpc(hostedInitial);
     }
 
-    // TUI kinds route through PtyManager, not LocalProvider — the openswarm
+    // TUI kinds route through PtyManager, not LocalProvider — the swarm-runner
     // restart machinery (port reuse, provider.restart, autoRestart) doesn't
     // apply. Branch early to a dedicated cold-restart path that tears down
     // the existing PTY/sidecar and re-boots the TUI against the SAME row
@@ -2269,7 +2333,7 @@ export class SwarmManager {
       // LocalProvider. Their liveness comes from the PTY exit handler
       // (handleClaudePtyExit) and, for sidecar-bearing kinds, the
       // sidecar's MAP registration — not an HTTP probe. The default
-      // openswarm probe (port+1/health) doesn't apply: there's no port
+      // swarm-runner probe (port+1/health) doesn't apply: there's no port
       // and no HTTP server. Skip explicitly.
       if (isTuiKind(hosted.kind)) continue;
 
@@ -2295,7 +2359,7 @@ export class SwarmManager {
 
         // If running, try HTTP health check on the gateway port
         if (hosted.assigned_port && status.state === 'running') {
-          const httpPort = hosted.assigned_port + 1; // OpenSwarm gateway HTTP is port+1
+          const httpPort = hosted.assigned_port + 1; // SwarmRunner gateway HTTP is port+1
           const healthy = await this.checkHttpHealth(httpPort);
 
           if (healthy) {
@@ -2337,7 +2401,7 @@ export class SwarmManager {
   /**
    * Revive hosted swarms that were in active states when openhive last ran.
    *
-   * On a server restart, openswarm child processes have almost always died
+   * On a server restart, swarm-runner child processes have almost always died
    * with the parent (detached children get killed by the exit handler;
    * anything that somehow survives is a detached orphan we can't adopt into
    * the provider's in-memory instance map anyway). Meanwhile the
@@ -2360,7 +2424,7 @@ export class SwarmManager {
    *     common path.
    *
    * Runs sequentially to cap startup resource churn. If N swarms all
-   * revive at once we spawn N openswarm processes + N Claude Code
+   * revive at once we spawn N swarm-runner processes + N Claude Code
    * subprocesses, which isn't free.
    */
   async reviveHostedSwarms(): Promise<{ revived: number; orphaned: number; failed: number }> {
@@ -2882,7 +2946,7 @@ export class SwarmManager {
   }
 
   private async waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
-    const httpPort = port + 1; // OpenSwarm gateway HTTP is on port+1
+    const httpPort = port + 1; // SwarmRunner gateway HTTP is on port+1
     const start = Date.now();
     const interval = 1000;
 
@@ -2934,6 +2998,49 @@ function isPidAlive(pid: number): boolean {
     if (code === 'EPERM') return true;
     return false;
   }
+}
+
+/**
+ * Validate a user-supplied `cwd` for TUI / codex-rpc spawns.
+ *
+ * Throws `SwarmHostingError` with a clear code so the route returns a
+ * 4xx-shaped response rather than a generic 500. Returns the path
+ * normalized to absolute form (matches the resolve used downstream for
+ * `data_dir`).
+ *
+ *   • Must be a non-empty string (schema enforces this, but defensive).
+ *   • Must be absolute — relative paths would resolve against the openhive
+ *     process cwd, which is opaque to the operator and surprising.
+ *   • Must exist on disk and be a directory. We don't auto-create
+ *     arbitrary host paths; that's an operator concern.
+ */
+function validateSpawnCwd(rawCwd: string): string {
+  const trimmed = rawCwd.trim();
+  if (!trimmed) {
+    throw new SwarmHostingError('WORKSPACE_SETUP_FAILED', 'cwd must not be empty');
+  }
+  if (!path.isAbsolute(trimmed)) {
+    throw new SwarmHostingError(
+      'WORKSPACE_SETUP_FAILED',
+      `cwd must be an absolute path; got "${trimmed}"`,
+    );
+  }
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(trimmed);
+  } catch {
+    throw new SwarmHostingError(
+      'WORKSPACE_SETUP_FAILED',
+      `cwd does not exist on disk: ${trimmed}`,
+    );
+  }
+  if (!stat.isDirectory()) {
+    throw new SwarmHostingError(
+      'WORKSPACE_SETUP_FAILED',
+      `cwd is not a directory: ${trimmed}`,
+    );
+  }
+  return path.resolve(trimmed);
 }
 
 // ============================================================================

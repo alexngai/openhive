@@ -19,7 +19,7 @@ import { websocketStream } from '@multi-agent-protocol/sdk';
 import { findAgentById, findAgentByApiKey, findOrCreateSwarmHubAgent, getOrCreateLocalAgent } from '../db/dal/agents.js';
 import { validateIngestKey } from '../db/dal/ingest-keys.js';
 import { validateSwarmHubToken, isJwksInitialized } from '../auth/jwks.js';
-import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findNodeBySwarmAndAgentId, findSwarmById, bulkUpdateSwarmNodesPresence } from '../db/dal/map.js';
+import { listSwarms, createSwarm, heartbeatSwarm, updateSwarm, updateNode, findNodeBySwarmAndAgentId, findSwarmById, bulkUpdateSwarmNodesPresence, ensureAgentRowForRegistered } from '../db/dal/map.js';
 import { handleSyncMessage, hasOutboundConnection } from './sync-listener.js';
 import { isMapSyncMessage } from './sync-listener.js';
 import { isMapTaskEvent, handleMapTaskEvent, isMapContextEvent, handleMapContextEvent } from '../coordination/listener.js';
@@ -34,6 +34,8 @@ import {
 import { CASCADE_DIFF_METHODS } from '../cascade/diff-types.js';
 import { handleTrajectoryRequest } from './trajectory-handler.js';
 import { handleOpenTasksResponse } from './opentasks-remote.js';
+import { autoRegisterResource, isValidOpenTasksDir } from './task-handler.js';
+import { findResourceByLocationHash } from '../db/dal/syncable-resources.js';
 import {
   handleNotificationPairResponse,
   rejectPendingForSwarm,
@@ -124,6 +126,47 @@ export function shouldAcceptAgentRegistration(
   const eventSessionId = e.source?.sessionId ?? e.data?.agent?.sessionId;
   if (!eventSessionId) return false;
   return eventSessionId === mySessionId;
+}
+
+/**
+ * Resolve the OpenHive `syncable_resources` id for an agent-declared
+ * `task_graph`. Macro-agent supplies `resource_id` directly; cc-swarm
+ * sidecars identify their opentasks graph only by `location_hash` (and/or a
+ * local `path`). Backfilling the id here makes cc-swarm task graphs
+ * first-class resources — both the `task.status` broadcast path and the
+ * cascade merge→auto-close path read off `defaultTaskGraph.resource_id`.
+ *
+ * Resolution chain (first hit wins):
+ *   1. explicit `resource_id` (macro-agent path — unchanged)
+ *   2. `location_hash` → existing task resource lookup
+ *   3. local valid opentasks `path` → idempotent auto-register
+ *   4. none → undefined (auto-close just won't fire — graceful)
+ *
+ * Best-effort: any failure is swallowed so agent registration never breaks.
+ * Exported for testing.
+ */
+export function resolveTaskGraphResourceId(
+  taskGraph: { resource_id?: string; path?: string; location_hash?: string },
+  agentId: string,
+): string | undefined {
+  if (taskGraph.resource_id) return taskGraph.resource_id;
+  try {
+    if (taskGraph.location_hash) {
+      const existing = findResourceByLocationHash(taskGraph.location_hash, agentId, 'task');
+      if (existing) return existing.id;
+    }
+    if (taskGraph.path && isValidOpenTasksDir(taskGraph.path)) {
+      // Ensure an `agents` row exists for the MAP-registered agentId before
+      // calling autoRegisterResource — without it, the syncable_resources
+      // INSERT fails with FOREIGN KEY constraint failed (silently swallowed
+      // by this try/catch). See ensureAgentRowForRegistered's docstring.
+      ensureAgentRowForRegistered(agentId);
+      return autoRegisterResource(taskGraph.path, agentId).id;
+    }
+  } catch {
+    // Best-effort — a failure here must never break agent registration.
+  }
+  return undefined;
 }
 
 let HEARTBEAT_INTERVAL = 30_000;
@@ -316,24 +359,33 @@ function createNotificationInterceptor(
   ws: WebSocket,
   swarmId: string,
 ): { cleanup: () => void } {
-  const handler = (data: Buffer | string) => {
+  const originalEmit = ws.emit;
+
+  const touchHeartbeat = () => {
+    const conn = getAllInbound().get(swarmId);
+    if (conn) {
+      conn.lastMessageAt = new Date().toISOString();
+    }
+    debouncedHeartbeat(swarmId);
+  };
+
+  const handleMessage = (data: Buffer | string): boolean => {
     try {
       const msg = JSON.parse(data.toString());
-
 
       // Handle trajectory/checkpoint requests before they reach the MAPServer.
       // These are JSON-RPC requests (have id) sent by the sidecar's callExtension.
       if (msg.method === 'trajectory/checkpoint' && msg.id != null) {
         console.log(`[ws-map] trajectory/checkpoint from ${swarmId}, id=${msg.id}`);
         handleTrajectoryCheckpoint(msg.params as Record<string, unknown>, swarmId, ws, msg.id);
-        // Note: MAPServer will also see this message (we can't prevent it from
-        // the on('message') handler), but it will return an "unknown method" error
-        // which the sidecar ignores since it already got our success response first.
+        touchHeartbeat();
+        return true;
       }
 
       // Only intercept notifications (no `id` field) that are OpenHive-specific
-      if (msg.id != null) return; // Let requests pass through to MAPServer
+      if (msg.id != null) return false; // Let standard requests pass through to MAPServer
 
+      let handled = true;
       if (isMapSyncMessage(msg)) {
         handleSyncMessage(msg, swarmId);
       } else if (isMapTaskEvent(msg)) {
@@ -406,22 +458,33 @@ function createNotificationInterceptor(
         if (fromAgentId && envelope && typeof envelope === 'object' && getAgentOnSwarm(swarmId, fromAgentId)) {
           pushDispatchMapReply({ swarmId, fromAgentId, message: envelope });
         }
+      } else {
+        handled = false;
       }
-      // Other notifications pass through to MAPServer (it will ignore unknown ones)
 
-      // Update heartbeat on any message (debounced to reduce DB writes)
-      const conn = getAllInbound().get(swarmId);
-      if (conn) {
-        conn.lastMessageAt = new Date().toISOString();
-      }
-      debouncedHeartbeat(swarmId);
+      if (handled) touchHeartbeat();
+      return handled;
     } catch {
-      // Non-JSON — ignore
+      // Non-JSON should be handled by MAPServer.
+      return false;
     }
   };
 
-  ws.on('message', handler);
-  return { cleanup: () => ws.removeListener('message', handler) };
+  (ws as unknown as { emit: typeof ws.emit }).emit = function patchedEmit(
+    eventName: string | symbol,
+    ...args: unknown[]
+  ): boolean {
+    if (eventName === 'message' && args.length > 0 && handleMessage(args[0] as Buffer | string)) {
+      return true;
+    }
+    return originalEmit.call(ws, eventName as string, ...args);
+  } as typeof ws.emit;
+
+  return {
+    cleanup: () => {
+      (ws as unknown as { emit: typeof ws.emit }).emit = originalEmit;
+    },
+  };
 }
 
 // ============================================================================
@@ -982,11 +1045,14 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
           }
         } catch { /* non-critical */ }
 
-        // Auto-detect default task graph from agent metadata
+        // Auto-detect default task graph from agent metadata. The
+        // `resource_id` is resolved (when absent) by `resolveTaskGraphResourceId`
+        // so cc-swarm task graphs — which identify only by `location_hash` —
+        // become first-class resources.
         const taskGraph = meta.task_graph as Record<string, string> | undefined;
         if (taskGraph) {
           setDefaultTaskGraph(swarmId, {
-            resource_id: taskGraph.resource_id,
+            resource_id: resolveTaskGraphResourceId(taskGraph, registeredAgent.id),
             path: taskGraph.path,
             location_hash: taskGraph.location_hash,
           });
@@ -1119,6 +1185,32 @@ export function setupMapWebSocket(fastify: FastifyInstance, config: Config): voi
       if (!entry) return;
 
       entry.metadata = agentData.metadata || {};
+
+      // If the metadata change carries a `task_graph`, re-run the resolution
+      // chain. The MAP SDK's connect() does not forward `metadata` to the
+      // initial map/agents/register frame, so sidecars push their task_graph
+      // post-connect via updateMetadata() — at which point the resolution
+      // (findResourceByLocationHash / autoRegisterResource) hasn't yet run.
+      // Without this re-resolve, `defaultTaskGraph.resource_id` stays
+      // unpopulated and the cascade merge→auto-close chain silently breaks.
+      // Surfaced by the live e2e (live-cc-swarm-auto-close-e2e.test.ts).
+      // Idempotent — repeated calls with the same task_graph are safe.
+      try {
+        const meta = (agentData.metadata as Record<string, unknown>) || {};
+        const taskGraph = meta.task_graph as
+          | { resource_id?: string; path?: string; location_hash?: string }
+          | undefined;
+        if (taskGraph) {
+          const resourceId = resolveTaskGraphResourceId(taskGraph, agentData.id);
+          setDefaultTaskGraph(swarmId, {
+            resource_id: resourceId,
+            path: taskGraph.path,
+            location_hash: taskGraph.location_hash,
+          });
+        }
+      } catch {
+        // Best-effort — must not break metadata update processing.
+      }
     };
     const unsubMetadataChanged = mapServer.eventBus.on('agent.metadata.changed', onAgentMetadataChanged);
 

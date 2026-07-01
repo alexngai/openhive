@@ -3,15 +3,17 @@ import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
   Activity, AlertTriangle, Brain, ChevronDown, ChevronRight,
   Clock, Cpu, FileText, GitBranch, GitCommit, Hash,
-  Info, MessageSquare, Send, User,
+  Info, MessageSquare, Send, Terminal, User,
+  type LucideIcon,
 } from 'lucide-react';
-import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants, useResumeSession, useRepo } from '../hooks/useApi';
+import { useResource, useSessionCheckpoints, useSessionStats, useSessionEvents, useSessionParticipants, useResumeSession, useRepo, useHostedSwarms } from '../hooks/useApi';
 import { useDispatchList } from '../hooks/useDispatch';
 import { useSpec } from '../hooks/useSpecs';
 import { useSessionsRealtime } from '../hooks/useRealtimeInvalidation';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { AgentAvatar } from '../components/common/AgentAvatar';
+import { TerminalPanel } from '../components/terminal/TerminalPanel';
 import type { TrajectoryCheckpoint, AgentIdentity } from '../lib/api';
 import { useSessionAttentionStore } from '../stores/session-attention';
 import {
@@ -40,7 +42,7 @@ import clsx from 'clsx';
 // Helpers
 // ============================================================================
 
-type DetailTab = 'checkpoints' | 'trajectory' | 'learning';
+type DetailTab = 'checkpoints' | 'trajectory' | 'terminal' | 'learning';
 
 // ============================================================================
 // Checkpoint Timeline
@@ -517,6 +519,31 @@ export function SessionDetail() {
     sourceDispatch?.spec_id,
   );
 
+  // Resolve the hosted swarm behind this session. `sourceSwarmId` is the MAP
+  // swarm id (carried on every trajectory checkpoint), which matches
+  // `hosted_swarms.swarm_id`. For kind=claude-code that row owns an
+  // interactive Claude Code TUI in a PTY — we surface it as a "Terminal" tab
+  // that attaches the embedded terminal to that live session.
+  // `useHostedSwarms` applies a React Query `select` that unwraps to the
+  // array, so this is `HostedSwarm[]` (not `{ data, total }`).
+  const { data: hostedSwarms } = useHostedSwarms();
+  const hostedTuiSwarm = useMemo(
+    () =>
+      sourceSwarmId
+        ? hostedSwarms?.find((h) => h.swarm_id === sourceSwarmId)
+        : undefined,
+    [hostedSwarms, sourceSwarmId],
+  );
+  const showTerminalTab =
+    hostedTuiSwarm?.kind === 'claude-code' && hostedTuiSwarm.state === 'running';
+
+  // If the swarm stops while the Terminal tab is open, the tab button
+  // disappears — fall back to trajectory so the user isn't stranded on a
+  // dead panel.
+  useEffect(() => {
+    if (tab === 'terminal' && !showTerminalTab) setTab('trajectory');
+  }, [tab, showTerminalTab]);
+
   // Declare chat context items. Unconditional — runs before early returns
   // so hook order is stable. Primary is the session itself; source spec +
   // dispatch + linked conversation ride along when present.
@@ -616,10 +643,10 @@ export function SessionDetail() {
   const hasTrajectorySupport = total > 0 || !!sourceSwarmId;
 
   return (
-    <>
-      {/* Full-width sticky header */}
+    <div className="flex flex-col h-full min-h-0">
+      {/* Detail header — fixed; tab content fills the rest of the pane */}
       <div
-        className="sticky top-0 z-10 py-2 px-6 border-b"
+        className="shrink-0 py-2 px-6 border-b"
         style={{ backgroundColor: 'var(--color-bg)', borderColor: 'var(--color-border-subtle)' }}
       >
         <div className="flex items-center gap-3 mb-2">
@@ -683,8 +710,11 @@ export function SessionDetail() {
             {([
               { key: 'trajectory', icon: MessageSquare, label: 'Trajectory' },
               { key: 'checkpoints', icon: GitCommit, label: 'Checkpoints' },
+              ...(showTerminalTab
+                ? [{ key: 'terminal', icon: Terminal, label: 'Terminal' }]
+                : []),
               { key: 'learning', icon: Brain, label: 'Learning' },
-            ] as const).map(({ key, icon: Icon, label }) => (
+            ] as Array<{ key: DetailTab; icon: LucideIcon; label: string }>).map(({ key, icon: Icon, label }) => (
               <button
                 key={key}
                 className={clsx(
@@ -707,22 +737,42 @@ export function SessionDetail() {
         </div>
       </div>
 
-      {/* Tab content.
-          For trajectory tab: drop the bottom padding so the sticky chat footer
-          aligns with the scrollport's bottom edge at max scroll (otherwise it
-          settles into its natural flow position, 16px above). */}
-      <div className={`max-w-4xl mx-auto px-4 pt-4 ${tab === 'trajectory' ? 'pb-0' : 'pb-4'}`}>
-        {tab === 'checkpoints' && (
-          <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
-        )}
-        {tab === 'trajectory' && (
-          <TrajectoryTab sessionId={id!} resourceId={resource.id} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} sourceSwarmId={sourceSwarmId} existingAcpStreamId={existingAcpStreamId} existingAcpSessionId={existingAcpSessionId} providerSessionId={providerSessionId} />
-        )}
-        {tab === 'learning' && (
-          <SessionLearningTab sessionId={id!} />
-        )}
-      </div>
-    </>
+      {/* The Terminal tab fills the whole pane (full-bleed); the other tabs
+          render in a scrollable, width-capped column. */}
+      {tab === 'terminal' && showTerminalTab && hostedTuiSwarm ? (
+        // Attach the embedded terminal to the swarm's live Claude Code PTY.
+        // TerminalPanel fetches terminal-info?mode=tui → binding:'attach' and
+        // wires up by sessionId; detaching on tab-switch leaves the TUI
+        // running (terminal-ws only destroys spawned, not attached, PTYs).
+        <div className="flex-1 min-h-0">
+          <TerminalPanel
+            key={hostedTuiSwarm.id}
+            mode="embedded"
+            sessionMode="tui"
+            hideEmbeddedBackLink
+            swarm={{ swarmId: hostedTuiSwarm.id, swarmName: resource.name }}
+            isOpen
+            onClose={() => setTab('trajectory')}
+          />
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          {/* For the trajectory tab: drop the bottom padding so the sticky
+              chat footer aligns with the scrollport's bottom edge. */}
+          <div className={`max-w-4xl mx-auto px-4 pt-4 ${tab === 'trajectory' ? 'pb-0' : 'pb-4'}`}>
+            {tab === 'checkpoints' && (
+              <CheckpointsTab checkpoints={checkpoints} total={total} isLoading={checkpointsLoading} />
+            )}
+            {tab === 'trajectory' && (
+              <TrajectoryTab sessionId={id!} resourceId={resource.id} hasTrajectorySupport={hasTrajectorySupport} agentIdentity={assistantAgent} sourceSwarmId={sourceSwarmId} existingAcpStreamId={existingAcpStreamId} existingAcpSessionId={existingAcpSessionId} providerSessionId={providerSessionId} />
+            )}
+            {tab === 'learning' && (
+              <SessionLearningTab sessionId={id!} />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

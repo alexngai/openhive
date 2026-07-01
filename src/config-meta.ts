@@ -34,7 +34,7 @@ export const CONFIG_SECTIONS: SectionMeta[] = [
 
   // Swarms
   { key: 'mapHub', label: 'MAP Hub', description: 'Multi-Agent Protocol hub for swarm coordination', group: 'swarms' },
-  { key: 'swarmHosting', label: 'Swarm Hosting', description: 'Spawn and manage OpenSwarm instances', group: 'swarms' },
+  { key: 'swarmHosting', label: 'Swarm Hosting', description: 'Spawn and manage Swarm Runner instances', group: 'swarms' },
   { key: 'swarmcraft', label: 'SwarmCraft', description: 'MAP client for agent monitoring', group: 'swarms' },
 
   // Integrations
@@ -166,7 +166,7 @@ export const FIELD_META: Record<string, FieldMeta> = {
   // Swarm Hosting
   'swarmHosting.enabled': { label: 'Enabled' },
   'swarmHosting.default_provider': { label: 'Default Provider', restartRequired: true },
-  'swarmHosting.openswarm_command': { label: 'OpenSwarm Command' },
+  'swarmHosting.swarm_runner_command': { label: 'Swarm Runner Command' },
   'swarmHosting.data_dir': { label: 'Data Directory' },
   'swarmHosting.port_range': { label: 'Port Range', description: '[min, max]' },
   'swarmHosting.max_swarms': { label: 'Max Swarms' },

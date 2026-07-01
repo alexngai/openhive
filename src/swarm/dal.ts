@@ -6,6 +6,7 @@
 
 import { nanoid } from 'nanoid';
 import { getDatabase } from '../db/index.js';
+import { normalizeHostedSwarmKind } from './types.js';
 import type {
   HostedSwarm,
   HostedSwarmKind,
@@ -25,6 +26,7 @@ export function generateHostedSwarmId(): string {
 function parseRow(row: Record<string, unknown>): HostedSwarm {
   return {
     ...row,
+    kind: normalizeHostedSwarmKind(row.kind as HostedSwarmKind | 'openswarm' | null | undefined),
     config: row.config ? JSON.parse(row.config as string) : null,
   } as HostedSwarm;
 }
@@ -42,7 +44,7 @@ function serializeConfig(config: SwarmProvisionConfig): string {
 export interface CreateHostedSwarmInput {
   provider: HostingProviderType;
   spawned_by: string;
-  /** Defaults to 'openswarm' so existing callers keep working unchanged. */
+  /** Defaults to 'swarm-runner' so existing callers keep working unchanged. */
   kind?: HostedSwarmKind;
   assigned_port?: number;
   bootstrap_token_hash?: string;
@@ -58,7 +60,7 @@ export interface CreateHostedSwarmInput {
 export function createHostedSwarm(input: CreateHostedSwarmInput): HostedSwarm {
   const db = getDatabase();
   const id = input.id ?? generateHostedSwarmId();
-  const kind: HostedSwarmKind = input.kind ?? 'openswarm';
+  const kind = normalizeHostedSwarmKind(input.kind);
 
   db.prepare(`
     INSERT INTO hosted_swarms (id, kind, provider, state, assigned_port, bootstrap_token_hash, config, spawned_by)
@@ -223,6 +225,35 @@ export function listKnownBootstrapCwds(limit: number = 50): string[] {
     SELECT json_extract(config, '$.bootstrap.cwd') AS cwd, MAX(created_at) AS created
     FROM hosted_swarms
     WHERE json_extract(config, '$.bootstrap.cwd') IS NOT NULL
+    GROUP BY cwd
+    ORDER BY created DESC
+    LIMIT ?
+  `).all(limit) as Array<{ cwd: string | null }>;
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const row of rows) {
+    const c = (row.cwd ?? '').trim();
+    if (!c || c === '.' || c === '..') continue;
+    if (seen.has(c)) continue;
+    seen.add(c);
+    out.push(c);
+  }
+  return out;
+}
+
+/**
+ * Distinct top-level `config.cwd` values across hosted swarms (TUI kinds
+ * and codex-rpc). Counterpart to `listKnownBootstrapCwds` for the newer
+ * free-form working-directory field. Same ordering rules (most recent
+ * row wins, drop empties / `.` / `..`).
+ */
+export function listKnownTuiCwds(limit: number = 50): string[] {
+  const db = getDatabase();
+  const rows = db.prepare(`
+    SELECT json_extract(config, '$.cwd') AS cwd, MAX(created_at) AS created
+    FROM hosted_swarms
+    WHERE json_extract(config, '$.cwd') IS NOT NULL
     GROUP BY cwd
     ORDER BY created DESC
     LIMIT ?

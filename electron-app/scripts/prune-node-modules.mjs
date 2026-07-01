@@ -12,9 +12,9 @@
  * Categories:
  *   - Frontend-only — Vite already bundles these into dist/web/assets/*.js,
  *     they're never imported by the Node-side server bundle.
- *   - TUI-only — openswarm declares @opentui/core etc. but the actual
- *     rendering runs inside the platform-specific `@openswarm/cli-*` Bun
- *     binary. The Node `openswarm/dist/server.mjs` is a bundled server
+ *   - TUI-only — swarm-runner declares @opentui/core etc. but the actual
+ *     rendering runs inside the platform-specific `@swarmkit-ai/swarm-runner-cli-*` Bun
+ *     binary. The Node `swarm-runner/dist/server.mjs` is a bundled server
  *     that imports none of these.
  *   - Optional telemetry — @opentelemetry is a no-op unless the user opts
  *     in via OTEL_EXPORTER_OTLP_ENDPOINT.
@@ -113,7 +113,7 @@ const DELETE_PACKAGES = [
   '@grpc',
   'protobufjs',
 
-  // ---- TUI-only (openswarm rendering is bundled in platform CLI binary) ----
+  // ---- TUI-only (swarm-runner rendering is bundled in platform CLI binary) ----
   '@opentui',
   '@solid-primitives',
   'solid-js',
@@ -227,9 +227,9 @@ const DELETE_SUBPATHS = [
   ['macro-agent', 'mvp_docs'],
   ['macro-agent', 'test_fixtures'],
   ['macro-agent', 'scripts'],
-  ['openswarm', 'src'],
-  ['openswarm', 'docs'],
-  ['openswarm', 'scripts'],
+  ['swarm-runner', 'src'],
+  ['swarm-runner', 'docs'],
+  ['swarm-runner', 'scripts'],
   // cognitive-core source + playbooks: runtime uses dist/ only
   ['cognitive-core', 'src'],
   ['cognitive-core', 'docs'],
@@ -268,9 +268,9 @@ const RIPGREP_DIR = {
 const ripgrepKeep = RIPGREP_DIR[`${targetPlatform}-${targetArch}`];
 const ripgrepDirs = Object.values(RIPGREP_DIR);
 
-// @openswarm/cli-* package-name suffixes that should be dropped — anything
+// @swarmkit-ai/swarm-runner-cli-* package-name suffixes that should be dropped — anything
 // not matching the target.
-const openswarmKeep = `${targetPlatform}-${targetArch}`;
+const swarmRunnerKeep = `${targetPlatform}-${targetArch}`;
 
 let bytesFreed = 0;
 let deletedCount = 0;
@@ -412,8 +412,8 @@ function walkNodeModules(nodeModulesDir, depth = 0) {
           removeDir(subPath, 'frontend/tui/dev pkg');
           continue;
         }
-        // Platform-prune @openswarm/cli-* — drop non-target CLIs.
-        if (entry === '@openswarm' && sub.startsWith('cli-') && sub !== `cli-${openswarmKeep}`) {
+        // Platform-prune @swarmkit-ai/swarm-runner-cli-* — drop non-target CLIs.
+        if (entry === '@swarmkit-ai' && sub.startsWith('swarm-runner-cli-') && sub !== `swarm-runner-cli-${swarmRunnerKeep}`) {
           removeDir(subPath, 'cross-platform CLI');
           continue;
         }

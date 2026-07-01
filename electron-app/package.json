@@ -1,6 +1,6 @@
 {
   "name": "openhive-electron",
-  "version": "0.1.6",
+  "version": "0.1.8",
   "description": "Electron desktop shell for OpenHive",
   "homepage": "https://github.com/alexngai/openhive",
   "author": {
@@ -17,7 +17,7 @@
     "dev": "npm --prefix .. run build && npm run build && npm run start",
     "dist": "npm --prefix .. run build && npm run build && npm run build:icons && node scripts/stage-openhive.mjs && node scripts/prune-node-modules.mjs && electron-builder && npm run verify",
     "pack": "npm --prefix .. run build && npm run build && node scripts/stage-openhive.mjs && node scripts/prune-node-modules.mjs && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir && npm run verify",
-    "verify": "node scripts/verify-asar.mjs && node scripts/smoke-test.mjs",
+    "verify": "node scripts/verify-asar.mjs && node scripts/smoke-test.mjs && node scripts/e2e-test.mjs && node scripts/headless-e2e.mjs && node scripts/verify-update-feed.mjs",
     "postinstall": "node scripts/fix-better-sqlite3.mjs"
   },
   "dependencies": {
@@ -28,6 +28,7 @@
     "@types/node": "^20.17.14",
     "electron": "^37.10.3",
     "electron-builder": "^26.8.1",
+    "playwright-core": "^1.60.0",
     "typescript": "^5.7.3"
   },
   "build": {
@@ -70,11 +71,15 @@
       "node_modules/better-sqlite3/**",
       "node_modules/bcrypt/**",
       "node_modules/sharp/**",
-      "node_modules/@lydell/node-pty/**"
+      "node_modules/@lydell/node-pty/**",
+      "node_modules/@img/**"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": "dmg",
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "artifactName": "OpenHive-mac-${arch}.${ext}",
       "icon": "build/icon.icns",
       "identity": "Alexander Ngai (TKJJVX3QDY)",
@@ -89,9 +94,9 @@
         "!**/vendor/ripgrep/x64-darwin/**",
         "!**/vendor/ripgrep/x64-linux/**",
         "!**/vendor/ripgrep/x64-win32/**",
-        "!**/node_modules/@openswarm/cli-linux-*/**",
-        "!**/node_modules/@openswarm/cli-win32-*/**",
-        "!**/node_modules/@openswarm/cli-darwin-x64/**"
+        "!**/node_modules/@swarmkit-ai/swarm-runner-cli-linux-*/**",
+        "!**/node_modules/@swarmkit-ai/swarm-runner-cli-win32-*/**",
+        "!**/node_modules/@swarmkit-ai/swarm-runner-cli-darwin-x64/**"
       ]
     },
     "linux": {
@@ -109,8 +114,8 @@
         "!**/vendor/ripgrep/arm64-win32/**",
         "!**/vendor/ripgrep/x64-darwin/**",
         "!**/vendor/ripgrep/x64-win32/**",
-        "!**/node_modules/@openswarm/cli-darwin-*/**",
-        "!**/node_modules/@openswarm/cli-win32-*/**"
+        "!**/node_modules/@swarmkit-ai/swarm-runner-cli-darwin-*/**",
+        "!**/node_modules/@swarmkit-ai/swarm-runner-cli-win32-*/**"
       ]
     }
   }

@@ -2,10 +2,10 @@
  * TerminalPanel
  *
  * Embeds a ghostty-web terminal that connects to a backend PTY session
- * via WebSocket. Used to tunnel the OpenSwarm TUI through the browser.
+ * via WebSocket. Used to tunnel the SwarmRunner TUI through the browser.
  *
  * When a `swarm` target is provided, the component fetches the TUI binary
- * info from the server and spawns a PTY running the OpenSwarm TUI
+ * info from the server and spawns a PTY running the SwarmRunner TUI
  * auto-connected to the swarm's MAP endpoint.
  *
  * Adapted from references/swarmcraft/src/ui/components/terminal/TerminalPanel.tsx
@@ -66,8 +66,14 @@ interface TerminalPanelProps {
   onSessionReady?: (session: TerminalSessionInfo) => void;
   /** Render mode: 'overlay' (floating modal) or 'embedded' (fills parent) */
   mode?: 'overlay' | 'embedded';
-  /** Session kind: 'tui' (OpenSwarm TUI, default) or 'shell' ($SHELL in cwd). */
+  /** Session kind: 'tui' (SwarmRunner TUI, default) or 'shell' ($SHELL in cwd). */
   sessionMode?: TerminalSessionMode;
+  /**
+   * In 'embedded' mode, suppress the header's "← Back to Swarms" link. Set
+   * when the panel is hosted inside another page (e.g. the Threads detail
+   * Terminal tab) where that navigation target makes no sense.
+   */
+  hideEmbeddedBackLink?: boolean;
 }
 
 // =============================================================================
@@ -99,6 +105,7 @@ export function TerminalPanel({
   onSessionReady,
   mode = 'overlay',
   sessionMode = 'tui',
+  hideEmbeddedBackLink = false,
 }: TerminalPanelProps) {
   // Derive WS base URL from current location
   const wsBase = useMemo(() => {
@@ -291,7 +298,7 @@ export function TerminalPanel({
             setErrorMsg(
               currentSessionMode === 'shell'
                 ? 'Shell mode unavailable for this swarm'
-                : 'OpenSwarm TUI binary not available on this server',
+                : 'SwarmRunner TUI binary not available on this server',
             );
             return;
           }
@@ -529,9 +536,11 @@ export function TerminalPanel({
           Reconnect
         </button>
         {mode === 'embedded' ? (
-          <Link to="/swarms" className="btn btn-ghost text-xs">
-            &larr; Back to Swarms
-          </Link>
+          hideEmbeddedBackLink ? null : (
+            <Link to="/swarms" className="btn btn-ghost text-xs">
+              &larr; Back to Swarms
+            </Link>
+          )
         ) : (
           <button
             onClick={onClose}

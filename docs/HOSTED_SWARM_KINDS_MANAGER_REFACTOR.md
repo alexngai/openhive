@@ -2,7 +2,7 @@
 
 **Status:** ✅ Approach A AND Approach B shipped (2026-05-06). All originally-planned PRs merged plus Approach B's strategy-pattern extraction once codex landed and provided the third concrete kind. The manager now has one shared TUI spawn pipeline (`spawnTuiKind` / `stopTuiKind` / `restartTuiKind`) parameterized by a `TuiKindStrategy` (see `src/swarm/tui-strategies.ts`); both `claude-code` and `codex` drive it. Adding a new TUI-shaped kind is a single new strategy implementation. See `docs/HOSTED_SWARM_KINDS_DESIGN.md` `## Implementation status` for the canonical list of what's in the tree, what's deferred, and the cumulative deviations from the original design. The Approach B preview below is now history; the actual interface that landed is documented in `tui-strategies.ts`.
 **Date:** 2026-05-05 (completed 2026-05-06)
-**Scope:** Concrete refactor sequence for `src/swarm/manager.ts` + provider layer to support `kind: 'claude-code'` alongside existing `kind: 'openswarm'`. Companion to `docs/HOSTED_SWARM_KINDS_DESIGN.md`.
+**Scope:** Concrete refactor sequence for `src/swarm/manager.ts` + provider layer to support `kind: 'claude-code'` alongside existing `kind: 'swarm-runner'`. Companion to `docs/HOSTED_SWARM_KINDS_DESIGN.md`.
 
 **Out of scope:**
 - Codex / gemini kinds (architecture admits them; no implementation here)
@@ -13,9 +13,9 @@
 
 ## Bottom line
 
-Start with **Approach A (minimum-viable branch)** for claude-code. Refactor to **Approach B (strategy pattern)** when codex lands. **Skip the full plan-based refactor (Approach C)** until at least two non-openswarm kinds are real — the design abstraction risks being wrong if there's no second concrete kind to inform it.
+Start with **Approach A (minimum-viable branch)** for claude-code. Refactor to **Approach B (strategy pattern)** when codex lands. **Skip the full plan-based refactor (Approach C)** until at least two non-swarm-runner kinds are real — the design abstraction risks being wrong if there's no second concrete kind to inform it.
 
-This is the standard "rule of three" applied: openswarm is one, claude-code makes two. Two isn't enough to know what the right abstraction is. Codex would be the third, and we extract the strategy interface then with three real call sites informing its shape.
+This is the standard "rule of three" applied: swarm-runner is one, claude-code makes two. Two isn't enough to know what the right abstraction is. Codex would be the third, and we extract the strategy interface then with three real call sites informing its shape.
 
 ---
 
@@ -23,7 +23,7 @@ This is the standard "rule of three" applied: openswarm is one, claude-code make
 
 The structural exploration of `manager.ts` (1000+ lines, 13 phases per spawn) surfaced two facts that change the calculus:
 
-1. **The `spawn()` method is ~70% openswarm-shaped** — bootstrap-token construction, port allocation with macro-agent stride assumptions, MAP pre-registration with a specific endpoint shape, health check on `port+1`, registration-by-bootstrap-hash repair. Generalizing the whole thing in one pass risks regressing the openswarm path.
+1. **The `spawn()` method is ~70% swarm-runner-shaped** — bootstrap-token construction, port allocation with macro-agent stride assumptions, MAP pre-registration with a specific endpoint shape, health check on `port+1`, registration-by-bootstrap-hash repair. Generalizing the whole thing in one pass risks regressing the swarm-runner path.
 
 2. **The provider interface doesn't work for claude-code** — `claude` is an interactive TUI and crashes under `child_process.spawn` (no TTY). The actual implementation routes claude-code spawns through `PtyManager` directly (`src/swarm/manager.ts` lines 59-63, 129-136, method `spawnClaudeCode`), bypassing `LocalProvider.provision()` entirely. `PtyManager` wraps node-pty and provides a long-lived real TTY that the embedded terminal can attach to.
 
@@ -40,7 +40,7 @@ The strategy pattern (Approach B) is the right shape long-term, but designing it
 ### Step sequence
 
 **1. Plumb `kind` through the input layer.** ✓ schema done; still need:
-- `SpawnSwarmInput.kind?: HostedSwarmKind` (default `'openswarm'`)
+- `SpawnSwarmInput.kind?: HostedSwarmKind` (default `'swarm-runner'`)
 - Spawn route schema (`SpawnSwarmSchema` in `swarm-hosting.ts`) accepts `kind`
 - DAL `CreateHostedSwarmInput.kind` is already optional (✓ done in schema migration commit)
 
@@ -48,19 +48,19 @@ The strategy pattern (Approach B) is the right shape long-term, but designing it
 
 ```ts
 async spawn(agentId: string, input: SpawnSwarmInput): Promise<HostedSwarm> {
-  if ((input.kind ?? 'openswarm') === 'claude-code') {
+  if ((input.kind ?? 'swarm-runner') === 'claude-code') {
     return this.spawnClaudeCode(agentId, input);
   }
-  return this.spawnOpenswarm(agentId, input);
+  return this.spawnSwarmRunner(agentId, input);
 }
 ```
 
-The existing `spawn()` body becomes `spawnOpenswarm()`. Pure rename, zero behavior change. The route layer's `spawn()` call signature is preserved.
+The existing `spawn()` body becomes `spawnSwarmRunner()`. Pure rename, zero behavior change. The route layer's `spawn()` call signature is preserved.
 
 **3. Implement `spawnClaudeCode()`** — minimum viable shape:
 
 ```
-Phase 1  Validation (max_swarms count, provider exists)              [shared with openswarm]
+Phase 1  Validation (max_swarms count, provider exists)              [shared with swarm-runner]
 Phase 2  Skip port allocation                                        [claude-code-specific: no port needed]
 Phase 3  Generate hostedSwarmId + data_dir                           [shared]
 Phase 4  Hive validation                                             [shared]
@@ -77,18 +77,18 @@ Phase 13 Mark running, broadcast event; register PTY session         [shared + r
 
 **Status update — 2026-05-06:** Phase 11 deviation: claude-code calls `ptyManager.create({ command: 'claude', cwd: dataDir, env })` directly instead of `provider.provision()`. The PTY is long-lived and registered in the manager's `claudeCodeSessions` map for the embedded terminal to attach to. This is because `claude` requires a real TTY and crashes under `child_process.spawn()`. See `src/swarm/manager.ts:spawnClaudeCode()` for the actual implementation.
 
-**4. Provider command resolution.** ~~The local provider currently builds the command from `this.config.openswarm_command`. For claude-code, it needs to use `claude` instead.~~
+**4. Provider command resolution.** ~~The local provider currently builds the command from `this.config.swarm_runner_command`. For claude-code, it needs to use `claude` instead.~~
 
 **Status update — 2026-05-06:** Deviation: claude-code does NOT use `LocalProvider.provision()` at all. Instead, `spawnClaudeCode()` resolves the `claude` binary directly and calls `ptyManager.create()` (see `src/swarm/manager.ts:59-63, 129-136`). 
 
-For OpenSwarm, the `spawn_command_override` and `spawn_args_override` fields were added to `SwarmProvisionConfig` (PR 3 of the plan), but they're not used by claude-code's spawn path:
+For SwarmRunner, the `spawn_command_override` and `spawn_args_override` fields were added to `SwarmProvisionConfig` (PR 3 of the plan), but they're not used by claude-code's spawn path:
 
 ```ts
 interface SwarmProvisionConfig {
   // ...existing fields
   /**
    * Override for the provider's spawn command. When unset the provider uses
-   * its kind-default (e.g. local provider's openswarm_command). When set,
+   * its kind-default (e.g. local provider's swarm_runner_command). When set,
    * it's used verbatim. Used by future kinds that route through LocalProvider.
    */
   spawn_command_override?: string;
@@ -102,13 +102,13 @@ interface SwarmProvisionConfig {
 
 `LocalProvider` reads these in its existing command-build path if set; one branch. claude-code's `PtyManager` path is separate and doesn't touch this field.
 
-**5. cc-swarm sidecar registration wait.** `spawnOpenswarm` waits on `port+1/health`. `spawnClaudeCode` waits on the MAP hub seeing a new agent registration with a known shape. Concretely:
+**5. cc-swarm sidecar registration wait.** `spawnSwarmRunner` waits on `port+1/health`. `spawnClaudeCode` waits on the MAP hub seeing a new agent registration with a known shape. Concretely:
 
 - After `provision()` returns, listen for inbound MAP registration events (the hub already emits these for any swarm registering)
 - Match by `swarm_id === preRegisteredSwarmId` — the slim token we minted carries this id, cc-swarm config will use it
 - Resolve when we see the registration; reject after timeout (~15s based on cc-swarm's bootstrap timings)
 
-Existing event pipeline: `mapHubEvents` (in src/coordination or src/map). New listener wired in `spawnClaudeCode` only — doesn't touch the openswarm path.
+Existing event pipeline: `mapHubEvents` (in src/coordination or src/map). New listener wired in `spawnClaudeCode` only — doesn't touch the swarm-runner path.
 
 **6. Kind-aware stop — politely signal the sidecar.** cc-swarm's sidecar manages itself: it has `SIGTERM`/`SIGINT` handlers in `scripts/map-sidecar.mjs:180-181` (clears timers, removes socket/pid files, disconnects MAP, exits cleanly) plus a 30-minute inactivity auto-shutdown. So strictly speaking we don't *need* to kill it — if we just kill claude, the sidecar will time itself out within 30 min.
 
@@ -137,7 +137,7 @@ if (hosted.kind === 'claude-code') {
 }
 ```
 
-For v1 we accept that claude-code rows don't get the same staleness sweeping as openswarm. Refine in Approach B if needed.
+For v1 we accept that claude-code rows don't get the same staleness sweeping as swarm-runner. Refine in Approach B if needed.
 
 **9. Restart for claude-code: cold only.** `restart()` tries hot-restart (provider.restart()) first, falls back to cold-restart. For claude-code, the bootstrap is a config file + plugin hook chain; hot-restart doesn't really apply. Branch in `restart()` to always cold-start when `kind === 'claude-code'`.
 
@@ -145,7 +145,7 @@ For v1 we accept that claude-code rows don't get the same staleness sweeping as 
 
 ## What gets deferred from Approach A
 
-Things that work for openswarm and should work for claude-code but aren't worth doing in this slice:
+Things that work for swarm-runner and should work for claude-code but aren't worth doing in this slice:
 
 - **Sandbox policy** for claude-code (the TUI doesn't have a sandbox config in scope; defer)
 - **Workspace repo cloning** for claude-code (provider does this; should "just work" but untested)
@@ -217,7 +217,7 @@ From the structural map:
 | Gotcha | Approach A handling |
 |---|---|
 | Health check hardcoded to `port+1` | Branch in `markStaleSwarms` to skip for claude-code (step 8) |
-| Sandbox policy is openswarm-only | Skip for claude-code in `spawnClaudeCode`; resolve to undefined |
+| Sandbox policy is swarm-runner-only | Skip for claude-code in `spawnClaudeCode`; resolve to undefined |
 | Workspace repos clone in provider | claude-code doesn't use provider; skip in `spawnClaudeCode` |
 | `bootstrap_token_hash` matching for late registrations | claude-code's slim token sets it to a deterministic hash of the onboard token; not strictly needed but matches existing schema |
 | `repairSwarmIdLink` decodes bootstrap_token | claude-code's token doesn't carry swarm_id; repair path falls back to endpoint lookup. Endpoint is `internal:cc:<id>`, doesn't match anything → repair fails silently. **Acceptable for v1**; document |
@@ -238,7 +238,7 @@ The two **real issues** that need explicit handling:
 Suggested commits / PRs:
 
 1. **PR 1** (already done as part of spike start): schema V50 + DAL `kind` field. ✓
-2. **PR 2**: rename `spawn()` body → `spawnOpenswarm()`, add `spawn()` dispatcher, no behavior change for openswarm. Pure refactor, all existing tests must pass. Adds `SpawnSwarmInput.kind?` and threads through the route schema. ✓
+2. **PR 2**: rename `spawn()` body → `spawnSwarmRunner()`, add `spawn()` dispatcher, no behavior change for swarm-runner. Pure refactor, all existing tests must pass. Adds `SpawnSwarmInput.kind?` and threads through the route schema. ✓
 3. **PR 3**: add `SwarmProvisionConfig.spawn_command_override` + `spawn_args_override`; teach `LocalProvider` to honor them. No callers use them yet. Pure provider extension. ✓
 4. **PR 4**: implement `spawnClaudeCode()` happy path. **DEVIATION**: Routes through `PtyManager.create()` directly instead of `LocalProvider.provision()` (discovered during live-test: `claude` crashes without a real TTY). Resolves `claude` binary via `resolveClaudeBinary()`. Writes prelaunch config with `auth.token` (not `auth.credential`) and `swarmId` field. Registers PTY session in manager's `claudeCodeSessions` map. Waits for cc-swarm sidecar MAP registration. See HOSTED_SWARM_KINDS_DESIGN.md Deviations 1–2. ✓
 5. **PR 5**: kind-aware `stop()` and `handleProcessExit()` — sidecar PID file kill (step 6, 7). ✓
@@ -272,7 +272,7 @@ Total: ~3 days of focused work for a working claude-code kind end-to-end. Approa
 These came out of the structural exploration and weren't covered in the main design doc:
 
 1. **Bootstrap token shape for claude-code.** Slim token (just onboard credential) — but cc-swarm's config schema expects a `map.auth.credential` field. Confirm the slim onboard token works there directly.
-2. **Pre-registration endpoint for claude-code.** Manager pre-registers the MAP swarm with `endpoint = ws://127.0.0.1:<port>` for openswarm. claude-code has no port. Use `internal:cc:<hostedSwarmId>` as a placeholder endpoint? Or leave endpoint NULL? Schema allows NULL.
+2. **Pre-registration endpoint for claude-code.** Manager pre-registers the MAP swarm with `endpoint = ws://127.0.0.1:<port>` for swarm-runner. claude-code has no port. Use `internal:cc:<hostedSwarmId>` as a placeholder endpoint? Or leave endpoint NULL? Schema allows NULL.
 3. **Sidecar registration matching.** When the cc-swarm sidecar registers via MAP, it carries `name="<teamName>-sidecar"` with `role="sidecar"`. We pre-registered with `swarm_id = preRegisteredSwarmId`. cc-swarm reads `map.systemId` from the config file — does it use that as the swarm id, or generate its own and we fail to match? Confirm in PR 4 spike.
 4. **Provision config persistence.** The manager persists `SwarmProvisionConfig` to the DB row's `config` column. For claude-code, much of `SwarmProvisionConfig` (adapter, bootstrap_token base64, assigned_port) is meaningless. Either set those fields to null/empty for claude-code rows, or split the persisted shape per kind. Lean: null/empty for v1, tighten in Approach B.
 

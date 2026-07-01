@@ -11,6 +11,7 @@ import type { Spec } from '../../hooks/useSpecs';
 import type { MapSwarm } from '../../lib/api';
 
 type PickerSwarm = MapSwarm & { variant_count?: number };
+const CODEX_EXECUTOR_KIND = 'swarm-codex';
 
 interface DispatchModalProps {
   open: boolean;
@@ -19,25 +20,53 @@ interface DispatchModalProps {
   onDispatched?: (dispatches: CreatedDispatch[]) => void;
 }
 
-/**
- * Determine whether a swarm is a viable dispatch target. v1 rule (per the
- * resolved Stream 2 ambiguities): online and exposes at least one ACP-capable
- * or mail-capable agent. Uses aggregate capabilities the hub records on the
- * swarm record (per CLAUDE.md getAggregateCapabilities).
- */
+function asObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function normalizeKind(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function isCodexExecutorTarget(s: MapSwarm): boolean {
+  const metadata = asObject(s.metadata);
+  const capabilities = asObject(s.capabilities);
+  const dispatch = asObject(capabilities.dispatch);
+  const stringMarkers = [
+    metadata.kind,
+    metadata.executor_kind,
+    metadata.dispatch_executor,
+    capabilities.kind,
+    capabilities.executor_kind,
+    dispatch.kind,
+    dispatch.executor,
+  ].map(normalizeKind);
+
+  if (stringMarkers.includes(CODEX_EXECUTOR_KIND)) return true;
+  if (capabilities.codex_executor === true) return true;
+  if (dispatch.codex_executor === true) return true;
+
+  const executors = Array.isArray(dispatch.executors)
+    ? dispatch.executors.map(normalizeKind)
+    : [];
+  return executors.includes(CODEX_EXECUTOR_KIND);
+}
+
 function isDispatchable(s: MapSwarm): boolean {
   if (s.status !== 'online') return false;
-  const caps = (s.capabilities ?? {}) as Record<string, unknown>;
+  const caps = asObject(s.capabilities);
   const protocols = Array.isArray(caps.protocols) ? (caps.protocols as string[]) : [];
   const hasAcp = protocols.includes('acp');
-  const mail = caps.mail as Record<string, unknown> | undefined;
-  const hasMail = !!mail && (mail.canCreate === true || mail.canJoin === true);
-  return hasAcp || hasMail;
+  const mail = asObject(caps.mail);
+  const hasMail = mail.canCreate === true || mail.canJoin === true;
+  return hasAcp || hasMail || isCodexExecutorTarget(s);
 }
 
 function explainUnavailable(s: MapSwarm): string {
   if (s.status !== 'online') return s.status;
-  return 'no ACP/mail capability';
+  return 'no ACP/mail/codex executor capability';
 }
 
 export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchModalProps) {
@@ -55,6 +84,10 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
   const sortedSwarms = useMemo(
     () => [...allListed].sort((a, b) => a.name.localeCompare(b.name)),
     [allListed],
+  );
+  const selectedCodexTargets = useMemo(
+    () => swarms.filter((s) => selected.has(s.id) && isCodexExecutorTarget(s)),
+    [selected, swarms],
   );
 
   const toggle = (id: string) => {
@@ -161,7 +194,7 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
               <div>
                 {showOffline
                   ? 'No swarms are registered with this hub.'
-                  : 'No online swarms with ACP or mail capability. Toggle "Show offline / incompatible" to inspect.'}
+                  : 'No online swarms with ACP, mail, or Codex executor capability. Toggle "Show offline / incompatible" to inspect.'}
               </div>
             </div>
           ) : (
@@ -172,6 +205,7 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
               {sortedSwarms.map((s) => {
                 const ps = s as PickerSwarm;
                 const eligible = isDispatchable(s);
+                const isCodex = isCodexExecutorTarget(s);
                 const checked = selected.has(s.id);
                 return (
                   <label
@@ -193,6 +227,13 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
                     <span className="truncate flex-1" style={{ color: 'var(--color-text)' }}>
                       {s.name}
                     </span>
+                    {isCodex && (
+                      <span
+                        className="text-2xs shrink-0 px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300"
+                      >
+                        Codex
+                      </span>
+                    )}
                     {s.last_seen_at && (
                       <TimeAgo date={s.last_seen_at} className="text-2xs shrink-0" style={{ color: 'var(--color-text-muted)' }} />
                     )}
@@ -215,6 +256,29 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
             </div>
           )}
         </div>
+
+        {selectedCodexTargets.length > 0 && (
+          <div
+            className="rounded-md border p-3 text-sm flex items-start gap-2"
+            style={{
+              borderColor: 'rgba(245, 158, 11, 0.45)',
+              background: 'rgba(245, 158, 11, 0.08)',
+              color: 'var(--color-text)',
+            }}
+          >
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-amber-300" />
+            <div className="space-y-1">
+              <div className="font-medium">
+                Codex dispatch uses full filesystem access by default.
+              </div>
+              <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                Selected Codex executor{selectedCodexTargets.length === 1 ? '' : 's'} run with{' '}
+                <span className="font-mono">danger-full-access</span> unless the operator
+                overrides <span className="font-mono">dispatch.codex_executor.sandbox</span>.
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Optional prompt */}
         <div>

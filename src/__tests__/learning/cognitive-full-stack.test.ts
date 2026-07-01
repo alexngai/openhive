@@ -1,10 +1,10 @@
 /**
- * Full Stack E2E: OpenHive → cognitive-core → OpenSwarm/macro-agent
+ * Full Stack E2E: OpenHive → cognitive-core → SwarmRunner/macro-agent
  *
- * Tests the complete learning flow with real OpenSwarm + macro-agent:
+ * Tests the complete learning flow with real SwarmRunner + macro-agent:
  *
  *   1. Boot OpenHive with learning + compute + swarm hosting
- *   2. Spawn a real OpenSwarm instance with macro-agent adapter
+ *   2. Spawn a real SwarmRunner instance with macro-agent adapter
  *   3. Swarm connects back to OpenHive's MAP hub (via bootstrap token)
  *   4. Ingest trajectories → trigger batch learning
  *   5. Atlas dispatches workspace.execute to the swarm
@@ -12,7 +12,7 @@
  *   7. Results flow back through MAP
  *
  * REQUIRES: FULL_STACK_E2E=true (spawns real processes)
- * REQUIRES: OpenSwarm + macro-agent built
+ * REQUIRES: SwarmRunner + macro-agent built
  *
  * Run:
  *   FULL_STACK_E2E=true npx vitest run src/__tests__/learning/cognitive-full-stack.test.ts
@@ -47,9 +47,9 @@ const TEST_ROOT = testRoot('cognitive-full-stack');
 const TEST_DB_PATH = testDbPath(TEST_ROOT, 'cognitive.db');
 const TEST_DATA_DIR = path.join(TEST_ROOT, 'swarm-data');
 
-const OPENSWARM_BIN = path.resolve(
+const SWARM_RUNNER_BIN = path.resolve(
   __dirname,
-  '../../../node_modules/openswarm/bin/openswarm.mjs',
+  '../../../node_modules/@swarmkit-ai/swarm-runner/bin/swarm-runner.mjs',
 );
 
 const PORT_RANGE_MIN = 19700;
@@ -79,7 +79,7 @@ function createTestConfig(): Config {
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
-      openswarm_command: `node ${OPENSWARM_BIN} serve`,
+      swarm_runner_command: `node ${SWARM_RUNNER_BIN} serve`,
       data_dir: TEST_DATA_DIR,
       port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
       max_swarms: 2,
@@ -108,7 +108,7 @@ async function waitFor(
 }
 
 describeFn(
-  'Full Stack: OpenHive → cognitive-core → OpenSwarm/macro-agent',
+  'Full Stack: OpenHive → cognitive-core → SwarmRunner/macro-agent',
   () => {
     let app: FastifyInstance;
     let config: Config;
@@ -118,8 +118,8 @@ describeFn(
     const agentsByKey = new Map<string, { id: string; name: string }>();
 
     beforeAll(async () => {
-      if (!fs.existsSync(OPENSWARM_BIN)) {
-        throw new Error(`OpenSwarm binary not found at ${OPENSWARM_BIN}`);
+      if (!fs.existsSync(SWARM_RUNNER_BIN)) {
+        throw new Error(`SwarmRunner binary not found at ${SWARM_RUNNER_BIN}`);
       }
 
       cleanTestRoot(TEST_ROOT);
@@ -208,7 +208,7 @@ describeFn(
       console.log('[cognitive-e2e] Atlas available');
     });
 
-    it('spawns a real OpenSwarm+macro-agent swarm', async () => {
+    it('spawns a real SwarmRunner+macro-agent swarm', async () => {
       const hosted = await swarmManager.spawn(testAgent.id, {
         name: 'cognitive-e2e-swarm',
         metadata: { role: 'learning-compute' },

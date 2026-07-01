@@ -1,7 +1,7 @@
 /**
  * End-to-End Tests: Swarm Hosting + Terminal WebSocket
  *
- * These tests spawn a real Fastify server with SwarmManager, a mock OpenSwarm
+ * These tests spawn a real Fastify server with SwarmManager, a mock SwarmRunner
  * MAP server (fixtures/map-server.js), and verify the full flow:
  *
  *   1. Spawn a hosted swarm via the API → mock MAP server starts
@@ -61,7 +61,7 @@ function createTestConfig(): Config {
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
-      openswarm_command: `node ${MAP_SERVER_SCRIPT}`,
+      swarm_runner_command: `node ${MAP_SERVER_SCRIPT}`,
       data_dir: TEST_DATA_DIR,
       port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
       max_swarms: 5,
@@ -375,7 +375,7 @@ describe('E2E: Swarm Hosting + Terminal WebSocket', () => {
       const body = JSON.parse(response.body);
 
       // The endpoint must be the hub's MAP server, not the swarm's
-      // assigned port — the openswarm `serve` gateway has no MAP WS bound to
+      // assigned port — the swarm-runner `serve` gateway has no MAP WS bound to
       // assigned_port, so pointing the TUI there used to silently fail.
       expect(body.endpoint).toBe(`ws://127.0.0.1:${SERVER_PORT}/ws/map`);
       expect(body.endpoint).not.toContain(String(runningSwarmPort));

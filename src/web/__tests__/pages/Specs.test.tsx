@@ -40,7 +40,7 @@ describe('<Specs /> page', () => {
   it('shows loading state while fetching', () => {
     mockUseSpecs.mockReturnValue({ data: undefined, isLoading: true, error: null });
     renderPage();
-    expect(screen.getByText(/Loading specs/i)).toBeDefined();
+    expect(screen.getByRole('status', { name: /loading/i })).toBeDefined();
   });
 
   it('shows empty state when no specs exist', () => {

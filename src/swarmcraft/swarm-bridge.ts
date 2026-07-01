@@ -200,31 +200,55 @@ export async function setupSwarmBridge(
       // Use the swarm's ID as mapServerId so ACP streams route through
       // the correct MAP ClientConnection for this swarm
       const serverId = ev.swarm_id;
-      await ctx.db.agents.create({
-        id: agentId,
-        name,
-        type: ev.role || 'agent',
-        // Forward the agent's declared MAP ParticipantCapabilities so
-        // SwarmCraft's capability resolver (useAgentCapabilities) can detect
-        // ACP/mail/messaging without re-querying MAP. Falls back to an empty
-        // object when the agent didn't declare any (still a valid shape).
-        capabilities: ev.capabilities ?? {},
-        mapServerId: serverId,
-        parentAgentId,
-        state: mapNodeStateToState(ev.state),
-        presence: 'online',
-        stateMetadata: {
-          source: 'openhive-hub',
-          swarmId: ev.swarm_id,
-          mapAgentId: ev.map_agent_id,
-          // SwarmCraft's capability resolver reads peerMapId from the nested
-          // `agentMetadata` slot — it uses this to target the agent on the
-          // peer's MAP server for ACP routing. Forward whatever metadata
-          // the registration carried (preserves peerMapId, sessionId, etc.)
-          // and fall back to the raw map_agent_id when emitter omitted it.
-          agentMetadata: ev.metadata ?? { peerMapId: ev.map_agent_id },
-        },
-      });
+      const buildPayload = (existingAgent: unknown) => {
+        const existing = existingAgent as {
+          capabilities?: unknown;
+          stateMetadata?: { agentMetadata?: Record<string, unknown> };
+        } | null;
+        return {
+          name,
+          type: ev.role || 'agent',
+          // Forward the agent's declared MAP ParticipantCapabilities so
+          // SwarmCraft's capability resolver (useAgentCapabilities) can detect
+          // ACP/mail/messaging without re-querying MAP. Falls back to an empty
+          // object when the agent didn't declare any (still a valid shape).
+          capabilities: ev.capabilities ?? existing?.capabilities ?? {},
+          mapServerId: serverId,
+          parentAgentId,
+          state: mapNodeStateToState(ev.state),
+          presence: 'online',
+          stateMetadata: {
+            source: 'openhive-hub',
+            swarmId: ev.swarm_id,
+            mapAgentId: ev.map_agent_id,
+            // SwarmCraft's capability resolver reads peerMapId from the nested
+            // `agentMetadata` slot — it uses this to target the agent on the
+            // peer's MAP server for ACP routing. Forward whatever metadata
+            // the registration carried (preserves peerMapId, sessionId, etc.)
+            // and preserve any existing metadata before falling back to the
+            // raw map_agent_id when emitter omitted it.
+            agentMetadata:
+              ev.metadata ??
+              existing?.stateMetadata?.agentMetadata ??
+              { peerMapId: ev.map_agent_id },
+          },
+        };
+      };
+      const existing = await ctx.db.agents.get(agentId);
+      const payload = buildPayload(existing);
+      if (existing) {
+        await ctx.db.agents.update(agentId, payload);
+      } else {
+        try {
+          await ctx.db.agents.create({ id: agentId, ...payload });
+        } catch (err) {
+          const message = (err as Error).message || '';
+          if (!/UNIQUE constraint failed|duplicate/i.test(message)) throw err;
+          const current = await ctx.db.agents.get(agentId);
+          if (!current) throw err;
+          await ctx.db.agents.update(agentId, buildPayload(current));
+        }
+      }
       ctx.wsHub.broadcastAgentRegistered({ id: agentId, name, type: ev.role || 'agent' });
     } catch (err) {
       console.warn(`[swarmcraft-bridge] node_registered handler failed: ${(err as Error).message}`);
@@ -616,7 +640,7 @@ async function hydrateSwarm(ctx: BridgeContext, swarm: MapSwarm): Promise<void> 
 /**
  * Derive the MAP server URL from a swarm's base endpoint.
  *
- * Hosted swarms (OpenSwarm + macro-agent) expose:
+ * Hosted swarms (SwarmRunner + macro-agent) expose:
  *   - ACP WebSocket on the base port ({endpoint}/acp)
  *   - MAP server on base port + 2 ({endpoint_port+2}/map)
  *
@@ -699,7 +723,7 @@ async function connectMapClient(
 /**
  * Candidate health-check URLs derived from a swarm's MAP endpoint.
  *
- * openswarm/macro-agent layouts:
+ * swarm-runner/macro-agent layouts:
  *   gateway HTTP at base port, management HTTP at base+1, MAP WS at base+2.
  *   /health is exposed on multiple of these; we probe the most-likely set.
  *

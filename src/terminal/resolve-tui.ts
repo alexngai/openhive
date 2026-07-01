@@ -1,8 +1,8 @@
 /**
- * OpenSwarm TUI Binary Resolution
+ * Swarm Runner TUI Binary Resolution
  *
- * Resolves the platform-specific OpenSwarm TUI binary path.
- * Mirrors the logic from openswarm/bin/openswarm.mjs lines 69-98.
+ * Resolves the platform-specific Swarm Runner TUI binary path.
+ * Mirrors the logic from swarm-runner/bin/swarm-runner.mjs lines 69-98.
  */
 
 import { existsSync } from 'fs';
@@ -12,18 +12,18 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
 /**
- * Resolve the OpenSwarm TUI binary path for the current platform.
+ * Resolve the Swarm Runner TUI binary path for the current platform.
  * Returns the absolute path to the binary, or null if not available.
  */
-export function resolveOpenSwarmTuiBinary(): string | null {
+export function resolveSwarmRunnerTuiBinary(): string | null {
   const { platform, arch } = process;
-  const packageName = `@openswarm/cli-${platform}-${arch}`;
+  const packageName = `@swarmkit-ai/swarm-runner-cli-${platform}-${arch}`;
 
   // Try 1: resolve from installed npm package (production path)
   try {
     const platformPkgJson = require.resolve(`${packageName}/package.json`);
     const platformPkgDir = dirname(platformPkgJson);
-    const binaryPath = join(platformPkgDir, 'openswarm');
+    const binaryPath = join(platformPkgDir, 'swarm-runner');
     if (existsSync(binaryPath)) {
       return binaryPath;
     }
@@ -31,16 +31,16 @@ export function resolveOpenSwarmTuiBinary(): string | null {
     // Package not installed
   }
 
-  // Try 2: check local packages/ directory in openswarm source (development path)
+  // Try 2: check local packages/ directory in swarm-runner source (development path)
   try {
-    const openswarmPkgJson = require.resolve('openswarm/package.json');
-    const openswarmPkgDir = dirname(openswarmPkgJson);
-    const localPath = join(openswarmPkgDir, 'packages', `cli-${platform}-${arch}`, 'openswarm');
+    const swarmRunnerPkgJson = require.resolve('@swarmkit-ai/swarm-runner/package.json');
+    const swarmRunnerPkgDir = dirname(swarmRunnerPkgJson);
+    const localPath = join(swarmRunnerPkgDir, 'packages', `cli-${platform}-${arch}`, 'swarm-runner');
     if (existsSync(localPath)) {
       return localPath;
     }
   } catch {
-    // openswarm package not found
+    // @swarmkit-ai/swarm-runner package not found
   }
 
   return null;

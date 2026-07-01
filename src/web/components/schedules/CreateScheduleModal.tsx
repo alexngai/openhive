@@ -36,7 +36,7 @@ export function CreateScheduleModal({ onClose, initialSpecRef }: Props) {
   const [skipIfRunning, setSkipIfRunning] = useState(false);
   // Fallback spawn
   const [fallbackEnabled, setFallbackEnabled] = useState(false);
-  const [fallbackAdapter, setFallbackAdapter] = useState<FallbackSpawnAdapter>('openswarm');
+  const [fallbackAdapter, setFallbackAdapter] = useState<FallbackSpawnAdapter>('swarm-runner');
   const [error, setError] = useState<string | null>(null);
 
   const create = useCreateSchedule();
@@ -204,7 +204,7 @@ export function CreateScheduleModal({ onClose, initialSpecRef }: Props) {
                     onChange={(e) => setFallbackAdapter(e.target.value as FallbackSpawnAdapter)}
                     className="input ml-1 px-1.5 py-0.5 text-xs"
                   >
-                    <option value="openswarm">openswarm</option>
+                    <option value="swarm-runner">swarm-runner</option>
                     <option value="claude-code">claude-code</option>
                     <option value="codex">codex</option>
                   </select>

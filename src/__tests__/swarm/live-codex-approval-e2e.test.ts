@@ -74,7 +74,7 @@ function createTestConfig(): Config {
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
-      openswarm_command: 'echo unused',
+      swarm_runner_command: 'echo unused',
       data_dir: TEST_DATA_DIR,
       port_range: [20040, 20060],
       max_swarms: 4,

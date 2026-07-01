@@ -48,6 +48,9 @@ const Dispatch = lazy(() => import('./pages/Dispatch').then(m => ({ default: m.D
 const DispatchDetail = lazy(() => import('./pages/DispatchDetail').then(m => ({ default: m.DispatchDetail })));
 const Schedules = lazy(() => import('./pages/Schedules').then(m => ({ default: m.Schedules })));
 const ScheduleDetail = lazy(() => import('./pages/ScheduleDetail').then(m => ({ default: m.ScheduleDetail })));
+const Experiments = lazy(() => import('./pages/Experiments').then(m => ({ default: m.Experiments })));
+const ExperimentDetail = lazy(() => import('./pages/ExperimentDetail').then(m => ({ default: m.ExperimentDetail })));
+const ExperimentRunDetail = lazy(() => import('./pages/ExperimentRunDetail').then(m => ({ default: m.ExperimentRunDetail })));
 const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
 const MemoryDetail = lazy(() => import('./pages/MemoryDetail').then(m => ({ default: m.MemoryDetail })));
 const Skills = lazy(() => import('./pages/Skills').then(m => ({ default: m.Skills })));
@@ -95,6 +98,9 @@ export default function App() {
                   `hostedId` from params and renders <HostedChat /> in the
                   detail pane — same chrome as SessionDetail/MailThreadView. */}
               <Route path="threads/hosted-chat/:hostedId" element={<Sessions />} />
+              {/* TUI-kind hosted swarms (claude-code, codex-tui) — the detail
+                  pane renders an embedded terminal attached to the live PTY. */}
+              <Route path="threads/hosted-tui/:hostedId" element={<Sessions />} />
               <Route path="events" element={<Events />} />
               <Route path="terminal/:swarmId" element={<Terminal />} />
               <Route path="teams" element={<Teams />} />
@@ -128,6 +134,9 @@ export default function App() {
               <Route path="dispatch/:id" element={<DispatchDetail />} />
               <Route path="schedules" element={<Schedules />} />
               <Route path="schedules/:id" element={<ScheduleDetail />} />
+              <Route path="experiments" element={<Experiments />} />
+              <Route path="experiments/:id" element={<ExperimentDetail />} />
+              <Route path="experiments/:id/runs/:runId" element={<ExperimentRunDetail />} />
               {/* Redirect legacy /dispatches URLs */}
               <Route path="dispatches" element={<Navigate to="/dispatch" replace />} />
               <Route path="dispatches/:id" element={<DispatchIdRedirect />} />

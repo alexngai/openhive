@@ -90,9 +90,9 @@ describe('Sidebar Navigation', () => {
     expect(link!.getAttribute('href')).toBe('/tasks');
   });
 
-  it('has the Agents section header', () => {
+  it('has the Fleet section header', () => {
     renderSidebar();
-    expect(screen.getByText('Agents')).toBeDefined();
+    expect(screen.getByText('Fleet')).toBeDefined();
   });
 
   it('has the Work section header', () => {
@@ -100,9 +100,16 @@ describe('Sidebar Navigation', () => {
     expect(screen.getByText('Work')).toBeDefined();
   });
 
-  it('has the Context section header', () => {
+  it('has the Library section header', () => {
     renderSidebar();
-    expect(screen.getByText('Context')).toBeDefined();
+    expect(screen.getByText('Library')).toBeDefined();
+  });
+
+  it('surfaces schedules and events links', () => {
+    renderSidebar();
+    const links = screen.getAllByRole('link');
+    expect(links.find((l) => l.textContent?.trim() === 'Schedules')?.getAttribute('href')).toBe('/schedules');
+    expect(links.find((l) => l.textContent?.trim() === 'Events')?.getAttribute('href')).toBe('/events');
   });
 
   it('marks Overview link as active when on /', () => {

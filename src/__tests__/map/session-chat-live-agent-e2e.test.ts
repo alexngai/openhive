@@ -1,10 +1,10 @@
 /**
  * Live Agent E2E Tests: Session Chat with Real Swarms
  *
- * Spawns REAL OpenSwarm processes with macro-agent adapter and cc-swarm
+ * Spawns REAL SwarmRunner processes with macro-agent adapter and cc-swarm
  * sidecars, then tests the full session chat flow end-to-end:
  *
- *   1. Spawn real OpenSwarm via SwarmManager
+ *   1. Spawn real SwarmRunner via SwarmManager
  *   2. Wait for MAP connection + capability registration
  *   3. Verify mail/messaging/ACP capabilities published
  *   4. Create session linked to the live swarm
@@ -13,7 +13,7 @@
  *
  * Requirements:
  *   - LIVE_AGENT_E2E=true to enable
- *   - openswarm installed (npx openswarm serve)
+ *   - swarm-runner installed (npx @swarmkit-ai/swarm-runner serve)
  *   - Claude Max plan or ANTHROPIC_API_KEY set
  *
  * Run:
@@ -86,7 +86,7 @@ function createTestConfig(): Config {
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
-      openswarm_command: 'npx openswarm serve',
+      swarm_runner_command: 'npx @swarmkit-ai/swarm-runner serve',
       data_dir: TEST_DATA_DIR,
       port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
       max_swarms: 3,
@@ -165,8 +165,8 @@ describeIf('Live Agent E2E — Session Chat with Real Swarms', () => {
     await app.listen({ port: SERVER_PORT, host: '127.0.0.1' });
     console.log(`[session-chat-live] Server listening on port ${SERVER_PORT}`);
 
-    // Spawn a REAL OpenSwarm with macro-agent adapter
-    console.log('[session-chat-live] Spawning real OpenSwarm with macro-agent...');
+    // Spawn a REAL SwarmRunner with macro-agent adapter
+    console.log('[session-chat-live] Spawning real SwarmRunner with macro-agent...');
     const hosted = await swarmManager.spawn(testAgent.id, {
       name: 'chat-test-swarm',
       adapter: 'macro-agent',

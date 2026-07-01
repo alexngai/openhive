@@ -134,7 +134,7 @@ Four files, three fast and one heavy. Critical path: the fast three first; full-
 
 ### 4. `src/__tests__/swarm/full-stack-loadout-prompt-receipt.test.ts` (slow, gated)
 
-**What it proves:** the materialized loadout addendum travels through the full dispatch orchestrator pipeline and arrives at the ACP runtime layer in a booted environment (real OpenHive Fastify + real OpenSwarm + real macro-agent subprocess).
+**What it proves:** the materialized loadout addendum travels through the full dispatch orchestrator pipeline and arrives at the ACP runtime layer in a booted environment (real OpenHive Fastify + real SwarmRunner + real macro-agent subprocess).
 
 **Shape:** sibling to `src/__tests__/swarm/full-stack-e2e.test.ts`. Same gate (`FULL_STACK_E2E=true`).
 

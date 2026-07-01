@@ -22,8 +22,13 @@ export const ScheduleLifecycleHintsSchema = z.object({
   mail: z.enum(['fresh', 'reuse']).optional(),
 });
 
+const FallbackSpawnAdapterSchema = z.preprocess(
+  (value) => (value === 'openswarm' ? 'swarm-runner' : value),
+  z.enum(['swarm-runner', 'claude-code', 'codex']),
+);
+
 export const FallbackSpawnSchema = z.object({
-  adapter: z.enum(['openswarm', 'claude-code', 'codex']),
+  adapter: FallbackSpawnAdapterSchema,
   cleanup_on_terminal: z.boolean().optional().default(true),
 });
 
@@ -52,11 +57,22 @@ const DispatchPromptPayloadSchema = z.object({
   fallback_spawn: FallbackSpawnSchema.optional(),
 });
 
+const ExperimentRunPayloadSchema = z.object({
+  kind: z.literal('experiment'),
+  experiment_ref: z.string().min(1),
+  run_controls: z
+    .object({
+      cycles: z.number().int().positive().optional(),
+      budgetSeconds: z.number().int().positive().optional(),
+    })
+    .optional(),
+});
+
 export const OpenHiveSchedulePayloadSchema = z.union([
-  // Try dispatch_prompt first since it requires the literal `kind`; any
-  // payload that doesn't match falls through to dispatch_spec (which
-  // accepts the legacy no-`kind` shape too).
+  // Literal-`kind` variants first; dispatch_spec (optional `kind`, legacy
+  // no-`kind` shape) is the permissive fallback.
   DispatchPromptPayloadSchema,
+  ExperimentRunPayloadSchema,
   DispatchSpecPayloadSchema,
 ]);
 

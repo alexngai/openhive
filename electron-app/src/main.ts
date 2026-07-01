@@ -13,6 +13,7 @@ import {
   Menu,
   Notification,
   Tray,
+  clipboard,
   crashReporter,
   dialog,
   ipcMain,
@@ -156,12 +157,51 @@ if (process.env.OPENHIVE_REMOTE_DEBUG) {
   );
 }
 
+// ── Headless / tray-only mode ─────────────────────────────────────────
+//
+// Headless mode boots the hive server (the forked Node child) WITHOUT
+// opening a BrowserWindow. The app lives entirely in the system tray /
+// menu bar; the UI window is built on demand when the user picks "Show
+// OpenHive". Triggered three ways, in precedence order:
+//   1. --no-tray / OPENHIVE_HEADLESS=0  → force headed, this launch
+//   2. --tray    / OPENHIVE_HEADLESS=1  → force headless, this launch
+//   3. the persisted `headless` app setting → default when no flag given
+//
+// The flag is `--tray`, NOT `--headless`: `--headless` is a reserved
+// Chromium command-line switch and Electron would route it into Chromium
+// rather than leave it for us to read. `OPENHIVE_HEADLESS` is fine as an
+// env var — no collision risk there.
+//
+// `headless` is finalised in whenReady, once the settings file is loaded.
+// The CLI/env flags are read here at module scope (no app paths needed);
+// the persisted setting is folded in later.
+const cliHeadless =
+  process.argv.includes('--tray') || process.env.OPENHIVE_HEADLESS === '1';
+const cliHeaded =
+  process.argv.includes('--no-tray') || process.env.OPENHIVE_HEADLESS === '0';
+let headless = cliHeadless;
+
 interface HiveEntry {
   child: ChildProcess;
-  window: BrowserWindow;
+  /**
+   * The hive's UI window. `null` in headless/tray mode — both before the
+   * user first opens the UI and again after they close it. The hive-child
+   * (the actual server process) lives on regardless.
+   */
+  window: BrowserWindow | null;
   dataDir: string;
   url: string;
   overrides: Record<string, unknown>;
+  /**
+   * Whether the hive-child server outlives its window. `true` → closing the
+   * window just disposes the UI; the server keeps running (a background
+   * hive). `false` → closing the window stops the hive (a transient,
+   * close-to-quit window). Also drives which hives are persisted to
+   * `settings.lastRunningHives` for restore-on-launch. See onHivesChanged().
+   */
+  keepAlive: boolean;
+  /** Stable short id for deep-link routing — `openhive://h/<id>/…`. */
+  id: string;
 }
 
 /**
@@ -312,6 +352,12 @@ type ChildMessage =
 
 const hives = new Map<string, HiveEntry>();
 
+// Set true once app quit begins. Child-exit handlers and onHivesChanged()
+// short-circuit on it: during quit every hive-child exits, and without this
+// guard their exit handlers would shrink `settings.lastRunningHives` to []
+// — destroying the very set the next launch needs to restore.
+let quitting = false;
+
 // ── Recent hives ──────────────────────────────────────────────────────
 //
 // Persisted MRU list of dataDir paths the user has opened. Surfaced as the
@@ -373,6 +419,179 @@ function clearRecentHives(): void {
   refreshMenus();
 }
 
+// ── App settings ──────────────────────────────────────────────────────
+//
+// Supervisor-scoped preferences, persisted under app.getPath('userData')
+// alongside recent-hives.json — separate from any per-hive state. Today
+// this is just the tray-mode knobs.
+
+interface AppSettings {
+  /** Launch into headless/tray-only mode (server runs, no window). */
+  headless: boolean;
+  /** Register an OS login item so OpenHive auto-starts at sign-in. */
+  startAtLogin: boolean;
+  /**
+   * dataDirs of the background (keepAlive) hives that were running last.
+   * Maintained continuously by onHivesChanged() — not just at quit — so a
+   * crash still leaves an accurate set. A headless launch restores these.
+   */
+  lastRunningHives: string[];
+  /**
+   * Stable hive-id registry: dataDir → short id, used by deep links
+   * (`openhive://h/<id>/…`). Persisted so a cold-start deep link can map an
+   * id back to a dataDir before that hive has booted.
+   */
+  hiveIds: Record<string, string>;
+}
+
+const DEFAULT_SETTINGS: Readonly<AppSettings> = {
+  headless: false,
+  startAtLogin: false,
+  lastRunningHives: [],
+  hiveIds: {},
+};
+
+let settings: AppSettings = { ...DEFAULT_SETTINGS };
+
+function settingsPath(): string {
+  return path.join(app.getPath('userData'), 'settings.json');
+}
+
+function loadSettings(): AppSettings {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(settingsPath(), 'utf-8'),
+    ) as Partial<AppSettings>;
+    return {
+      headless: parsed.headless === true,
+      startAtLogin: parsed.startAtLogin === true,
+      lastRunningHives: Array.isArray(parsed.lastRunningHives)
+        ? parsed.lastRunningHives.filter((p): p is string => typeof p === 'string')
+        : [],
+      hiveIds: (parsed.hiveIds && typeof parsed.hiveIds === 'object'
+        && !Array.isArray(parsed.hiveIds))
+        ? Object.fromEntries(
+            Object.entries(parsed.hiveIds as Record<string, unknown>)
+              .filter((e): e is [string, string] => typeof e[1] === 'string'),
+          )
+        : {},
+    };
+  } catch {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function saveSettings(): void {
+  try {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    fs.writeFileSync(
+      settingsPath(),
+      JSON.stringify(settings, null, 2),
+      'utf-8',
+    );
+  } catch {
+    /* disk full / readonly fs — non-fatal */
+  }
+}
+
+/**
+ * Sync the OS login-item registration to `settings.startAtLogin`.
+ * A sign-in auto-start passes `--tray` so it lands in the tray rather
+ * than stealing focus with a window. `setLoginItemSettings` is a no-op on
+ * Linux — autostart there needs an XDG `.desktop` file we don't ship yet,
+ * which is why the tray toggle is disabled on Linux.
+ */
+function applyLoginItemSetting(): void {
+  if (process.platform === 'linux') return;
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: settings.startAtLogin,
+      args: ['--tray'],
+    });
+  } catch {
+    /* login item is a convenience, not load-bearing — non-fatal */
+  }
+}
+
+/** Apply a settings patch, persist it, and re-sync derived OS state. */
+function updateSettings(patch: Partial<AppSettings>): void {
+  settings = { ...settings, ...patch };
+  saveSettings();
+  applyLoginItemSetting();
+  refreshTrayMenu();
+}
+
+/**
+ * dataDirs that were in the restore set this launch but whose hive folder
+ * was missing (deleted, or an unmounted drive). Kept *out* of the running
+ * `hives` map but folded back into `settings.lastRunningHives` by
+ * onHivesChanged() — so a transient unmount auto-recovers next launch
+ * rather than silently dropping the hive from auto-start.
+ */
+let unavailableHives: string[] = [];
+
+/**
+ * Call after any change to the set of running hives (spawn, stop, crash,
+ * window close, keepAlive toggle). Persists the auto-start set for
+ * restore-on-launch and rebuilds the tray so its "Running Hives" list
+ * stays accurate. Persisting continuously (rather than only at quit) means
+ * a crash still leaves a correct `lastRunningHives`.
+ *
+ * The persisted set is (running keepAlive hives) ∪ (unavailableHives) — see
+ * `unavailableHives` for why the missing ones are retained.
+ *
+ * NOT called from before-quit's mass `hives.clear()` — that would wipe the
+ * set right before exit; the last per-hive change already recorded it.
+ */
+function onHivesChanged(): void {
+  if (quitting) return;  // don't persist the set as it drains during quit
+  const running = [...hives.values()]
+    .filter((entry) => entry.keepAlive)
+    .map((entry) => entry.dataDir);
+  settings.lastRunningHives = [...new Set([...running, ...unavailableHives])];
+  saveSettings();
+  refreshTrayMenu();
+}
+
+// ── Hive-id registry ──────────────────────────────────────────────────
+//
+// A stable, short, URL-safe id per hive dataDir, used by deep links
+// (`openhive://h/<id>/<route>`). Persisted in settings.hiveIds (dataDir →
+// id) so a cold-start deep link can resolve an id to a dataDir before that
+// hive has booted.
+
+/** Derive a URL-safe id stub from a dataDir's basename. */
+function slugifyHiveId(dataDir: string): string {
+  const base = path.basename(dataDir)
+    .toLowerCase()
+    .replace(/^\.+/, '')          // ~/.openhive → "openhive"
+    .replace(/[^a-z0-9]+/g, '-')  // spaces / punctuation → dash
+    .replace(/^-+|-+$/g, '');     // trim leading/trailing dashes
+  return base || 'hive';
+}
+
+/** Return the hive's id, assigning + persisting a fresh one on first use.
+ *  Collisions (same basename, different dir) get a `-2`, `-3`, … suffix. */
+function ensureHiveId(dataDir: string): string {
+  const existing = settings.hiveIds[dataDir];
+  if (existing) return existing;
+  const taken = new Set(Object.values(settings.hiveIds));
+  const base = slugifyHiveId(dataDir);
+  let id = base;
+  for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
+  settings.hiveIds = { ...settings.hiveIds, [dataDir]: id };
+  saveSettings();
+  return id;
+}
+
+/** Reverse the registry: hive id → dataDir, or undefined if unknown. */
+function resolveHiveId(id: string): string | undefined {
+  for (const [dir, hid] of Object.entries(settings.hiveIds)) {
+    if (hid === id) return dir;
+  }
+  return undefined;
+}
+
 /** Rebuild + reattach both the application menu and the macOS dock menu.
  *  Safe to call before app-ready (no-op until then). */
 function refreshMenus(): void {
@@ -384,20 +603,35 @@ function refreshMenus(): void {
 }
 
 /**
- * Focus an already-open hive's window, or boot a new hive at this dataDir.
- * Used by the "New Hive…" menu, the recent-hives submenu, and the default
- * userData spawn on launch.
+ * Open a hive's window — focusing it if already open, building the window
+ * if headless mode deferred it, or booting a fresh hive at this dataDir.
+ * Always results in a visible window: it's the user-initiated "open"
+ * action (menus, recent-hives, tray). The headless launch path boots the
+ * server windowless instead by calling spawnHive directly.
  */
-async function openHive(dataDir: string): Promise<void> {
+async function openHive(
+  dataDir: string,
+  opts: { withWindow?: boolean; keepAlive?: boolean } = {},
+): Promise<void> {
+  const withWindow = opts.withWindow ?? true;
   const existing = hives.get(dataDir);
   if (existing) {
-    if (existing.window.isMinimized()) existing.window.restore();
-    existing.window.focus();
+    if (opts.keepAlive !== undefined) {
+      existing.keepAlive = opts.keepAlive;
+      onHivesChanged();
+    }
+    if (withWindow) {
+      const window = existing.window && !existing.window.isDestroyed()
+        ? existing.window
+        : await createHiveWindow(existing);
+      if (window.isMinimized()) window.restore();
+      window.focus();
+    }
     recordRecentHive(dataDir);
     return;
   }
   try {
-    await spawnHive(dataDir);
+    await spawnHive(dataDir, {}, { withWindow, keepAlive: opts.keepAlive });
     recordRecentHive(dataDir);
   } catch (err) {
     dialog.showErrorBox('Could not open hive', (err as Error).message);
@@ -416,47 +650,222 @@ async function openHive(dataDir: string): Promise<void> {
 // subscribes to the `openhive:deep-link` IPC channel and maps URLs to
 // react-router routes.
 
+/** True if any hive currently has a live, non-destroyed window. */
+function anyHiveWindowOpen(): boolean {
+  for (const entry of hives.values()) {
+    if (entry.window && !entry.window.isDestroyed()) return true;
+  }
+  return false;
+}
+
+/**
+ * Focus the first hive that already has a live window. Returns null when
+ * no hive has a window (e.g. headless mode before the UI is opened) —
+ * callers that must guarantee a window should use showHive() instead.
+ */
 function focusFirstHive(): BrowserWindow | null {
-  const first = hives.values().next().value;
-  if (!first) return null;
-  const { window } = first;
+  for (const entry of hives.values()) {
+    const window = entry.window;
+    if (window && !window.isDestroyed()) {
+      if (window.isMinimized()) window.restore();
+      if (!window.isVisible()) window.show();
+      window.focus();
+      return window;
+    }
+  }
+  return null;
+}
+
+/**
+ * Surface a hive window whatever the current state: focus an open one,
+ * lazily build the window for a running-but-windowless headless hive, or
+ * boot the default hive if nothing is running. This is what the tray's
+ * "Show OpenHive", tray click, and dock/second-instance activations route
+ * through.
+ */
+async function showHive(): Promise<BrowserWindow | null> {
+  const focused = focusFirstHive();
+  if (focused) return focused;
+
+  const first = hives.values().next().value as HiveEntry | undefined;
+  if (first) {
+    const window = await createHiveWindow(first);
+    if (window.isMinimized()) window.restore();
+    window.focus();
+    return window;
+  }
+
+  // Nothing running at all — boot the default hive with a window.
+  await openHive(defaultHiveDataDir());
+  const booted = hives.values().next().value as HiveEntry | undefined;
+  return booted?.window ?? null;
+}
+
+/**
+ * Surface one *specific* hive's window — focusing it, or building it on
+ * demand if the hive is running windowless. Used by the tray's per-hive
+ * "Show Window". Boots the hive first if it isn't running at all.
+ */
+async function showHiveByDir(dataDir: string): Promise<BrowserWindow | null> {
+  const entry = hives.get(dataDir);
+  if (!entry) {
+    await openHive(dataDir, { withWindow: true });
+    return hives.get(dataDir)?.window ?? null;
+  }
+  const window = entry.window && !entry.window.isDestroyed()
+    ? entry.window
+    : await createHiveWindow(entry);
   if (window.isMinimized()) window.restore();
-  if (!window.isVisible()) window.show();
   window.focus();
   return window;
 }
 
-// Resolved when the first hive's renderer has signalled readiness via the
-// `openhive:renderer-ready` IPC — i.e. the React app has mounted *and* the
+/**
+ * Stop one hive: send its child the graceful stop, destroy any window, and
+ * drop it from the registry. Deleting the entry first means the child's
+ * exit handler treats the exit as intentional (no crash dialog).
+ */
+function stopHive(dataDir: string): void {
+  const entry = hives.get(dataDir);
+  if (!entry) return;
+  hives.delete(dataDir);
+  if (entry.window && !entry.window.isDestroyed()) entry.window.destroy();
+  if (entry.child.pid && !entry.child.killed) {
+    entry.child.send({ type: 'stop' });
+    // Backstop: force-kill if the graceful stop doesn't take.
+    setTimeout(() => {
+      if (!entry.child.killed) entry.child.kill();
+    }, 3000);
+  }
+  onHivesChanged();
+}
+
+/** Flip a hive's keepAlive flag (tray "Keep Running in Background"). */
+function setHiveKeepAlive(dataDir: string, value: boolean): void {
+  const entry = hives.get(dataDir);
+  if (!entry) return;
+  entry.keepAlive = value;
+  onHivesChanged();
+}
+
+/**
+ * Drop a missing hive from auto-start (tray "Remove from Auto-Start").
+ * Removing it from `unavailableHives` then letting onHivesChanged()
+ * recompute `lastRunningHives` (= running ∪ unavailableHives) prunes it
+ * from the persisted set — it won't reappear next launch.
+ */
+function removeUnavailableHive(dataDir: string): void {
+  unavailableHives = unavailableHives.filter((d) => d !== dataDir);
+  onHivesChanged();
+}
+
+/**
+ * Re-check a missing hive (tray "Try Again") — e.g. after remounting the
+ * drive it lived on. Boots it windowless + keepAlive if its `.openhive-root`
+ * marker is back (spawnHive then clears it from `unavailableHives`);
+ * otherwise notifies and leaves it in the unavailable list.
+ */
+async function retryUnavailableHive(dataDir: string): Promise<void> {
+  if (!fs.existsSync(path.join(dataDir, '.openhive-root'))) {
+    if (Notification.isSupported()) {
+      new Notification({
+        title: 'OpenHive',
+        body: `Still unavailable: ${path.basename(dataDir)}`,
+      }).show();
+    }
+    return;
+  }
+  try {
+    await openHive(dataDir, { withWindow: false, keepAlive: true });
+  } catch (err) {
+    console.warn(
+      `[supervisor] retry failed for ${dataDir} — ${(err as Error).message}`,
+    );
+  }
+}
+
+// Renderer-ready tracking. A hive's renderer signals readiness via the
+// `openhive:renderer-ready` IPC once the React app has mounted *and* the
 // deep-link hook has subscribed. Cold-start deep links (clicked while the
-// app was closed) wait on this so the IPC doesn't fire into a renderer
-// that hasn't subscribed yet.
+// app was closed, or while headless with no window) wait on this so the
+// IPC doesn't fire into a renderer that hasn't subscribed yet.
 //
 // Why a ping instead of `did-finish-load`: did-finish-load fires after the
 // HTML is parsed, but React's useEffect (where the deep-link hook attaches)
 // runs after the commit phase — usually within microtasks but not
 // guaranteed, and Suspense boundaries can defer it further.
-let firstHiveReady: Promise<BrowserWindow> | null = null;
-let firstHiveReadyResolve: ((w: BrowserWindow) => void) | null = null;
-function ensureFirstHivePromise(): Promise<BrowserWindow> {
-  if (!firstHiveReady) {
-    firstHiveReady = new Promise<BrowserWindow>((resolve) => {
-      firstHiveReadyResolve = resolve;
-    });
+//
+// Tracked per-webContents (not a single app-wide promise) so it stays
+// correct across headless open→close→reopen cycles, where the "first"
+// window keeps changing identity.
+const readyRenderers = new WeakSet<WebContents>();
+const rendererReadyWaiters = new WeakMap<WebContents, Array<() => void>>();
+
+function markRendererReady(wc: WebContents): void {
+  readyRenderers.add(wc);
+  const waiters = rendererReadyWaiters.get(wc);
+  if (waiters) {
+    rendererReadyWaiters.delete(wc);
+    for (const resolve of waiters) resolve();
   }
-  return firstHiveReady;
+}
+
+/** Resolve once the given window's renderer has signalled readiness. */
+function whenRendererReady(window: BrowserWindow): Promise<void> {
+  const wc = window.webContents;
+  if (readyRenderers.has(wc)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const list = rendererReadyWaiters.get(wc) ?? [];
+    list.push(resolve);
+    rendererReadyWaiters.set(wc, list);
+  });
+}
+
+// Resolves when whenReady has finished the initial supervisor boot (hive-id
+// registry loaded, restore set spawned). Cold-start deep links await this so
+// they can't race the restore loop into a double-spawn, nor try to resolve a
+// hive id before settings.hiveIds is populated.
+let markBootComplete: () => void = () => {};
+const bootComplete = new Promise<void>((resolve) => { markBootComplete = resolve; });
+
+/**
+ * Split an `openhive://` URL into an optional target hive id and the route
+ * URL to forward to that hive's renderer. `openhive://h/<id>/<route>`
+ * targets a specific hive; anything else has no id and targets the
+ * focused/first hive — the pre-multi-hive contract, unchanged for
+ * single-hive users. `h/` is safe to reserve: the SPA has no `/h` route.
+ */
+function parseDeepLink(url: string): { hiveId?: string; forward: string } {
+  const rest = url.slice('openhive://'.length);
+  const m = /^h\/([^/]+)(?:\/(.*))?$/.exec(rest);
+  if (m) return { hiveId: m[1], forward: `openhive://${m[2] ?? ''}` };
+  return { forward: url };
 }
 
 async function processDeepLink(url: string): Promise<void> {
   if (!url.startsWith('openhive://')) return;
-  // Send to whichever hive is already loaded, or wait for one if cold.
-  const live = focusFirstHive();
-  const target = live ?? await ensureFirstHivePromise();
-  if (live !== target) {
-    if (target.isMinimized()) target.restore();
-    target.focus();
+  // Hold cold-start links until the supervisor's initial boot is done.
+  await bootComplete;
+
+  const { hiveId, forward } = parseDeepLink(url);
+  // Resolve the target window: a specific hive by id (booting it if it
+  // isn't running), or — for an id-less link or an unknown id — the
+  // focused/first hive.
+  let target: BrowserWindow | null;
+  if (hiveId) {
+    const dataDir = resolveHiveId(hiveId);
+    target = dataDir ? await showHiveByDir(dataDir) : await showHive();
+  } else {
+    target = await showHive();
   }
-  target.webContents.send('openhive:deep-link', url);
+  if (!target || target.isDestroyed()) return;
+
+  // Route the URL once the renderer has subscribed to the deep-link channel.
+  await whenRendererReady(target);
+  if (target.isDestroyed()) return;
+  if (target.isMinimized()) target.restore();
+  target.focus();
+  target.webContents.send('openhive:deep-link', forward);
 }
 
 function findDeepLinkInArgv(argv: string[]): string | undefined {
@@ -480,7 +889,8 @@ if (!app.requestSingleInstanceLock()) {
       void processDeepLink(deepLink);
       return;
     }
-    focusFirstHive();
+    // Relaunch with no deep link — the user wants the app surfaced.
+    void showHive();
   });
   // Handle the initial launch argv too — the URL that triggered the launch
   // is in process.argv on Linux/Windows. macOS uses open-url instead.
@@ -492,7 +902,7 @@ if (!app.requestSingleInstanceLock()) {
 
 // ── IPC: renderer → main bridge ───────────────────────────────────────
 //
-// Preload (electron-app/src/preload.ts) exposes these as
+// Preload (electron-app/src/preload.cts) exposes these as
 // `window.openhive.{notify,setBadge}`. Main validates payload shape then
 // hands off to the OS.
 
@@ -536,11 +946,7 @@ ipcMain.on('openhive:notify', (event, payload: unknown) => {
 });
 
 ipcMain.on('openhive:renderer-ready', (event) => {
-  const sender = BrowserWindow.fromWebContents(event.sender);
-  if (sender && firstHiveReadyResolve) {
-    firstHiveReadyResolve(sender);
-    firstHiveReadyResolve = null;
-  }
+  markRendererReady(event.sender);
 });
 
 ipcMain.on('openhive:set-badge', (_event, raw: unknown) => {
@@ -556,12 +962,133 @@ ipcMain.on('openhive:set-badge', (_event, raw: unknown) => {
 
 // ── Tray icon ─────────────────────────────────────────────────────────
 //
-// Menu-bar/system-tray entry that's always present. Clicking brings the
-// first hive window forward; the submenu offers Show/New Hive/Quit for
-// when the window is fully hidden (closed on Linux, minimized-into-dock
-// on macOS). Held in a module-level ref so GC doesn't collect the Tray
-// and drop the icon from the menu bar.
+// Menu-bar/system-tray entry, always present. In headed mode it's a
+// convenience for when every window is closed; in headless/tray-only mode
+// it is the *only* surface — "Show OpenHive" lazily builds the UI window.
+// The menu also carries the two tray-mode toggles (start in background,
+// open at login). Held in a module-level ref so GC doesn't collect the
+// Tray and drop the icon from the menu bar.
 let tray: Tray | null = null;
+
+/** Per-hive submenu for the tray "Running Hives" list. */
+function buildHiveTraySubmenu(entry: HiveEntry): MenuItemConstructorOptions[] {
+  return [
+    { label: `ID: ${entry.id}`, enabled: false },
+    { type: 'separator' },
+    { label: 'Show Window', click: () => { void showHiveByDir(entry.dataDir); } },
+    { label: 'Stop', click: () => { stopHive(entry.dataDir); } },
+    {
+      label: 'Restart',
+      click: () => { void restartHive(entry.dataDir, entry.overrides); },
+    },
+    {
+      label: 'Copy Deep Link',
+      toolTip: `openhive://h/${entry.id}/`,
+      click: () => { clipboard.writeText(`openhive://h/${entry.id}/`); },
+    },
+    { type: 'separator' },
+    {
+      label: 'Keep Running in Background',
+      type: 'checkbox',
+      checked: entry.keepAlive,
+      toolTip: 'When off, closing this hive’s window stops its server',
+      click: (item) => { setHiveKeepAlive(entry.dataDir, item.checked); },
+    },
+  ];
+}
+
+/** Per-hive submenu for the tray "Unavailable Hives" list. */
+function buildUnavailableHiveSubmenu(dataDir: string): MenuItemConstructorOptions[] {
+  return [
+    { label: dataDir, enabled: false },
+    { type: 'separator' },
+    {
+      label: 'Try Again',
+      toolTip: 'Re-check the folder and boot the hive if it has reappeared',
+      click: () => { void retryUnavailableHive(dataDir); },
+    },
+    {
+      label: 'Remove from Auto-Start',
+      toolTip: 'Stop trying to restore this hive on launch',
+      click: () => { removeUnavailableHive(dataDir); },
+    },
+  ];
+}
+
+function buildTrayMenu(): Menu {
+  const items: MenuItemConstructorOptions[] = [];
+
+  // Running hives — the headless control panel. Each is a submenu of
+  // per-hive lifecycle actions; a "●" marks the ones with an open window.
+  if (hives.size > 0) {
+    items.push({ label: 'Running Hives', enabled: false });
+    for (const entry of hives.values()) {
+      const windowed = !!entry.window && !entry.window.isDestroyed();
+      items.push({
+        label: `  ${windowed ? '●' : '○'}  ${shortenPath(entry.dataDir)}`,
+        toolTip: entry.dataDir,
+        submenu: buildHiveTraySubmenu(entry),
+      });
+    }
+  } else {
+    items.push({ label: 'No hives running', enabled: false });
+  }
+
+  // Unavailable hives — restore entries whose folder was missing this
+  // launch (deleted, or an unmounted drive). Kept visible so the user
+  // explicitly retries or removes them, rather than a heuristic guessing.
+  if (unavailableHives.length > 0) {
+    items.push({ type: 'separator' });
+    items.push({ label: 'Unavailable Hives', enabled: false });
+    for (const dir of unavailableHives) {
+      items.push({
+        label: `  ⚠  ${shortenPath(dir)}`,
+        toolTip: `${dir} — folder missing (deleted, or drive not mounted)`,
+        submenu: buildUnavailableHiveSubmenu(dir),
+      });
+    }
+  }
+  items.push({ type: 'separator' });
+
+  items.push({
+    label: 'New Hive in Background…',
+    toolTip: 'Boot a hive server with no window',
+    click: () => { void promptOpenHive({ withWindow: false }); },
+  });
+  items.push({
+    label: 'New Hive (with window)…',
+    click: () => { void promptOpenHive({ withWindow: true }); },
+  });
+  items.push({ label: 'Open Recent', submenu: buildOpenRecentSubmenu() });
+  items.push({ type: 'separator' });
+
+  items.push({
+    label: 'Open in Background on Launch',
+    type: 'checkbox',
+    checked: settings.headless,
+    toolTip: 'Start in the tray without opening a window',
+    click: (item) => { updateSettings({ headless: item.checked }); },
+  });
+  items.push({
+    label: 'Open at Login',
+    type: 'checkbox',
+    checked: settings.startAtLogin,
+    // setLoginItemSettings is a no-op on Linux — disable the control
+    // there rather than offer a toggle that silently does nothing.
+    enabled: process.platform !== 'linux',
+    click: (item) => { updateSettings({ startAtLogin: item.checked }); },
+  });
+  items.push({ type: 'separator' });
+  items.push({ label: 'Quit OpenHive', click: () => app.quit() });
+
+  return Menu.buildFromTemplate(items);
+}
+
+/** Reattach the tray context menu — call after a settings change so the
+ *  checkbox states reflect the new values. No-op before the tray exists. */
+function refreshTrayMenu(): void {
+  if (tray) tray.setContextMenu(buildTrayMenu());
+}
 
 function setupTray(): void {
   const templateIcon = path.join(__dirname, '..', 'build', 'tray-iconTemplate.png');
@@ -572,25 +1099,26 @@ function setupTray(): void {
 
   tray = new Tray(image);
   tray.setToolTip('OpenHive');
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Show OpenHive', click: () => { focusFirstHive(); } },
-    { label: 'New Hive…', click: () => { void promptOpenHive(); } },
-    { type: 'separator' },
-    { label: 'Quit', click: () => app.quit() },
-  ]));
+  tray.setContextMenu(buildTrayMenu());
 
-  // Left-click (macOS) / single-click (Linux) focuses the window without
+  // Left-click (macOS) / single-click (Linux) surfaces the window without
   // needing the context menu.
-  tray.on('click', () => { focusFirstHive(); });
+  tray.on('click', () => { void showHive(); });
 }
 
 /** "Choose folder" dialog → openHive. Shared by the menu + tray.
  *  Parents the dialog to the focused or first hive window so macOS attaches
- *  it as a sheet instead of floating it free. */
-async function promptOpenHive(): Promise<void> {
-  const parent = BrowserWindow.getFocusedWindow()
-    ?? hives.values().next().value?.window
-    ?? undefined;
+ *  it as a sheet instead of floating it free. `withWindow: false` boots the
+ *  new hive headless (tray "New Hive in Background…"); such hives are
+ *  keepAlive so closing a later-opened window doesn't stop them. */
+async function promptOpenHive(
+  opts: { withWindow?: boolean } = {},
+): Promise<void> {
+  const withWindow = opts.withWindow ?? true;
+  const firstWindow = [...hives.values()]
+    .map((e) => e.window)
+    .find((w): w is BrowserWindow => !!w && !w.isDestroyed());
+  const parent = BrowserWindow.getFocusedWindow() ?? firstWindow ?? undefined;
   const r = parent
     ? await dialog.showOpenDialog(parent, {
         properties: ['openDirectory', 'createDirectory'],
@@ -601,7 +1129,10 @@ async function promptOpenHive(): Promise<void> {
         title: 'Choose a folder for the new hive',
       });
   if (r.canceled || !r.filePaths[0]) return;
-  await openHive(r.filePaths[0]);
+  await openHive(r.filePaths[0], {
+    withWindow,
+    keepAlive: withWindow ? undefined : true,
+  });
 }
 
 // ── Splash window ─────────────────────────────────────────────────────
@@ -673,6 +1204,14 @@ function dismissSplash(): void {
 // ── Lifecycle ─────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
   recentHives = loadRecentHives();
+  settings = loadSettings();
+
+  // Finalise headless mode now the persisted setting is available. An
+  // explicit flag this launch (either direction) overrides the setting.
+  headless = cliHeaded ? false : (cliHeadless || settings.headless);
+
+  // Keep the OS login item in sync with the saved preference.
+  applyLoginItemSetting();
 
   // Conservative permission posture: deny everything the SPA hasn't asked
   // for yet. We can whitelist as we add features (e.g. native notifications
@@ -690,28 +1229,105 @@ app.whenReady().then(async () => {
     return allowed.has(permission);
   });
 
-  showSplash();
+  // Headless: the hive server boots without a window, so there's nothing
+  // for the splash to bridge to — skip it entirely.
+  if (!headless) showSplash();
+
   const defaultHive = defaultHiveDataDir();
-  try {
-    await spawnHive(defaultHive);
-    recordRecentHive(defaultHive);
-  } catch (err) {
-    dismissSplash();
-    // Smoke test: a boot failure must exit non-zero so CI fails. Bypasses
-    // the error dialog (no one to see it) and app.quit()'s exit code 0.
-    if (process.env.OPENHIVE_SMOKE_TEST) {
-      console.error(
-        `[smoke-test] FAIL: hive did not boot — ${(err as Error).message}`,
+
+  if (headless) {
+    // Restore the background hives from the last session — boot them
+    // windowless + keepAlive. Sequential: pickFreePort has a race window,
+    // so we never boot two hives concurrently. Per-hive failures are
+    // non-fatal — log and skip; the app still comes up in the tray.
+    const restoring = settings.lastRunningHives.length > 0;
+    // Dedupe — a hand-edited settings.json could list a dir twice, and a
+    // second spawnHive() for the same dataDir would orphan the first child.
+    const toBoot = restoring
+      ? [...new Set(settings.lastRunningHives)]
+      : [defaultHive];
+    // Pre-scan for missing folders BEFORE booting any hive. A restore entry
+    // whose folder is gone (deleted, or an unmounted drive) must not be
+    // booted — spawnHiveChild would mkdir it and a blank hive would appear.
+    // `.openhive-root` is openhive's own sentinel, present in every
+    // initialized hive. Missing ones go to `unavailableHives` (kept, not
+    // pruned — see that var). The scan must complete before the first
+    // spawnHive(), whose onHivesChanged() reads `unavailableHives` — scan
+    // it lazily and a later-discovered miss would be dropped.
+    const bootable: string[] = [];
+    for (const dir of toBoot) {
+      if (restoring && !fs.existsSync(path.join(dir, '.openhive-root'))) {
+        console.warn(`[supervisor] hive unavailable, skipped: ${dir}`);
+        unavailableHives.push(dir);
+      } else {
+        bootable.push(dir);
+      }
+    }
+
+    let bootedAny = false;
+    for (const dir of bootable) {
+      try {
+        await spawnHive(dir, {}, { withWindow: false, keepAlive: true });
+        recordRecentHive(dir);
+        bootedAny = true;
+      } catch (err) {
+        console.warn(
+          `[supervisor] hive failed to restore: ${dir} — ${(err as Error).message}`,
+        );
+      }
+    }
+    // Restore set was non-empty but nothing came up — boot the default hive
+    // so the app isn't left with an empty tray.
+    if (!bootedAny && restoring) {
+      try {
+        await spawnHive(defaultHive, {}, { withWindow: false, keepAlive: true });
+        recordRecentHive(defaultHive);
+        bootedAny = true;
+      } catch (err) {
+        console.warn(
+          `[supervisor] default hive failed to boot — ${(err as Error).message}`,
+        );
+      }
+    }
+    if (Notification.isSupported()) {
+      // Stay resident in the tray regardless — surface what didn't come up.
+      if (unavailableHives.length > 0) {
+        new Notification({
+          title: 'OpenHive',
+          body: unavailableHives.length === 1
+            ? `Hive folder unavailable — skipped: ${path.basename(unavailableHives[0])}`
+            : `${unavailableHives.length} hive folders unavailable — skipped`,
+        }).show();
+      }
+      if (!bootedAny) {
+        new Notification({
+          title: 'OpenHive',
+          body: 'No hives could be started. Open one from the tray.',
+        }).show();
+      }
+    }
+  } else {
+    try {
+      await spawnHive(defaultHive, {}, { withWindow: true });
+      recordRecentHive(defaultHive);
+    } catch (err) {
+      dismissSplash();
+      // Smoke test: a boot failure must exit non-zero so CI fails. Bypasses
+      // the error dialog (no one to see it) and app.quit()'s exit code 0.
+      if (process.env.OPENHIVE_SMOKE_TEST) {
+        console.error(
+          `[smoke-test] FAIL: hive did not boot — ${(err as Error).message}`,
+        );
+        app.exit(1);
+        return;
+      }
+      dialog.showErrorBox(
+        'OpenHive failed to start',
+        (err as Error).message,
       );
-      app.exit(1);
+      app.quit();
       return;
     }
-    dialog.showErrorBox(
-      'OpenHive failed to start',
-      (err as Error).message,
-    );
-    app.quit();
-    return;
   }
 
   // Smoke test: spawnHive resolving means the hive-child loaded `openhive`
@@ -726,8 +1342,39 @@ app.whenReady().then(async () => {
     return;
   }
 
+  // Headless on macOS: drop the dock icon so OpenHive is a true menu-bar
+  // app. The icon comes back via app.dock.show() when a window is opened
+  // from the tray (see createHiveWindow's ready-to-show), and hides again
+  // when the last hive window closes (see the window 'closed' handler).
+  if (headless && process.platform === 'darwin') {
+    app.dock?.hide();
+  }
+
   refreshMenus();
   setupTray();
+  // Initial boot done — cold-start deep links queued on bootComplete may
+  // now resolve hive ids and route without racing the restore loop.
+  markBootComplete();
+
+  // E2E test hook — opt-in via OPENHIVE_E2E, inert (and absent) otherwise.
+  // A native tray menu can't be clicked from Playwright, so
+  // scripts/headless-e2e.mjs reaches supervisor state + the tray-action
+  // handlers through this, via electronApp.evaluate().
+  if (process.env.OPENHIVE_E2E) {
+    (globalThis as Record<string, unknown>).__openhiveTest = {
+      headless: () => headless,
+      hives: () => [...hives.values()].map((e) => ({
+        id: e.id,
+        dataDir: e.dataDir,
+        url: e.url,
+        keepAlive: e.keepAlive,
+        windowed: !!e.window && !e.window.isDestroyed(),
+      })),
+      unavailable: () => [...unavailableHives],
+      removeUnavailableHive: (dir: string) => { removeUnavailableHive(dir); },
+      retryUnavailableHive: (dir: string) => retryUnavailableHive(dir),
+    };
+  }
 
   // Auto-update: only in packaged builds. Skipped on `electron .` dev
   // launches (app.isPackaged === false). Publish destination is declared
@@ -735,11 +1382,21 @@ app.whenReady().then(async () => {
   // reads the same config to know where to check.
   if (app.isPackaged) {
     try {
-      const { autoUpdater } = await import('electron-updater');
+      const autoUpdater = await loadAutoUpdater();
+      // Record updater wiring health on the global. The e2e test reads this
+      // via Playwright's app.evaluate(), which runs in a context with no
+      // `require` / `import()` and so can't probe electron-updater itself.
+      // True iff electron-updater resolved to a usable object — the exact
+      // thing the CJS-interop regression broke (autoUpdater came back
+      // undefined). This records the result of the *real* loadAutoUpdater()
+      // call, not a re-implementation.
+      (globalThis as Record<string, unknown>).__openhiveAutoUpdaterReady =
+        typeof autoUpdater?.checkForUpdatesAndNotify === 'function';
       autoUpdater.checkForUpdatesAndNotify().catch((err: Error) => {
         console.warn(`[supervisor] auto-update check failed: ${err.message}`);
       });
     } catch (err) {
+      (globalThis as Record<string, unknown>).__openhiveAutoUpdaterReady = false;
       console.warn(
         `[supervisor] auto-update unavailable: ${(err as Error).message}`,
       );
@@ -748,22 +1405,34 @@ app.whenReady().then(async () => {
 });
 
 app.on('activate', () => {
-  if (hives.size === 0 && app.isReady()) {
+  if (!app.isReady()) return;
+  if (hives.size === 0) {
     void openHive(defaultHiveDataDir());
+  } else if (!anyHiveWindowOpen()) {
+    // A headless hive is running but has no window — surface one.
+    void showHive();
   }
 });
 
 app.on('window-all-closed', () => {
+  // Headless/tray mode: the app stays resident in the tray with the hive
+  // server still running, so closing the last window must not quit.
+  if (headless) return;
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', async (e) => {
+  // Freeze the running-hive set: from here on, child-exit handlers must not
+  // mutate `settings.lastRunningHives` (see `quitting`). Its current value
+  // is what the next launch restores.
+  quitting = true;
   if (hives.size === 0) return;
   e.preventDefault();
   // Snapshot bounds before app.exit() — that path bypasses window 'close'
   // events, so the per-hive close-handler never gets to persist them.
+  // Headless hives may have no window — nothing to snapshot there.
   for (const { window, dataDir } of hives.values()) {
-    saveWindowState(dataDir, window);
+    if (window && !window.isDestroyed()) saveWindowState(dataDir, window);
   }
   await Promise.allSettled(
     [...hives.values()].map(({ child }) =>
@@ -779,10 +1448,22 @@ app.on('before-quit', async (e) => {
 });
 
 // ── Hive lifecycle ────────────────────────────────────────────────────
-async function spawnHive(
+//
+// A hive is two things with independent lifetimes:
+//   - the hive-child: a forked Node process running the Fastify server
+//   - the window:     a BrowserWindow rendering the SPA against that server
+// They used to be created together. Headless mode splits them — the child
+// always boots; the window is built on demand. spawnHiveChild boots the
+// server, createHiveWindow builds its UI, and spawnHive orchestrates both.
+
+/**
+ * Fork a hive-child and wait for its Fastify server to bind. Resolves with
+ * the child handle and the loopback URL. Creates no window.
+ */
+async function spawnHiveChild(
   dataDir: string,
-  overrides: Record<string, unknown> = {},
-): Promise<HiveEntry> {
+  overrides: Record<string, unknown>,
+): Promise<{ child: ChildProcess; url: string }> {
   fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
   const logPath = path.join(dataDir, 'logs', 'hive.log');
 
@@ -841,6 +1522,19 @@ async function spawnHive(
     });
   });
 
+  return { child, url };
+}
+
+/**
+ * Build the BrowserWindow for an already-running hive entry and load the
+ * SPA. Idempotent — returns the existing window if one is already open.
+ * In headless mode this is deferred until the user opens the UI from the
+ * tray; in headed mode spawnHive calls it inline.
+ */
+async function createHiveWindow(entry: HiveEntry): Promise<BrowserWindow> {
+  if (entry.window && !entry.window.isDestroyed()) return entry.window;
+
+  const { dataDir, url } = entry;
   const state = loadWindowState(dataDir);
   const window = new BrowserWindow({
     x: state.x,
@@ -850,7 +1544,13 @@ async function spawnHive(
     show: false,
     backgroundColor: '#0b0a0c',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      // preload.cjs, NOT .js: the renderer is sandboxed (Electron default),
+      // and a sandboxed preload is executed as CommonJS. This package is
+      // `"type": "module"`, so a `.js` emit is ESM — Electron would throw
+      // `SyntaxError: Cannot use import statement outside a module` and the
+      // whole `window.openhive` bridge would silently never appear. The
+      // source is `preload.cts`; NodeNext compiles `.cts` → `.cjs` (CJS).
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -861,6 +1561,8 @@ async function spawnHive(
   window.once('ready-to-show', () => {
     window.show();
     dismissSplash();
+    // Headless macOS hid the dock icon — bring it back now there's a window.
+    if (process.platform === 'darwin') app.dock?.show();
   });
   // Recover from renderer crashes by reloading the same hive URL. The
   // hive-child Fastify server is a separate process and is unaffected, so
@@ -873,15 +1575,8 @@ async function spawnHive(
     console.warn(`[supervisor] renderer gone (${details.reason}) — reloading`);
     window.reload();
   });
-  try {
-    await window.loadURL(url);
-  } catch (err) {
-    if (!window.isDestroyed()) window.destroy();
-    throw err;
-  }
 
-  const entry: HiveEntry = { child, window, dataDir, url, overrides };
-  hives.set(dataDir, entry);
+  entry.window = window;
 
   // 'close' fires before 'closed' — bounds are still readable here.
   // Saving on 'closed' would be too late: the BrowserWindow is destroyed.
@@ -889,54 +1584,184 @@ async function spawnHive(
 
   window.on('closed', () => {
     const existing = hives.get(dataDir);
-    if (existing?.child.pid && !existing.child.killed) {
+    if (!existing) return;  // already stopped via stopHive / a crash
+    existing.window = null;
+    if (existing.keepAlive) {
+      // Background hive: closing the UI just disposes the window — the
+      // server keeps running, reachable again from the tray. Re-hide the
+      // macOS dock icon (headless mode) once no hive window remains.
+      if (headless && process.platform === 'darwin' && !anyHiveWindowOpen()) {
+        app.dock?.hide();
+      }
+      refreshTrayMenu();  // the "● windowed" marker changed
+      return;
+    }
+    // Transient hive: closing the window stops it.
+    if (existing.child.pid && !existing.child.killed) {
       existing.child.send({ type: 'stop' });
     }
     hives.delete(dataDir);
+    onHivesChanged();
   });
 
-  child.on('exit', (code) => {
-    const stillTracked = hives.get(dataDir);
-    // User-initiated close already deleted the entry; don't show crash dialog.
-    if (!stillTracked) return;
-    hives.delete(dataDir);
-    if (code === 0 || window.isDestroyed()) return;
+  try {
+    await window.loadURL(url);
+  } catch (err) {
+    if (!window.isDestroyed()) window.destroy();
+    entry.window = null;
+    throw err;
+  }
+  return window;
+}
 
+/**
+ * Surface a crashed hive to the user. With a window we parent a modal
+ * Restart/Close dialog to it; headless we fall back to an OS notification
+ * (a modal with no window to anchor would be invisible / un-dismissable).
+ * We never auto-restart — a silent crash loop is worse than a quiet stop.
+ */
+function handleHiveCrash(
+  dataDir: string,
+  overrides: Record<string, unknown>,
+  logPath: string,
+  code: number,
+  window: BrowserWindow | null,
+  keepAlive: boolean,
+): void {
+  const detail = `Hive at ${dataDir} exited (code ${code}). See ${logPath} for details.`;
+
+  if (window && !window.isDestroyed()) {
     dialog
       .showMessageBox(window, {
         type: 'error',
         title: 'Hive crashed',
-        message: `Hive at ${dataDir} exited (code ${code}). See ${logPath} for details.`,
+        message: detail,
         buttons: ['Restart', 'Close'],
       })
       .then((r) => {
-        if (r.response === 0) void spawnHive(dataDir, overrides);
-        else if (!window.isDestroyed()) window.close();
+        if (r.response === 0) {
+          void spawnHive(dataDir, overrides, { withWindow: true, keepAlive });
+        } else if (!window.isDestroyed()) {
+          window.close();
+        }
       })
       .catch(() => { /* dialog dismissed */ });
+    return;
+  }
+
+  // Headless: notify, and offer a one-click restart.
+  if (Notification.isSupported()) {
+    const n = new Notification({
+      title: 'OpenHive — hive stopped',
+      body: `${path.basename(dataDir)} crashed (code ${code}). Click to restart.`,
+    });
+    n.on('click', () => {
+      void spawnHive(dataDir, overrides, { withWindow: false, keepAlive });
+    });
+    n.show();
+  }
+}
+
+/**
+ * Boot a hive: fork the child server, register it, and — unless headless
+ * (or overridden via options.withWindow) — open its window.
+ */
+async function spawnHive(
+  dataDir: string,
+  overrides: Record<string, unknown> = {},
+  options: { withWindow?: boolean; keepAlive?: boolean } = {},
+): Promise<HiveEntry> {
+  const withWindow = options.withWindow ?? !headless;
+  // Default keepAlive to the global mode: a headless app's hives are
+  // background services; a headed app's hives are close-to-quit windows.
+  // "New Hive in Background…" and the restore path pass keepAlive: true.
+  const keepAlive = options.keepAlive ?? headless;
+  const logPath = path.join(dataDir, 'logs', 'hive.log');
+
+  const { child, url } = await spawnHiveChild(dataDir, overrides);
+
+  const entry: HiveEntry = {
+    child, window: null, dataDir, url, overrides, keepAlive,
+    id: ensureHiveId(dataDir),
+  };
+  hives.set(dataDir, entry);
+  // A dir that just booted is, by definition, available again.
+  unavailableHives = unavailableHives.filter((d) => d !== dataDir);
+  onHivesChanged();
+
+  // Long-lived crash handler. The 'exit before ready' listener inside
+  // spawnHiveChild has already settled by now; this one catches a child
+  // dying *after* a successful boot.
+  child.on('exit', (code) => {
+    if (quitting) return;  // app shutting down — before-quit owns cleanup
+    const stillTracked = hives.get(dataDir);
+    // User-initiated close/stop already deleted the entry; nothing to do.
+    if (!stillTracked) return;
+    hives.delete(dataDir);
+    onHivesChanged();
+    if (code === 0) return;  // clean stop — not a crash
+    const window = stillTracked.window;
+    if (window?.isDestroyed()) return;
+    handleHiveCrash(dataDir, overrides, logPath, code ?? -1, window, keepAlive);
   });
 
+  if (withWindow) {
+    try {
+      await createHiveWindow(entry);
+    } catch (err) {
+      // Window failed to load — tear the whole hive down so we don't leak
+      // an orphaned, unreachable child process.
+      hives.delete(dataDir);
+      onHivesChanged();
+      child.kill();
+      throw err;
+    }
+  }
   return entry;
 }
 
-/** Kill the current hive-child and boot a fresh one with new config. */
+/** Kill the current hive-child and boot a fresh one with new config,
+ *  reusing the existing window (if any) rather than orphaning it. */
 export async function restartHive(
   dataDir: string,
   overrides: Record<string, unknown>,
 ): Promise<void> {
   const existing = hives.get(dataDir);
   if (!existing) return;
-  const { window } = existing;
+  const { window, keepAlive } = existing;
   existing.child.kill();
   hives.delete(dataDir);
 
-  const next = await spawnHive(dataDir, overrides);
-  if (!window.isDestroyed()) {
+  const next = await spawnHive(dataDir, overrides, {
+    withWindow: false,
+    keepAlive,
+  });
+  if (window && !window.isDestroyed()) {
+    next.window = window;
     await window.loadURL(next.url);
   }
 }
 
 // ── Menu ──────────────────────────────────────────────────────────────
+
+/**
+ * Resolve electron-updater's `autoUpdater`.
+ *
+ * electron-updater is CommonJS and exposes `autoUpdater` through an
+ * `Object.defineProperty` lazy getter (it defers loading the platform-
+ * specific updater). Node's cjs-module-lexer can't see defineProperty-based
+ * exports, so `await import('electron-updater')` yields a namespace whose
+ * named `autoUpdater` binding is `undefined` — only `.default` (the real
+ * `module.exports`) carries the getter. Destructuring the named export
+ * silently gave `undefined`, hence the runtime
+ * `Cannot read properties of undefined (reading 'checkForUpdatesAndNotify')`.
+ * Reaching through `.default` fixes it; the `?? mod` fallback keeps it
+ * working if a future electron-updater ships a proper ESM-friendly export.
+ */
+async function loadAutoUpdater() {
+  const mod = await import('electron-updater');
+  return (mod.default ?? mod).autoUpdater;
+}
 
 /**
  * Manual update check — menu-item driven. `checkForUpdatesAndNotify` on
@@ -956,7 +1781,7 @@ async function manualCheckForUpdates(): Promise<void> {
     return;
   }
   try {
-    const { autoUpdater } = await import('electron-updater');
+    const autoUpdater = await loadAutoUpdater();
     const result = await autoUpdater.checkForUpdates();
     const latest = result?.updateInfo?.version;
     if (!latest || latest === app.getVersion()) {

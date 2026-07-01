@@ -2,7 +2,7 @@
  * Full Stack E2E: dispatch orchestrator delivers materialized loadout content
  * to the runtime layer (ACP prompt receipt verification).
  *
- * Boots the same OpenHive infrastructure (Fastify + real OpenSwarm + macro-agent subprocess)
+ * Boots the same OpenHive infrastructure (Fastify + real SwarmRunner + macro-agent subprocess)
  * as full-stack-e2e.test.ts, but wires the dispatch orchestrator with a stub AcpStreamManager
  * that records every prompt() call. A queued dispatch row bound to a loadout
  * containing a distinctive marker string is inserted; the test waits for
@@ -35,7 +35,7 @@
  *
  * ─── Constraints ────────────────────────────────────────────────────────────
  * REQUIRES: FULL_STACK_E2E=true
- * REQUIRES: OpenSwarm built (references/openswarm/dist/server.mjs or npm pkg)
+ * REQUIRES: SwarmRunner built (references/swarm-runner/dist/server.mjs or npm pkg)
  * REQUIRES: macro-agent built (references/macro-agent/dist/)
  *
  * Run:
@@ -98,9 +98,9 @@ const PORT_RANGE_MIN = 19640;
 const PORT_RANGE_MAX = 19650;
 const SERVER_PORT = 19739;
 
-const OPENSWARM_BIN = path.resolve(
+const SWARM_RUNNER_BIN = path.resolve(
   __dirname,
-  '../../../node_modules/openswarm/bin/openswarm.mjs',
+  '../../../node_modules/@swarmkit-ai/swarm-runner/bin/swarm-runner.mjs',
 );
 
 /**
@@ -137,7 +137,7 @@ function createTestConfig(): Config {
     swarmHosting: {
       enabled: true,
       default_provider: 'local',
-      openswarm_command: `node ${OPENSWARM_BIN} serve`,
+      swarm_runner_command: `node ${SWARM_RUNNER_BIN} serve`,
       data_dir: TEST_DATA_DIR,
       port_range: [PORT_RANGE_MIN, PORT_RANGE_MAX],
       max_swarms: 2,
@@ -313,10 +313,10 @@ describeFn(
     let recordingMgr: RecordingAcpStreamManager;
 
     beforeAll(async () => {
-      if (!fs.existsSync(OPENSWARM_BIN)) {
+      if (!fs.existsSync(SWARM_RUNNER_BIN)) {
         throw new Error(
-          `OpenSwarm binary not found at ${OPENSWARM_BIN}. ` +
-            `Build it first: cd references/openswarm && npm run build:server`,
+          `SwarmRunner binary not found at ${SWARM_RUNNER_BIN}. ` +
+            `Build it first: cd references/swarm-runner && npm run build:server`,
         );
       }
 

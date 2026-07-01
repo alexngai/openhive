@@ -37,7 +37,7 @@ function makeConfig(): SwarmHostingConfig {
   return {
     enabled: true,
     default_provider: 'local',
-    openswarm_command: 'node /tmp/unused.js',
+    swarm_runner_command: 'node /tmp/unused.js',
     data_dir: TEST_DATA_DIR,
     port_range: [19200, 19210],
     max_swarms: 3,
@@ -173,12 +173,12 @@ describe('SwarmManager.spawn — kind=claude-code', () => {
     it('returns false for non-claude-code rows', () => {
       const manager = new SwarmManager(makeConfig(), 'http://localhost:7836');
       try {
-        const fakeOpenswarmRow = {
+        const fakeSwarmRunnerRow = {
           id: 'h1',
-          kind: 'openswarm' as const,
+          kind: 'swarm-runner' as const,
           config: { data_dir: '/tmp' } as any,
         } as any;
-        expect(manager.signalClaudeCodeSidecar(fakeOpenswarmRow)).toBe(false);
+        expect(manager.signalClaudeCodeSidecar(fakeSwarmRunnerRow)).toBe(false);
       } finally {
         manager.shutdown();
       }
@@ -241,7 +241,7 @@ describe('SwarmManager.spawn — kind=claude-code', () => {
     });
   });
 
-  it('health monitor leaves claude-code rows alone (no openswarm-style probe)', async () => {
+  it('health monitor leaves claude-code rows alone (no swarm-runner-style probe)', async () => {
     // Insert a synthetic claude-code row at state=running and run the
     // private health-check loop directly. The loop should skip it (no
     // probe attempted) and leave the state untouched. Without the

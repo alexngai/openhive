@@ -41,7 +41,6 @@ import {
   useConnectSwarm,
   useHives,
   useSpawnAgent,
-  useConnectAcp,
   useKnownProjectPaths,
   useResourcesByType,
   useRepos,
@@ -61,8 +60,10 @@ import {
   SandboxBadge,
   SectionLabel,
 } from "../components/swarm/StatusBadges";
+import { WorkingDirectoryCombobox } from "../components/swarm/WorkingDirectoryCombobox";
 import type { HostedSwarm, MapSwarm, MapRegisteredAgent } from "../lib/api";
 import { getPeerMapId } from "../lib/map";
+import { useChatFabStore } from "../components/chat-fab/ChatFabStore";
 
 const PROVIDERS = [
   { value: "local", label: "Local", desc: "Sidecar process on this machine" },
@@ -165,8 +166,8 @@ const emptyRepo = (): WorkspaceRepoEntry => ({
 export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   // Which kind of swarm to spawn. claude-code uses a different pipeline
   // (claude TUI + cc-swarm plugin sidecar) and a much smaller config
-  // surface than openswarm. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
-  const [kind, setKind] = useState<'openswarm' | 'claude-code' | 'codex'>('openswarm');
+  // surface than swarm-runner. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
+  const [kind, setKind] = useState<'swarm-runner' | 'claude-code' | 'codex'>('swarm-runner');
   // codex-only: which surface to spawn. 'rpc' (default) opens openhive's
   // chat as the canonical driver; 'tui' attaches the embedded terminal
   // to a real codex TUI process. The two modes operate on independent
@@ -192,7 +193,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   );
   // Boot-time agent provisioning (opt-in). When `bootstrapCoordinator` is
   // true, openhive sets MACRO_BOOTSTRAP_COORDINATOR + MACRO_BOOTSTRAP_CWD on
-  // the spawned openswarm process so macro-agent's bootV2 fires a default
+  // the spawned swarm-runner process so macro-agent's bootV2 fires a default
   // coordinator at `projectDirectory` — no separate _macro/spawnAgent call.
   const [projectDirectory, setProjectDirectory] = useState("");
   const [bootstrapCoordinator, setBootstrapCoordinator] = useState(false);
@@ -215,6 +216,11 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   const [ccRepoUrl, setCcRepoUrl] = useState("");
   const [ccRepoBranch, setCcRepoBranch] = useState("");
   const [repoId, setRepoId] = useState("");
+  // Free-form working directory for non-swarm-runner kinds. Sent as the
+  // top-level `cwd` field; the backend validates absolute / exists.
+  // Disabled when repoId is set (the schema rejects the combination —
+  // mirrored in the UI to avoid a silent backend 422).
+  const [cwd, setCwd] = useState("");
 
   // Per-swarm workspace policy (Advanced). Defaults to 'open' (omitted
   // from the payload). When mode === 'allow_listed' the user picks one
@@ -312,7 +318,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
     }
 
     try {
-      // For claude-code, drop openswarm-specific fields entirely; the
+      // For claude-code, drop swarm-runner-specific fields entirely; the
       // server ignores them but sending nothing keeps the audit/log
       // surface honest.
       const trimmedRepoUrl = ccRepoUrl.trim();
@@ -363,6 +369,11 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
         workspace_policy = { mode: 'pinned', pinned_repo: url };
       }
 
+      // For TUI kinds + codex rpc, route the free-form working directory
+      // through the top-level `cwd` field. Omit when empty so the backend's
+      // exclusivity checks against repo_id / workspace don't trip on a
+      // blank string. Backend validates absolute path + exists.
+      const trimmedCwd = cwd.trim();
       const payload =
         isTuiKind
           ? {
@@ -373,6 +384,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               workspace: ccWorkspace,
               initial_prompt: trimmedPrompt || undefined,
               repo_id: repoId || undefined,
+              cwd: trimmedCwd || undefined,
               workspace_policy,
               ...codexModeOverride,
             }
@@ -404,39 +416,51 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Dialog open onClose={onClose} maxWidth="max-w-xl">
-      <div className="p-4">
-        <div className="flex items-center justify-between mb-3">
+    <Dialog open onClose={onClose} maxWidth="max-w-xl" bodyScrollOnly>
+      {/* Three-row layout: sticky header, scrollable body, sticky footer.
+          The form spans body + footer so the submit button stays inside
+          the form element. Body owns the only overflow region so the
+          header and the Spawn / Cancel row are always visible while the
+          fields scroll. */}
+      <form onSubmit={handleSubmit} className="flex flex-col min-h-0 flex-1">
+        {/* Header — sticky top */}
+        <div
+          className="flex items-center justify-between px-4 py-3 border-b shrink-0"
+          style={{ borderColor: 'var(--color-border-subtle)' }}
+        >
           <h2 className="text-sm font-semibold flex items-center gap-1.5">
             <Zap className="w-3.5 h-3.5 text-honey-500" />
             Spawn Swarm
           </h2>
-          <button onClick={onClose} className="btn btn-ghost p-1">
+          <button type="button" onClick={onClose} className="btn btn-ghost p-1">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-3">
+        {/* Scrollable body — the only overflow region. `min-h-0` is required
+            inside a flex column so flex-1 children can shrink past their
+            intrinsic content height and the overflow:auto actually kicks in. */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
           {/* Kind picker — drives the rest of the form's shape */}
           <div>
             <SectionLabel>Kind</SectionLabel>
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => setKind('openswarm')}
+                onClick={() => setKind('swarm-runner')}
                 className={`flex-1 px-3 py-2 rounded-md border text-left transition-colors ${
-                  kind === 'openswarm' ? 'border-honey-500' : 'border-transparent'
+                  kind === 'swarm-runner' ? 'border-honey-500' : 'border-transparent'
                 }`}
                 style={{
                   backgroundColor:
-                    kind === 'openswarm'
+                    kind === 'swarm-runner'
                       ? 'var(--color-accent-bg)'
                       : 'var(--color-elevated)',
                   borderColor:
-                    kind === 'openswarm' ? 'var(--color-accent)' : undefined,
+                    kind === 'swarm-runner' ? 'var(--color-accent)' : undefined,
                 }}
               >
-                <div className="text-xs font-medium">OpenSwarm</div>
+                <div className="text-xs font-medium">SwarmRunner</div>
                 <div
                   className="text-2xs mt-0.5"
                   style={{ color: 'var(--color-text-muted)' }}
@@ -626,10 +650,10 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
             />
           </div>
 
-          {/* Openswarm-only fields. claude-code spawns are intentionally
+          {/* SwarmRunner-only fields. claude-code spawns are intentionally
               minimal — the cc-swarm plugin handles bootstrap, no adapter
               choice or workspace cloning is exposed in v1. */}
-          {kind === 'openswarm' && (
+          {kind === 'swarm-runner' && (
           <>
           {/* Row 3: Adapter + Hive */}
           <div className="flex gap-3">
@@ -667,7 +691,11 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
-          {/* Project directory + auto-spawn coordinator */}
+          {/* Project directory + auto-spawn coordinator. SwarmRunner-only:
+              this feeds bootstrap.cwd which the schema rejects for TUI
+              kinds. Non-swarm-runner kinds get their own "Working directory"
+              field above (renders the new top-level `cwd` field). */}
+          {kind === 'swarm-runner' && (
           <div className="space-y-2">
             <div>
               <SectionLabel>Project directory</SectionLabel>
@@ -677,13 +705,15 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setProjectDirectory(e.target.value)}
                 className="input w-full font-mono text-2xs"
                 placeholder="/path/to/your/project (optional)"
-                list="known-project-paths"
+                list="known-project-paths-swarm-runner"
                 autoComplete="off"
                 spellCheck={false}
               />
-              {/* Suggest paths previously used by other swarms / hosted bootstraps. */}
+              {/* Suggest paths previously used by other swarms / hosted bootstraps.
+                  Datalist id is suffixed to avoid colliding with the TUI-kind
+                  "Working directory" datalist above. */}
               {knownProjectPaths && knownProjectPaths.length > 0 && (
-                <datalist id="known-project-paths">
+                <datalist id="known-project-paths-swarm-runner">
                   {knownProjectPaths.map((p) => (
                     <option key={p} value={p} />
                   ))}
@@ -734,6 +764,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               </div>
             </label>
           </div>
+          )}
 
           {/* OpenTeams binding (Path B) */}
           <div>
@@ -975,7 +1006,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
           </>
           )}
 
-          {/* Repo resource selector — applies to all kinds. For openswarm
+          {/* Repo resource selector — applies to all kinds. For swarm-runner
               the manager only injects WORKSPACE_* env vars (the sidecar is
               expected to clone). For claude-code/codex the provider does
               the mount-or-clone and overrides cwd. */}
@@ -1000,9 +1031,38 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
                 ))}
               </select>
               <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-                {kind === 'openswarm'
+                {kind === 'swarm-runner'
                   ? 'Sets WORKSPACE_* env vars on the swarm process; the sidecar handles the actual clone.'
                   : 'Mount an existing local checkout or clone from the repo’s remote URL.'}
+              </p>
+            </div>
+          )}
+
+          {/* Working directory — free-form cwd for TUI / codex spawns. Not
+              shown for swarm-runner (it has its own bootstrap.cwd mechanism
+              rendered further down). Disabled when a repo resource is
+              picked because the backend rejects cwd + repo_id (the repo's
+              local_path is the cwd in that path). Built on the same
+              combobox pattern as AssigneeCombobox — grouped suggestions
+              (recent spawns / registered swarms / registered repos) plus
+              free-form entry. */}
+          {kind !== 'swarm-runner' && (
+            <div>
+              <SectionLabel>Working directory (optional)</SectionLabel>
+              <WorkingDirectoryCombobox
+                value={cwd}
+                onChange={setCwd}
+                disabled={!!repoId}
+                disabledHint="Using repo resource path"
+              />
+              <p className="text-2xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                {repoId ? (
+                  <>Repo resource picked — its <code>local_path</code> is used as cwd.</>
+                ) : (
+                  <>
+                    Absolute path. Must exist. The {kind === 'claude-code' ? 'claude' : 'codex'} process is spawned with this as cwd.
+                  </>
+                )}
               </p>
             </div>
           )}
@@ -1158,30 +1218,37 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
             </>
           )}
 
-          {/* Actions */}
-          <div className="flex items-center gap-2 pt-1">
-            <button
-              type="submit"
-              disabled={spawnMutation.isPending || !name.trim()}
-              className="btn btn-primary flex items-center gap-1.5 text-xs"
-            >
-              {spawnMutation.isPending ? (
-                <LoadingSpinner size="sm" />
-              ) : (
-                <Zap className="w-3 h-3" />
-              )}
-              Spawn
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="btn btn-ghost text-xs"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      </div>
+        </div>
+
+        {/* Footer — sticky bottom. Actions live here so the Spawn / Cancel
+            row stays visible even when the body has scrolled past the
+            first screen of fields. Top border separates it visually
+            from the scroll content above. */}
+        <div
+          className="flex items-center gap-2 px-4 py-3 border-t shrink-0"
+          style={{ borderColor: 'var(--color-border-subtle)' }}
+        >
+          <button
+            type="submit"
+            disabled={spawnMutation.isPending || !name.trim()}
+            className="btn btn-primary flex items-center gap-1.5 text-xs"
+          >
+            {spawnMutation.isPending ? (
+              <LoadingSpinner size="sm" />
+            ) : (
+              <Zap className="w-3 h-3" />
+            )}
+            Spawn
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn btn-ghost text-xs"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
     </Dialog>
   );
 }
@@ -1419,8 +1486,8 @@ function InlineAgentRow({
   agent: MapRegisteredAgent;
   projectPath?: string;
 }) {
-  const navigate = useNavigate();
-  const connectAcp = useConnectAcp();
+  const connectAndOpen = useChatFabStore((s) => s.connectAndOpen);
+  const connecting = useChatFabStore((s) => s.connecting);
 
   const protocols = Array.isArray(agent.capabilities?.protocols)
     ? (agent.capabilities!.protocols as string[])
@@ -1434,21 +1501,14 @@ function InlineAgentRow({
   const handleChat = async (e: React.MouseEvent) => {
     // Prevent the parent swarm card from navigating to the detail page.
     e.stopPropagation();
-    if (!supportsAcp || connectAcp.isPending) return;
-    try {
-      const result = await connectAcp.mutateAsync({
-        swarmId,
-        agentId: targetAgentId,
-        cwd: projectPath,
-      });
-      const params = new URLSearchParams({
-        streamId: result.acp_stream_id,
-        sessionId: result.acp_session_id,
-      });
-      navigate(`/threads/${result.session_resource_id}?${params}`);
-    } catch (err) {
-      toast.error("Chat failed", (err as Error).message);
-    }
+    if (!supportsAcp || connecting) return;
+    await connectAndOpen(
+      swarmId,
+      agent.id,
+      agent.name || agent.id,
+      targetAgentId !== agent.id ? targetAgentId : undefined,
+      projectPath,
+    );
   };
 
   // The whole row becomes the CTA when the agent supports ACP. We make the
@@ -1458,7 +1518,7 @@ function InlineAgentRow({
 
   const content = (
     <>
-      {connectAcp.isPending ? (
+      {connecting ? (
         <LoadingSpinner size="sm" />
       ) : (
         <User
@@ -1538,7 +1598,6 @@ function HostedSwarmCard({
   const restartMutation = useRestartSwarm();
   const removeMutation = useRemoveSwarm();
   const spawnAgent = useSpawnAgent();
-  const connectAcp = useConnectAcp();
 
   // If there's a linked MAP swarm record (the same macro-agent process seen by
   // SwarmCraft via outbound MAP, or the sidecar's inbound registration), use
@@ -1593,9 +1652,9 @@ function HostedSwarmCard({
   const isRunning = swarm.state === "running";
   const quickOpen: { label: string; href: string; icon: typeof Terminal } | null =
     isRunning && swarm.kind === "claude-code"
-      ? { label: "Open Claude Code TUI", href: `/terminal/${swarm.id}`, icon: Terminal }
+      ? { label: "Open Claude Code TUI", href: `/threads/hosted-tui/${swarm.id}`, icon: Terminal }
       : isRunning && swarm.kind === "codex" && swarm.mode !== "rpc"
-        ? { label: "Open Codex TUI", href: `/terminal/${swarm.id}`, icon: Terminal }
+        ? { label: "Open Codex TUI", href: `/threads/hosted-tui/${swarm.id}`, icon: Terminal }
         : isRunning && swarm.kind === "codex" && swarm.mode === "rpc"
           ? { label: "Open codex chat", href: `/threads/hosted-chat/${swarm.id}`, icon: MessageSquare }
           : null;
@@ -2034,7 +2093,7 @@ type FormMode = "none" | "spawn" | "connect";
  *                       the per-card "Remove" button accepts).
  *
  * The hooks are wired per-id, so we fan out the mutations here with
- * bounded concurrency (sequential) to avoid N openswarm processes
+ * bounded concurrency (sequential) to avoid N swarm-runner processes
  * racing for ports on bulk restart. React Query's invalidation on
  * each mutation success keeps the list fresh.
  */

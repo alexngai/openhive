@@ -10,6 +10,7 @@ import { api } from '../../lib/api';
 import { useChatFabStagedChipsStore } from './chat-fab-staged-chips-store';
 
 export type ChatFabMode = 'floating' | 'docked';
+export type ChatTransportMode = 'acp' | 'mail' | 'hosted';
 
 /**
  * Which view the ChatFab body is showing. Drives both the body content and
@@ -22,6 +23,10 @@ export type ChatFabView = 'picker' | 'chat';
 
 const MODE_STORAGE_KEY = 'chat-fab-mode';
 const OPEN_STORAGE_KEY = 'chat-fab-open';
+const CONNECT_TIMEOUT_MS = 25_000;
+
+let activeConnectAbort: AbortController | null = null;
+let activeConnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
 function loadMode(): ChatFabMode {
   try {
@@ -101,6 +106,8 @@ export interface ChatFabState {
   agentRef: ChatFabAgentRef | null;
   /** ACP resume descriptor — set whenever we created/loaded a stream */
   resume: ChatFabResume | null;
+  /** Visible transport mode for the active chat surface. */
+  transportMode: ChatTransportMode | null;
   /** Display mode: floating popup or docked sidebar */
   mode: ChatFabMode;
 
@@ -119,8 +126,10 @@ export interface ChatFabState {
     label: string,
     resume?: ChatFabResume | null,
     agentRef?: ChatFabAgentRef | null,
+    transportMode?: ChatTransportMode | null,
   ) => void;
   clearSession: () => void;
+  cancelConnect: () => void;
   setMode: (mode: ChatFabMode) => void;
   toggleMode: () => void;
   /**
@@ -133,7 +142,13 @@ export interface ChatFabState {
    * projection id (e.g. `oh-node-{swarmId}-{mapAgentId}`) — the hub's
    * registry routes ACP by the raw id and 404s on the projection.
    */
-  connectAndOpen: (swarmId: string, agentId: string, label?: string, peerMapId?: string) => Promise<void>;
+  connectAndOpen: (
+    swarmId: string,
+    agentId: string,
+    label?: string,
+    peerMapId?: string,
+    cwd?: string,
+  ) => Promise<void>;
 }
 
 export const useChatFabStore = create<ChatFabState>((set) => ({
@@ -144,6 +159,7 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
   sessionLabel: null,
   agentRef: null,
   resume: null,
+  transportMode: null,
   mode: loadMode(),
   connecting: false,
   connectError: null,
@@ -161,7 +177,7 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
 
   navigate: (view) => set({ view }),
 
-  setSession: (sessionId, swarmId, label, resume, agentRef) => {
+  setSession: (sessionId, swarmId, label, resume, agentRef, transportMode) => {
     // Session swap clears staged chips — composition state belongs to the
     // active composer, not to a history. Avoids "agent A's context bled
     // into agent B" when switching sessions. Only clears on actual id
@@ -176,6 +192,7 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
         sessionLabel: label,
         agentRef: agentRef ?? null,
         resume: resume ?? null,
+        transportMode: transportMode ?? (resume ? 'acp' : 'mail'),
         connectError: null,
         view: 'chat',
       };
@@ -190,9 +207,24 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
       sessionLabel: null,
       agentRef: null,
       resume: null,
+      transportMode: null,
       connectError: null,
       view: 'picker',
     });
+  },
+
+  cancelConnect: () => {
+    activeConnectAbort?.abort();
+    if (activeConnectTimeout) {
+      clearTimeout(activeConnectTimeout);
+      activeConnectTimeout = null;
+    }
+    activeConnectAbort = null;
+    set((s) => ({
+      connecting: false,
+      connectError: null,
+      view: s.sessionId ? 'chat' : 'picker',
+    }));
   },
 
   setMode: (mode) => {
@@ -206,20 +238,38 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
       return { mode: next };
     }),
 
-  connectAndOpen: async (swarmId, agentId, label, peerMapId) => {
+  connectAndOpen: async (swarmId, agentId, label, peerMapId, cwd) => {
+    activeConnectAbort?.abort();
+    if (activeConnectTimeout) clearTimeout(activeConnectTimeout);
+    const controller = new AbortController();
+    activeConnectAbort = controller;
+    activeConnectTimeout = setTimeout(() => controller.abort(), CONNECT_TIMEOUT_MS);
+
     saveOpen(true);
-    set({ connecting: true, connectError: null, open: true, view: 'chat' });
+    set({
+      connecting: true,
+      connectError: null,
+      open: true,
+      view: 'chat',
+      sessionLabel: label ?? 'Agent',
+      transportMode: 'acp',
+    });
     try {
       const result = await api.post<{
         session_resource_id: string;
         acp_session_id: string;
         acp_stream_id: string;
         created: boolean;
-      }>('/sessions/acp-connect', {
-        swarm_id: swarmId,
-        agent_id: agentId,
-        ...(peerMapId ? { peer_map_id: peerMapId } : {}),
-      });
+      }>(
+        '/sessions/acp-connect',
+        {
+          swarm_id: swarmId,
+          agent_id: agentId,
+          ...(peerMapId ? { peer_map_id: peerMapId } : {}),
+          ...(cwd ? { cwd } : {}),
+        },
+        { signal: controller.signal },
+      );
 
       // Seed sessionLabel with the best label we have *right now* —
       // `label` (passed from SessionPicker's spawn response), else 'Agent'
@@ -240,14 +290,26 @@ export const useChatFabStore = create<ChatFabState>((set) => ({
             acpStreamId: result.acp_stream_id,
             acpSessionId: result.acp_session_id,
           },
+          transportMode: 'acp',
           connecting: false,
         };
       });
     } catch (err) {
+      if (activeConnectAbort !== controller && controller.signal.aborted) return;
       set({
         connecting: false,
-        connectError: err instanceof Error ? err.message : String(err),
+        connectError: controller.signal.aborted
+          ? 'Connection timed out or was cancelled.'
+          : err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      if (activeConnectAbort === controller) {
+        activeConnectAbort = null;
+        if (activeConnectTimeout) {
+          clearTimeout(activeConnectTimeout);
+          activeConnectTimeout = null;
+        }
+      }
     }
   },
 }));

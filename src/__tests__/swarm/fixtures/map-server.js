@@ -5,10 +5,10 @@
  * Accepts --port <N> and serves:
  *   - WebSocket on /map (MAP protocol — accepts connections, responds to connect handshake)
  *   - WebSocket on /acp (ACP protocol — accepts connections)
- *   - HTTP GET /health on port N+1 (OpenSwarm gateway convention)
+ *   - HTTP GET /health on port N+1 (SwarmRunner gateway convention)
  *
- * This simulates enough of an OpenSwarm combined-server for e2e testing
- * without requiring the real macro-agent or OpenSwarm packages.
+ * This simulates enough of an SwarmRunner combined-server for e2e testing
+ * without requiring the real macro-agent or SwarmRunner packages.
  */
 
 // Package.json sets `"type": "module"`, so this fixture must use ESM
@@ -106,7 +106,7 @@ httpServer.listen(port, '127.0.0.1', () => {
 });
 
 // ===========================================================================
-// Health HTTP server (port+1) — matches OpenSwarm gateway convention
+// Health HTTP server (port+1) — matches SwarmRunner gateway convention
 // ===========================================================================
 
 const healthServer = http.createServer((req, res) => {

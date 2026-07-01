@@ -12,7 +12,6 @@ import {
   useEventSubscriptions, useDeliveryLog,
   useConnectionHealth,
   useSpawnAgent,
-  useConnectAcp,
   useStopAgent,
   useResumableSessions,
   useResumeAllSessions,
@@ -51,6 +50,7 @@ import { getPeerMapId } from '../lib/map';
 import { usePageContext } from '../components/chat-fab/usePageContext';
 import { swarmContextItem } from '../components/chat-fab/context-types';
 import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
+import { useChatFabStore } from '../components/chat-fab/ChatFabStore';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -447,9 +447,16 @@ function TerminalSection({ hosted }: { hosted: HostedSwarm }) {
   return (
     <div className="mt-4 grid gap-2 sm:grid-cols-2">
       <button
-        onClick={() => navigate(`/terminal/${hosted.id}`)}
+        onClick={() =>
+          // TUI-kind hosted swarms (claude-code, codex-tui) live on the
+          // Threads page — route there so the unified surface handles it.
+          // SwarmRunner still uses the dedicated Terminal page.
+          hosted.kind === 'claude-code' || hosted.kind === 'codex'
+            ? navigate(`/threads/hosted-tui/${hosted.id}`)
+            : navigate(`/terminal/${hosted.id}`)
+        }
         className="card card-hover px-3 py-2.5 flex items-center gap-3 text-left transition-colors group"
-        aria-label="Open TUI in a dedicated view"
+        aria-label="Open the embedded terminal"
       >
         <div
           className="w-7 h-7 rounded flex items-center justify-center shrink-0"
@@ -470,7 +477,7 @@ function TerminalSection({ hosted }: { hosted: HostedSwarm }) {
               ? 'Attach to the running Claude Code TUI.'
               : hosted.kind === 'codex'
                 ? 'Attach to the running Codex TUI.'
-                : 'OpenSwarm TUI tunneled through this hub.'}
+                : 'SwarmRunner TUI tunneled through this hub.'}
           </div>
         </div>
         <ChevronRight
@@ -664,8 +671,9 @@ function RegisteredAgentCard({
   openChanges: StreamDAGNode[];
   activeSessionsCount: number;
 }) {
-  const navigate = useNavigate();
-  const connectAcp = useConnectAcp();
+  const connectAndOpen = useChatFabStore((s) => s.connectAndOpen);
+  const connecting = useChatFabStore((s) => s.connecting);
+  const connectError = useChatFabStore((s) => s.connectError);
   const stopAgent = useStopAgent();
 
   const caps = agent.capabilities ?? {};
@@ -679,20 +687,13 @@ function RegisteredAgentCard({
   const targetAgentId = getPeerMapId(agent.metadata) ?? agent.id;
 
   const handleChat = async () => {
-    try {
-      const result = await connectAcp.mutateAsync({
-        swarmId,
-        cwd: projectPath,
-        agentId: targetAgentId,
-      });
-      const params = new URLSearchParams({
-        streamId: result.acp_stream_id,
-        sessionId: result.acp_session_id,
-      });
-      navigate(`/threads/${result.session_resource_id}?${params}`);
-    } catch {
-      // Error state is rendered below via the mutation's isError flag
-    }
+    await connectAndOpen(
+      swarmId,
+      agent.id,
+      agent.name || agent.id,
+      targetAgentId !== agent.id ? targetAgentId : undefined,
+      projectPath,
+    );
   };
 
   const handleStop = async () => {
@@ -785,11 +786,11 @@ function RegisteredAgentCard({
           {supportsAcp && (
             <button
               onClick={handleChat}
-              disabled={connectAcp.isPending}
+              disabled={connecting}
               className="btn btn-primary inline-flex items-center gap-1 px-2 py-1 text-2xs disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:bg-honey-500"
               title="Start ACP session with this agent"
             >
-              {connectAcp.isPending ? (
+              {connecting ? (
                 <Loader2 className="w-3 h-3 animate-spin" />
               ) : (
                 <Zap className="w-3 h-3" />
@@ -809,9 +810,9 @@ function RegisteredAgentCard({
           )}
         </div>
       </div>
-      {connectAcp.isError && (
+      {connectError && (
         <div className="mt-1.5 text-2xs text-red-400">
-          {(connectAcp.error as Error)?.message || 'Failed to create session'}
+          {connectError}
         </div>
       )}
     </div>
@@ -968,7 +969,7 @@ function RegisteredAgentsSection({
   const allAgents = (swarm as any)?.registered_agents as LiveRegisteredAgent[] | undefined ?? [];
   // Render sidecars in the cards list — for kinds where the sidecar is
   // the only agent (claude-code), hiding it leaves the section eternally
-  // empty. Sort sidecars LAST so worker fleets (openswarm) render natural
+  // empty. Sort sidecars LAST so worker fleets (swarm-runner) render natural
   // ordering up top with infrastructure at the bottom; for claude-code
   // the sidecar is just the only visible card.
   const agents = useMemo(
@@ -1006,14 +1007,18 @@ function RegisteredAgentsSection({
   }, [sessionsResp]);
 
   // Derive the swarm's effective cwd. Mirror the backend resolution chain in
-  // src/api/routes/map.ts: hosted bootstrap.cwd → swarm metadata.cwd →
-  // metadata.projectPath → capabilities.projectPath → hosted data_dir.
+  // src/api/routes/map.ts but with the TUI/codex operator-chosen `cwd`
+  // taking precedence — it's the most specific intent we have for those
+  // kinds and what the user actually sees inside the TUI:
+  //   hosted.cwd → hosted.bootstrap.cwd (swarm-runner) → swarm.metadata.cwd →
+  //   metadata.projectPath → capabilities.projectPath → hosted.data_dir.
   // The first hit wins. The dialog uses this as a placeholder + fallback
   // hint so the user can see exactly where an empty-cwd spawn will land.
   // The hosted data_dir is the terminal fallback because it's where the
   // runtime process literally launched — `'.'` resolves to it at the
   // OS level when no other cwd flows through.
   const projectPath =
+    hosted?.cwd ??
     hosted?.bootstrap?.cwd ??
     (swarm.metadata as any)?.cwd as string | undefined ??
     (swarm.metadata as any)?.projectPath as string | undefined ??

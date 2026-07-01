@@ -707,4 +707,79 @@ dbCmd
 // Network commands (mesh networking setup)
 registerNetworkCommands(program);
 
+// Experiment runner worker (autonomation control plane). Requires the optional
+// `autonomation` package; the worker module is dynamically imported so the rest
+// of the CLI (and the hub) never depends on it.
+program
+  .command('experiment-worker')
+  .description(
+    'Run an autonomation experiment loop and report to a hub (requires the optional `autonomation` package)',
+  )
+  .requiredOption('--hub-url <url>', 'Hub base URL, e.g. http://127.0.0.1:7836')
+  .requiredOption('--experiment-id <id>', 'Experiment id (exp_...)')
+  .requiredOption('--run-id <id>', 'Run id (exrun_...)')
+  .option(
+    '--worker-token <token>',
+    'Per-run worker token (or set OPENHIVE_WORKER_TOKEN)',
+  )
+  .option('--deployment <path>', 'Deployment YAML path (deployment path)')
+  .option('--run <path>', 'Run YAML path (deployment path)')
+  .option('--config-base <dir>', 'Base dir for resolving inline-config relative paths')
+  .requiredOption('--metric <id>', 'Objective metric id (for lineage score extraction)')
+  .option('--aggregate <agg>', 'Score aggregate (mean|sum|min|max)', 'mean')
+  .option('--cycles <n>', 'Max cycles')
+  .option('--budget-seconds <n>', 'Wall-clock budget in seconds')
+  .action(async (options: any) => {
+    const token = options.workerToken ?? process.env.OPENHIVE_WORKER_TOKEN;
+    if (!token) {
+      console.error(
+        'A worker token is required (--worker-token or OPENHIVE_WORKER_TOKEN).',
+      );
+      process.exit(1);
+    }
+    // The inline (lightweight) domain config is passed via env, not argv — it can
+    // be large, and argv is visible in `ps`.
+    let inlineConfig: unknown;
+    if (process.env.OPENHIVE_EXPERIMENT_CONFIG) {
+      try {
+        inlineConfig = JSON.parse(process.env.OPENHIVE_EXPERIMENT_CONFIG);
+      } catch (err) {
+        console.error(`OPENHIVE_EXPERIMENT_CONFIG is not valid JSON: ${(err as Error).message}`);
+        process.exit(1);
+      }
+    }
+    const hasDeployment = Boolean(options.deployment && options.run);
+    if (hasDeployment === (inlineConfig !== undefined)) {
+      console.error(
+        'Provide EXACTLY ONE config source: --deployment + --run (deployment path), ' +
+          'or the OPENHIVE_EXPERIMENT_CONFIG env var (inline lightweight config).',
+      );
+      process.exit(1);
+    }
+    const controls: Record<string, unknown> = {};
+    if (options.cycles) controls.cycles = Number(options.cycles);
+    if (options.budgetSeconds) controls.budgetSeconds = Number(options.budgetSeconds);
+
+    try {
+      const { runExperimentWorker } = await import('./experiments/worker/index.js');
+      const result = await runExperimentWorker({
+        hubUrl: options.hubUrl,
+        apiKey: token,
+        experimentId: options.experimentId,
+        runId: options.runId,
+        ...(inlineConfig !== undefined
+          ? { config: inlineConfig, configBaseDir: options.configBase }
+          : { deploymentPath: options.deployment, runPath: options.run }),
+        objectiveMetric: options.metric,
+        objectiveAggregate: options.aggregate,
+        controls,
+      });
+      console.log(JSON.stringify({ ok: !result.failed, ...result }));
+      process.exit(result.failed ? 1 : 0);
+    } catch (err) {
+      console.error(`experiment-worker failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
 program.parse();

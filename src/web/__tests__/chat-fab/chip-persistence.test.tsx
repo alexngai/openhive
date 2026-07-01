@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom';
 import { useEffect } from 'react';
 import '../../components/chat-fab/context-types';
@@ -63,13 +63,12 @@ describe('§3.1.7 Chip persistence', () => {
     // Pre-nav: chip is staged.
     expect(screen.getByText('Spec A')).toBeDefined();
 
-    // Let the navigate() fire.
-    await new Promise((r) => setTimeout(r, 5));
+    // Let the navigate() commit through React Router.
+    await waitFor(() => expect(screen.getByTestId('dispatch-page')).toBeDefined());
 
     // Post-nav: same chip still staged.
     expect(useChatFabStagedChipsStore.getState().stagedChips).toHaveLength(1);
     expect(screen.getByText('Spec A')).toBeDefined();
-    expect(screen.getByTestId('dispatch-page')).toBeDefined();
   });
 
   it('is tab-local: a second tab does not see the first tab\'s chips', () => {

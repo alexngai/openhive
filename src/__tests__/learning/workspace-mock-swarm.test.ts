@@ -5,7 +5,7 @@
  * the swarm "responds" via handleWorkspaceResult(), and the delegate resolves.
  *
  * Uses a mock WebSocket registered in the connection registry to simulate
- * a connected swarm without needing a real OpenSwarm process.
+ * a connected swarm without needing a real SwarmRunner process.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';

@@ -58,6 +58,7 @@ import {
 import { evictByStream as evictDiffCacheByStream } from '../db/dal/cascade-diff-cache.js';
 import { broadcastToChannel } from '../realtime/index.js';
 import { mapHubEvents } from './service.js';
+import { getDefaultTaskGraph } from './connection-registry.js';
 
 // ============================================================================
 // Entry point
@@ -311,8 +312,13 @@ function handleStreamMerged(
   // the task-binder act on the event without re-querying the DB for the
   // common case, and matches the propagation contract the cascade-streams
   // schema already upholds.
+  //
+  // `resolveMergeTaskRef` additionally backfills a missing `resource_id` for
+  // node-only refs (cc-swarm emits `task_ref: { node_id }`) from the source
+  // swarm's registered `defaultTaskGraph`. Strictly additive — a complete
+  // macro-agent ref is returned unchanged.
   const taskRef =
-    extractTaskRef(params.metadata) ??
+    resolveMergeTaskRef(params.metadata, context.swarmId) ??
     taskRefFromStream(sourceStream) ??
     taskRefFromStream(targetStream);
 
@@ -922,6 +928,55 @@ function extractTaskRef(metadata: EventMetadata | undefined): TaskRef | undefine
   if (!tr || typeof tr !== 'object') return undefined;
   if (typeof tr.resource_id !== 'string' || typeof tr.node_id !== 'string') return undefined;
   return { resource_id: tr.resource_id, node_id: tr.node_id };
+}
+
+/**
+ * Lenient `task_ref` parse: extracts `node_id` even when `resource_id` is
+ * absent. cc-swarm sidecars emit `stream.merged` with `task_ref: { node_id }`
+ * — node id only — because the agent's daemon doesn't know its own OpenHive
+ * resource id. `extractTaskRef` (strict) discards such a ref; this keeps it
+ * alive long enough for `backfillTaskRef` to recover the `resource_id` from
+ * the source swarm's registered `defaultTaskGraph`.
+ */
+function extractPartialTaskRef(
+  metadata: EventMetadata | undefined
+): { resource_id?: string; node_id: string } | undefined {
+  if (!metadata) return undefined;
+  const tr = metadata.task_ref as { resource_id?: unknown; node_id?: unknown } | undefined;
+  if (!tr || typeof tr !== 'object') return undefined;
+  if (typeof tr.node_id !== 'string' || !tr.node_id) return undefined;
+  return {
+    resource_id: typeof tr.resource_id === 'string' && tr.resource_id ? tr.resource_id : undefined,
+    node_id: tr.node_id,
+  };
+}
+
+/**
+ * Resolve a complete `TaskRef` for a `stream.merged` event. Prefers a fully
+ * formed ref (macro-agent path — unchanged). For a node-only ref (cc-swarm),
+ * backfills `resource_id` from the source swarm's registered task graph. If
+ * no resource_id can be recovered the ref is dropped — merge→auto-close just
+ * won't fire (graceful). Never throws.
+ */
+function resolveMergeTaskRef(
+  metadata: EventMetadata | undefined,
+  sourceSwarmId: string
+): TaskRef | undefined {
+  try {
+    // Complete ref already present (macro-agent) — strict path, untouched.
+    const strict = extractTaskRef(metadata);
+    if (strict) return strict;
+
+    // Node-only ref (cc-swarm): backfill resource_id from the source swarm's
+    // registered defaultTaskGraph.
+    const partial = extractPartialTaskRef(metadata);
+    if (!partial) return undefined;
+    const resourceId = getDefaultTaskGraph(sourceSwarmId)?.resource_id;
+    if (!resourceId) return undefined;
+    return { resource_id: resourceId, node_id: partial.node_id };
+  } catch {
+    return undefined;
+  }
 }
 
 function taskRefFromStream(stream: CascadeStream | null | undefined): TaskRef | undefined {

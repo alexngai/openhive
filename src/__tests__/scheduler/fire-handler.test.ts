@@ -284,8 +284,8 @@ describe('fire handler — fallback_spawn', () => {
 
   function seedScheduleWithFallback(
     targets: string[],
-    fallback: { adapter: 'openswarm' | 'claude-code' | 'codex'; cleanup_on_terminal?: boolean } = {
-      adapter: 'openswarm',
+    fallback: { adapter: 'swarm-runner' | 'claude-code' | 'codex'; cleanup_on_terminal?: boolean } = {
+      adapter: 'swarm-runner',
     },
   ) {
     return schedules.createSchedule({
@@ -333,7 +333,7 @@ describe('fire handler — fallback_spawn', () => {
       getSwarmStatus: () => 'offline',
       spawnFallbackSwarm: async ({ adapter, name }) => {
         spawnCalled = true;
-        expect(adapter).toBe('openswarm');
+        expect(adapter).toBe('swarm-runner');
         expect(name).toContain(`sched-spawn-${s.id}`);
         return { swarmId: 'spawned_swarm_xyz', hostedSwarmId: 'h-spawned-xyz' };
       },
@@ -370,7 +370,7 @@ describe('fire handler — fallback_spawn', () => {
 
   it('cleanup_on_terminal=false produces a binding that opts out of cleanup', async () => {
     const s = seedScheduleWithFallback(['swarm_off'], {
-      adapter: 'openswarm',
+      adapter: 'swarm-runner',
       cleanup_on_terminal: false,
     });
     const handler = createOpenHiveFireHandler({
@@ -469,5 +469,59 @@ describe('fire handler — backward compat with pre-discriminator payloads', () 
     expect(rows).toHaveLength(1);
     expect(rows[0].spec_resource_id).toBe('res_legacy');
     expect(rows[0].spec_id).toBe('spec_legacy');
+  });
+});
+
+describe('fire handler — experiment payload', () => {
+  function seedExperimentSchedule(ref: string): schedules.OpenHiveSchedule {
+    return schedules.createSchedule({
+      cron: '0 * * * *',
+      payload: { kind: 'experiment', experiment_ref: ref },
+      next_fires_at: '2026-05-01T12:00:00.000Z',
+      hive_id: 'default-general',
+      initiator_type: 'user',
+      initiator_id: 'agent_test',
+    });
+  }
+  const FIRE = new Date('2026-05-01T12:00:00.000Z');
+
+  it('fires runScheduledExperiment and creates no dispatch rows', async () => {
+    const runScheduledExperiment = vi.fn(() => ({ runId: 'exrun_x' }));
+    const handler = createOpenHiveFireHandler({
+      fetchSpec: async () => null,
+      isAutonomousDispatchPaused: () => false,
+      runScheduledExperiment,
+    });
+    const s = seedExperimentSchedule('exp_1');
+    await handler(scheduleAsLibrary(s), FIRE);
+    expect(runScheduledExperiment).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'experiment', experiment_ref: 'exp_1' }),
+      s.id,
+    );
+    expect(dispatches.listDispatches({ initiator_id: `schedule:${s.id}` }).total).toBe(0);
+  });
+
+  it('respects the kill switch for experiment fires', async () => {
+    const runScheduledExperiment = vi.fn(() => ({ runId: 'x' }));
+    const handler = createOpenHiveFireHandler({
+      fetchSpec: async () => null,
+      isAutonomousDispatchPaused: () => true,
+      runScheduledExperiment,
+    });
+    await handler(scheduleAsLibrary(seedExperimentSchedule('exp_1')), FIRE);
+    expect(runScheduledExperiment).not.toHaveBeenCalled();
+  });
+
+  it('swallows a runner failure (handler does not throw)', async () => {
+    const handler = createOpenHiveFireHandler({
+      fetchSpec: async () => null,
+      isAutonomousDispatchPaused: () => false,
+      runScheduledExperiment: () => {
+        throw new Error('launch boom');
+      },
+    });
+    await expect(
+      handler(scheduleAsLibrary(seedExperimentSchedule('exp_1')), FIRE),
+    ).resolves.toBeUndefined();
   });
 });

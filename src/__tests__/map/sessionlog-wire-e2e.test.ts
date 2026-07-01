@@ -1,11 +1,11 @@
 /**
- * Cross-package E2E: cc-swarm buildTrajectoryCheckpoint() → OpenHive handleSyncMessage() → DB
+ * Cross-package E2E: swarm-codex buildTrajectoryCheckpoint() → OpenHive handleSyncMessage() → DB
  *
- * This test verifies end-to-end wire compatibility between cc-swarm's sessionlog
+ * This test verifies end-to-end wire compatibility between swarm-codex's sessionlog
  * checkpoint builder and OpenHive's MAP sync listener + trajectory DAL.
  *
  * Real components:
- *   - cc-swarm: buildTrajectoryCheckpoint() — real function from references/claude-code-swarm
+ *   - swarm-codex: buildTrajectoryCheckpoint() — real exported function
  *   - OpenHive: handleSyncMessage() — real sync listener
  *   - OpenHive: trajectory DAL — real SQLite DB
  *   - OpenHive: session stats aggregation — real SQL queries
@@ -26,20 +26,11 @@ import { handleTrajectoryRequest } from '../../map/trajectory-handler.js';
 import type { MapSyncMessage } from '../../map/types.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
-// cc-swarm real function — import from references/ (published package doesn't export src/)
-// @ts-expect-error — .mjs import from references
-import { buildTrajectoryCheckpoint } from '../../../references/claude-code-swarm/src/sessionlog.mjs';
+// @ts-expect-error swarm-codex is an ESM JS package without declarations.
+import { buildTrajectoryCheckpoint } from 'swarm-codex';
 
 vi.mock('../../realtime/index.js', () => ({
   broadcastToChannel: vi.fn(),
-}));
-
-// cc-swarm's resolveTeamName/resolveScope are called by buildTrajectoryCheckpoint via config
-// We mock the cc-swarm config module so it doesn't try to read .swarm/claude-swarm/config.json
-vi.mock('../../../references/claude-code-swarm/src/config.mjs', () => ({
-  readConfig: () => ({ sessionlog: { enabled: true, sync: 'metrics', mode: 'plugin' } }),
-  resolveTeamName: () => 'test-swarm',
-  resolveScope: () => 'swarm:test-swarm',
 }));
 
 const TEST_ROOT = testRoot('sessionlog-wire-e2e');
@@ -94,7 +85,7 @@ describe('Sessionlog wire format E2E: cc-swarm → OpenHive', () => {
     };
 
     // cc-swarm builds the checkpoint (real function)
-    const checkpoint = buildTrajectoryCheckpoint(sessionlogState, 'lifecycle', {});
+    const checkpoint = buildTrajectoryCheckpoint(sessionlogState, 'lifecycle', { teamName: 'test-swarm' });
 
     // Verify wire format shape
     expect(checkpoint.agent).toBe('test-swarm-sidecar');
@@ -147,7 +138,7 @@ describe('Sessionlog wire format E2E: cc-swarm → OpenHive', () => {
     };
 
     // cc-swarm builds the checkpoint (real function)
-    const checkpoint = buildTrajectoryCheckpoint(sessionlogState, 'metrics', {});
+    const checkpoint = buildTrajectoryCheckpoint(sessionlogState, 'metrics', { teamName: 'test-swarm' });
 
     // Feed through OpenHive sync listener (real function)
     const msg: MapSyncMessage = {
@@ -205,7 +196,7 @@ describe('Sessionlog wire format E2E: cc-swarm → OpenHive', () => {
     };
 
     // cc-swarm builds the checkpoint (real function)
-    const checkpoint = buildTrajectoryCheckpoint(sessionlogState, 'full', {});
+    const checkpoint = buildTrajectoryCheckpoint(sessionlogState, 'full', { teamName: 'test-swarm' });
 
     // Verify metadata has the extra sessionlog fields
     expect(checkpoint.metadata.tasks).toEqual(sessionlogState.tasks);

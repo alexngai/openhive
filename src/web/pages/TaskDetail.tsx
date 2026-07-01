@@ -35,6 +35,8 @@ import {
   type TaskRef,
 } from '../components/chat-fab/context-types';
 import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
+import { LineageRail } from '../components/pipeline/LineageRail';
+import { useDispatchList } from '../hooks/useDispatch';
 
 export function TaskDetail() {
   const { resourceId, nodeId } = useParams<{ resourceId: string; nodeId: string }>();
@@ -165,6 +167,15 @@ export function TaskDetail() {
       {/* Header */}
       <div>
         <TaskBackLink resourceId={resourceId} />
+        <LineageRail
+          anchor={{
+            kind: 'task',
+            resourceId,
+            nodeId,
+            title: taskTitle,
+          }}
+          className="mt-3"
+        />
 
         <div className="flex items-start gap-3 mt-3">
           <div
@@ -233,7 +244,7 @@ export function TaskDetail() {
       />
 
       {/* Dispatch threads — linked coordination conversations */}
-      <DispatchThreadLinks metadata={resource.metadata} />
+      <DispatchThreadLinks metadata={resource.metadata} resourceId={resourceId} nodeId={nodeId} />
     </div>
   );
 }
@@ -256,10 +267,30 @@ function TaskBackLink({ resourceId }: { resourceId: string }) {
  * `metadata.dispatch_threads[]`. Each entry links to the dispatch detail
  * page (anchored to the thread section).
  */
-function DispatchThreadLinks({ metadata }: { metadata?: Record<string, unknown> | null }) {
-  const threads = Array.isArray(metadata?.dispatch_threads)
+function DispatchThreadLinks({
+  metadata,
+  resourceId,
+  nodeId,
+}: {
+  metadata?: Record<string, unknown> | null;
+  resourceId: string;
+  nodeId: string;
+}) {
+  const metadataThreads = Array.isArray(metadata?.dispatch_threads)
     ? (metadata!.dispatch_threads as Array<{ dispatch_id: string; conversation_id: string }>)
     : [];
+  const fallbackDispatches = useDispatchList({
+    task_resource_id: resourceId,
+    task_node_id: nodeId,
+    limit: 10,
+    enabled: metadataThreads.length === 0,
+  });
+  const threads = metadataThreads.length > 0
+    ? metadataThreads
+    : fallbackDispatches.data?.data.map((d) => ({
+        dispatch_id: d.id,
+        conversation_id: d.conversation_id ?? '',
+      })) ?? [];
   if (threads.length === 0) return null;
 
   return (

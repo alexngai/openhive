@@ -60,6 +60,39 @@ function rpc(ws: WebSocket, method: string, params: Record<string, unknown> = {}
   });
 }
 
+/** Send a JSON-RPC request and collect all responses for its id over a short settle window. */
+function collectRpcResponses(
+  ws: WebSocket,
+  method: string,
+  params: Record<string, unknown> = {},
+  settleMs = 250,
+): Promise<any[]> {
+  const id = nextId();
+  const responses: any[] = [];
+  return new Promise((resolve, reject) => {
+    let settleTimer: NodeJS.Timeout | undefined;
+    const timeout = setTimeout(() => {
+      ws.removeListener('message', handler);
+      reject(new Error(`RPC timeout: ${method}`));
+    }, 5000);
+    const finish = () => {
+      clearTimeout(timeout);
+      ws.removeListener('message', handler);
+      resolve(responses);
+    };
+    const handler = (data: Buffer | string) => {
+      const msg = JSON.parse(data.toString());
+      if (msg.id === id) {
+        responses.push(msg);
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = setTimeout(finish, settleMs);
+      }
+    };
+    ws.on('message', handler);
+    ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+  });
+}
+
 /** Wait for the next server-pushed notification (no id) matching a method. */
 function waitNotification(ws: WebSocket, timeoutMs = 3000): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -193,6 +226,28 @@ describe('E2E Routing: Open Mode — notification and request routing', () => {
     sendNotification(ws, 'ping', {});
     const pong = await pongPromise;
     expect(pong.method).toBe('pong');
+
+    ws.close();
+  });
+
+  it('returns exactly one response for trajectory/checkpoint requests', async () => {
+    const ws = await openModeConnect(`traj-rpc-open-${Date.now()}`);
+
+    const responses = await collectRpcResponses(ws, 'trajectory/checkpoint', {
+      checkpoint: {
+        id: `ckpt-single-response-${Date.now()}`,
+        session_id: `session-single-response-${Date.now()}`,
+        agent: 'routing-open-agent',
+        files_touched: ['src/single-response.ts'],
+        checkpoints_count: 1,
+        token_usage: { input_tokens: 100, output_tokens: 20 },
+        metadata: { phase: 'active', turnId: 'single' },
+      },
+    });
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0].result).toBeDefined();
+    expect(responses[0].result.ok).toBe(true);
 
     ws.close();
   });

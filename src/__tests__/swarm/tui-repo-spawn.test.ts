@@ -76,7 +76,7 @@ function makeConfig(): SwarmHostingConfig {
   return {
     enabled: true,
     default_provider: 'local',
-    openswarm_command: 'echo unused',
+    swarm_runner_command: 'echo unused',
     data_dir: TEST_DATA_DIR,
     port_range: [19300, 19310],
     max_swarms: 5,

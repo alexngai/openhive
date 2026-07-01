@@ -14,7 +14,7 @@ describe('swarmHosting config', () => {
 
     expect(config.swarmHosting.enabled).toBe(true);
     expect(config.swarmHosting.default_provider).toBe('local');
-    expect(config.swarmHosting.openswarm_command).toBe('npx openswarm serve');
+    expect(config.swarmHosting.swarm_runner_command).toBe('npx @swarmkit-ai/swarm-runner serve');
     expect(config.swarmHosting.data_dir).toBe('./data/swarms');
     expect(config.swarmHosting.port_range).toEqual([9000, 9100]);
     expect(config.swarmHosting.max_swarms).toBe(10);
@@ -33,15 +33,26 @@ describe('swarmHosting config', () => {
     expect(config.swarmHosting.port_range).toEqual([8000, 8050]);
   });
 
-  it('should accept custom openswarm command', () => {
+  it('should accept custom swarm-runner command', () => {
     const config = ConfigSchema.parse({
       swarmHosting: {
         enabled: true,
-        openswarm_command: '/usr/local/bin/openswarm',
+        swarm_runner_command: '/usr/local/bin/swarm-runner',
       },
     });
 
-    expect(config.swarmHosting.openswarm_command).toBe('/usr/local/bin/openswarm');
+    expect(config.swarmHosting.swarm_runner_command).toBe('/usr/local/bin/swarm-runner');
+  });
+
+  it('should accept the legacy openswarm_command config key', () => {
+    const config = ConfigSchema.parse({
+      swarmHosting: {
+        enabled: true,
+        openswarm_command: 'npx openswarm serve',
+      },
+    });
+
+    expect(config.swarmHosting.swarm_runner_command).toBe('npx openswarm serve');
   });
 
   it('should accept docker provider', () => {
@@ -107,7 +118,7 @@ describe('swarmHosting config', () => {
       swarmHosting: {
         enabled: true,
         default_provider: 'local',
-        openswarm_command: 'bun run openswarm',
+        swarm_runner_command: 'bun run swarm-runner',
         data_dir: '/var/lib/swarms',
         port_range: [10000, 10100],
         max_swarms: 20,
@@ -117,7 +128,7 @@ describe('swarmHosting config', () => {
     });
 
     expect(config.swarmHosting.enabled).toBe(true);
-    expect(config.swarmHosting.openswarm_command).toBe('bun run openswarm');
+    expect(config.swarmHosting.swarm_runner_command).toBe('bun run swarm-runner');
     expect(config.swarmHosting.data_dir).toBe('/var/lib/swarms');
     expect(config.swarmHosting.port_range).toEqual([10000, 10100]);
     expect(config.swarmHosting.max_swarms).toBe(20);

@@ -11,9 +11,9 @@ const noAgents = { registered_agents: [] };
 const oneAgent = { registered_agents: [{ id: 'sidecar' }] };
 
 describe('getSwarmDetailSections', () => {
-  describe('openswarm', () => {
+  describe('swarm-runner', () => {
     it('exposes the full fleet-shaped layout', () => {
-      const ids = getSwarmDetailSections({ kind: 'openswarm' }, noAgents);
+      const ids = getSwarmDetailSections({ kind: 'swarm-runner' }, noAgents);
       expect(ids.has('active-work')).toBe(true);
       expect(ids.has('terminal')).toBe(true);
       expect(ids.has('logs')).toBe(true);
@@ -28,7 +28,7 @@ describe('getSwarmDetailSections', () => {
       expect(ids.has('peers')).toBe(true);
     });
 
-    it('treats a missing hosted record as openswarm (legacy MAP-only swarm)', () => {
+    it('treats a missing hosted record as swarm-runner (legacy MAP-only swarm)', () => {
       const ids = getSwarmDetailSections(undefined, noAgents);
       expect(ids.has('spawn-agent')).toBe(true);
     });

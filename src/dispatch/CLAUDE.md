@@ -7,6 +7,7 @@ OpenHive-specific adapters + wiring for the `swarm-dispatch` library. The librar
 - **`setup.ts`** — composes an `Orchestrator` from the factories below + the event bridge that writes terminal state to `dispatches` and broadcasts to the `map:dispatches` WS channel. Entry point: `setupOrchestrator({ specFetcher, runtimeDeps, messagePort, dispatchConfig })`. The event bridge also pairs the orchestrator's `dispatched` event (carrying `agentId`, `attempt`, `via`) with the OpenHive transport hint stashed by the adapter that performed delivery, then persists the merged row via `recordAttemptDelivery`.
 - **`openhive-source.ts`** — `DispatchTaskSource` adapter. Polls the `dispatches` table for `queued` rows, applies fence-token claim semantics, enriches with spec content via the injected fetcher. `enrichWithLoadout` materializes `team_role_ref`/`loadout_ref` bindings, surfaces the role onto `task.metadata.role` (so the orchestrator's `chooseExecutor` can route to role-matched agents), and writes the resolution outcome to the dispatch row's V49 columns (`loadout_ref`, `loadout_status`, `loadout_error`).
 - **`openhive-runtime.ts`** — `DispatchAgentRuntime` adapter. Drives ACP stream lifecycle (create → init → session → prompt) via `AcpStreamManager` from the SwarmCraft plugin. Calls `markDelivery({transport: 'acp', agent_id})` on both fresh-spawn and reuse paths so the event bridge can stamp the per-attempt transport.
+- **`swarm-codex-runtime.ts`** — optional local Codex executor branch. Uses `swarm-codex`'s `createCodexDispatchRuntime` directly, not a nested `runDispatchedSwarm`, so OpenHive keeps one authoritative orchestrator/retry loop. Intended for `swarm-codex` executor targets only; hosted `kind='codex'` RPC remains an interactive chat/session surface, not a dispatch sidecar.
 - **`openhive-roster.ts`** — `AgentRoster` adapter. Walks `getAllInbound()` and surfaces eligible agents to the orchestrator's executor chooser. Implements the `AgentRoster` contract directly (not via `createRegistryRoster`) because **sidecars are universal fallbacks**: when the requested role doesn't match any agent on a swarm, any sidecar registered there is returned as a last-resort target. Real workers/coordinators with an exact role match always win when present. This keeps mail routing alive on sidecar-only swarms after `enrichWithLoadout` started surfacing user-defined team roles like `'executor'`.
 - **`openhive-mail-port.ts`** — `MessagePort` adapter. Wraps envelopes for agent-inbox mail delivery, classifies incoming, dedups. Calls `markDelivery({transport: 'mail', agent_id})` after `transport.sendToAgent` returns `delivered: true` so the event bridge picks up the transport on the `dispatched` event.
 - **`delivery-tracker.ts`** — tiny in-memory side-channel keyed by `taskId`. Adapters call `markDelivery(taskId, {transport, agent_id})` at the moment of delivery; `setup.ts` calls `claimDelivery(taskId)` on the `dispatched` event and merges with the orchestrator's authoritative attempt+via fields. Avoids cyclic imports between setup ↔ runtime ↔ mail-port.
@@ -90,12 +91,29 @@ The orchestrator runs a reconcile cycle every 5s (configurable) that:
 - `reconcileIntervalMs` (5000) — external-cancel / stall detection
 - `retry.maxRetries` (3), `retry.baseDelayMs` (10000), `retry.maxDelayMs` (300000)
 - `scorer` (`heuristic` | `noop`) — ready-dispatch eligibility ordering
+- `codex_executor.enabled` (`false`) — enables the local `swarm-codex` dispatch executor branch
+- `codex_executor.target_kind` (`swarm-codex`) — metadata/capability marker a MAP swarm row must carry to be treated as a local Codex executor target
+- `codex_executor.map_server` (`ws://127.0.0.1:<port>/ws/map` at server setup) — MAP WebSocket URL for the executor sidecar; the runtime appends `swarm_id`
+- `codex_executor.command` (`codex`) and `codex_executor.driver` (`mcp`) — Codex worker launch controls
+- `codex_executor.sandbox` (`danger-full-access`) — Codex sandbox for dispatch workers. Git-cascade is commit-based, and Codex `workspace-write` blocks `.git/index.lock`, so repo-writing dispatches need full git metadata access unless the operator supplies an equivalent external sandbox.
+- `codex_executor.timeoutMs` (`300000`) and `codex_executor.attributionRefreshMs` (`2000`) — worker timeout and cascade-attribution refresh cadence
+- `codex_executor.concurrency_per_repo` (`1`) — recommended repo-level ceiling while cascade attribution is a single active hint per watcher
+
+## swarm-codex executor design decisions
+
+- **Separate executor target**: do not overload hosted `kind='codex'` RPC rows. Those rows represent OpenHive-managed interactive Codex sessions. Dispatchable Codex work uses a dedicated executor target marked as `swarm-codex` in the MAP row metadata/capabilities.
+- **Repo source of truth**: repo-scoped dispatches must resolve `cwd` from the dispatch repo binding (`repo_id`, `clone_path`, or repo `local_path`). Dispatch without a concrete local repo path fails before spawning Codex.
+- **Task ref binding**: cascade gets one `metadata.task_ref`. For v1 the runtime uses the first linked task from `dispatch_linked_tasks`. Multi-task metadata is deferred.
+- **Completion semantics**: dispatch completes when the Codex worker exits normally. The continuation policy releases after a Codex-delivered attempt instead of granting normal follow-up turns, because local repo dispatches are one-shot and a second pass can fall through to mail/ACP routing after the commit already exists. Linked task closure remains cascade merge-driven via `src/cascade/task-binder.ts`; a commit-only dispatch can produce artifacts without closing the task.
+- **Attribution mechanism**: use programmatic attribution through `CoordinationPlane.recordCascadeAttribution()`. Do not rely on Codex `PostToolUse` hooks inside nested `codex mcp-server` role threads; live probes showed file writes occur without hook events.
+- **Sandbox default**: default Codex dispatch workers to `danger-full-access`. Live verification showed `workspace-write` can edit worktree files but cannot create `.git/index.lock`, so `git add` / `git commit` fails and no cascade commit can be projected. This branch is local/dev-oriented and should be paired with explicit executor targeting plus operator-owned repo selection.
+- **Concurrency**: default to one active Codex worker per repo. Parallel workers in the same repo can misattribute cascade events until attribution is keyed by branch/worktree or each dispatch gets an isolated worktree.
 
 ## Non-goals
 
 - No spec-level aggregate status. Each dispatch row is independent, even when one spec is dispatched to N swarms (D8 — parked `all-must-complete` / `first-wins`).
 - No persisted outbound mail log inside this directory. Mail transport delegates to `agent-inbox` for persistence.
-- No cascade integration inside dispatch. Dispatch does not care whether the agent it routes to uses `git-cascade`. The cascade-task binder in `src/cascade/` operates separately on the agent's post-work merge events.
+- No hub-authored merge. Dispatch may run a cascade-reporting worker, but the cascade-task binder in `src/cascade/` remains the post-work merge observer.
 
 ## Relationship to other subsystems
 

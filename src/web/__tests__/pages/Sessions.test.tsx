@@ -40,6 +40,7 @@ vi.mock('../../hooks/useApi', () => ({
 
 vi.mock('../../hooks/useRealtimeInvalidation', () => ({
   useSessionsRealtime: vi.fn(),
+  useSwarmRealtime: vi.fn(),
 }));
 
 vi.mock('../../hooks/useWebSocket', () => ({

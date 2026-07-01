@@ -18,6 +18,11 @@ import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import { cascadeRoutes } from '../../api/routes/cascade.js';
 import { handleCascadeRequest, CASCADE_METHODS } from '../../map/cascade-handler.js';
+import {
+  registerInbound,
+  unregisterInbound,
+  type MapInboundConnection,
+} from '../../map/connection-registry.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 vi.mock('../../realtime/index.js', () => ({
@@ -515,6 +520,121 @@ describe('Cascade REST Routes', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.data.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // ── Capability gate on the actions endpoint ──────────────────────────
+  //
+  // POST /cascade/streams/:id/actions/:action pre-checks the owning swarm's
+  // `cascade.canAct` capability before dispatching `x-cascade/request.*`.
+  // An observe-only swarm (canAct !== true) is rejected with a 409 so the
+  // operator gets a clear typed error instead of a silent no-op.
+  describe('POST /cascade/streams/:id/actions/:action — capability gate', () => {
+    let streamRowId: string;
+
+    // A fake inbound connection registered into the in-memory registry so
+    // `hasCapability(swarmId, 'cascade.canAct')` reads from declared
+    // capabilities. `ws.readyState = 1` keeps `sendCascadeAction` happy on
+    // the canAct=true path; `send` is a sink — the action's effect isn't
+    // under test here, only the gate.
+    function fakeConnection(
+      conn_swarmId: string,
+      cascade: Record<string, unknown>,
+    ): MapInboundConnection {
+      return {
+        ws: { readyState: 1, send: () => {}, close: () => {} } as never,
+        agentId: 'sidecar',
+        swarmId: conn_swarmId,
+        connectedAt: new Date().toISOString(),
+        lastMessageAt: new Date().toISOString(),
+        registeredAgents: new Map([
+          [
+            'agent-cascade',
+            {
+              id: 'agent-cascade',
+              name: 'cascade-agent',
+              role: 'coordinator',
+              state: 'active',
+              scopes: [],
+              capabilities: { cascade },
+            },
+          ],
+        ]),
+      };
+    }
+
+    beforeAll(async () => {
+      // Resolve the row id of route-s1 (owned by `swarmId`).
+      const list = await app.inject({
+        method: 'GET',
+        url: `/api/v1/cascade/streams?source_swarm_id=${swarmId}`,
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      streamRowId = list.json().data[0].id;
+    });
+
+    afterAll(() => {
+      unregisterInbound(swarmId);
+    });
+
+    it('rejects with 409 when the owning swarm declares canAct:false (observe-only)', async () => {
+      registerInbound(
+        swarmId,
+        fakeConnection(swarmId, { canServeDiff: true, canAct: false, emitsConflicts: false }),
+      );
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/cascade/streams/${streamRowId}/actions/pause`,
+        headers: { Authorization: `Bearer ${apiKey}` },
+        payload: { reason: 'operator-paused' },
+      });
+      expect(res.statusCode).toBe(409);
+      const body = res.json();
+      expect(body.sent).toBe(false);
+      expect(body.message).toMatch(/observe-only|canAct/i);
+    });
+
+    it('rejects with 409 when the owning swarm declares no cascade block', async () => {
+      registerInbound(swarmId, fakeConnection(swarmId, {}));
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/cascade/streams/${streamRowId}/actions/abandon`,
+        headers: { Authorization: `Bearer ${apiKey}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().sent).toBe(false);
+    });
+
+    it('dispatches the action when the owning swarm declares canAct:true', async () => {
+      registerInbound(
+        swarmId,
+        fakeConnection(swarmId, { canServeDiff: true, canAct: true, emitsConflicts: true }),
+      );
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/cascade/streams/${streamRowId}/actions/pause`,
+        headers: { Authorization: `Bearer ${apiKey}` },
+        payload: { reason: 'operator-paused' },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.sent).toBe(true);
+      expect(body.action).toBe('pause');
+    });
+
+    it('still rejects unknown actions with 400 before the capability check', async () => {
+      registerInbound(
+        swarmId,
+        fakeConnection(swarmId, { canAct: true }),
+      );
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/cascade/streams/${streamRowId}/actions/bogus`,
+        headers: { Authorization: `Bearer ${apiKey}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
     });
   });
 });

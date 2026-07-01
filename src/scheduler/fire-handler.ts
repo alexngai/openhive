@@ -26,6 +26,9 @@ import { broadcastToChannel } from '../realtime/index.js';
 import {
   getPayloadKind,
   isValidPayload,
+  type DispatchSpecPayload,
+  type DispatchPromptPayload,
+  type ExperimentRunPayload,
   type FallbackSpawn,
   type OpenHiveSchedulePayload,
   type SpecRef,
@@ -57,6 +60,15 @@ export interface FireHandlerDeps {
     adapter: FallbackSpawn['adapter'];
     name: string;
   }): Promise<{ swarmId: string; hostedSwarmId: string }>;
+  /**
+   * Fire a scheduled experiment run (autonomation control plane): resolve the
+   * experiment, create a `queued` run, and launch the runner worker. Returns
+   * the new run id, or null if the experiment is missing/inactive.
+   */
+  runScheduledExperiment?(
+    payload: ExperimentRunPayload,
+    scheduleId: string,
+  ): { runId: string } | null;
 }
 
 export function createOpenHiveFireHandler(deps: FireHandlerDeps): ScheduleFireHandler {
@@ -77,6 +89,28 @@ export function createOpenHiveFireHandler(deps: FireHandlerDeps): ScheduleFireHa
 
     const payload = schedule.payload as OpenHiveSchedulePayload;
     const kind = getPayloadKind(payload);
+
+    // Experiment runs branch out before the dispatch fan-out — no spec, no
+    // target swarms. Resolve + create a run + launch the worker.
+    if (kind === 'experiment') {
+      let runId: string | null = null;
+      if (deps.runScheduledExperiment) {
+        try {
+          runId = deps.runScheduledExperiment(payload as ExperimentRunPayload, schedule.id)?.runId ?? null;
+        } catch (err) {
+          console.warn(
+            `[scheduler] experiment fire failed for schedule=${schedule.id}: ${(err as Error).message}`,
+          );
+        }
+      }
+      broadcastToChannel('map:schedules', {
+        type: 'schedule.fired',
+        data: { schedule_id: schedule.id, kind, run_id: runId },
+      });
+      return;
+    }
+
+    const dispatchPayload = payload as DispatchSpecPayload | DispatchPromptPayload;
 
     // Per-kind setup: resolve spec ref + prompt-override.
     //   dispatch_spec   → existence-check the real spec, use its ref
@@ -119,8 +153,8 @@ export function createOpenHiveFireHandler(deps: FireHandlerDeps): ScheduleFireHa
     // through to the configured targets and let the orchestrator's
     // retry/stall logic handle offline-routing errors.
     const { targets, spawnedFallback } = await resolveTargets(
-      payload.target_swarm_ids,
-      payload.fallback_spawn,
+      dispatchPayload.target_swarm_ids,
+      dispatchPayload.fallback_spawn,
       deps,
       schedule.id,
     );
@@ -139,8 +173,8 @@ export function createOpenHiveFireHandler(deps: FireHandlerDeps): ScheduleFireHa
           initiator_type: 'agent',
           initiator_id,
           prompt_override: promptOverride,
-          acp_lifecycle: payload.lifecycle?.acp,
-          mail_lifecycle: payload.lifecycle?.mail,
+          acp_lifecycle: dispatchPayload.lifecycle?.acp,
+          mail_lifecycle: dispatchPayload.lifecycle?.mail,
         });
         created.push(dispatch.id);
         // Bind the spawned-fallback swarm to this dispatch so the dispatch
@@ -171,7 +205,7 @@ export function createOpenHiveFireHandler(deps: FireHandlerDeps): ScheduleFireHa
         schedule_id: schedule.id,
         kind,
         dispatch_count: created.length,
-        target_count: payload.target_swarm_ids.length,
+        target_count: dispatchPayload.target_swarm_ids.length,
         fallback_spawn_used: spawnedFallback != null,
       },
     });

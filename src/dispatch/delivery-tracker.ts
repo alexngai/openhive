@@ -1,7 +1,7 @@
 /**
  * Delivery tracker — bridges OpenHive transport adapters with the
  * `dispatched` event in setup.ts so per-attempt rows in `attempts_history`
- * carry the actual transport (acp | mail) used.
+ * carry the actual transport (acp | mail | codex) used.
  *
  * Why a side-channel instead of direct DB writes from each adapter:
  *   - The orchestrator's `dispatched` event is the authoritative source of
@@ -19,7 +19,7 @@
  */
 
 export interface DeliveryHint {
-  transport: 'acp' | 'mail';
+  transport: 'acp' | 'mail' | 'codex';
   agent_id?: string;
 }
 

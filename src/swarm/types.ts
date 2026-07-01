@@ -1,7 +1,7 @@
 /**
  * Swarm Hosting Types
  *
- * Types for spawning and managing OpenSwarm instances from OpenHive.
+ * Types for spawning and managing SwarmRunner instances from OpenHive.
  * Supports multiple hosting providers (local sidecar, docker, remote compute).
  */
 
@@ -25,7 +25,7 @@ export type HostedSwarmState =
 // ============================================================================
 
 /**
- * Bootstrap token passed to a spawned OpenSwarm instance.
+ * Bootstrap token passed to a spawned SwarmRunner instance.
  * Contains everything the swarm needs to start and register itself
  * with the OpenHive MAP hub.
  */
@@ -45,7 +45,7 @@ export interface BootstrapToken {
   swarm_name: string;
   /** Pre-registered swarm ID for stable identity across reconnections */
   swarm_id?: string;
-  /** OpenSwarm adapter to use (e.g. 'macro-agent') */
+  /** SwarmRunner adapter to use (e.g. 'macro-agent') */
   adapter: string;
   /** Adapter-specific configuration */
   adapter_config?: Record<string, unknown>;
@@ -67,7 +67,7 @@ export interface BootstrapToken {
    * OpenTeams binding (Layer 4). Optional — present when the spawn was
    * initiated with a `loadout_bundle_id`. The loadout's MCP scope and
    * prompt addendum are materialized at the hub and forwarded here so
-   * the openswarm sidecar can apply them to the spawned agent's first
+   * the swarm-runner sidecar can apply them to the spawned agent's first
    * session without an extra round-trip to fetch the bundle.
    *
    * `loadout_bundle_id` / `team_bundle_id` / `role` are recorded for the
@@ -181,7 +181,7 @@ export interface SwarmBootstrap {
 /** What the caller provides when requesting a swarm spawn */
 export interface SpawnSwarmInput {
   /**
-   * What kind of agent process to spawn. Defaults to 'openswarm' (existing
+   * What kind of agent process to spawn. Defaults to 'swarm-runner' (existing
    * behavior). When set to 'claude-code', the manager routes to a separate
    * spawn pipeline that launches the Claude Code TUI alongside cc-swarm's
    * plugin-managed sidecar. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
@@ -191,7 +191,7 @@ export interface SpawnSwarmInput {
   name?: string;
   /** Optional description */
   description?: string;
-  /** OpenSwarm adapter to use */
+  /** SwarmRunner adapter to use */
   adapter?: string;
   /** Adapter-specific configuration */
   adapter_config?: Record<string, unknown>;
@@ -225,7 +225,7 @@ export interface SpawnSwarmInput {
    *
    * For `kind: 'claude-code'`, passed to `claude` as a positional arg so the
    * TUI opens with the prompt prefilled (claude treats it as the first user
-   * turn). For `kind: 'openswarm'`, currently a no-op — the openswarm adapter
+   * turn). For `kind: 'swarm-runner'`, currently a no-op — the swarm-runner adapter
    * has its own prompt-injection path via the bootstrap-coordinator field.
    */
   initial_prompt?: string;
@@ -250,6 +250,18 @@ export interface SpawnSwarmInput {
   inject_resources?: string[];
   /** Boot-time agent provisioning (e.g. auto-spawn coordinator) */
   bootstrap?: SwarmBootstrap;
+  /**
+   * Free-form working directory for the spawned process. Only valid for
+   * non-swarm-runner kinds (claude-code, codex TUI, codex RPC) — swarm-runner
+   * has its own cwd plumbing via `bootstrap.cwd`. Must be an absolute path
+   * that exists on disk as a directory. When set, the TUI / codex process
+   * is spawned with this as cwd instead of the synthetic `data_dir`.
+   *
+   * Mutually exclusive with `repo_id` and `workspace` (those drive their
+   * own cwd resolution). Persisted on the hosted-swarm config so restart
+   * lands in the same directory.
+   */
+  cwd?: string;
   /**
    * Optional openteams binding. When `loadout_bundle_id` is supplied the
    * manager fetches the materialized loadout (MCP scope + prompt
@@ -307,8 +319,14 @@ export interface SwarmProvisionConfig {
   /** Boot-time agent provisioning (env-var bridged into the runtime) */
   bootstrap?: SwarmBootstrap;
   /**
+   * Free-form working directory for the spawned process (TUI / codex
+   * kinds only). Echoed from `SpawnSwarmInput.cwd`; persisted so restart
+   * lands in the same directory. Always an absolute path when set.
+   */
+  cwd?: string;
+  /**
    * When set, the provider spawns this command instead of its kind-default
-   * (e.g. the local provider's `openswarm_command`). Used by non-openswarm
+   * (e.g. the local provider's `swarm_runner_command`). Used by non-swarm-runner
    * kinds (`claude-code`, future codex/gemini) to point the provider at the
    * right binary without making the provider itself kind-aware.
    *
@@ -367,12 +385,12 @@ export interface LogOptions {
 
 /**
  * Hosting provider interface.
- * Implementations handle the actual spawning/stopping of OpenSwarm processes.
+ * Implementations handle the actual spawning/stopping of SwarmRunner processes.
  */
 export interface HostingProvider {
   readonly type: HostingProviderType;
 
-  /** Provision and start a new OpenSwarm instance */
+  /** Provision and start a new SwarmRunner instance */
   provision(config: SwarmProvisionConfig): Promise<ProvisionResult>;
 
   /** Stop and tear down an instance */
@@ -395,12 +413,20 @@ export interface HostingProvider {
 /**
  * What flavour of agent process this hosted swarm is. Drives the spawn-plan
  * resolver — see docs/HOSTED_SWARM_KINDS_DESIGN.md. New rows must specify a
- * kind; legacy rows default to 'openswarm' on read.
+ * kind; legacy rows default to 'swarm-runner' on read.
  */
 export type HostedSwarmKind =
-  | 'openswarm'    // OpenSwarm hosting gateway (current default)
+  | 'swarm-runner'    // SwarmRunner hosting gateway (current default)
   | 'claude-code'  // claude TUI + cc-swarm plugin sidecar
   | 'codex';       // codex TUI (no plugin/sidecar in v1; future codex-swarm plugin will add MAP integration)
+
+export type LegacyHostedSwarmKind = 'openswarm';
+
+export function normalizeHostedSwarmKind(
+  kind: HostedSwarmKind | LegacyHostedSwarmKind | null | undefined,
+): HostedSwarmKind {
+  return kind === 'openswarm' || kind == null ? 'swarm-runner' : kind;
+}
 
 export interface HostedSwarm {
   id: string;
@@ -442,8 +468,8 @@ export interface SwarmHostingConfig {
   enabled: boolean;
   /** Default hosting provider */
   default_provider: HostingProviderType;
-  /** Command to run OpenSwarm (e.g. 'npx openswarm' or path to binary) */
-  openswarm_command: string;
+  /** Command to run SwarmRunner (e.g. 'npx @swarmkit-ai/swarm-runner' or path to binary) */
+  swarm_runner_command: string;
   /** Base directory for swarm instance data */
   data_dir: string;
   /** Port range for locally spawned swarms [min, max] */

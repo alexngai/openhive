@@ -23,7 +23,7 @@ export interface ScheduleLifecycleHints {
   mail?: 'fresh' | 'reuse';
 }
 
-export type FallbackSpawnAdapter = 'openswarm' | 'claude-code' | 'codex';
+export type FallbackSpawnAdapter = 'swarm-runner' | 'claude-code' | 'codex';
 
 export interface FallbackSpawn {
   adapter: FallbackSpawnAdapter;
@@ -131,6 +131,7 @@ export interface UseSchedulesOptions {
   paused?: boolean;
   limit?: number;
   offset?: number;
+  enabled?: boolean;
 }
 
 export function useSchedules(options: UseSchedulesOptions = {}) {
@@ -144,6 +145,7 @@ export function useSchedules(options: UseSchedulesOptions = {}) {
   return useQuery({
     queryKey: ['schedules', { ...options }],
     queryFn: () => api.get<SchedulesResponse>(`/schedules?${params.toString()}`),
+    enabled: options.enabled ?? true,
     staleTime: 15_000,
   });
 }

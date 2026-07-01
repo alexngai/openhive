@@ -148,7 +148,7 @@ export function ChatPanel() {
             <ChipsComposer channel={channel} onAtKey={onAtKey} compact />
           </>
         ) : (
-          <ChatInput channel={channel} compact />
+          <ChatInput channel={channel} compact showModeBadge />
         )}
       </div>
     </div>

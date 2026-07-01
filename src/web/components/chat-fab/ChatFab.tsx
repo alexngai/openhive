@@ -138,7 +138,7 @@ function useLiveAgent(agentRef: ChatFabAgentRef | null): LiveAgentInfo {
 }
 
 function ChatHeader({ isDocked }: { isDocked: boolean }) {
-  const { view, sessionId, sessionLabel, agentRef, clearSession, collapse, toggleMode } = useChatFabStore();
+  const { view, sessionId, sessionLabel, agentRef, transportMode, clearSession, collapse, toggleMode } = useChatFabStore();
   useLiveSwarmRefresh(agentRef?.swarmId ?? null);
   const live = useLiveAgent(agentRef);
   const headerName = live.name ?? sessionLabel ?? 'Agent';
@@ -217,6 +217,18 @@ function ChatHeader({ isDocked }: { isDocked: boolean }) {
         </div>
       </div>
       <div className="flex items-center gap-1 shrink-0">
+        {view === 'chat' && transportMode && (
+          <span
+            className="rounded px-1.5 py-0.5 text-2xs font-semibold uppercase"
+            style={{
+              color: 'var(--color-accent)',
+              backgroundColor: 'var(--color-accent-bg)',
+            }}
+            title={`Chat transport: ${transportMode.toUpperCase()}`}
+          >
+            {transportMode}
+          </span>
+        )}
         <button
           type="button"
           onClick={toggleMode}
@@ -246,6 +258,7 @@ function ChatBody() {
   const connecting = useChatFabStore((s) => s.connecting);
   const connectError = useChatFabStore((s) => s.connectError);
   const sessionLabel = useChatFabStore((s) => s.sessionLabel);
+  const cancelConnect = useChatFabStore((s) => s.cancelConnect);
   const clearError = useChatFabStore((s) => s.clearSession);
 
   // Mid-flight connect (no session yet) — show a clean spinner so the user
@@ -257,6 +270,13 @@ function ChatBody() {
         style={{ color: 'var(--color-text-muted)' }}>
         <Loader2 className="h-5 w-5 animate-spin" style={{ color: 'var(--color-accent)' }} />
         <span>Connecting{sessionLabel ? ` to ${sessionLabel}` : ''}…</span>
+        <button
+          type="button"
+          onClick={cancelConnect}
+          className="btn-ghost px-2 py-1 text-2xs"
+        >
+          Cancel
+        </button>
       </div>
     );
   }

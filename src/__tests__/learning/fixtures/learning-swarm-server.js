@@ -23,11 +23,11 @@ const port = portIdx !== -1 ? parseInt(process.argv[portIdx + 1], 10) : 9999;
 const healthPort = port + 1;
 
 // Check for bootstrap token to auto-connect to hub
-const bootstrapToken = process.env.OPENSWARM_BOOTSTRAP_TOKEN;
+const bootstrapToken = process.env.SWARM_RUNNER_BOOTSTRAP_TOKEN;
 let hubWs = null;
 
 // ===========================================================================
-// Main WebSocket server (serves as OpenSwarm MAP endpoint)
+// Main WebSocket server (serves as SwarmRunner MAP endpoint)
 // ===========================================================================
 
 const httpServer = http.createServer((req, res) => {

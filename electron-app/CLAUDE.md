@@ -1,7 +1,9 @@
 # OpenHive Electron App
 
-Thin Electron supervisor that hosts one openhive server per window, forked
-via `node:child_process` + `ELECTRON_RUN_AS_NODE=1`.
+Thin Electron supervisor that forks one openhive server per hive
+(`node:child_process` + `ELECTRON_RUN_AS_NODE=1`). Each hive's server runs in
+its own Node process; its UI window is optional — built on demand, or never
+(headless / tray-only mode). See "Headless / tray-only mode".
 
 ## Architecture
 
@@ -19,7 +21,7 @@ electron-app/src/main.ts  (Electron main process)
             → Fastify listens on the preallocated port
             → main posts { type: 'start', config }
             ← child posts { type: 'ready', url } when hive is listening
-       → BrowserWindow.loadURL(url)
+       → BrowserWindow.loadURL(url)        ← headed only; deferred in tray mode
 ```
 
 **Why not `utilityProcess`:** Electron's `utilityProcess` runs a restricted
@@ -39,7 +41,7 @@ belt-and-suspenders.
 
 ## Renderer ↔ main bridge (`window.openhive`)
 
-`electron-app/src/preload.ts` exposes a tightly-scoped API via
+`electron-app/src/preload.cts` exposes a tightly-scoped API via
 `contextBridge`. Always guard for `window.openhive` being undefined — the
 SPA also runs in plain browsers (`npm run dev:web`) where the bridge isn't
 present.
@@ -61,9 +63,16 @@ Renderer integration:
   counts as "unread") is design-heavy and lives in feature code as it gets
   added. The bridge is just the OS call.
 
-Cold-start deep links (URL clicked while app was closed) are gated on the
-first hive's `did-finish-load` so the IPC doesn't fire into a renderer
-that hasn't subscribed yet.
+Deep links reach a renderer over the `openhive:deep-link` IPC channel only
+once that renderer has signalled readiness — it sends an
+`openhive:renderer-ready` ping after React has mounted and the deep-link hook
+has subscribed (`did-finish-load` is too early: React's `useEffect` runs after
+the commit phase). Readiness is tracked per-`webContents`, so it stays correct
+across headless open→close→reopen cycles where the "first" window keeps
+changing identity. Cold-start links additionally await `bootComplete` so they
+can't race the restore loop. Full routing — including `openhive://h/<id>/…`
+hive targeting — is covered under "Headless / tray-only mode → Deep-link hive
+routing".
 
 ## Build + run
 
@@ -90,7 +99,13 @@ cd electron-app && npm run dist
 cd electron-app && npm run pack
 
 # Re-run just the guards against the last build (seconds, no rebuild)
+#   verify chain: verify-asar → smoke-test → e2e-test (headed) →
+#   headless-e2e (tray-only / multi-hive / deep-link flows) → verify-update-feed
 cd electron-app && npm run verify
+
+# Run only the headless-flow tests — works against the dev build, no
+# packaging needed (uses dist/main.js when it's newer than release/):
+cd electron-app && npm run build && node scripts/headless-e2e.mjs
 ```
 
 > **Restoring after `dist` / `pack`.** Both run `stage-openhive.mjs` +
@@ -123,7 +138,7 @@ Breakpoints in `spawnHive`, menu handlers, IPC routing.
 ### Hive-child (the forked Node process)
 
 The child is a separate process from main — `--inspect` on the parent doesn't
-cover it. Pass `execArgv` to `fork()` in `main.ts#spawnHive`:
+cover it. Pass `execArgv` to `fork()` in `main.ts#spawnHiveChild`:
 
 ```ts
 execArgv: process.env.OPENHIVE_DEBUG_HIVE
@@ -174,9 +189,10 @@ Two distinct trees, deliberately separated:
 | macOS `<userData>` (app-level) | `~/Library/Application Support/OpenHive/` |
 | Crash dumps | `<userData>/Crashpad/` |
 | Recent-hives MRU | `<userData>/recent-hives.json` |
+| App settings (tray-mode toggles) | `<userData>/settings.json` |
 
 Every line the hive-child writes is piped to **both** the per-hive log file and
-the supervisor's stderr (see `child.stdout.on('data', ...)` in `spawnHive`).
+the supervisor's stderr (see `child.stdout.on('data', ...)` in `spawnHiveChild`).
 Tail one place, see everything.
 
 ## Environment variables
@@ -187,6 +203,98 @@ Tail one place, see everything.
 | `OPENHIVE_HOME` | User → Electron main (and Supervisor → child fork) | Default hive's dataDir. Read by `defaultHiveDataDir()` at launch; if unset, falls back to `~/.openhive/`. Also forwarded into the hive-child so anything that calls `resolveDataDir()` inside the openhive runtime agrees. |
 | `OPENHIVE_REMOTE_DEBUG` | User → Electron main | If set, exposes Chromium's CDP at that port (e.g. `OPENHIVE_REMOTE_DEBUG=9223`) |
 | `OPENHIVE_DEBUG_HIVE` | User → Electron main | (Optional hook) pass `--inspect` to forked hive-children |
+| `OPENHIVE_HEADLESS` | User → Electron main | `1` forces headless/tray-only launch, `0` forces headed — overrides the persisted `headless` setting for that launch. See "Headless / tray-only mode". |
+
+## Headless / tray-only mode
+
+The supervisor can boot a hive **without a window** — the Fastify server runs,
+the app sits in the system tray / menu bar, and the UI window is built on
+demand. The hive-child (the server process) was always independent of the
+window; headless mode just makes window creation optional.
+
+**Triggers** (precedence high → low):
+
+1. `--no-tray` / `OPENHIVE_HEADLESS=0` — force headed for this launch
+2. `--tray` / `OPENHIVE_HEADLESS=1` — force headless for this launch
+3. the persisted `headless` flag in `<userData>/settings.json`
+
+> The CLI flag is `--tray`, **not** `--headless` — `--headless` is a reserved
+> Chromium switch Electron would intercept before `main.ts` could read it.
+
+**Tray menu is the headless control panel.** `buildTrayMenu()` is rebuilt on
+every change to the running set (`onHivesChanged()` / `refreshTrayMenu()`):
+- *Running Hives* — one submenu per hive: an `ID: <id>` header, Show Window ·
+  Stop · Restart · Copy Deep Link, plus a *Keep Running in Background*
+  checkbox. A `●`/`○` marks whether it has a window.
+- *New Hive in Background…* (`withWindow: false`) / *New Hive (with window)…*
+- *Open in Background on Launch* → `settings.headless`
+- *Open at Login* → `settings.startAtLogin`, which drives
+  `app.setLoginItemSettings({ openAtLogin, args: ['--tray'] })` so a sign-in
+  auto-start lands in the tray. No-op on Linux (no `setLoginItemSettings`
+  support — the toggle is disabled there).
+
+**Window lifecycle decoupling.** `spawnHive` splits into `spawnHiveChild`
+(fork + boot the server) and `createHiveWindow` (build the BrowserWindow).
+`HiveEntry.window` is `BrowserWindow | null`. Whether a hive's server outlives
+its window is the per-hive **`HiveEntry.keepAlive`** flag — *not* the global
+`headless` flag. Closing a window stops the hive iff `!keepAlive`. `keepAlive`
+defaults to the global `headless` mode at spawn; "New Hive in Background…" and
+the restore path force it `true`; the tray checkbox toggles it live.
+
+**Multi-hive restore.** `settings.lastRunningHives` holds the dataDirs of the
+`keepAlive` hives. `onHivesChanged()` rewrites it on *every* hive add/remove
+(not just at quit — so a crash still leaves an accurate set). A headless
+launch boots that whole set windowless + `keepAlive`, **sequentially** (the
+`pickFreePort()` race forbids concurrent boots), falling back to the default
+hive when the set is empty. Headed launch is unchanged (default hive only).
+The `quitting` flag gates child-exit handlers during `before-quit` — without
+it, hives exiting on quit would drain `lastRunningHives` to `[]`.
+
+A restore entry whose folder is **missing** (deleted, or an unmounted drive —
+detected by the absence of openhive's `.openhive-root` marker) is **skipped,
+not pruned**: it's tracked in `unavailableHives`, which `onHivesChanged()`
+folds back into `lastRunningHives`, so an unmounted drive auto-recovers on a
+later launch. The check applies only to the restore set — "New Hive…" still
+creates a brand-new folder deliberately. A once-per-launch notification names
+what was skipped.
+
+Skipped hives appear under a tray **Unavailable Hives** section, each with
+*Try Again* (`retryUnavailableHive` — re-checks the marker, boots the hive if
+its folder reappeared) and *Remove from Auto-Start* (`removeUnavailableHive` —
+drops it from `unavailableHives`; the next `onHivesChanged()` then prunes it
+from `lastRunningHives` so it won't return next launch). This keeps pruning a
+deleted hive an explicit user choice rather than a heuristic.
+
+**Deep-link hive routing.** `openhive://h/<id>/<route>` targets a specific
+hive; `<id>` is a stable short slug (`HiveEntry.id`, derived from the dataDir
+basename, collision-suffixed) held in the `settings.hiveIds` registry —
+parsed by `parseDeepLink()`, resolved by `resolveHiveId()`, booted on demand.
+An id-less `openhive://<route>` keeps the pre-multi-hive behavior (focused /
+first hive). `processDeepLink()` awaits `bootComplete` so a cold-start link
+can't race the restore loop. The renderer is unchanged — main strips `h/<id>`
+and forwards a clean `openhive://<route>`. Tray → per-hive *Copy Deep Link*
+puts `openhive://h/<id>/` on the clipboard.
+
+**macOS dock.** Headless launch calls `app.dock.hide()` for a true menu-bar
+app. The icon returns via `app.dock.show()` when a window opens from the tray
+and hides again when the last window closes.
+
+**Planned (not yet built):** a "Copy link to *this view*" renderer affordance —
+a deep link to the current SPA route, not just the hive root (`openhive://h/<id>/`,
+which is all the tray's main-process *Copy Deep Link* can build). Needs a
+preload-bridge method exposing the hive id + current route to the renderer.
+
+**Tests.** `scripts/headless-e2e.mjs` (in the `verify` chain) is the
+regression guard for everything above — headless boot, multi-hive restore,
+2b skip-but-keep, 2e remove/retry, deep-link hive routing. Native tray menus
+can't be clicked from Playwright, so `main.ts` exposes an `OPENHIVE_E2E`-gated
+`globalThis.__openhiveTest` (state readers + the 2e action handlers) that the
+script drives via `electronApp.evaluate()`. It runs against the packaged app
+in CI, or the dev build locally (whichever is newer; `--dev` forces dev):
+
+```bash
+npm run build && node scripts/headless-e2e.mjs
+```
 
 ## Known gotchas (debug anchors for future sessions)
 
@@ -207,7 +315,7 @@ The script then idempotently patches `lib/database.js` (guarded by a `// openhiv
 
 **ESM/CJS module resolution for the electron-app bundle.** `tsconfig.json` emits NodeNext ESM. `electron-app/package.json` has `"type": "module"` via the generated `dist-electron/package.json`... actually no, we build to `electron-app/dist/` now and the parent `electron-app/package.json` already has `"type": "module"`. When the hive-child does `await import('openhive')`, it uses the variable-specifier trick (`const specifier = 'openhive'; await import(specifier)`) to bypass TS's static type resolution — so tsc doesn't complain even when openhive's dist lacks a `.d.ts`.
 
-**Multi-hive architecture.** `app.requestSingleInstanceLock()` prevents multiple Electron app processes. Multi-hive lives inside a single Electron instance — "New Hive…" in the menu forks an additional `child_process.fork` with its own `dataDir`, own SQLite file, own Fastify listener, own BrowserWindow. Each is fully isolated; a hive crash shows a per-window restart dialog without taking down siblings.
+**Multi-hive architecture.** `app.requestSingleInstanceLock()` prevents multiple Electron app processes. Multi-hive lives inside a single Electron instance — "New Hive…" in the menu forks an additional `child_process.fork` with its own `dataDir`, own SQLite file, own Fastify listener, and (in headed mode) its own BrowserWindow. Each is fully isolated; a hive crash surfaces a restart prompt — a modal dialog when the hive has a window, an OS notification when it's headless (`handleHiveCrash`) — without taking down siblings.
 
 **`dist/` vs `dist/web/` cleanup.** `npm run build:server` runs `tsup` with `clean: true` — wipes the whole `dist/` directory, including `dist/web/`. If you rebuild just the server, the SPA is gone until you also run `npm run build:web`. `npm run build` (no suffix) runs both.
 
@@ -225,7 +333,8 @@ electron-app/
 ├── src/
 │   ├── main.ts                       # Supervisor: windows, menu, fork hive-child, auto-update
 │   ├── hive-child.ts                 # In-process openhive server via child_process.fork
-│   └── preload.ts                    # Renderer preload (empty placeholder)
+│   └── preload.cts                   # Renderer preload — window.openhive bridge.
+│                                     # .cts (→ .cjs): sandboxed preloads must be CJS.
 ├── scripts/
 │   └── fix-better-sqlite3.mjs        # postinstall: dedup nested copies, fetch Electron prebuild
 └── dist/                             # tsc output (gitignored)

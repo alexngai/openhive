@@ -12,7 +12,7 @@
  * vertical timeline, actions, branch / PR / commit controls.
  */
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   GitBranch,
   GitCommit,
@@ -38,11 +38,8 @@ import {
   Edit3,
   Search,
   Inbox,
-  Send,
-  FileText,
-  Zap,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   useCascadeDAG,
   useCascadeStreamTimeline,
@@ -54,21 +51,18 @@ import {
   useUpdatePublishBranch,
   useGitHubStatus,
   useMapSwarm,
-  useSessionsList,
   type StreamDAGNode,
   type StreamDAGEdge,
   type CascadeAction,
   type CascadePullRequest,
 } from '../hooks/useApi';
-import { useDispatchList } from '../hooks/useDispatch';
-import { useSpec } from '../hooks/useSpecs';
 import { useCascadeStreamsRealtime } from '../hooks/useRealtimeInvalidation';
 import { useMapSwarms } from '../hooks/useApi';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { EmptyState } from '../components/common/EmptyState';
 import { useDebouncedValue, matchesSearch } from '../components/common/ListFilters';
-import { StreamDAGView } from '../components/streams/StreamDAGView';
+import { StreamCascadeMap } from '../components/streams/StreamCascadeMap';
 import { StreamStatusDot, STATUS_COLORS, STATUS_LABELS, TimelineEntry } from '../components/streams/shared';
 import { DiffView } from '../components/cascade/DiffView';
 import { StackDiffView } from '../components/cascade/StackDiffView';
@@ -79,12 +73,42 @@ import {
   taskContextItem,
 } from '../components/chat-fab/context-types';
 import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
+import { LineageRail } from '../components/pipeline/LineageRail';
 
-type ViewMode = 'list' | 'stack' | 'dag';
+type ViewMode = 'list' | 'stack' | 'map';
 
 const RECENTLY_LANDED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 type TriageBucket = 'needs-attention' | 'in-progress' | 'recently-landed';
+
+/**
+ * Per-stream cascade capability gate. The "All swarms" view mixes streams
+ * from multiple swarms, so action availability must be resolved per-stream
+ * keyed on `node.source_swarm_id` — never a single page-level value.
+ *
+ * Reads the owning swarm's aggregate `capabilities.cascade` block (a
+ * `CascadeCapability` shape declared by the runtime at MAP registration):
+ *   - `canAct`         — can drive merge/pause/resume/abandon/resolve + push/commit.
+ *   - `emitsConflicts` — emits conflict lifecycle events.
+ *
+ * Conservative by default: a swarm that declares no `cascade` block, or
+ * leaves a flag undefined, is treated as not-capable. Mirrors the chat
+ * surface's "Unavailable + reason" precedent (see src/web/CLAUDE.md).
+ */
+const CASCADE_ACT_DISABLED_REASON =
+  "This swarm reports cascade activity but doesn't accept cascade actions (observe-only).";
+
+function useCascadeCapability(node: StreamDAGNode): {
+  canAct: boolean;
+  emitsConflicts: boolean;
+} {
+  const { data: swarm } = useMapSwarm(node.source_swarm_id);
+  const cascade = (swarm?.capabilities as { cascade?: { canAct?: boolean; emitsConflicts?: boolean } } | null)?.cascade;
+  return {
+    canAct: cascade?.canAct === true,
+    emitsConflicts: cascade?.emitsConflicts === true,
+  };
+}
 
 function bucketForNode(node: StreamDAGNode): TriageBucket | null {
   if (node.status === 'conflicted' || node.open_conflict_count > 0) {
@@ -101,6 +125,7 @@ function bucketForNode(node: StreamDAGNode): TriageBucket | null {
 }
 
 export function Changes() {
+  const [routeSearchParams, setRouteSearchParams] = useSearchParams();
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [selectedSwarmId, setSelectedSwarmId] = useState<string | undefined>();
   const [selectedStreamId, setSelectedStreamId] = useState<string | null>(null);
@@ -135,6 +160,30 @@ export function Changes() {
 
   const dag = dagResponse?.data;
   const swarms = swarmsResponse?.data ?? [];
+  const streamParam = routeSearchParams.get('stream');
+
+  useEffect(() => {
+    if (!streamParam || !dag?.nodes.some((n) => n.id === streamParam)) return;
+    setSelectedStreamId(streamParam);
+  }, [dag, streamParam]);
+
+  const selectStream = useCallback((streamRowId: string) => {
+    setSelectedStreamId(streamRowId);
+    setRouteSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('stream', streamRowId);
+      return next;
+    }, { replace: true });
+  }, [setRouteSearchParams]);
+
+  const closeStream = useCallback(() => {
+    setSelectedStreamId(null);
+    setRouteSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('stream');
+      return next;
+    }, { replace: true });
+  }, [setRouteSearchParams]);
 
   const { buckets, filteredCount, totalCount } = useMemo(() => {
     const all = dag?.nodes ?? [];
@@ -314,7 +363,7 @@ export function Changes() {
 
       {/* Main content */}
       <div className="flex flex-1 min-h-0">
-        <div className={`flex-1 ${viewMode === 'dag' ? 'overflow-hidden' : 'overflow-auto'}`}>
+        <div className={`flex-1 ${viewMode === 'map' ? 'overflow-hidden' : 'overflow-auto'}`}>
           {!dag || dag.nodes.length === 0 ? (
             <EmptyState
               icon={GitBranch}
@@ -325,7 +374,7 @@ export function Changes() {
             <ChangesList
               buckets={buckets}
               filteredCount={filteredCount}
-              onSelect={setSelectedStreamId}
+              onSelect={selectStream}
               onViewStack={openStackFrom}
               onShowDiff={(streamRowId, commitHash) =>
                 setDiffTarget({ streamRowId, commitHash })
@@ -339,7 +388,7 @@ export function Changes() {
               rootId={stackRootId}
               onSelectRoot={setStackRootId}
               onBackToList={() => { setStackRootId(null); setViewMode('list'); }}
-              onSelect={setSelectedStreamId}
+              onSelect={selectStream}
               selectedId={selectedStreamId}
               onShowStackDiff={(rootRowId) =>
                 setRangeDiffTarget({ mode: 'stack', rowId: rootRowId })
@@ -349,11 +398,11 @@ export function Changes() {
               }
             />
           ) : (
-            <StreamDAGView
+            <StreamCascadeMap
               nodes={dag.nodes}
               edges={dag.edges}
               selectedId={selectedStreamId}
-              onSelect={setSelectedStreamId}
+              onSelect={selectStream}
             />
           )}
         </div>
@@ -362,9 +411,9 @@ export function Changes() {
           <StreamDetailSidebar
             streamRowId={selectedStreamId}
             node={dag?.nodes.find((n) => n.id === selectedStreamId) ?? null}
-            onClose={() => setSelectedStreamId(null)}
+            onClose={closeStream}
             onViewStack={openStackFrom}
-            onViewGraph={() => setViewMode('dag')}
+            onViewGraph={() => setViewMode('map')}
             onShowStreamDiff={(streamRowId) =>
               setRangeDiffTarget({ mode: 'stream', rowId: streamRowId })
             }
@@ -493,7 +542,7 @@ function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode
   const items: Array<{ value: ViewMode; icon: JSX.Element; label: string; title: string }> = [
     { value: 'list',  icon: <Inbox   className="w-3.5 h-3.5" />, label: 'List',  title: 'Triaged list (default)' },
     { value: 'stack', icon: <Layers  className="w-3.5 h-3.5" />, label: 'Stack', title: 'Graphite-style stack from a root' },
-    { value: 'dag',   icon: <Network className="w-3.5 h-3.5" />, label: 'Graph', title: 'Full DAG of parent/child + merges' },
+    { value: 'map',   icon: <Network className="w-3.5 h-3.5" />, label: 'Map',   title: 'Branch map: structured DAG of parent/child + merges' },
   ];
 
   return (
@@ -997,6 +1046,8 @@ function StackLevel({
 
 // ─── Detail Sidebar ───────────────────────────────────────────────────
 
+type SidebarTab = 'details' | 'evolution';
+
 function StreamDetailSidebar({
   streamRowId,
   node,
@@ -1014,8 +1065,7 @@ function StreamDetailSidebar({
   onShowDiff: (streamRowId: string, commitHash: string) => void;
   onShowStreamDiff: (streamRowId: string) => void;
 }) {
-  const { data: timelineResp, isLoading } = useCascadeStreamTimeline(streamRowId);
-  const timeline = timelineResp?.data ?? [];
+  const [tab, setTab] = useState<SidebarTab>('details');
 
   return (
     <div
@@ -1040,10 +1090,94 @@ function StreamDetailSidebar({
         </button>
       </div>
 
-      {/* Lineage — heuristic "where did this change come from?" */}
-      {node && <ChangeLineagePanel node={node} />}
+      {/* Tabs */}
+      <SidebarTabs tab={tab} onChange={setTab} />
 
-      {/* Meta */}
+      {tab === 'details' ? (
+        <SidebarDetailsTab
+          streamRowId={streamRowId}
+          node={node}
+          onViewStack={onViewStack}
+          onViewGraph={onViewGraph}
+          onShowStreamDiff={onShowStreamDiff}
+        />
+      ) : (
+        <SidebarEvolutionTab
+          streamRowId={streamRowId}
+          node={node}
+          onShowDiff={onShowDiff}
+          onShowStreamDiff={onShowStreamDiff}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Sidebar tabs ─────────────────────────────────────────────────────
+
+function SidebarTabs({
+  tab,
+  onChange,
+}: {
+  tab: SidebarTab;
+  onChange: (t: SidebarTab) => void;
+}) {
+  const items: Array<{ value: SidebarTab; label: string }> = [
+    { value: 'details', label: 'Details' },
+    { value: 'evolution', label: 'Evolution' },
+  ];
+  return (
+    <div
+      className="flex border-b shrink-0"
+      style={{ borderColor: 'var(--color-border-subtle)' }}
+    >
+      {items.map((item) => {
+        const active = item.value === tab;
+        return (
+          <button
+            key={item.value}
+            type="button"
+            className="flex-1 text-2xs py-1.5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-honey-500/60"
+            style={{
+              color: active ? 'var(--color-accent)' : 'var(--color-text-muted)',
+              borderBottom: active ? '2px solid var(--color-accent)' : '2px solid transparent',
+              marginBottom: '-1px',
+              fontWeight: active ? 600 : 400,
+            }}
+            onClick={() => onChange(item.value)}
+            aria-pressed={active}
+          >
+            {item.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Sidebar bodies ───────────────────────────────────────────────────
+
+function SidebarDetailsTab({
+  streamRowId,
+  node,
+  onViewStack,
+  onViewGraph,
+  onShowStreamDiff,
+}: {
+  streamRowId: string;
+  node: StreamDAGNode | null;
+  onViewStack: (streamRowId: string) => void;
+  onViewGraph: () => void;
+  onShowStreamDiff: (streamRowId: string) => void;
+}) {
+  return (
+    <div className="flex-1 overflow-auto">
+      {node && (
+        <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
+          <LineageRail anchor={{ kind: 'stream', node }} />
+        </div>
+      )}
+
       {node && (
         <div className="px-3 py-2 text-2xs space-y-1 border-b" style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text-muted)' }}>
           <div className="flex justify-between">
@@ -1079,12 +1213,10 @@ function StreamDetailSidebar({
         </div>
       )}
 
-      {/* Actions */}
-      {node && (
-        <StreamActions streamRowId={streamRowId} node={node} />
-      )}
+      {node && <ConflictReportingNote node={node} />}
 
-      {/* Secondary views — drill into stack or graph from here */}
+      {node && <StreamActions streamRowId={streamRowId} node={node} />}
+
       {node && (
         <div className="px-3 py-2 border-b flex items-center gap-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
           <button
@@ -1100,10 +1232,10 @@ function StreamDetailSidebar({
             type="button"
             className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
             onClick={onViewGraph}
-            title="View the full DAG centered here"
+            title="View the full branch map centered here"
           >
             <Network className="w-3 h-3" />
-            Graph
+            Map
           </button>
           <button
             type="button"
@@ -1117,7 +1249,6 @@ function StreamDetailSidebar({
         </div>
       )}
 
-      {/* Branch + PR + Commit */}
       {node && node.status !== 'merged' && node.status !== 'abandoned' && (
         <>
           <StreamBranchSection streamRowId={streamRowId} node={node} />
@@ -1125,50 +1256,109 @@ function StreamDetailSidebar({
           <StreamCommitSection streamRowId={streamRowId} node={node} />
         </>
       )}
+    </div>
+  );
+}
 
-      {/* Timeline */}
-      <div className="flex-1 overflow-auto p-3">
-        <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
-          <Clock className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
-          Timeline
-        </h4>
-        {isLoading ? (
-          <div className="text-2xs animate-pulse" style={{ color: 'var(--color-text-muted)' }}>Loading...</div>
-        ) : timeline.length === 0 ? (
-          <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>No events yet.</div>
-        ) : (
+function SidebarEvolutionTab({
+  streamRowId,
+  node,
+  onShowDiff,
+  onShowStreamDiff,
+}: {
+  streamRowId: string;
+  node: StreamDAGNode | null;
+  onShowDiff: (streamRowId: string, commitHash: string) => void;
+  onShowStreamDiff: (streamRowId: string) => void;
+}) {
+  const { data: timelineResp, isLoading } = useCascadeStreamTimeline(streamRowId);
+  const timeline = timelineResp?.data ?? [];
+
+  // Commits first, then the full chronological event stream below them. The
+  // commit-first list is the primary affordance for "trace through changes" —
+  // each row jumps to its diff. Other events (merge, conflict, push, rebase)
+  // stay visible underneath so the full history is one scroll away.
+  const commits = useMemo(
+    () => timeline.filter((e) => e.type === 'commit'),
+    [timeline],
+  );
+  const nonCommits = useMemo(
+    () => timeline.filter((e) => e.type !== 'commit'),
+    [timeline],
+  );
+
+  return (
+    <div className="flex-1 overflow-auto p-3">
+      {/* Stream-diff CTA — the "what does this whole stream change?" answer.
+          Top of the tab so it's the first thing the reader sees. */}
+      {node && (
+        <button
+          type="button"
+          className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1 w-full justify-center mb-3 border rounded"
+          style={{ borderColor: 'var(--color-border-subtle)' }}
+          onClick={() => onShowStreamDiff(streamRowId)}
+          title="Cumulative diff across all commits in this stream"
+        >
+          <ListTree className="w-3 h-3" />
+          View cumulative diff
+        </button>
+      )}
+
+      <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
+        <GitCommit className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+        Commits
+        <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>
+          {commits.length}
+        </span>
+      </h4>
+      {isLoading ? (
+        <div className="text-2xs animate-pulse" style={{ color: 'var(--color-text-muted)' }}>Loading...</div>
+      ) : commits.length === 0 ? (
+        <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>No commits yet.</div>
+      ) : (
+        <div className="space-y-0 mb-4">
+          {commits.map((event, idx) => {
+            const hash = event.data?.commit_hash as string | undefined;
+            if (!hash) return <TimelineEntry key={idx} event={event} />;
+            return (
+              <div
+                key={idx}
+                role="button"
+                tabIndex={0}
+                onClick={() => onShowDiff(streamRowId, hash)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onShowDiff(streamRowId, hash);
+                  }
+                }}
+                title={`View diff for ${hash.slice(0, 7)}`}
+                className="cursor-pointer rounded -mx-1 px-1 hover:bg-honey-500/5
+                           focus:outline-none focus-visible:ring-1 focus-visible:ring-honey-500/60"
+              >
+                <TimelineEntry event={event} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {nonCommits.length > 0 && (
+        <>
+          <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5 mt-3">
+            <Clock className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+            Other events
+            <span className="text-2xs font-normal" style={{ color: 'var(--color-text-muted)' }}>
+              {nonCommits.length}
+            </span>
+          </h4>
           <div className="space-y-0">
-            {timeline.map((event, idx) => {
-              const isCommit = event.type === 'commit';
-              const hash = isCommit
-                ? ((event.data?.commit_hash as string | undefined) ?? undefined)
-                : undefined;
-              if (!isCommit || !hash) {
-                return <TimelineEntry key={idx} event={event} />;
-              }
-              return (
-                <div
-                  key={idx}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onShowDiff(streamRowId, hash)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      onShowDiff(streamRowId, hash);
-                    }
-                  }}
-                  title={`View diff for ${hash.slice(0, 7)}`}
-                  className="cursor-pointer rounded -mx-1 px-1 hover:bg-honey-500/5
-                             focus:outline-none focus-visible:ring-1 focus-visible:ring-honey-500/60"
-                >
-                  <TimelineEntry event={event} />
-                </div>
-              );
-            })}
+            {nonCommits.map((event, idx) => (
+              <TimelineEntry key={idx} event={event} />
+            ))}
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1186,6 +1376,10 @@ function StreamBranchSection({
   const [branchName, setBranchName] = useState(node.publish_branch ?? '');
   const updateBranch = useUpdatePublishBranch();
   const pushAction = useCascadeStreamAction();
+  // Push is a cascade action — gated on the owning swarm's canAct, same as
+  // merge/pause/abandon. Editing the branch *alias* is hub-local and stays
+  // available regardless (it never dispatches to the runtime).
+  const { canAct } = useCascadeCapability(node);
 
   const saveBranch = useCallback(() => {
     if (branchName.trim()) {
@@ -1220,8 +1414,8 @@ function StreamBranchSection({
               action: 'push',
               params: { target_ref: node.publish_branch ?? displayBranch },
             })}
-            disabled={pushAction.isPending}
-            title="Push to remote"
+            disabled={pushAction.isPending || !canAct}
+            title={canAct ? 'Push to remote' : CASCADE_ACT_DISABLED_REASON}
           >
             <Upload className="w-3 h-3" />
           </button>
@@ -1363,6 +1557,9 @@ function StreamCommitSection({
   const [message, setMessage] = useState('');
   const [showInput, setShowInput] = useState(false);
   const commitAction = useCascadeStreamAction();
+  // Commit dispatches an `x-cascade/request.commit` — gated on canAct like
+  // the other action requests.
+  const { canAct } = useCascadeCapability(node);
 
   const doCommit = useCallback(() => {
     if (!message.trim()) return;
@@ -1394,7 +1591,8 @@ function StreamCommitSection({
               type="button"
               className="btn-ghost text-2xs px-2 py-0.5 flex items-center gap-1"
               onClick={doCommit}
-              disabled={commitAction.isPending || !message.trim()}
+              disabled={commitAction.isPending || !message.trim() || !canAct}
+              title={canAct ? undefined : CASCADE_ACT_DISABLED_REASON}
             >
               <Save className="w-3 h-3" />
               {commitAction.isPending ? 'Committing...' : 'Commit'}
@@ -1414,11 +1612,28 @@ function StreamCommitSection({
           type="button"
           className="btn-ghost text-2xs flex items-center gap-1 px-1.5 py-0.5 w-full justify-center"
           onClick={() => setShowInput(true)}
+          disabled={!canAct}
+          title={canAct ? undefined : CASCADE_ACT_DISABLED_REASON}
         >
           <GitCommit className="w-3 h-3" />
           Commit changes
         </button>
       )}
+    </div>
+  );
+}
+
+// ─── Conflict-reporting capability note ───────────────────────────────
+
+function ConflictReportingNote({ node }: { node: StreamDAGNode }) {
+  const { emitsConflicts } = useCascadeCapability(node);
+  if (emitsConflicts) return null;
+  return (
+    <div
+      className="px-3 py-1.5 text-2xs border-b"
+      style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text-muted)' }}
+    >
+      This swarm does not report cascade conflicts.
     </div>
   );
 }
@@ -1434,6 +1649,11 @@ function StreamActions({
 }) {
   const action = useCascadeStreamAction();
   const isPending = action.isPending;
+  // Per-stream gate: an observe-only swarm (cascade.canAct !== true) silently
+  // no-ops any action request, so render the buttons disabled with a reason
+  // rather than hide them — a vanished button reads as a bug; a disabled one
+  // teaches the operator (and the model) why nothing happens.
+  const { canAct } = useCascadeCapability(node);
 
   const fire = useCallback(
     (act: CascadeAction, params?: Record<string, string>) => {
@@ -1450,6 +1670,12 @@ function StreamActions({
 
   if (isTerminal) return null;
 
+  // Buttons are disabled either while a request is in flight or when the
+  // owning swarm doesn't accept cascade actions. The capability tooltip
+  // wins so the operator sees *why* the control is dead.
+  const disabled = isPending || !canAct;
+  const gateTitle = (active: string) => (canAct ? active : CASCADE_ACT_DISABLED_REASON);
+
   return (
     <div className="px-3 py-2 border-b flex flex-wrap gap-1.5" style={{ borderColor: 'var(--color-border-subtle)' }}>
       {/* Merge — available when active and has a parent */}
@@ -1458,8 +1684,8 @@ function StreamActions({
           type="button"
           className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
           onClick={() => fire('merge')}
-          disabled={isPending}
-          title="Request merge into parent stream"
+          disabled={disabled}
+          title={gateTitle('Request merge into parent stream')}
         >
           <GitMerge className="w-3 h-3" />
           Merge
@@ -1472,8 +1698,8 @@ function StreamActions({
           type="button"
           className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
           onClick={() => fire('pause', { reason: 'operator-paused' })}
-          disabled={isPending}
-          title="Pause this change"
+          disabled={disabled}
+          title={gateTitle('Pause this change')}
         >
           <Pause className="w-3 h-3" />
           Pause
@@ -1484,8 +1710,8 @@ function StreamActions({
           type="button"
           className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
           onClick={() => fire('resume')}
-          disabled={isPending}
-          title="Resume this change"
+          disabled={disabled}
+          title={gateTitle('Resume this change')}
         >
           <Play className="w-3 h-3" />
           Resume
@@ -1501,8 +1727,10 @@ function StreamActions({
           className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
           style={{ color: 'var(--color-danger)' }}
           onClick={() => fire('resolve', { strategy: 'ours' })}
-          disabled={isPending}
-          title="Force-resolve with 'ours'. Agents usually handle conflicts themselves — use only if stuck."
+          disabled={disabled}
+          title={gateTitle(
+            "Force-resolve with 'ours'. Agents usually handle conflicts themselves — use only if stuck.",
+          )}
         >
           <Wrench className="w-3 h-3" />
           Force resolve
@@ -1515,8 +1743,8 @@ function StreamActions({
         className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
         style={{ color: 'var(--color-text-muted)' }}
         onClick={() => fire('abandon', { reason: 'operator-abandoned' })}
-        disabled={isPending}
-        title="Abandon this change"
+        disabled={disabled}
+        title={gateTitle('Abandon this change')}
       >
         <Trash2 className="w-3 h-3" />
         Abandon
@@ -1528,100 +1756,15 @@ function StreamActions({
           Sending...
         </span>
       )}
+
+      {/* Observe-only note — surfaces the reason once for the whole group. */}
+      {!canAct && (
+        <span className="text-2xs w-full" style={{ color: 'var(--color-text-muted)' }}>
+          {CASCADE_ACT_DISABLED_REASON}
+        </span>
+      )}
     </div>
   );
 }
 
 // TimelineEntry and StreamStatusDot imported from ../components/streams/shared
-
-// ─── Lineage Panel ────────────────────────────────────────────────────
-//
-// Heuristic chain: stream.source_swarm_id + source_agent_id →
-//   sessions on that swarm with matching acp_target_agent_id →
-//   dispatches on that swarm whose session_ids include the session →
-//   spec (resource + id on the dispatch).
-//
-// Each hop is client-side. Renders compact rows only for hops that
-// resolve — if no matching session/dispatch exists (agent opened the
-// stream outside any dispatch, or data hasn't synced yet), the panel
-// falls back to just the swarm + agent chips.
-
-function ChangeLineagePanel({ node }: { node: StreamDAGNode }) {
-  const { data: swarm } = useMapSwarm(node.source_swarm_id);
-  const { data: sessionsResp } = useSessionsList({ swarm_id: node.source_swarm_id, limit: 100 });
-  const { data: dispatchResp } = useDispatchList({ target_swarm_id: node.source_swarm_id, limit: 100 });
-
-  const matchedSession = useMemo(() => {
-    if (!sessionsResp?.data) return undefined;
-    return sessionsResp.data.find(
-      (s) => s.acp_target_agent_id === node.source_agent_id,
-    );
-  }, [sessionsResp, node.source_agent_id]);
-
-  const matchedDispatch = useMemo(() => {
-    if (!dispatchResp?.data || !matchedSession) return undefined;
-    return dispatchResp.data.find((d) => d.session_ids.includes(matchedSession.id));
-  }, [dispatchResp, matchedSession]);
-
-  const { data: specResp } = useSpec(
-    matchedDispatch?.spec_resource_id,
-    matchedDispatch?.spec_id,
-  );
-
-  return (
-    <div
-      className="px-3 py-2 text-2xs space-y-1 border-b"
-      style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text-muted)' }}
-    >
-      <div className="uppercase tracking-wider text-2xs font-semibold mb-1" style={{ fontSize: '0.6rem' }}>
-        From
-      </div>
-      <div className="flex items-center gap-1.5">
-        <Zap className="w-3 h-3 text-honey-500 shrink-0" />
-        <Link
-          to={`/swarms/${node.source_swarm_id}`}
-          className="hover:opacity-80 truncate"
-          style={{ color: 'var(--color-text)' }}
-        >
-          {swarm?.name ?? node.source_swarm_id}
-        </Link>
-      </div>
-      {matchedSession && (
-        <div className="flex items-center gap-1.5">
-          <Clock className="w-3 h-3 text-honey-500 shrink-0" />
-          <Link
-            to={`/threads/${matchedSession.id}`}
-            className="hover:opacity-80 truncate"
-            style={{ color: 'var(--color-text)' }}
-          >
-            {matchedSession.latest_agent ?? matchedSession.name ?? 'session'}
-          </Link>
-        </div>
-      )}
-      {matchedDispatch && (
-        <div className="flex items-center gap-1.5">
-          <Send className="w-3 h-3 text-honey-500 shrink-0" />
-          <Link
-            to={`/dispatch/${matchedDispatch.id}`}
-            className="hover:opacity-80 truncate font-mono"
-            style={{ color: 'var(--color-text)' }}
-          >
-            {matchedDispatch.id}
-          </Link>
-        </div>
-      )}
-      {matchedDispatch && (
-        <div className="flex items-center gap-1.5">
-          <FileText className="w-3 h-3 text-honey-500 shrink-0" />
-          <Link
-            to={`/specs/${matchedDispatch.spec_resource_id}/${matchedDispatch.spec_id}`}
-            className="hover:opacity-80 truncate"
-            style={{ color: 'var(--color-text)' }}
-          >
-            {specResp?.spec.title ?? matchedDispatch.spec_id}
-          </Link>
-        </div>
-      )}
-    </div>
-  );
-}

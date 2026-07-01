@@ -115,6 +115,104 @@ describe('swarm-bridge — agent projection', () => {
 
     handle.teardown();
   });
+
+  it('upserts duplicate node_registered emissions and preserves rich metadata', async () => {
+    const { ctx } = createCtx();
+    const handle = await setupSwarmBridge(ctx as any);
+
+    (ctx.db.agents.get as any)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: OH_NODE_ID,
+        capabilities: { protocols: ['acp'], messaging: { canReceive: true } },
+        stateMetadata: {
+          agentMetadata: { peerMapId: 'peer-alice', sessionId: 'sess-1' },
+        },
+      });
+
+    await emitAndDrain('node_registered', {
+      node_id: RAW_AGENT_ID,
+      swarm_id: SWARM_ID,
+      map_agent_id: RAW_AGENT_ID,
+      name: 'Alice',
+      role: 'coordinator',
+      state: 'registered',
+      capabilities: { protocols: ['acp'], messaging: { canReceive: true } },
+      metadata: { peerMapId: 'peer-alice', sessionId: 'sess-1' },
+    });
+
+    await emitAndDrain('node_registered', {
+      node_id: RAW_AGENT_ID,
+      swarm_id: SWARM_ID,
+      map_agent_id: RAW_AGENT_ID,
+      name: 'Alice',
+      role: 'coordinator',
+      state: 'registered',
+    });
+
+    expect(ctx.db.agents.create).toHaveBeenCalledTimes(1);
+    expect(ctx.db.agents.update).toHaveBeenCalledTimes(1);
+
+    const updatePayload = (ctx.db.agents.update as any).mock.calls[0][1];
+    expect(updatePayload.capabilities).toEqual({
+      protocols: ['acp'],
+      messaging: { canReceive: true },
+    });
+    expect(updatePayload.stateMetadata.agentMetadata).toEqual({
+      peerMapId: 'peer-alice',
+      sessionId: 'sess-1',
+    });
+
+    handle.teardown();
+  });
+
+  it('handles duplicate node_registered create races from same-tick emissions', async () => {
+    const { ctx } = createCtx();
+    const handle = await setupSwarmBridge(ctx as any);
+
+    const currentAgent = {
+      id: OH_NODE_ID,
+      capabilities: { protocols: ['acp'] },
+      stateMetadata: {
+        agentMetadata: { peerMapId: 'peer-alice' },
+      },
+    };
+    (ctx.db.agents.get as any)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(currentAgent);
+    (ctx.db.agents.create as any)
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error('UNIQUE constraint failed: sc_agents.id'));
+
+    mapHubEvents.emit('node_registered', {
+      node_id: RAW_AGENT_ID,
+      swarm_id: SWARM_ID,
+      map_agent_id: RAW_AGENT_ID,
+      name: 'Alice',
+      role: 'coordinator',
+      state: 'registered',
+      capabilities: { protocols: ['acp'] },
+      metadata: { peerMapId: 'peer-alice' },
+    });
+    mapHubEvents.emit('node_registered', {
+      node_id: RAW_AGENT_ID,
+      swarm_id: SWARM_ID,
+      map_agent_id: RAW_AGENT_ID,
+      name: 'Alice',
+      role: 'coordinator',
+      state: 'registered',
+    });
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(ctx.db.agents.create).toHaveBeenCalledTimes(2);
+    expect(ctx.db.agents.update).toHaveBeenCalledTimes(1);
+    const updatePayload = (ctx.db.agents.update as any).mock.calls[0][1];
+    expect(updatePayload.capabilities).toEqual({ protocols: ['acp'] });
+    expect(updatePayload.stateMetadata.agentMetadata).toEqual({ peerMapId: 'peer-alice' });
+
+    handle.teardown();
+  });
 });
 
 describe('swarm-bridge — ACP stream cleanup (inbound mapHubEvents)', () => {
