@@ -23,6 +23,7 @@ import {
   type Schedule,
   type DispatchSpecPayload,
   type DispatchPromptPayload,
+  type ExperimentRunPayload,
 } from '../hooks/useSchedules';
 import { useSchedulesRealtime } from '../hooks/useSchedulesRealtime';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -115,6 +116,8 @@ function Header({
   const pause = usePauseSchedule(schedule.id);
   const resume = useResumeSchedule(schedule.id);
   const del = useDeleteSchedule();
+  const targets = 'target_swarm_ids' in schedule.payload ? (schedule.payload.target_swarm_ids ?? []) : [];
+  const kind = getPayloadKind(schedule.payload);
 
   async function handleDelete() {
     if (!confirm(`Delete this schedule? This cannot be undone.`)) return;
@@ -151,8 +154,12 @@ function Header({
 
           <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
             <ScheduleWorkRow schedule={schedule} />
-            <MetaRow label="Targets">
-              <span className="font-mono" style={{ color: 'var(--color-text)' }}>{schedule.payload.target_swarm_ids.length} swarm{schedule.payload.target_swarm_ids.length === 1 ? '' : 's'}</span>
+            <MetaRow label={kind === 'experiment' ? 'Run target' : 'Targets'}>
+              {kind === 'experiment' ? (
+                <span style={{ color: 'var(--color-text)' }}>experiment worker</span>
+              ) : (
+                <span className="font-mono" style={{ color: 'var(--color-text)' }}>{targets.length} swarm{targets.length === 1 ? '' : 's'}</span>
+              )}
             </MetaRow>
             <MetaRow label="Next fire">
               {schedule.next_fires_at ? <TimeAgo date={schedule.next_fires_at} /> : <span style={{ color: 'var(--color-text-muted)' }}>—</span>}
@@ -453,6 +460,29 @@ function ScheduleWorkRow({ schedule }: { schedule: Schedule }) {
           <div className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs" style={{ color: 'var(--color-text-secondary)' }}>
             {p.prompt}
           </div>
+        </div>
+      </>
+    );
+  }
+  if (kind === 'experiment') {
+    const p = schedule.payload as ExperimentRunPayload;
+    return (
+      <>
+        <div style={{ color: 'var(--color-text-muted)' }}>Experiment</div>
+        <div style={{ color: 'var(--color-text)' }}>
+          <Link
+            to={`/experiments/${p.experiment_ref}`}
+            className="font-mono text-honey-400 hover:text-honey-300"
+          >
+            {p.experiment_ref}
+          </Link>
+          {p.run_controls && (
+            <div className="mt-1 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+              {p.run_controls.cycles != null && <span>{p.run_controls.cycles} cycles</span>}
+              {p.run_controls.cycles != null && p.run_controls.budgetSeconds != null && <span> · </span>}
+              {p.run_controls.budgetSeconds != null && <span>{p.run_controls.budgetSeconds}s budget</span>}
+            </div>
+          )}
         </div>
       </>
     );

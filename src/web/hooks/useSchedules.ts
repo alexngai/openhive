@@ -57,16 +57,29 @@ export interface DispatchPromptPayload {
   fallback_spawn?: FallbackSpawn;
 }
 
+export interface ExperimentRunPayload {
+  kind: 'experiment';
+  experiment_ref: string;
+  run_controls?: {
+    cycles?: number;
+    budgetSeconds?: number;
+  };
+}
+
 export type OpenHiveSchedulePayload =
   | DispatchSpecPayload
-  | DispatchPromptPayload;
+  | DispatchPromptPayload
+  | ExperimentRunPayload;
 
 /** Returns 'dispatch_spec' for legacy payloads (no `kind` field). */
 export function getPayloadKind(
   payload: OpenHiveSchedulePayload,
-): 'dispatch_spec' | 'dispatch_prompt' {
+): 'dispatch_spec' | 'dispatch_prompt' | 'experiment' {
   if ('kind' in payload && payload.kind === 'dispatch_prompt') {
     return 'dispatch_prompt';
+  }
+  if ('kind' in payload && payload.kind === 'experiment') {
+    return 'experiment';
   }
   return 'dispatch_spec';
 }

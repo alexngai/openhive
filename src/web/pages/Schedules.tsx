@@ -9,6 +9,7 @@ import {
   type Schedule,
   type DispatchSpecPayload,
   type DispatchPromptPayload,
+  type ExperimentRunPayload,
 } from '../hooks/useSchedules';
 import { useSchedulesRealtime } from '../hooks/useSchedulesRealtime';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -45,6 +46,8 @@ export function Schedules() {
         const extras: string[] =
           kind === 'dispatch_prompt'
             ? [(s.payload as DispatchPromptPayload).prompt]
+            : kind === 'experiment'
+              ? [(s.payload as ExperimentRunPayload).experiment_ref]
             : [
                 (s.payload as DispatchSpecPayload).spec_ref.spec_id,
                 (s.payload as DispatchSpecPayload).spec_ref.resource_id,
@@ -54,7 +57,7 @@ export function Schedules() {
           s.id,
           s.cron,
           ...extras,
-          ...(s.payload.target_swarm_ids ?? []),
+          ...('target_swarm_ids' in s.payload ? (s.payload.target_swarm_ids ?? []) : []),
         );
       }),
     [schedules, q],
@@ -165,7 +168,7 @@ export function Schedules() {
 }
 
 function ScheduleRow({ schedule }: { schedule: Schedule }) {
-  const targets = schedule.payload.target_swarm_ids ?? [];
+  const targets = 'target_swarm_ids' in schedule.payload ? (schedule.payload.target_swarm_ids ?? []) : [];
   const kind = getPayloadKind(schedule.payload);
   let cronDescription = '';
   try {
@@ -206,6 +209,10 @@ function ScheduleRow({ schedule }: { schedule: Schedule }) {
               <span className="line-clamp-1" style={{ color: 'var(--color-text-secondary)' }}>
                 {(schedule.payload as DispatchPromptPayload).prompt}
               </span>
+            ) : kind === 'experiment' ? (
+              <span className="font-mono" style={{ color: 'var(--color-text-secondary)' }}>
+                {(schedule.payload as ExperimentRunPayload).experiment_ref}
+              </span>
             ) : (
               <span className="font-mono" style={{ color: 'var(--color-text-secondary)' }}>
                 {(schedule.payload as DispatchSpecPayload).spec_ref.spec_id}
@@ -213,7 +220,9 @@ function ScheduleRow({ schedule }: { schedule: Schedule }) {
             )}
             <span>·</span>
             {/* Targets */}
-            {targets.length === 1 ? (
+            {kind === 'experiment' ? (
+              <span>experiment run</span>
+            ) : targets.length === 1 ? (
               <span className="font-mono">{targets[0]}</span>
             ) : (
               <span>{targets.length} swarms</span>

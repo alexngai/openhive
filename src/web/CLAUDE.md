@@ -110,6 +110,8 @@ Two dedup layers protect against duplicates:
 
 When an ACP agent requests tool approval, SwarmCraft emits `acp.permission.request` via WebSocket. The frontend renders Allow/Deny buttons above the chat input. Replies are sent via `POST /api/swarmcraft/acp/streams/:streamId/permission` with `{ requestId, reply: { outcome: 'approved' | 'denied' } }`. Permissions time out after 5 minutes on the server side.
 
+Permission/question requests can also arrive inside `acp.session.update` (`update.sessionUpdate === 'permission_request' | 'question_request'`) from the ACP bridge. `openhive-acp-service.ts` must normalize both standalone events and embedded session updates into the same `PermissionDialog` / `QuestionDialog` callbacks.
+
 ### Multi-tab session sharing (Option 1B)
 
 `/sessions/acp-connect` is idempotent per `(owner_agent_id, source_swarm_id, acp_target_agent_id)`. The first connect creates the ACP stream + session and persists `acpStreamId`, `sessionId`, `acp_target_agent_id` on the session resource metadata. Subsequent connects (additional browser tabs, same user, same target) hit `findLiveAcpSession` (`src/db/dal/syncable-resources.ts`), confirm the streamId is still in `acpStreamManager.streams`, and return the cached IDs without touching the manager. A per-key `inflightAcpConnects` Promise cache in `src/api/routes/sessions.ts` makes concurrent POSTs share one create — only the leader runs `createStream`, followers piggyback.
@@ -155,3 +157,7 @@ Chat bubbles get the same identity via `decorateWithAgentIdentity` in `openhive-
 ## Realtime invalidation
 
 The frontend invalidation contract — which channels to subscribe, which event types invalidate which React Query keys — lives in `src/web/hooks/useRealtimeInvalidation.ts`. The HMR-safe WS client lives in `src/web/hooks/useWebSocket.ts`. Server-side broadcast helpers are documented in `src/realtime/CLAUDE.md`.
+
+`useWebSocket` delivers the full event envelope (`{ type, channel?, data }`) to `useWSEvent` handlers. Feature hooks such as `useExperimentsRealtime`, `useSchedulesRealtime`, and `useDispatchRealtime` must unwrap `.data` while tolerating flat test payloads.
+
+Schedules support three payload families: legacy/spec dispatch (`dispatch_spec`, with optional `kind`), ad-hoc prompt dispatch (`dispatch_prompt`), and experiment runs (`experiment`). Experiment schedules do not have `target_swarm_ids`; list/detail renderers must branch by `getPayloadKind()` before reading dispatch-only fields.

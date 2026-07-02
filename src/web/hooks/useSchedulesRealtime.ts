@@ -13,8 +13,14 @@ interface ScheduleEventData {
   schedule_id?: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 function extractScheduleId(data: unknown): string | undefined {
-  return (data as ScheduleEventData | undefined)?.schedule_id;
+  if (!isRecord(data)) return undefined;
+  const payload = isRecord(data.data) ? data.data : data;
+  return typeof payload.schedule_id === 'string' ? payload.schedule_id : undefined;
 }
 
 export function useSchedulesRealtime() {

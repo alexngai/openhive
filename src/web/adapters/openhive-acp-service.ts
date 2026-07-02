@@ -211,6 +211,31 @@ function notifyMessages(sub: StreamSubscription) {
   sub.handlers?.onMessages(decorateWithAgentIdentity(Array.from(sub.messageMap.values()), sub.agentName));
 }
 
+function buildPermissionRequest(streamId: string, data: Record<string, unknown>): ACPPermissionRequest {
+  const toolCall = data.toolCall as { name?: string; title?: string; kind?: string } | undefined;
+  return {
+    id: (data.requestId as string | undefined) ?? (data.id as string | undefined) ?? `perm-${Date.now()}`,
+    streamId,
+    agentId: '',
+    description: (data.description as string | undefined) ?? String(
+      toolCall?.title ?? toolCall?.name ?? toolCall?.kind ?? 'Tool approval',
+    ),
+    timestamp: Date.now(),
+    status: 'pending',
+  };
+}
+
+function buildQuestionRequest(streamId: string, data: Record<string, unknown>): ACPQuestionRequest {
+  return {
+    id: (data.requestId as string | undefined) ?? (data.id as string | undefined) ?? `q-${Date.now()}`,
+    streamId,
+    sessionId: (data.sessionId as string | undefined) ?? '',
+    questions: (data.questions as ACPQuestionRequest['questions'] | undefined) ?? [],
+    timestamp: Date.now(),
+    status: 'pending',
+  };
+}
+
 function registerGlobalListeners() {
   if (wsListenersRegistered) return;
   wsListenersRegistered = true;
@@ -250,6 +275,25 @@ function registerGlobalListeners() {
     const chunk = update.chunk as { text?: string } | undefined;
     const content = update.content as { text?: string } | undefined;
     const text = chunk?.text ?? content?.text ?? (update.text as string | undefined);
+
+    if (sessionUpdate === 'permission_request') {
+      finalizeAssistantBubble(sub);
+      const req = buildPermissionRequest(data.streamId, update);
+      if (sub.handlers) sub.handlers.onPermission(req);
+      else sub.pendingPermissions.push(req);
+      return;
+    }
+
+    if (sessionUpdate === 'question_request') {
+      finalizeAssistantBubble(sub);
+      const req = buildQuestionRequest(data.streamId, {
+        ...update,
+        sessionId: (update.sessionId as string | undefined) ?? data.sessionId,
+      });
+      if (sub.handlers) sub.handlers.onQuestion(req);
+      else sub.pendingQuestions.push(req);
+      return;
+    }
 
     // Tool call results
     if (sessionUpdate === 'tool_call_update' || sessionUpdate === 'tool_call_complete') {
@@ -360,16 +404,7 @@ function registerGlobalListeners() {
     if (!streamId) return;
     const sub = subscriptions.get(streamId);
     if (!sub) return;
-    const req: ACPPermissionRequest = {
-      id: (data as { requestId?: string; id?: string }).requestId ?? (data as { id?: string }).id ?? `perm-${Date.now()}`,
-      streamId,
-      agentId: '',
-      description: (data as { description?: string }).description ?? String(
-        ((data as { toolCall?: { name?: string } }).toolCall?.name) ?? 'Tool approval',
-      ),
-      timestamp: Date.now(),
-      status: 'pending',
-    };
+    const req = buildPermissionRequest(streamId, data as Record<string, unknown>);
     if (sub.handlers) sub.handlers.onPermission(req);
     else sub.pendingPermissions.push(req);
   };
@@ -380,14 +415,7 @@ function registerGlobalListeners() {
     if (!streamId) return;
     const sub = subscriptions.get(streamId);
     if (!sub) return;
-    const req: ACPQuestionRequest = {
-      id: (data as { requestId?: string; id?: string }).requestId ?? (data as { id?: string }).id ?? `q-${Date.now()}`,
-      streamId,
-      sessionId: (data as { sessionId?: string }).sessionId ?? '',
-      questions: (data as { questions?: ACPQuestionRequest['questions'] }).questions ?? [],
-      timestamp: Date.now(),
-      status: 'pending',
-    };
+    const req = buildQuestionRequest(streamId, data as Record<string, unknown>);
     if (sub.handlers) sub.handlers.onQuestion(req);
     else sub.pendingQuestions.push(req);
   };

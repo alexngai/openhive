@@ -17,14 +17,23 @@ interface DispatchEventData {
   error?: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function extractPayload(data: unknown): DispatchEventData | undefined {
+  if (!isRecord(data)) return undefined;
+  return (isRecord(data.data) ? data.data : data) as DispatchEventData;
+}
+
 function extractDispatchId(data: unknown): string | undefined {
-  const d = data as DispatchEventData | undefined;
-  return d?.dispatch?.id ?? d?.taskId ?? d?.dispatch_id;
+  const payload = extractPayload(data);
+  return payload?.dispatch?.id ?? payload?.taskId ?? payload?.dispatch_id;
 }
 
 function extractDispatchError(data: unknown): string | undefined {
-  const d = data as DispatchEventData | undefined;
-  return d?.error;
+  const payload = extractPayload(data);
+  return payload?.error;
 }
 
 export function useDispatchRealtime() {
