@@ -34,6 +34,7 @@ import { toast } from "../stores/toast";
 import {
   useHostedSwarms,
   useSpawnSwarm,
+  useSpawnPreflight,
   useStopSwarm,
   useRestartSwarm,
   useRemoveSwarm,
@@ -61,6 +62,8 @@ import {
   SectionLabel,
 } from "../components/swarm/StatusBadges";
 import { WorkingDirectoryCombobox } from "../components/swarm/WorkingDirectoryCombobox";
+import { SpawnPreflightCallout } from "../components/swarm/SpawnPreflightCallout";
+import { OnboardTokenPanel } from "../components/onboarding/OnboardTokenPanel";
 import type { HostedSwarm, MapSwarm, MapRegisteredAgent } from "../lib/api";
 import { getPeerMapId } from "../lib/map";
 import { useChatFabStore } from "../components/chat-fab/ChatFabStore";
@@ -244,6 +247,20 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   const { data: hives } = useHives({ sort: "popular", limit: 50 });
   const { data: knownProjectPaths } = useKnownProjectPaths();
   const { data: reposPage } = useRepos({ limit: 100 });
+
+  // Preflight — probe the hub's environment for the selected kind/mode so
+  // missing binaries / capacity show up before submit. Failed checks
+  // render as a callout; submit is disabled unless "attempt anyway" is
+  // ticked (PATH can differ between probe and spawn environment).
+  const { data: preflight } = useSpawnPreflight(
+    kind,
+    kind === 'codex' ? codexMode : undefined,
+  );
+  const [attemptAnyway, setAttemptAnyway] = useState(false);
+  useEffect(() => {
+    setAttemptAnyway(false);
+  }, [kind, codexMode]);
+  const preflightBlocked = preflight?.ready === false && !attemptAnyway;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -574,6 +591,12 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               </p>
             </div>
           )}
+
+          <SpawnPreflightCallout
+            preflight={preflight}
+            attemptAnyway={attemptAnyway}
+            onAttemptAnywayChange={setAttemptAnyway}
+          />
 
           {/* Row 1: Name + Provider */}
           <div className="flex gap-3">
@@ -1230,7 +1253,8 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
         >
           <button
             type="submit"
-            disabled={spawnMutation.isPending || !name.trim()}
+            disabled={spawnMutation.isPending || !name.trim() || preflightBlocked}
+            title={preflightBlocked ? 'Preflight checks failed — see the callout above (or tick "attempt anyway")' : undefined}
             className="btn btn-primary flex items-center gap-1.5 text-xs"
           >
             {spawnMutation.isPending ? (
@@ -1258,6 +1282,10 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
 // =============================================================================
 
 export function ConnectFormDialog({ onClose }: { onClose: () => void }) {
+  // Two paths: mint an onboard token (copy-paste, no CLI) or manually
+  // register a remote MAP endpoint. Onboard is first — it's the day-zero
+  // path (north-star P2.3).
+  const [tab, setTab] = useState<"onboard" | "endpoint">("onboard");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [endpoint, setEndpoint] = useState("");
@@ -1302,13 +1330,47 @@ export function ConnectFormDialog({ onClose }: { onClose: () => void }) {
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-semibold flex items-center gap-1.5">
             <Link2 className="w-3.5 h-3.5 text-honey-500" />
-            Connect External Swarm
+            Connect an Agent
           </h2>
           <button onClick={onClose} className="btn btn-ghost p-1">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
 
+        <div
+          className="inline-flex p-0.5 rounded-md mb-3"
+          style={{ backgroundColor: "var(--color-elevated)" }}
+          role="tablist"
+        >
+          {(
+            [
+              { id: "onboard", label: "Onboard an agent" },
+              { id: "endpoint", label: "Register a remote MAP endpoint" },
+            ] as const
+          ).map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={tab === t.id}
+              onClick={() => setTab(t.id)}
+              className="px-3 py-1 rounded text-2xs font-medium transition-colors"
+              style={{
+                backgroundColor: tab === t.id ? "var(--color-bg)" : "transparent",
+                color:
+                  tab === t.id
+                    ? "var(--color-text-primary)"
+                    : "var(--color-text-muted)",
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {tab === "onboard" && <OnboardTokenPanel />}
+
+        {tab === "endpoint" && (
         <form onSubmit={handleSubmit} className="space-y-3">
           {/* Name + Transport */}
           <div className="flex gap-3">
@@ -1463,6 +1525,7 @@ export function ConnectFormDialog({ onClose }: { onClose: () => void }) {
             </button>
           </div>
         </form>
+        )}
       </div>
     </Dialog>
   );

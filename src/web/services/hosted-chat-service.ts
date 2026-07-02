@@ -98,6 +98,19 @@ function ensureWSListener(): void {
   });
 }
 
+/**
+ * Interrupt the in-flight turn on a hosted rpc swarm (clean cancel — the
+ * session stays usable). Not part of `HostedChatServiceLike`, so exposed
+ * as a standalone helper; callers track the active turn id from the
+ * `turn.started` / `turn.completed` events.
+ */
+export async function interruptHostedTurn(
+  hostedSwarmId: string,
+  turnId: string,
+): Promise<void> {
+  await api.post(`/map/hosted/${hostedSwarmId}/chat/interrupt`, { turn_id: turnId });
+}
+
 export const hostedChatService: HostedChatServiceLike = {
   sendTurn: async (hostedSwarmId, text) => {
     return api.post<{ turn_id: string }>(

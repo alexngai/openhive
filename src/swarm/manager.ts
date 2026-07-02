@@ -35,6 +35,7 @@ import type { PtyManager } from '../terminal/pty-manager.js';
 // loads when swarmHosting.enabled = true (see server.ts).
 import type { CodexAppServerManager } from './codex-app-server-manager.js';
 import { resolveCodexBinary } from './codex-binary.js';
+import { resolveClaudeBinary } from './claude-binary.js';
 import { preTrustCodexWorkdir } from './codex-config.js';
 import { translateCodexNotification, translateCodexRequest } from './hosted-chat-events.js';
 import type {
@@ -85,7 +86,10 @@ export class SwarmManager {
    * the decision should be forwarded to. Cleared when the user (or a
    * sibling tab) answers.
    */
-  private codexPendingPermissions = new Map<string, { hostedSwarmId: string; sessionId: string }>();
+  private codexPendingPermissions = new Map<
+    string,
+    { hostedSwarmId: string; sessionId: string; summary?: string; requestedAt: number }
+  >();
 
   constructor(config: SwarmHostingConfig, instanceUrl: string) {
     this.config = config;
@@ -213,6 +217,8 @@ export class SwarmManager {
         this.codexPendingPermissions.set(event.requestId, {
           hostedSwarmId: hostedId,
           sessionId: event.sessionId,
+          summary: normalized.request.summary,
+          requestedAt: Date.now(),
         });
         broadcastToChannel(`hosted-chat:${hostedId}`, {
           type: 'hosted-chat.event',
@@ -239,6 +245,33 @@ export class SwarmManager {
       }
       mgr.errorToRequest(event.sessionId, event.requestId, -32601, `unsupported codex request: ${event.method}`);
     });
+  }
+
+  /**
+   * Read-only snapshot of pending codex approval prompts, for the
+   * pending-attention hydration endpoint. Does not mutate state.
+   */
+  listPendingCodexPermissions(): Array<{
+    requestId: string;
+    hostedSwarmId: string;
+    summary?: string;
+    requestedAt: number;
+  }> {
+    const out: Array<{
+      requestId: string;
+      hostedSwarmId: string;
+      summary?: string;
+      requestedAt: number;
+    }> = [];
+    for (const [requestId, ctx] of this.codexPendingPermissions) {
+      out.push({
+        requestId,
+        hostedSwarmId: ctx.hostedSwarmId,
+        summary: ctx.summary,
+        requestedAt: ctx.requestedAt,
+      });
+    }
+    return out;
   }
 
   /**
@@ -1132,6 +1165,133 @@ export class SwarmManager {
       console.warn('[swarm-manager] Could not resolve @swarmkit-ai/swarm-runner package, using: ' + configured);
       return configured;
     }
+  }
+
+  // ==========================================================================
+  // Preflight
+  // ==========================================================================
+
+  /**
+   * Side-effect-free readiness probe for a prospective spawn. Runs the
+   * same environment checks the per-kind spawn pipelines would fail on,
+   * so the UI can turn post-submit errors into pre-submit guidance.
+   *
+   * `ready` means every *required* check passed; the `credentials` check
+   * is informational (always ok) and reports the inherit_env flag plus
+   * resolved credential-set KEYS — never values.
+   */
+  preflight(
+    kind: HostedSwarmKind,
+    modeInput?: 'rpc' | 'tui',
+  ): {
+    kind: HostedSwarmKind;
+    mode: 'rpc' | 'tui';
+    ready: boolean;
+    checks: Array<{ id: string; ok: boolean; message?: string }>;
+  } {
+    // Normalize mode the same way spawn() does: codex defaults to rpc,
+    // claude-code is TUI-only, swarm-runner is a headless server (mode
+    // is echoed but meaningless).
+    const mode: 'rpc' | 'tui' =
+      kind === 'codex' ? (modeInput ?? 'rpc')
+      : kind === 'claude-code' ? 'tui'
+      : (modeInput ?? 'rpc');
+
+    const checks: Array<{ id: string; ok: boolean; message?: string }> = [];
+
+    // Binary / runtime prerequisites per kind.
+    if (kind === 'codex') {
+      const codexBinary = resolveCodexBinary();
+      checks.push({
+        id: 'codex-binary',
+        ok: codexBinary !== null,
+        message: codexBinary ?? 'codex binary not found on PATH. Install Codex and retry.',
+      });
+      if (mode === 'rpc') {
+        checks.push({
+          id: 'codex-app-server',
+          ok: this.codexAppServerManager !== null,
+          message: this.codexAppServerManager
+            ? undefined
+            : 'Codex RPC hosting is not initialized on this hub (CodexAppServerManager missing).',
+        });
+      } else {
+        checks.push({
+          id: 'pty-manager',
+          ok: this.ptyManager !== null,
+          message: this.ptyManager
+            ? undefined
+            : 'Terminal hosting is unavailable on this hub (node-pty not loaded).',
+        });
+      }
+    } else if (kind === 'claude-code') {
+      const claudeBinary = resolveClaudeBinary();
+      checks.push({
+        id: 'claude-binary',
+        ok: claudeBinary !== null,
+        message: claudeBinary ?? 'claude binary not found on PATH. Install Claude Code and retry.',
+      });
+      checks.push({
+        id: 'pty-manager',
+        ok: this.ptyManager !== null,
+        message: this.ptyManager
+          ? undefined
+          : 'Terminal hosting is unavailable on this hub (node-pty not loaded).',
+      });
+    } else {
+      // swarm-runner: report the resolved runner command. Resolution
+      // falls back to the configured string when the package can't be
+      // found — flag the default-npx fallback since npx-at-spawn-time is
+      // the classic silent-failure mode (see resolveSwarmRunnerCommand).
+      const resolved = this.resolveSwarmRunnerCommand(this.config.swarm_runner_command);
+      const unresolvedNpxDefault = resolved === 'npx @swarmkit-ai/swarm-runner serve';
+      checks.push({
+        id: 'swarm-runner-command',
+        ok: !unresolvedNpxDefault,
+        message: unresolvedNpxDefault
+          ? '@swarmkit-ai/swarm-runner package could not be resolved — spawn would fall back to npx, which is slow and may fail offline.'
+          : resolved,
+      });
+    }
+
+    // Provider registered.
+    const providerType = this.config.default_provider;
+    checks.push({
+      id: 'provider',
+      ok: this.providers.has(providerType),
+      message: this.providers.has(providerType)
+        ? providerType
+        : `Hosting provider "${providerType}" is not configured.`,
+    });
+
+    // Capacity.
+    const activeCount = dal.countActiveHostedSwarms();
+    const hasCapacity = activeCount < this.config.max_swarms;
+    checks.push({
+      id: 'capacity',
+      ok: hasCapacity,
+      message: hasCapacity
+        ? `${activeCount}/${this.config.max_swarms} hosted swarms active`
+        : `Maximum of ${this.config.max_swarms} hosted swarms reached (${activeCount} active). Stop one first.`,
+    });
+
+    // Credentials summary — informational, never a blocker, never values.
+    const inheritEnv = this.config.credentials?.inherit_env !== false;
+    const overlayKeys = Object.keys(resolveCredentialOverlay(this.config.credentials));
+    checks.push({
+      id: 'credentials',
+      ok: true,
+      message: `env inheritance ${inheritEnv ? 'on' : 'off'}${
+        overlayKeys.length > 0 ? `; credential set provides: ${overlayKeys.join(', ')}` : ''
+      }`,
+    });
+
+    return {
+      kind,
+      mode,
+      ready: checks.every((c) => c.ok),
+      checks,
+    };
   }
 
   // ==========================================================================

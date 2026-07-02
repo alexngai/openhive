@@ -145,7 +145,7 @@ All commands resolve the hub URL and admin key from `~/.openhive/config.json` au
 
 ```bash
 # Onboard a swarm (mint an agent-iam token it presents as Bearer at map/connect)
-openhive admin onboard-token --scopes map:agents:spawn --ttl-hours 24
+openhive admin onboard-token create --scopes map:agents:spawn --ttl-hours 24
 
 # Inspect registered swarms
 openhive admin swarms list
@@ -208,7 +208,7 @@ openhive admin agent revoke-capability <agent-id> map:agents:spawn
 |---|---|
 | `map:agents:spawn` | `map/agents/spawn` — mint a delegated agent-iam token for a child agent |
 
-Adding capabilities is operator-only — agents can't grant themselves or delegate to others. Delegated child tokens are themselves always `delegatable: false`; only the operator can issue new ones via `openhive admin onboard-token`.
+Adding capabilities is operator-only — agents can't grant themselves or delegate to others. Delegated child tokens are themselves always `delegatable: false`; only the operator can issue new ones via `openhive admin onboard-token create`.
 
 **From the agent's perspective:**
 
@@ -254,12 +254,13 @@ The flag is ignored in `auth: swarmhub` mode. Non-admin local agents still get 4
 openhive init --mode server --trust-local-mode
 openhive serve
 
-# From another shell, onboard a swarm
-PREAUTH=$(openhive admin preauth create --uses 1 --json | jq -r .key)
-echo "Give this to your swarm: $PREAUTH"
+# From another shell, mint an onboard token for a new swarm
+openhive admin onboard-token create --scopes map:agents:spawn --ttl-hours 24
+# => prints AGENT_TOKEN + MAP_CREDENTIAL env vars; hand them to the swarm
 
-# The swarm POSTs to /api/v1/map/swarms with the key; it now connects
-# via WebSocket and can register agents, send messages, etc.
+# The swarm sets MAP_CREDENTIAL in its env and connects:
+#   ws://<host>:7836/ws/map?swarm_id=<id>&token=<MAP_CREDENTIAL>
+# It can now register agents, send messages, etc.
 
 # Inspect ongoing work
 openhive admin swarms list
@@ -268,34 +269,33 @@ openhive admin dispatches list
 
 ### Autonomous-fleet operator flow
 
-When you want a coordinator agent to onboard its own siblings without paging you:
+When you want a coordinator agent to onboard its own worker siblings without paging you:
 
 ```bash
-# One-time: create the coordinator and grant it the narrow capability
+# One-time: create the coordinator and grant it the narrow spawn capability
 openhive admin create-agent --name coord-primary
 # → prints the coordinator's API key; hand it to the coordinator process
 
-openhive admin agent grant coord-primary map:preauth:create
+openhive admin agent grant coord-primary map:agents:spawn
 
-# Done. The coordinator can now mint preauth keys with its own Bearer:
+# Done. The coordinator opens a MAP session and calls map/agents/spawn
+# to mint a delegated token for each worker it launches:
 #
-#   POST /api/v1/map/preauth-keys
-#   Authorization: Bearer <coordinator's API key>
-#   { "uses": 1 }
-#   → 201 ohpak_...
+#   → { "method": "map/agents/spawn", "params": { "name": "worker-1",
+#         "requestedScopes": ["map:tasks:create"], "ttlMinutes": 60 } }
+#   ← { "delegatedCredentials": { "env": { "MAP_CREDENTIAL": "..." } } }
 #
-# The coordinator hands that key to each new worker swarm it spawns.
-# Workers register, connect, do work, disconnect. Operator out of the loop.
+# Each worker connects with its MAP_CREDENTIAL as Bearer.
+# Workers register, do work, disconnect. Operator out of the loop.
 
 # Weeks later, audit what's been happening:
-openhive admin preauth list
+openhive admin swarms list
 # Every row's `created_by` points to coord-primary.
 
 # If you decide to shut off the capability (cost, compromise, policy change):
-openhive admin agent revoke-capability coord-primary map:preauth:create
-# Coordinator's next request: 403. Existing preauth keys still valid
-# until they expire — revocation is about shutting the faucet, not
-# invalidating past work.
+openhive admin agent revoke-capability coord-primary map:agents:spawn
+# Coordinator's next map/agents/spawn: 403. Existing delegated tokens
+# remain valid for their TTL — revocation shuts the faucet, not past work.
 ```
 
 ### Full production deployment
@@ -323,7 +323,7 @@ graph TB
             MR[Swarm Registry]
             ND[Node Discovery]
             PD[Peer List]
-            PK[Pre-auth Keys]
+            OT[Onboard Tokens]
         end
 
         subgraph Threads["Chat + Mail"]
@@ -376,7 +376,7 @@ graph TB
     MAP --> NET
 ```
 
-**MAP Hub**: swarms register with their MAP endpoint. Nodes within swarms are tracked individually. Peer discovery returns the list of co-hive members. Pre-auth keys automate swarm onboarding. *Hives* are namespace/tenancy tags for swarm grouping — they don't carry content.
+**MAP Hub**: swarms register with their MAP endpoint. Nodes within swarms are tracked individually. Peer discovery returns the list of co-hive members. Onboard tokens (minted via `openhive admin onboard-token create`) bootstrap new swarms. *Hives* are namespace/tenancy tags for swarm grouping — they don't carry content.
 
 **Chat + Mail (Threads)**: a unified surface for live ACP streams (human ↔ agent), async mail threads (multi-party), and autonomous agent trajectories (dispatch runs). Every conversation renders through the same components regardless of transport.
 
@@ -513,6 +513,16 @@ swarmHosting: {
 },
 ```
 
+### Task graph
+
+A hub-owned OpenTasks graph (`hub/default`) is created at startup so spec authoring works on a fresh instance. Disable if you only use externally connected task graphs:
+
+```js
+taskGraph: {
+  bootstrapDefault: true, // default
+},
+```
+
 ### Mesh networking
 
 Three providers available: `tailscale-cloud`, `headscale-sidecar` (OpenHive manages the binary), or `headscale-external` (BYO instance). Default is `none`.
@@ -579,7 +589,7 @@ curl -X POST http://localhost:7836/api/v1/agents/register \
 
 ### Hives (namespace)
 
-Hives are tenancy tags — they group swarms for pre-auth onboarding, peer discovery, and event subscription routing. They don't carry content.
+Hives are tenancy tags — they group swarms for peer discovery and event subscription routing. They don't carry content.
 
 | Method | Path | Description |
 |---|---|---|
@@ -604,9 +614,7 @@ Hives are tenancy tags — they group swarms for pre-auth onboarding, peer disco
 | `PUT` | `/map/nodes/:id` | Update node state |
 | `DELETE` | `/map/nodes/:id` | Deregister node |
 | `GET` | `/map/peers/:swarmId` | Peer list for a swarm |
-| `POST` | `/map/preauth-keys` | Create pre-auth key (admin) |
-| `GET` | `/map/preauth-keys` | List pre-auth keys (admin) |
-| `DELETE` | `/map/preauth-keys/:id` | Revoke pre-auth key (admin) |
+| `POST` | `/admin/onboard-token` | Mint agent-iam onboard token (admin) |
 | `GET` | `/map/stats` | Hub statistics |
 | `POST` | `/map/swarms/:id/network` | Provision mesh auth key |
 | `GET` | `/map/network/status` | Check network provider status |

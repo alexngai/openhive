@@ -9,9 +9,6 @@
 import { useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSubscribe, useWSEvent } from './useWebSocket';
-import { useSessionAttentionStore } from '../stores/session-attention';
-import { toast } from '../stores/toast';
-import type { SessionListItem } from '../lib/api';
 
 // ── Swarms ──
 
@@ -124,21 +121,13 @@ export function useSkillRealtime(resourceId: string) {
 /**
  * Invalidates sessions-overview and session-checkpoints queries
  * when trajectory sync events arrive.
+ *
+ * Attention marking (idle / permission) and the associated toasts live in
+ * `useGlobalAttention` (mounted once in Layout) — this hook is
+ * invalidation-only and safe to mount on multiple pages.
  */
-// Toast deduplication: don't re-toast the same session within 30s
-const _toastCooldowns = new Map<string, number>();
-
-function shouldToast(sessionId: string): boolean {
-  const now = Date.now();
-  const last = _toastCooldowns.get(sessionId);
-  if (last && now - last < 30_000) return false;
-  _toastCooldowns.set(sessionId, now);
-  return true;
-}
-
 export function useSessionsRealtime() {
   const queryClient = useQueryClient();
-  const { markNeedsAttention } = useSessionAttentionStore();
 
   useSubscribe(['global']);
 
@@ -147,48 +136,7 @@ export function useSessionsRealtime() {
     queryClient.invalidateQueries({ queryKey: ['session-checkpoints'] });
   }, [queryClient]);
 
-  // Resolve swarmId → session(s) from the React Query cache
-  const findSessionsBySwarm = useCallback((swarmId: string): SessionListItem[] => {
-    const cached = queryClient.getQueriesData<{ data: SessionListItem[] }>({ queryKey: ['sessions-overview'] });
-    const sessions: SessionListItem[] = [];
-    for (const [, data] of cached) {
-      if (!data?.data) continue;
-      for (const s of data.data) {
-        if (s.source_swarm_id === swarmId || s.source_swarm_ids?.includes(swarmId)) {
-          sessions.push(s);
-        }
-      }
-    }
-    return sessions;
-  }, [queryClient]);
-
-  // trajectory:sync — invalidate caches + detect idle agent via two signals:
-  // 1. agent_state from MAP node DB (set by agent.state_changed eventBus handler)
-  // 2. checkpoint_phase from sessionlog metadata (idle = turn complete, ended = session done)
-  useWSEvent('trajectory:sync', useCallback((data: any) => {
-    invalidate();
-    const isIdle = data?.agent_state === 'idle' || data?.checkpoint_phase === 'idle' || data?.checkpoint_phase === 'ended';
-    if (isIdle && data.resource_id) {
-      markNeedsAttention(data.resource_id, data.source_swarm_id || '', 'idle');
-      const sessions = findSessionsBySwarm(data.source_swarm_id || '');
-      const session = sessions.find(s => s.id === data.resource_id);
-      if (session && shouldToast(data.resource_id)) {
-        toast.info(session.name, 'Agent is awaiting input');
-      }
-    }
-  }, [invalidate, markNeedsAttention, findSessionsBySwarm]));
-
-  // node_state_changed — mark sessions needing attention
-  useWSEvent('node_state_changed', useCallback((data: any) => {
-    if (!data?.needs_attention || !data.swarm_id) return;
-    const sessions = findSessionsBySwarm(data.swarm_id);
-    for (const session of sessions) {
-      markNeedsAttention(session.id, data.swarm_id, data.new_state);
-      if (shouldToast(session.id)) {
-        toast.info(session.name, `Agent is ${data.new_state}`);
-      }
-    }
-  }, [markNeedsAttention, findSessionsBySwarm]));
+  useWSEvent('trajectory:sync', invalidate);
 }
 
 // ── Learning Engine ──

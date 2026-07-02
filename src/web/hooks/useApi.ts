@@ -160,6 +160,39 @@ export function useKnownProjectPathEntries() {
   });
 }
 
+export interface SpawnPreflightCheck {
+  id: string;
+  ok: boolean;
+  message?: string;
+}
+export interface SpawnPreflightResult {
+  kind: 'swarm-runner' | 'claude-code' | 'codex';
+  mode: 'rpc' | 'tui';
+  ready: boolean;
+  checks: SpawnPreflightCheck[];
+}
+
+/**
+ * Side-effect-free spawn readiness probe. Refetched per (kind, mode) so
+ * the spawn form can surface missing binaries / capacity before submit.
+ */
+export function useSpawnPreflight(
+  kind: 'swarm-runner' | 'claude-code' | 'codex',
+  mode?: 'rpc' | 'tui',
+  opts?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ['spawn-preflight', kind, mode ?? null],
+    queryFn: () =>
+      api.get<SpawnPreflightResult>(
+        `/map/hosted/spawn/preflight?kind=${kind}${mode ? `&mode=${mode}` : ''}`,
+      ),
+    staleTime: 30_000,
+    retry: false,
+    enabled: opts?.enabled ?? true,
+  });
+}
+
 export function useSpawnSwarm() {
   const queryClient = useQueryClient();
 
@@ -172,6 +205,12 @@ export function useSpawnSwarm() {
        * See docs/HOSTED_SWARM_KINDS_DESIGN.md.
        */
       kind?: 'swarm-runner' | 'claude-code' | 'codex';
+      /**
+       * codex-only surface selector: 'rpc' (chat-driven app-server,
+       * backend default) or 'tui' (embedded terminal). Ignored for other
+       * kinds.
+       */
+      mode?: 'rpc' | 'tui';
       name: string;
       description?: string;
       adapter?: string;

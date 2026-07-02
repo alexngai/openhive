@@ -98,7 +98,7 @@ npm run typecheck    # TypeScript type check
 
 All routes prefixed `/api/v1`. Auth via `Authorization: Bearer <api_key>`. Admin routes require `X-Admin-Key`.
 
-Core route groups: agents, hives (namespace), map (swarms, nodes, peers, preauth-keys), resources, repos, swarms (hosting), coordination, sessions (events, chat, checkpoints), mail (conversations, turns), specs, dispatches, schedules, events (subscriptions, delivery-log), admin.
+Core route groups: agents, hives (namespace), map (swarms, nodes, peers), resources, repos, swarms (hosting), coordination, sessions (events, chat, checkpoints), mail (conversations, turns), specs, dispatches, schedules, events (subscriptions, delivery-log), admin (incl. onboard tokens).
 
 Sync routes at `/sync/v1` (JSON-RPC 2.0). WebSocket at `/ws`. Discovery at `/.well-known/openhive.json` and `/skill.md`.
 
@@ -108,6 +108,6 @@ SQLite by default (single file at configured path). PostgreSQL supported via con
 
 ## Configuration
 
-Primary config file: `openhive.config.js`. Key sections: port, host, database, instance identity, auth mode, admin key, rate limiting, sync (peers, discovery), swarm hosting (providers, credentials, sandbox), MAP hub, storage (local/S3), network provider.
+Primary config file: `openhive.config.js`. Key sections: port, host, database, instance identity, auth mode, admin key, rate limiting, sync (peers, discovery), swarm hosting (providers, credentials, sandbox), MAP hub, storage (local/S3), network provider, task graph (`taskGraph.bootstrapDefault` — hub-default OpenTasks graph at startup).
 
 Environment variables override config file values. See README for the full env var table.

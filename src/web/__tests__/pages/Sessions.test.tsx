@@ -79,6 +79,10 @@ vi.mock('../../pages/SessionDetail', () => ({
 }));
 
 import { Sessions } from '../../pages/Sessions';
+import {
+  useSessionAttentionStore,
+  sessionThreadKey,
+} from '../../stores/session-attention';
 
 // ── Helpers ──
 
@@ -127,6 +131,7 @@ const onlineSwarm = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useSessionAttentionStore.getState().clearAll();
 
   // Default: no sessions, no swarms
   mockUseSessionsList.mockReturnValue({ data: { data: [], total: 0 }, isLoading: false });
@@ -232,6 +237,89 @@ describe('Sessions page', () => {
       fireEvent.click(screen.getByText('Inactive threads (1)'));
       expect(screen.getByText('old-project')).toBeDefined();
       expect(screen.getByPlaceholderText('Search threads...')).toBeDefined();
+    });
+  });
+
+  describe('thread-row state chips', () => {
+    function renderLiveSession() {
+      const session = makeSession();
+      mockUseSessionsList.mockReturnValue({
+        data: { data: [session], total: 1 },
+        isLoading: false,
+      });
+      mockUseMapSwarms.mockReturnValue({ data: [onlineSwarm] });
+      return renderSessions();
+    }
+
+    it('shows a live chip on a working session with no attention', () => {
+      renderLiveSession();
+      expect(screen.getByText('live')).toBeDefined();
+    });
+
+    it('overlays an input chip when the thread has idle attention', () => {
+      useSessionAttentionStore
+        .getState()
+        .markIdle(sessionThreadKey('session-1'), 'swarm-1', 'idle');
+      renderLiveSession();
+
+      expect(screen.getByText('input')).toBeDefined();
+      expect(screen.queryByText('live')).toBeNull();
+    });
+
+    it('permission chip outranks idle attention', () => {
+      const store = useSessionAttentionStore.getState();
+      store.markIdle(sessionThreadKey('session-1'), 'swarm-1', 'idle');
+      store.markPermission({
+        threadKey: sessionThreadKey('session-1'),
+        requestId: 'req-1',
+        description: 'Run tests',
+        streamId: 'stream-1',
+      });
+      renderLiveSession();
+
+      expect(screen.getByText('approval')).toBeDefined();
+      expect(screen.queryByText('input')).toBeNull();
+    });
+
+    it('row click clears idle but the permission chip survives', () => {
+      const store = useSessionAttentionStore.getState();
+      store.markIdle(sessionThreadKey('session-1'), 'swarm-1', 'idle');
+      store.markPermission({
+        threadKey: sessionThreadKey('session-1'),
+        requestId: 'req-1',
+        description: 'Run tests',
+        streamId: 'stream-1',
+      });
+      renderLiveSession();
+
+      fireEvent.click(screen.getByText('my-project (main)'));
+
+      const key = sessionThreadKey('session-1');
+      expect(useSessionAttentionStore.getState().hasPermission(key)).toBe(true);
+      // Idle item is gone; only the permission remains.
+      expect(
+        useSessionAttentionStore.getState().itemsForThread(key).every((i) => i.kind === 'permission'),
+      ).toBe(true);
+      expect(screen.getByText('approval')).toBeDefined();
+    });
+
+    it('renders no chip for a stale session', () => {
+      const staleSession = makeSession({
+        id: 'stale-1',
+        name: 'old-project',
+        source_swarm_id: null,
+        source_swarm_ids: [],
+        last_synced_at: new Date().toISOString(), // recent → active list, but not live
+      });
+      mockUseSessionsList.mockReturnValue({
+        data: { data: [staleSession], total: 1 },
+        isLoading: false,
+      });
+      renderSessions();
+
+      expect(screen.queryByText('live')).toBeNull();
+      expect(screen.queryByText('recent')).toBeNull();
+      expect(screen.queryByText('idle')).toBeNull();
     });
   });
 

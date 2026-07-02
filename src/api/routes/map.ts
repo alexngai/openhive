@@ -1137,4 +1137,23 @@ export async function mapRoutes(
 
     return reply.send({ data: graphs });
   });
+
+  // POST /map/hub-task-graph — Create (or return) the hub-default OpenTasks
+  // graph. The same function runs at startup when taskGraph.bootstrapDefault
+  // is on; this route covers instances where bootstrap was disabled or the
+  // DB predates the feature (SpecNew's "create default task graph" button).
+  fastify.post('/map/hub-task-graph', {
+    preHandler: [authMiddleware],
+  }, async (_request, reply) => {
+    const { ensureHubDefaultTaskGraph } = await import('../../map/hub-task-graph.js');
+    const { resolveDataDir } = await import('../../data-dir.js');
+    const resource = ensureHubDefaultTaskGraph(resolveDataDir());
+    if (!resource) {
+      return reply.status(503).send({
+        error: 'NOT_READY',
+        message: 'No agents exist yet — run openhive init (or create an agent) first.',
+      });
+    }
+    return reply.send({ resource });
+  });
 }

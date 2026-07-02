@@ -466,6 +466,17 @@ export const ConfigSchema = z.object({
     })
     .default({}),
 
+  // Task graph: hub-owned OpenTasks bootstrap
+  taskGraph: z
+    .object({
+      /**
+       * Create a hub-default OpenTasks graph (`hub/default`) at startup so
+       * /specs/new works on a fresh instance. Idempotent — safe to leave on.
+       */
+      bootstrapDefault: z.boolean().default(true),
+    })
+    .default({}),
+
   // Channel Bridge: external platform integration (Slack, Discord, Telegram, etc.)
   bridge: z
     .object({

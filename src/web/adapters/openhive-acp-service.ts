@@ -51,6 +51,24 @@ async function acpFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return (body as { data?: T }).data ?? (body as T);
 }
 
+/**
+ * Answer a pending ACP tool-approval request without mounting a chat
+ * channel. Used by the attention queue panel (and the ACP service below).
+ */
+export async function replyAcpPermission(
+  streamId: string,
+  requestId: string,
+  granted: boolean,
+): Promise<void> {
+  await acpFetch(`/acp/streams/${streamId}/permission`, {
+    method: 'POST',
+    body: JSON.stringify({
+      requestId,
+      reply: { outcome: granted ? 'approved' : 'denied' },
+    }),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Per-stream event subscription bookkeeping
 // ---------------------------------------------------------------------------
@@ -609,15 +627,8 @@ export function createOpenHiveAcpServiceLike(): AcpServiceLike {
       await acpFetch(`/acp/streams/${streamId}/cancel`, { method: 'POST' });
     },
 
-    replyPermission: async (streamId, requestId, granted) => {
-      await acpFetch(`/acp/streams/${streamId}/permission`, {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId,
-          reply: { outcome: granted ? 'approved' : 'denied' },
-        }),
-      });
-    },
+    replyPermission: (streamId, requestId, granted) =>
+      replyAcpPermission(streamId, requestId, granted),
 
     replyQuestion: async (streamId, requestId, answers) => {
       await acpFetch(`/acp/streams/${streamId}/question`, {

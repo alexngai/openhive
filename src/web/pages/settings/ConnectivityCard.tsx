@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Check, Copy, AlertTriangle } from 'lucide-react';
+import { OnboardTokenPanel } from '../../components/onboarding/OnboardTokenPanel';
 
 /**
  * Connection-info panel for the Server settings tab. Surfaces the URLs,
@@ -111,9 +112,12 @@ export function ConnectivityCard() {
         </div>
       )}
 
-      <p className="text-2xs pt-1" style={{ color: 'var(--color-text-muted)' }}>
-        Agents authenticate with API keys or pre-auth keys — generate them in the API Keys tab.
-      </p>
+      <div className="pt-2 border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
+        <h4 className="text-2xs font-semibold mb-2" style={{ color: 'var(--color-text-secondary)' }}>
+          Onboard an agent
+        </h4>
+        <OnboardTokenPanel showNameField={false} />
+      </div>
     </div>
   );
 }

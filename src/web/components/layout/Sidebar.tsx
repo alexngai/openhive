@@ -8,6 +8,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { useMapSwarms } from '../../hooks/useApi';
 import { useAuthStore } from '../../stores/auth';
+import { useSessionAttentionStore } from '../../stores/session-attention';
 import { useState, useCallback } from 'react';
 import clsx from 'clsx';
 import { Logo } from '../common/Logo';
@@ -17,7 +18,19 @@ interface NavItem {
   icon: LucideIcon;
   label: string;
   badge?: number;
+  /**
+   * 'attention' renders amber (agents idle/awaiting input),
+   * 'permission' renders red (agents blocked on approval).
+   * Default is the honey accent (informational counts).
+   */
+  badgeTone?: 'attention' | 'permission';
 }
+
+const BADGE_TONE_CLASSES: Record<string, string> = {
+  attention: 'bg-amber-500/15 text-amber-400',
+  permission: 'bg-red-500/15 text-red-400',
+  default: 'bg-honey-500/15 text-honey-500',
+};
 
 interface NavGroup {
   id: string;
@@ -64,6 +77,17 @@ export function Sidebar() {
   const { data: mapSwarms } = useMapSwarms();
   const onlineSwarmCount = mapSwarms?.filter((s) => s.status === 'online').length ?? 0;
 
+  // Attention badge on Threads — reactive subscription to the store's items
+  // map (replaced on every mutation, so this re-renders on change).
+  const attentionItems = useSessionAttentionStore((s) => s.items);
+  const attentionCount = attentionItems.size;
+  const hasPendingPermission = (() => {
+    for (const item of attentionItems.values()) {
+      if (item.kind === 'permission') return true;
+    }
+    return false;
+  })();
+
   const navGroups: NavGroup[] = [
     {
       id: 'overview',
@@ -77,7 +101,13 @@ export function Sidebar() {
       label: 'Fleet',
       items: [
         { to: '/swarms', icon: CirclePile, label: 'Swarms', badge: onlineSwarmCount || undefined },
-        { to: '/threads', icon: MessageSquare, label: 'Threads' },
+        {
+          to: '/threads',
+          icon: MessageSquare,
+          label: 'Threads',
+          badge: attentionCount || undefined,
+          badgeTone: hasPendingPermission ? 'permission' : 'attention',
+        },
       ],
     },
     {
@@ -177,7 +207,10 @@ export function Sidebar() {
                       <div className="relative">
                         <item.icon className="w-5 h-5 shrink-0" />
                         {item.badge != null && (
-                          <span className="absolute -top-1.5 -right-2.5 text-[9px] font-medium px-1 py-px rounded-full bg-honey-500/15 text-honey-500 leading-none min-w-[14px] text-center">
+                          <span className={clsx(
+                            'absolute -top-1.5 -right-2.5 text-[9px] font-medium px-1 py-px rounded-full leading-none min-w-[14px] text-center',
+                            BADGE_TONE_CLASSES[item.badgeTone ?? 'default'],
+                          )}>
                             {item.badge}
                           </span>
                         )}
@@ -225,7 +258,10 @@ export function Sidebar() {
                           <item.icon className="w-4 h-4 shrink-0" />
                           <span className="truncate">{item.label}</span>
                           {item.badge != null && (
-                            <span className="ml-auto text-2xs font-medium px-1.5 py-0.5 rounded-full bg-honey-500/15 text-honey-500 leading-none">
+                            <span className={clsx(
+                              'ml-auto text-2xs font-medium px-1.5 py-0.5 rounded-full leading-none',
+                              BADGE_TONE_CLASSES[item.badgeTone ?? 'default'],
+                            )}>
                               {item.badge}
                             </span>
                           )}
