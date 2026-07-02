@@ -307,6 +307,12 @@ function startMailPushBridge(events: EventEmitter): void {
 
   mailPushBridge = createMailPushBridge<OpenHiveMailSubscriber>({
     mailEvents: events,
+    // Fold conversation context (scope/subject/metadata/participants) into
+    // the mail/turn.received payload so sidecars can filter/route without a
+    // round-trip back to the hub. Reads from the same mail storage the turn
+    // was written to; undefined degrades to a context-less notification.
+    resolveConversation: (turn) =>
+      getMailStorage().getConversation(turn.conversation_id),
     getSubscribers: (turn) => {
       const subs: OpenHiveMailSubscriber[] = [];
       for (const [swarmId, conn] of getAllInboundIncludingStale()) {
