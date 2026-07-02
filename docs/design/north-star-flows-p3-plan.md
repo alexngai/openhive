@@ -1,9 +1,24 @@
 # North Star Flows — P3 Implementation Plan (Spec & Discuss)
 
 **Date:** 2026-07-01
-**Status:** Proposed
+**Status:** ✅ Implemented (2026-07-02)
 **Parent:** [`north-star-flows.md`](north-star-flows.md) Flow 3 (Spec & Discuss)
 **Predecessor:** [`north-star-flows-wave1-plan.md`](north-star-flows-wave1-plan.md) (P1 + P2, all shipped)
+
+## Implementation status
+
+All P3.1–P3.6 tickets landed. Where the shipped shape differs from the plan below, the plan text is kept as the design record and the deltas are noted here.
+
+| Ticket | Status | Key files |
+|---|---|---|
+| P3.1 spec thread create/resolve | ✅ | `src/specs/spec-conversation.ts` (`ensureSpecConversation`, deterministic `spec-thread:<rid>:<sid>` id, create-or-get), `GET`/`POST /specs/:rid/:sid/thread` in `src/api/routes/specs.ts`; tests in `src/__tests__/routes/specs.test.ts` |
+| P3.2 REST invite | ✅ | `POST /mail/conversations/:id/participants` in `src/api/routes/mail.ts` (generic, idempotent); `mail.participant.joined` now also fans out to `mail:conversation:<id>` (`src/mail/index.ts`); tests in `src/__tests__/mail/mail-routes.test.ts` |
+| P3.3 Discussion tab | ✅ | Document/Discussion tab strip + `?tab=discussion` deep link in `src/web/pages/SpecDetail.tsx`; `SpecDiscussionPanel` + `useSpecThread`/`useCreateSpecThread`; `spec-thread` case in `Sessions.tsx` `mailToThread`; test `spec-discussion-panel.test.tsx` |
+| P3.4 agent invite picker | ✅ | `InviteAgentButton` (mail-capable agents) wired via new `MailThreadView` `headerAction` prop; `useInviteMailParticipant`; test `invite-agent-button.test.tsx` |
+| P3.5 dispatch outcomes → system turns | ✅ | `postSpecThreadOutcome` (`src/specs/spec-conversation.ts`) called from `src/dispatch/setup.ts` (completed/dead) + `src/map/dispatch-handler.ts` (agent report); `system:*` turns relabeled "Orchestrator" in `MailThreadView`; test `spec-thread-outcome.test.ts` |
+| P3.6 docs + skill hygiene | ✅ | `src/api/skill-fragments/mail.ts` + `dispatch.ts`, `src/web/CLAUDE.md`, this doc + `north-star-flows.md` |
+
+**Delta from plan:** no `POST /mail/conversations` create route was added — spec threads rely on the deterministic id + create-or-get, so `POST /specs/:rid/:sid/thread` is the only create path. Turn `metadata` (`{ system: true }`) is passed to `mail/turn` but agent-inbox does not persist it; system-turn rendering keys off the `system:` author prefix instead.
 
 ## Goal
 

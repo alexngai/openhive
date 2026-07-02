@@ -105,16 +105,31 @@ function sessionToThread(
 
 function mailToThread(conv: MailConversation): Thread {
   const isDispatchThread = conv.scope === 'dispatch-thread';
+  const isSpecThread = conv.scope === 'spec-thread';
   const status: ThreadStatus = conv.status === 'active' ? 'mail-active' : 'mail-completed';
   // Dispatch threads link to their dispatch detail page instead of the mail view
   const dispatchId = isDispatchThread
     ? (conv.metadata?.dispatch_id as string | undefined)
     : undefined;
+  // Spec threads link to the spec's Discussion tab so the two surfaces don't
+  // compete for the same conversation.
+  const specResourceId = isSpecThread
+    ? (conv.metadata?.spec_resource_id as string | undefined)
+    : undefined;
+  const specId = isSpecThread ? (conv.metadata?.spec_id as string | undefined) : undefined;
+  const specTo =
+    specResourceId && specId
+      ? `/specs/${encodeURIComponent(specResourceId)}/${encodeURIComponent(specId)}?tab=discussion`
+      : undefined;
   return {
     id: conv.id,
     flavor: isDispatchThread ? 'dispatch' : 'mail',
-    to: dispatchId ? `/dispatch/${dispatchId}` : `/threads/mail/${conv.id}`,
-    title: conv.subject || (isDispatchThread ? 'Dispatch thread' : 'Untitled conversation'),
+    to: dispatchId
+      ? `/dispatch/${dispatchId}`
+      : specTo ?? `/threads/mail/${conv.id}`,
+    title:
+      conv.subject ||
+      (isDispatchThread ? 'Dispatch thread' : isSpecThread ? 'Spec discussion' : 'Untitled conversation'),
     description: conv.participants.map((p) => p.agent_id).join(', ') || null,
     status,
     lastActivityAt: conv.updated_at,

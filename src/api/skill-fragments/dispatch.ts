@@ -27,6 +27,17 @@ stream.
 | GET | /dispatches | List dispatches |
 | GET | /dispatches/:id | Single dispatch with attempt/turn history |
 | POST | /dispatches/:id/cancel | Cancel a running dispatch |
+| GET | /specs/:resourceId/:specId/thread | Resolve the spec discussion thread (404 if none) |
+| POST | /specs/:resourceId/:specId/thread | Create/return the spec discussion thread (idempotent) |
+
+### Spec discussion threads
+
+Each spec can host a mail conversation (scope \`spec-thread\`, deterministic id
+\`spec-thread:<resourceId>:<specId>\`). Humans open it from the spec's Discussion
+tab; agents are pulled in via \`POST /mail/conversations/:id/participants\`. When
+a dispatch that carries spec refs reaches a terminal state, the hub posts a
+\`system:dispatch-orchestrator\` outcome turn into that thread **only if it
+already exists** — silent specs stay silent.
 
 ### Lifecycle
 

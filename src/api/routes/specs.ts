@@ -38,6 +38,11 @@ import {
 import type { Dispatch } from '../../db/dal/dispatches.js';
 import type { SyncableResource } from '../../types.js';
 import type { Config } from '../../config.js';
+import { getMailJsonRpc, getMailStorage } from '../../mail/index.js';
+import {
+  ensureSpecConversation,
+  specThreadConversationId,
+} from '../../specs/spec-conversation.js';
 
 const CreateSpecSchema = z.object({
   resource_id: z.string().min(1),
@@ -609,6 +614,80 @@ export async function specsRoutes(
       edges,
     });
   });
+
+  /**
+   * GET /specs/:resourceId/:specId/thread
+   *
+   * Read-only resolution of the spec's discussion thread. Returns the
+   * deterministic conversation id if the thread already exists, else 404 —
+   * the frontend uses this to decide between rendering the thread or a
+   * "Start discussion" CTA, without side effects (no create).
+   */
+  fastify.get<{
+    Params: { resourceId: string; specId: string };
+  }>(
+    '/specs/:resourceId/:specId/thread',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { resourceId, specId } = request.params;
+      const conversationId = specThreadConversationId(resourceId, specId);
+      const conv = getMailStorage().getConversation(conversationId);
+      if (!conv) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'No discussion thread for this spec yet',
+        });
+      }
+      const turns = getMailStorage().getTurns(conversationId);
+      return reply.send({
+        conversation_id: conversationId,
+        turn_count: turns.length,
+        participants: conv.participants,
+      });
+    },
+  );
+
+  /**
+   * POST /specs/:resourceId/:specId/thread
+   *
+   * Create (or return the existing) mail conversation bound to the spec.
+   * Idempotent via a deterministic id + create-or-get semantics.
+   */
+  fastify.post<{
+    Params: { resourceId: string; specId: string };
+  }>(
+    '/specs/:resourceId/:specId/thread',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { resourceId, specId } = request.params;
+
+      // Validate the spec exists (and the caller can access it) via the same
+      // resolution path GET /specs/:rid/:sid uses.
+      const resolved = await fetchSpecForDispatch(resourceId, specId, request.agent!.id);
+      if (!resolved.ok) {
+        return reply
+          .status(resolved.statusCode)
+          .send({ error: resolved.error, message: resolved.message });
+      }
+
+      const specTitle = (resolved.data.node.title as string) ?? '';
+      const conversationId = await ensureSpecConversation(
+        {
+          resourceId,
+          specId,
+          specTitle,
+          initiatorAgentId: request.agent!.id,
+        },
+        { getMailJsonRpc, getMailStorage },
+      );
+
+      const turns = getMailStorage().getTurns(conversationId);
+      return reply.status(201).send({
+        conversation_id: conversationId,
+        turn_count: turns.length,
+      });
+    },
+  );
 
   /**
    * POST /specs

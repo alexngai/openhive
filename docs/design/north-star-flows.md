@@ -95,9 +95,11 @@ The user runs 4 sessions, minimizes the window, and misses nothing: every permis
 
 ---
 
-## Flow 3 — Spec & Discuss
+## Flow 3 — Spec & Discuss ✅ shipped (P3)
 
 *Author a spec and hold a discussion around it — with agents and humans — before any dispatch.*
+
+> **Status (2026-07-02):** shipped. See [`north-star-flows-p3-plan.md`](north-star-flows-p3-plan.md) for the ticket-level record. Notable deviation from the plan below: instead of a `POST /mail/conversations` create route, spec threads use a **deterministic conversation id** (`spec-thread:<rid>:<sid>`) with create-or-get, resolved/created via `POST /specs/:rid/:sid/thread`. Agent invites go through a generic `POST /mail/conversations/:id/participants`. Live conversational replies for pull-only agents remain dispatch-as-wake territory (a macro-agent bridge fix landed in `agent-inbox`/`macro-agent` 0.2.5 for the push-capable tier).
 
 ### North-star narrative
 
@@ -195,7 +197,7 @@ Dependencies: Flow 2's attention queue feeds Flows 4/5; Flow 3's thread + graph 
 |-------|----------|-------|---------------------|
 | **P1 — Cockpit core** | New-session picker, attention queue + badge, thread state chips, cancel/affordance unification | 2 | #28; parity gaps 1–3 |
 | **P2 — Day zero** | First-run panel, spawn preflight, onboard one-liner, task-graph bootstrap, doc fixes | 1, 3 (partial) | #3, #23, #24, #26; SpecNew dead end |
-| **P3 — Spec threads** | `POST /mail/conversations`, spec discussion tab, agent invites, system-turn hooks | 3 | #1, #14 |
+| **P3 — Spec threads** ✅ | Deterministic spec-thread create/resolve (`POST/GET /specs/:rid/:sid/thread`), generic REST invite (`POST /mail/conversations/:id/participants`), spec discussion tab + agent invite picker, dispatch-outcome system-turn hooks | 3 | #1, #14 |
 | **P4 — Team dispatch** | Modal expansion, coordinated-team mode (shared thread + roster), spec rollup, unified dispatch thread UI, real cancel | 4 | #4, #5, #6, #9, #10 |
 | **P5 — Validate loop** | Outcome actions, validator preset, diff deep links, completion → attention | 5 | #18 + validation gaps |
 | Later | Grid view polish, remote spec writes (#7/#8), durable kill switch (#12), coordination-message delivery (#27), mail-as-request handler (#25) | — | remainder |

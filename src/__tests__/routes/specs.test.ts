@@ -150,6 +150,7 @@ import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import * as mapDAL from '../../db/dal/map.js';
 import * as dispatchesDAL from '../../db/dal/dispatches.js';
 import { buildDispatchSeedPrompt, specsRoutes } from '../../api/routes/specs.js';
+import { initMail, getMailStorage } from '../../mail/index.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
 import { registerInbound, unregisterInbound } from '../../map/connection-registry.js';
@@ -971,6 +972,96 @@ describe('Specs routes', () => {
       });
       expect(a).not.toContain('## Additional instructions');
       expect(b).not.toContain('## Additional instructions');
+    });
+  });
+
+  // ==========================================================================
+  // Spec discussion thread (P3.1): GET/POST /specs/:rid/:sid/thread
+  // ==========================================================================
+
+  describe('Spec discussion thread', () => {
+    beforeAll(async () => {
+      // In-memory mail module; idempotent if another suite already init'd it.
+      await initMail();
+    });
+
+    it('GET returns 404 before a thread exists', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/specs/${resourceA.id}/s-bbb/thread`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('POST creates a thread with a deterministic id + spec back-references', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/thread`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+      expect(res.statusCode).toBe(201);
+      const body = JSON.parse(res.body);
+      expect(body.conversation_id).toBe(`spec-thread:${resourceA.id}:s-aaa`);
+
+      const conv = getMailStorage().getConversation(body.conversation_id);
+      expect(conv).toBeTruthy();
+      expect(conv!.scope).toBe('spec-thread');
+      expect(conv!.subject).toBe('Spec: Auth rewrite');
+      expect(conv!.metadata).toMatchObject({
+        source: 'spec-thread',
+        spec_id: 's-aaa',
+        spec_resource_id: resourceA.id,
+      });
+      // Creator was invited as a participant.
+      expect(conv!.participants.some((p) => p.agent_id === testAgent.id)).toBe(true);
+    });
+
+    it('POST is idempotent — second call returns same id without wiping participants', async () => {
+      const first = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/thread`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+      const convId = JSON.parse(first.body).conversation_id;
+      const before = getMailStorage().getConversation(convId)!.participants.length;
+
+      const second = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/thread`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+      expect(second.statusCode).toBe(201);
+      expect(JSON.parse(second.body).conversation_id).toBe(convId);
+      // create-or-get: participants preserved, not reset.
+      expect(getMailStorage().getConversation(convId)!.participants.length).toBe(before);
+    });
+
+    it('GET resolves the thread once created', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/thread`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).conversation_id).toBe(`spec-thread:${resourceA.id}:s-aaa`);
+    });
+
+    it('POST 404s on an unknown spec', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-does-not-exist/thread`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('POST requires authentication', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa/thread`,
+      });
+      expect(res.statusCode).toBe(401);
     });
   });
 });

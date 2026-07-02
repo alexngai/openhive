@@ -1874,6 +1874,37 @@ export function useMailTurns(
   });
 }
 
+/**
+ * Invite an agent into a conversation (P3.2). Optimistically no-op on the
+ * client; the roster refresh comes from invalidating the conversation query
+ * (and, live, from the `mail.participant.joined` WS event MailThreadView
+ * already listens for).
+ */
+export function useInviteMailParticipant() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      conversationId,
+      agentId,
+      role,
+    }: {
+      conversationId: string;
+      agentId: string;
+      role?: string;
+    }) =>
+      api.post<{ ok: boolean; agent_id: string }>(
+        `/mail/conversations/${conversationId}/participants`,
+        { agent_id: agentId, role },
+      ),
+    onSuccess: (_, { conversationId }) => {
+      queryClient.invalidateQueries({
+        queryKey: ["mail-conversation", conversationId],
+      });
+    },
+  });
+}
+
 export function useSendMailTurn() {
   const queryClient = useQueryClient();
 

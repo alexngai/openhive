@@ -267,6 +267,9 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
             status: 'completed',
           });
         }
+        // Narrate the outcome into the spec discussion thread (if opened).
+        const summary = dispatchesDAL.findDispatchById(event.taskId)?.outcome?.summary;
+        void postSpecOutcomeTurn(event.taskId, 'complete', summary ?? undefined);
       }
     }
 
@@ -299,6 +302,8 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
             error: lastError,
           });
         }
+        // Narrate the failure into the spec discussion thread (if opened).
+        void postSpecOutcomeTurn(event.taskId, 'dead', lastError);
       }
     }
 
@@ -352,6 +357,43 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
       }
     }
   });
+
+  /**
+   * Post a terminal-outcome system turn into the dispatch's spec discussion
+   * thread — only when the dispatch carries spec refs and that thread already
+   * exists. Fully best-effort: never throws into the dispatch lifecycle.
+   */
+  async function postSpecOutcomeTurn(
+    dispatchId: string,
+    outcome: 'complete' | 'failed' | 'dead',
+    detail: string | undefined,
+  ): Promise<void> {
+    if (!opts.getMailJsonRpc) return;
+    const d = dispatchesDAL.findDispatchById(dispatchId);
+    if (!d?.spec_resource_id || !d?.spec_id) return;
+    try {
+      const [{ findSwarmById }, { postSpecThreadOutcome }, { getMailStorage }] =
+        await Promise.all([
+          import('../db/dal/map.js'),
+          import('../specs/spec-conversation.js'),
+          import('../mail/index.js'),
+        ]);
+      const swarmName = findSwarmById(d.target_swarm_id)?.name ?? d.target_swarm_id;
+      await postSpecThreadOutcome(
+        {
+          resourceId: d.spec_resource_id,
+          specId: d.spec_id,
+          dispatchId,
+          outcome,
+          swarmName,
+          detail,
+        },
+        { getMailJsonRpc: opts.getMailJsonRpc, getMailStorage },
+      );
+    } catch {
+      /* best effort */
+    }
+  }
 
   return orchestrator;
 }

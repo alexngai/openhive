@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, FileText, ListTodo, MessageSquare, Layers, GitBranch, Zap, List,
   Archive, ArchiveRestore, PanelRightClose, PanelRightOpen,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { useSpec, useUpdateSpec, useLinkSpec, useUnlinkSpec } from '../hooks/useSpecs';
+import { useSpec, useUpdateSpec, useLinkSpec, useUnlinkSpec, useSpecThread } from '../hooks/useSpecs';
+import { SpecDiscussionPanel } from '../components/specs/SpecDiscussionPanel';
 import type { EdgeType } from '../hooks/useSpecs';
 import { usePageContext } from '../components/chat-fab/usePageContext';
 import {
@@ -65,6 +66,30 @@ export function SpecDetail() {
 
   const [saveError, setSaveError] = useState<string | null>(null);
   const [dispatchOpen, setDispatchOpen] = useState(false);
+
+  // Document / Discussion tab strip. Deep-linkable via ?tab=discussion so
+  // system turns and toasts can jump straight into the conversation.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab: 'document' | 'discussion' =
+    searchParams.get('tab') === 'discussion' ? 'discussion' : 'document';
+  const setActiveTab = useCallback(
+    (tab: 'document' | 'discussion') => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (tab === 'discussion') next.set('tab', 'discussion');
+          else next.delete('tab');
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  // Resolve the thread for the tab badge. Deduped with the panel's own query
+  // (same queryKey), so this doesn't cost an extra request.
+  const { data: thread } = useSpecThread(resourceId, specId);
 
   // Editable fields — local state so we can auto-save debounced without
   // bouncing on every server round trip.
@@ -394,6 +419,26 @@ export function SpecDetail() {
 	              }}
 	            />
 	          </div>
+
+          {/* Document / Discussion tab strip */}
+          <div
+            className="flex items-center gap-1 px-4"
+            style={{ borderTop: '1px solid var(--color-border-subtle)' }}
+          >
+            <TabButton
+              active={activeTab === 'document'}
+              onClick={() => setActiveTab('document')}
+              icon={<FileText className="h-3.5 w-3.5" />}
+              label="Document"
+            />
+            <TabButton
+              active={activeTab === 'discussion'}
+              onClick={() => setActiveTab('discussion')}
+              icon={<MessageSquare className="h-3.5 w-3.5" />}
+              label="Discussion"
+              badge={thread && thread.turn_count > 0 ? thread.turn_count : undefined}
+            />
+          </div>
 	        </div>
 
         {saveError && (
@@ -410,53 +455,63 @@ export function SpecDetail() {
 
         {/* Body: TOC · content · sidebar */}
         <div className="flex flex-1 overflow-hidden">
-          {showToc ? (
-            <aside className="hidden xl:flex w-60 shrink-0">
-              <SpecTableOfContents
-                items={tocItems}
-                onItemClick={handleTocItemClick}
-                onCollapse={() => setShowToc(false)}
-                className="w-full"
-              />
-            </aside>
-          ) : (
-            // Thin rail holds the expand-TOC FAB so content never sits under
-            // it. Only rendered when there's an outline worth navigating.
-            tocItems.length > 0 && (
-              <aside className="hidden xl:flex w-12 shrink-0 items-start justify-center pt-3">
-                <button
-                  type="button"
-                  onClick={() => setShowToc(true)}
-                  className="flex h-9 w-9 items-center justify-center rounded-full border shadow transition-colors hover:bg-white/10"
-                  style={{
-                    borderColor: 'var(--color-border-subtle)',
-                    backgroundColor: 'var(--color-surface)',
-                    color: 'var(--color-text-secondary)',
-                  }}
-                  title="Show table of contents"
-                >
-                  <List className="h-4 w-4" />
-                </button>
-              </aside>
-            )
-          )}
+          {activeTab === 'document' ? (
+            <>
+              {showToc ? (
+                <aside className="hidden xl:flex w-60 shrink-0">
+                  <SpecTableOfContents
+                    items={tocItems}
+                    onItemClick={handleTocItemClick}
+                    onCollapse={() => setShowToc(false)}
+                    className="w-full"
+                  />
+                </aside>
+              ) : (
+                // Thin rail holds the expand-TOC FAB so content never sits under
+                // it. Only rendered when there's an outline worth navigating.
+                tocItems.length > 0 && (
+                  <aside className="hidden xl:flex w-12 shrink-0 items-start justify-center pt-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowToc(true)}
+                      className="flex h-9 w-9 items-center justify-center rounded-full border shadow transition-colors hover:bg-white/10"
+                      style={{
+                        borderColor: 'var(--color-border-subtle)',
+                        backgroundColor: 'var(--color-surface)',
+                        color: 'var(--color-text-secondary)',
+                      }}
+                      title="Show table of contents"
+                    >
+                      <List className="h-4 w-4" />
+                    </button>
+                  </aside>
+                )
+              )}
 
-          {/* Center content — full width between the two panels with
-              responsive padding. Caps at 128rem on ultra-wide screens so
-              lines don't stretch unreadably. */}
-          <main className="flex-1 overflow-y-auto">
-            <div
-              ref={editorContainerRef}
-              className="w-full px-4 py-5"
-            >
-              <TiptapSpecEditor
-                content={content}
-                onChange={handleContentChange}
-                onTocUpdate={handleTocUpdate}
-                placeholder="Write the spec in markdown — goals, acceptance criteria, out-of-scope. Changes save automatically."
-              />
-            </div>
-          </main>
+              {/* Center content — full width between the two panels with
+                  responsive padding. Caps at 128rem on ultra-wide screens so
+                  lines don't stretch unreadably. */}
+              <main className="flex-1 overflow-y-auto">
+                <div
+                  ref={editorContainerRef}
+                  className="w-full px-4 py-5"
+                >
+                  <TiptapSpecEditor
+                    content={content}
+                    onChange={handleContentChange}
+                    onTocUpdate={handleTocUpdate}
+                    placeholder="Write the spec in markdown — goals, acceptance criteria, out-of-scope. Changes save automatically."
+                  />
+                </div>
+              </main>
+            </>
+          ) : (
+            // Discussion tab — spec-scoped mail conversation. Keeps the right
+            // sidebar (dispatch panel) visible alongside.
+            <main className="flex flex-1 flex-col overflow-hidden min-w-0">
+              <SpecDiscussionPanel resourceId={spec.resource_id} specId={spec.id} />
+            </main>
+          )}
 
           {/* Right sidebar */}
           {showSidebar && (
@@ -533,5 +588,46 @@ export function SpecDetail() {
         />
       </div>
     </>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  icon,
+  label,
+  badge,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: ReactNode;
+  label: string;
+  badge?: number;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        'inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors',
+        active ? 'border-b-2' : 'border-b-2 border-transparent hover:opacity-80',
+      )}
+      style={{
+        color: active ? 'var(--color-text)' : 'var(--color-text-muted)',
+        borderBottomColor: active ? 'var(--color-accent)' : 'transparent',
+      }}
+      aria-current={active ? 'page' : undefined}
+    >
+      {icon}
+      {label}
+      {badge !== undefined && (
+        <span
+          className="ml-0.5 rounded-full px-1.5 py-0.5 text-2xs"
+          style={{ backgroundColor: 'var(--color-accent-bg)', color: 'var(--color-accent)' }}
+        >
+          {badge}
+        </span>
+      )}
+    </button>
   );
 }

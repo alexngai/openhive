@@ -1,4 +1,4 @@
-import { useMemo, useCallback } from 'react';
+import { useMemo, useCallback, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ExternalLink, MessageSquare, Users } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -44,7 +44,14 @@ interface ParticipantLink {
  * adapter. Extracted from the legacy Conversation.tsx so mail threads can
  * be viewed without a separate top-level route.
  */
-export function MailThreadView({ conversationId }: { conversationId: string }) {
+export function MailThreadView({
+  conversationId,
+  headerAction,
+}: {
+  conversationId: string;
+  /** Optional control rendered in the header (e.g. an "Invite agent" button). */
+  headerAction?: ReactNode;
+}) {
   const { data, isLoading, isError, error } = useMailConversation(conversationId);
   const { data: sessionsData } = useSessionsList();
   const queryClient = useQueryClient();
@@ -101,9 +108,22 @@ export function MailThreadView({ conversationId }: { conversationId: string }) {
   // User/supervisor turns are decorated by `useEnrichedUserTurns` below.
   const agentEnriched = useMemo(() => {
     if (!channel.messages.length) return channel.messages;
-    if (participantSessionMap.size === 0) return channel.messages;
     return channel.messages.map((m) => {
       if (m.role === 'user' || m.role === 'supervisor') return m;
+      // Hub-authored system turns (dispatch outcomes, retries) carry a
+      // `system:*` sender. Relabel so they read as an orchestrator note
+      // instead of an agent literally named "system:dispatch-orchestrator".
+      if (m.sender && m.sender.startsWith('system:')) {
+        return {
+          ...m,
+          senderName: 'Orchestrator',
+          agentIdentity: {
+            ...(m.agentIdentity ?? {}),
+            id: m.sender,
+            name: 'Orchestrator',
+          },
+        };
+      }
       const link = m.sender ? participantSessionMap.get(m.sender) : undefined;
       if (!link) return m;
       return {
@@ -288,6 +308,7 @@ export function MailThreadView({ conversationId }: { conversationId: string }) {
               </div>
             )}
           </div>
+          {headerAction && <div className="ml-1 shrink-0">{headerAction}</div>}
         </div>
       </div>
 

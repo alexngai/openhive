@@ -187,6 +187,15 @@ function setupEventForwarding(events: EventEmitter): void {
       type: 'mail.participant.joined',
       data,
     });
+    // Also fan out to the specific conversation channel so an open thread
+    // view (e.g. the spec Discussion tab) refreshes its roster live.
+    const convId = (data as { conversation_id?: string })?.conversation_id;
+    if (convId) {
+      broadcastToChannel(`mail:conversation:${convId}`, {
+        type: 'mail.participant.joined',
+        data,
+      });
+    }
   });
 
   events.on('mail.closed', (data) => {

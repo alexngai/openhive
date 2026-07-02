@@ -156,6 +156,46 @@ export async function mailRoutes(
     return reply.send(response.result);
   });
 
+  // POST /mail/conversations/:id/participants — Invite an agent (supervisor action)
+  //
+  // Generic on purpose: serves spec threads, dispatch threads, and any future
+  // surface that needs to pull an agent into a conversation. Proxies
+  // mail/invite (idempotent — silent no-op if already a participant, so no 409
+  // is needed). Emits mail.participant.joined only on an actual add.
+  fastify.post<{
+    Params: { id: string };
+    Body: { agent_id?: string; role?: string };
+  }>('/mail/conversations/:id/participants', {
+    preHandler: [authMiddleware],
+  }, async (request, reply) => {
+    const agentId = request.body?.agent_id;
+    if (!agentId || typeof agentId !== 'string') {
+      return reply.status(400).send({
+        error: 'BAD_REQUEST',
+        message: 'agent_id is required',
+      });
+    }
+
+    const jsonRpc = getMailJsonRpc();
+    const response = await jsonRpc.handleRequest({
+      jsonrpc: '2.0',
+      id: 'invite-' + Date.now(),
+      method: 'mail/invite',
+      params: {
+        conversationId: request.params.id,
+        agentId,
+        role: request.body?.role ?? 'participant',
+      },
+    });
+
+    if (response.error) {
+      const status = response.error.code === -32001 ? 404 : 400;
+      return reply.status(status).send({ error: response.error.message });
+    }
+
+    return reply.send({ ok: true, agent_id: agentId });
+  });
+
   // POST /mail/conversations/:id/turns — Send a turn as supervisor
   fastify.post<{
     Params: { id: string };

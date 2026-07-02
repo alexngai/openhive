@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api } from '../lib/api';
+import { api, ApiClientError } from '../lib/api';
 
 export interface Spec {
   id: string;
@@ -121,6 +121,49 @@ export function useUpdateSpec(resourceId: string, specId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['spec', resourceId, specId] });
       qc.invalidateQueries({ queryKey: ['specs'] });
+    },
+  });
+}
+
+// ── Spec discussion thread (P3.1/P3.3) ──────────────────────────────────
+
+export interface SpecThreadResponse {
+  conversation_id: string;
+  turn_count: number;
+  participants?: Array<{ agent_id: string; role?: string; joined_at: string }>;
+}
+
+/**
+ * Resolve a spec's discussion thread. Returns `null` (not an error) when no
+ * thread exists yet — the UI uses that to show a "Start discussion" CTA.
+ */
+export function useSpecThread(
+  resourceId: string | undefined,
+  specId: string | undefined,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ['spec-thread', resourceId, specId],
+    queryFn: async (): Promise<SpecThreadResponse | null> => {
+      try {
+        return await api.get<SpecThreadResponse>(`/specs/${resourceId}/${specId}/thread`);
+      } catch (err) {
+        if (err instanceof ApiClientError && err.status === 404) return null;
+        throw err;
+      }
+    },
+    enabled: !!resourceId && !!specId && enabled,
+    staleTime: 15_000,
+  });
+}
+
+export function useCreateSpecThread(resourceId: string, specId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post<SpecThreadResponse>(`/specs/${resourceId}/${specId}/thread`, {}),
+    onSuccess: (data) => {
+      qc.setQueryData(['spec-thread', resourceId, specId], data);
     },
   });
 }
