@@ -19,13 +19,14 @@ describe('OpenHive ACP service websocket handling', () => {
     const onPermission = vi.fn();
 
     service.prepareSubscription('stream-chat-1');
-    const unsubscribe = service.subscribe('stream-chat-1', {
+    const handlers = {
       onMessages: vi.fn(),
       onStatus: vi.fn(),
       onPermission,
       onQuestion: vi.fn(),
       onError: vi.fn(),
-    });
+    } as Parameters<typeof service.subscribe>[1];
+    const unsubscribe = service.subscribe('stream-chat-1', handlers);
 
     useWSStore.getState().emit('acp.session.update', {
       type: 'acp.session.update',
