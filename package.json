@@ -105,7 +105,7 @@
     "sharp": "^0.34.5",
     "skill-tree": "^0.2.0",
     "skill-tree-indexer": "^0.2.2",
-    "swarm-codex": "file:../../plugins/swarm-codex",
+    "swarm-codex": "^1.1.1",
     "swarm-dispatch": "^0.3.5",
     "swarmcraft": "^0.1.13",
     "swarmkit": "^0.1.0",

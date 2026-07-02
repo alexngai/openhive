@@ -251,6 +251,13 @@ export async function ensureDaemon(opentasksDir: string): Promise<boolean> {
     });
     child.unref();
 
+    // A failed spawn (e.g. `opentasks` not on PATH) surfaces as an async
+    // 'error' event, NOT a synchronous throw. Without a listener Node treats
+    // it as an unhandled 'error' and crashes the whole hub. Swallow it here —
+    // the readiness poll below will simply time out and we return false.
+    let spawnError: Error | null = null;
+    child.on('error', (err: Error) => { spawnError = err; });
+
     // Collect stderr for diagnostics
     let stderr = '';
     child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
@@ -258,6 +265,17 @@ export async function ensureDaemon(opentasksDir: string): Promise<boolean> {
     // Poll for socket readiness (up to 5s — first start can be slow)
     for (let i = 0; i < 20; i++) {
       await new Promise((r) => setTimeout(r, 250));
+
+      // Bail early if the spawn itself failed (e.g. binary not found).
+      if (spawnError) {
+        const msg = (spawnError as Error).message;
+        if (msg.includes('ENOENT')) {
+          console.warn('[task-daemon] opentasks CLI not found — cannot auto-start daemon');
+        } else {
+          console.error('[task-daemon] failed to start daemon:', msg);
+        }
+        return false;
+      }
 
       // Re-resolve socket path after daemon starts (it may have created config)
       if (i === 4) {
