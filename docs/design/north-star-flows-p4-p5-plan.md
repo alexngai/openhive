@@ -262,6 +262,38 @@ P5.1 (outcome actions) ─► P5.2 (diff deep link) ─► P5.3
 5. **Agent-side cancel consumer is cross-repo (P4.5).** Like the P3 macro-agent relay, cooperative stop + ack needs a sidecar change; ship the reconcile-fallback (ACP) path first so the OpenHive-only change is independently useful.
 6. **`thread_tag` vs `conversation_id` mismatch (P4.2).** The prompt currently advertises a tag that isn't the real conversation id; the peer-roster work must advertise the actual shared id or agents post into the wrong (auto-created) thread.
 
+## Live e2e validation (2026-07-03)
+
+Ran a live browser pass against a Docker Compose build (`docker compose up -d --build`)
+with a seeded completed dispatch (`disp_e2e_1`) linked to spec `c-154g` and a
+`cascade_streams` row (`cs_e2e_1`). Local auth mode auto-authenticates, so no login.
+
+- **P5.1 — ✅ verified live.** Outcome action bar renders all three actions.
+  *Accept & close* → confirm → actually closed the linked opentask (`t-35j7`
+  flipped to `closed` in the opentasks graph) and the bar switched to
+  *Accepted*. *Send back* navigated to `…/c-154g?tab=discussion`.
+- **P5.2 — ✅ verified live.** *View diff →* navigated to
+  `/changes?stream=cs_e2e_1` (hub **row id**, not the runtime `stream_id`) and
+  the Changes hub opened with the stream's detail panel selected.
+- **P5.3 — ✅ verified live after a fix.** **Bug found:** the reviewer
+  prompt/role/Advanced prefill was gated behind `dispatchable.length > 0`, so a
+  hub with **no online swarms** opened a blank modal. Fixed by splitting the
+  text prefill (immediate) from swarm auto-select (best-effort once loaded);
+  added a zero-swarm regression test. Re-verified live: modal now prefills the
+  reviewer template, expands Advanced, and sets role=`reviewer` even with zero
+  swarms. (commit `04f2c51`)
+- **P5.4 — covered by unit tests, not live.** `dispatch.completed`/`dispatch.dead`
+  only originate from a MAP-connected agent report (no HTTP shim), so a live
+  trigger needs a registered executor swarm — out of scope for this UI change.
+  WS→store→bell is covered by `useGlobalAttention.test.ts` +
+  `session-attention.test.ts`.
+
+**Env note (not a P4/P5 defect):** the opentasks daemon did not auto-start under
+`docker compose` (socket absent → `POST /specs` 500) and had to be started
+manually inside the container. `docker-compose.yml` also needed
+`HOME/OPENHIVE_HOME=/app/data` to avoid an EACCES crash-loop. Daemon auto-start
+is a follow-up worth tracking.
+
 ## Open questions
 
 - **Rollup scope:** does "is this spec done?" aggregate over dispatch rows only, or also fold in linked-task statuses (a dispatch can complete while its task stays open)? Plan assumes both, dispatch-status-primary.
