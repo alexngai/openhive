@@ -69,6 +69,12 @@ export interface SessionListItem {
   last_synced_at: string | null;
   source_swarm_id: string | null;
   source_swarm_ids: string[];
+  /** Raw MAP agent id this session targets (populated on ACP sessions). */
+  acp_target_agent_id: string | null;
+  /** Live ACP stream id (populated on ACP sessions; used to map stream-scoped WS events to sessions). */
+  acp_stream_id: string | null;
+  /** Mail conversation linked via /sessions/:id/chat lazy-create, if any. */
+  mail_conversation_id: string | null;
 }
 
 // ============================================================================
@@ -263,11 +269,13 @@ export function listAllSessions(limit = 50, offset = 0, swarmId?: string, search
     // to mail conversations (for group-thread participant drill-in) and
     // identify the ACP target without a separate per-session fetch.
     let acpTargetAgentId: string | null = null;
+    let acpStreamId: string | null = null;
     let mailConversationId: string | null = null;
     if (typeof row.metadata === 'string') {
       try {
         const md = JSON.parse(row.metadata) as Record<string, unknown>;
         if (typeof md.acp_target_agent_id === 'string') acpTargetAgentId = md.acp_target_agent_id;
+        if (typeof md.acpStreamId === 'string') acpStreamId = md.acpStreamId;
         if (typeof md.mail_conversation_id === 'string') mailConversationId = md.mail_conversation_id;
       } catch { /* malformed metadata — leave null */ }
     }
@@ -288,6 +296,7 @@ export function listAllSessions(limit = 50, offset = 0, swarmId?: string, search
       source_swarm_id: latestCheckpoint?.source_swarm_id ?? null,
       source_swarm_ids: swarmIdRows.map((r) => r.source_swarm_id),
       acp_target_agent_id: acpTargetAgentId,
+      acp_stream_id: acpStreamId,
       mail_conversation_id: mailConversationId,
     };
   });

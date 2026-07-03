@@ -27,6 +27,7 @@ vi.mock('../components/dashboard/RecentActivity', () => ({
 // Mock hooks used by Dashboard
 vi.mock('../hooks/useApi', () => ({
   useMapSwarms: vi.fn().mockReturnValue({ data: [] }),
+  useHostedSwarms: vi.fn().mockReturnValue({ data: undefined }),
   useSessionsList: vi.fn().mockReturnValue({ data: [] }),
 }));
 vi.mock('../hooks/useInstanceFeatures', () => ({

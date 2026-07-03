@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import clsx from 'clsx';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   Activity, Bot, ChevronDown, ChevronRight, Clock, Cpu, FileText, GitBranch, Loader2,
@@ -13,6 +14,9 @@ import { TimeAgo } from '../components/common/TimeAgo';
 import { AgentAvatar } from '../components/common/AgentAvatar';
 import { StatusChip, type StatusTone } from '../components/common/StatusChip';
 import { useSessionAttentionStore } from '../stores/session-attention';
+import { AttentionBell } from '../components/attention/AttentionBell';
+import { FirstRunPanel, useIsFirstRun } from '../components/onboarding/FirstRunPanel';
+import { NewSessionButton } from '../components/threads/NewSessionMenu';
 import { SessionDetail } from './SessionDetail';
 import { MailThreadView } from '../components/sessions/MailThreadView';
 import { HostedChat } from '../components/hosted-chat/HostedChat';
@@ -101,16 +105,31 @@ function sessionToThread(
 
 function mailToThread(conv: MailConversation): Thread {
   const isDispatchThread = conv.scope === 'dispatch-thread';
+  const isSpecThread = conv.scope === 'spec-thread';
   const status: ThreadStatus = conv.status === 'active' ? 'mail-active' : 'mail-completed';
   // Dispatch threads link to their dispatch detail page instead of the mail view
   const dispatchId = isDispatchThread
     ? (conv.metadata?.dispatch_id as string | undefined)
     : undefined;
+  // Spec threads link to the spec's Discussion tab so the two surfaces don't
+  // compete for the same conversation.
+  const specResourceId = isSpecThread
+    ? (conv.metadata?.spec_resource_id as string | undefined)
+    : undefined;
+  const specId = isSpecThread ? (conv.metadata?.spec_id as string | undefined) : undefined;
+  const specTo =
+    specResourceId && specId
+      ? `/specs/${encodeURIComponent(specResourceId)}/${encodeURIComponent(specId)}?tab=discussion`
+      : undefined;
   return {
     id: conv.id,
     flavor: isDispatchThread ? 'dispatch' : 'mail',
-    to: dispatchId ? `/dispatch/${dispatchId}` : `/threads/mail/${conv.id}`,
-    title: conv.subject || (isDispatchThread ? 'Dispatch thread' : 'Untitled conversation'),
+    to: dispatchId
+      ? `/dispatch/${dispatchId}`
+      : specTo ?? `/threads/mail/${conv.id}`,
+    title:
+      conv.subject ||
+      (isDispatchThread ? 'Dispatch thread' : isSpecThread ? 'Spec discussion' : 'Untitled conversation'),
     description: conv.participants.map((p) => p.agent_id).join(', ') || null,
     status,
     lastActivityAt: conv.updated_at,
@@ -209,11 +228,35 @@ function ThreadRow({
   isSelected: boolean;
   onClick: () => void;
 }) {
-  const { hasAttention, clearAttention } = useSessionAttentionStore();
-  const needsAttention = thread.flavor === 'session' && hasAttention(thread.id);
+  const { hasAttention, hasPermission, clearIdle } = useSessionAttentionStore();
+  // Attention keys mirror the selection keys (`flavor:id`); sessions and
+  // hosted rpc chats are the two flavors that receive attention items today.
+  const attentionKey =
+    thread.flavor === 'session' || thread.flavor === 'hosted-chat'
+      ? `${thread.flavor}:${thread.id}`
+      : null;
+  const needsAttention = attentionKey !== null && hasAttention(attentionKey);
+  const needsPermission = attentionKey !== null && hasPermission(attentionKey);
+
+  // Effective row state, highest priority first: permission (blocked on
+  // approval) > awaiting input (idle attention) > working (live statuses).
+  // Quiet states (recent / idle / closed) render no chip — the avatar
+  // border color already carries that signal, and gray chips on every
+  // stale row would be noise.
+  const isWorking =
+    thread.status === 'live' || thread.status === 'hosted-running' || thread.status === 'mail-active';
+  const chip: { label: string; tone: StatusTone; pulse: boolean } | null = needsPermission
+    ? { label: 'approval', tone: 'danger', pulse: true }
+    : needsAttention
+      ? { label: 'input', tone: 'warning', pulse: true }
+      : isWorking
+        ? { ...STATUS_CHIP[thread.status], pulse: false }
+        : null;
 
   const handleClick = () => {
-    if (needsAttention) clearAttention(thread.id);
+    // Viewing a thread acknowledges "awaiting input", but a pending
+    // permission stays visible until it's actually answered.
+    if (attentionKey && needsAttention) clearIdle(attentionKey);
     onClick();
   };
 
@@ -272,17 +315,30 @@ function ThreadRow({
             <Mail className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
           </div>
         )}
-        {needsAttention && (
-          <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse border border-[var(--color-bg)]" />
-        )}
       </div>
       <div className="flex-1 min-w-0">
-        <p
-          className="text-xs font-medium truncate"
-          style={{ color: isSelected ? 'var(--color-text)' : 'var(--color-text-secondary)' }}
-        >
-          {thread.title}
-        </p>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <p
+            className="text-xs font-medium truncate min-w-0"
+            style={{ color: isSelected ? 'var(--color-text)' : 'var(--color-text-secondary)' }}
+          >
+            {thread.title}
+          </p>
+          {chip && (
+            <StatusChip
+              label={chip.label}
+              tone={chip.tone}
+              className={clsx('shrink-0', chip.pulse && 'animate-pulse')}
+              title={
+                chip.label === 'approval'
+                  ? 'Permission requested — answer from the bell or open the thread'
+                  : chip.label === 'input'
+                    ? 'Agent is awaiting input'
+                    : undefined
+              }
+            />
+          )}
+        </div>
         {thread.terminal ? (
           <>
             {thread.terminal.repo && (
@@ -326,6 +382,20 @@ function formatTokens(n: number): string {
 }
 
 function EmptyDetail() {
+  // Day zero: no swarms at all means "select a thread" is useless advice.
+  // FirstRunPanel gates itself on zero swarms (post-settle), so this
+  // renders the guidance cards on a fresh instance and the plain
+  // placeholder everywhere else.
+  const isFirstRun = useIsFirstRun();
+  if (isFirstRun) {
+    return (
+      <div className="flex-1 flex items-center justify-center h-full p-6">
+        <div className="max-w-2xl w-full">
+          <FirstRunPanel />
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex-1 flex items-center justify-center h-full">
       <div className="text-center" style={{ color: 'var(--color-text-muted)' }}>
@@ -338,10 +408,13 @@ function EmptyDetail() {
 
 function EmptySidebar() {
   return (
-    <div className="px-4 py-8 text-center" style={{ color: 'var(--color-text-muted)' }}>
-      <FileText className="w-8 h-8 mx-auto mb-2 opacity-40" />
-      <p className="text-xs">No threads yet</p>
-      <p className="text-2xs mt-1">Connect a swarm or start a conversation.</p>
+    <div className="px-4 py-8 text-center space-y-3" style={{ color: 'var(--color-text-muted)' }}>
+      <FileText className="w-8 h-8 mx-auto opacity-40" />
+      <div>
+        <p className="text-xs">No threads yet</p>
+        <p className="text-2xs mt-1">Connect to an agent or spawn one to start.</p>
+      </div>
+      <NewSessionButton variant="block" />
     </div>
   );
 }
@@ -725,7 +798,7 @@ export function Sessions() {
         style={{ borderColor: 'var(--color-border-subtle)' }}
       >
         <div
-          className="px-3 py-3 border-b"
+          className="px-3 py-2 border-b flex items-center justify-between"
           style={{ borderColor: 'var(--color-border-subtle)' }}
         >
           <h2
@@ -740,6 +813,10 @@ export function Sessions() {
               </span>
             )}
           </h2>
+          <div className="flex items-center gap-0.5">
+            <NewSessionButton />
+            <AttentionBell />
+          </div>
         </div>
 
         <FilterChips active={filter} onChange={setFilter} />

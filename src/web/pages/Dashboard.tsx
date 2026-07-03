@@ -24,6 +24,7 @@ import { SyncResourcesStatus } from "../components/dashboard/SyncResourcesStatus
 import { RecentActivity } from "../components/dashboard/RecentActivity";
 import { SpawnFormDialog, ConnectFormDialog } from "./Swarms";
 import { PageHeader } from "../components/common/PageHeader";
+import { FirstRunPanel } from "../components/onboarding/FirstRunPanel";
 import { ErrorBoundary } from "../components/common/ErrorBoundary";
 
 /** Derive API/WS URLs relative to current host */
@@ -259,6 +260,25 @@ function StatsOverlay({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * SwarmCraft-embed variant of the first-run panel: rendered as a strip
+ * between the stats bar and the graph so the (empty) graph doesn't
+ * swallow day zero. FirstRunPanel gates itself on zero swarms.
+ */
+function FirstRunOverlayStrip({
+  onSpawn,
+  onConnect,
+}: {
+  onSpawn: () => void;
+  onConnect: () => void;
+}) {
+  return (
+    <div className="shrink-0 px-4 pt-3 empty:hidden">
+      <FirstRunPanel onSpawn={onSpawn} onConnect={onConnect} />
+    </div>
+  );
+}
+
 function SwarmCraftView() {
   const config = useSwarmCraftConfig();
   const tasksOverride = useTasksOverride();
@@ -307,6 +327,10 @@ function SwarmCraftView() {
       >
         <StatsOverview />
       </div>
+      <FirstRunOverlayStrip
+        onSpawn={() => setFormMode("spawn")}
+        onConnect={() => setFormMode("connect")}
+      />
       <div className="flex-1 min-h-0">
         {canRenderGraph ? (
           <ErrorBoundary fallback={<SwarmCraftFallback />}>
@@ -416,6 +440,12 @@ export function Dashboard() {
           </>
         }
       />
+      <div className="max-w-4xl mx-auto px-4 pt-4 w-full">
+        <FirstRunPanel
+          onSpawn={() => setFormMode("spawn")}
+          onConnect={() => setFormMode("connect")}
+        />
+      </div>
       <StatsDashboard />
       {formMode === "spawn" && (
         <SpawnFormDialog onClose={() => setFormMode("none")} />

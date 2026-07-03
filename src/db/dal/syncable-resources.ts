@@ -239,6 +239,27 @@ export function findLiveAcpSession(opts: {
   return row ? rowToResource(row) : null;
 }
 
+/**
+ * Find the session resource whose metadata records a given live ACP stream
+ * id. Used by GET /sessions/pending-attention to join in-memory pending
+ * permission requests (keyed by streamId) back to session resources.
+ *
+ * `metadata.acpStreamId` is written by /sessions/acp-connect on every
+ * connect/reuse, so at most one *current* session references a stream —
+ * but stale rows can linger after reconnects, hence newest-first LIMIT 1.
+ */
+export function findSessionByAcpStreamId(acpStreamId: string): SyncableResource | null {
+  const db = getDatabase();
+  const row = db.prepare(`
+    SELECT * FROM syncable_resources
+    WHERE resource_type = 'session'
+      AND json_extract(metadata, '$.acpStreamId') = ?
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).get(acpStreamId) as Record<string, unknown> | undefined;
+  return row ? rowToResource(row) : null;
+}
+
 export function findResourceById(id: string): SyncableResource | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM syncable_resources WHERE id = ?').get(id) as Record<string, unknown> | undefined;

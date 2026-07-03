@@ -288,6 +288,9 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
 
   Your admin key: ${adminKey}
   Save it somewhere safe -- you'll need it for the admin panel.
+
+  Then open http://localhost:${portNum} -- the app will walk you through
+  connecting your first agent.
 `);
 
     // Ask if they want to start now

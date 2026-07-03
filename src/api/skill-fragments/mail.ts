@@ -20,13 +20,21 @@ and delivers new turns to participants via MAP notifications + WebSocket.
 
 ### REST
 
+Conversations are created by agents via MAP JSON-RPC \`mail/create\` (not REST).
+The REST surface is for observability and supervisor injection:
+
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| POST | /mail/conversations | Create conversation |
-| GET | /mail/conversations | List your conversations |
-| GET | /mail/conversations/:id | Detail |
-| POST | /mail/conversations/:id/turns | Post a turn |
+| GET | /mail/conversations | List all conversations |
+| GET | /mail/conversations/:id | Conversation detail (with turns + threads) |
 | GET | /mail/conversations/:id/turns | List turns |
+| GET | /mail/conversations/:id/threads | List threads |
+| POST | /mail/conversations/:id/join | Join as supervisor |
+| POST | /mail/conversations/:id/participants | Invite an agent (\`{ agent_id, role? }\`) — idempotent |
+| POST | /mail/conversations/:id/turns | Post a turn as supervisor |
+
+Any agent on a \`mail.canJoin\` swarm can be invited into a conversation via the
+participants route — that's how a supervisor pulls you into a spec discussion.
 
 Declare capability \`mail: { canCreate: true, canJoin: true, canViewHistory: true }\`.`,
 };

@@ -582,6 +582,98 @@ describe('Mail API Routes', () => {
     });
   });
 
+  // ── POST /mail/conversations/:id/participants (generic invite) ──
+
+  describe('POST /mail/conversations/:id/participants', () => {
+    it('invites an agent into a conversation', async () => {
+      const createRes = await mockJsonRpc.handleRequest({
+        jsonrpc: '2.0', id: '1', method: 'mail/create',
+        params: { subject: 'Invite test' },
+      });
+      const convId = (createRes.result as any).id;
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/mail/conversations/${convId}/participants`,
+        payload: { agent_id: 'codex-1', role: 'reviewer' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.ok).toBe(true);
+      expect(body.agent_id).toBe('codex-1');
+
+      const conv = mockStorage.getConversation(convId);
+      const invited = conv!.participants.find((p) => p.agent_id === 'codex-1');
+      expect(invited).toBeDefined();
+      expect(invited!.role).toBe('reviewer');
+    });
+
+    it('is idempotent — inviting twice does not duplicate', async () => {
+      const createRes = await mockJsonRpc.handleRequest({
+        jsonrpc: '2.0', id: '1', method: 'mail/create',
+        params: { subject: 'Idempotent invite' },
+      });
+      const convId = (createRes.result as any).id;
+
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/mail/conversations/${convId}/participants`,
+        payload: { agent_id: 'codex-1' },
+      });
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/mail/conversations/${convId}/participants`,
+        payload: { agent_id: 'codex-1' },
+      });
+
+      const conv = mockStorage.getConversation(convId);
+      expect(conv!.participants.filter((p) => p.agent_id === 'codex-1')).toHaveLength(1);
+    });
+
+    it('defaults role to participant when omitted', async () => {
+      const createRes = await mockJsonRpc.handleRequest({
+        jsonrpc: '2.0', id: '1', method: 'mail/create',
+        params: { subject: 'Default role' },
+      });
+      const convId = (createRes.result as any).id;
+
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/mail/conversations/${convId}/participants`,
+        payload: { agent_id: 'agent-x' },
+      });
+
+      const conv = mockStorage.getConversation(convId);
+      const p = conv!.participants.find((x) => x.agent_id === 'agent-x');
+      expect(p!.role).toBe('participant');
+    });
+
+    it('returns 400 when agent_id is missing', async () => {
+      const createRes = await mockJsonRpc.handleRequest({
+        jsonrpc: '2.0', id: '1', method: 'mail/create',
+        params: { subject: 'Missing agent' },
+      });
+      const convId = (createRes.result as any).id;
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/mail/conversations/${convId}/participants`,
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('returns 404 for a non-existent conversation', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/mail/conversations/nonexistent/participants',
+        payload: { agent_id: 'codex-1' },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
   // ── Multi-participant conversations ──
 
   describe('Multi-participant conversations', () => {

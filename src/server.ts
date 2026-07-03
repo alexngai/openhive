@@ -1133,6 +1133,19 @@ export async function createHive(
         // Non-fatal — watchers enhance UX but aren't required
       });
 
+      // Hub-default task graph so /specs/new works on a fresh instance.
+      // Idempotent (upsert + on-disk skip); non-fatal on failure.
+      if (config.taskGraph.bootstrapDefault) {
+        try {
+          const { ensureHubDefaultTaskGraph } = await import('./map/hub-task-graph.js');
+          ensureHubDefaultTaskGraph(resolveDataDir());
+        } catch (err) {
+          console.warn(
+            `[openhive] Hub-default task graph bootstrap failed: ${(err as Error).message}`,
+          );
+        }
+      }
+
       // Start swarm hosting health monitor
       if (swarmManager) {
         swarmManager.startHealthMonitor();

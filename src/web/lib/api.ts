@@ -782,8 +782,29 @@ export interface SessionListItem {
   source_swarm_ids: string[];
   /** Raw MAP agent id this session targets (populated on ACP sessions). */
   acp_target_agent_id: string | null;
+  /** Live ACP stream id (populated on ACP sessions; maps stream-scoped WS events to sessions). */
+  acp_stream_id: string | null;
   /** Mail conversation linked via /sessions/:id/chat lazy-create, if any. */
   mail_conversation_id: string | null;
+}
+
+/**
+ * One pending in-memory permission request, from GET /sessions/pending-attention.
+ * Used to hydrate the attention store after a hard reload.
+ */
+export interface PendingAttentionItem {
+  kind: 'permission';
+  source: 'acp' | 'hosted';
+  request_id: string;
+  description: string;
+  requested_at: number | null;
+  /** ACP-only routing. */
+  stream_id?: string;
+  session_resource_id?: string | null;
+  session_name?: string | null;
+  swarm_id?: string | null;
+  /** Hosted-only routing. */
+  hosted_swarm_id?: string;
 }
 
 // Session event types (ACP-compatible)

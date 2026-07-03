@@ -1414,6 +1414,97 @@ export async function sessionsRoutes(
     }
   );
 
+  // ============================================================================
+  // Pending attention (cockpit hydration)
+  // ============================================================================
+
+  // GET /sessions/pending-attention — snapshot of in-memory pending
+  // permission requests across both stores (SwarmCraft ACP streams and
+  // hosted-codex approval prompts), so the frontend attention queue is
+  // correct after a hard reload. Both stores are in-memory only: a hub
+  // restart legitimately clears them (the agent's request timed out or
+  // died with the process), so there is nothing to persist.
+  //
+  // The SwarmCraft `pendingPermissions` map is private with no public
+  // accessor in the package — we duck-type it read-only and degrade to an
+  // empty list when the shape changes. Wrong-but-empty beats 500 here:
+  // this endpoint only *seeds* the store; live WS events keep it current.
+  fastify.get(
+    '/sessions/pending-attention',
+    { preHandler: authMiddleware },
+    async (_request, reply) => {
+      interface PendingAttentionItem {
+        kind: 'permission';
+        source: 'acp' | 'hosted';
+        request_id: string;
+        description: string;
+        requested_at: number | null;
+        /** ACP-only routing (reply via /api/swarmcraft/acp/streams/:streamId/permission). */
+        stream_id?: string;
+        session_resource_id?: string | null;
+        session_name?: string | null;
+        swarm_id?: string | null;
+        /** Hosted-only routing (reply via /map/hosted/:id/chat/permission/:requestId). */
+        hosted_swarm_id?: string;
+      }
+      const items: PendingAttentionItem[] = [];
+
+      // ── ACP streams (SwarmCraft manager) ──
+      const sc = (fastify as unknown as {
+        swarmcraft?: {
+          acpStreamManager?: {
+            pendingPermissions?: Map<
+              string,
+              { streamId?: string; request?: { toolCall?: { title?: string; name?: string } } }
+            >;
+            getStreamInfo?: (id: string) => { serverId?: string } | null;
+          };
+        };
+      }).swarmcraft;
+      const acpPending = sc?.acpStreamManager?.pendingPermissions;
+      if (acpPending instanceof Map) {
+        for (const [requestId, pending] of acpPending) {
+          const streamId = typeof pending?.streamId === 'string' ? pending.streamId : null;
+          if (!streamId) continue;
+          const session = resourcesDAL.findSessionByAcpStreamId(streamId);
+          const toolCall = pending?.request?.toolCall;
+          // requestId format is `${streamId}:${sessionId}:${Date.now()}` —
+          // best-effort parse of the trailing segment for age display.
+          const tail = requestId.slice(requestId.lastIndexOf(':') + 1);
+          const ts = Number(tail);
+          items.push({
+            kind: 'permission',
+            source: 'acp',
+            request_id: requestId,
+            description: toolCall?.title ?? toolCall?.name ?? 'Tool approval',
+            requested_at: Number.isFinite(ts) && ts > 0 ? ts : null,
+            stream_id: streamId,
+            session_resource_id: session?.id ?? null,
+            session_name: session?.name ?? null,
+            swarm_id: sc?.acpStreamManager?.getStreamInfo?.(streamId)?.serverId ?? null,
+          });
+        }
+      }
+
+      // ── Hosted codex approval prompts ──
+      const swarmManager = (fastify as unknown as { swarmManager?: SwarmManager }).swarmManager;
+      if (swarmManager && typeof swarmManager.listPendingCodexPermissions === 'function') {
+        for (const p of swarmManager.listPendingCodexPermissions()) {
+          items.push({
+            kind: 'permission',
+            source: 'hosted',
+            request_id: p.requestId,
+            description: p.summary ?? 'Tool approval',
+            requested_at: p.requestedAt,
+            hosted_swarm_id: p.hostedSwarmId,
+          });
+        }
+      }
+
+      return reply.send({ items });
+    }
+  );
+
   // List trajectory checkpoints for a session
   fastify.get<{ Params: { id: string }; Querystring: { limit?: number; offset?: number } }>(
     '/sessions/:id/trajectory-checkpoints',

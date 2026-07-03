@@ -15,7 +15,7 @@ import { PageLoader } from '../components/common/LoadingSpinner';
 import { AgentAvatar } from '../components/common/AgentAvatar';
 import { TerminalPanel } from '../components/terminal/TerminalPanel';
 import type { TrajectoryCheckpoint, AgentIdentity } from '../lib/api';
-import { useSessionAttentionStore } from '../stores/session-attention';
+import { useSessionAttentionStore, sessionThreadKey } from '../stores/session-attention';
 import {
   useChatChannel,
   ChatMessageList,
@@ -472,13 +472,14 @@ export function SessionDetail() {
   const { data: checkpointsData, isLoading: checkpointsLoading } = useSessionCheckpoints(id!);
   const { data: stats } = useSessionStats(id!);
   const { data: participantsData } = useSessionParticipants(id!);
-  const { hasAttention, clearAttention } = useSessionAttentionStore();
+  const { hasAttention, hasPermission, clearIdle } = useSessionAttentionStore();
   useSessionsRealtime();
 
-  // Clear attention when viewing a session
+  // Viewing a session acknowledges "awaiting input"; pending permission
+  // items stay until they're actually answered.
   useEffect(() => {
-    if (id && hasAttention(id)) clearAttention(id);
-  }, [id, hasAttention, clearAttention]);
+    if (id) clearIdle(sessionThreadKey(id));
+  }, [id, clearIdle]);
 
   // Derive assistant agent identity for the trajectory view.
   const assistantAgent: AgentIdentity | undefined = (() => {
@@ -659,10 +660,16 @@ export function SessionDetail() {
               <span className="text-2xs px-1.5 py-0.5 rounded bg-honey-500/10 text-honey-500">
                 session
               </span>
-              {id && hasAttention(id) && (
-                <span className="text-2xs px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 animate-pulse">
-                  Awaiting input
-                </span>
+              {id && hasAttention(sessionThreadKey(id)) && (
+                hasPermission(sessionThreadKey(id)) ? (
+                  <span className="text-2xs px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-400 animate-pulse">
+                    Permission requested
+                  </span>
+                ) : (
+                  <span className="text-2xs px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 animate-pulse">
+                    Awaiting input
+                  </span>
+                )
               )}
               <LinkedRepoChip resource={resource} />
             </div>

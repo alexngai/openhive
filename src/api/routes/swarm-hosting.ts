@@ -305,6 +305,39 @@ export async function swarmHostingRoutes(
     }
   });
 
+  // GET /map/hosted/spawn/preflight?kind=<kind>&mode=<rpc|tui> — Readiness
+  // probe for a prospective spawn. Side-effect free; the spawn form calls
+  // this on kind/mode selection to surface missing binaries, capacity, or
+  // uninitialized runtimes BEFORE submit instead of as a post-submit toast.
+  fastify.get<{
+    Querystring: { kind?: string; mode?: string };
+  }>(
+    '/map/hosted/spawn/preflight',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const manager = getManager(request);
+        const rawKind = request.query.kind ?? 'swarm-runner';
+        if (rawKind !== 'swarm-runner' && rawKind !== 'claude-code' && rawKind !== 'codex') {
+          return reply.status(422).send({
+            error: 'VALIDATION_ERROR',
+            message: `Unknown kind "${rawKind}". Expected swarm-runner | claude-code | codex.`,
+          });
+        }
+        const rawMode = request.query.mode;
+        if (rawMode !== undefined && rawMode !== 'rpc' && rawMode !== 'tui') {
+          return reply.status(422).send({
+            error: 'VALIDATION_ERROR',
+            message: `Unknown mode "${rawMode}". Expected rpc | tui.`,
+          });
+        }
+        return reply.send(manager.preflight(rawKind, rawMode));
+      } catch (error) {
+        return handleSwarmError(error, reply);
+      }
+    },
+  );
+
   // GET /map/known-project-paths — Distinct directories worth suggesting
   // in the Spawn Swarm dialog's working-directory combobox. Sources:
   //   • hosted-swarm config.cwd (claude-code / codex) — listKnownTuiCwds

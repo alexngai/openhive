@@ -3,6 +3,7 @@ import { Sidebar } from './Sidebar';
 import { ToastContainer } from '../common/Toast';
 import { UpdateBanner } from '../common/UpdateBanner';
 import { ChatFab, ChatSidebar } from '../chat-fab/ChatFab';
+import { useGlobalAttention } from '../../hooks/useGlobalAttention';
 
 // Routes that need full-width layout (no max-width constraint)
 const FULL_WIDTH_ROUTES = ['/terminal', '/tasks', '/threads', '/changes'];
@@ -20,6 +21,8 @@ function isEditorRoute(pathname: string): boolean {
 
 export function Layout() {
   const location = useLocation();
+  // App-wide attention tracking (idle + permission events → attention store).
+  useGlobalAttention();
   const isFullWidth = FULL_WIDTH_ROUTES.some(r => location.pathname.startsWith(r))
     || FULL_WIDTH_EXACT.includes(location.pathname)
     || isEditorRoute(location.pathname)

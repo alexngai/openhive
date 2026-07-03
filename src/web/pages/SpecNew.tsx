@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, FileText } from 'lucide-react';
+import { ArrowLeft, FileText, Plus } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { SpecEditor, type SpecDraft } from '../components/specs/SpecEditor';
 import { useCreateSpec } from '../hooks/useSpecs';
 import { useResourcesByType } from '../hooks/useApi';
+import { api, type SyncableResource } from '../lib/api';
+import { LoadingSpinner } from '../components/common/LoadingSpinner';
 
 const DRAFT_KEY = 'openhive:spec-draft';
 
@@ -62,6 +65,28 @@ export function SpecNew() {
   }, [resourceId, opentasksResources]);
 
   const create = useCreateSpec();
+  const queryClient = useQueryClient();
+  const [creatingGraph, setCreatingGraph] = useState(false);
+
+  // Zero-graphs escape hatch: ask the hub to create (or return) the
+  // hub-default OpenTasks graph, then select it. Covers instances where
+  // taskGraph.bootstrapDefault was disabled or the DB predates it.
+  const handleCreateDefaultGraph = async () => {
+    setCreatingGraph(true);
+    setError(null);
+    try {
+      const { resource } = await api.post<{ resource: SyncableResource }>(
+        '/map/hub-task-graph',
+        {},
+      );
+      await queryClient.invalidateQueries({ queryKey: ['resources'] });
+      setResourceId(resource.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreatingGraph(false);
+    }
+  };
 
   const handleChange = (draft: SpecDraft) => {
     saveDraft({ ...draft, resource_id: resourceId, saved_at: Date.now() });
@@ -121,13 +146,25 @@ export function SpecNew() {
         </label>
         {opentasksResources.length === 0 ? (
           <div
-            className="rounded-md border p-3 text-sm"
+            className="rounded-md border p-3 text-sm space-y-2"
             style={{
               borderColor: 'var(--color-border-subtle)',
               color: 'var(--color-text-muted)',
             }}
           >
-            No OpenTasks task graphs are accessible. Connect or create one to author specs here.
+            <p>No OpenTasks task graphs are accessible yet.</p>
+            <button
+              type="button"
+              onClick={() => void handleCreateDefaultGraph()}
+              disabled={creatingGraph}
+              className="btn btn-primary inline-flex items-center gap-1.5 text-xs"
+            >
+              {creatingGraph ? <LoadingSpinner size="sm" /> : <Plus className="w-3 h-3" />}
+              Create default task graph
+            </button>
+            <p className="text-xs">
+              Creates a hub-owned graph (<code>hub/default</code>) so specs work without connecting an external OpenTasks store.
+            </p>
           </div>
         ) : (
           <select

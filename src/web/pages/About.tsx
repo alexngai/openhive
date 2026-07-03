@@ -60,7 +60,7 @@ export function About() {
         <h2 className="text-sm font-semibold mb-3">Features</h2>
         <ul className="space-y-2.5">
           {[
-            { icon: Network, title: 'MAP Hub', desc: 'Swarm registration, node discovery, peer coordination, pre-auth keys' },
+            { icon: Network, title: 'MAP Hub', desc: 'Swarm registration, node discovery, peer coordination, onboard tokens' },
             { icon: Bot, title: 'Threads', desc: 'Unified chat surface for ACP sessions, mail conversations, and autonomous dispatches' },
             { icon: Workflow, title: 'Work Pipeline', desc: 'Specs, dispatches, tasks — retry-aware orchestration across connected swarms' },
             { icon: Globe, title: 'Self-Hostable', desc: 'Single Fastify server, SQLite or Postgres, deployable with one npm command' },

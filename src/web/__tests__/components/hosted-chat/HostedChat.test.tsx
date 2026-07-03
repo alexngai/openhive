@@ -20,20 +20,30 @@ import {
 } from 'swarmcraft/ui/embed';
 
 const sendTurn = vi.fn().mockResolvedValue({ turnId: 't-1' });
-let capturedHandlers: HostedChatSubscriptionHandlers | null = null;
+// The component now opens TWO subscriptions on the service: the adapter's
+// (message/turn events → channel) and its own (turn-id tracking for the
+// stop control). Capture all handler sets and fan emits out to every one,
+// mirroring the real ref-counted service behavior.
+const handlerSets = new Set<HostedChatSubscriptionHandlers>();
 let lastSubscribedId: string | null = null;
 
 const testService: HostedChatServiceLike = {
   sendTurn: (...args) => sendTurn(...args),
   subscribe: (id, handlers) => {
     lastSubscribedId = id;
-    capturedHandlers = handlers;
+    handlerSets.add(handlers);
     return () => {
-      capturedHandlers = null;
-      lastSubscribedId = null;
+      handlerSets.delete(handlers);
+      if (handlerSets.size === 0) lastSubscribedId = null;
     };
   },
 };
+
+const mockInterruptHostedTurn = vi.fn(async () => {});
+vi.mock('../../../services/hosted-chat-service', () => ({
+  get hostedChatService() { return testService; },
+  interruptHostedTurn: (...args: unknown[]) => mockInterruptHostedTurn(...args),
+}));
 
 vi.mock('../../../adapters/openhive-adapters', () => ({
   useOpenHiveAdapters: () => [createHostedChatAdapter({ service: testService })],
@@ -59,40 +69,48 @@ import { HostedChat } from '../../../components/hosted-chat/HostedChat';
 
 const HOSTED_ID = 'hsw_test_1';
 
-async function awaitHandlers(): Promise<HostedChatSubscriptionHandlers> {
+async function awaitHandlers(): Promise<void> {
   await waitFor(() => {
-    if (!capturedHandlers) throw new Error('subscribe handlers not captured');
+    if (handlerSets.size === 0) throw new Error('subscribe handlers not captured');
   });
-  return capturedHandlers!;
 }
 async function emitMessage(itemId: string, role: 'assistant' | 'user' | 'system'): Promise<void> {
-  const h = await awaitHandlers();
-  await act(async () => { h.onMessageStart(itemId, role); });
+  await awaitHandlers();
+  await act(async () => { for (const h of handlerSets) h.onMessageStart(itemId, role); });
 }
 async function emitDelta(itemId: string, delta: string): Promise<void> {
-  const h = await awaitHandlers();
-  await act(async () => { h.onMessageDelta(itemId, delta); });
+  await awaitHandlers();
+  await act(async () => { for (const h of handlerSets) h.onMessageDelta(itemId, delta); });
 }
 async function emitComplete(itemId: string, finalText?: string): Promise<void> {
-  const h = await awaitHandlers();
-  await act(async () => { h.onMessageComplete(itemId, finalText); });
+  await awaitHandlers();
+  await act(async () => { for (const h of handlerSets) h.onMessageComplete(itemId, finalText); });
 }
 async function emitError(message: string): Promise<void> {
-  const h = await awaitHandlers();
-  await act(async () => { h.onError(message); });
+  await awaitHandlers();
+  await act(async () => { for (const h of handlerSets) h.onError(message); });
+}
+async function emitTurnStarted(turnId: string): Promise<void> {
+  await awaitHandlers();
+  await act(async () => { for (const h of handlerSets) h.onTurnStarted(turnId); });
+}
+async function emitTurnCompleted(turnId: string): Promise<void> {
+  await awaitHandlers();
+  await act(async () => { for (const h of handlerSets) h.onTurnCompleted(turnId); });
 }
 
 beforeEach(() => {
-  capturedHandlers = null;
+  handlerSets.clear();
   lastSubscribedId = null;
   sendTurn.mockClear();
+  mockInterruptHostedTurn.mockClear();
 });
 
 describe('HostedChat (unified channel)', () => {
   it('subscribes to the hosted swarm via the host service on mount', async () => {
     render(<HostedChat hostedSwarmId={HOSTED_ID} label="my-swarm" providerLabel="codex" />);
     await waitFor(() => expect(lastSubscribedId).toBe(HOSTED_ID));
-    expect(capturedHandlers).not.toBeNull();
+    expect(handlerSets.size).toBeGreaterThan(0);
   });
 
   it('renders an input field once the chat surface mounts', () => {
@@ -147,6 +165,37 @@ describe('HostedChat (unified channel)', () => {
     // Give effects a chance to settle without subscribing.
     await new Promise((r) => setTimeout(r, 50));
     expect(lastSubscribedId).toBeNull();
-    expect(capturedHandlers).toBeNull();
+    expect(handlerSets.size).toBe(0);
+  });
+
+  describe('stop control', () => {
+    it('appears on turn.started and interrupts the active turn', async () => {
+      const { container } = render(<HostedChat hostedSwarmId={HOSTED_ID} label="t" />);
+
+      // No stop strip before a turn starts.
+      expect(container.textContent ?? '').not.toContain('Stop');
+
+      await emitTurnStarted('turn-42');
+      await waitFor(() => expect(container.textContent ?? '').toContain('Stop'));
+
+      const stopButton = Array.from(container.querySelectorAll('button'))
+        .find((b) => b.textContent?.includes('Stop'))!;
+      await act(async () => { stopButton.click(); });
+
+      await waitFor(() => {
+        expect(mockInterruptHostedTurn).toHaveBeenCalledWith(HOSTED_ID, 'turn-42');
+      });
+    });
+
+    it('disappears on turn.completed', async () => {
+      const { container } = render(<HostedChat hostedSwarmId={HOSTED_ID} label="t" />);
+
+      await emitTurnStarted('turn-43');
+      await waitFor(() => expect(container.textContent ?? '').toContain('Stop'));
+
+      await emitTurnCompleted('turn-43');
+      await waitFor(() => expect(container.textContent ?? '').not.toContain('Stop'));
+      expect(mockInterruptHostedTurn).not.toHaveBeenCalled();
+    });
   });
 });

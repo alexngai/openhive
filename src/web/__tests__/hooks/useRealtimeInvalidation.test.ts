@@ -150,13 +150,12 @@ describe('useRealtimeInvalidation', () => {
       expect(mockUseSubscribe).toHaveBeenCalledWith(['global']);
     });
 
-    it('registers handler for trajectory:sync event', () => {
+    it('registers handler for trajectory:sync event only (attention lives in useGlobalAttention)', () => {
       renderHook(() => useSessionsRealtime(), { wrapper: createWrapper() });
 
       const registeredEvents = mockUseWSEvent.mock.calls.map((call) => call[0]);
       expect(registeredEvents).toContain('trajectory:sync');
-      expect(registeredEvents).toContain('node_state_changed');
-      expect(registeredEvents).toHaveLength(2);
+      expect(registeredEvents).toHaveLength(1);
     });
 
     it('invalidates session query keys on trajectory:sync event', () => {

@@ -231,6 +231,24 @@ export function listAgents(options: {
   return rows.map(rowToAgent);
 }
 
+/**
+ * Pick the agent that should own hub-created resources (e.g. the
+ * hub-default task graph): the oldest admin agent, falling back to the
+ * oldest agent of any kind. Returns null on a database with no agents
+ * (pre-init instance).
+ */
+export function findDefaultOwnerAgent(): Agent | null {
+  const db = getDatabase();
+  const admin = db.prepare(
+    'SELECT * FROM agents WHERE is_admin = 1 ORDER BY created_at ASC LIMIT 1'
+  ).get() as Record<string, unknown> | undefined;
+  if (admin) return rowToAgent(admin);
+  const any = db.prepare(
+    'SELECT * FROM agents ORDER BY created_at ASC LIMIT 1'
+  ).get() as Record<string, unknown> | undefined;
+  return any ? rowToAgent(any) : null;
+}
+
 export function countAgents(): number {
   const db = getDatabase();
   const row = db.prepare('SELECT COUNT(*) as count FROM agents').get() as { count: number };

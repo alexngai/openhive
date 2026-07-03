@@ -143,6 +143,40 @@ export async function handleDispatchRequest(
         /* best effort */
       }
 
+      // Narrate agent-reported terminal outcomes into the spec discussion
+      // thread (only if one has been opened). Best-effort — never breaks the
+      // report path.
+      if (
+        (status === 'complete' || status === 'failed') &&
+        updated.spec_resource_id &&
+        updated.spec_id
+      ) {
+        try {
+          const [{ postSpecThreadOutcome }, { getMailJsonRpc, getMailStorage }, { findSwarmById }] =
+            await Promise.all([
+              import('../specs/spec-conversation.js'),
+              import('../mail/index.js'),
+              import('../db/dal/map.js'),
+            ]);
+          const swarmName = findSwarmById(updated.target_swarm_id)?.name ?? updated.target_swarm_id;
+          const detail =
+            status === 'complete' ? updated.outcome?.summary : updated.outcome?.error;
+          await postSpecThreadOutcome(
+            {
+              resourceId: updated.spec_resource_id,
+              specId: updated.spec_id,
+              dispatchId,
+              outcome: status,
+              swarmName,
+              detail: detail ?? undefined,
+            },
+            { getMailJsonRpc, getMailStorage },
+          );
+        } catch {
+          /* best effort */
+        }
+      }
+
       return { dispatch: updated };
     }
 

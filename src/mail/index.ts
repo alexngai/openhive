@@ -187,6 +187,15 @@ function setupEventForwarding(events: EventEmitter): void {
       type: 'mail.participant.joined',
       data,
     });
+    // Also fan out to the specific conversation channel so an open thread
+    // view (e.g. the spec Discussion tab) refreshes its roster live.
+    const convId = (data as { conversation_id?: string })?.conversation_id;
+    if (convId) {
+      broadcastToChannel(`mail:conversation:${convId}`, {
+        type: 'mail.participant.joined',
+        data,
+      });
+    }
   });
 
   events.on('mail.closed', (data) => {
@@ -307,6 +316,12 @@ function startMailPushBridge(events: EventEmitter): void {
 
   mailPushBridge = createMailPushBridge<OpenHiveMailSubscriber>({
     mailEvents: events,
+    // Fold conversation context (scope/subject/metadata/participants) into
+    // the mail/turn.received payload so sidecars can filter/route without a
+    // round-trip back to the hub. Reads from the same mail storage the turn
+    // was written to; undefined degrades to a context-less notification.
+    resolveConversation: (turn) =>
+      getMailStorage().getConversation(turn.conversation_id),
     getSubscribers: (turn) => {
       const subs: OpenHiveMailSubscriber[] = [];
       for (const [swarmId, conn] of getAllInboundIncludingStale()) {

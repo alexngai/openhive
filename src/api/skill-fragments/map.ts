@@ -14,8 +14,12 @@ it for registration, coordination, and bi-directional message routing.
 Agents connect a WebSocket to:
 
 \`\`\`
-${wsBaseUrl}/ws/map?swarm_id=<id>&api_key=<key>
+${wsBaseUrl}/ws/map?swarm_id=<id>&token=<token>
 \`\`\`
+
+where \`token\` is the value of the \`MAP_CREDENTIAL\` env var returned when
+the operator ran \`openhive admin onboard-token create\` (or the delegated
+token from \`map/agents/spawn\`).
 
 Trust models (configurable):
 - \`open\` — \`swarm_id\` in query is sufficient
@@ -45,7 +49,7 @@ There is exactly one way to mint credentials for a new swarm: the
 operator runs
 
 \`\`\`
-openhive admin onboard-token --scopes map:agents:spawn --ttl-hours 24
+openhive admin onboard-token create --scopes map:agents:spawn --ttl-hours 24
 \`\`\`
 
 which calls \`POST /api/v1/admin/onboard-token\` (admin-only) and returns
