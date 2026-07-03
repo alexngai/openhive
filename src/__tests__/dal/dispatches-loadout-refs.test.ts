@@ -40,6 +40,32 @@ describe('dispatches DAL — loadout refs (V46)', () => {
     expect(d.loadout_bundle_id).toBeNull();
     expect(d.team_bundle_id).toBeNull();
     expect(d.role).toBeNull();
+    // V64 resource refs
+    expect(d.loadout_resource_id).toBeNull();
+    expect(d.team_template_resource_id).toBeNull();
+  });
+
+  // P4.1 / V64: the originating resource ids ride alongside the pinned bundle
+  // ids so hub-side enrichment can materialize live.
+  it('persists openteams resource refs (V64) and round-trips them', () => {
+    const d = dispatches.createDispatch({
+      spec_resource_id: 'res_x',
+      spec_id: 'c-3',
+      target_swarm_id: 'swarm_a',
+      initiator_type: 'user',
+      initiator_id: 'agent_u',
+      loadout_bundle_id: 'sha256:pinned',
+      team_bundle_id: 'sha256:pinned-team',
+      role: 'reviewer',
+      loadout_resource_id: 'res_loadout_live',
+      team_template_resource_id: 'res_team_live',
+    });
+    expect(d.loadout_resource_id).toBe('res_loadout_live');
+    expect(d.team_template_resource_id).toBe('res_team_live');
+
+    const found = dispatches.findDispatchById(d.id);
+    expect(found!.loadout_resource_id).toBe('res_loadout_live');
+    expect(found!.team_template_resource_id).toBe('res_team_live');
   });
 
   it('persists openteams binding fields and round-trips them via findDispatchById', () => {
@@ -76,5 +102,36 @@ describe('dispatches DAL — loadout refs (V46)', () => {
     expect(d.loadout_bundle_id).toBe('sha256:loadout-only');
     expect(d.team_bundle_id).toBeNull();
     expect(d.role).toBeNull();
+  });
+
+  // P4.2 / V65: coordinated-team shared thread linkage.
+  it('defaults team_conversation_id to null and links a batch (first-writer wins)', () => {
+    const a = dispatches.createDispatch({
+      spec_resource_id: 'res_x',
+      spec_id: 'team-1',
+      target_swarm_id: 'swarm_a',
+      initiator_type: 'user',
+      initiator_id: 'agent_u',
+    });
+    const b = dispatches.createDispatch({
+      spec_resource_id: 'res_x',
+      spec_id: 'team-1',
+      target_swarm_id: 'swarm_b',
+      initiator_type: 'user',
+      initiator_id: 'agent_u',
+    });
+    expect(a.team_conversation_id).toBeNull();
+    expect(b.team_conversation_id).toBeNull();
+
+    dispatches.setDispatchTeamConversationId(a.id, 'team-conv-1');
+    dispatches.setDispatchTeamConversationId(b.id, 'team-conv-1');
+
+    const members = dispatches.listDispatchesByTeamConversation('team-conv-1');
+    expect(members.map((d) => d.id).sort()).toEqual([a.id, b.id].sort());
+    expect(members.every((d) => d.team_conversation_id === 'team-conv-1')).toBe(true);
+
+    // First-writer wins — a second stamp must not clobber.
+    dispatches.setDispatchTeamConversationId(a.id, 'team-conv-2');
+    expect(dispatches.findDispatchById(a.id)!.team_conversation_id).toBe('team-conv-1');
   });
 });

@@ -8,6 +8,7 @@ import {
   sessionThreadKey,
   hostedChatThreadKey,
   streamThreadKey,
+  dispatchThreadKey,
 } from '../../stores/session-attention';
 
 // ── Mocks: WS plumbing + hosted swarms query + toasts ──
@@ -84,7 +85,7 @@ describe('useGlobalAttention', () => {
     ];
     renderHook(() => useGlobalAttention(), { wrapper: createWrapper() });
 
-    expect(mockUseSubscribe).toHaveBeenCalledWith(['global']);
+    expect(mockUseSubscribe).toHaveBeenCalledWith(['global', 'map:dispatches']);
     expect(mockUseSubscribe).toHaveBeenCalledWith(['hosted-chat:hosted-1']);
   });
 
@@ -258,6 +259,49 @@ describe('useGlobalAttention', () => {
       });
 
       expect(store().attentionCount()).toBe(0);
+    });
+  });
+
+  describe('dispatch completion (P5.4)', () => {
+    it('adds a dispatch attention item on dispatch.completed', () => {
+      renderHook(() => useGlobalAttention(), { wrapper: createWrapper() });
+
+      eventHandlers.get('dispatch.completed')!({
+        type: 'dispatch.completed',
+        data: {
+          dispatch: { id: 'disp-77', status: 'complete' },
+          target_swarm_id: 'swarm-9',
+        },
+      });
+
+      const key = dispatchThreadKey('disp-77');
+      expect(store().hasAttention(key)).toBe(true);
+      const item = store().itemsForThread(key)[0];
+      expect(item.kind).toBe('dispatch');
+      expect(item.description).toBe('Completed — review outcome');
+      expect(item.swarmId).toBe('swarm-9');
+    });
+
+    it('labels a failed completion for review', () => {
+      renderHook(() => useGlobalAttention(), { wrapper: createWrapper() });
+      eventHandlers.get('dispatch.completed')!({
+        type: 'dispatch.completed',
+        data: { dispatch: { id: 'disp-88', status: 'failed' }, target_swarm_id: 'swarm-1' },
+      });
+      expect(store().itemsForThread(dispatchThreadKey('disp-88'))[0].description).toBe(
+        'Failed — needs review',
+      );
+    });
+
+    it('handles dispatch.dead (taskId payload, no status)', () => {
+      renderHook(() => useGlobalAttention(), { wrapper: createWrapper() });
+      eventHandlers.get('dispatch.dead')!({
+        type: 'dispatch.dead',
+        data: { taskId: 'disp-99' },
+      });
+      const item = store().itemsForThread(dispatchThreadKey('disp-99'))[0];
+      expect(item.kind).toBe('dispatch');
+      expect(item.description).toBe('Ended — review');
     });
   });
 });

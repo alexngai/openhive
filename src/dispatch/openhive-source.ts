@@ -6,7 +6,7 @@
  */
 
 import { createSqlSource } from 'swarm-dispatch/client';
-import type { DispatchTaskSource, DispatchTask } from 'swarm-dispatch';
+import type { DispatchTaskSource, DispatchTask, DispatchRecord } from 'swarm-dispatch';
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import type { Dispatch } from '../db/dal/dispatches.js';
 import { advanceLinkedTasksOnStart } from './start.js';
@@ -19,6 +19,7 @@ import { emptyMaterialization, type MaterializedLoadout } from '../openteams/typ
 import { registerLoadoutForDispatch } from './loadout-side-channel.js';
 import { registerRepoForDispatch, setActiveDispatchRepoId } from './repo-side-channel.js';
 import { findRepoById } from '../db/dal/repos.js';
+import { findSwarmById } from '../db/dal/map.js';
 import { broadcastToChannel } from '../realtime/index.js';
 
 export interface SpecContentFetcher {
@@ -30,6 +31,30 @@ export interface SpecContentFetcher {
      *  source reads loadout_ref / team_role_ref from this. */
     metadata?: Record<string, unknown>;
   } | null>;
+}
+
+/**
+ * Reconcile stop predicate (P4.5 Layer 1). swarm-dispatch's default
+ * `shouldStop` only fires on task status `closed`/`blocked` (+ claim theft),
+ * but `dispatchToTask` maps a `cancelled` dispatch row straight to
+ * `task.status === 'cancelled'` — which the default ignores. Result: an
+ * external cancel flipped the DB row but the running ACP agent kept churning
+ * until stall timeout. Stopping on any terminal dispatch status makes the
+ * reconcile tick reliably call `cancelExecutor` → `runtime.terminate`
+ * (ACP `closeStream`).
+ *
+ * NOTE: mail-origin records are skipped by the library reconcile loop
+ * (`record.origin === 'mail'`), so proactive cancel for mail-routed agents
+ * still needs the MAP push (Layer 2, cross-repo sidecar work).
+ */
+export function reconcileShouldStop(task: DispatchTask, record: DispatchRecord): boolean {
+  if (task.status === 'cancelled' || task.status === 'complete' || task.status === 'failed') {
+    return true;
+  }
+  // Preserve the library defaults (closed/blocked + claim theft).
+  if (task.status === 'closed' || task.status === 'blocked') return true;
+  if (task.claimed_by != null && task.claimed_by !== record.claimantId) return true;
+  return false;
 }
 
 function dispatchToTask(d: Dispatch): DispatchTask {
@@ -57,9 +82,37 @@ function dispatchToTask(d: Dispatch): DispatchTask {
       // Structured fields for the prompt builder's coordination section
       initiator: { type: d.initiator_type, id: d.initiator_id },
       conversation_id: d.conversation_id ?? undefined,
+      team_conversation_id: d.team_conversation_id ?? undefined,
       linkedTasks,
     },
   };
+}
+
+/**
+ * Enrich a coordinated-team dispatch with its peer roster (P4.2). Reads the
+ * sibling dispatches sharing the same `team_conversation_id` and attaches a
+ * `peers` list (swarm name + role, excluding self) so the prompt builder can
+ * tell each agent who else is on the team and which shared thread to use.
+ * Best-effort — a DB hiccup leaves the task un-enriched.
+ */
+function enrichWithTeam(task: DispatchTask): DispatchTask {
+  const meta = task.metadata ?? {};
+  const teamConversationId = meta.team_conversation_id as string | undefined;
+  if (!teamConversationId) return task;
+
+  try {
+    const siblings = dispatchesDAL.listDispatchesByTeamConversation(teamConversationId);
+    const peers = siblings
+      .filter((d) => d.id !== task.id)
+      .map((d) => ({
+        swarmName: findSwarmById(d.target_swarm_id)?.name ?? d.target_swarm_id,
+        role: d.role ?? undefined,
+      }));
+    if (peers.length === 0) return task;
+    return { ...task, metadata: { ...meta, peers } };
+  } catch {
+    return task;
+  }
 }
 
 async function enrichWithSpec(
@@ -132,6 +185,25 @@ function readLoadoutBinding(meta: Record<string, unknown>): SpecLoadoutBinding |
   return { loadoutRef, teamRoleRef };
 }
 
+/**
+ * Read a loadout binding from the dispatch row's openteams *resource* refs
+ * (V64) — the modal's explicit loadout / team+role selection. Mirrors the
+ * spec-metadata binding shape so `enrichWithLoadout` can materialize it
+ * through the same resolver path. team_template + role wins over a bare
+ * loadout (a role is the more specific choice).
+ */
+function readRowLoadoutBinding(row: Dispatch | null): SpecLoadoutBinding | null {
+  if (!row) return null;
+  const teamId = row.team_template_resource_id?.trim();
+  const role = row.role?.trim();
+  if (teamId && role) {
+    return { teamRoleRef: { teamTemplateId: teamId, role } };
+  }
+  const loadoutId = row.loadout_resource_id?.trim();
+  if (loadoutId) return { loadoutRef: loadoutId };
+  return null;
+}
+
 /** Injectable broadcast fn — production uses broadcastToChannel; tests inject a spy. */
 export type MaterializationBroadcastFn = (dispatchId: string, errorMessage: string) => void;
 
@@ -165,8 +237,25 @@ export async function enrichWithLoadout(
   _broadcast: MaterializationBroadcastFn = defaultBroadcast,
 ): Promise<DispatchTask> {
   const meta = task.metadata ?? {};
-  const binding = readLoadoutBinding(meta);
-  if (!binding) return task;
+  // Fetch the dispatch row once — used for the row-level openteams binding
+  // (V64), the bare-role executor hint, and the lifecycle hints below.
+  const dispatchRow = dispatchesDAL.findDispatchById(task.id);
+  // Explicit dispatch-row selection (the modal) takes precedence over the
+  // spec's default binding. Row columns are null for legacy / spec-only
+  // dispatches, so this is backward compatible.
+  const binding = readRowLoadoutBinding(dispatchRow) ?? readLoadoutBinding(meta);
+  // A role drives swarm-dispatch's chooseExecutor even without a loadout to
+  // materialize. Prefer the binding's team role; fall back to a bare row role.
+  const rowRole =
+    dispatchRow?.role && dispatchRow.role.trim() ? dispatchRow.role.trim() : undefined;
+
+  if (!binding) {
+    // No loadout to materialize, but a bare role still selects an executor.
+    if (rowRole) {
+      return { ...task, metadata: { ...meta, role: rowRole } };
+    }
+    return task;
+  }
 
   // Use the dispatch initiator's identity for ACL checks so a dispatcher
   // cannot leak content from resources they cannot access.
@@ -207,8 +296,7 @@ export async function enrichWithLoadout(
     // dispatch-creation layer, NOT on opentasks spec content (content
     // authoring) or loadout content (role-bundle abstraction). The
     // ACP runtime / mail port apply config-default fallbacks when the
-    // respective column is null.
-    const dispatchRow = dispatchesDAL.findDispatchById(task.id);
+    // respective column is null. (dispatchRow fetched once at the top.)
     const acpLifecycle =
       dispatchRow?.acp_lifecycle === 'fresh' || dispatchRow?.acp_lifecycle === 'reuse'
         ? dispatchRow.acp_lifecycle
@@ -254,7 +342,11 @@ export async function enrichWithLoadout(
       metadata: {
         ...meta,
         materializedLoadout: materialized,
-        ...(binding.teamRoleRef?.role ? { role: binding.teamRoleRef.role } : {}),
+        ...(binding.teamRoleRef?.role
+          ? { role: binding.teamRoleRef.role }
+          : rowRole
+            ? { role: rowRole }
+            : {}),
       },
     };
   } catch (err) {
@@ -393,7 +485,8 @@ export function createOpenHiveDispatchSource(
     const withSpec = await enrichWithSpec(task, specFetcher);
     const withLoadout = await enrichWithLoadout(withSpec);
     const withRepo = enrichWithRepo(withLoadout);
-    return enrichWithPendingMessages(withRepo);
+    const withTeam = enrichWithTeam(withRepo);
+    return enrichWithPendingMessages(withTeam);
   }
 
   /**

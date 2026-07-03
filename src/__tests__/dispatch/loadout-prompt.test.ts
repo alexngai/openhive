@@ -306,4 +306,38 @@ describe('openHivePromptBuilder coordination section', () => {
 
     expect(out).not.toContain('## Coordination');
   });
+
+  // P4.2: coordinated-team dispatches advertise the shared thread + peer roster.
+  it('renders the team roster and shared thread when peers are present', () => {
+    const out = build(
+      makeTask({
+        initiator: { type: 'user', id: 'u1' },
+        team_conversation_id: 'team-conv-xyz',
+        peers: [
+          { swarmName: 'swarm-alpha', role: 'planner' },
+          { swarmName: 'swarm-beta' },
+        ],
+      }),
+      { attempt: 1, turnCount: 0, role: 'worker' },
+    );
+
+    expect(out).toContain('coordinated team');
+    expect(out).toContain('swarm-alpha (planner), swarm-beta');
+    expect(out).toContain('Shared thread tag: team-conv-xyz');
+    expect(out).toContain('thread_tag "team-conv-xyz"');
+  });
+
+  it('omits the team roster when there are no peers', () => {
+    const out = build(
+      makeTask({
+        initiator: { type: 'user', id: 'u1' },
+        team_conversation_id: 'team-conv-xyz',
+        peers: [],
+      }),
+      { attempt: 1, turnCount: 0, role: 'worker' },
+    );
+
+    expect(out).not.toContain('coordinated team');
+    expect(out).not.toContain('Shared thread tag');
+  });
 });

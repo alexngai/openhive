@@ -29,6 +29,7 @@ import {
   sessionThreadKey,
   hostedChatThreadKey,
   streamThreadKey,
+  dispatchThreadKey,
 } from '../stores/session-attention';
 import { toast } from '../stores/toast';
 import { api } from '../lib/api';
@@ -55,9 +56,13 @@ export function useGlobalAttention() {
   const queryClient = useQueryClient();
   const markIdle = useSessionAttentionStore((s) => s.markIdle);
   const markPermission = useSessionAttentionStore((s) => s.markPermission);
+  const markDispatch = useSessionAttentionStore((s) => s.markDispatch);
   const resolvePermission = useSessionAttentionStore((s) => s.resolvePermission);
 
-  useSubscribe(['global']);
+  // `global` carries idle + permission events; `map:dispatches` carries
+  // dispatch lifecycle terminals (P5.4). Channels are ref-counted, so the
+  // overlap with useDispatchRealtime is safe.
+  useSubscribe(['global', 'map:dispatches']);
 
   // Subscribe to per-swarm hosted-chat channels for every running rpc-mode
   // hosted swarm so codex permission events arrive even when no chat surface
@@ -193,6 +198,37 @@ export function useGlobalAttention() {
     const data = unwrap<{ requestId?: string }>(raw);
     if (data?.requestId) resolvePermission(data.requestId);
   }, [resolvePermission]));
+
+  // ── Dispatch completion (P5.4) ──
+  //
+  // A terminal dispatch becomes an attention item so the user is nudged to
+  // review its outcome (accept / validate / send back). `dispatch.completed`
+  // fires for both complete and failed; `dispatch.dead` is the give-up path.
+  const onDispatchTerminal = useCallback((raw: unknown) => {
+    const data = unwrap<{
+      dispatch?: { id?: string; status?: string };
+      taskId?: string;
+      dispatch_id?: string;
+      target_swarm_id?: string;
+    }>(raw);
+    const id = data.dispatch?.id ?? data.taskId ?? data.dispatch_id;
+    if (!id) return;
+    const status = data.dispatch?.status;
+    const label =
+      status === 'failed'
+        ? 'Failed — needs review'
+        : status === 'complete'
+          ? 'Completed — review outcome'
+          : 'Ended — review';
+    const key = dispatchThreadKey(id);
+    markDispatch(key, data.target_swarm_id ?? '', label);
+    if (shouldToast(key)) {
+      toast.info(`Dispatch ${id.slice(0, 8)}`, label);
+    }
+  }, [markDispatch]);
+
+  useWSEvent('dispatch.completed', onDispatchTerminal);
+  useWSEvent('dispatch.dead', onDispatchTerminal);
 
   // ── Hosted (codex rpc) permissions ──
 

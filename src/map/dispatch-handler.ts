@@ -169,6 +169,7 @@ export async function handleDispatchRequest(
               outcome: status,
               swarmName,
               detail: detail ?? undefined,
+              kind: updated.role === 'reviewer' ? 'validation' : 'dispatch',
             },
             { getMailJsonRpc, getMailStorage },
           );

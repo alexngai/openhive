@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 63;
+export const SCHEMA_VERSION = 65;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -2467,6 +2467,36 @@ CREATE TABLE IF NOT EXISTS experiment_events (
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_exev_seq ON experiment_events(run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_exev_run ON experiment_events(run_id, created_at);
+`;
+
+// Migration V64: add openteams *resource* refs to `dispatches` (P4.1).
+//
+// V57 pinned content-addressed *bundle* ids (loadout_bundle_id /
+// team_bundle_id) that the sidecar-facing GET /dispatches/:id/loadout
+// materializes on demand. But the hub-side rich enrichment pipeline
+// (enrichWithLoadout → loadout side-channel → mail envelope) materializes
+// *live* from resource ids via the resolver (docs/LOADOUTS_DESIGN.md:
+// "pinning: not implemented" for that path). To let the dispatch modal's
+// explicit loadout / team+role choice drive hub-side enrichment — the same
+// way a spec's loadout_ref / team_role_ref does — we persist the originating
+// resource ids alongside the pinned bundle ids. Nullable; legacy + spec-only
+// dispatches pass through unchanged.
+export const MIGRATION_V64_DISPATCH_LOADOUT_RESOURCE_REFS = `
+ALTER TABLE dispatches ADD COLUMN loadout_resource_id TEXT;
+ALTER TABLE dispatches ADD COLUMN team_template_resource_id TEXT;
+`;
+
+// Migration V65: add `team_conversation_id` to `dispatches` (P4.2).
+//
+// Coordinated-team dispatches (N>1 targets fanned out in one batch with the
+// "Coordinated team" toggle on) share ONE mail thread so peers can see each
+// other's messages. We deliberately do NOT overload `conversation_id` — that
+// column is the per-dispatch transport/coordination channel (contended by the
+// mail port). The shared team thread lives in its own column, created eagerly
+// at dispatch time and stamped onto every row in the batch. Nullable; the
+// default independent-dispatch flow leaves it null.
+export const MIGRATION_V65_DISPATCH_TEAM_CONVERSATION = `
+ALTER TABLE dispatches ADD COLUMN team_conversation_id TEXT;
 `;
 
 // Populate FTS tables from existing data

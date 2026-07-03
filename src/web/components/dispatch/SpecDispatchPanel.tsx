@@ -4,6 +4,7 @@ import { useDispatchList } from '../../hooks/useDispatch';
 import { useDispatchRealtime } from '../../hooks/useDispatchRealtime';
 import { useMapSwarms } from '../../hooks/useApi';
 import { DispatchStatusChip } from './DispatchStatusChip';
+import { DispatchRollup } from './DispatchRollup';
 import { TimeAgo } from '../common/TimeAgo';
 
 interface SpecDispatchPanelProps {
@@ -81,6 +82,15 @@ export function SpecDispatchPanel({
           </button>
         )}
       </div>
+
+      {dispatches.length > 0 && (
+        <div
+          className="px-3 py-2 border-b"
+          style={{ borderColor: 'var(--color-border-subtle)' }}
+        >
+          <DispatchRollup items={dispatches} showSummary />
+        </div>
+      )}
 
       {isLoading ? (
         <div className="px-3 py-3 text-xs" style={{ color: 'var(--color-text-muted)' }}>

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Send, Zap, FileText, User, Bot, Ban, AlertCircle, GitBranch, GitCommit,
@@ -11,9 +11,13 @@ import {
   useMaterializationWarnings,
 } from '../hooks/useDispatchRealtime';
 import { useMapSwarm, useSessionsList, useCascadeDAG } from '../hooks/useApi';
+import type { StreamDAGNode } from '../hooks/useApi';
 import { useSpec } from '../hooks/useSpecs';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
 import { DispatchThreadSection } from '../components/dispatch/DispatchThreadSection';
+import { OutcomeActionBar } from '../components/dispatch/OutcomeActionBar';
+import { resolveCascadeStreamRow } from '../components/dispatch/cascade-link';
+import { DispatchModal } from '../components/dispatch/DispatchModal';
 import { AttemptsTimeline } from '../components/dispatch/AttemptsTimeline';
 import { StreamStatusDot } from '../components/streams/shared';
 import { TimeAgo } from '../components/common/TimeAgo';
@@ -26,6 +30,7 @@ import {
 } from '../components/chat-fab/context-types';
 import type { ChatFabContextItem } from '../components/chat-fab/chat-fab-item';
 import { LineageRail } from '../components/pipeline/LineageRail';
+import { useSessionAttentionStore, dispatchThreadKey } from '../stores/session-attention';
 
 export function DispatchDetail() {
   const { id } = useParams<{ id: string }>();
@@ -34,7 +39,15 @@ export function DispatchDetail() {
   const { data: specResp } = useSpec(data?.dispatch.spec_resource_id, data?.dispatch.spec_id);
   const cancel = useCancelDispatch();
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [validationOpen, setValidationOpen] = useState(false);
   useDispatchRealtime();
+
+  // Viewing a dispatch clears its completion attention item (P5.4) — mirrors
+  // how opening a thread clears its idle flag.
+  const clearThread = useSessionAttentionStore((s) => s.clearThread);
+  useEffect(() => {
+    if (id) clearThread(dispatchThreadKey(id));
+  }, [id, clearThread]);
   const { warned: cancelNotAcked, dismiss: dismissCancelWarning } = useCancelAckWarnings(id);
   const { error: materializationError, dismiss: dismissMaterializationWarning } =
     useMaterializationWarnings(id);
@@ -63,6 +76,16 @@ export function DispatchDetail() {
     if (agentIds.size === 0) return [];
     return cascadeResp.data.nodes.filter((n) => agentIds.has(n.source_agent_id));
   }, [data, sessionsResp, cascadeResp]);
+
+  // Cascade DAG nodes for this swarm — used to resolve a `cascade_stream`
+  // artifact ref to its Changes-hub row so the outcome deep-links straight to
+  // the diff (`/changes?stream=<row_id>`) instead of the fleet-wide list (P5.2).
+  // Same data source `relatedChanges` uses — no schema change, works for
+  // already-finalized dispatches too.
+  const cascadeNodes = useMemo<StreamDAGNode[]>(
+    () => cascadeResp?.data?.nodes ?? [],
+    [cascadeResp],
+  );
 
   // Declare this page's chat context items. Re-runs when the dispatch,
   // source spec, or linked tasks change; cleared on unmount. Must stay
@@ -389,6 +412,7 @@ export function DispatchDetail() {
         dispatchId={d.id}
         conversationId={d.conversation_id}
         dispatchStatus={d.status}
+        teamConversationId={d.team_conversation_id}
       />
 
       {/* Sessions */}
@@ -520,6 +544,16 @@ export function DispatchDetail() {
         </div>
       )}
 
+      {/* Flow 5 action bar — completed dispatch: accept/validate/send-back */}
+      {d.status === 'complete' && sourceSpec && (
+        <OutcomeActionBar
+          specResourceId={d.spec_resource_id}
+          specId={d.spec_id}
+          linkedTasks={data.linked_tasks ?? []}
+          onDispatchValidation={() => setValidationOpen(true)}
+        />
+      )}
+
       {/* Outcome */}
       {d.outcome && (
         <div
@@ -543,18 +577,37 @@ export function DispatchDetail() {
           {d.outcome.artifacts && d.outcome.artifacts.length > 0 && (
             <ul className="space-y-1 text-sm">
               {d.outcome.artifacts.map((a, i) => {
-                // cascade_stream refs are `${swarm_id}/${stream_id}` — the
-                // Changes page groups streams fleet-wide; there's no
-                // per-stream detail route so we link there.
+                // cascade_stream refs are `${swarm_id}/${stream_id}`. Resolve to
+                // the Changes-hub row so we deep-link to the diff; fall back to a
+                // labeled pointer when the stream isn't indexed on this hub yet.
                 const isCascadeStream = a.kind === 'cascade_stream';
                 const streamId = isCascadeStream ? a.ref.split('/').slice(1).join('/') : null;
+                const streamRow = isCascadeStream
+                  ? resolveCascadeStreamRow(a.ref, cascadeNodes)
+                  : null;
+                const deepLink = streamRow
+                  ? `/changes?stream=${encodeURIComponent(streamRow.id)}`
+                  : null;
                 const body = (
                   <>
                     <span className="font-mono text-xs mr-2">{a.kind}</span>
                     {isCascadeStream ? (
                       <span className="inline-flex items-center gap-1">
-                        <GitBranch className="h-3 w-3" />
-                        <span>{streamId || a.ref}</span>
+                        {streamRow ? (
+                          <StreamStatusDot status={streamRow.status} />
+                        ) : (
+                          <GitBranch className="h-3 w-3" />
+                        )}
+                        <span>{streamRow?.name || streamId || a.ref}</span>
+                        {streamRow && (
+                          <span
+                            className="text-2xs inline-flex items-center gap-1 ml-1"
+                            style={{ color: 'var(--color-text-muted)' }}
+                          >
+                            <GitCommit className="h-3 w-3" />
+                            {streamRow.commit_count}
+                          </span>
+                        )}
                       </span>
                     ) : (
                       <span>{a.ref}</span>
@@ -564,9 +617,24 @@ export function DispatchDetail() {
                 return (
                   <li key={i} style={{ color: 'var(--color-text-secondary)' }}>
                     {isCascadeStream ? (
-                      <Link to="/changes" className="hover:opacity-80">
-                        {body}
-                      </Link>
+                      deepLink ? (
+                        <Link to={deepLink} className="inline-flex items-center hover:opacity-80">
+                          {body}
+                          <span className="text-2xs ml-1.5 text-honey-500">View diff →</span>
+                        </Link>
+                      ) : (
+                        <span className="inline-flex items-center">
+                          {body}
+                          <Link
+                            to="/changes"
+                            className="text-2xs ml-1.5 hover:opacity-80"
+                            style={{ color: 'var(--color-text-muted)' }}
+                            title="This stream isn't indexed on this hub yet — opening the full Changes list."
+                          >
+                            (diff not indexed · browse Changes →)
+                          </Link>
+                        </span>
+                      )
                     ) : (
                       body
                     )}
@@ -597,6 +665,21 @@ export function DispatchDetail() {
             and update the status automatically.
           </span>
         </div>
+      )}
+
+      {/* Dispatch-validation preset (P5.3) — a reviewer-role re-dispatch of the
+          same spec, prefilled from this completed dispatch's outcome. */}
+      {sourceSpec && (
+        <DispatchModal
+          open={validationOpen}
+          onClose={() => setValidationOpen(false)}
+          spec={sourceSpec}
+          validationPreset={{
+            summary: d.outcome?.summary,
+            executorSwarmId: d.target_swarm_id,
+            streamRef: d.outcome?.artifacts?.find((a) => a.kind === 'cascade_stream')?.ref,
+          }}
+        />
       )}
     </div>
   );

@@ -20,6 +20,8 @@ import { SpecTableOfContents } from '../components/specs/SpecTableOfContents';
 import { LinkedNodesPanel } from '../components/specs/LinkedNodesPanel';
 import { DispatchModal } from '../components/dispatch/DispatchModal';
 import { SpecDispatchPanel } from '../components/dispatch/SpecDispatchPanel';
+import { DispatchRollup } from '../components/dispatch/DispatchRollup';
+import { useDispatchList } from '../hooks/useDispatch';
 import { PageLoader } from '../components/common/LoadingSpinner';
 import { StatusChip } from '../components/common/StatusChip';
 import { PRIORITY_MAP } from '../components/specs/specPriority';
@@ -90,6 +92,16 @@ export function SpecDetail() {
   // Resolve the thread for the tab badge. Deduped with the panel's own query
   // (same queryKey), so this doesn't cost an extra request.
   const { data: thread } = useSpecThread(resourceId, specId);
+
+  // Dispatch rollup for the header "is this spec done?" glance (P4.3). Same
+  // query options as SpecDispatchPanel so react-query dedupes — no extra fetch.
+  const { data: dispatchList } = useDispatchList({
+    spec_resource_id: resourceId,
+    spec_id: specId,
+    limit: 50,
+    enabled: !!resourceId && !!specId,
+  });
+  const specDispatches = dispatchList?.data ?? [];
 
   // Editable fields — local state so we can auto-save debounced without
   // bouncing on every server round trip.
@@ -408,6 +420,12 @@ export function SpecDetail() {
                 <span className="px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)' }}>archived</span>
               </>
 	            )}
+            {specDispatches.length > 0 && (
+              <>
+                <span>·</span>
+                <DispatchRollup items={specDispatches} showSummary />
+              </>
+            )}
 	          </div>
 	          <div className="px-4 pb-3">
 	            <LineageRail

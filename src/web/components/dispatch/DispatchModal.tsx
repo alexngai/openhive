@@ -1,8 +1,22 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import clsx from 'clsx';
-import { Loader2, Send, X, Zap, AlertCircle, CheckCircle2 } from 'lucide-react';
-import { useMapSwarmsForPicker } from '../../hooks/useApi';
+import {
+  Loader2,
+  Send,
+  X,
+  Zap,
+  AlertCircle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Settings2,
+} from 'lucide-react';
+import {
+  useMapSwarmsForPicker,
+  useResourcesByType,
+  useRepos,
+} from '../../hooks/useApi';
 import { useCreateDispatch, type CreatedDispatch } from '../../hooks/useDispatch';
 import { toast } from '../../stores/toast';
 import { Dialog } from '../common/Dialog';
@@ -13,11 +27,49 @@ import type { MapSwarm } from '../../lib/api';
 type PickerSwarm = MapSwarm & { variant_count?: number };
 const CODEX_EXECUTOR_KIND = 'swarm-codex';
 
+/**
+ * Dispatch-validation preset (P5.3). When present, the modal opens prefilled to
+ * re-dispatch the same spec as a reviewer-role validation of a completed run:
+ * reviewer prompt template, `role: reviewer`, Advanced expanded, and a target
+ * swarm defaulted to one *other* than the executor.
+ */
+export interface ValidationPreset {
+  /** Completed dispatch's outcome summary (what was done). */
+  summary?: string;
+  /** Swarm that executed the work — excluded from the default target pick. */
+  executorSwarmId?: string;
+  /** `cascade_stream` artifact ref (the diff), surfaced in the review prompt. */
+  streamRef?: string;
+}
+
 interface DispatchModalProps {
   open: boolean;
   onClose: () => void;
   spec: Spec;
   onDispatched?: (dispatches: CreatedDispatch[]) => void;
+  validationPreset?: ValidationPreset;
+}
+
+function buildValidationPrompt(spec: Spec, preset: ValidationPreset): string {
+  const lines = [
+    `You are validating completed work for spec "${spec.title || spec.id}".`,
+    '',
+    '## What was done',
+    preset.summary?.trim() || '(the executor left no outcome summary)',
+    '',
+    '## Review against',
+    "- The spec's acceptance criteria and requirements.",
+  ];
+  if (preset.streamRef) {
+    lines.push(`- Changes / diff: ${preset.streamRef}`);
+  }
+  lines.push(
+    '',
+    '## Your task',
+    'Verify the implementation satisfies the spec. Check correctness, tests, and edge cases.',
+    'Post a clear verdict — APPROVED or CHANGES REQUESTED — with specific, actionable findings.',
+  );
+  return lines.join('\n');
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -69,14 +121,28 @@ function explainUnavailable(s: MapSwarm): string {
   return 'no ACP/mail/codex executor capability';
 }
 
-export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchModalProps) {
+export function DispatchModal({ open, onClose, spec, onDispatched, validationPreset }: DispatchModalProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [prompt, setPrompt] = useState('');
   const [showOffline, setShowOffline] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Advanced (P4.1) — collapsed by default so the simple case stays ~2 clicks.
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [teamId, setTeamId] = useState('');
+  const [loadoutId, setLoadoutId] = useState('');
+  const [role, setRole] = useState('');
+  const [repoId, setRepoId] = useState('');
+  const [branch, setBranch] = useState('');
+  const [acpLifecycle, setAcpLifecycle] = useState<'' | 'fresh' | 'reuse'>('');
+  const [mailLifecycle, setMailLifecycle] = useState<'' | 'fresh' | 'reuse'>('');
+  // Coordinated-team mode (P4.2) — only meaningful with >1 target.
+  const [coordinated, setCoordinated] = useState(false);
   const navigate = useNavigate();
 
   const { data: swarms = [] } = useMapSwarmsForPicker();
+  const { data: teamResources } = useResourcesByType('team_template', { limit: 100 });
+  const { data: loadoutResources } = useResourcesByType('loadout', { limit: 100 });
+  const { data: reposData } = useRepos({ limit: 100 });
   const create = useCreateDispatch();
 
   const dispatchable = useMemo(() => swarms.filter(isDispatchable), [swarms]);
@@ -90,6 +156,23 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
     [selected, swarms],
   );
 
+  // Apply the validation preset once each time the modal is opened with one.
+  const presetAppliedRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      presetAppliedRef.current = false;
+      return;
+    }
+    if (!validationPreset || presetAppliedRef.current) return;
+    if (dispatchable.length === 0) return; // wait for the swarm list to load
+    presetAppliedRef.current = true;
+    setPrompt(buildValidationPrompt(spec, validationPreset));
+    setRole('reviewer');
+    setShowAdvanced(true);
+    const reviewer = dispatchable.find((s) => s.id !== validationPreset.executorSwarmId);
+    if (reviewer) setSelected(new Set([reviewer.id]));
+  }, [open, validationPreset, spec, dispatchable]);
+
   const toggle = (id: string) => {
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
@@ -102,6 +185,15 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
     setPrompt('');
     setError(null);
     setShowOffline(false);
+    setShowAdvanced(false);
+    setTeamId('');
+    setLoadoutId('');
+    setRole('');
+    setRepoId('');
+    setBranch('');
+    setAcpLifecycle('');
+    setMailLifecycle('');
+    setCoordinated(false);
     onClose();
   };
 
@@ -117,6 +209,14 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
         spec_id: spec.id,
         target_swarms: Array.from(selected),
         prompt: prompt.trim() || undefined,
+        loadout_resource_id: loadoutId || undefined,
+        team_template_resource_id: teamId || undefined,
+        role: role.trim() || undefined,
+        acp_lifecycle: acpLifecycle || undefined,
+        mail_lifecycle: mailLifecycle || undefined,
+        repo_id: repoId || undefined,
+        branch: branch.trim() || undefined,
+        coordinated: selected.size > 1 && coordinated ? true : undefined,
       });
       const n = result.dispatches.length;
       onDispatched?.(result.dispatches);
@@ -301,6 +401,154 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
           />
         </div>
 
+        {/* Advanced (P4.1): loadout / team+role / repo / lifecycle */}
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="flex items-center gap-1.5 text-xs"
+            style={{ color: 'var(--color-text-muted)' }}
+          >
+            {showAdvanced ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+            <Settings2 className="h-3.5 w-3.5" />
+            Advanced
+          </button>
+
+          {showAdvanced && (
+            <div
+              className="mt-3 space-y-3 rounded-md border p-3"
+              style={{ borderColor: 'var(--color-border-subtle)' }}
+            >
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs block">
+                  <span className="block mb-1" style={{ color: 'var(--color-text-muted)' }}>
+                    Team template
+                  </span>
+                  <select
+                    value={teamId}
+                    onChange={(e) => setTeamId(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded-md border bg-transparent text-sm outline-none focus:ring-1 focus:ring-honey-500"
+                    style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text)' }}
+                  >
+                    <option value="">— none —</option>
+                    {(teamResources?.data ?? []).map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs block">
+                  <span className="block mb-1" style={{ color: 'var(--color-text-muted)' }}>
+                    Loadout
+                  </span>
+                  <select
+                    value={loadoutId}
+                    onChange={(e) => setLoadoutId(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded-md border bg-transparent text-sm outline-none focus:ring-1 focus:ring-honey-500"
+                    style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text)' }}
+                  >
+                    <option value="">— none —</option>
+                    {(loadoutResources?.data ?? []).map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              {(teamId || loadoutId || role) && (
+                <label className="text-xs block">
+                  <span className="block mb-1" style={{ color: 'var(--color-text-muted)' }}>
+                    Role{teamId ? '' : ' (advisory)'}
+                  </span>
+                  <input
+                    type="text"
+                    value={role}
+                    onChange={(e) => setRole(e.target.value)}
+                    placeholder={teamId ? 'e.g. reviewer' : 'e.g. worker'}
+                    className="w-full px-2 py-1.5 rounded-md border bg-transparent text-sm outline-none focus:ring-1 focus:ring-honey-500"
+                    style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text)' }}
+                  />
+                </label>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs block">
+                  <span className="block mb-1" style={{ color: 'var(--color-text-muted)' }}>
+                    Repo
+                  </span>
+                  <select
+                    value={repoId}
+                    onChange={(e) => setRepoId(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded-md border bg-transparent text-sm outline-none focus:ring-1 focus:ring-honey-500"
+                    style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text)' }}
+                  >
+                    <option value="">— spec default —</option>
+                    {(reposData?.data ?? []).map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs block">
+                  <span className="block mb-1" style={{ color: 'var(--color-text-muted)' }}>
+                    Branch
+                  </span>
+                  <input
+                    type="text"
+                    value={branch}
+                    onChange={(e) => setBranch(e.target.value)}
+                    placeholder="default"
+                    disabled={!repoId}
+                    className="w-full px-2 py-1.5 rounded-md border bg-transparent text-sm outline-none focus:ring-1 focus:ring-honey-500 disabled:opacity-50"
+                    style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text)' }}
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs block">
+                  <span className="block mb-1" style={{ color: 'var(--color-text-muted)' }}>
+                    ACP lifecycle
+                  </span>
+                  <select
+                    value={acpLifecycle}
+                    onChange={(e) => setAcpLifecycle(e.target.value as '' | 'fresh' | 'reuse')}
+                    className="w-full px-2 py-1.5 rounded-md border bg-transparent text-sm outline-none focus:ring-1 focus:ring-honey-500"
+                    style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text)' }}
+                  >
+                    <option value="">default</option>
+                    <option value="fresh">fresh</option>
+                    <option value="reuse">reuse</option>
+                  </select>
+                </label>
+                <label className="text-xs block">
+                  <span className="block mb-1" style={{ color: 'var(--color-text-muted)' }}>
+                    Mail lifecycle
+                  </span>
+                  <select
+                    value={mailLifecycle}
+                    onChange={(e) => setMailLifecycle(e.target.value as '' | 'fresh' | 'reuse')}
+                    className="w-full px-2 py-1.5 rounded-md border bg-transparent text-sm outline-none focus:ring-1 focus:ring-honey-500"
+                    style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text)' }}
+                  >
+                    <option value="">default</option>
+                    <option value="fresh">fresh</option>
+                    <option value="reuse">reuse</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Error */}
         {error && (
           <div
@@ -313,6 +561,28 @@ export function DispatchModal({ open, onClose, spec, onDispatched }: DispatchMod
             <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-red-400" />
             <div>{error}</div>
           </div>
+        )}
+
+        {/* Coordinated-team toggle (P4.2) — only relevant for a fan-out. */}
+        {selected.size > 1 && (
+          <label
+            className="flex items-start gap-2 text-xs cursor-pointer rounded-md border p-2.5"
+            style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text)' }}
+          >
+            <input
+              type="checkbox"
+              checked={coordinated}
+              onChange={(e) => setCoordinated(e.target.checked)}
+              className="rounded mt-0.5"
+            />
+            <span>
+              <span className="font-medium">Coordinate as a team</span>
+              <span className="block mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                Share one mail thread across all {selected.size} agents; each prompt names its
+                peers. Leave off for independent per-dispatch threads.
+              </span>
+            </span>
+          </label>
         )}
 
         {/* Selected summary */}

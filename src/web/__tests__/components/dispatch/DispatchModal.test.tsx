@@ -29,6 +29,9 @@ vi.mock('../../../hooks/useDispatch', async () => {
 
 vi.mock('../../../hooks/useApi', () => ({
   useMapSwarmsForPicker: () => mockUseMapSwarms(),
+  // Advanced-section data sources (P4.1). Empty lists keep the simple path.
+  useResourcesByType: () => ({ data: { data: [] } }),
+  useRepos: () => ({ data: { data: [] } }),
 }));
 
 vi.mock('../../../stores/toast', () => ({
@@ -263,6 +266,35 @@ describe('<DispatchModal />', () => {
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockToastSuccess).toHaveBeenCalled();
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('validation preset prefills reviewer role, prompt template, and a non-executor swarm (P5.3)', async () => {
+    mockUseMapSwarms.mockReturnValue({
+      data: [
+        makeSwarm({ id: 'sw_exec', name: 'executor', capabilities: { protocols: ['acp'] } }),
+        makeSwarm({ id: 'sw_review', name: 'reviewer-swarm', capabilities: { protocols: ['acp'] } }),
+      ],
+    });
+    renderModal({
+      validationPreset: {
+        summary: 'Implemented rate limiting middleware.',
+        executorSwarmId: 'sw_exec',
+        streamRef: 'sw_exec/stream_xyz',
+      },
+    });
+
+    // reviewer prompt template rendered into the textarea
+    const textarea = screen.getByPlaceholderText(/Anything beyond/i) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toMatch(/validating completed work/i));
+    expect(textarea.value).toContain('Implemented rate limiting middleware.');
+    expect(textarea.value).toContain('sw_exec/stream_xyz');
+
+    // Advanced expanded with role=reviewer
+    const roleInput = screen.getByPlaceholderText('e.g. worker') as HTMLInputElement;
+    expect(roleInput.value).toBe('reviewer');
+
+    // Default target is the non-executor swarm.
+    await waitFor(() => expect(screen.getByText(/1 swarm selected/i)).toBeDefined());
   });
 
   it('shows error and keeps modal open on dispatch failure', async () => {

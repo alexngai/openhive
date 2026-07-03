@@ -8,8 +8,12 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as dispatchesDAL from '../../db/dal/dispatches.js';
-import { createOpenHiveDispatchSource } from '../../dispatch/openhive-source.js';
+import {
+  createOpenHiveDispatchSource,
+  reconcileShouldStop,
+} from '../../dispatch/openhive-source.js';
 import type { SpecContentFetcher } from '../../dispatch/openhive-source.js';
+import type { DispatchTask, DispatchRecord } from 'swarm-dispatch';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
 const TEST_ROOT = testRoot('dispatch-source');
@@ -201,6 +205,52 @@ describe('createOpenHiveDispatchSource', () => {
       const source = createOpenHiveDispatchSource(mockFetcher, 'test-claimant');
       await expect(source.getTask('disp_nonexistent')).rejects.toThrow('not found');
     });
+
+    // P4.1: a dispatch row's `role` column (set by the dispatch modal) must
+    // surface onto task.metadata.role so swarm-dispatch's chooseExecutor
+    // filters the roster by it — even without a loadout to materialize.
+    it('surfaces the dispatch row role onto task.metadata for executor selection', async () => {
+      const d = seedDispatch({ role: 'reviewer' });
+      const source = createOpenHiveDispatchSource(mockFetcher, 'test-claimant');
+
+      const task = await source.getTask(d.id);
+      expect(task.metadata?.role).toBe('reviewer');
+    });
+
+    it('leaves task.metadata.role unset when the row has no role', async () => {
+      const d = seedDispatch();
+      const source = createOpenHiveDispatchSource(mockFetcher, 'test-claimant');
+
+      const task = await source.getTask(d.id);
+      expect(task.metadata?.role).toBeUndefined();
+    });
+
+    // P4.2: a coordinated-team dispatch surfaces its peer roster (siblings
+    // sharing the same team_conversation_id, minus self) + the shared thread id
+    // so the prompt builder can name teammates. Swarm name falls back to the id
+    // when no map row exists.
+    it('surfaces the coordinated-team peer roster onto task.metadata', async () => {
+      const a = seedDispatch({ target_swarm_id: 'swarm_a', role: 'planner' });
+      const b = seedDispatch({ target_swarm_id: 'swarm_b', role: 'reviewer' });
+      dispatchesDAL.setDispatchTeamConversationId(a.id, 'team-conv-abc');
+      dispatchesDAL.setDispatchTeamConversationId(b.id, 'team-conv-abc');
+
+      const source = createOpenHiveDispatchSource(mockFetcher, 'test-claimant');
+      const task = await source.getTask(a.id);
+
+      expect(task.metadata?.team_conversation_id).toBe('team-conv-abc');
+      const peers = task.metadata?.peers as Array<{ swarmName: string; role?: string }>;
+      expect(peers).toHaveLength(1);
+      expect(peers[0]).toEqual({ swarmName: 'swarm_b', role: 'reviewer' });
+    });
+
+    it('omits peers for a non-coordinated dispatch', async () => {
+      const d = seedDispatch();
+      const source = createOpenHiveDispatchSource(mockFetcher, 'test-claimant');
+      const task = await source.getTask(d.id);
+      expect(task.metadata?.peers).toBeUndefined();
+      expect(task.metadata?.team_conversation_id).toBeUndefined();
+    });
   });
 
   // ==========================================================================
@@ -310,5 +360,41 @@ describe('createOpenHiveDispatchSource', () => {
       const result = await source.renewClaim!(d.id, 'bad-fence');
       expect(result.ok).toBe(false);
     });
+  });
+});
+
+// ============================================================================
+// reconcileShouldStop (P4.5 Layer 1) — pure predicate, no DB needed.
+// ============================================================================
+
+describe('reconcileShouldStop', () => {
+  const task = (status: string, claimed_by?: string): DispatchTask => ({
+    id: 'disp_x',
+    title: 't',
+    status,
+    ...(claimed_by ? { claimed_by } : {}),
+  });
+  const record = (claimantId = 'orch-1'): DispatchRecord =>
+    ({ taskId: 'disp_x', claimantId, role: 'worker' } as DispatchRecord);
+
+  it('stops on a cancelled dispatch (the bug the default missed)', () => {
+    expect(reconcileShouldStop(task('cancelled'), record())).toBe(true);
+  });
+
+  it('stops on other terminal statuses', () => {
+    expect(reconcileShouldStop(task('complete'), record())).toBe(true);
+    expect(reconcileShouldStop(task('failed'), record())).toBe(true);
+    expect(reconcileShouldStop(task('closed'), record())).toBe(true);
+    expect(reconcileShouldStop(task('blocked'), record())).toBe(true);
+  });
+
+  it('keeps running active dispatches', () => {
+    expect(reconcileShouldStop(task('open'), record())).toBe(false);
+    expect(reconcileShouldStop(task('running'), record())).toBe(false);
+  });
+
+  it('stops when the claim was stolen by another claimant', () => {
+    expect(reconcileShouldStop(task('running', 'orch-2'), record('orch-1'))).toBe(true);
+    expect(reconcileShouldStop(task('running', 'orch-1'), record('orch-1'))).toBe(false);
   });
 });

@@ -64,6 +64,9 @@ export interface Dispatch {
   /** Linked dispatch coordination thread conversation id. Null until the
    *  first message is posted (lazy creation). */
   conversation_id: string | null;
+  /** Shared coordinated-team thread id (P4.2). Non-null when this dispatch
+   *  was created as part of a coordinated fan-out. */
+  team_conversation_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -89,6 +92,17 @@ export interface CreateDispatchInput {
   spec_id: string;
   target_swarms: string[];
   prompt?: string;
+  // Advanced (P4.1) — all optional; the backend DispatchSpecSchema already
+  // accepts these. Omitted fields keep the simple two-click dispatch path.
+  loadout_resource_id?: string;
+  team_template_resource_id?: string;
+  role?: string;
+  acp_lifecycle?: 'fresh' | 'reuse';
+  mail_lifecycle?: 'fresh' | 'reuse';
+  repo_id?: string;
+  branch?: string;
+  /** Coordinated-team mode (P4.2) — shared thread across >1 target. */
+  coordinated?: boolean;
 }
 
 // ============================================================================
@@ -175,7 +189,22 @@ export function useCreateDispatch() {
     mutationFn: (input: CreateDispatchInput) =>
       api.post<{ dispatches: CreatedDispatch[] }>(
         `/specs/${input.resource_id}/${input.spec_id}/dispatch`,
-        { target_swarms: input.target_swarms, prompt: input.prompt },
+        {
+          target_swarms: input.target_swarms,
+          prompt: input.prompt,
+          ...(input.loadout_resource_id
+            ? { loadout_resource_id: input.loadout_resource_id }
+            : {}),
+          ...(input.team_template_resource_id
+            ? { team_template_resource_id: input.team_template_resource_id }
+            : {}),
+          ...(input.role ? { role: input.role } : {}),
+          ...(input.acp_lifecycle ? { acp_lifecycle: input.acp_lifecycle } : {}),
+          ...(input.mail_lifecycle ? { mail_lifecycle: input.mail_lifecycle } : {}),
+          ...(input.repo_id ? { repo_id: input.repo_id } : {}),
+          ...(input.branch ? { branch: input.branch } : {}),
+          ...(input.coordinated ? { coordinated: true } : {}),
+        },
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['dispatches'] });

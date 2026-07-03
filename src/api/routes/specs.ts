@@ -43,6 +43,8 @@ import {
   ensureSpecConversation,
   specThreadConversationId,
 } from '../../specs/spec-conversation.js';
+import { ensureTeamConversation } from '../../dispatch/dispatch-conversation.js';
+import { nanoid } from 'nanoid';
 
 const CreateSpecSchema = z.object({
   resource_id: z.string().min(1),
@@ -79,6 +81,12 @@ const DispatchSpecSchema = z.object({
   loadout_resource_id: z.string().min(1).optional(),
   team_template_resource_id: z.string().min(1).optional(),
   role: z.string().min(1).optional(),
+  /**
+   * Coordinated-team mode (P4.2). When true and >1 target is selected, all
+   * executors + the initiator share one mail thread and each prompt names
+   * its peers. Ignored for single-target dispatches.
+   */
+  coordinated: z.boolean().optional(),
   /**
    * Per-dispatch ACP lifecycle override. When the dispatch routes via
    * ACP, controls whether the orchestrator spawns a fresh coordinator
@@ -1005,6 +1013,7 @@ export async function specsRoutes(
         loadoutResourceId: body.loadout_resource_id,
         teamTemplateResourceId: body.team_template_resource_id,
         role: body.role,
+        ...(body.coordinated ? { coordinated: true } : {}),
         ...(body.acp_lifecycle ? { acpLifecycle: body.acp_lifecycle } : {}),
         ...(body.mail_lifecycle ? { mailLifecycle: body.mail_lifecycle } : {}),
         ...(body.repo_id ? { repoId: body.repo_id } : {}),
@@ -1045,6 +1054,12 @@ export async function dispatchSpecToSwarms(input: {
   loadoutResourceId?: string | null;
   teamTemplateResourceId?: string | null;
   role?: string | null;
+  /**
+   * Coordinated-team mode (P4.2). When true and >1 target is dispatched,
+   * all executors + the initiator share one mail thread and each agent's
+   * prompt names its peers. Default false = today's N independent threads.
+   */
+  coordinated?: boolean;
   /** Per-dispatch ACP lifecycle override (caller pass-through). */
   acpLifecycle?: 'fresh' | 'reuse';
   /** Per-dispatch mail lifecycle override (caller pass-through). */
@@ -1175,6 +1190,12 @@ export async function dispatchSpecToSwarms(input: {
       loadout_bundle_id: loadoutBundleId,
       team_bundle_id: teamBundleId,
       role: input.role ?? null,
+      // Persist the originating resource ids (V64) so hub-side enrichment
+      // can materialize the loadout / team-role live, mirroring the spec's
+      // loadout_ref / team_role_ref path. Bundle ids above still serve the
+      // sidecar-facing GET /dispatches/:id/loadout endpoint.
+      loadout_resource_id: input.loadoutResourceId ?? null,
+      team_template_resource_id: input.teamTemplateResourceId ?? null,
       ...(input.acpLifecycle ? { acp_lifecycle: input.acpLifecycle } : {}),
       ...(input.mailLifecycle ? { mail_lifecycle: input.mailLifecycle } : {}),
       ...(input.repoId ? { repo_id: input.repoId } : {}),
@@ -1224,6 +1245,43 @@ export async function dispatchSpecToSwarms(input: {
     }
 
     dispatches.push({ ...dispatch, seed_prompt: seedPrompt, target_swarm_name: target.name });
+  }
+
+  // Coordinated-team mode (P4.2): when the user opts in and fans out to more
+  // than one target, create ONE shared coordination thread up front and stamp
+  // it onto every row so each executor's prompt can name its peers and post to
+  // a real, already-existing thread. Best-effort — a mail hiccup must not fail
+  // the dispatch itself (the per-dispatch threads still work).
+  if (input.coordinated && dispatches.length > 1) {
+    const teamConversationId = `team-conv-${nanoid()}`;
+    try {
+      await ensureTeamConversation(
+        {
+          teamConversationId,
+          specId: input.specId,
+          specResourceId: resource.id,
+          specTitle: title,
+          initiator: { type: input.initiatorType, id: input.agentId },
+          peers: dispatches.map((d) => ({
+            dispatch_id: d.id,
+            target_swarm_id: d.target_swarm_id,
+            swarm_name: d.target_swarm_name ?? d.target_swarm_id,
+            role: d.role,
+          })),
+        },
+        { getMailJsonRpc },
+      );
+      for (const d of dispatches) {
+        dispatchesDAL.setDispatchTeamConversationId(d.id, teamConversationId);
+        d.team_conversation_id = teamConversationId;
+      }
+    } catch (err) {
+      console.warn(
+        `[dispatch] coordinated-team thread creation failed (dispatches proceed independently): ${
+          (err as Error).message
+        }`,
+      );
+    }
   }
 
   return { ok: true, dispatches };

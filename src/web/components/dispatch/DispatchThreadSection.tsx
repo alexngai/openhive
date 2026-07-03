@@ -5,12 +5,15 @@
  * detail page. Shows turns from agents and users with importance badges on
  * agent-initiated turns. Users can reply via the input at the bottom.
  *
- * If no conversation exists yet, shows a muted placeholder.
- * If the dispatch is in a terminal state, the input is hidden.
+ * If no conversation exists yet AND the dispatch is still active, we show an
+ * empty-state composer so the user can start the thread (and nudge a silent
+ * agent) — the first send lazily creates the conversation via the turns route.
+ * If the dispatch is terminal with no thread, nothing is rendered.
  */
 
 import { useState, useRef, useEffect } from 'react';
-import { MessageCircle, Send, Settings, ArrowUpCircle, AlertTriangle } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { MessageCircle, Send, Settings, ArrowUpCircle, AlertTriangle, Users } from 'lucide-react';
 import { useMailConversation } from '../../hooks/useApi';
 import { useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
@@ -26,6 +29,9 @@ interface DispatchThreadSectionProps {
   dispatchId: string;
   conversationId: string | null;
   dispatchStatus: DispatchStatus;
+  /** Shared coordinated-team thread id (P4.2/P4.4). When set, a pointer to the
+   *  team thread is shown above the per-dispatch thread. */
+  teamConversationId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +138,7 @@ export function DispatchThreadSection({
   dispatchId,
   conversationId,
   dispatchStatus,
+  teamConversationId,
 }: DispatchThreadSectionProps) {
   const { data, isLoading } = useMailConversation(conversationId ?? '');
   const queryClient = useQueryClient();
@@ -187,10 +194,13 @@ export function DispatchThreadSection({
     }
   };
 
-  // No conversation yet
-  if (!conversationId) {
+  // Nothing to show only when the dispatch is terminal AND never had a thread —
+  // there's no history to read and no point composing to a finished dispatch.
+  if (!conversationId && isTerminal) {
     return null;
   }
+
+  const hasConversation = !!conversationId;
 
   return (
     <div
@@ -206,9 +216,11 @@ export function DispatchThreadSection({
         <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
           Coordination thread
         </span>
-        <span className="text-2xs font-mono" style={{ color: 'var(--color-text-muted)', opacity: 0.6 }}>
-          {turns.length} {turns.length === 1 ? 'message' : 'messages'}
-        </span>
+        {hasConversation && (
+          <span className="text-2xs font-mono" style={{ color: 'var(--color-text-muted)', opacity: 0.6 }}>
+            {turns.length} {turns.length === 1 ? 'message' : 'messages'}
+          </span>
+        )}
         {isTerminal && data?.conversation?.status === 'completed' && (
           <span
             className="text-2xs px-1.5 py-0.5 rounded-full ml-auto"
@@ -219,8 +231,27 @@ export function DispatchThreadSection({
         )}
       </div>
 
-      {/* Messages */}
-      {isLoading ? (
+      {/* Shared coordinated-team thread pointer (P4.2/P4.4) */}
+      {teamConversationId && (
+        <Link
+          to={`/threads/${teamConversationId}`}
+          className="flex items-center gap-2 px-4 py-2 border-b text-xs hover:bg-white/5"
+          style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-text-secondary)' }}
+        >
+          <Users className="h-3.5 w-3.5 text-honey-500 shrink-0" />
+          <span>Part of a coordinated team — open the shared thread</span>
+          <span className="font-mono ml-auto" style={{ color: 'var(--color-text-muted)', opacity: 0.7 }}>
+            {teamConversationId}
+          </span>
+        </Link>
+      )}
+
+      {/* Messages / empty-state */}
+      {!hasConversation ? (
+        <div className="p-4 text-center text-xs" style={{ color: 'var(--color-text-muted)' }}>
+          No coordination thread yet. Send a message below to start one and nudge the agent.
+        </div>
+      ) : isLoading ? (
         <div className="p-4 text-center text-xs" style={{ color: 'var(--color-text-muted)' }}>
           Loading thread...
         </div>
@@ -262,7 +293,11 @@ export function DispatchThreadSection({
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Send a message to the agent..."
+              placeholder={
+                hasConversation
+                  ? 'Send a message to the agent...'
+                  : 'Start a coordination thread — message the agent...'
+              }
               rows={1}
               className="flex-1 text-sm rounded-md border px-3 py-1.5 resize-none bg-transparent focus:outline-none focus:ring-1"
               style={{

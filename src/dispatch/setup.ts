@@ -8,7 +8,7 @@
 import { hostname } from 'node:os';
 import { createOrchestrator, heuristicScorer, noopScorer } from 'swarm-dispatch';
 import type { Orchestrator, DispatchEvent, MessagePort, EligibilityScorer } from 'swarm-dispatch';
-import { createOpenHiveDispatchSource } from './openhive-source.js';
+import { createOpenHiveDispatchSource, reconcileShouldStop } from './openhive-source.js';
 import type { SpecContentFetcher, DispatchSourceDeps } from './openhive-source.js';
 import { createOpenHiveAgentRuntime } from './openhive-runtime.js';
 import type { OpenHiveRuntimeDeps } from './openhive-runtime.js';
@@ -152,6 +152,10 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
       enabled: true,
       intervalMs: cfg?.reconcileIntervalMs ?? 5_000,
       stallTimeoutMs: 300_000,
+      // External-cancel stop predicate (P4.5 Layer 1). See reconcileShouldStop
+      // for why the library default isn't enough for OpenHive's `cancelled`
+      // rows. Fixes: click Cancel → reconcile tick terminates the ACP agent.
+      shouldStop: reconcileShouldStop,
     },
   });
 
@@ -387,6 +391,7 @@ export function setupOrchestrator(opts: SetupOrchestratorOptions): Orchestrator 
           outcome,
           swarmName,
           detail,
+          kind: d.role === 'reviewer' ? 'validation' : 'dispatch',
         },
         { getMailJsonRpc: opts.getMailJsonRpc, getMailStorage },
       );

@@ -152,10 +152,13 @@ export async function dispatchesRoutes(
   /**
    * POST /dispatches/:id/cancel
    *
-   * Marks a dispatch as cancelled (D14). v1 does NOT proactively notify the
-   * target swarm to stop work — that requires the agent feedback contract from
-   * D11 to be in place on the receiver side. Once the contract matures we can
-   * layer a `map/dispatches/cancel` notification in.
+   * Marks a dispatch as cancelled (D14). This does not *proactively* push a
+   * stop to the target swarm, but the orchestrator's reconcile tick (P4.5
+   * Layer 1, `reconcileShouldStop` in dispatch/openhive-source.ts) now picks up
+   * the `cancelled` row within ~5s and terminates ACP-spawned agents via
+   * `runtime.terminate` (`closeStream`). Mail-routed agents are skipped by the
+   * library reconcile loop, so proactive `map/dispatches/cancel` (Layer 2,
+   * needs a sidecar-side consumer + ack) is still the follow-up for those.
    *
    * Open to any authenticated agent (per D9). The operation is idempotent
    * relative to terminal states — cancelling a complete/failed/cancelled
