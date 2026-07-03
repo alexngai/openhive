@@ -14,10 +14,11 @@
  * MAP, UI) is operator surface; the core mechanic is proven here.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as schedules from '../../db/dal/schedules.js';
 import * as dispatches from '../../db/dal/dispatches.js';
+import * as experiments from '../../db/dal/experiments.js';
 import { setupScheduler } from '../../scheduler/setup.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
@@ -38,6 +39,8 @@ beforeEach(() => {
   const db = getDatabase();
   db.exec('DELETE FROM schedules');
   db.exec('DELETE FROM dispatches');
+  db.exec('DELETE FROM experiment_runs');
+  db.exec('DELETE FROM experiments');
 });
 
 describe('scheduler end-to-end (DAL checkpoint)', () => {
@@ -198,6 +201,56 @@ describe('scheduler end-to-end (DAL checkpoint)', () => {
         initiator_id: `schedule:${sched.id}`,
       }).data;
       expect(dispatchRows).toEqual([]);
+    } finally {
+      await scheduler.stop();
+    }
+  });
+
+  it('skipIfRunning suppresses an experiment fire while a schedule run is active', async () => {
+    const exp = experiments.createExperiment({
+      name: 'scheduled overlap guard',
+      objective_metric: 'eval.score',
+      objective_direction: 'increase',
+      config: { deployment: { deploymentPath: '/cfg/dep.yaml', runPath: '/cfg/run.yaml' } },
+      status: 'active',
+    });
+    const sched = schedules.createSchedule({
+      cron: '0 * * * *',
+      payload: { kind: 'experiment', experiment_ref: exp.id },
+      policy: { skipIfRunning: true },
+      next_fires_at: new Date(Date.now() - 60_000).toISOString(),
+      hive_id: 'default-general',
+      initiator_type: 'user',
+      initiator_id: 'agent_test',
+    });
+    experiments.createRun({
+      experiment_id: exp.id,
+      status: 'running',
+      initiator_type: 'schedule',
+      initiator_id: `schedule:${sched.id}`,
+    });
+    const runScheduledExperiment = vi.fn(() => ({ runId: 'exrun_new' }));
+
+    const scheduler = setupScheduler({
+      fetchSpec: async () => ({ ok: true }),
+      isAutonomousDispatchPaused: () => false,
+      runScheduledExperiment,
+      tickIntervalMs: 100,
+    });
+
+    try {
+      scheduler.start();
+      const originalNext = sched.next_fires_at!;
+      await waitFor(
+        () => {
+          const after = schedules.findScheduleById(sched.id)!;
+          return after.next_fires_at !== null && after.next_fires_at !== originalNext;
+        },
+        { timeout: 5_000, message: 'expected next_fires_at to advance while skipping active run' },
+      );
+
+      expect(runScheduledExperiment).not.toHaveBeenCalled();
+      expect(experiments.listRunsForExperiment(exp.id).total).toBe(1);
     } finally {
       await scheduler.stop();
     }

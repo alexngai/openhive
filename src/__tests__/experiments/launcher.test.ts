@@ -353,6 +353,7 @@ describe('launcher — runScheduledExperiment', () => {
     const spy = spawnSpy();
     setLauncherSpawnForTest(spy.fn);
     const exp = makeDeploymentExperiment();
+    dal.updateExperiment(exp.id, { status: 'active' });
     const res = runScheduledExperiment(
       { experiment_ref: exp.id, run_controls: { cycles: 7 } },
       'sch_1',
@@ -363,6 +364,13 @@ describe('launcher — runScheduledExperiment', () => {
     expect(run.initiator_id).toBe('schedule:sch_1');
     expect(spy.calls.length).toBe(1);
     expect(spy.calls[0].argv).toEqual(expect.arrayContaining(['--cycles', '7']));
+  });
+
+  it('skips a draft experiment (returns null, no run)', () => {
+    setLauncherSpawnForTest(spawnSpy().fn);
+    const exp = makeDeploymentExperiment();
+    expect(runScheduledExperiment({ experiment_ref: exp.id }, 'sch_1')).toBeNull();
+    expect(dal.listRunsForExperiment(exp.id).total).toBe(0);
   });
 
   it('skips a paused experiment (returns null, no run)', () => {

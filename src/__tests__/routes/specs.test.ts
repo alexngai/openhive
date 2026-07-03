@@ -149,7 +149,11 @@ import * as agentsDAL from '../../db/dal/agents.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
 import * as mapDAL from '../../db/dal/map.js';
 import * as dispatchesDAL from '../../db/dal/dispatches.js';
-import { buildDispatchSeedPrompt, specsRoutes } from '../../api/routes/specs.js';
+import {
+  buildDispatchSeedPrompt,
+  fetchSpecForDispatchInternal,
+  specsRoutes,
+} from '../../api/routes/specs.js';
 import { initMail, getMailStorage } from '../../mail/index.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
@@ -1045,6 +1049,37 @@ describe('Specs routes', () => {
       });
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body).conversation_id).toBe(`spec-thread:${resourceA.id}:s-aaa`);
+    });
+
+    it('GET enforces the same resource ACL as thread creation', async () => {
+      const create = await app.inject({
+        method: 'POST',
+        url: `/api/v1/specs/${resourceA.id}/s-bbb/thread`,
+        headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+      });
+      expect(create.statusCode).toBe(201);
+
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/specs/${resourceA.id}/s-bbb/thread`,
+        headers: { Authorization: `Bearer ${otherAgent.apiKey}` },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('hub-internal dispatch fetch bypasses caller ACL without weakening route auth', async () => {
+      const userFetch = await app.inject({
+        method: 'GET',
+        url: `/api/v1/specs/${resourceA.id}/s-aaa`,
+        headers: { Authorization: `Bearer ${otherAgent.apiKey}` },
+      });
+      expect(userFetch.statusCode).toBe(403);
+
+      const internal = await fetchSpecForDispatchInternal(resourceA.id, 's-aaa');
+      expect(internal.ok).toBe(true);
+      if (internal.ok) {
+        expect(internal.data.node.title).toBe('Auth rewrite');
+      }
     });
 
     it('POST 404s on an unknown spec', async () => {
