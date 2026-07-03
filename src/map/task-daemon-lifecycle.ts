@@ -11,7 +11,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join, basename, dirname, resolve, relative } from 'node:path';
-import { mkdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
 
 // ============================================================================
 // Socket Resolution
@@ -213,6 +213,51 @@ export function resolveOpentasksCliPath(): string | null {
   }
 }
 
+/** signal-0 liveness probe — true if a process with `pid` exists. */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reap a stale opentasks daemon lock so auto-start doesn't fail with `ELOCKED`
+ * for ~10s after an ungraceful shutdown (e.g. SIGKILL on container restart).
+ *
+ * opentasks locks each location with proper-lockfile: a JSON content file
+ * `daemon.lock` (carries the holder pid) plus proper-lockfile's own
+ * `daemon.lock.lock` directory. On a clean release both are removed; on a hard
+ * kill the `.lock` dir lingers and proper-lockfile only treats it as stale
+ * after its 10s window — and opentasks acquires with `retries: 0`, so the next
+ * daemon throws `LOCK_HELD` immediately and auto-start fails until the window
+ * elapses.
+ *
+ * Callers invoke this only after confirming the socket is dead, so any lock
+ * found here is genuinely orphaned. We still re-check the content file's pid to
+ * avoid racing a daemon that's actively starting. Never throws.
+ */
+export function reapStaleDaemonLock(lockDir: string): void {
+  const contentLock = join(lockDir, 'daemon.lock');
+  const properLock = join(lockDir, 'daemon.lock.lock');
+  if (!existsSync(contentLock) && !existsSync(properLock)) return;
+
+  // If a live process still owns the content lock, leave everything alone —
+  // it's a real daemon mid-startup, not an orphan.
+  if (existsSync(contentLock)) {
+    try {
+      const { pid } = JSON.parse(readFileSync(contentLock, 'utf-8')) as { pid?: number };
+      if (typeof pid === 'number' && isProcessAlive(pid)) return;
+    } catch { /* unreadable/malformed — treat as stale */ }
+  }
+
+  try { rmSync(properLock, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { rmSync(contentLock, { force: true }); } catch { /* ignore */ }
+  console.warn(`[task-daemon] reaped stale daemon lock in ${lockDir}`);
+}
+
 /**
  * Ensure the OpenTasks daemon is running for the given .opentasks directory.
  * If not alive, initializes the directory if needed and spawns the daemon.
@@ -246,6 +291,18 @@ export async function ensureDaemon(opentasksDir: string): Promise<boolean> {
   } catch (err) {
     console.warn('[task-daemon] failed to initialize .opentasks dir:', (err as Error).message);
     return false;
+  }
+
+  // The socket is confirmed dead above, so any daemon lock left behind is
+  // orphaned (typically from a SIGKILLed container). Reap it now so the spawn
+  // below doesn't hit proper-lockfile's ~10s ELOCKED window. Check every
+  // candidate location dir; the Set dedups when they coincide.
+  for (const dir of new Set([
+    otDir,
+    dirname(socketPath),
+    join(projectRoot, '.git', 'opentasks'),
+  ])) {
+    reapStaleDaemonLock(dir);
   }
 
   // Start the daemon.

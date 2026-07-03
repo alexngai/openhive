@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import {
   DispatchRollup,
   rollupDispatchStatuses,
+  rollupTaskStatuses,
 } from '../../../components/dispatch/DispatchRollup';
 import type { DispatchStatus } from '../../../hooks/useDispatch';
 
@@ -33,8 +34,28 @@ describe('rollupDispatchStatuses', () => {
   });
 });
 
+describe('rollupTaskStatuses', () => {
+  it('counts done statuses case-insensitively', () => {
+    const r = rollupTaskStatuses([
+      { status: 'closed' },
+      { status: 'DONE' },
+      { status: 'in_progress' },
+      { status: null },
+      {},
+    ]);
+    expect(r.total).toBe(5);
+    expect(r.done).toBe(2);
+    expect(r.allDone).toBe(false);
+  });
+
+  it('allDone only when every task is done', () => {
+    expect(rollupTaskStatuses([{ status: 'closed' }, { status: 'resolved' }]).allDone).toBe(true);
+    expect(rollupTaskStatuses([]).allDone).toBe(false);
+  });
+});
+
 describe('<DispatchRollup />', () => {
-  it('renders nothing when there are no items', () => {
+  it('renders nothing when there are no items and no tasks', () => {
     const { container } = render(<DispatchRollup items={[]} />);
     expect(container.firstChild).toBeNull();
   });
@@ -45,5 +66,21 @@ describe('<DispatchRollup />', () => {
     expect(screen.getByText('1 running')).toBeDefined();
     expect(screen.getByText('2 complete')).toBeDefined();
     expect(screen.queryByText(/queued/)).toBeNull();
+  });
+
+  it('appends a linked-task completion chip when tasks are supplied', () => {
+    render(
+      <DispatchRollup
+        items={items('complete')}
+        tasks={[{ status: 'closed' }, { status: 'open' }]}
+      />,
+    );
+    expect(screen.getByText('1/2 tasks')).toBeDefined();
+  });
+
+  it('renders the task chip even with zero dispatches', () => {
+    const { container } = render(<DispatchRollup items={[]} tasks={[{ status: 'closed' }]} />);
+    expect(container.firstChild).not.toBeNull();
+    expect(screen.getByText('1/1 tasks')).toBeDefined();
   });
 });

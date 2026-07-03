@@ -5,16 +5,17 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { DispatchThreadSection } from '../../../components/dispatch/DispatchThreadSection';
 import type { DispatchStatus } from '../../../hooks/useDispatch';
 
-const mockUseMailConversation = vi.fn();
 const mockPost = vi.fn();
+const mockMailThreadView = vi.fn();
 
-vi.mock('../../../hooks/useApi', async () => {
-  const actual = await vi.importActual<typeof import('../../../hooks/useApi')>('../../../hooks/useApi');
-  return {
-    ...actual,
-    useMailConversation: (...args: unknown[]) => mockUseMailConversation(...args),
-  };
-});
+// MailThreadView pulls in the swarmcraft chat embed + openhive adapters, which
+// are heavy to wire up in a unit test. Stub it and assert delegation instead.
+vi.mock('../../../components/sessions/MailThreadView', () => ({
+  MailThreadView: (props: { conversationId: string; registerPageContext?: boolean }) => {
+    mockMailThreadView(props);
+    return <div data-testid="mail-thread-view" data-conversation-id={props.conversationId} />;
+  },
+}));
 
 vi.mock('../../../lib/api', () => ({
   api: { post: (...args: unknown[]) => mockPost(...args) },
@@ -38,7 +39,6 @@ function renderSection(props: {
 describe('<DispatchThreadSection />', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUseMailConversation.mockReturnValue({ data: undefined, isLoading: false });
   });
 
   it('renders nothing when terminal with no conversation', () => {
@@ -80,19 +80,22 @@ describe('<DispatchThreadSection />', () => {
     expect(screen.getByText('team-conv-xyz')).toBeDefined();
   });
 
-  it('renders the message list when a conversation exists', () => {
-    mockUseMailConversation.mockReturnValue({
-      data: {
-        conversation: { status: 'active' },
-        turns: [
-          { id: 't1', participant_id: 'agent:a', content: 'working on it', created_at: '2026-04-15T20:00:00Z' },
-        ],
-        turn_count: 1,
-      },
-      isLoading: false,
-    });
+  it('delegates to MailThreadView (embedded, no page-context) when a conversation exists', () => {
     renderSection({ conversationId: 'conv_1', dispatchStatus: 'running' });
-    expect(screen.getByText('working on it')).toBeDefined();
-    expect(screen.getByPlaceholderText('Send a message to the agent...')).toBeDefined();
+    const view = screen.getByTestId('mail-thread-view');
+    expect(view.getAttribute('data-conversation-id')).toBe('conv_1');
+    expect(mockMailThreadView).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv_1', registerPageContext: false }),
+    );
+  });
+
+  it('still shows the team pointer above the embedded thread', () => {
+    renderSection({
+      conversationId: 'conv_1',
+      dispatchStatus: 'running',
+      teamConversationId: 'team-conv-xyz',
+    });
+    expect(screen.getByTestId('mail-thread-view')).toBeDefined();
+    expect(screen.getByText(/coordinated team/)).toBeDefined();
   });
 });

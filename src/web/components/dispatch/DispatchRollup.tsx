@@ -1,9 +1,12 @@
-import { Loader2, CheckCircle2, XCircle, Clock, Ban } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, Clock, Ban, ListChecks } from 'lucide-react';
 import clsx from 'clsx';
 import type { DispatchStatus } from '../../hooks/useDispatch';
 import { StatusChip, type StatusTone } from '../common/StatusChip';
 
 const ORDER: DispatchStatus[] = ['running', 'queued', 'complete', 'failed', 'cancelled'];
+
+/** OpenTasks statuses that count as "done" for the linked-task rollup. */
+const TASK_DONE_STATUSES = new Set(['closed', 'done', 'complete', 'completed', 'resolved']);
 
 const META: Record<DispatchStatus, { tone: StatusTone; label: string; Icon: React.ElementType; spin?: boolean }> = {
   running:   { tone: 'warning', label: 'running',   Icon: Loader2, spin: true },
@@ -44,8 +47,39 @@ export function rollupDispatchStatuses(items: Array<{ status: DispatchStatus }>)
   };
 }
 
+export interface TaskRollupCounts {
+  total: number;
+  done: number;
+  /** True when there's at least one linked task and every one is done. */
+  allDone: boolean;
+}
+
+/**
+ * Pure aggregation over linked-task statuses (P4.3). A dispatch can complete
+ * while its task stays open, so this is a distinct, complementary "done"
+ * signal from the dispatch rollup. Case-insensitive; unknown statuses count as
+ * not-done.
+ */
+export function rollupTaskStatuses(
+  tasks: Array<{ status?: string | null }>,
+): TaskRollupCounts {
+  let done = 0;
+  for (const t of tasks) {
+    if (t.status && TASK_DONE_STATUSES.has(t.status.toLowerCase())) done += 1;
+  }
+  const total = tasks.length;
+  return { total, done, allDone: total > 0 && done === total };
+}
+
 interface DispatchRollupProps {
   items: Array<{ status: DispatchStatus }>;
+  /**
+   * Optional linked tasks. When provided (and non-empty), a task-completion
+   * chip ("N/M tasks") is appended so the rollup reflects real work-item
+   * progress, not just dispatch execution status (P4.3). Dispatch status stays
+   * the primary signal.
+   */
+  tasks?: Array<{ status?: string | null }>;
   /** `sm` (compact, default) or `md`. */
   size?: 'sm' | 'md';
   className?: string;
@@ -55,15 +89,17 @@ interface DispatchRollupProps {
 
 /**
  * Status tally chips over a spec's dispatch rows — the "is this spec done?"
- * glance surface (P4.3). Renders one chip per non-zero status.
+ * glance surface (P4.3). Renders one chip per non-zero dispatch status, plus an
+ * optional linked-task completion chip when `tasks` is supplied.
  */
-export function DispatchRollup({ items, size = 'sm', className, showSummary }: DispatchRollupProps) {
-  if (items.length === 0) return null;
+export function DispatchRollup({ items, tasks, size = 'sm', className, showSummary }: DispatchRollupProps) {
+  const taskRoll = tasks && tasks.length > 0 ? rollupTaskStatuses(tasks) : null;
+  if (items.length === 0 && !taskRoll) return null;
   const roll = rollupDispatchStatuses(items);
 
   return (
     <div className={clsx('flex flex-wrap items-center gap-1.5', className)}>
-      {showSummary && (
+      {showSummary && roll.total > 0 && (
         <span
           className={clsx('font-medium', size === 'sm' ? 'text-2xs' : 'text-xs')}
           style={{ color: roll.allComplete ? 'var(--color-text)' : 'var(--color-text-muted)' }}
@@ -86,6 +122,19 @@ export function DispatchRollup({ items, size = 'sm', className, showSummary }: D
           />
         );
       })}
+      {taskRoll && (
+        <StatusChip
+          label={`${taskRoll.done}/${taskRoll.total} tasks`}
+          tone={taskRoll.allDone ? 'success' : 'neutral'}
+          icon={ListChecks}
+          size={size}
+          title={
+            taskRoll.allDone
+              ? 'All linked tasks done'
+              : `${taskRoll.total - taskRoll.done} linked task(s) still open`
+          }
+        />
+      )}
     </div>
   );
 }

@@ -47,10 +47,16 @@ interface ParticipantLink {
 export function MailThreadView({
   conversationId,
   headerAction,
+  registerPageContext = true,
 }: {
   conversationId: string;
   /** Optional control rendered in the header (e.g. an "Invite agent" button). */
   headerAction?: ReactNode;
+  /** When false, skips registering chat-fab page context — used when embedded
+   *  inside a page that already owns the context (e.g. DispatchDetail). The
+   *  page-context store is a single global slot, so a second registrant would
+   *  stomp the host page's items. Defaults to true. */
+  registerPageContext?: boolean;
 }) {
   const { data, isLoading, isError, error } = useMailConversation(conversationId);
   const { data: sessionsData } = useSessionsList();
@@ -186,6 +192,7 @@ export function MailThreadView({
       return items;
     },
     [conversationForContext, turnsForContext, turnCountForContext],
+    { enabled: registerPageContext },
   );
 
   if (isLoading) {

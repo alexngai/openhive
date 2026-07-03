@@ -10,6 +10,8 @@ import { TimeAgo } from '../common/TimeAgo';
 interface SpecDispatchPanelProps {
   resourceId: string;
   specId: string;
+  /** Linked task nodes, folded into the rollup's completion signal (P4.3). */
+  tasks?: Array<{ status?: string | null }>;
   /** Optional CTA to trigger a new dispatch (opens the dispatch modal). */
   onDispatch?: () => void;
   /** Disable the dispatch CTA with a reason shown in the title attribute. */
@@ -25,6 +27,7 @@ interface SpecDispatchPanelProps {
 export function SpecDispatchPanel({
   resourceId,
   specId,
+  tasks,
   onDispatch,
   dispatchDisabled = false,
   dispatchDisabledReason,
@@ -83,12 +86,12 @@ export function SpecDispatchPanel({
         )}
       </div>
 
-      {dispatches.length > 0 && (
+      {(dispatches.length > 0 || (tasks?.length ?? 0) > 0) && (
         <div
           className="px-3 py-2 border-b"
           style={{ borderColor: 'var(--color-border-subtle)' }}
         >
-          <DispatchRollup items={dispatches} showSummary />
+          <DispatchRollup items={dispatches} tasks={tasks} showSummary />
         </div>
       )}
 

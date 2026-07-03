@@ -420,10 +420,10 @@ export function SpecDetail() {
                 <span className="px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--color-elevated)' }}>archived</span>
               </>
 	            )}
-            {specDispatches.length > 0 && (
+            {(specDispatches.length > 0 || (data.linked.tasks?.length ?? 0) > 0) && (
               <>
                 <span>·</span>
-                <DispatchRollup items={specDispatches} showSummary />
+                <DispatchRollup items={specDispatches} tasks={data.linked.tasks} showSummary />
               </>
             )}
 	          </div>
@@ -537,6 +537,7 @@ export function SpecDetail() {
               <SpecDispatchPanel
                 resourceId={spec.resource_id}
                 specId={spec.id}
+                tasks={linked.tasks}
                 onDispatch={() => setDispatchOpen(true)}
                 dispatchDisabled={spec.archived}
                 dispatchDisabledReason="Can't dispatch an archived spec"

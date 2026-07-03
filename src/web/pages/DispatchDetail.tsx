@@ -16,6 +16,7 @@ import { useSpec } from '../hooks/useSpecs';
 import { DispatchStatusChip } from '../components/dispatch/DispatchStatusChip';
 import { DispatchThreadSection } from '../components/dispatch/DispatchThreadSection';
 import { OutcomeActionBar } from '../components/dispatch/OutcomeActionBar';
+import { StackDiffView } from '../components/cascade/StackDiffView';
 import { resolveCascadeStreamRow } from '../components/dispatch/cascade-link';
 import { DispatchModal } from '../components/dispatch/DispatchModal';
 import { AttemptsTimeline } from '../components/dispatch/AttemptsTimeline';
@@ -40,6 +41,10 @@ export function DispatchDetail() {
   const cancel = useCancelDispatch();
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [validationOpen, setValidationOpen] = useState(false);
+  // Ref of the cascade_stream artifact whose inline diff is expanded (P5.2).
+  // Only one open at a time; lazily mounts StackDiffView so we don't fetch
+  // diffs for artifacts the user never opens.
+  const [expandedDiffRef, setExpandedDiffRef] = useState<string | null>(null);
   useDispatchRealtime();
 
   // Viewing a dispatch clears its completion attention item (P5.4) — mirrors
@@ -614,14 +619,44 @@ export function DispatchDetail() {
                     )}
                   </>
                 );
+                const expanded = expandedDiffRef === a.ref;
                 return (
                   <li key={i} style={{ color: 'var(--color-text-secondary)' }}>
                     {isCascadeStream ? (
-                      deepLink ? (
-                        <Link to={deepLink} className="inline-flex items-center hover:opacity-80">
-                          {body}
-                          <span className="text-2xs ml-1.5 text-honey-500">View diff →</span>
-                        </Link>
+                      deepLink && streamRow ? (
+                        <>
+                          <span className="inline-flex items-center flex-wrap gap-x-1.5">
+                            {body}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedDiffRef(expanded ? null : a.ref)
+                              }
+                              className="text-2xs text-honey-500 hover:opacity-80"
+                              aria-expanded={expanded}
+                            >
+                              {expanded ? 'Hide diff' : 'Show diff'}
+                            </button>
+                            <Link
+                              to={deepLink}
+                              className="text-2xs hover:opacity-80"
+                              style={{ color: 'var(--color-text-muted)' }}
+                              title="Open in the Changes hub"
+                            >
+                              Open in Changes →
+                            </Link>
+                          </span>
+                          {expanded && (
+                            <div className="mt-2 h-[480px]">
+                              <StackDiffView
+                                mode="stream"
+                                rowId={streamRow.id}
+                                title={streamRow.name || streamId || 'Stream diff'}
+                                onClose={() => setExpandedDiffRef(null)}
+                              />
+                            </div>
+                          )}
+                        </>
                       ) : (
                         <span className="inline-flex items-center">
                           {body}
