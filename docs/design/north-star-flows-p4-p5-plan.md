@@ -298,12 +298,26 @@ with a seeded completed dispatch (`disp_e2e_1`) linked to spec `c-154g` and a
    `POST /specs` 500 until the daemon was started by hand. Fixed with
    `resolveOpentasksCliPath()` (walks `node_modules` off disk, reads the package's
    own `bin`).
-2. **EACCES crash-loop on first start.** The image never set `OPENHIVE_HOME`, so
-   `resolveDataDir()` fell back to `os.homedir()/.openhive`
-   (`/home/openhive/.openhive`), unwritable by the `useradd -r` system user. Fixed
-   by pinning `OPENHIVE_HOME=/app/data` in the Dockerfile (compose also sets it).
+2. **EACCES crash-loop on first start.** The image never set `HOME`/`OPENHIVE_HOME`,
+   so both OpenHive (`resolveDataDir()` → `os.homedir()/.openhive`) and the spawned
+   OpenTasks daemon (registry does `mkdir os.homedir()`) tried to write under
+   `/home/openhive`, unwritable by the `useradd -r` system user. Fixed by pinning
+   `HOME=/app/data` and `OPENHIVE_HOME=/app/data` in the Dockerfile (compose also
+   sets both).
 
-Both require an image rebuild to take effect.
+**e2e verification (2026-07-03, `docker run` of the rebuilt image, no runtime
+`HOME`/`OPENHIVE_HOME`, fresh volume):**
+- ✅ #2 — container starts healthy first try (no EACCES crash-loop); `HOME` and
+  `OPENHIVE_HOME` both resolve to `/app/data`.
+- ✅ #1 — first `POST /specs` returns **201** (was 500); the daemon auto-starts
+  (socket appears) with no manual intervention.
+- ⚠️ Residual (opentasks-level, out of scope): after an *ungraceful* restart the
+  SIGKILLed daemon leaves a stale `daemon.lock` (`ELOCKED`), so auto-start 500s for
+  a ~10s window, then **self-heals** (proper-lockfile stale detection) — subsequent
+  `POST /specs` returns 201. A graceful-shutdown / stale-lock-reap improvement is a
+  possible follow-up.
+
+Both fixes require an image rebuild to take effect.
 
 ## Open questions
 

@@ -88,14 +88,19 @@ RUN chmod +x /app/docker-entrypoint.sh && \
 # Switch to non-root user
 USER openhive
 
-# Environment defaults
-# OPENHIVE_HOME pins the config/data dir onto the writable, volume-backed /app/data.
-# Without it, resolveDataDir() falls back to os.homedir()/.openhive
-# (/home/openhive/.openhive), which the `useradd -r` system user cannot create →
-# EACCES crash-loop on first start.
+# Environment defaults.
+#
+# HOME/OPENHIVE_HOME both point at the writable, volume-backed /app/data because
+# the `useradd -r` system user's default home (/home/openhive) is not writable:
+#   - OPENHIVE_HOME pins OpenHive's own config/data dir (else resolveDataDir()
+#     falls back to os.homedir()/.openhive → EACCES crash-loop on first start).
+#   - HOME fixes os.homedir() for the spawned OpenTasks daemon, whose global
+#     registry does `mkdir os.homedir()` on start (else `POST /specs` 500s with
+#     "auto-start failed" — the daemon crashes trying to mkdir /home/openhive).
 ENV NODE_ENV=production \
     OPENHIVE_HOST=0.0.0.0 \
     OPENHIVE_PORT=3000 \
+    HOME=/app/data \
     OPENHIVE_HOME=/app/data \
     OPENHIVE_DATABASE=/app/data/openhive.db
 
