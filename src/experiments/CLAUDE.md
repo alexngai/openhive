@@ -66,8 +66,10 @@ overfit signal), and degrades null content_hash / claim_strength / held-out to
   (`setHubBaseUrl`, set post-`listen` — may differ from `config.port`). A spawn
   error finalizes the run `failed`. The scheduler `experiment` payload-kind drives
   the same launcher via `runScheduledExperiment` (recurring runs). Spawn is
-  injectable (`setLauncherSpawnForTest`). `experiment.config` selects the path
-  (XOR): `deployment.{deploymentPath,runPath}` → the deployment worker, or
+  injectable (`setLauncherSpawnForTest`). Scheduled experiment fires only launch
+  experiments with `status: "active"`; `draft`, `paused`, and `archived`
+  experiments are skipped without creating a run. `experiment.config` selects the
+  path (XOR): `deployment.{deploymentPath,runPath}` → the deployment worker, or
   `inline` (an autonomation domain config) → the lightweight worker, passed to
   the child via the `OPENHIVE_EXPERIMENT_CONFIG` env var (not argv).
 

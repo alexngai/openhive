@@ -324,3 +324,22 @@ export function hasUnfinishedDispatchForSchedule(scheduleId: string): boolean {
     .get(`schedule:${scheduleId}`);
   return row !== undefined;
 }
+
+/**
+ * Experiment-schedule companion to hasUnfinishedDispatchForSchedule. Experiment
+ * fires create experiment_runs instead of dispatches, so skipIfRunning must
+ * inspect the run table for active schedule-owned work.
+ */
+export function hasUnfinishedExperimentRunForSchedule(scheduleId: string): boolean {
+  const db = getDatabase();
+  const row = db
+    .prepare(
+      `SELECT 1 FROM experiment_runs
+         WHERE initiator_type = 'schedule'
+           AND initiator_id = ?
+           AND status IN ('queued', 'running')
+         LIMIT 1`,
+    )
+    .get(`schedule:${scheduleId}`);
+  return row !== undefined;
+}

@@ -206,9 +206,8 @@ export interface ScheduledExperimentPayload {
 /**
  * Fire a scheduled experiment: resolve the experiment, create a `queued` run,
  * and launch the worker. Returns the new run id, or null if the experiment is
- * missing or not active (paused/archived experiments are skipped). On a launch
- * failure the run is finalized `failed` and the error rethrown (the scheduler
- * fire handler logs it).
+ * missing or not active. On a launch failure the run is finalized `failed` and
+ * the error rethrown (the scheduler fire handler logs it).
  */
 export function runScheduledExperiment(
   payload: ScheduledExperimentPayload,
@@ -217,7 +216,7 @@ export function runScheduledExperiment(
 ): { runId: string } | null {
   const experiment = dal.findExperimentById(payload.experiment_ref);
   if (!experiment) return null;
-  if (experiment.status === 'paused' || experiment.status === 'archived') return null;
+  if (experiment.status !== 'active') return null;
 
   const run = dal.createRun({
     experiment_id: experiment.id,

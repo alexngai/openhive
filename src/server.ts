@@ -49,7 +49,7 @@ import { isAutonomousDispatchPaused } from "./map/dispatch-policy.js";
 import { startTaskBinder, stopTaskBinder } from "./cascade/task-binder.js";
 import { installAsResolverFetcher as installCascadeDiffFetcher } from "./map/cascade-diff-protocol.js";
 import { startThreadLifecycle, stopThreadLifecycle } from "./dispatch/thread-lifecycle.js";
-import { fetchSpecForDispatch } from "./api/routes/specs.js";
+import { fetchSpecForDispatchInternal } from "./api/routes/specs.js";
 import { findResourceById as findResourceForSchedule } from "./db/dal/syncable-resources.js";
 import { createOpenHiveSpecResolver } from "./scheduler/setup.js";
 import { takeSpawnedFallback } from "./scheduler/spawn-tracker.js";
@@ -648,7 +648,7 @@ export async function createHive(
       },
       specFetcher: {
         async fetch(resourceId: string, specId: string) {
-          const result = await fetchSpecForDispatch(resourceId, specId, 'system');
+          const result = await fetchSpecForDispatchInternal(resourceId, specId);
           if (!result.ok) return null;
           const { node, neighbors } = result.data;
           const tasks = neighbors

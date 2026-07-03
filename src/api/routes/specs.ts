@@ -265,11 +265,36 @@ export async function fetchSpecForDispatch(
   | { ok: true; data: SpecForDispatch }
   | { ok: false; statusCode: number; error: string; message: string }
 > {
+  return resolveSpecForDispatch(resourceId, specId, agentId);
+}
+
+/**
+ * Hub-internal variant for background orchestrators. This deliberately skips
+ * user ACL checks while keeping resource existence/type/spec validation intact.
+ */
+export async function fetchSpecForDispatchInternal(
+  resourceId: string,
+  specId: string,
+): Promise<
+  | { ok: true; data: SpecForDispatch }
+  | { ok: false; statusCode: number; error: string; message: string }
+> {
+  return resolveSpecForDispatch(resourceId, specId, null);
+}
+
+async function resolveSpecForDispatch(
+  resourceId: string,
+  specId: string,
+  agentId: string | null,
+): Promise<
+  | { ok: true; data: SpecForDispatch }
+  | { ok: false; statusCode: number; error: string; message: string }
+> {
   const resource = resourcesDAL.findResourceById(resourceId);
   if (!resource) {
     return { ok: false, statusCode: 404, error: 'Not Found', message: 'Resource not found' };
   }
-  if (!resourcesDAL.canAccessResource(agentId, resource)) {
+  if (agentId && !resourcesDAL.canAccessResource(agentId, resource)) {
     return { ok: false, statusCode: 403, error: 'Forbidden', message: 'No access to resource' };
   }
   if (!isOpenTasksResource(resource)) {
@@ -630,6 +655,13 @@ export async function specsRoutes(
     { preHandler: authMiddleware },
     async (request, reply) => {
       const { resourceId, specId } = request.params;
+      const resolved = await fetchSpecForDispatch(resourceId, specId, request.agent!.id);
+      if (!resolved.ok) {
+        return reply
+          .status(resolved.statusCode)
+          .send({ error: resolved.error, message: resolved.message });
+      }
+
       const conversationId = specThreadConversationId(resourceId, specId);
       const conv = getMailStorage().getConversation(conversationId);
       if (!conv) {

@@ -11,12 +11,14 @@ import { createScheduler, type Scheduler } from 'swarm-dispatch';
 import {
   createScheduleStore,
   hasUnfinishedDispatchForSchedule,
+  hasUnfinishedExperimentRunForSchedule,
 } from '../db/dal/schedules.js';
 import {
   createOpenHiveFireHandler,
   type FireHandlerDeps,
 } from './fire-handler.js';
 import { runScheduledExperiment as launcherRunScheduledExperiment } from '../experiments/launcher.js';
+import { getPayloadKind, isValidPayload } from './payload-types.js';
 
 /**
  * Default `fetchSpec` resolver for OpenHive's scheduler.
@@ -78,7 +80,12 @@ export function setupScheduler(opts: SetupSchedulerOptions): Scheduler {
 
   const scheduler = createScheduler({
     store,
-    isFireRunning: async (s) => hasUnfinishedDispatchForSchedule(s.id),
+    isFireRunning: async (s) => {
+      if (isValidPayload(s.payload) && getPayloadKind(s.payload) === 'experiment') {
+        return hasUnfinishedExperimentRunForSchedule(s.id);
+      }
+      return hasUnfinishedDispatchForSchedule(s.id);
+    },
     tickIntervalMs: opts.tickIntervalMs ?? 60_000,
     maxConcurrentFires: opts.maxConcurrentFires ?? 10,
   });
