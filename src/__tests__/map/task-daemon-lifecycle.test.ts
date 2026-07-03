@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { resolveDaemonSocket } from '../../map/task-daemon-client.js';
+import { resolveOpentasksCliPath } from '../../map/task-daemon-lifecycle.js';
 import { testRoot, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
 
 const TEST_ROOT = testRoot('task-daemon-lifecycle');
@@ -97,6 +98,19 @@ describe('resolveDaemonSocket', () => {
     fs.writeFileSync(path.join(dir, 'config.json'), 'not json');
 
     expect(resolveDaemonSocket(dir)).toBe(path.join(dir, 'daemon.sock'));
+  });
+});
+
+describe('resolveOpentasksCliPath', () => {
+  // Regression: the package's ESM-only `exports` map makes
+  // require.resolve('opentasks/package.json') throw ERR_PACKAGE_PATH_NOT_EXPORTED
+  // under a CJS createRequire, which used to silently fall back to spawning a
+  // bare `opentasks` (not on $PATH in Docker/Electron) → auto-start always failed.
+  it('locates the opentasks CLI by walking node_modules off disk', () => {
+    const cli = resolveOpentasksCliPath();
+    expect(cli).toBeTruthy();
+    expect(cli).toMatch(/opentasks[/\\]dist[/\\]cli\.js$/);
+    expect(fs.existsSync(cli!)).toBe(true);
   });
 });
 

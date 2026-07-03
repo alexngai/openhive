@@ -9,7 +9,7 @@
 import * as net from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execSync } from 'node:child_process';
-import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { join, basename, dirname, resolve, relative } from 'node:path';
 import { mkdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 
@@ -180,6 +180,40 @@ export function ensureInitialized(opentasksDir: string, extraConfig?: Record<str
 }
 
 /**
+ * Resolve the absolute path to the `opentasks` CLI entry (`dist/cli.js`).
+ *
+ * We deliberately do NOT use `require.resolve('opentasks/package.json')` or
+ * `require.resolve('opentasks')`: the package ships an ESM-only `exports` map
+ * (`"."` → `import` only, no `./package.json` subpath), so under the bundled
+ * server's CJS `createRequire` both throw `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+ * That silently fell back to spawning a bare `opentasks` (not on `$PATH` in the
+ * production image) → ENOENT → auto-start always failed. Instead, walk up
+ * `node_modules` from this module and read the package's own `bin` field
+ * directly off disk. Works identically in dev (`src/`) and the Docker image
+ * (`/app/dist` + `/app/node_modules`). Returns null if not locatable.
+ */
+export function resolveOpentasksCliPath(): string | null {
+  let cur = dirname(fileURLToPath(import.meta.url));
+  // Walk up to the filesystem root, checking <dir>/node_modules/opentasks.
+  for (;;) {
+    const pkgDir = join(cur, 'node_modules', 'opentasks');
+    const pkgJson = join(pkgDir, 'package.json');
+    if (existsSync(pkgJson)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgJson, 'utf-8')) as {
+          bin?: string | Record<string, string>;
+        };
+        const binField = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.opentasks;
+        if (binField) return resolve(pkgDir, binField);
+      } catch { /* malformed — keep walking */ }
+    }
+    const parent = dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
+  }
+}
+
+/**
  * Ensure the OpenTasks daemon is running for the given .opentasks directory.
  * If not alive, initializes the directory if needed and spawns the daemon.
  * Returns true if daemon is available, false if start failed.
@@ -216,30 +250,22 @@ export async function ensureDaemon(opentasksDir: string): Promise<boolean> {
 
   // Start the daemon.
   //
-  // Resolve the `opentasks` bin via require.resolve and invoke it through
-  // process.execPath so this works inside Electron (where the package lives
-  // in the asar but isn't on $PATH). In plain Node process.execPath === node,
-  // so behavior is identical to `node <bin>`. Fall back to a $PATH lookup if
-  // the package isn't resolvable (e.g. dev without the dep linked).
+  // Resolve the `opentasks` bin off disk (see resolveOpentasksCliPath — the
+  // package's exports map makes require.resolve unusable) and invoke it through
+  // process.execPath so this works inside Electron (where the package lives in
+  // the asar but isn't on $PATH) and the production Docker image (where
+  // `opentasks` is likewise not on $PATH). In plain Node process.execPath ===
+  // node, so behavior is identical to `node <bin>`. Fall back to a $PATH lookup
+  // only if the package isn't locatable (e.g. dev without the dep linked).
   let daemonBin = 'opentasks';
   let daemonArgs = ['daemon', 'start'];
   const daemonEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
 
-  try {
-    const require_ = createRequire(import.meta.url);
-    const pkgJsonPath = require_.resolve('opentasks/package.json');
-    const pkgDir = dirname(pkgJsonPath);
-    const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as {
-      bin?: string | Record<string, string>;
-    };
-    const binField = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.opentasks;
-    if (binField) {
-      daemonBin = process.execPath;
-      daemonArgs = [resolve(pkgDir, binField), 'daemon', 'start'];
-      daemonEnv.ELECTRON_RUN_AS_NODE = '1';
-    }
-  } catch {
-    // fall through to $PATH-based lookup
+  const cliPath = resolveOpentasksCliPath();
+  if (cliPath) {
+    daemonBin = process.execPath;
+    daemonArgs = [cliPath, 'daemon', 'start'];
+    daemonEnv.ELECTRON_RUN_AS_NODE = '1';
   }
 
   try {

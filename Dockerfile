@@ -89,9 +89,14 @@ RUN chmod +x /app/docker-entrypoint.sh && \
 USER openhive
 
 # Environment defaults
+# OPENHIVE_HOME pins the config/data dir onto the writable, volume-backed /app/data.
+# Without it, resolveDataDir() falls back to os.homedir()/.openhive
+# (/home/openhive/.openhive), which the `useradd -r` system user cannot create →
+# EACCES crash-loop on first start.
 ENV NODE_ENV=production \
     OPENHIVE_HOST=0.0.0.0 \
     OPENHIVE_PORT=3000 \
+    OPENHIVE_HOME=/app/data \
     OPENHIVE_DATABASE=/app/data/openhive.db
 
 # Expose the default port
