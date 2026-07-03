@@ -288,11 +288,22 @@ with a seeded completed dispatch (`disp_e2e_1`) linked to spec `c-154g` and a
   WS→store→bell is covered by `useGlobalAttention.test.ts` +
   `session-attention.test.ts`.
 
-**Env note (not a P4/P5 defect):** the opentasks daemon did not auto-start under
-`docker compose` (socket absent → `POST /specs` 500) and had to be started
-manually inside the container. `docker-compose.yml` also needed
-`HOME/OPENHIVE_HOME=/app/data` to avoid an EACCES crash-loop. Daemon auto-start
-is a follow-up worth tracking.
+**Env defects found + fixed (not P4/P5, but Docker-deployment bugs) — commit `a80d857`:**
+
+1. **Daemon auto-start always failed in the production image.** `opentasks` ships
+   an ESM-only `exports` map (no `./package.json` subpath), so
+   `require.resolve('opentasks/package.json')` threw `ERR_PACKAGE_PATH_NOT_EXPORTED`
+   under the bundled server's CJS `createRequire`; the code silently fell back to
+   spawning a bare `opentasks` (not on `$PATH` in the image) → ENOENT →
+   `POST /specs` 500 until the daemon was started by hand. Fixed with
+   `resolveOpentasksCliPath()` (walks `node_modules` off disk, reads the package's
+   own `bin`).
+2. **EACCES crash-loop on first start.** The image never set `OPENHIVE_HOME`, so
+   `resolveDataDir()` fell back to `os.homedir()/.openhive`
+   (`/home/openhive/.openhive`), unwritable by the `useradd -r` system user. Fixed
+   by pinning `OPENHIVE_HOME=/app/data` in the Dockerfile (compose also sets it).
+
+Both require an image rebuild to take effect.
 
 ## Open questions
 
