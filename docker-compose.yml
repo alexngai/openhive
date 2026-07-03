@@ -35,6 +35,10 @@ services:
       - NODE_ENV=production
       - OPENHIVE_PORT=7836
       - OPENHIVE_HOST=0.0.0.0
+      # Keep the home/config dir on the writable data volume (the image's
+      # /home/openhive is not writable by the runtime user).
+      - HOME=/app/data
+      - OPENHIVE_HOME=/app/data
       - OPENHIVE_DATABASE=/app/data/openhive.db
       # Set these in .env file or pass directly
       - OPENHIVE_ADMIN_KEY=${OPENHIVE_ADMIN_KEY:-}

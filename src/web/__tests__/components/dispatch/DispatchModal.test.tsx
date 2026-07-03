@@ -297,6 +297,30 @@ describe('<DispatchModal />', () => {
     await waitFor(() => expect(screen.getByText(/1 swarm selected/i)).toBeDefined());
   });
 
+  it('validation preset still prefills prompt + reviewer role with zero online swarms (P5.3 regression)', async () => {
+    // No dispatchable swarms — the prefill must not be gated on the swarm list.
+    mockUseMapSwarms.mockReturnValue({ data: [] });
+    renderModal({
+      validationPreset: {
+        summary: 'Implemented rate limiting middleware.',
+        executorSwarmId: 'sw_exec',
+        streamRef: 'sw_exec/stream_xyz',
+      },
+    });
+
+    const textarea = screen.getByPlaceholderText(/Anything beyond/i) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toMatch(/validating completed work/i));
+    expect(textarea.value).toContain('Implemented rate limiting middleware.');
+
+    const roleInput = screen.getByPlaceholderText('e.g. worker') as HTMLInputElement;
+    expect(roleInput.value).toBe('reviewer');
+
+    // Empty-state message still shown (no swarm auto-selected).
+    expect(
+      screen.getByText(/No online swarms with ACP, mail, or Codex executor capability/i),
+    ).toBeDefined();
+  });
+
   it('shows error and keeps modal open on dispatch failure', async () => {
     mockUseMapSwarms.mockReturnValue({
       data: [makeSwarm({ id: 'sw_a', name: 'a', capabilities: { protocols: ['acp'] } })],

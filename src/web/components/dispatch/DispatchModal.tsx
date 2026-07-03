@@ -157,20 +157,30 @@ export function DispatchModal({ open, onClose, spec, onDispatched, validationPre
   );
 
   // Apply the validation preset once each time the modal is opened with one.
-  const presetAppliedRef = useRef(false);
+  // The prompt/role/Advanced prefill must NOT wait for the swarm list — a hub
+  // with zero online swarms should still show the reviewer template so the user
+  // can bring a swarm online and dispatch. Swarm auto-select is a separate,
+  // best-effort step gated on the list being loaded.
+  const presetTextAppliedRef = useRef(false);
+  const presetSwarmAppliedRef = useRef(false);
   useEffect(() => {
     if (!open) {
-      presetAppliedRef.current = false;
+      presetTextAppliedRef.current = false;
+      presetSwarmAppliedRef.current = false;
       return;
     }
-    if (!validationPreset || presetAppliedRef.current) return;
-    if (dispatchable.length === 0) return; // wait for the swarm list to load
-    presetAppliedRef.current = true;
-    setPrompt(buildValidationPrompt(spec, validationPreset));
-    setRole('reviewer');
-    setShowAdvanced(true);
-    const reviewer = dispatchable.find((s) => s.id !== validationPreset.executorSwarmId);
-    if (reviewer) setSelected(new Set([reviewer.id]));
+    if (!validationPreset) return;
+    if (!presetTextAppliedRef.current) {
+      presetTextAppliedRef.current = true;
+      setPrompt(buildValidationPrompt(spec, validationPreset));
+      setRole('reviewer');
+      setShowAdvanced(true);
+    }
+    if (!presetSwarmAppliedRef.current && dispatchable.length > 0) {
+      presetSwarmAppliedRef.current = true;
+      const reviewer = dispatchable.find((s) => s.id !== validationPreset.executorSwarmId);
+      if (reviewer) setSelected(new Set([reviewer.id]));
+    }
   }, [open, validationPreset, spec, dispatchable]);
 
   const toggle = (id: string) => {
