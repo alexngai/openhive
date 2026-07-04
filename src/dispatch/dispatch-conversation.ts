@@ -18,6 +18,9 @@ import { findResourceById, updateResource } from '../db/dal/syncable-resources.j
 /** Scope constant for dispatch coordination threads. */
 export const DISPATCH_THREAD_SCOPE = 'dispatch-thread';
 
+/** Scope constant for shared coordinated-team threads (P4.2). */
+export const DISPATCH_TEAM_THREAD_SCOPE = 'dispatch-team-thread';
+
 export interface DispatchConversationOpts {
   dispatchId: string;
   specId: string;
@@ -122,6 +125,69 @@ async function createConversation(
   //    with the in-flight mutex, but defensive).
   const updated = dispatchesDAL.findDispatchById(opts.dispatchId);
   return updated?.conversation_id ?? conversationId;
+}
+
+// ---------------------------------------------------------------------------
+// Coordinated-team shared thread (P4.2)
+// ---------------------------------------------------------------------------
+
+export interface TeamConversationPeer {
+  dispatch_id: string;
+  target_swarm_id: string;
+  swarm_name: string;
+  role?: string | null;
+}
+
+export interface TeamConversationOpts {
+  /** Deterministic shared id, generated once per fan-out batch. */
+  teamConversationId: string;
+  specId: string;
+  specResourceId: string;
+  specTitle: string;
+  initiator: { type: 'user' | 'agent'; id: string };
+  peers: TeamConversationPeer[];
+}
+
+/**
+ * Eagerly create the shared coordination thread for a coordinated-team
+ * dispatch batch. Unlike `ensureDispatchConversation` (lazy, per-dispatch),
+ * this is created up front in the fan-out loop when the user opts into
+ * coordinated mode, so every executor's prompt can advertise a real,
+ * already-existing shared thread.
+ *
+ * Only the initiator is invited at creation — executor agent ids aren't
+ * resolved until claim/delivery time. Executors join by posting (agent-inbox
+ * auto-adds the sender), guided by the peer roster in their prompt. Idempotent
+ * via agent-inbox's create-or-get semantics (0.2.5).
+ */
+export async function ensureTeamConversation(
+  opts: TeamConversationOpts,
+  deps: DispatchConversationDeps,
+): Promise<string> {
+  const jsonRpc = deps.getMailJsonRpc();
+  const { teamConversationId } = opts;
+
+  await invokeMailMethod(jsonRpc, 'mail/create', {
+    id: teamConversationId,
+    scope: DISPATCH_TEAM_THREAD_SCOPE,
+    subject: `Team dispatch: ${opts.specTitle}`,
+    metadata: {
+      source: DISPATCH_TEAM_THREAD_SCOPE,
+      spec_id: opts.specId,
+      spec_resource_id: opts.specResourceId,
+      initiator: opts.initiator,
+      dispatch_ids: opts.peers.map((p) => p.dispatch_id),
+      peers: opts.peers,
+    },
+  });
+
+  await invokeMailMethod(jsonRpc, 'mail/invite', {
+    conversationId: teamConversationId,
+    agentId: opts.initiator.id,
+    role: 'initiator',
+  });
+
+  return teamConversationId;
 }
 
 // ---------------------------------------------------------------------------

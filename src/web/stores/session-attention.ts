@@ -21,7 +21,7 @@
 
 import { create } from 'zustand';
 
-export type AttentionKind = 'idle' | 'permission';
+export type AttentionKind = 'idle' | 'permission' | 'dispatch';
 
 export interface AttentionItem {
   /** Thread selection key: `session:<id>` | `hosted-chat:<id>` | `stream:<id>` fallback. */
@@ -51,12 +51,20 @@ export function streamThreadKey(acpStreamId: string): string {
   return `stream:${acpStreamId}`;
 }
 
+/** Attention key for a completed/dead dispatch — deep-links to `/dispatch/<id>`. */
+export function dispatchThreadKey(dispatchId: string): string {
+  return `dispatch:${dispatchId}`;
+}
+
 /** Internal map key: one slot per thread for idle, one per request for permissions. */
 function idleKey(threadKey: string): string {
   return `${threadKey}#idle`;
 }
 function permissionKey(threadKey: string, requestId: string): string {
   return `${threadKey}#perm:${requestId}`;
+}
+function dispatchKey(threadKey: string): string {
+  return `${threadKey}#dispatch`;
 }
 
 export interface MarkPermissionInput {
@@ -75,6 +83,8 @@ interface SessionAttentionState {
   markIdle: (threadKey: string, swarmId: string, state: string) => void;
   /** Upsert a permission item (one per requestId). */
   markPermission: (input: MarkPermissionInput) => void;
+  /** Upsert the (single) dispatch-completion item for a dispatch. */
+  markDispatch: (threadKey: string, swarmId: string, description: string) => void;
   /** Remove a permission item by requestId (answered here or in another tab). */
   resolvePermission: (requestId: string) => void;
   /** Clear the idle item only — viewing a thread must not hide pending permissions. */
@@ -118,6 +128,20 @@ export const useSessionAttentionStore = create<SessionAttentionState>((set, get)
         requestId,
         streamId,
         hostedSwarmId,
+      });
+      return { items };
+    });
+  },
+
+  markDispatch: (threadKey, swarmId, description) => {
+    set((prev) => {
+      const items = new Map(prev.items);
+      items.set(dispatchKey(threadKey), {
+        threadKey,
+        kind: 'dispatch',
+        swarmId,
+        description,
+        timestamp: Date.now(),
       });
       return { items };
     });

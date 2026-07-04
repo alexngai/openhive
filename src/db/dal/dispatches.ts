@@ -90,6 +90,15 @@ export interface Dispatch {
   team_bundle_id: string | null;
   role: string | null;
   /**
+   * Originating openteams *resource* ids (V64). Unlike the pinned bundle
+   * ids above, these point at the live loadout / team_template resources so
+   * the hub-side rich enrichment pipeline (enrichWithLoadout) can
+   * materialize them the same way it materializes a spec's loadout_ref /
+   * team_role_ref. Null when the dispatch carried no explicit binding.
+   */
+  loadout_resource_id: string | null;
+  team_template_resource_id: string | null;
+  /**
    * ACP lifecycle hint (V47). When the orchestrator routes this dispatch
    * via ACP, controls whether to spawn a fresh coordinator (`'fresh'`)
    * or reuse an existing ACP-capable agent (`'reuse'`). `null` → fall
@@ -128,6 +137,13 @@ export interface Dispatch {
    * `ensureDispatchConversation`. Null for silent dispatches.
    */
   conversation_id: string | null;
+  /**
+   * Shared coordinated-team thread id (V65). Set on every row in a
+   * coordinated fan-out batch so peers share one mail thread, kept separate
+   * from `conversation_id` (the per-dispatch transport channel). Null for
+   * independent dispatches.
+   */
+  team_conversation_id: string | null;
   /** Repo targeting (V54). Primary source for repo-scoped dispatches. */
   repo_id: string | null;
   /** Canonical URL resolved at enrichment time (V54). */
@@ -164,12 +180,15 @@ interface DispatchRow {
   loadout_bundle_id: string | null;
   team_bundle_id: string | null;
   role: string | null;
+  loadout_resource_id: string | null;
+  team_template_resource_id: string | null;
   acp_lifecycle: string | null;
   mail_lifecycle: string | null;
   loadout_ref: string | null;
   loadout_status: string | null;
   loadout_error: string | null;
   conversation_id: string | null;
+  team_conversation_id: string | null;
   repo_id: string | null;
   canonical_url: string | null;
   branch: string | null;
@@ -227,6 +246,8 @@ function rowToDispatch(row: DispatchRow): Dispatch {
     loadout_bundle_id: row.loadout_bundle_id ?? null,
     team_bundle_id: row.team_bundle_id ?? null,
     role: row.role ?? null,
+    loadout_resource_id: row.loadout_resource_id ?? null,
+    team_template_resource_id: row.team_template_resource_id ?? null,
     acp_lifecycle:
       row.acp_lifecycle === 'fresh' || row.acp_lifecycle === 'reuse'
         ? row.acp_lifecycle
@@ -242,6 +263,7 @@ function rowToDispatch(row: DispatchRow): Dispatch {
         : null,
     loadout_error: row.loadout_error ?? null,
     conversation_id: row.conversation_id ?? null,
+    team_conversation_id: row.team_conversation_id ?? null,
     repo_id: row.repo_id ?? null,
     canonical_url: row.canonical_url ?? null,
     branch: row.branch ?? null,
@@ -277,6 +299,12 @@ export interface CreateDispatchInput {
   team_bundle_id?: string | null;
   role?: string | null;
   /**
+   * Originating openteams resource ids (V64) for hub-side live enrichment.
+   * Persisted alongside the pinned bundle ids above.
+   */
+  loadout_resource_id?: string | null;
+  team_template_resource_id?: string | null;
+  /**
    * Optional per-dispatch ACP lifecycle override. When omitted, the
    * orchestrator falls back to `config.dispatch.acp_lifecycle_default`
    * and finally to `'reuse'`. Transport-level concern — set by the
@@ -311,10 +339,11 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
        id, spec_resource_id, spec_id, spec_captured_at, target_swarm_id,
        status, initiator_type, initiator_id, session_ids, prompt_override,
        loadout_bundle_id, team_bundle_id, role,
+       loadout_resource_id, team_template_resource_id,
        acp_lifecycle, mail_lifecycle,
        repo_id, branch, commit_sha, clone_policy, clone_path,
        created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.spec_resource_id ?? null,
@@ -329,6 +358,8 @@ export function createDispatch(input: CreateDispatchInput): Dispatch {
     input.loadout_bundle_id ?? null,
     input.team_bundle_id ?? null,
     input.role ?? null,
+    input.loadout_resource_id ?? null,
+    input.team_template_resource_id ?? null,
     input.acp_lifecycle ?? null,
     input.mail_lifecycle ?? null,
     input.repo_id ?? null,
@@ -776,6 +807,41 @@ export function setDispatchConversationId(
        SET conversation_id = ?, updated_at = datetime('now')
      WHERE id = ? AND conversation_id IS NULL`,
   ).run(conversationId, id);
+}
+
+/**
+ * Stamp the shared coordinated-team thread id onto a dispatch row (V65 / P4.2).
+ * First-writer wins (`WHERE team_conversation_id IS NULL`) so a re-run of the
+ * fan-out can't clobber an already-linked batch.
+ */
+export function setDispatchTeamConversationId(
+  id: string,
+  teamConversationId: string,
+): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE dispatches
+       SET team_conversation_id = ?, updated_at = datetime('now')
+     WHERE id = ? AND team_conversation_id IS NULL`,
+  ).run(teamConversationId, id);
+}
+
+/**
+ * All dispatches sharing a coordinated-team thread (V65 / P4.2). Used to build
+ * each executor's peer roster for the prompt.
+ */
+export function listDispatchesByTeamConversation(
+  teamConversationId: string,
+): Dispatch[] {
+  const db = getDatabase();
+  const rows = db
+    .prepare(
+      `SELECT * FROM dispatches
+         WHERE team_conversation_id = ?
+         ORDER BY created_at ASC`,
+    )
+    .all(teamConversationId) as DispatchRow[];
+  return rows.map(rowToDispatch);
 }
 
 // ============================================================================

@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Bell, Check, Clock, ShieldAlert, X } from 'lucide-react';
+import { Bell, Check, Clock, ShieldAlert, Sparkles, X } from 'lucide-react';
 import {
   useSessionAttentionStore,
   type AttentionItem,
@@ -46,6 +46,7 @@ function threadPath(threadKey: string): string {
   switch (flavor) {
     case 'session': return `/threads/${id}`;
     case 'hosted-chat': return `/threads/hosted-chat/${id}`;
+    case 'dispatch': return `/dispatch/${id}`;
     default: return '/threads';
   }
 }
@@ -58,6 +59,7 @@ export function AttentionBell() {
 
   const items = useSessionAttentionStore((s) => s.items);
   const clearIdle = useSessionAttentionStore((s) => s.clearIdle);
+  const clearThread = useSessionAttentionStore((s) => s.clearThread);
   const resolvePermission = useSessionAttentionStore((s) => s.resolvePermission);
 
   // requestIds with an in-flight reply, so double-clicks don't double-post.
@@ -79,6 +81,9 @@ export function AttentionBell() {
       item.threadKey.slice(0, item.threadKey.indexOf(':')),
       item.threadKey.slice(item.threadKey.indexOf(':') + 1),
     ];
+    if (flavor === 'dispatch') {
+      return `Dispatch ${id.slice(0, 8)}`;
+    }
     if (flavor === 'hosted-chat') {
       return (hostedSwarms ?? []).find((h) => h.id === id)?.name ?? 'Hosted agent';
     }
@@ -138,9 +143,10 @@ export function AttentionBell() {
 
   const openThread = useCallback((item: AttentionItem) => {
     if (item.kind === 'idle') clearIdle(item.threadKey);
+    else if (item.kind === 'dispatch') clearThread(item.threadKey);
     setOpen(false);
     navigate(threadPath(item.threadKey));
-  }, [clearIdle, navigate]);
+  }, [clearIdle, clearThread, navigate]);
 
   return (
     <div ref={containerRef} className="relative">
@@ -191,7 +197,7 @@ export function AttentionBell() {
               {sorted.map((item) => {
                 const rowKey = item.kind === 'permission'
                   ? `${item.threadKey}#perm:${item.requestId}`
-                  : `${item.threadKey}#idle`;
+                  : `${item.threadKey}#${item.kind}`;
                 const busy = item.requestId ? replying.has(item.requestId) : false;
                 return (
                   <li
@@ -202,6 +208,8 @@ export function AttentionBell() {
                     <div className="flex items-start gap-2">
                       {item.kind === 'permission' ? (
                         <ShieldAlert className="w-3.5 h-3.5 mt-0.5 shrink-0 text-red-400" />
+                      ) : item.kind === 'dispatch' ? (
+                        <Sparkles className="w-3.5 h-3.5 mt-0.5 shrink-0 text-honey-500" />
                       ) : (
                         <Clock className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-400" />
                       )}
@@ -214,7 +222,7 @@ export function AttentionBell() {
                           {threadLabel(item)}
                         </button>
                         <p className="text-2xs truncate" style={{ color: 'var(--color-text-secondary)' }}>
-                          {item.kind === 'permission' ? item.description : 'Awaiting input'}
+                          {item.kind === 'idle' ? 'Awaiting input' : item.description}
                         </p>
                         <p className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
                           {timeAgo(item.timestamp)}

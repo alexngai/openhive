@@ -77,6 +77,35 @@ describe('postSpecThreadOutcome', () => {
     expect(text).toContain('/dispatch/d-42');
   });
 
+  it('narrates a reviewer-role dispatch as a validation verdict (P5.4)', async () => {
+    const convId = await ensureSpecConversation(
+      { resourceId: 'res-v', specId: 's-val', specTitle: 'Rate limiting' },
+      deps,
+    );
+    const posted = await postSpecThreadOutcome(
+      {
+        resourceId: 'res-v',
+        specId: 's-val',
+        dispatchId: 'd-val',
+        outcome: 'complete',
+        swarmName: 'reviewer-swarm',
+        detail: 'APPROVED — meets acceptance criteria',
+        kind: 'validation',
+      },
+      deps,
+    );
+    expect(posted).toBe(true);
+    const turns = getMailStorage().getTurns(convId);
+    const turn = turns[turns.length - 1];
+    const text =
+      typeof turn.content === 'string'
+        ? turn.content
+        : (turn.content as { text?: string })?.text ?? '';
+    expect(text).toContain('Validation by reviewer-swarm completed');
+    expect(text).toContain('APPROVED');
+    expect(text).not.toContain('Dispatch to reviewer-swarm');
+  });
+
   it('narrates failures with the error detail', async () => {
     const convId = await ensureSpecConversation(
       { resourceId: 'res-z', specId: 's-bbb', specTitle: 'Search' },

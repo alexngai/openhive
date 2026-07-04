@@ -9,9 +9,9 @@
 import * as net from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execSync } from 'node:child_process';
-import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { join, basename, dirname, resolve, relative } from 'node:path';
-import { mkdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
 
 // ============================================================================
 // Socket Resolution
@@ -180,6 +180,85 @@ export function ensureInitialized(opentasksDir: string, extraConfig?: Record<str
 }
 
 /**
+ * Resolve the absolute path to the `opentasks` CLI entry (`dist/cli.js`).
+ *
+ * We deliberately do NOT use `require.resolve('opentasks/package.json')` or
+ * `require.resolve('opentasks')`: the package ships an ESM-only `exports` map
+ * (`"."` → `import` only, no `./package.json` subpath), so under the bundled
+ * server's CJS `createRequire` both throw `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+ * That silently fell back to spawning a bare `opentasks` (not on `$PATH` in the
+ * production image) → ENOENT → auto-start always failed. Instead, walk up
+ * `node_modules` from this module and read the package's own `bin` field
+ * directly off disk. Works identically in dev (`src/`) and the Docker image
+ * (`/app/dist` + `/app/node_modules`). Returns null if not locatable.
+ */
+export function resolveOpentasksCliPath(): string | null {
+  let cur = dirname(fileURLToPath(import.meta.url));
+  // Walk up to the filesystem root, checking <dir>/node_modules/opentasks.
+  for (;;) {
+    const pkgDir = join(cur, 'node_modules', 'opentasks');
+    const pkgJson = join(pkgDir, 'package.json');
+    if (existsSync(pkgJson)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgJson, 'utf-8')) as {
+          bin?: string | Record<string, string>;
+        };
+        const binField = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.opentasks;
+        if (binField) return resolve(pkgDir, binField);
+      } catch { /* malformed — keep walking */ }
+    }
+    const parent = dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
+  }
+}
+
+/** signal-0 liveness probe — true if a process with `pid` exists. */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reap a stale opentasks daemon lock so auto-start doesn't fail with `ELOCKED`
+ * for ~10s after an ungraceful shutdown (e.g. SIGKILL on container restart).
+ *
+ * opentasks locks each location with proper-lockfile: a JSON content file
+ * `daemon.lock` (carries the holder pid) plus proper-lockfile's own
+ * `daemon.lock.lock` directory. On a clean release both are removed; on a hard
+ * kill the `.lock` dir lingers and proper-lockfile only treats it as stale
+ * after its 10s window — and opentasks acquires with `retries: 0`, so the next
+ * daemon throws `LOCK_HELD` immediately and auto-start fails until the window
+ * elapses.
+ *
+ * Callers invoke this only after confirming the socket is dead, so any lock
+ * found here is genuinely orphaned. We still re-check the content file's pid to
+ * avoid racing a daemon that's actively starting. Never throws.
+ */
+export function reapStaleDaemonLock(lockDir: string): void {
+  const contentLock = join(lockDir, 'daemon.lock');
+  const properLock = join(lockDir, 'daemon.lock.lock');
+  if (!existsSync(contentLock) && !existsSync(properLock)) return;
+
+  // If a live process still owns the content lock, leave everything alone —
+  // it's a real daemon mid-startup, not an orphan.
+  if (existsSync(contentLock)) {
+    try {
+      const { pid } = JSON.parse(readFileSync(contentLock, 'utf-8')) as { pid?: number };
+      if (typeof pid === 'number' && isProcessAlive(pid)) return;
+    } catch { /* unreadable/malformed — treat as stale */ }
+  }
+
+  try { rmSync(properLock, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { rmSync(contentLock, { force: true }); } catch { /* ignore */ }
+  console.warn(`[task-daemon] reaped stale daemon lock in ${lockDir}`);
+}
+
+/**
  * Ensure the OpenTasks daemon is running for the given .opentasks directory.
  * If not alive, initializes the directory if needed and spawns the daemon.
  * Returns true if daemon is available, false if start failed.
@@ -214,32 +293,36 @@ export async function ensureDaemon(opentasksDir: string): Promise<boolean> {
     return false;
   }
 
+  // The socket is confirmed dead above, so any daemon lock left behind is
+  // orphaned (typically from a SIGKILLed container). Reap it now so the spawn
+  // below doesn't hit proper-lockfile's ~10s ELOCKED window. Check every
+  // candidate location dir; the Set dedups when they coincide.
+  for (const dir of new Set([
+    otDir,
+    dirname(socketPath),
+    join(projectRoot, '.git', 'opentasks'),
+  ])) {
+    reapStaleDaemonLock(dir);
+  }
+
   // Start the daemon.
   //
-  // Resolve the `opentasks` bin via require.resolve and invoke it through
-  // process.execPath so this works inside Electron (where the package lives
-  // in the asar but isn't on $PATH). In plain Node process.execPath === node,
-  // so behavior is identical to `node <bin>`. Fall back to a $PATH lookup if
-  // the package isn't resolvable (e.g. dev without the dep linked).
+  // Resolve the `opentasks` bin off disk (see resolveOpentasksCliPath — the
+  // package's exports map makes require.resolve unusable) and invoke it through
+  // process.execPath so this works inside Electron (where the package lives in
+  // the asar but isn't on $PATH) and the production Docker image (where
+  // `opentasks` is likewise not on $PATH). In plain Node process.execPath ===
+  // node, so behavior is identical to `node <bin>`. Fall back to a $PATH lookup
+  // only if the package isn't locatable (e.g. dev without the dep linked).
   let daemonBin = 'opentasks';
   let daemonArgs = ['daemon', 'start'];
   const daemonEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
 
-  try {
-    const require_ = createRequire(import.meta.url);
-    const pkgJsonPath = require_.resolve('opentasks/package.json');
-    const pkgDir = dirname(pkgJsonPath);
-    const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as {
-      bin?: string | Record<string, string>;
-    };
-    const binField = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.opentasks;
-    if (binField) {
-      daemonBin = process.execPath;
-      daemonArgs = [resolve(pkgDir, binField), 'daemon', 'start'];
-      daemonEnv.ELECTRON_RUN_AS_NODE = '1';
-    }
-  } catch {
-    // fall through to $PATH-based lookup
+  const cliPath = resolveOpentasksCliPath();
+  if (cliPath) {
+    daemonBin = process.execPath;
+    daemonArgs = [cliPath, 'daemon', 'start'];
+    daemonEnv.ELECTRON_RUN_AS_NODE = '1';
   }
 
   try {

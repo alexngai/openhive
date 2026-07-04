@@ -56,6 +56,8 @@ import {
   MIGRATION_V61_EXPERIMENT_RUNS,
   MIGRATION_V62_EXPERIMENT_CANDIDATES,
   MIGRATION_V63_EXPERIMENT_EVENTS,
+  MIGRATION_V64_DISPATCH_LOADOUT_RESOURCE_REFS,
+  MIGRATION_V65_DISPATCH_TEAM_CONVERSATION,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -387,6 +389,13 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   61: MIGRATION_V61_EXPERIMENT_RUNS,
   62: MIGRATION_V62_EXPERIMENT_CANDIDATES,
   63: MIGRATION_V63_EXPERIMENT_EVENTS,
+  // Version 64: openteams resource refs on dispatches (loadout_resource_id,
+  // team_template_resource_id) so the dispatch modal's explicit loadout /
+  // team+role selection drives hub-side rich enrichment (P4.1).
+  64: MIGRATION_V64_DISPATCH_LOADOUT_RESOURCE_REFS,
+  // Version 65: team_conversation_id on dispatches — shared coordination
+  // thread for coordinated-team dispatches (P4.2).
+  65: MIGRATION_V65_DISPATCH_TEAM_CONVERSATION,
 };
 
 /** Get the SQL for a specific migration version.
@@ -493,6 +502,13 @@ function repairSchema(database: Database.Database): void {
     "ALTER TABLE dispatches ADD COLUMN loadout_bundle_id TEXT",
     "ALTER TABLE dispatches ADD COLUMN team_bundle_id TEXT",
     "ALTER TABLE dispatches ADD COLUMN role TEXT",
+    // V64 — openteams resource refs on dispatches. Mirrored here so fresh
+    // installs (which skip migrations and jump straight to SCHEMA_VERSION)
+    // pick up the columns. Idempotent on existing installs.
+    "ALTER TABLE dispatches ADD COLUMN loadout_resource_id TEXT",
+    "ALTER TABLE dispatches ADD COLUMN team_template_resource_id TEXT",
+    // V65 — shared coordinated-team thread id. Mirrored for fresh installs.
+    "ALTER TABLE dispatches ADD COLUMN team_conversation_id TEXT",
   ];
   for (const sql of repairs) {
     try {

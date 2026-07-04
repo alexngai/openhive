@@ -128,6 +128,30 @@ export const openHivePromptBuilder: PromptBuilder = (
     lines.push('To post, use the agent-inbox send_message tool with');
     lines.push(`thread_tag "dispatch-${task.id}".`);
     lines.push('The thread will be created on your first message.');
+
+    // Coordinated-team mode (P4.2): name the peers and point at the *shared*
+    // thread (a real, already-created conversation — advertise its true id so
+    // posts land where teammates can see them).
+    const peers = Array.isArray(meta.peers)
+      ? (meta.peers as Array<{ swarmName?: string; role?: string }>)
+      : [];
+    const teamThreadId = meta.team_conversation_id as string | undefined;
+    if (teamThreadId && peers.length > 0) {
+      const roster = peers
+        .map((p) => (p.role ? `${p.swarmName} (${p.role})` : p.swarmName))
+        .filter(Boolean)
+        .join(', ');
+      lines.push('');
+      lines.push("You're on a coordinated team for this spec. Teammates:");
+      lines.push(`  ${roster}`);
+      lines.push('');
+      lines.push('A shared team thread coordinates all teammates. Post progress,');
+      lines.push('blockers, and hand-offs there so peers stay in sync.');
+      lines.push(`  Shared thread tag: ${teamThreadId}`);
+      lines.push('');
+      lines.push('To post to the team, use the agent-inbox send_message tool with');
+      lines.push(`thread_tag "${teamThreadId}".`);
+    }
   }
 
   // MCP expectations — advisory list of servers the role expects.

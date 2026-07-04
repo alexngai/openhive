@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { resolveDaemonSocket } from '../../map/task-daemon-client.js';
+import { resolveOpentasksCliPath, reapStaleDaemonLock } from '../../map/task-daemon-lifecycle.js';
 import { testRoot, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
 
 const TEST_ROOT = testRoot('task-daemon-lifecycle');
@@ -97,6 +98,67 @@ describe('resolveDaemonSocket', () => {
     fs.writeFileSync(path.join(dir, 'config.json'), 'not json');
 
     expect(resolveDaemonSocket(dir)).toBe(path.join(dir, 'daemon.sock'));
+  });
+});
+
+describe('resolveOpentasksCliPath', () => {
+  // Regression: the package's ESM-only `exports` map makes
+  // require.resolve('opentasks/package.json') throw ERR_PACKAGE_PATH_NOT_EXPORTED
+  // under a CJS createRequire, which used to silently fall back to spawning a
+  // bare `opentasks` (not on $PATH in Docker/Electron) → auto-start always failed.
+  it('locates the opentasks CLI by walking node_modules off disk', () => {
+    const cli = resolveOpentasksCliPath();
+    expect(cli).toBeTruthy();
+    expect(cli).toMatch(/opentasks[/\\]dist[/\\]cli\.js$/);
+    expect(fs.existsSync(cli!)).toBe(true);
+  });
+});
+
+describe('reapStaleDaemonLock', () => {
+  // Regression: after an ungraceful shutdown (SIGKILL on container restart)
+  // proper-lockfile's `daemon.lock.lock` dir lingers, and opentasks acquires
+  // with retries:0, so auto-start 500s for ~10s until the stale window elapses.
+  it('removes an orphaned content lock + proper-lockfile dir (dead pid)', () => {
+    const dir = mkTestDir(TEST_ROOT, 'reap-dead-pid');
+    const content = path.join(dir, 'daemon.lock');
+    const properDir = path.join(dir, 'daemon.lock.lock');
+    // pid 2^31-1 is effectively guaranteed dead.
+    fs.writeFileSync(content, JSON.stringify({ pid: 2147483646, socketPath: '/x.sock' }));
+    fs.mkdirSync(properDir, { recursive: true });
+
+    reapStaleDaemonLock(dir);
+
+    expect(fs.existsSync(content)).toBe(false);
+    expect(fs.existsSync(properDir)).toBe(false);
+  });
+
+  it('reaps a lingering proper-lockfile dir even without a content file', () => {
+    const dir = mkTestDir(TEST_ROOT, 'reap-orphan-dir');
+    const properDir = path.join(dir, 'daemon.lock.lock');
+    fs.mkdirSync(properDir, { recursive: true });
+
+    reapStaleDaemonLock(dir);
+
+    expect(fs.existsSync(properDir)).toBe(false);
+  });
+
+  it('leaves the lock intact when a live process still owns it', () => {
+    const dir = mkTestDir(TEST_ROOT, 'reap-live-pid');
+    const content = path.join(dir, 'daemon.lock');
+    const properDir = path.join(dir, 'daemon.lock.lock');
+    // Our own pid is alive → treat as a real daemon mid-startup.
+    fs.writeFileSync(content, JSON.stringify({ pid: process.pid, socketPath: '/x.sock' }));
+    fs.mkdirSync(properDir, { recursive: true });
+
+    reapStaleDaemonLock(dir);
+
+    expect(fs.existsSync(content)).toBe(true);
+    expect(fs.existsSync(properDir)).toBe(true);
+  });
+
+  it('is a no-op when no lock exists', () => {
+    const dir = mkTestDir(TEST_ROOT, 'reap-none');
+    expect(() => reapStaleDaemonLock(dir)).not.toThrow();
   });
 });
 

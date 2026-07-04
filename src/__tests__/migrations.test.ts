@@ -256,7 +256,7 @@ CREATE TABLE IF NOT EXISTS ingest_keys (
       closeDatabase();
     });
 
-    it('creates the experiment tables on a V59→V63 upgrade', () => {
+    it('creates the experiment tables on a V59→current upgrade', () => {
       // Simulate a pre-V60 DB: full schema minus the experiment tables, pinned at v59.
       const dbPath = testDbPath(TEST_ROOT, 'experiments-upgrade-e2e.db');
       const rawDb = new Database(dbPath);
@@ -269,8 +269,8 @@ CREATE TABLE IF NOT EXISTS ingest_keys (
       rawDb.prepare('INSERT INTO schema_version (version) VALUES (?)').run(59);
       rawDb.close();
 
-      // initDatabase sees version 59 < SCHEMA_VERSION and runs migrations 60→63
-      // through runMigrations (the naive-';'-split upgrade path).
+      // initDatabase sees version 59 < SCHEMA_VERSION and runs the remaining
+      // migrations through runMigrations (the naive-';'-split upgrade path).
       initDatabase(dbPath);
       const db = getDatabase();
 
@@ -301,7 +301,7 @@ CREATE TABLE IF NOT EXISTS ingest_keys (
       const ver = db.prepare('SELECT version FROM schema_version').get() as {
         version: number;
       };
-      expect(ver.version).toBe(63);
+      expect(ver.version).toBe(SCHEMA_VERSION);
 
       closeDatabase();
     });

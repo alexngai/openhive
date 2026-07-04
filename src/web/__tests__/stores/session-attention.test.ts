@@ -4,6 +4,7 @@ import {
   sessionThreadKey,
   hostedChatThreadKey,
   streamThreadKey,
+  dispatchThreadKey,
 } from '../../stores/session-attention';
 
 const store = () => useSessionAttentionStore.getState();
@@ -99,6 +100,27 @@ describe('session-attention store', () => {
       expect(item.streamId).toBe('stream-1');
       expect(item.swarmId).toBe('swarm-1');
       expect(item.hostedSwarmId).toBeUndefined();
+    });
+  });
+
+  describe('dispatch items (P5.4)', () => {
+    it('upserts a single dispatch item per dispatch and clears via clearThread', () => {
+      const key = dispatchThreadKey('disp-1');
+      store().markDispatch(key, 'swarm-1', 'Completed — review outcome');
+      expect(store().hasAttention(key)).toBe(true);
+      expect(store().attentionCount()).toBe(1);
+      const item = store().itemsForThread(key)[0];
+      expect(item.kind).toBe('dispatch');
+      expect(item.description).toBe('Completed — review outcome');
+
+      // Re-marking upserts, not duplicates.
+      store().markDispatch(key, 'swarm-1', 'Failed — needs review');
+      expect(store().attentionCount()).toBe(1);
+      expect(store().itemsForThread(key)[0].description).toBe('Failed — needs review');
+
+      store().clearThread(key);
+      expect(store().hasAttention(key)).toBe(false);
+      expect(store().attentionCount()).toBe(0);
     });
   });
 

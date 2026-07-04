@@ -123,6 +123,12 @@ export interface SpecOutcomeTurnOpts {
   swarmName?: string;
   /** One-line summary (on complete) or error (on failure). */
   detail?: string;
+  /**
+   * Narrative flavor (P5.4). `validation` reads the turn as a reviewer verdict
+   * ("Validation by <swarm> …") rather than a generic dispatch outcome, so a
+   * reviewer-role re-dispatch (P5.3) narrates as a review in the spec thread.
+   */
+  kind?: 'dispatch' | 'validation';
 }
 
 /**
@@ -142,9 +148,11 @@ export async function postSpecThreadOutcome(
   if (!conv) return false; // no discussion opened → stay silent
 
   const swarm = opts.swarmName || 'swarm';
+  const isValidation = opts.kind === 'validation';
   const verb =
     opts.outcome === 'complete' ? 'completed' : opts.outcome === 'dead' ? 'died' : 'failed';
-  const parts = [`Dispatch to ${swarm} ${verb}.`];
+  const lead = isValidation ? `Validation by ${swarm} ${verb}.` : `Dispatch to ${swarm} ${verb}.`;
+  const parts = [lead];
   if (opts.detail && opts.detail.trim()) parts.push(opts.detail.trim());
   parts.push(`See /dispatch/${opts.dispatchId}`);
   const content = parts.join(' ');
@@ -156,7 +164,12 @@ export async function postSpecThreadOutcome(
       content,
       contentType: 'text',
       importance: 'normal',
-      metadata: { system: true, dispatch_id: opts.dispatchId, outcome: opts.outcome },
+      metadata: {
+        system: true,
+        dispatch_id: opts.dispatchId,
+        outcome: opts.outcome,
+        kind: opts.kind ?? 'dispatch',
+      },
     });
     return true;
   } catch {
