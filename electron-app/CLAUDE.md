@@ -74,6 +74,46 @@ can't race the restore loop. Full routing — including `openhive://h/<id>/…`
 hive targeting — is covered under "Headless / tray-only mode → Deep-link hive
 routing".
 
+## Remote hubs (multi-hub steering / remote-control)
+
+The renderer is the same `dist/web` SPA the hive serves. The remote-control work
+(A1–A3, `docs/design/remote-control.md`) makes that SPA **hub-agnostic** — the sidebar
+connection switcher can point REST + WS at a *different* origin than the loopback hive
+that served the page. This works in Electron **with no main-process change**, because
+nothing here constrains the renderer's *network*, only its *navigation*:
+
+- **`hardenWebContents()` is navigation-only.** It intercepts main-frame navigations
+  (`will-navigate`) + `window.open` / `target=_blank` (→ OS browser). It does **not**
+  touch `fetch` / `XHR` / `WebSocket`. The switcher, API-key login, and password login
+  are all fetch/WS with no page navigation, so cross-origin calls to a remote hub pass
+  through untouched.
+- **No CSP anywhere.** Neither the hive server, `src/web/index.html`, nor this main
+  process sets a `Content-Security-Policy` / `onHeadersReceived` / `connect-src`. So the
+  loopback-origin renderer may fetch/WS a remote hub freely; the remote hub's CORS is
+  `origin: true` and its WS Host-guard is satisfied by its own `instance.url` /
+  `allowedHosts` config (a *remote-hub* setup task, not an Electron one).
+- **`src/web/lib/hub.ts` is origin-aware.** Every REST/ACP/WS base + auth header derives
+  from the *active* origin; `window.location` is used **only** for the same-origin
+  ("This hub" = the local loopback hive) case, so `ws(s)://` correctly follows a switch
+  to a remote hub.
+- **Self-hosted password login (A3)** is a `fetch` to the remote `/auth/login` that
+  returns a scoped `ohk_` token — it works in-window and is the Electron-friendly login
+  path.
+
+**Known gap — SwarmHub OAuth to a remote hub.** OAuth navigates the main frame to the
+provider's authorize URL; `will-navigate` hands that to the external browser, so the
+`/auth/callback` never returns to the Electron window. This is (part of) why the A2
+add-connection form is **API-key / password only** — OAuth-remote is deferred and not
+reachable via the switcher UI. The same constraint applies to same-origin SwarmHub OAuth
+on a local `swarmhub`-mode hive: a pre-existing Electron+OAuth limitation, *not*
+introduced by the remote-control work. If in-window OAuth is ever needed, capture the
+callback in a child `BrowserWindow` rather than `shell.openExternal`.
+
+**Manually testing remote steering in Electron:** boot a second hub (`openhive serve` on
+another port / machine / tailnet), then in the app's sidebar switcher → *Add connection*
+→ paste its URL + an API key (or username/password). REST + WS re-point live; the page
+stays served by the local hive, and the loopback lock is not tripped (no navigation).
+
 ## Build + run
 
 ```bash
