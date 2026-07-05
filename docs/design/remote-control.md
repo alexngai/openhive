@@ -1,6 +1,6 @@
 # Remote Control of OpenHive from Another Device
 
-**Status:** draft · investigation + design direction · 2026-07-04
+**Status:** A1 + A2 + A3 landed on `feat/remote-control-a1` (A3 verified live 2026-07-05); A4 (packaging + push) and the public-exposure auth hardening remain · 2026-07-05
 **Owner:** (tbd)
 **Related:** `src/server.ts`, `src/config.ts`, `src/api/middleware/auth.ts`, `src/network/`, `src/headscale/manager.ts`, `src/map/` (MAP hub), `src/sync/` (federation), `docs/DEPLOYMENT.md`, `docs/HEADSCALE_HOSTING_SPEC.md`
 **Adjacent repos:** `multi-agent-protocol` (`@multi-agent-protocol/sdk`), `agentic-mesh` (transport layer under the SDK)
@@ -253,20 +253,25 @@ authz, not protocol.
 
 ---
 
-## 6. The auth gap (blocks a clean mobile/web login)
+## 6. The auth gap (blocks a clean mobile/web login) — ✅ resolved by A3 (2026-07-05)
 
-Today the only token-minting login is SwarmHub OAuth
-(`POST /auth/swarmhub/exchange`, `src/api/routes/auth.ts:53`). Self-hosted operators
-without SwarmHub must paste an API key. For a first-class mobile/web terminal, add a
-**local login endpoint**:
+Historically the only token-minting login was SwarmHub OAuth
+(`POST /auth/swarmhub/exchange`, `src/api/routes/auth.ts:53`); self-hosted operators
+without SwarmHub had to paste an API key. **A3 closed this gap** — see §10.2. The
+implementation diverged from (and improved on) the original sketch below:
 
-- `POST /api/v1/auth/login` `{ username, password }` → `{ token, expires_in }`,
-  issuing a JWT the existing middleware already accepts.
-- Gate it behind `auth.mode` so it is a no-op when SwarmHub is authoritative.
-- Pair with a **key/credential scope model** (read-only / operator / admin) so a
-  device can hold least-privilege.
+- `POST /api/v1/auth/login` `{ username, password }` → `{ token, agent, expires_in }`.
+- It **mints a scoped `ohk_` ingest key**, *not* a JWT. Reusing the existing ingest-key
+  validation + per-route scope gate meant **no new middleware** — a smaller, more
+  consistent change than a fresh JWT verify path, and the credential is revocable +
+  expiring for free.
+- Gated behind `auth.mode` (a no-op / 400 in `swarmhub` mode).
+- Admin authority stays enforced by `requireAdmin` (agent `is_admin`), so key scope did
+  not need a read-only/operator/admin split for v1 (deferred).
 
-This is small and unblocks Approach A's UX without touching the steering surfaces.
+Original sketch (superseded), kept for context: *"issue a JWT the existing middleware
+accepts; pair with a read-only/operator/admin credential scope model."* The ingest-key
+route reached the same goal with less surface.
 
 ---
 
@@ -317,7 +322,15 @@ deferred until after the Approach A implementation lands** — see [TODO-1].
 - **[TODO-1] User-facing "access your hub from another device" guide** (operator-facing,
   `docs/` proper — not `design/`). OS Tailscale + credential walkthrough. **Low
   priority; write after the Approach A client ships** so the instructions match the
-  real login/credential flow rather than the pre-implementation state.
+  real login/credential flow rather than the pre-implementation state. *(Still open —
+  A3's login/credential flow is now stable, so this can be written when prioritized.)*
+- **[TODO-2] Public-exposure auth hardening (turns A3 login into a real gate).** Today
+  `local` auth mode auto-authenticates unauthenticated requests, so A3's password login
+  is a scoped-identity convenience over a trusted network (Tailscale), not a barrier for
+  a publicly-reachable hub. Add a "reject-unauthenticated" posture — finish the vestigial
+  `token` auth mode (referenced in `src/config.ts`, never wired) or a `requireCredential`
+  flag — so an exposed hub demands the API-key/password/OAuth credential. Pair with a
+  boot-time warning when `local` mode is bound to a non-loopback host. Ties to §8 [Q2].
 
 ---
 
@@ -362,11 +375,13 @@ deferred until after the Approach A implementation lands** — see [TODO-1].
 - **Shipped:** `src/web/stores/hubs.ts` (saved connections + `activeHubId`; `switchTo` re-points `lib/hub.ts` **and** drives the single-session auth store as a *view* of the active hub — no auth-store rewrite; `ensureSeed` guarantees a same-origin "This hub" connection and reconciles `activeHubId` to whatever `hub.ts` is pointed at on boot; `syncActiveFromAuth` mirrors live login/logout into only the *active* connection so switching never clobbers the same-origin credential; `addConnection` validates a credential against the remote via `/agents/me`, decorates from `/auth/mode` + `/.well-known/openhive.json`). `src/web/components/layout/HubSwitcher.tsx` (sidebar dropdown: list/switch/remove + add-connection form), wired into `Sidebar.tsx` (below the logo, collapsed-aware) and `App.tsx` (seed + auth-sync effect). Tests: `src/web/__tests__/stores/hubs.test.ts` (10).
 - **Deferred to later:** adding a **SwarmHub-OAuth** remote hub through the switcher (v1 add-form is API-key / local-mode only, per [DA3]); a dedicated Settings → **Connections** management panel (the sidebar dropdown covers add/switch/remove for now); live **visual** verification of the switcher against a running backend.
 
-**A3 — Self-hosted login + scoped keys** *(backend; ~1.5–2 wk; parallel to A1/A2)*
-- `POST /api/v1/auth/login { username, password } → { token, expires_in }`, issuing a JWT the existing middleware already accepts. Needs a console-user credential store (bcrypt — already a dep; JWT via jose — already a dep) mapping a username → an agent identity + scopes. Gate behind `auth.mode` (no-op when SwarmHub is authoritative).
-- **Scoped credentials** (read-only / operator / admin) mapped onto the existing `session-scopes` / `requireCapability` system; enforce per-route.
-- Client: "add connection" gains a username/password option → stores the returned JWT as the connection token; handle expiry (re-login prompt or refresh).
-- **Accept:** operator logs into a remote hub with username+password from the client and gets a scoped session; a read-only credential cannot mutate.
+**A3 — Self-hosted login + scoped keys** — ✅ **landed 2026-07-05** on branch `feat/remote-control-a1` *(backend + client; verified live)*
+- **`POST /api/v1/auth/login { username, password } → { token, agent, expires_in }`** (`src/api/routes/auth.ts`). Verifies a human account's password (bcrypt, existing DAL) and **mints a short-lived (24h) scoped `ohk_` ingest key — *not* a JWT.** This reuses the existing `validateIngestKey` + scope-gate middleware, so **no new token type and no new middleware** were needed (a cleaner result than the JWT plan; see §6). Gated off in `swarmhub` mode, mirroring how `/auth/swarmhub/exchange` is gated off in local mode.
+- **Scope model:** the login key is issued with `['*']` scope. This does **not** grant admin routes — those are gated by `requireAdmin` on the resolved agent's `is_admin` flag (`src/api/middleware/auth.ts`), independent of key scope. So a non-admin operator gets full console access but cannot hit `/admin/*`, and an admin operator's identity flows through unchanged. (A finer read-only/operator key split is deferred: the scope taxonomy makes `/agents`, `/hives`, … require `*`, so a "console-capable but non-admin" *key* scope is awkward, and `requireAdmin` already provides the real admin boundary.)
+- **Provisioning — both paths (per [DA3] follow-up decision):** `POST /api/v1/admin/operators` (admin-gated; create/update a human operator) **and** `openhive admin set-password` (DB-direct bootstrap with a no-echo password prompt). Both create/update `account_type='human'` accounts; no schema migration (the columns already existed).
+- **Client:** the Login page gains a username/password form (shown outside swarmhub mode); the A2 add-connection form gains an **API-key / Password toggle** — the password path exchanges credentials for a scoped token via the *remote* hub's `/auth/login`, then stores it like any bearer credential (so you can attach a remote hub by username+password, not just a key).
+- **Verified live (2026-07-05):** curl E2E against a running hub (login → token → `/agents/me` **with that token** → 200; wrong-pw → 401; `/admin/operators` → 201); the CLI provisioned + migrated a fresh DB; the web UI rendered the switcher + the API-key/Password toggle. Tests: 11 backend (`src/__tests__/auth-login.test.ts`) + 3 client (`hubs.test.ts`); full web suite green (773).
+- **⚠️ Caveat (not yet a hard gate):** in `local` auth mode the hub still **auto-authenticates** unauthenticated requests, so this login provides a *real scoped identity + nicer UX over a trusted network* (Tailscale), but is **not** a barrier on a publicly-exposed hub. Making it a true gate needs a "reject-unauthenticated" posture (the vestigial `token` auth mode) — see [Q2] and Deferred TODOs.
 
 **A4 — Packaging + push** *(after A2; PWA and Electron are parallel sub-tracks)*
 - **PWA:** web app manifest + service worker (Vite PWA plugin); installable on desktop/iOS/Android; cache the app shell. The PWA is "the OpenHive app" served by any hub and targets others via the connection store.
