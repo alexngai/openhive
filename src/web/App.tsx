@@ -7,6 +7,7 @@ import { ProtectedRoute } from './components/common/ProtectedRoute';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useElectronDeepLinks } from './hooks/useElectronDeepLinks';
 import { useAuthStore } from './stores/auth';
+import { useHubsStore } from './stores/hubs';
 
 function SessionIdRedirect() {
   const { id } = useParams<{ id: string }>();
@@ -73,6 +74,21 @@ export default function App() {
   useEffect(() => {
     checkAuthMode();
   }, [checkAuthMode]);
+
+  // Multi-hub (A2): once auth is ready, ensure a same-origin "this hub"
+  // connection exists and keep the active connection's cached credential in
+  // sync with the live session. On boot this reconciles the switcher to
+  // whatever lib/hub.ts (persisted origin) is actually pointed at.
+  useEffect(() => {
+    const apply = (s = useAuthStore.getState()) => {
+      if (!s.isReady) return;
+      const hubs = useHubsStore.getState();
+      hubs.ensureSeed({ token: s.token, agent: s.agent, authMode: s.authMode });
+      hubs.syncActiveFromAuth({ token: s.token, agent: s.agent, authMode: s.authMode });
+    };
+    apply();
+    return useAuthStore.subscribe(apply);
+  }, []);
 
   return (
     <ErrorBoundary>
