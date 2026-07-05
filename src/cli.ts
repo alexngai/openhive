@@ -10,7 +10,13 @@ import { createHive } from './server.js';
 import { generateSampleConfig } from './config.js';
 import { initDatabase, getDatabase, closeDatabase } from './db/index.js';
 import { createInviteCode } from './db/dal/invites.js';
-import { createAgent } from './db/dal/agents.js';
+import {
+  createAgent,
+  createHumanAccount,
+  findAgentByName,
+  setNewPassword,
+  updateAgent,
+} from './db/dal/agents.js';
 import { nanoid } from 'nanoid';
 import { registerNetworkCommands } from './cli/network.js';
 import { registerAdminHttpCommands } from './cli/admin/index.js';
@@ -582,6 +588,24 @@ program
   });
 
 // Admin commands
+/** Prompt for a secret on the TTY without echoing keystrokes. */
+function promptHidden(question: string): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    // Suppress echo of typed characters while still showing the prompt.
+    const rlAny = rl as unknown as { _writeToOutput?: (s: string) => void };
+    const original = rlAny._writeToOutput?.bind(rl);
+    process.stdout.write(question);
+    rlAny._writeToOutput = () => {};
+    rl.question('', (answer) => {
+      rlAny._writeToOutput = original;
+      rl.close();
+      process.stdout.write('\n');
+      resolve(answer.trim());
+    });
+  });
+}
+
 const admin = program.command('admin').description('Admin utilities');
 
 admin
@@ -638,6 +662,53 @@ admin
     }
 
     closeDatabase();
+  });
+
+admin
+  .command('set-password')
+  .description('Create or update a human operator account for the web login')
+  .option('-d, --database <path>', 'Database file path')
+  .requiredOption('-u, --username <name>', 'Operator username (used to log in)')
+  .option('--email <email>', 'Operator email (defaults to <username>@operator.local)')
+  .option('--admin', 'Grant admin privileges to this operator')
+  .option('--password <password>', 'Password (omit to be prompted without echo)')
+  .action(async (options: any) => {
+    const dbPath = resolveDbPath(options.database, program.opts().dataDir);
+    initDatabase(dbPath);
+    try {
+      const password: string = options.password || (await promptHidden('Password: '));
+      if (!password) {
+        console.error('Password is required.');
+        process.exitCode = 1;
+        return;
+      }
+
+      const existing = findAgentByName(options.username);
+      if (existing && existing.account_type !== 'human') {
+        console.error(
+          `An account named "${options.username}" already exists and is not a human operator.`
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      if (existing) {
+        await setNewPassword(existing.id, password);
+        if (options.admin) updateAgent(existing.id, { is_admin: true });
+        console.log(`\nUpdated operator "${existing.name}".`);
+      } else {
+        const agent = await createHumanAccount({
+          name: options.username,
+          email: (options.email || `${options.username}@operator.local`).toLowerCase(),
+          password,
+        });
+        if (options.admin) updateAgent(agent.id, { is_admin: true });
+        console.log(`\nCreated operator "${agent.name}".`);
+      }
+      console.log(`Log in at the hub with username "${options.username}".`);
+    } finally {
+      closeDatabase();
+    }
   });
 
 // HTTP-backed admin subcommands (onboard-token, agent, invite, swarms, ...)

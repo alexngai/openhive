@@ -3,11 +3,18 @@ import { z } from 'zod';
 import * as agentsDAL from '../../db/dal/agents.js';
 import { toPublicAgent } from '../../db/dal/agents.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { createIngestKey } from '../../db/dal/ingest-keys.js';
+import type { IngestKeyScope } from '../../types.js';
 import type { SwarmHubConnector } from '../../swarmhub/connector.js';
 
 const CodeExchangeSchema = z.object({
   code: z.string().min(1),
   redirect_uri: z.string().url(),
+});
+
+const LoginSchema = z.object({
+  username: z.string().min(1),
+  password: z.string().min(1),
 });
 
 interface AuthConfig {
@@ -148,6 +155,62 @@ export async function authRoutes(
         message: 'Failed to complete authentication',
       });
     }
+  });
+
+  // POST /auth/login — password login for self-hosted operators. Verifies a
+  // human account's password and mints a short-lived, scoped ingest key
+  // (ohk_...) that the existing auth middleware already validates + scope-gates,
+  // so no new token type is introduced. Not available in swarmhub mode (which
+  // authenticates via OAuth only), mirroring how /auth/swarmhub/exchange is
+  // gated off in local mode.
+  //
+  // NOTE: in `local` auth mode the hub auto-authenticates unauthenticated
+  // requests, so this login provides a *real scoped operator identity* and a
+  // nicer UX over a trusted network (e.g. Tailscale) rather than a hard gate.
+  // Rejecting unauthenticated requests (needed for public exposure) is a
+  // separate hardening — see docs/design/remote-control.md.
+  fastify.post('/auth/login', async (request, reply) => {
+    if (opts.config.authMode === 'swarmhub') {
+      return reply.status(400).send({ error: 'Not available in swarmhub mode' });
+    }
+
+    const parsed = LoginSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: 'Validation Error',
+        details: parsed.error.issues,
+      });
+    }
+    const { username, password } = parsed.data;
+
+    const agent =
+      agentsDAL.findAgentByName(username) ?? agentsDAL.findAgentByEmail(username);
+    // Uniform 401 whether the account is missing, has no password set, or the
+    // password is wrong — don't leak which usernames exist.
+    if (!agent || !agent.password_hash || !(await agentsDAL.verifyPassword(agent, password))) {
+      return reply.status(401).send({ error: 'Invalid credentials' });
+    }
+
+    // The web console reaches non-categorized routes (/agents, /hives, ...)
+    // which require the '*' ingest-key scope, so a console login needs '*'.
+    // This does NOT grant admin routes: those are gated by requireAdmin on the
+    // resolved agent's is_admin flag, independent of key scope — so a non-admin
+    // operator gets full console access but still can't hit /admin/*. Mirrors
+    // how local-mode auto-auth already runs as an admin local agent.
+    const scopes: IngestKeyScope[] = ['*'];
+    const expiresInHours = 24;
+    const { plaintext_key } = createIngestKey(agent.id, {
+      label: `login:${agent.name}`,
+      agent_id: agent.id,
+      scopes,
+      expires_in_hours: expiresInHours,
+    });
+
+    return reply.send({
+      token: plaintext_key,
+      agent: toPublicAgent(agent),
+      expires_in: expiresInHours * 3600,
+    });
   });
 
   // GET /auth/me — get current authenticated user
