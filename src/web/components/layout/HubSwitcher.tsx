@@ -171,11 +171,17 @@ function AddConnectionForm({
   onCancel: () => void;
 }) {
   const addConnection = useHubsStore((s) => s.addConnection);
+  const [method, setMethod] = useState<'apikey' | 'password'>('apikey');
   const [label, setLabel] = useState('');
   const [url, setUrl] = useState('');
   const [token, setToken] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const canSubmit =
+    !!url.trim() && (method === 'apikey' || (!!username.trim() && !!password));
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -185,7 +191,9 @@ function AddConnectionForm({
       const conn = await addConnection({
         label: label.trim() || undefined,
         origin: url.trim(),
-        token: token.trim() || null,
+        ...(method === 'password'
+          ? { username: username.trim(), password }
+          : { token: token.trim() || null }),
       });
       onDone(conn.id);
     } catch (err) {
@@ -211,14 +219,55 @@ function AddConnectionForm({
         disabled={busy}
         autoFocus
       />
-      <input
-        className="input w-full text-xs"
-        type="password"
-        placeholder="API key (blank for local-mode hub)"
-        value={token}
-        onChange={(e) => { setToken(e.target.value); setError(null); }}
-        disabled={busy}
-      />
+      <div className="flex gap-1">
+        <button
+          type="button"
+          onClick={() => { setMethod('apikey'); setError(null); }}
+          className={clsx('btn flex-1 text-2xs py-1', method === 'apikey' ? 'btn-primary' : 'btn-secondary')}
+          disabled={busy}
+        >
+          API key
+        </button>
+        <button
+          type="button"
+          onClick={() => { setMethod('password'); setError(null); }}
+          className={clsx('btn flex-1 text-2xs py-1', method === 'password' ? 'btn-primary' : 'btn-secondary')}
+          disabled={busy}
+        >
+          Password
+        </button>
+      </div>
+      {method === 'apikey' ? (
+        <input
+          className="input w-full text-xs"
+          type="password"
+          placeholder="API key (blank for local-mode hub)"
+          value={token}
+          onChange={(e) => { setToken(e.target.value); setError(null); }}
+          disabled={busy}
+          autoComplete="off"
+        />
+      ) : (
+        <>
+          <input
+            className="input w-full text-xs"
+            placeholder="Username"
+            value={username}
+            onChange={(e) => { setUsername(e.target.value); setError(null); }}
+            disabled={busy}
+            autoComplete="off"
+          />
+          <input
+            className="input w-full text-xs"
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => { setPassword(e.target.value); setError(null); }}
+            disabled={busy}
+            autoComplete="off"
+          />
+        </>
+      )}
       <input
         className="input w-full text-xs"
         placeholder="Label (optional)"
@@ -232,7 +281,7 @@ function AddConnectionForm({
       <button
         type="submit"
         className="btn btn-primary w-full flex items-center justify-center gap-1.5 text-xs"
-        disabled={busy || !url.trim()}
+        disabled={busy || !canSubmit}
       >
         {busy && <LoadingSpinner size="sm" />}
         Connect

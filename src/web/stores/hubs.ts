@@ -63,11 +63,15 @@ interface HubsState {
   /** Guarantee a same-origin "this hub" connection and reconcile `activeHubId`
    *  to whatever `lib/hub.ts` is actually pointed at (source of truth on boot). */
   ensureSeed: (current: AuthView) => void;
-  /** Validate a credential against a remote hub, then save it. Throws on failure. */
+  /** Validate a credential against a remote hub, then save it. Throws on failure.
+   *  Provide either a `token` (API key) or `username`+`password` (password login,
+   *  exchanged for a scoped token via the remote hub's POST /auth/login). */
   addConnection: (input: {
     label?: string;
     origin: string;
-    token: string | null;
+    token?: string | null;
+    username?: string;
+    password?: string;
   }) => Promise<HubConnection>;
   removeConnection: (id: string) => void;
   renameConnection: (id: string, label: string) => void;
@@ -131,7 +135,7 @@ export const useHubsStore = create<HubsState>()(
         });
       },
 
-      addConnection: async ({ label, origin, token }) => {
+      addConnection: async ({ label, origin, token: tokenInput, username, password }) => {
         const o = normalizeOrigin(origin);
         if (!o) throw new Error('Enter a full hub URL, e.g. https://mini:7836');
         try {
@@ -141,6 +145,34 @@ export const useHubsStore = create<HubsState>()(
         }
         if (get().connections.some((c) => c.origin === o)) {
           throw new Error('A connection to that hub already exists.');
+        }
+
+        // Password login: exchange username/password for a scoped token on the
+        // remote hub, then treat it like any other bearer credential below.
+        let token: string | null = tokenInput ?? null;
+        if (username && password) {
+          let loginRes: Response;
+          try {
+            loginRes = await fetch(`${o}/api/v1/auth/login`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username, password }),
+            });
+          } catch {
+            throw new Error(`Could not reach the hub at ${o}.`);
+          }
+          if (!loginRes.ok) {
+            throw new Error(
+              loginRes.status === 401
+                ? 'Invalid username or password.'
+                : loginRes.status === 400
+                  ? 'This hub does not accept password login (it uses SwarmHub OAuth).'
+                  : `Login failed (HTTP ${loginRes.status}).`,
+            );
+          }
+          const loginBody = (await loginRes.json().catch(() => ({}))) as { token?: string };
+          if (!loginBody.token) throw new Error('Login response did not include a token.');
+          token = loginBody.token;
         }
 
         const authHeaders: Record<string, string> = token

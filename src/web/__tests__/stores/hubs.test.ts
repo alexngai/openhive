@@ -151,4 +151,48 @@ describe('addConnection', () => {
       useHubsStore.getState().addConnection({ origin: 'https://mini:7836', token: 't' }),
     ).rejects.toThrow(/already exists/);
   });
+
+  it('password login: exchanges username/password for a token via /auth/login, then saves', async () => {
+    const calls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      const u = String(url);
+      calls.push(`${(init?.method ?? 'GET')} ${u}`);
+      if (u.endsWith('/api/v1/auth/login')) return okJson(200, { token: 'ohk_fromlogin', agent: agent('op') });
+      if (u.endsWith('/api/v1/agents/me')) return okJson(200, { data: agent('op') });
+      if (u.endsWith('/api/v1/auth/mode')) return okJson(200, { mode: 'local' });
+      if (u.endsWith('/.well-known/openhive.json')) return okJson(200, { name: 'Mini' });
+      return okJson(404, {});
+    });
+
+    const conn = await useHubsStore.getState().addConnection({
+      origin: 'https://mini:7836',
+      username: 'operator',
+      password: 'pw',
+    });
+    // The saved credential is the token minted by the remote hub's login.
+    expect(conn.token).toBe('ohk_fromlogin');
+    expect(calls).toContain('POST https://mini:7836/api/v1/auth/login');
+  });
+
+  it('password login: surfaces a 401 as invalid credentials', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/api/v1/auth/login')) return okJson(401, { error: 'Invalid credentials' });
+      return okJson(404, {});
+    });
+    await expect(
+      useHubsStore.getState().addConnection({ origin: 'https://mini:7836', username: 'operator', password: 'bad' }),
+    ).rejects.toThrow(/Invalid username or password/);
+  });
+
+  it('password login: surfaces a 400 (swarmhub-mode hub) clearly', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/api/v1/auth/login')) return okJson(400, { error: 'Not available in swarmhub mode' });
+      return okJson(404, {});
+    });
+    await expect(
+      useHubsStore.getState().addConnection({ origin: 'https://mini:7836', username: 'operator', password: 'pw' }),
+    ).rejects.toThrow(/does not accept password login/);
+  });
 });

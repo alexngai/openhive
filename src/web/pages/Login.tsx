@@ -6,8 +6,10 @@ import { Logo } from '../components/common/Logo';
 
 export function Login() {
   const [apiKey, setApiKey] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const navigate = useNavigate();
-  const { login, isLoading, error, clearError, swarmhubOAuth, authMode, isAuthenticated } = useAuthStore();
+  const { login, loginWithPassword, isLoading, error, clearError, swarmhubOAuth, authMode, isAuthenticated } = useAuthStore();
 
   // Redirect away if already authenticated (e.g. local mode auto-auth)
   useEffect(() => {
@@ -21,6 +23,17 @@ export function Login() {
     if (!apiKey.trim()) return;
     try {
       await login(apiKey.trim());
+      navigate('/');
+    } catch {
+      // Error handled by store
+    }
+  };
+
+  const handlePasswordLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!username.trim() || !password) return;
+    try {
+      await loginWithPassword(username.trim(), password);
       navigate('/');
     } catch {
       // Error handled by store
@@ -62,28 +75,76 @@ export function Login() {
 
         {/* SwarmHub OAuth login (for humans) */}
         {authMode === 'swarmhub' && swarmhubOAuth && (
-          <>
-            <button
-              onClick={handleSwarmHubLogin}
-              className="btn btn-primary w-full flex items-center justify-center gap-1.5 text-xs mb-4"
-            >
-              Login with SwarmHub
-            </button>
+          <button
+            onClick={handleSwarmHubLogin}
+            className="btn btn-primary w-full flex items-center justify-center gap-1.5 text-xs mb-4"
+          >
+            Login with SwarmHub
+          </button>
+        )}
 
-            <div className="relative my-4">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t" style={{ borderColor: 'var(--color-border-subtle)' }} />
-              </div>
-              <div className="relative flex justify-center text-2xs">
-                <span className="px-2" style={{
-                  backgroundColor: 'var(--color-surface)',
-                  color: 'var(--color-text-muted)',
-                }}>
-                  or use an API key
-                </span>
-              </div>
+        {/* Password login (self-hosted human operators). /auth/login is gated
+            off in swarmhub mode, so only offer it in local mode. */}
+        {authMode !== 'swarmhub' && (
+          <form onSubmit={handlePasswordLogin}>
+            <div className="mb-3">
+              <label htmlFor="username" className="block text-xs font-medium mb-1"
+                style={{ color: 'var(--color-text-secondary)' }}>
+                Username
+              </label>
+              <input
+                id="username"
+                type="text"
+                autoComplete="username"
+                value={username}
+                onChange={(e) => { setUsername(e.target.value); clearError(); }}
+                placeholder="Your operator username"
+                className="input w-full"
+                disabled={isLoading}
+              />
             </div>
-          </>
+            <div className="mb-3">
+              <label htmlFor="password" className="block text-xs font-medium mb-1"
+                style={{ color: 'var(--color-text-secondary)' }}>
+                Password
+              </label>
+              <input
+                id="password"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); clearError(); }}
+                placeholder="Your password"
+                className="input w-full"
+                disabled={isLoading}
+              />
+            </div>
+            <button
+              type="submit"
+              className="btn btn-primary w-full flex items-center justify-center gap-1.5 text-xs"
+              disabled={isLoading || !username.trim() || !password}
+            >
+              {isLoading && <LoadingSpinner size="sm" />}
+              Log In
+            </button>
+          </form>
+        )}
+
+        {/* Divider before the API-key method (shown once auth mode is known) */}
+        {authMode && (
+          <div className="relative my-4">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t" style={{ borderColor: 'var(--color-border-subtle)' }} />
+            </div>
+            <div className="relative flex justify-center text-2xs">
+              <span className="px-2" style={{
+                backgroundColor: 'var(--color-surface)',
+                color: 'var(--color-text-muted)',
+              }}>
+                or use an API key
+              </span>
+            </div>
+          </div>
         )}
 
         {/* API key login (for agents/bots) */}

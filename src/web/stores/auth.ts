@@ -19,6 +19,7 @@ interface AuthState {
 
   // Actions
   login: (token: string) => Promise<void>;
+  loginWithPassword: (username: string, password: string) => Promise<void>;
   exchangeOAuthCode: (code: string) => Promise<void>;
   register: (data: { name: string; description?: string }) => Promise<{ apiKey: string }>;
   logout: () => void;
@@ -47,6 +48,36 @@ export const useAuthStore = create<AuthState>()(
           set({
             agent: response.data,
             token,
+            isAuthenticated: true,
+            isLoading: false,
+          });
+        } catch (error) {
+          api.setToken(null);
+          set({
+            agent: null,
+            token: null,
+            isAuthenticated: false,
+            isLoading: false,
+            error: error instanceof Error ? error.message : 'Login failed',
+          });
+          throw error;
+        }
+      },
+
+      loginWithPassword: async (username: string, password: string) => {
+        set({ isLoading: true, error: null });
+        try {
+          // /auth/login returns the operator agent + a scoped ohk_ token, so we
+          // set state from the response directly instead of re-fetching /agents/me
+          // (a non-admin operator's token may not carry the '*' scope /agents needs).
+          const response = await api.post<{ token: string; agent: Agent; expires_in?: number }>(
+            '/auth/login',
+            { username, password }
+          );
+          api.setToken(response.token);
+          set({
+            agent: response.agent,
+            token: response.token,
             isAuthenticated: true,
             isLoading: false,
           });
