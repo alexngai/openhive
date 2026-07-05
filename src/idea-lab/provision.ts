@@ -18,7 +18,8 @@
  */
 
 import * as path from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { evaluateCron } from 'swarm-dispatch';
 
 import * as resourcesDAL from '../db/dal/syncable-resources.js';
@@ -30,6 +31,7 @@ import {
   daemonGetGraph,
   resolveDaemonSocket,
 } from '../map/task-daemon-client.js';
+import { applyGitSyncConfig, type GitSyncMetadata } from '../swarmkit/git-sync-config.js';
 import { DEFAULT_IDEA_LAB_PACK } from './pack.js';
 import { objectiveKey, roleKey, type IdeaLabPack } from './types.js';
 
@@ -49,6 +51,12 @@ export interface ProvisionIdeaLabDeps {
   targetSwarmIds?: string[];
   /** Schedule reconcile mode (default "managed"). Objectives are always create-only. */
   reconcile?: ReconcileMode;
+  /**
+   * Optional shared git remote for the lab graph. When set, the graph is
+   * registered as a standard git-synced task resource (metadata.git_sync +
+   * applyGitSyncConfig). When unset, the graph is hub-local (default).
+   */
+  gitRemote?: string;
   logger?: { info: (m: string) => void; warn: (m: string) => void };
 }
 
@@ -72,6 +80,24 @@ function readPayload(payload: unknown): Record<string, unknown> {
     }
   }
   return (payload ?? {}) as Record<string, unknown>;
+}
+
+/**
+ * Ensure `root` is a git working copy whose `origin` points at `remote`.
+ * git-inits if needed and adds/updates the remote. No fetch/clone here — the
+ * opentasks daemon's git-sync (pullOnStartup) converges content on start.
+ */
+function ensureGitRemote(root: string, remote: string): void {
+  mkdirSync(root, { recursive: true });
+  if (!existsSync(path.join(root, '.git'))) {
+    execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' });
+  }
+  try {
+    execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['remote', 'set-url', 'origin', remote], { cwd: root, stdio: 'ignore' });
+  } catch {
+    execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: root, stdio: 'ignore' });
+  }
 }
 
 /**
@@ -106,19 +132,48 @@ export async function provisionIdeaLab(
   }
 
   // 1. Ensure the lab's OpenTasks graph resource (holds ideas + objectives).
-  const graphDir = path.join(deps.dataDir, 'idea-lab', '.opentasks');
+  //    Default: a hub-local graph (git_remote_url points at the local dir).
+  //    When `gitRemote` is set, it becomes a STANDARD git-synced task resource
+  //    — same metadata.git_sync + applyGitSyncConfig any git-backed opentasks
+  //    graph uses — so connected swarms can clone/read/write it and converge.
+  //    Nothing here is idea-lab-special; regular opentasks flows are untouched.
+  const graphRoot = path.join(deps.dataDir, 'idea-lab');
+  const graphDir = path.join(graphRoot, '.opentasks');
   ensureInitialized(graphDir);
+
+  let graphRemoteUrl = graphDir;
+  const graphMetadata: Record<string, unknown> = { opentasks: true, idea_lab: true };
+
+  if (deps.gitRemote) {
+    graphRemoteUrl = deps.gitRemote;
+    const gitSync: GitSyncMetadata = {
+      enabled: true,
+      remote: 'origin',
+      autoCommit: true,
+      autoPush: true,
+      pullOnStartup: true,
+      pullOnSignal: true,
+    };
+    graphMetadata.git_sync = gitSync;
+    try {
+      ensureGitRemote(graphRoot, deps.gitRemote);
+      applyGitSyncConfig(graphRoot, gitSync);
+    } catch (err) {
+      summary.warnings.push(`git-sync setup for lab graph failed: ${(err as Error).message}`);
+    }
+  }
+
   const graphUpsert = resourcesDAL.upsertDiscoveredResource({
     resource_type: 'task',
     name: pack.graph.name,
     description: pack.graph.description ?? 'Idea-lab OpenTasks graph',
-    git_remote_url: graphDir,
+    git_remote_url: graphRemoteUrl,
     local_path: graphDir,
     sync_strategy: 'local',
     owner_agent_id: owner.id,
     scope: 'global',
     visibility: 'public',
-    metadata: { opentasks: true, idea_lab: true },
+    metadata: graphMetadata,
   });
   summary.graph = { resourceId: graphUpsert.resource.id, created: graphUpsert.created };
 

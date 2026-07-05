@@ -508,6 +508,16 @@ export const ConfigSchema = z.object({
        * Objectives are always create-only regardless.
        */
       reconcile: z.enum(["managed", "create-only"]).default("managed"),
+      /**
+       * Optional shared git remote for the lab graph. When set, the lab graph
+       * is provisioned as a standard git-synced task resource (reusing
+       * metadata.git_sync + applyGitSyncConfig, exactly like any git-backed
+       * opentasks graph) so connected swarms can clone, read, and write it and
+       * converge with the hub. When unset (default), the lab graph is hub-local.
+       * Either way, regular opentasks flows are unaffected — this only shapes
+       * the idea-lab's own graph resource.
+       */
+      gitRemote: z.string().optional(),
     })
     .default({}),
 

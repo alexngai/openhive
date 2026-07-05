@@ -1158,6 +1158,7 @@ export async function createHive(
             hiveId: config.ideaLab.hiveId,
             targetSwarmIds: config.ideaLab.targetSwarmIds,
             reconcile: config.ideaLab.reconcile,
+            gitRemote: config.ideaLab.gitRemote,
           });
         } catch (err) {
           console.warn(

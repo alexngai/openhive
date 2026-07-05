@@ -58,6 +58,28 @@ what `upsertDiscoveredResource` does for resources). No schema migration.
   → schedules provisioned paused** (dormant until you configure a target and
   resume). The kill switch (`autonomousDispatchPaused`) still gates fires.
 - `reconcile` (`managed` | `create-only`, default `managed`).
+- `gitRemote` (optional) — shared git remote for the lab graph. **This is the
+  wire that lets connected swarms actually read/write the shared ideas.** When
+  set, the graph is registered as an ordinary git-synced task resource
+  (`git_remote_url` = the remote, `metadata.git_sync` enabled, `applyGitSyncConfig`
+  writing the daemon's `sync.git` block); connected swarms clone it, use their
+  native opentasks tools, and converge via git-sync + MAP `context.*` pull
+  signals. When unset (default), the graph is hub-local.
+
+## The shared-graph mechanism (how roles act on ideas)
+
+Role agents author/critique/score ideas with their **native opentasks tools**
+on a shared, git-synced lab graph — no idea-lab-specific agent surface. The
+path (traced + validated): register the graph git-backed (`gitRemote`) →
+swarms discover it (`map/resources/list`) and subscribe → the graph mounts into
+a swarm at spawn via `git_sync` config (`swarm/manager.ts` `applyGitSyncConfig`)
+→ agents read/write their local clone → git-sync (`autoCommit`/`autoPush` +
+pull-on-`context.*`-signal) converges hub ↔ swarm. The lab graph is **just a
+git-synced task resource** — nothing here forks the general opentasks/sync path,
+so regular opentasks flows (hub-local graphs, non-synced task resources) are
+unaffected. `git-sync-convergence.test.ts` validates the hub↔agent round-trip;
+`provision-git-backed.test.ts` validates the registration. The dispatch
+reply/`done()` capture is irrelevant to this — work flows through the graph.
 
 ## Editing the lab
 
