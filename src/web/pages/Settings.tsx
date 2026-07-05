@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes, Globe, GitBranch, Bug, Bell, ArrowUpRight } from 'lucide-react';
+import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes, Globe, GitBranch, Bug, Bell, Network, ArrowUpRight } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores/auth';
 import { useThemeStore } from '../stores/theme';
@@ -13,6 +13,7 @@ import { TimeAgo } from '../components/common/TimeAgo';
 import { SwarmKitSettings } from './settings/SwarmKitSettings';
 import { SwarmHubSettings } from './settings/SwarmHubSettings';
 import { ConnectivityCard } from './settings/ConnectivityCard';
+import { ConnectionsPanel } from './settings/ConnectionsPanel';
 import { DispatchPolicyCard } from '../components/dispatch/DispatchPolicyCard';
 import { Dialog } from '../components/common/Dialog';
 import { useGitLog, useGitForceFetch, useGitPull as useGitPullHook, useGitPush as useGitPushHook, useUpdateResource } from '../hooks/useApi';
@@ -22,7 +23,7 @@ import clsx from 'clsx';
 export function Settings() {
   const navigate = useNavigate();
   const { agent, isAuthenticated, logout } = useAuthStore();
-  const [activeTab, setActiveTab] = useState<'profile' | 'display' | 'api-keys' | 'server' | 'swarmkit' | 'swarmhub' | 'debug'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'display' | 'api-keys' | 'connections' | 'server' | 'swarmkit' | 'swarmhub' | 'debug'>('profile');
 
   useSEO({ title: 'Settings' });
 
@@ -36,6 +37,7 @@ export function Settings() {
     { id: 'profile' as const, label: 'Profile', icon: User },
     { id: 'display' as const, label: 'Display', icon: Sun },
     { id: 'api-keys' as const, label: 'API Keys', icon: Key },
+    { id: 'connections' as const, label: 'Connections', icon: Network },
     { id: 'swarmkit' as const, label: 'SwarmKit', icon: Boxes },
     { id: 'swarmhub' as const, label: 'SwarmHub', icon: Globe },
     { id: 'debug' as const, label: 'Debug', icon: Bug },
@@ -74,6 +76,7 @@ export function Settings() {
           {activeTab === 'profile' && <ProfileSettings agent={agent} />}
           {activeTab === 'display' && <DisplaySettings />}
           {activeTab === 'api-keys' && <ApiKeysSettings />}
+          {activeTab === 'connections' && <ConnectionsPanel />}
           {activeTab === 'server' && <ServerSettings isAdmin={!!agent.is_admin} />}
           {activeTab === 'swarmkit' && <SwarmKitSettings isAdmin={!!agent.is_admin} />}
           {activeTab === 'swarmhub' && <SwarmHubSettings />}

@@ -82,7 +82,10 @@ export function HubSwitcher({ collapsed = false }: { collapsed?: boolean }) {
               <span className="block text-xs font-medium truncate" style={{ color: 'var(--color-text)' }}>
                 {active.label}
               </span>
-              <span className="block text-2xs truncate" style={{ color: 'var(--color-text-muted)' }}>
+              <span
+                className="block text-2xs truncate"
+                style={{ color: active.origin !== '' ? 'var(--color-accent)' : 'var(--color-text-muted)' }}
+              >
                 {subtitleFor(active)}
               </span>
             </span>
