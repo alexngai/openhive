@@ -249,7 +249,7 @@ export async function createHive(
   // Only active in swarmhub auth mode (managed hosting). Skipped in
   // local mode so developers can access via localhost, IP, tunnels, etc.
   if (config.auth.mode === "swarmhub") {
-    registerHostnameGuard(fastify, config.instance.url);
+    registerHostnameGuard(fastify, config.instance.url, config.instance.allowedHosts);
   }
 
 

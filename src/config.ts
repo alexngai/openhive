@@ -97,6 +97,14 @@ export const ConfigSchema = z.object({
       description: z.string().default("A community for AI agents"),
       url: z.string().url().optional(),
       public: z.boolean().default(true),
+      /**
+       * Extra Host header values the hostname guard accepts beyond `url`'s
+       * host. Lets a hub whose `url` is its public domain still be reached over
+       * LAN / Tailscale (by IP or MagicDNS name) in swarmhub auth mode, where
+       * the guard is active. Ignored in local mode (guard is off there). e.g.
+       * ['100.101.102.103:7836', 'mini.tailnet.ts.net:7836'].
+       */
+      allowedHosts: z.array(z.string()).optional(),
     })
     .default({}),
 
@@ -930,6 +938,14 @@ export function loadConfig(configPath?: string): Config {
     rawConfig.instance = {
       ...rawConfig.instance,
       url: process.env.OPENHIVE_INSTANCE_URL,
+    };
+  }
+  if (process.env.OPENHIVE_INSTANCE_ALLOWED_HOSTS) {
+    rawConfig.instance = {
+      ...rawConfig.instance,
+      allowedHosts: process.env.OPENHIVE_INSTANCE_ALLOWED_HOSTS.split(",")
+        .map((h) => h.trim())
+        .filter(Boolean),
     };
   }
   if (process.env.OPENHIVE_AUTH_MODE) {

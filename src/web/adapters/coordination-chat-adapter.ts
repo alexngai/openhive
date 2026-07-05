@@ -15,16 +15,10 @@
 
 import type { ChatAdapter, ChatMessage } from 'swarmcraft/ui/embed';
 import type { SwarmMessage } from '../lib/api';
-
-const API_BASE = '/api/v1';
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem('openhive_token');
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
+import { restBase, authHeaders } from '../lib/hub';
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${restBase()}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',

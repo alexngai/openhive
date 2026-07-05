@@ -15,6 +15,8 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { init, Terminal, FitAddon } from 'ghostty-web';
 import { api } from '../../lib/api';
+import { toWsOrigin } from '../../lib/hub';
+import { useActiveHub } from '../../hooks/useActiveHub';
 import { generateQueryResponses } from './query-responses';
 import { setupMouseBridge } from './terminal-mouse';
 
@@ -107,11 +109,9 @@ export function TerminalPanel({
   sessionMode = 'tui',
   hideEmbeddedBackLink = false,
 }: TerminalPanelProps) {
-  // Derive WS base URL from current location
-  const wsBase = useMemo(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.host}`;
-  }, []);
+  // Derive WS base URL from the active hub (same-origin default, or a remote hub).
+  const { origin } = useActiveHub();
+  const wsBase = useMemo(() => toWsOrigin(origin), [origin]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);

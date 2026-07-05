@@ -18,19 +18,13 @@ import type {
   ChatMessage,
 } from 'swarmcraft/ui/embed';
 import { useWSStore } from '../hooks/useWebSocket';
-
-const API_BASE = '/api/swarmcraft';
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem('openhive_token');
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
+import { acpBase, authHeaders } from '../lib/hub';
 
 async function acpFetch<T>(path: string, init?: RequestInit): Promise<T> {
   // Only send Content-Type when a body is actually present — Fastify rejects
   // empty POSTs that declare application/json (FST_ERR_CTP_EMPTY_JSON_BODY).
   const hasBody = init?.body !== undefined && init.body !== null;
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${acpBase()}${path}`, {
     ...init,
     headers: {
       ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
