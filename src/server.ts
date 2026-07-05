@@ -1146,6 +1146,26 @@ export async function createHive(
         }
       }
 
+      // Idea lab: idempotently provision the brainstorm-and-work loop
+      // (graph, ledger, seed objectives, role schedules) from its pack.
+      // Opt-in; runs after the hub-default graph so an owner agent exists.
+      // Non-fatal on failure.
+      if (config.ideaLab.enabled) {
+        try {
+          const { provisionIdeaLab } = await import('./idea-lab/index.js');
+          await provisionIdeaLab({
+            dataDir: resolveDataDir(),
+            hiveId: config.ideaLab.hiveId,
+            targetSwarmIds: config.ideaLab.targetSwarmIds,
+            reconcile: config.ideaLab.reconcile,
+          });
+        } catch (err) {
+          console.warn(
+            `[openhive] Idea-lab provisioning failed: ${(err as Error).message}`,
+          );
+        }
+      }
+
       // Start swarm hosting health monitor
       if (swarmManager) {
         swarmManager.startHealthMonitor();
