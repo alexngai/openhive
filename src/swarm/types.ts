@@ -187,6 +187,16 @@ export interface SpawnSwarmInput {
    * plugin-managed sidecar. See docs/HOSTED_SWARM_KINDS_DESIGN.md.
    */
   kind?: HostedSwarmKind;
+  /**
+   * Which swarm-runner *gateway* to spawn. Only meaningful for
+   * `kind: 'swarm-runner'` (the process contract is identical across runners —
+   * same bootstrap token, MAP registration, and dispatch path; only the spawn
+   * command differs). `undefined` / `'swarmkit'` uses `swarm_runner_command`
+   * (the default `@swarmkit-ai/swarm-runner` gateway); any other name resolves
+   * to `swarmHosting.runners[<name>]` (e.g. `'openswarm'` → `openswarm host`).
+   * The chosen runner is recorded on the swarm's metadata for identity.
+   */
+  runner?: string;
   /** Human-readable name for the swarm (auto-generated if omitted) */
   name?: string;
   /** Optional description */
@@ -334,6 +344,21 @@ export interface SwarmProvisionConfig {
    */
   spawn_command_override?: string;
   /**
+   * For `kind: 'swarm-runner'` only: overrides the gateway command the provider
+   * splits + appends `--port/--host/--adapter` to, instead of the manager's
+   * default `swarm_runner_command`. Set by the manager when a non-default
+   * `runner` is selected (e.g. `openswarm host`). Unlike `spawn_command_override`,
+   * the provider STILL appends the standard hosting flags. Persisted so restart
+   * re-spawns the same runner.
+   */
+  swarm_runner_command_override?: string;
+  /**
+   * The selected runner NAME (e.g. `'openswarm'`), for identity + API surfacing.
+   * Absent for the default `'swarmkit'` gateway. Persisted alongside the
+   * command override.
+   */
+  runner?: string;
+  /**
    * For `kind: 'codex'` only — which surface this row was spawned with.
    * `'rpc'` rows route through CodexAppServerManager; `'tui'` (and absent)
    * rows route through PtyManager. Persisted so restart/revive can pick
@@ -470,6 +495,14 @@ export interface SwarmHostingConfig {
   default_provider: HostingProviderType;
   /** Command to run SwarmRunner (e.g. 'npx @swarmkit-ai/swarm-runner' or path to binary) */
   swarm_runner_command: string;
+  /**
+   * Named alternative swarm-runner gateways, keyed by `runner` name → spawn
+   * command. Selected per-spawn via `SpawnSwarmInput.runner`. The default
+   * (`'swarmkit'`) always maps to `swarm_runner_command`; entries here add
+   * others (e.g. `{ openswarm: 'npx openswarm host' }`). Any command listed
+   * gets the same `--port/--host/--adapter` hosting flags appended.
+   */
+  runners?: Record<string, string>;
   /** Base directory for swarm instance data */
   data_dir: string;
   /** Port range for locally spawned swarms [min, max] */

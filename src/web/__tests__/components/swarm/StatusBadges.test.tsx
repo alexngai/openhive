@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import {
   HostedStateBadge,
   MapStatusBadge,
+  KindBadge,
   SectionLabel,
   HOSTED_STATE_STYLES,
   MAP_STATUS_STYLES,
@@ -49,6 +50,33 @@ describe('MapStatusBadge', () => {
   it('falls back to offline style for unknown status', () => {
     render(<MapStatusBadge status="unknown-status" />);
     expect(screen.getByText('Offline')).toBeDefined();
+  });
+});
+
+describe('KindBadge', () => {
+  it('renders nothing for the default swarm-runner (no runner)', () => {
+    const { container } = render(<KindBadge kind="swarm-runner" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders nothing for swarm-runner with the default 'swarmkit' runner", () => {
+    const { container } = render(<KindBadge kind="swarm-runner" runner="swarmkit" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('badges OpenSwarm for the openswarm runner', () => {
+    render(<KindBadge kind="swarm-runner" runner="openswarm" />);
+    expect(screen.getByText('OpenSwarm')).toBeDefined();
+  });
+
+  it('falls back to the raw runner name for an unknown runner', () => {
+    render(<KindBadge kind="swarm-runner" runner="custom-gw" />);
+    expect(screen.getByText('custom-gw')).toBeDefined();
+  });
+
+  it('labels TUI kinds', () => {
+    render(<KindBadge kind="claude-code" />);
+    expect(screen.getByText('Claude Code')).toBeDefined();
   });
 });
 

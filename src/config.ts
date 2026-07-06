@@ -280,6 +280,16 @@ export const ConfigSchema = z.object({
         .default("local"),
       /** Command to run Swarm Runner (e.g. 'npx @swarmkit-ai/swarm-runner' or path to binary) */
       swarm_runner_command: z.string().default("npx @swarmkit-ai/swarm-runner serve"),
+      /**
+       * Named alternative swarm-runner gateways: `runner` name → spawn command.
+       * Selected per-spawn via the `runner` field. The implicit `'swarmkit'`
+       * runner always maps to `swarm_runner_command`; entries here add others.
+       * Seeded with `openswarm` (our in-house harness — `openswarm host` speaks
+       * the same OpenHive hosting contract). Override to point at a local build.
+       */
+      runners: z
+        .record(z.string(), z.string())
+        .default({ openswarm: "npx openswarm host" }),
       /** Base directory for swarm instance data */
       data_dir: z.string().default("./data/swarms"),
       /** Port range for locally spawned swarms [min, max] */

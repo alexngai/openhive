@@ -219,3 +219,44 @@ describe('SpawnSwarmSchema — cwd validation', () => {
     expect(r.success).toBe(false);
   });
 });
+
+describe('SpawnSwarmSchema — runner selection', () => {
+  it('accepts a runner for kind=swarm-runner', () => {
+    const r = SpawnSwarmSchema.safeParse({ ...baseInput, runner: 'openswarm' });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.runner).toBe('openswarm');
+  });
+
+  it('accepts an omitted runner (default swarmkit gateway)', () => {
+    const r = SpawnSwarmSchema.safeParse(baseInput);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.runner).toBeUndefined();
+  });
+
+  it('rejects a runner for kind=claude-code (spawns its own process)', () => {
+    const r = SpawnSwarmSchema.safeParse({
+      kind: 'claude-code',
+      name: 'runner-test',
+      runner: 'openswarm',
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const issue = r.error.issues.find((i) => i.path.includes('runner'));
+      expect(issue?.message).toContain('swarm-runner-specific');
+    }
+  });
+
+  it('rejects a runner for kind=codex', () => {
+    const r = SpawnSwarmSchema.safeParse({
+      kind: 'codex',
+      name: 'runner-test',
+      runner: 'openswarm',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects an empty-string runner (schema enforces min(1))', () => {
+    const r = SpawnSwarmSchema.safeParse({ ...baseInput, runner: '' });
+    expect(r.success).toBe(false);
+  });
+});

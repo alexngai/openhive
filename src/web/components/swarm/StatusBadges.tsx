@@ -56,8 +56,29 @@ export function SandboxBadge() {
   );
 }
 
-export function KindBadge({ kind }: { kind?: 'swarm-runner' | 'claude-code' | 'codex' }) {
-  if (!kind || kind === 'swarm-runner') return null;
+const RUNNER_LABELS: Record<string, string> = { openswarm: 'OpenSwarm' };
+
+export function KindBadge({
+  kind,
+  runner,
+}: {
+  kind?: 'swarm-runner' | 'claude-code' | 'codex';
+  /** Gateway runner for kind=swarm-runner (e.g. 'openswarm'); badges the harness. */
+  runner?: string;
+}) {
+  // For the default swarm-runner gateway there's nothing to badge, but a
+  // non-default runner (openswarm) is its own selectable harness — show it.
+  if (!kind || kind === 'swarm-runner') {
+    if (kind === 'swarm-runner' && runner && runner !== 'swarmkit') {
+      const label = RUNNER_LABELS[runner] ?? runner;
+      return (
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-2xs font-medium bg-amber-500/10 text-amber-400">
+          {label}
+        </span>
+      );
+    }
+    return null;
+  }
   const label = kind === 'claude-code' ? 'Claude Code' : 'Codex';
   // Codex gets a distinct color so the two TUI kinds aren't visually
   // identical at a glance on the swarm cards.

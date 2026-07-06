@@ -200,6 +200,11 @@ export interface HostedSwarm {
   /** Kind of hosted swarm. Defaults to 'swarm-runner' when absent. */
   kind?: 'swarm-runner' | 'claude-code' | 'codex';
   /**
+   * For kind='swarm-runner' only — which gateway runner was spawned
+   * (e.g. 'openswarm'). Absent for the default '@swarmkit-ai/swarm-runner'.
+   */
+  runner?: string;
+  /**
    * For kind='codex' only — which surface this swarm spawned with.
    * 'rpc' rows are driven through openhive chat (POST /codex/turn);
    * 'tui' (and absent) rows are driven through the embedded terminal.

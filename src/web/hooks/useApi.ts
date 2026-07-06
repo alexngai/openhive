@@ -206,6 +206,12 @@ export function useSpawnSwarm() {
        */
       kind?: 'swarm-runner' | 'claude-code' | 'codex';
       /**
+       * swarm-runner-only gateway selector. Omit / 'swarmkit' = the default
+       * @swarmkit-ai/swarm-runner; 'openswarm' (or any configured runner name)
+       * spawns that harness instead. Rejected by the backend for TUI kinds.
+       */
+      runner?: string;
+      /**
        * codex-only surface selector: 'rpc' (chat-driven app-server,
        * backend default) or 'tui' (embedded terminal). Ignored for other
        * kinds.
