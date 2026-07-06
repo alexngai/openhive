@@ -24,7 +24,6 @@ import { skillManagementRoutes } from "./routes/skill-management.js";
 import { specsRoutes } from "./routes/specs.js";
 import { dispatchesRoutes } from "./routes/dispatches.js";
 import { schedulesRoutes } from "./routes/schedules.js";
-import { ideaLabRoutes } from "./routes/idea-lab.js";
 import { experimentsRoutes } from "./routes/experiments.js";
 import { teamsRoutes } from "./routes/teams.js";
 import { loadoutsRoutes } from "./routes/loadouts.js";
@@ -82,7 +81,6 @@ export async function registerRoutes(
       await api.register(specsRoutes, { config });
       await api.register(dispatchesRoutes, { config });
       await api.register(schedulesRoutes, { config });
-      await api.register(ideaLabRoutes, { config });
       await api.register(experimentsRoutes, { config });
       await api.register(teamsRoutes, { config });
       await api.register(loadoutsRoutes, { config });

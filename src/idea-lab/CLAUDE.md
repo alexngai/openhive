@@ -27,28 +27,29 @@ active → done` (archived = killed). Idea metadata lives under
 (`derived_from`, `merged_from`). See `roles/conventions.ts` for the full
 contract shared by every prompt.
 
-## Loading the lab (it's a workload, not hub config)
+## No dedicated surface — the lab is a preset over existing primitives
 
-The idea-lab is **loaded at runtime**, not configured globally at boot — it's a
-workload you run, not hub infrastructure. `POST /idea-lab/load`
-(`src/api/routes/idea-lab.ts`, admin-or-auth-key) calls `provisionIdeaLab(deps)`
-with the instance args in the body:
+The idea-lab has **no backend surface of its own** (no `config.ideaLab`, no
+boot provisioning, no `/idea-lab/*` routes, no CLl). That's deliberate: a lab
+decomposes entirely into things that already have surfaces —
 
-- `targetSwarmIds`, `gitRemote`, `hiveId`, `reconcile`, and an optional full
-  `pack` override (defaults to the checked-in `DEFAULT_IDEA_LAB_PACK`).
+- the five **role dispatches** are ordinary `dispatch_prompt` schedules (the
+  existing `schedules` API/UI),
+- the shared **lab graph** is an ordinary git-synced `task` resource (the
+  existing resources UI + git-sync toggle),
+- the **objectives** are ordinary specs (the existing specs API/UI).
 
-The preset (role prompts + cadences) is checked-in source a hub edits; the
-instance specifics (objectives, target swarms, git remote) come in on load.
-`GET /idea-lab` reports the loaded role schedules; `POST /idea-lab/unload`
-pauses them (dormant, reversible). A dedicated preset/instance system (multiple
-named labs, a `playbook` resource) can be factored out later — this is the
-minimal runtime loader. There is **no** `config.ideaLab` and no boot-time
-provisioning.
+The only idea-lab-specific thing is the *preset*: the role prompts + cadences in
+`pack.ts`. The intended operator path is a **UI preset** — pick/customize the
+preset and apply it, which fans out to the existing schedules (and specs)
+surfaces. `provisionIdeaLab` remains a library function that does the ordered,
+idempotent orchestration (keyed reconcile of the schedules, git-sync graph
+setup, objective seeding) for callers that want it in one shot.
 
 ## Provisioning (the "reload reliably" guarantee)
 
 `provisionIdeaLab(deps)` (`provision.ts`) applies a pack idempotently — safe to
-re-run on every load. Reconciliation is **keyed, never blind**:
+re-run. Reconciliation is **keyed, never blind**:
 
 | Thing | Keyed by | Mode | Primitive |
 |---|---|---|---|
@@ -65,9 +66,9 @@ destructive; the provisioner only creates and updates lab-owned rows.
 `idealab_key` into the payload and matching on it (the app-level analogue of
 what `upsertDiscoveredResource` does for resources). No schema migration.
 
-## Load args
+## provisionIdeaLab args
 
-The `POST /idea-lab/load` body (all optional):
+`provisionIdeaLab(deps)` (all optional except `dataDir`):
 - `targetSwarmIds` — swarms the role dispatches target. **Empty → schedules
   loaded paused** (dormant until you set a target and resume). The kill switch
   (`autonomousDispatchPaused`) still gates fires.
@@ -107,9 +108,6 @@ bundle through tsup with no asset-copy step.
 ## Tests
 
 - `src/__tests__/idea-lab/pack.test.ts` — schema validation (fast, no DB).
-- `src/__tests__/idea-lab/load-route.test.ts` — the runtime loader: `POST
-  /idea-lab/load` creates the schedules idempotently, `GET /idea-lab` reports
-  them, `POST /idea-lab/unload` pauses them, invalid pack → 422, admin-gated.
 - `src/__tests__/idea-lab/provision.test.ts` — idempotency ("provision twice,
   no duplicates"), paused-when-no-targets, managed vs create-only reconcile,
   and that provisioned payloads pass the fire handler's `isValidPayload`.
