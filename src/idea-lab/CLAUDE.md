@@ -27,24 +27,27 @@ active → done` (archived = killed). Idea metadata lives under
 (`derived_from`, `merged_from`). See `roles/conventions.ts` for the full
 contract shared by every prompt.
 
-## No dedicated surface — the lab is a preset over existing primitives
+## Loading the lab (a settings-driven workload, not hub config)
 
-The idea-lab has **no backend surface of its own** (no `config.ideaLab`, no
-boot provisioning, no `/idea-lab/*` routes, no CLl). That's deliberate: a lab
-decomposes entirely into things that already have surfaces —
+The idea-lab is a workload you load, not hub infrastructure — so there's no
+`config.ideaLab` and no boot provisioning. It's loaded from the **Settings UI**
+(`IdeaLabCard` in the server tab, `src/web/pages/settings/IdeaLabCard.tsx`),
+which drives a slim admin-scoped route (`src/api/routes/idea-lab-admin.ts`):
 
-- the five **role dispatches** are ordinary `dispatch_prompt` schedules (the
-  existing `schedules` API/UI),
-- the shared **lab graph** is an ordinary git-synced `task` resource (the
-  existing resources UI + git-sync toggle),
-- the **objectives** are ordinary specs (the existing specs API/UI).
+- `POST /admin/idea-lab/setup` → `provisionIdeaLab` — the whole bundle
+  (git-synced graph, objectives, role schedules), idempotent.
+- `GET /admin/idea-lab` → status (the loaded role schedules).
+- `POST /admin/idea-lab/teardown` → pause the role schedules (soft, reversible).
 
-The only idea-lab-specific thing is the *preset*: the role prompts + cadences in
-`pack.ts`. The intended operator path is a **UI preset** — pick/customize the
-preset and apply it, which fans out to the existing schedules (and specs)
-surfaces. `provisionIdeaLab` remains a library function that does the ordered,
-idempotent orchestration (keyed reconcile of the schedules, git-sync graph
-setup, objective seeding) for callers that want it in one shot.
+Why an admin route and not the generic schedules/specs endpoints: those
+deliberately can't carry what a lab needs — `POST /specs` drops `metadata` (so
+objectives can't be tagged `anchored`), `POST /schedules` strips unknown payload
+keys (so the `idealab_key` marker is lost), and nothing provisions a git-synced
+task graph. So the lab gets one setup action over the tested `provisionIdeaLab`
+orchestration rather than five hand-wired, gap-ridden steps. The preset (role
+prompts + cadences) stays checked-in source (`pack.ts`); the setup body carries
+the instance specifics (objectives, target swarms, git remote), and a hub can
+POST a full `pack` override to customize prompts/cadences.
 
 ## Provisioning (the "reload reliably" guarantee)
 
@@ -108,6 +111,10 @@ bundle through tsup with no asset-copy step.
 ## Tests
 
 - `src/__tests__/idea-lab/pack.test.ts` — schema validation (fast, no DB).
+- `src/__tests__/idea-lab/admin-route.test.ts` — the settings-driven setup:
+  `POST /admin/idea-lab/setup` provisions the schedules idempotently, `GET`
+  reports status, `POST /admin/idea-lab/teardown` pauses them, invalid pack →
+  422, admin-gated.
 - `src/__tests__/idea-lab/provision.test.ts` — idempotency ("provision twice,
   no duplicates"), paused-when-no-targets, managed vs create-only reconcile,
   and that provisioned payloads pass the fire handler's `isValidPayload`.

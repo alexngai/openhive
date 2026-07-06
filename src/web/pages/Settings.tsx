@@ -15,6 +15,7 @@ import { SwarmHubSettings } from './settings/SwarmHubSettings';
 import { ConnectivityCard } from './settings/ConnectivityCard';
 import { ConnectionsPanel } from './settings/ConnectionsPanel';
 import { DispatchPolicyCard } from '../components/dispatch/DispatchPolicyCard';
+import { IdeaLabCard } from './settings/IdeaLabCard';
 import { Dialog } from '../components/common/Dialog';
 import { useGitLog, useGitForceFetch, useGitPull as useGitPullHook, useGitPush as useGitPushHook, useUpdateResource } from '../hooks/useApi';
 import { ArrowDownToLine, ArrowUpFromLine, RotateCcw, ExternalLink, Unlink } from 'lucide-react';
@@ -265,6 +266,9 @@ function ServerSettings({ isAdmin }: { isAdmin: boolean }) {
 
       {/* Runtime safety: dispatch kill switch (Stream 2 D9). */}
       <DispatchPolicyCard isAdmin={isAdmin} />
+
+      {/* Idea lab: load the brainstorm-and-work loop as a workload. */}
+      <IdeaLabCard isAdmin={isAdmin} />
 
       {!isAdmin && (
         <div className="p-2 rounded-md text-2xs" style={{ color: 'var(--color-text-muted)', backgroundColor: 'var(--color-elevated)' }}>
