@@ -102,11 +102,30 @@ bundle through tsup with no asset-copy step.
   image (it needs HOME/OPENHIVE_HOME to survive), so this hand-builds an
   in-process IPC server bound to the resolved socket — the same approach as
   `opentasks-daemon-integration.test.ts` — and `withDaemon` reuses it.
+- `src/__tests__/idea-lab/provision-git-backed.test.ts` — with `gitRemote` set,
+  the lab graph is registered as a git-synced task resource (git_remote_url,
+  metadata.git_sync, `sync.git` on disk, git origin); without it, stays hub-local
+  and no git repo is created. Proves regular flows are unaffected.
+- `src/__tests__/idea-lab/git-sync-convergence.test.ts` — the shared-graph
+  mechanism: a bare git remote + a hub clone + an agent clone; hub-authored
+  objectives converge to the agent and an agent-authored idea back to the hub.
 - `src/__tests__/idea-lab/live-role-dispatch-e2e.test.ts` — LIVE_AGENT_E2E
   drive path: `provisionIdeaLab` → role schedule → fire → dispatch (schedule
   initiator) → orchestrator claims + mail-routes to a real macro-agent.
-  Agent-side completion of the `dispatch_prompt` is logged best-effort (see
-  below), not asserted.
+  Agent-side completion of the `dispatch_prompt` is logged best-effort, not
+  asserted.
+- `src/__tests__/idea-lab/live-composed-rest-e2e.test.ts` — **the composed loop,
+  green anywhere.** LIVE_AGENT_E2E; a real Claude Code agent reads a hub-seeded
+  objective (carrying a read-token) and writes a derived idea (token + marker)
+  back into the shared lab graph over the opentasks REST interface. Asserts a
+  hub-graph node carrying both — so the agent provably read and wrote.
+- `src/__tests__/idea-lab/live-composed-gitsync-e2e.test.ts` — **the
+  production-faithful composed loop.** Same read→write→converge, but git-sync-
+  native (a real cc-swarm agent's git-synced opentasks). Double-gated
+  (LIVE_AGENT_E2E + IDEA_LAB_GITSYNC_E2E) because the agent-side opentasks daemon
+  must run with git-sync — which needs HOME/OPENHIVE_HOME and doesn't start in
+  every local env (cc-swarm swallows the failure). Run it in a daemon-capable
+  CI/prod image; the REST test is the green proof elsewhere.
 
 ## Known nuances / follow-ups
 
