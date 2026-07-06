@@ -1,4 +1,7 @@
-const API_BASE = '/api/v1';
+import { getActiveOrigin, getActiveToken, setActiveToken } from './hub';
+
+/** REST path prefix; the hub origin is resolved dynamically per request. */
+const API_PATH = '/api/v1';
 
 /** Body shape every openhive route returns on non-2xx (when JSON-parseable). */
 export interface ApiErrorBody {
@@ -26,30 +29,21 @@ export class ApiClientError extends Error {
 }
 
 export class ApiClient {
-  private baseUrl: string;
-  private token: string | null = null;
-
-  constructor(baseUrl: string = API_BASE) {
-    this.baseUrl = baseUrl;
-    // Try to restore token from localStorage
-    if (typeof window !== 'undefined') {
-      this.token = localStorage.getItem('openhive_token');
-    }
+  /**
+   * Full REST URL for a path against the *active* hub. Origin is resolved per
+   * call from src/web/lib/hub.ts, so switching hubs takes effect immediately
+   * without reconstructing the client.
+   */
+  private url(path: string): string {
+    return `${getActiveOrigin()}${API_PATH}${path}`;
   }
 
   setToken(token: string | null) {
-    this.token = token;
-    if (typeof window !== 'undefined') {
-      if (token) {
-        localStorage.setItem('openhive_token', token);
-      } else {
-        localStorage.removeItem('openhive_token');
-      }
-    }
+    setActiveToken(token);
   }
 
   getToken(): string | null {
-    return this.token;
+    return getActiveToken();
   }
 
   private async request<T>(
@@ -58,14 +52,15 @@ export class ApiClient {
     body?: unknown,
     options?: RequestInit
   ): Promise<T> {
-    const url = `${this.baseUrl}${path}`;
+    const url = this.url(path);
+    const token = getActiveToken();
     const headers: HeadersInit = {
       ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...options?.headers,
     };
 
-    if (this.token) {
-      (headers as Record<string, string>)['Authorization'] = `Bearer ${this.token}`;
+    if (token) {
+      (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
     }
 
     const response = await fetch(url, {
@@ -108,11 +103,12 @@ export class ApiClient {
   }
 
   async upload<T>(path: string, formData: FormData): Promise<T> {
-    const url = `${this.baseUrl}${path}`;
+    const url = this.url(path);
+    const token = getActiveToken();
     const headers: HeadersInit = {};
 
-    if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
 
     const response = await fetch(url, {
@@ -203,6 +199,11 @@ export interface HostedSwarm {
   workspace?: { repos: Array<{ url: string; branch?: string; path?: string }> };
   /** Kind of hosted swarm. Defaults to 'swarm-runner' when absent. */
   kind?: 'swarm-runner' | 'claude-code' | 'codex';
+  /**
+   * For kind='swarm-runner' only — which gateway runner was spawned
+   * (e.g. 'openswarm'). Absent for the default '@swarmkit-ai/swarm-runner'.
+   */
+  runner?: string;
   /**
    * For kind='codex' only — which surface this swarm spawned with.
    * 'rpc' rows are driven through openhive chat (POST /codex/turn);

@@ -5,6 +5,7 @@ import { uploadsRoutes } from "./routes/uploads.js";
 import { authRoutes } from "./routes/auth.js";
 import { federationRoutes } from "./routes/federation.js";
 import { adminRoutes } from "./routes/admin.js";
+import { ideaLabAdminRoutes } from "./routes/idea-lab-admin.js";
 import { memoryBanksRoutes } from "./routes/memory-banks.js";
 import { resourcesRoutes } from "./routes/resources.js";
 import { resourceContentRoutes } from "./routes/resource-content.js";
@@ -62,6 +63,7 @@ export async function registerRoutes(
       });
       await api.register(federationRoutes, { config });
       await api.register(adminRoutes, { config });
+      await api.register(ideaLabAdminRoutes, { config });
       await api.register(memoryBanksRoutes, { config });
       await api.register(resourcesRoutes, { config });
       await api.register(resourceContentRoutes, { config });

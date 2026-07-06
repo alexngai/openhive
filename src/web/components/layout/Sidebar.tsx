@@ -12,6 +12,7 @@ import { useSessionAttentionStore } from '../../stores/session-attention';
 import { useState, useCallback } from 'react';
 import clsx from 'clsx';
 import { Logo } from '../common/Logo';
+import { HubSwitcher } from './HubSwitcher';
 
 interface NavItem {
   to: string;
@@ -180,7 +181,8 @@ export function Sidebar() {
         </Link>
       </div>
 
-
+      {/* Hub connection switcher */}
+      <HubSwitcher collapsed={collapsed} />
 
       {/* Navigation */}
       <nav className={clsx('flex-1 overflow-y-auto py-2', collapsed ? 'px-1 space-y-0.5' : 'px-0')}>

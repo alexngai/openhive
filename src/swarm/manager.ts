@@ -1167,6 +1167,32 @@ export class SwarmManager {
     }
   }
 
+  /**
+   * Resolve a `runner` selector to a concrete spawn command. The default
+   * (`undefined` / `'swarmkit'`) is the configured `swarm_runner_command`
+   * gateway; any other name must exist in `swarmHosting.runners`. Throws
+   * `UNKNOWN_RUNNER` for an unrecognized name so the operator gets a clear
+   * error instead of a silent fallback to the wrong harness.
+   */
+  private resolveRunner(runner: string | undefined): { name: string; command: string } {
+    const DEFAULT = 'swarmkit';
+    if (runner === undefined || runner === '' || runner === DEFAULT) {
+      return {
+        name: DEFAULT,
+        command: this.resolveSwarmRunnerCommand(this.config.swarm_runner_command),
+      };
+    }
+    const configured = this.config.runners?.[runner];
+    if (configured === undefined || configured === '') {
+      const known = [DEFAULT, ...Object.keys(this.config.runners ?? {})].join(', ');
+      throw new SwarmHostingError(
+        'UNKNOWN_RUNNER',
+        `Unknown runner "${runner}". Configured runners: ${known}`,
+      );
+    }
+    return { name: runner, command: this.resolveSwarmRunnerCommand(configured) };
+  }
+
   // ==========================================================================
   // Preflight
   // ==========================================================================
@@ -1783,6 +1809,10 @@ export class SwarmManager {
     // Generate bootstrap token
     const adapter = input.adapter ?? 'macro-agent';
 
+    // Resolve the gateway runner (default swarmkit, or e.g. openswarm). Throws
+    // UNKNOWN_RUNNER before any ports are allocated so a bad selector is cheap.
+    const runner = this.resolveRunner(input.runner);
+
     // Allocate port(s) — adapters like macro-agent need several consecutive
     // ports (see getPortStride). allocatePorts probes the OS to avoid collisions
     // with stale processes or previously assigned adjacent ports.
@@ -2037,6 +2067,11 @@ export class SwarmManager {
       bootstrap: input.bootstrap,
       ...(input.repo_id !== undefined && { repo_id: input.repo_id }),
       ...(input.workspace_policy !== undefined && { workspace_policy: input.workspace_policy }),
+      // Non-default runner → tell the provider which gateway command to spawn.
+      // The default swarmkit path is left untouched (provider uses its own).
+      ...(runner.name !== 'swarmkit' && { swarm_runner_command_override: runner.command }),
+      // Record the runner NAME too (persisted for restart + API surfacing).
+      ...(runner.name !== 'swarmkit' && { runner: runner.name }),
     };
 
     // Create DB record — id is pre-generated so data_dir matches.
@@ -2115,6 +2150,8 @@ export class SwarmManager {
               hosted: true,
               hosted_swarm_id: hosted.id,
               provider: providerType,
+              // Record the gateway runner for identity (omitted for the default).
+              ...(runner.name !== 'swarmkit' && { runner: runner.name }),
             },
           });
         } else {
@@ -2139,6 +2176,8 @@ export class SwarmManager {
               hosted: true,
               hosted_swarm_id: hosted.id,
               provider: providerType,
+              // Record the gateway runner for identity (omitted for the default).
+              ...(runner.name !== 'swarmkit' && { runner: runner.name }),
             },
           });
           preRegisteredSwarmId = mapResult.swarm.id;
@@ -3232,6 +3271,7 @@ export type SwarmHostingErrorCode =
   | 'RESTART_FAILED'
   | 'REPO_NOT_FOUND'
   | 'WORKSPACE_POLICY_PERSIST_FAILED'
+  | 'UNKNOWN_RUNNER'
   | 'NOT_IMPLEMENTED';
 
 export class SwarmHostingError extends Error {

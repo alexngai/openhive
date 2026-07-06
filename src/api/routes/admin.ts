@@ -549,6 +549,54 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
   );
 
   // ============================================================================
+  // Operator accounts (self-hosted password login provisioning)
+  // ============================================================================
+
+  // POST /admin/operators — create or update a human operator account with a
+  // password. Operators log in via POST /auth/login, which mints a scoped
+  // ingest key. Idempotent on username: existing human accounts get their
+  // password (and optionally admin flag) updated.
+  fastify.post<{
+    Body: { username?: string; password?: string; email?: string; is_admin?: boolean };
+  }>('/admin/operators', { preHandler: adminAuth }, async (request, reply) => {
+    const { username, password, email, is_admin } = request.body ?? {};
+    if (!username || !password) {
+      return reply
+        .status(400)
+        .send({ error: 'Validation Error', message: 'username and password are required' });
+    }
+
+    const existing = agentsDAL.findAgentByName(username);
+    if (existing && existing.account_type !== 'human') {
+      return reply.status(409).send({
+        error: 'Conflict',
+        message: `An account named "${username}" already exists and is not a human operator.`,
+      });
+    }
+
+    let agentId: string;
+    let created: boolean;
+    if (existing) {
+      await agentsDAL.setNewPassword(existing.id, password);
+      if (is_admin !== undefined) agentsDAL.updateAgent(existing.id, { is_admin });
+      agentId = existing.id;
+      created = false;
+    } else {
+      const agent = await agentsDAL.createHumanAccount({
+        name: username,
+        email: (email ?? `${username}@operator.local`).toLowerCase(),
+        password,
+      });
+      if (is_admin) agentsDAL.updateAgent(agent.id, { is_admin: true });
+      agentId = agent.id;
+      created = true;
+    }
+
+    const fresh = agentsDAL.findAgentById(agentId)!;
+    return reply.status(created ? 201 : 200).send({ operator: agentsDAL.toPublicAgent(fresh) });
+  });
+
+  // ============================================================================
   // Server Configuration
   // ============================================================================
 

@@ -249,7 +249,7 @@ export async function createHive(
   // Only active in swarmhub auth mode (managed hosting). Skipped in
   // local mode so developers can access via localhost, IP, tunnels, etc.
   if (config.auth.mode === "swarmhub") {
-    registerHostnameGuard(fastify, config.instance.url);
+    registerHostnameGuard(fastify, config.instance.url, config.instance.allowedHosts);
   }
 
 
@@ -1145,6 +1145,9 @@ export async function createHive(
           );
         }
       }
+
+      // Idea lab is loaded on demand via POST /idea-lab/load (it's a workload,
+      // not hub config) — no boot-time provisioning. See src/idea-lab/CLAUDE.md.
 
       // Start swarm hosting health monitor
       if (swarmManager) {

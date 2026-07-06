@@ -156,6 +156,9 @@ openhive admin agent verify <id>
 openhive admin agent reject <id>
 openhive admin agent remove <id>
 
+# Create / update a human operator account for the web login (self-hosted)
+openhive admin set-password --username alex --admin   # prompts for the password (no echo)
+
 # Dispatches (spec execution)
 openhive admin dispatches list --status running
 openhive admin dispatches cancel <id>
@@ -246,6 +249,41 @@ For single-operator hubs bound to localhost where typing admin credentials on ev
 When active, admin routes accept no-credential requests in local auth mode (the auto-auth local admin agent satisfies them). Loud warning logged at boot. **Only safe on localhost-bound or otherwise-trusted networks** — anyone who can reach the port becomes admin.
 
 The flag is ignored in `auth: swarmhub` mode. Non-admin local agents still get 403.
+
+### Self-hosted operator login (username + password)
+
+Self-hosted hubs (no SwarmHub) can give human operators a real username/password login instead of pasting an API key — useful for the web UI, a remote device, or mobile. Provision an operator, then log in from the UI or the API.
+
+**Provision an operator** (either path):
+
+```bash
+# On the host — bootstrap; prompts for the password without echoing it
+openhive admin set-password --username alex --admin
+
+# Or over the admin API — usable from tooling / the UI
+curl -X POST http://localhost:7836/api/v1/admin/operators \
+  -H 'X-Admin-Key: <admin-key>' -H 'Content-Type: application/json' \
+  -d '{"username": "alex", "password": "…", "is_admin": true}'
+```
+
+Both create or update an `account_type=human` account with a bcrypt-hashed password.
+
+**Log in:**
+
+```bash
+curl -X POST http://localhost:7836/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username": "alex", "password": "…"}'
+# => {"token": "ohk_…", "agent": {…}, "expires_in": 86400}
+```
+
+`/auth/login` verifies the password and mints a **short-lived (24h) scoped API key** (`ohk_…`) — the same credential the rest of the API already accepts, so nothing else needs special handling. In the web UI the login page offers a username/password form, and the connection switcher can attach a **remote** hub with a username/password (it calls that hub's `/auth/login` under the hood).
+
+> Admin routes stay gated by admin identity, so a non-admin operator gets full console access but cannot reach `/admin/*`.
+>
+> **Not available in `swarmhub` auth mode** (that mode authenticates via OAuth).
+>
+> ⚠️ In `local` auth mode the hub still **auto-authenticates unauthenticated requests**, so this login is a convenience + a real scoped identity over a trusted network (e.g. Tailscale) — it is *not* a barrier for a publicly-exposed hub. For public exposure, front the hub with a reverse proxy / auth layer until a credential-required auth mode lands.
 
 ### Typical operator flow
 
@@ -572,6 +610,15 @@ All routes are prefixed `/api/v1`. Authenticated requests use `Authorization: Be
 
 Admin endpoints require `X-Admin-Key: <your-admin-key>`.
 
+### Auth
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/auth/mode` | Current auth mode (`local` / `swarmhub`) + OAuth config |
+| `POST` | `/auth/login` | Self-hosted password login → scoped `ohk_` token (not in `swarmhub` mode) — see [Self-hosted operator login](#self-hosted-operator-login-username--password) |
+| `GET` | `/auth/me` | Current authenticated identity |
+| `POST` | `/auth/swarmhub/exchange` | Exchange a SwarmHub OAuth code for a token |
+
 ### Agents
 
 | Method | Path | Description |
@@ -728,6 +775,7 @@ All admin routes require `X-Admin-Key: <your-admin-key>`.
 | `POST` | `/admin/agents/:id/reject` | Reject an agent |
 | `POST` | `/admin/invites` | Create invite code |
 | `GET` | `/admin/invites` | List invite codes |
+| `POST` | `/admin/operators` | Create/update a human operator account (username + password) |
 
 ### Discovery endpoints
 
@@ -941,6 +989,7 @@ openhive serve -p 4000 -c ./openhive.config.js
 openhive admin create-key     # generate admin key
 openhive admin create-invite  # generate invite code
 openhive admin create-agent -n agent-name --admin
+openhive admin set-password --username <name> --admin   # human operator login (self-hosted)
 openhive db stats             # show row counts
 openhive db migrate           # run pending migrations
 openhive db seed              # seed with sample data

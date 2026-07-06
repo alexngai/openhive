@@ -7,10 +7,17 @@ import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
 import { createHive } from './server.js';
+import { installAcpRaceSafetyNet } from './acp-safety-net.js';
 import { generateSampleConfig } from './config.js';
 import { initDatabase, getDatabase, closeDatabase } from './db/index.js';
 import { createInviteCode } from './db/dal/invites.js';
-import { createAgent } from './db/dal/agents.js';
+import {
+  createAgent,
+  createHumanAccount,
+  findAgentByName,
+  setNewPassword,
+  updateAgent,
+} from './db/dal/agents.js';
 import { nanoid } from 'nanoid';
 import { registerNetworkCommands } from './cli/network.js';
 import { registerAdminHttpCommands } from './cli/admin/index.js';
@@ -329,45 +336,6 @@ function openInBrowser(url: string): void {
   exec(`${cmd} ${url}`);
 }
 
-/**
- * Safety net for a known race in `@multi-agent-protocol/sdk`'s ACP stream:
- * when `close()` is called while an RPC is in-flight, the pending promise
- * can be orphaned (rejected with "ACP stream closed" but never awaited,
- * because the same method throws synchronously right after). Under Node's
- * default `--unhandled-rejections=throw` this crashes the whole hub.
- *
- * The SDK itself has been patched (see references/multi-agent-protocol/
- * ts-sdk/src/acp/stream.ts #sendRequest — the sync throw before
- * `return await resultPromise` was removed), but `node_modules` may still
- * carry an unpatched copy until the SDK is republished. This handler
- * specifically catches that one rejection pattern, logs a warning, and
- * keeps the process alive. Any other unhandled rejection still crashes —
- * we want the default behavior to surface genuine bugs.
- */
-function installAcpRaceSafetyNet(): void {
-  const isAcpCloseRace = (reason: unknown): boolean => {
-    if (!(reason instanceof Error)) return false;
-    if (reason.message !== 'ACP stream closed') return false;
-    // Stack-trace smell test: the rejection must originate inside the
-    // MAP SDK's acp stream module. Anything else with a matching message
-    // is suspicious and should keep crashing.
-    return typeof reason.stack === 'string'
-      && /multi-agent-protocol\/sdk.*acp\/stream|acp\/stream\.ts/.test(reason.stack);
-  };
-
-  process.on('unhandledRejection', (reason) => {
-    if (isAcpCloseRace(reason)) {
-      console.warn(
-        '[acp] suppressed SDK close-race rejection:',
-        (reason as Error).message,
-      );
-      return;
-    }
-    // Preserve Node's default crash behavior for anything else.
-    throw reason;
-  });
-}
-
 async function startServer(opts: StartOptions): Promise<string> {
   installAcpRaceSafetyNet();
 
@@ -582,6 +550,24 @@ program
   });
 
 // Admin commands
+/** Prompt for a secret on the TTY without echoing keystrokes. */
+function promptHidden(question: string): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    // Suppress echo of typed characters while still showing the prompt.
+    const rlAny = rl as unknown as { _writeToOutput?: (s: string) => void };
+    const original = rlAny._writeToOutput?.bind(rl);
+    process.stdout.write(question);
+    rlAny._writeToOutput = () => {};
+    rl.question('', (answer) => {
+      rlAny._writeToOutput = original;
+      rl.close();
+      process.stdout.write('\n');
+      resolve(answer.trim());
+    });
+  });
+}
+
 const admin = program.command('admin').description('Admin utilities');
 
 admin
@@ -638,6 +624,53 @@ admin
     }
 
     closeDatabase();
+  });
+
+admin
+  .command('set-password')
+  .description('Create or update a human operator account for the web login')
+  .option('-d, --database <path>', 'Database file path')
+  .requiredOption('-u, --username <name>', 'Operator username (used to log in)')
+  .option('--email <email>', 'Operator email (defaults to <username>@operator.local)')
+  .option('--admin', 'Grant admin privileges to this operator')
+  .option('--password <password>', 'Password (omit to be prompted without echo)')
+  .action(async (options: any) => {
+    const dbPath = resolveDbPath(options.database, program.opts().dataDir);
+    initDatabase(dbPath);
+    try {
+      const password: string = options.password || (await promptHidden('Password: '));
+      if (!password) {
+        console.error('Password is required.');
+        process.exitCode = 1;
+        return;
+      }
+
+      const existing = findAgentByName(options.username);
+      if (existing && existing.account_type !== 'human') {
+        console.error(
+          `An account named "${options.username}" already exists and is not a human operator.`
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      if (existing) {
+        await setNewPassword(existing.id, password);
+        if (options.admin) updateAgent(existing.id, { is_admin: true });
+        console.log(`\nUpdated operator "${existing.name}".`);
+      } else {
+        const agent = await createHumanAccount({
+          name: options.username,
+          email: (options.email || `${options.username}@operator.local`).toLowerCase(),
+          password,
+        });
+        if (options.admin) updateAgent(agent.id, { is_admin: true });
+        console.log(`\nCreated operator "${agent.name}".`);
+      }
+      console.log(`Log in at the hub with username "${options.username}".`);
+    } finally {
+      closeDatabase();
+    }
   });
 
 // HTTP-backed admin subcommands (onboard-token, agent, invite, swarms, ...)

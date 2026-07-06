@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { create } from 'zustand';
-import { useAuthStore } from '../stores/auth';
+import { useActiveHub } from './useActiveHub';
+import { wsUrl } from '../lib/hub';
 
 interface WSMessage {
   type: string;
@@ -83,6 +84,10 @@ export const useWSStore = create<WSState>((set, get) => ({
 }));
 
 let globalWs: WebSocket | null = null;
+// Identity of the hub the live socket is bound to (`${origin}|${token}`), so a
+// hub or credential switch forces a real reconnect instead of reusing the
+// socket bound to the previous hub.
+let currentHubKey: string | null = null;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
@@ -109,13 +114,14 @@ if (typeof import.meta !== 'undefined' && import.meta.hot) {
       try { globalWs.close(); } catch { /* ignore */ }
       globalWs = null;
     }
+    currentHubKey = null;
     reconnectAttempts = 0;
   });
 }
 
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
-  const { token } = useAuthStore();
+  const { origin, token } = useActiveHub();
   // Select `setConnected` directly — selecting the whole store (as this hook
   // originally did) causes a re-render on EVERY field change (listeners map,
   // channels set, refcounts) and churned the `connect` useCallback identity,
@@ -124,18 +130,27 @@ export function useWebSocket() {
   const setConnected = useWSStore((s) => s.setConnected);
 
   const connect = useCallback(() => {
-    if (globalWs?.readyState === WebSocket.OPEN || globalWs?.readyState === WebSocket.CONNECTING) {
+    const hubKey = `${origin}|${token ?? ''}`;
+    const live =
+      globalWs?.readyState === WebSocket.OPEN ||
+      globalWs?.readyState === WebSocket.CONNECTING;
+    // Already connected/connecting to THIS hub — nothing to do.
+    if (live && currentHubKey === hubKey) {
       return;
     }
+    // Switching hubs (or re-auth): tear down the socket bound to the old hub so
+    // we dial the new one. Its onclose won't reconnect — the `globalWs === ws`
+    // guard there fails once we reassign globalWs below.
+    if (globalWs && currentHubKey !== hubKey) {
+      try { globalWs.close(); } catch { /* ignore */ }
+      globalWs = null;
+    }
+    currentHubKey = hubKey;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const wsUrl = token
-      ? `${protocol}//${host}/ws?token=${encodeURIComponent(token)}`
-      : `${protocol}//${host}/ws`;
+    const url = wsUrl('/ws', token);
 
     try {
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(url);
       globalWs = ws;
       wsRef.current = ws;
 
@@ -213,7 +228,7 @@ export function useWebSocket() {
     } catch (error) {
       console.error('[WS] Failed to connect:', error);
     }
-  }, [token, setConnected]);
+  }, [origin, token, setConnected]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeout) {

@@ -97,6 +97,14 @@ export const ConfigSchema = z.object({
       description: z.string().default("A community for AI agents"),
       url: z.string().url().optional(),
       public: z.boolean().default(true),
+      /**
+       * Extra Host header values the hostname guard accepts beyond `url`'s
+       * host. Lets a hub whose `url` is its public domain still be reached over
+       * LAN / Tailscale (by IP or MagicDNS name) in swarmhub auth mode, where
+       * the guard is active. Ignored in local mode (guard is off there). e.g.
+       * ['100.101.102.103:7836', 'mini.tailnet.ts.net:7836'].
+       */
+      allowedHosts: z.array(z.string()).optional(),
     })
     .default({}),
 
@@ -272,6 +280,16 @@ export const ConfigSchema = z.object({
         .default("local"),
       /** Command to run Swarm Runner (e.g. 'npx @swarmkit-ai/swarm-runner' or path to binary) */
       swarm_runner_command: z.string().default("npx @swarmkit-ai/swarm-runner serve"),
+      /**
+       * Named alternative swarm-runner gateways: `runner` name → spawn command.
+       * Selected per-spawn via the `runner` field. The implicit `'swarmkit'`
+       * runner always maps to `swarm_runner_command`; entries here add others.
+       * Seeded with `openswarm` (our in-house harness — `openswarm host` speaks
+       * the same OpenHive hosting contract). Override to point at a local build.
+       */
+      runners: z
+        .record(z.string(), z.string())
+        .default({ openswarm: "npx openswarm host" }),
       /** Base directory for swarm instance data */
       data_dir: z.string().default("./data/swarms"),
       /** Port range for locally spawned swarms [min, max] */
@@ -476,6 +494,9 @@ export const ConfigSchema = z.object({
       bootstrapDefault: z.boolean().default(true),
     })
     .default({}),
+
+  // (The idea-lab is not hub config — it's a workload loaded at runtime via
+  //  POST /idea-lab/load. See src/idea-lab/CLAUDE.md.)
 
   // Channel Bridge: external platform integration (Slack, Discord, Telegram, etc.)
   bridge: z
@@ -904,6 +925,14 @@ export function loadConfig(configPath?: string): Config {
     rawConfig.instance = {
       ...rawConfig.instance,
       url: process.env.OPENHIVE_INSTANCE_URL,
+    };
+  }
+  if (process.env.OPENHIVE_INSTANCE_ALLOWED_HOSTS) {
+    rawConfig.instance = {
+      ...rawConfig.instance,
+      allowedHosts: process.env.OPENHIVE_INSTANCE_ALLOWED_HOSTS.split(",")
+        .map((h) => h.trim())
+        .filter(Boolean),
     };
   }
   if (process.env.OPENHIVE_AUTH_MODE) {

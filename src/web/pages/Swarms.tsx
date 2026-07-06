@@ -177,6 +177,10 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
   // threads — see docs/HOSTED_SWARM_KINDS_DESIGN.md "codex — programmatic
   // mode" for the why. Field is ignored when kind !== 'codex'.
   const [codexMode, setCodexMode] = useState<'rpc' | 'tui'>('rpc');
+  // swarm-runner gateway selector. 'swarmkit' = the default
+  // @swarmkit-ai/swarm-runner; 'openswarm' spawns our in-house harness
+  // (same hosting contract, different gateway). Only sent for kind=swarm-runner.
+  const [runner, setRunner] = useState<string>('swarmkit');
   const [name, setName] = useState(() =>
     uniqueNamesGenerator({
       dictionaries: [adjectives, colors, animals],
@@ -410,6 +414,7 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               name,
               description: description || undefined,
               adapter: adapter || undefined,
+              runner: runner !== 'swarmkit' ? runner : undefined,
               hive: hive || undefined,
               provider: provider !== 'local' ? provider : undefined,
               adapter_config,
@@ -678,6 +683,23 @@ export function SpawnFormDialog({ onClose }: { onClose: () => void }) {
               choice or workspace cloning is exposed in v1. */}
           {kind === 'swarm-runner' && (
           <>
+          {/* Gateway runner (harness). Default swarmkit vs. our openswarm —
+              same hosting contract, different spawned gateway. */}
+          <div>
+            <SectionLabel>Runner</SectionLabel>
+            <select
+              value={runner}
+              onChange={(e) => setRunner(e.target.value)}
+              className="input w-full"
+            >
+              <option value="swarmkit">Default (@swarmkit-ai/swarm-runner)</option>
+              <option value="openswarm">OpenSwarm</option>
+            </select>
+            <p className="text-2xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+              OpenSwarm is our in-house harness — a multi-agent coding CLI that
+              speaks the same OpenHive hosting contract.
+            </p>
+          </div>
           {/* Row 3: Adapter + Hive */}
           <div className="flex gap-3">
             <div className="flex-1">
@@ -1800,7 +1822,7 @@ function HostedSwarmCard({
             </span>
             <HostedStateBadge state={swarm.state} />
             {mapStatus && <MapStatusBadge status={mapStatus} />}
-            <KindBadge kind={swarm.kind} />
+            <KindBadge kind={swarm.kind} runner={swarm.runner} />
             <span
               className="text-2xs px-1.5 py-0.5 rounded"
               style={{

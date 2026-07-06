@@ -9,6 +9,7 @@ import './styles/globals.css';
 // not just surfaces that already bring it in via Dashboard.
 import 'swarmcraft/ui/embed.css';
 import { registerServiceWorker } from './utils/serviceWorker';
+import { subscribeHub, getHubSnapshot } from './lib/hub';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,6 +19,18 @@ const queryClient = new QueryClient({
       refetchOnWindowFocus: false,
     },
   },
+});
+
+// When the client is pointed at a different hub, the React Query cache still
+// holds the previous hub's data — clear it on an origin change so nothing bleeds
+// across a hub switch. Token-only changes (same hub, re-auth) keep the cache.
+let lastHubOrigin = getHubSnapshot().origin;
+subscribeHub(() => {
+  const { origin } = getHubSnapshot();
+  if (origin !== lastHubOrigin) {
+    lastHubOrigin = origin;
+    queryClient.clear();
+  }
 });
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

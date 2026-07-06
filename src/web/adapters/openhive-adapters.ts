@@ -21,15 +21,14 @@ import {
   ensureAcpListenersRegistered,
 } from './openhive-acp-service';
 import { hostedChatService } from '../services/hosted-chat-service';
+import { restBase, authHeader } from '../lib/hub';
+import { useActiveHub } from '../hooks/useActiveHub';
 
 /** OpenHive-specific ApiConfig: /api/v1 + lazy conv creation via /sessions/:id/chat */
 function openHiveApiConfig(): ApiConfig {
   return {
-    baseUrl: '/api/v1',
-    getAuthHeader: () => {
-      const t = localStorage.getItem('openhive_token');
-      return t ? `Bearer ${t}` : null;
-    },
+    baseUrl: restBase(),
+    getAuthHeader: () => authHeader(),
     endpoints: {
       mailConversations: '/mail/conversations',
       sessionChat: '/sessions/:id/chat',
@@ -42,6 +41,10 @@ export function useOpenHiveAdapters(): ChatAdapter[] {
   // actually receive bridged acp.* events. Ref-counted at the store, so other
   // subscribers on 'global' share the channel.
   useSubscribe(['global']);
+
+  // Rebuild the adapter set when the active hub changes so ACP/mail re-target
+  // the new hub's origin + credential (baseUrl is captured per hub below).
+  const { origin } = useActiveHub();
 
   // Register the ACP service's module-level WS listeners in an effect (not
   // during render) so the store mutation doesn't trigger a setState-during-
@@ -62,5 +65,5 @@ export function useOpenHiveAdapters(): ChatAdapter[] {
       createHostedChatAdapter({ service: hostedChatService }),
       createMailAdapter(api),
     ];
-  }, []);
+  }, [origin]);
 }

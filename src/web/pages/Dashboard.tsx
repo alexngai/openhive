@@ -26,15 +26,18 @@ import { SpawnFormDialog, ConnectFormDialog } from "./Swarms";
 import { PageHeader } from "../components/common/PageHeader";
 import { FirstRunPanel } from "../components/onboarding/FirstRunPanel";
 import { ErrorBoundary } from "../components/common/ErrorBoundary";
+import { acpBase, toWsOrigin } from "../lib/hub";
+import { useActiveHub } from "../hooks/useActiveHub";
 
-/** Derive API/WS URLs relative to current host */
+/** Derive API/WS URLs from the active hub (same-origin default, or a remote hub). */
 function useSwarmCraftConfig() {
+  const { origin } = useActiveHub();
   return useMemo(
     () => ({
-      apiUrl: "/api/swarmcraft",
-      wsUrl: `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws/swarmcraft`,
+      apiUrl: acpBase(),
+      wsUrl: `${toWsOrigin(origin)}/ws/swarmcraft`,
     }),
-    [],
+    [origin],
   );
 }
 

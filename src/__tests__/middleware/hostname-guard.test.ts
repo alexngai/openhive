@@ -2,9 +2,9 @@ import { describe, it, expect } from "vitest";
 import Fastify from "fastify";
 import { registerHostnameGuard } from "../../api/middleware/hostname-guard.js";
 
-async function buildApp(instanceUrl: string | undefined) {
+async function buildApp(instanceUrl: string | undefined, allowedHosts?: string[]) {
   const app = Fastify();
-  registerHostnameGuard(app, instanceUrl);
+  registerHostnameGuard(app, instanceUrl, allowedHosts);
 
   app.get("/health", async () => ({ status: "ok" }));
   app.get("/.well-known/openhive.json", async () => ({ version: "1.0" }));
@@ -68,6 +68,42 @@ describe("hostname-guard", () => {
       headers: { host: "anything.example.com" },
     });
     expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("accepts a Host in allowedHosts (LAN / Tailscale reach of the same hub)", async () => {
+    const app = await buildApp("https://test.hive.swarmkit.ai", [
+      "100.101.102.103:7836",
+      "mini.tailnet.ts.net:7836",
+    ]);
+    for (const host of ["100.101.102.103:7836", "mini.tailnet.ts.net:7836"]) {
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/v1/test",
+        headers: { host },
+      });
+      expect(res.statusCode).toBe(200);
+    }
+    // The canonical host still works alongside the allowlist.
+    const canonical = await app.inject({
+      method: "GET",
+      url: "/api/v1/test",
+      headers: { host: "test.hive.swarmkit.ai" },
+    });
+    expect(canonical.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("still rejects a Host that is neither the instance URL nor allowlisted", async () => {
+    const app = await buildApp("https://test.hive.swarmkit.ai", [
+      "100.101.102.103:7836",
+    ]);
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/test",
+      headers: { host: "evil.example.com" },
+    });
+    expect(res.statusCode).toBe(421);
     await app.close();
   });
 });

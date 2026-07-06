@@ -186,8 +186,11 @@ export class SandboxedLocalProvider implements HostingProvider {
       await cloneWorkspaceRepos(config.workspace, dataDir, process.env as Record<string, string>);
     }
 
-    // Parse the command
-    const parts = this.swarmRunnerCommand.split(/\s+/);
+    // Parse the command. A per-spawn `swarm_runner_command_override` (non-default
+    // runner, e.g. openswarm) wins over the configured default; hosting flags
+    // are appended either way.
+    const runnerCommand = config.swarm_runner_command_override ?? this.swarmRunnerCommand;
+    const parts = runnerCommand.split(/\s+/);
     let bin = parts[0];
     const baseArgs = parts.slice(1);
 

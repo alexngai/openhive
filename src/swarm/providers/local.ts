@@ -164,8 +164,12 @@ export class LocalProvider implements HostingProvider {
       bin = config.spawn_command_override;
       args = config.spawn_args_override ?? [];
     } else {
-      // Parse the command (could be 'npx @swarmkit-ai/swarm-runner', 'node /path/to/bin', etc.)
-      const parts = this.swarmRunnerCommand.split(/\s+/);
+      // Parse the command. A per-spawn `swarm_runner_command_override` (set by
+      // the manager when a non-default runner like openswarm is selected) wins
+      // over the provider's configured default; the standard hosting flags are
+      // appended either way (unlike `spawn_command_override`, which is verbatim).
+      const runnerCommand = config.swarm_runner_command_override ?? this.swarmRunnerCommand;
+      const parts = runnerCommand.split(/\s+/);
       bin = parts[0];
       const baseArgs = parts.slice(1);
 

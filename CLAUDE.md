@@ -41,6 +41,7 @@ src/
 ├── cascade/           # Cascade ↔ task binding (post-merge orchestration) — see src/cascade/CLAUDE.md
 ├── dispatch/          # swarm-dispatch integration — see src/dispatch/CLAUDE.md
 ├── scheduler/         # swarm-dispatch scheduler integration (cron-style recurring dispatches) — see src/scheduler/CLAUDE.md
+├── idea-lab/          # Autonomous brainstorm-and-work loop (config + prompts on existing primitives) — see src/idea-lab/CLAUDE.md
 ├── swarmkit/          # SwarmKit config proxy + git-sync — see src/swarmkit/CLAUDE.md
 ├── swarmcraft/        # SwarmCraft plugin integration — see src/swarmcraft/CLAUDE.md
 ├── realtime/          # WebSocket fan-out helpers — see src/realtime/CLAUDE.md
@@ -78,6 +79,7 @@ Each major subsystem has its own `CLAUDE.md` next to the code that owns it. Clau
 | Cascade ↔ task binding | [`src/cascade/CLAUDE.md`](src/cascade/CLAUDE.md) | Post-merge auto-close orchestration with three-scope policy chain |
 | Dispatch orchestrator | [`src/dispatch/CLAUDE.md`](src/dispatch/CLAUDE.md) | swarm-dispatch adapters, status lifecycle, kill switch, V47–V49 persistence |
 | Scheduler | [`src/scheduler/CLAUDE.md`](src/scheduler/CLAUDE.md) | swarm-dispatch scheduler integration: cron-style recurring dispatches, payload-types, fire handler, kill-switch respect |
+| Idea lab | [`src/idea-lab/CLAUDE.md`](src/idea-lab/CLAUDE.md) | Autonomous brainstorm→judge→work loop, provisioned idempotently from a checked-in pack; blackboard coordination over specs/threads/memory/scheduler |
 | SwarmKit config + git-sync | [`src/swarmkit/CLAUDE.md`](src/swarmkit/CLAUDE.md) | Disk-backed config proxy, `settings.local.json` overrides, opentasks git-sync signaling |
 | SwarmCraft integration | [`src/swarmcraft/CLAUDE.md`](src/swarmcraft/CLAUDE.md) | Agent projection ownership + MAP client ownership |
 | Realtime fan-out | [`src/realtime/CLAUDE.md`](src/realtime/CLAUDE.md) | Server-side broadcast helpers + frontend HMR-safe WS client |

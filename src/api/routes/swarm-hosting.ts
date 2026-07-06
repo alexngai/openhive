@@ -148,6 +148,13 @@ export const SpawnSwarmSchema = z
     loadout_bundle_id: z.string().min(1).max(200).optional(),
     team_bundle_id: z.string().min(1).max(200).optional(),
     role: z.string().min(1).max(100).optional(),
+    /**
+     * Which swarm-runner gateway to spawn (swarm-runner kind only). `undefined`
+     * / `'swarmkit'` = the default `@swarmkit-ai/swarm-runner`; other names
+     * resolve to `swarmHosting.runners[<name>]` (e.g. `'openswarm'`). Rejected
+     * for TUI kinds (claude-code, codex), which spawn their own process.
+     */
+    runner: z.string().min(1).max(100).optional(),
   })
 
   .superRefine((data, ctx) => {
@@ -213,6 +220,7 @@ export const SpawnSwarmSchema = z
       ['hive', hiveMsg],
       ['bootstrap', bootstrapMsg],
       ['credential_overrides', credsMsg],
+      ['runner', `${data.kind} spawns its own process; runner is swarm-runner-specific`],
     ];
     for (const [field, reason] of blocked) {
       if (data[field] !== undefined) {
@@ -244,6 +252,7 @@ function handleSwarmError(error: unknown, reply: FastifyReply): FastifyReply {
       NOT_OWNER: 403,
       RESTART_NOT_SUPPORTED: 400,
       RESTART_FAILED: 500,
+      UNKNOWN_RUNNER: 400,
       NOT_IMPLEMENTED: 501,
     };
     return reply.status(statusMap[error.code] || 500).send({
@@ -444,6 +453,8 @@ export async function swarmHostingRoutes(
       // Surface workspace repos so the frontend can show repo/branch hints
       // (e.g. on Threads terminal rows) without a per-swarm lookup.
       workspace: h.config?.workspace,
+      // Selected swarm-runner gateway (e.g. 'openswarm'); absent for default.
+      runner: h.config?.runner,
     }));
 
     return reply.send({ data, total: result.total });
@@ -479,6 +490,8 @@ export async function swarmHostingRoutes(
       // Already absolute when persisted (validateSpawnCwd resolves) —
       // no need to re-resolve like data_dir.
       cwd: hosted.config?.cwd,
+      // Selected swarm-runner gateway (e.g. 'openswarm'); absent for default.
+      runner: hosted.config?.runner,
     });
   });
 
