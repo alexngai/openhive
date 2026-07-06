@@ -495,41 +495,8 @@ export const ConfigSchema = z.object({
     })
     .default({}),
 
-  // Idea lab: autonomous brainstorm-and-work loop provisioned from a pack.
-  // Off by default — opt-in like taskGraph.bootstrapDefault. When enabled,
-  // the boot provisioner idempotently ensures the lab graph, ledger memory
-  // bank, seed objectives, and recurring role schedules exist. See
-  // src/idea-lab/CLAUDE.md.
-  ideaLab: z
-    .object({
-      /** Master toggle. When false the provisioner never runs. */
-      enabled: z.boolean().default(false),
-      /** Schedule tenancy tag for the lab's role schedules. */
-      hiveId: z.string().default(""),
-      /**
-       * Swarms the role dispatches target. Empty → role schedules are
-       * provisioned PAUSED (the loop stays dormant until you configure a
-       * target and resume).
-       */
-      targetSwarmIds: z.array(z.string()).default([]),
-      /**
-       * Schedule reconcile mode. "managed" reconciles drifted cron/prompt/
-       * targets on each boot; "create-only" leaves existing schedules alone.
-       * Objectives are always create-only regardless.
-       */
-      reconcile: z.enum(["managed", "create-only"]).default("managed"),
-      /**
-       * Optional shared git remote for the lab graph. When set, the lab graph
-       * is provisioned as a standard git-synced task resource (reusing
-       * metadata.git_sync + applyGitSyncConfig, exactly like any git-backed
-       * opentasks graph) so connected swarms can clone, read, and write it and
-       * converge with the hub. When unset (default), the lab graph is hub-local.
-       * Either way, regular opentasks flows are unaffected — this only shapes
-       * the idea-lab's own graph resource.
-       */
-      gitRemote: z.string().optional(),
-    })
-    .default({}),
+  // (The idea-lab is not hub config — it's a workload loaded at runtime via
+  //  POST /idea-lab/load. See src/idea-lab/CLAUDE.md.)
 
   // Channel Bridge: external platform integration (Slack, Discord, Telegram, etc.)
   bridge: z

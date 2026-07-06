@@ -1146,26 +1146,8 @@ export async function createHive(
         }
       }
 
-      // Idea lab: idempotently provision the brainstorm-and-work loop
-      // (graph, ledger, seed objectives, role schedules) from its pack.
-      // Opt-in; runs after the hub-default graph so an owner agent exists.
-      // Non-fatal on failure.
-      if (config.ideaLab.enabled) {
-        try {
-          const { provisionIdeaLab } = await import('./idea-lab/index.js');
-          await provisionIdeaLab({
-            dataDir: resolveDataDir(),
-            hiveId: config.ideaLab.hiveId,
-            targetSwarmIds: config.ideaLab.targetSwarmIds,
-            reconcile: config.ideaLab.reconcile,
-            gitRemote: config.ideaLab.gitRemote,
-          });
-        } catch (err) {
-          console.warn(
-            `[openhive] Idea-lab provisioning failed: ${(err as Error).message}`,
-          );
-        }
-      }
+      // Idea lab is loaded on demand via POST /idea-lab/load (it's a workload,
+      // not hub config) — no boot-time provisioning. See src/idea-lab/CLAUDE.md.
 
       // Start swarm hosting health monitor
       if (swarmManager) {

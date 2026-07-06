@@ -27,12 +27,28 @@ active → done` (archived = killed). Idea metadata lives under
 (`derived_from`, `merged_from`). See `roles/conventions.ts` for the full
 contract shared by every prompt.
 
+## Loading the lab (it's a workload, not hub config)
+
+The idea-lab is **loaded at runtime**, not configured globally at boot — it's a
+workload you run, not hub infrastructure. `POST /idea-lab/load`
+(`src/api/routes/idea-lab.ts`, admin-or-auth-key) calls `provisionIdeaLab(deps)`
+with the instance args in the body:
+
+- `targetSwarmIds`, `gitRemote`, `hiveId`, `reconcile`, and an optional full
+  `pack` override (defaults to the checked-in `DEFAULT_IDEA_LAB_PACK`).
+
+The preset (role prompts + cadences) is checked-in source a hub edits; the
+instance specifics (objectives, target swarms, git remote) come in on load.
+`GET /idea-lab` reports the loaded role schedules; `POST /idea-lab/unload`
+pauses them (dormant, reversible). A dedicated preset/instance system (multiple
+named labs, a `playbook` resource) can be factored out later — this is the
+minimal runtime loader. There is **no** `config.ideaLab` and no boot-time
+provisioning.
+
 ## Provisioning (the "reload reliably" guarantee)
 
-`provisionIdeaLab(deps)` (`provision.ts`) applies a pack idempotently at boot,
-wired into `server.ts` after the hub-default task graph (so an owner agent
-exists), gated by `config.ideaLab.enabled` (default off). Reconciliation is
-**keyed, never blind**:
+`provisionIdeaLab(deps)` (`provision.ts`) applies a pack idempotently — safe to
+re-run on every load. Reconciliation is **keyed, never blind**:
 
 | Thing | Keyed by | Mode | Primitive |
 |---|---|---|---|
@@ -42,29 +58,29 @@ exists), gated by `config.ideaLab.enabled` (default off). Reconciliation is
 
 Objectives are **create-only** — never rewrite an idea agents may have
 evolved. Schedules are **managed** — drifted cron/prompt/targets reconcile on
-each boot, but paused-state is operator-owned after first create. Nothing is
+each load, but paused-state is operator-owned after first create. Nothing is
 destructive; the provisioner only creates and updates lab-owned rows.
 
 `schedules` has no unique-by-name column, so idempotency comes from stamping
 `idealab_key` into the payload and matching on it (the app-level analogue of
 what `upsertDiscoveredResource` does for resources). No schema migration.
 
-## Config
+## Load args
 
-`config.ideaLab`:
-- `enabled` (default `false`) — master toggle.
-- `hiveId` (default `''`) — schedule tenancy tag.
-- `targetSwarmIds` (default `[]`) — swarms the role dispatches target. **Empty
-  → schedules provisioned paused** (dormant until you configure a target and
-  resume). The kill switch (`autonomousDispatchPaused`) still gates fires.
+The `POST /idea-lab/load` body (all optional):
+- `targetSwarmIds` — swarms the role dispatches target. **Empty → schedules
+  loaded paused** (dormant until you set a target and resume). The kill switch
+  (`autonomousDispatchPaused`) still gates fires.
 - `reconcile` (`managed` | `create-only`, default `managed`).
-- `gitRemote` (optional) — shared git remote for the lab graph. **This is the
-  wire that lets connected swarms actually read/write the shared ideas.** When
-  set, the graph is registered as an ordinary git-synced task resource
-  (`git_remote_url` = the remote, `metadata.git_sync` enabled, `applyGitSyncConfig`
-  writing the daemon's `sync.git` block); connected swarms clone it, use their
-  native opentasks tools, and converge via git-sync + MAP `context.*` pull
-  signals. When unset (default), the graph is hub-local.
+- `gitRemote` — shared git remote for the lab graph. **This is the wire that
+  lets connected swarms actually read/write the shared ideas.** When set, the
+  graph is registered as an ordinary git-synced task resource (`git_remote_url`
+  = the remote, `metadata.git_sync` enabled, `applyGitSyncConfig` writing the
+  daemon's `sync.git` block); swarms clone it, use their native opentasks tools,
+  and converge via git-sync + MAP `context.*` pull signals. When unset, the
+  graph is hub-local.
+- `hiveId` — schedule tenancy tag.
+- `pack` — full pack override; defaults to the checked-in `DEFAULT_IDEA_LAB_PACK`.
 
 ## The shared-graph mechanism (how roles act on ideas)
 
@@ -91,6 +107,9 @@ bundle through tsup with no asset-copy step.
 ## Tests
 
 - `src/__tests__/idea-lab/pack.test.ts` — schema validation (fast, no DB).
+- `src/__tests__/idea-lab/load-route.test.ts` — the runtime loader: `POST
+  /idea-lab/load` creates the schedules idempotently, `GET /idea-lab` reports
+  them, `POST /idea-lab/unload` pauses them, invalid pack → 422, admin-gated.
 - `src/__tests__/idea-lab/provision.test.ts` — idempotency ("provision twice,
   no duplicates"), paused-when-no-targets, managed vs create-only reconcile,
   and that provisioned payloads pass the fire handler's `isValidPayload`.
