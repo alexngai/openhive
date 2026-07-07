@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isSafeRemoteUrl, isPrivateHost, extractRemoteHost } from './safe-url.js';
+import { isSafeRemoteUrl, isSafeHttpUrl, isPrivateHost, extractRemoteHost } from './safe-url.js';
 
 describe('isSafeRemoteUrl', () => {
   it('accepts legitimate git remote forms', () => {
@@ -76,6 +76,36 @@ describe('isPrivateHost', () => {
     expect(isPrivateHost('localhost')).toBe(true);
     expect(isPrivateHost('8.8.8.8')).toBe(false);
     expect(isPrivateHost('github.com')).toBe(false);
+  });
+});
+
+describe('isSafeHttpUrl', () => {
+  it('accepts well-formed http/https endpoints', () => {
+    expect(isSafeHttpUrl('https://peer.example.com/sync')).toBe(true);
+    expect(isSafeHttpUrl('http://peer.example.com:7836/sync/v1')).toBe(true);
+    expect(isSafeHttpUrl('https://peer.example.com')).toBe(true);
+  });
+
+  it('rejects non-http schemes, malformed, embedded creds, and over-long', () => {
+    expect(isSafeHttpUrl('file:///etc/passwd')).toBe(false);
+    expect(isSafeHttpUrl('ftp://example.com')).toBe(false);
+    expect(isSafeHttpUrl('git@example.com:x/y')).toBe(false);
+    expect(isSafeHttpUrl('not a url')).toBe(false);
+    expect(isSafeHttpUrl('https://user:pass@example.com')).toBe(false); // inline creds
+    expect(isSafeHttpUrl('https://example.com/' + 'a'.repeat(3000))).toBe(false);
+    expect(isSafeHttpUrl(undefined)).toBe(false);
+  });
+
+  it('blocks SSRF targets when blockPrivateNetworks is set', () => {
+    const opts = { blockPrivateNetworks: true };
+    expect(isSafeHttpUrl('http://169.254.169.254/latest/meta-data/', opts)).toBe(false);
+    expect(isSafeHttpUrl('http://127.0.0.1:8085/admin', opts)).toBe(false);
+    expect(isSafeHttpUrl('http://10.0.0.1/x', opts)).toBe(false);
+    expect(isSafeHttpUrl('http://192.168.1.1/x', opts)).toBe(false);
+    expect(isSafeHttpUrl('http://localhost/x', opts)).toBe(false);
+    // Public + Tailscale CGNAT (100.64/10) peers still allowed by default.
+    expect(isSafeHttpUrl('https://peer.example.com/sync', opts)).toBe(true);
+    expect(isSafeHttpUrl('http://100.101.102.103:7836/sync', opts)).toBe(true);
   });
 });
 

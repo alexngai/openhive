@@ -6,6 +6,7 @@
  */
 
 import * as peerConfigsDAL from '../db/dal/sync-peer-configs.js';
+import { isSafeHttpUrl } from '../utils/safe-url.js';
 import type { SyncPeer, GossipPeerInfo } from './types.js';
 
 export interface GossipConfig {
@@ -76,7 +77,8 @@ export function buildGossipPayload(
 export function processGossipPeers(
   incomingPeers: GossipPeerInfo[],
   fromPeerEndpoint: string,
-  config: GossipConfig
+  config: GossipConfig,
+  allowPrivatePeers = false
 ): string[] {
   if (!config.enabled) return [];
 
@@ -85,6 +87,13 @@ export function processGossipPeers(
   for (const incoming of incomingPeers) {
     // Skip if TTL is expired
     if (incoming.ttl < 0) continue;
+
+    // Never auto-learn an endpoint we couldn't safely dial. Gossip is fully
+    // transitive and untrusted, so an unsafe (or private, unless opted-in)
+    // endpoint here is an SSRF vector — drop it silently.
+    if (!isSafeHttpUrl(incoming.sync_endpoint, { blockPrivateNetworks: !allowPrivatePeers })) {
+      continue;
+    }
 
     // Check if we already know this peer
     const existing = peerConfigsDAL.findPeerConfigByEndpoint(incoming.sync_endpoint);

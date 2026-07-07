@@ -147,3 +147,42 @@ export function assertSafeRemoteUrl(raw: unknown, opts: SafeUrlOptions = {}): st
   }
   return (raw as string).trim();
 }
+
+/**
+ * Non-throwing check for an outbound HTTP(S) endpoint the server will dial
+ * (sync peers, webhooks, health probes). Stricter than isSafeRemoteUrl: only
+ * `http:`/`https:`, no embedded credentials, and (optionally) no private hosts.
+ *
+ * Use `blockPrivateNetworks: true` for endpoints supplied by untrusted callers
+ * (peer handshakes, gossip) to stop SSRF to loopback / cloud metadata / RFC1918.
+ */
+export function isSafeHttpUrl(raw: unknown, opts: SafeUrlOptions = {}): boolean {
+  if (typeof raw !== 'string') return false;
+  const value = raw.trim();
+  const maxLength = opts.maxLength ?? 2048;
+  if (value.length === 0 || value.length > maxLength) return false;
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  if (!url.hostname) return false;
+  if (url.username || url.password) return false; // no inline credentials
+  if (opts.blockPrivateNetworks && isPrivateHost(url.hostname)) return false;
+
+  return true;
+}
+
+/**
+ * Throwing variant of {@link isSafeHttpUrl}.
+ */
+export function assertSafeHttpUrl(raw: unknown, opts: SafeUrlOptions = {}): string {
+  if (!isSafeHttpUrl(raw, opts)) {
+    throw new UnsafeUrlError('Unsafe or unsupported HTTP endpoint');
+  }
+  return (raw as string).trim();
+}

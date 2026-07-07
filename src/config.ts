@@ -246,6 +246,13 @@ export const ConfigSchema = z.object({
       sync_endpoint: z.string().optional(),
       /** Optional pre-shared key required for handshake authentication (GAP-2) */
       handshake_secret: z.string().optional(),
+      /**
+       * Allow peer `sync_endpoint`s that point at private / loopback / link-local
+       * hosts. Default false — handshake + gossip reject such endpoints to prevent
+       * SSRF (cloud metadata at 169.254.169.254, internal services, RFC1918).
+       * Enable only for a trusted private-network mesh (LAN/VPN you control).
+       */
+      allowPrivatePeers: z.boolean().default(false),
       /** Maximum pending events per sync group before oldest are dropped (GAP-12) */
       max_pending_events: z.number().default(1000),
       /** Maximum concurrent pull/push operations to prevent resource exhaustion on large meshes */
