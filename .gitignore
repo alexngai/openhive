@@ -17,6 +17,12 @@ test-data/
 .swarm/
 .claude/
 .omc/
+.sessionlog/
+.sudocode/
+
+# Editor / build artifacts
+**/.DS_Store
+**/*.tsbuildinfo
 
 # Local-only convenience: sibling ecosystem repos cloned/symlinked here for
 # live development. Never part of this repo — see CLAUDE.md (multi-repo workflow).
