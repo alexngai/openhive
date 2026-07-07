@@ -2,10 +2,13 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import * as instancesDAL from '../../db/dal/instances.js';
 import * as federation from '../../federation/service.js';
+import { isSafeHttpUrl } from '../../utils/safe-url.js';
 import type { Config } from '../../config.js';
 
 const AddPeerSchema = z.object({
-  url: z.string().url(),
+  url: z.string().url().refine((u) => isSafeHttpUrl(u), {
+    message: 'Peer url must be an http(s) endpoint',
+  }),
   trusted: z.boolean().default(false),
 });
 
