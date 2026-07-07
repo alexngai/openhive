@@ -432,17 +432,31 @@ export async function resourceContentRoutes(
           maxResults: limit,
         });
 
-        const results = searchResults.map((r: { path: string; snippet: string; score: number }) => {
-          const content = readFileSync(join(localPath, r.path), 'utf-8');
+        const results: Array<{ path: string; frontmatter: Record<string, unknown> | null; snippet: string; score: number; knowledge_type: string | null }> = [];
+        for (const r of searchResults as Array<{ path: string; snippet: string; score: number }>) {
+          const fullPath = join(localPath, r.path);
+          // r.path comes from minimem's index, not the HTTP query — but a
+          // federated/synced memory bank could seed the index with an
+          // adversarial relative path (crafted frontmatter/filename). Enforce
+          // the same containment guard used for request-derived paths; skip
+          // (don't fail the whole batch) any result that escapes localPath.
+          if (!isPathWithin(fullPath, localPath)) {
+            request.log.warn(
+              { resourceId: resource.id, path: r.path },
+              'knowledgeSearch returned a path outside the resource directory; skipping'
+            );
+            continue;
+          }
+          const content = readFileSync(fullPath, 'utf-8');
           const { frontmatter } = parseFrontmatter(content);
-          return {
+          results.push({
             path: r.path,
             frontmatter: frontmatter ?? null,
             snippet: r.snippet,
             score: r.score,
             knowledge_type: (frontmatter?.type as string) ?? null,
-          };
-        });
+          });
+        }
 
         return reply.send({ results, total: results.length, engine: 'minimem' });
       } catch {
