@@ -245,7 +245,8 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
     // Write config file (JSON format — editable by UI)
     const configObj: Record<string, unknown> = {
       port: portNum,
-      host: '0.0.0.0',
+      // Loopback by default; set OPENHIVE_HOST=0.0.0.0 (or edit this) to expose on the network.
+      host: '127.0.0.1',
       mode: hubMode,
       database: paths.database,
       instance: {

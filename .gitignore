@@ -21,3 +21,6 @@ test-data/
 # Local-only convenience: sibling ecosystem repos cloned/symlinked here for
 # live development. Never part of this repo — see CLAUDE.md (multi-repo workflow).
 references/
+
+# Local-only working docs (never ship)
+publish_readiness.md

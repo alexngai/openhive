@@ -10,7 +10,7 @@ describe('Configuration', () => {
       const config = ConfigSchema.parse({});
 
       expect(config.port).toBe(7836);
-      expect(config.host).toBe('0.0.0.0');
+      expect(config.host).toBe('127.0.0.1');
       expect(config.instance.name).toBe('OpenHive');
       expect(config.instance.public).toBe(true);
       expect(config.auth.mode).toBe('local');
@@ -186,7 +186,7 @@ describe('Configuration', () => {
   describe('defaultConfig', () => {
     it('should have sensible defaults', () => {
       expect(defaultConfig.port).toBe(7836);
-      expect(defaultConfig.host).toBe('0.0.0.0');
+      expect(defaultConfig.host).toBe('127.0.0.1');
       expect(defaultConfig.instance.name).toBe('OpenHive');
       expect(defaultConfig.auth.mode).toBe('local');
     });

@@ -74,7 +74,10 @@ const DatabaseSchema = z
 // Configuration schema
 export const ConfigSchema = z.object({
   port: z.number().default(7836),
-  host: z.string().default("0.0.0.0"),
+  // Loopback by default — a fresh hub is NOT network-reachable until the
+  // operator explicitly binds a public address (e.g. OPENHIVE_HOST=0.0.0.0).
+  // Every container/PaaS deploy path already sets OPENHIVE_HOST=0.0.0.0.
+  host: z.string().default("127.0.0.1"),
 
   /**
    * Deployment mode.
@@ -167,6 +170,17 @@ export const ConfigSchema = z.object({
   auth: z
     .object({
       mode: z.enum(["local", "swarmhub"]).default("local"),
+      /**
+       * Who may call `POST /agents/register`:
+       *   - 'admin'    (default): requires X-Admin-Key or an admin agent. On a
+       *                loopback + local-auth hub the auto-trusted local admin
+       *                still satisfies this, so `openhive init` keeps working.
+       *   - 'open':    unauthenticated self-registration; new agents start
+       *                UNVERIFIED (no operator has vouched for them).
+       *   - 'disabled': the registration endpoint always refuses.
+       * Defaults to 'admin' so a publicly-exposed hub is not open by default.
+       */
+      registration: z.enum(["open", "admin", "disabled"]).default("admin"),
     })
     .default({}),
 
@@ -1003,7 +1017,8 @@ export function loadConfig(configPath?: string): Config {
 export function generateSampleConfig(): string {
   const sample = {
     port: 7836,
-    host: "0.0.0.0",
+    // Loopback by default; set to "0.0.0.0" (or use OPENHIVE_HOST) to expose on the network.
+    host: "127.0.0.1",
     database: "./data/openhive.db",
     instance: {
       name: "My OpenHive",

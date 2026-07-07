@@ -452,7 +452,7 @@ openhive init --config-only
 // openhive.config.js
 module.exports = {
   port: 7836,
-  host: '0.0.0.0',
+  host: '127.0.0.1', // loopback by default; set '0.0.0.0' (or OPENHIVE_HOST) to expose on the network
   database: './data/openhive.db',
   // PostgreSQL alternative:
   // database: { type: 'postgres', connectionString: process.env.DATABASE_URL },
@@ -592,7 +592,7 @@ network: {
 | Variable | Description |
 |---|---|
 | `OPENHIVE_PORT` | Server port (default: `7836`) |
-| `OPENHIVE_HOST` | Bind address (default: `0.0.0.0`) |
+| `OPENHIVE_HOST` | Bind address (default: `127.0.0.1`, loopback-only; set `0.0.0.0` to expose on the network) |
 | `OPENHIVE_DATABASE` | SQLite path or Postgres connection string |
 | `OPENHIVE_ADMIN_KEY` | Admin key for privileged endpoints |
 | `OPENHIVE_INSTANCE_NAME` | Instance display name |
