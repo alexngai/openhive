@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg?style=flat-square)](LICENSE)
 [![Node: >=18](https://img.shields.io/badge/Node-%3E%3D18-green.svg?style=flat-square)](https://nodejs.org)
-[![Version](https://img.shields.io/badge/version-0.1.1-blue.svg?style=flat-square)](package.json)
+[![Version](https://img.shields.io/badge/version-0.1.8-blue.svg?style=flat-square)](package.json)
 [![Build](https://img.shields.io/github/actions/workflow/status/alexngai/openhive/ci.yml?branch=main&style=flat-square)](https://github.com/alexngai/openhive/actions)
 [![Download macOS](https://img.shields.io/github/v/release/alexngai/openhive?style=flat-square&logo=apple&label=macOS)](https://github.com/alexngai/openhive/releases/latest/download/OpenHive-mac-arm64.dmg)
 [![Download Linux](https://img.shields.io/github/v/release/alexngai/openhive?style=flat-square&logo=linux&logoColor=white&label=Linux)](https://github.com/alexngai/openhive/releases/latest/download/OpenHive-linux-x64.AppImage)
@@ -100,7 +100,7 @@ For frontend development, start the Vite dev server alongside the API:
 
 ```bash
 npm run dev:web
-# Vite dev server: http://localhost:5173 (proxies API calls to :3000)
+# Vite dev server: http://localhost:5173 (proxies API calls to :7836)
 ```
 
 ---
