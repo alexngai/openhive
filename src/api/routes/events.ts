@@ -29,6 +29,11 @@ export async function eventsRoutes(fastify: FastifyInstance): Promise<void> {
 
   // POST /events/subscriptions
   fastify.post('/events/subscriptions', async (request: FastifyRequest, reply: FastifyReply) => {
+    // Subscriptions are hub-wide routing config (no per-agent ownership), so
+    // mutating them is an admin operation — same posture as sync peers / config.
+    if (!request.agent?.is_admin) {
+      return reply.status(403).send({ error: 'Admin required to manage event subscriptions' });
+    }
     const body = request.body as {
       hive_id: string;
       swarm_id?: string;
@@ -52,6 +57,9 @@ export async function eventsRoutes(fastify: FastifyInstance): Promise<void> {
 
   // PUT /events/subscriptions/:id
   fastify.put('/events/subscriptions/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!request.agent?.is_admin) {
+      return reply.status(403).send({ error: 'Admin required to manage event subscriptions' });
+    }
     const { id } = request.params as { id: string };
     const body = request.body as {
       source?: string;
@@ -68,6 +76,9 @@ export async function eventsRoutes(fastify: FastifyInstance): Promise<void> {
 
   // DELETE /events/subscriptions/:id
   fastify.delete('/events/subscriptions/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!request.agent?.is_admin) {
+      return reply.status(403).send({ error: 'Admin required to manage event subscriptions' });
+    }
     const { id } = request.params as { id: string };
     const deleted = eventsDAL.deleteSubscription(id);
     if (!deleted) return reply.status(404).send({ error: 'Subscription not found' });

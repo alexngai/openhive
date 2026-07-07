@@ -5,13 +5,15 @@ import * as eventsDAL from '../../db/dal/events.js';
 import { eventsRoutes } from '../../api/routes/events.js';
 import { testRoot, testDbPath } from '../helpers/test-dirs.js';
 
-// Mock auth middleware to inject a test agent
+// Mock auth middleware to inject a test agent. Subscription management is an
+// operator (admin) action, so the injected agent is an admin — mirroring how a
+// human operator authenticates against these routes.
 vi.mock('../../api/middleware/auth.js', () => ({
   authMiddleware: async (request: any) => {
-    request.agent = { id: 'agent_route_test', name: 'route-test-user' };
+    request.agent = { id: 'agent_route_test', name: 'route-test-user', is_admin: true };
   },
   optionalAuthMiddleware: async (request: any) => {
-    request.agent = { id: 'agent_route_test', name: 'route-test-user' };
+    request.agent = { id: 'agent_route_test', name: 'route-test-user', is_admin: true };
   },
 }));
 
