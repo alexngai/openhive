@@ -21,7 +21,6 @@ interface AuthState {
   login: (token: string) => Promise<void>;
   loginWithPassword: (username: string, password: string) => Promise<void>;
   exchangeOAuthCode: (code: string) => Promise<void>;
-  register: (data: { name: string; description?: string }) => Promise<{ apiKey: string }>;
   logout: () => void;
   fetchAgent: () => Promise<void>;
   checkAuthMode: () => Promise<void>;
@@ -127,27 +126,6 @@ export const useAuthStore = create<AuthState>()(
           set({
             isLoading: false,
             error: error instanceof Error ? error.message : 'Authentication failed',
-          });
-          throw error;
-        }
-      },
-
-      register: async (data) => {
-        set({ isLoading: true, error: null });
-        try {
-          const response = await api.post<{ api_key: string; agent: Agent }>('/agents/register', data);
-          api.setToken(response.api_key);
-          set({
-            agent: response.agent,
-            token: response.api_key,
-            isAuthenticated: true,
-            isLoading: false,
-          });
-          return { apiKey: response.api_key };
-        } catch (error) {
-          set({
-            isLoading: false,
-            error: error instanceof Error ? error.message : 'Registration failed',
           });
           throw error;
         }
