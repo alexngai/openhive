@@ -32,7 +32,7 @@ import { seedOpenteamsBundleStore } from "./openteams/seed.js";
 import { SwarmManager } from "./swarm/manager.js";
 import type { SwarmHostingConfig } from "./swarm/types.js";
 import { getOrCreateLocalAgent, countAgents } from "./db/dal/agents.js";
-import { setLocalAgent } from "./api/middleware/auth.js";
+import { setLocalAgent, shouldAutoAuthLocalAgent } from "./api/middleware/auth.js";
 import {
   initMapSyncListener,
   stopMapSyncListener,
@@ -171,20 +171,37 @@ export async function createHive(
 
   // Set up auth mode
   if (config.auth.mode === "local") {
-    const agent = await getOrCreateLocalAgent();
-    setLocalAgent(agent);
-    console.log(
-      '[openhive] Local auth mode — all requests auto-authenticated as "local"',
-    );
-    if (config.admin.trustLocalMode) {
-      console.warn(
-        '[openhive] ⚠  admin.trustLocalMode=true — admin routes accept NO credentials',
+    // Only install the ambient "local" agent (which auto-authenticates
+    // credential-less REST requests) in a TRUSTED LOCAL CONTEXT — a loopback
+    // bind, or an explicit admin.trustLocalMode opt-in. On a network bind
+    // without trustLocalMode we leave it UNSET, so the REST/human plane requires
+    // a real credential (operator login token or agent API key) — matching how
+    // admin routes are already gated by createAdminAuth.
+    if (shouldAutoAuthLocalAgent(config)) {
+      const agent = await getOrCreateLocalAgent();
+      setLocalAgent(agent);
+      console.log(
+        '[openhive] Local auth mode — credential-less requests from a trusted local context are auto-authenticated as "local"',
       );
+      if (config.admin.trustLocalMode) {
+        console.warn(
+          '[openhive] ⚠  admin.trustLocalMode=true — admin routes accept NO credentials',
+        );
+        console.warn(
+          '[openhive]    Any client that can reach this port can run admin commands.',
+        );
+        console.warn(
+          '[openhive]    Only safe on localhost-bound or otherwise-trusted networks.',
+        );
+      }
+    } else {
+      // Network-reachable local-auth hub without trustLocalMode: no ambient
+      // identity. Every REST request must present a credential.
       console.warn(
-        '[openhive]    Any client that can reach this port can run admin commands.',
-      );
-      console.warn(
-        '[openhive]    Only safe on localhost-bound or otherwise-trusted networks.',
+        `[openhive] ⚠  Local auth mode on a network bind (host=${config.host}) — REST requests now ` +
+          `require a credential (operator login token or agent API key). Provision an operator login ` +
+          `with 'openhive admin set-password', or set admin.trustLocalMode=true to restore ` +
+          `auto-authentication (only on trusted networks).`,
       );
     }
   } else if (config.auth.mode === "swarmhub") {

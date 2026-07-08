@@ -190,7 +190,7 @@ To reach the hub from other devices, **do not** simply bind `0.0.0.0` on the ope
 - **Mesh (recommended):** put the hub on a Tailscale / Headscale tailnet and reach it at its tailnet address (`http://<tailnet-ip>:7836`).
 - **Reverse proxy:** front it with a TLS-terminating proxy that adds an auth layer, then set `OPENHIVE_HOST=0.0.0.0`.
 
-> ⚠️ In `local` auth mode the hub auto-authenticates unauthenticated **REST** requests as the local operator, so a raw `0.0.0.0` bind is **not** a public-safe configuration on its own. Always front a network-exposed hub with a proxy or mesh. See **[SECURITY.md](SECURITY.md)** for the full deploy-safety checklist.
+> ⚠️ On a network bind, `local` auth mode **requires a credential** for every REST request (operator login token or agent API key) — the ambient "local" auto-auth applies only to a loopback bind (or when you set `admin.trustLocalMode`). It's still plain HTTP, though, so front a network-exposed hub with a **TLS-terminating proxy or a mesh** so credentials aren't sent in the clear. See **[SECURITY.md](SECURITY.md)** for the full deploy-safety checklist.
 
 ---
 
@@ -372,7 +372,7 @@ curl -X POST http://localhost:7836/api/v1/auth/login \
 >
 > **Not available in `swarmhub` auth mode** (that mode authenticates via OAuth).
 >
-> ⚠️ In `local` auth mode the hub still **auto-authenticates unauthenticated requests**, so this login is a convenience + a real scoped identity over a trusted network (e.g. Tailscale) — it is *not* a barrier for a publicly-exposed hub. For public exposure, front the hub with a reverse proxy / auth layer until a credential-required auth mode lands.
+> ⚠️ In `local` auth mode the ambient "local" auto-auth applies only on a **loopback bind** (or with `admin.trustLocalMode`). On a **network bind** the hub requires a credential for every request, so this login is a real barrier — but it's still plain HTTP, so front a publicly-exposed hub with a **TLS-terminating reverse proxy** (and consider rate-limiting the login endpoint) so passwords and tokens aren't sent in the clear.
 
 ### Typical operator flow
 

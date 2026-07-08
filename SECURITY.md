@@ -41,6 +41,16 @@ live:
   (or an admin bearer token) on any non-loopback bind.
 - **Agent registration** — `auth.registration` defaults to `admin`
   (self-registration is closed). Only set it to `open` on trusted networks.
+- **Agent trust model** — `mapHub.trustModel` defaults to `verified` for a new
+  hub: agents must present an operator-issued token to join over MAP. Existing
+  hubs are grandfathered to `open` on upgrade — set it explicitly and mint
+  onboard tokens (`openhive admin onboard-token create`) to require verified agents.
+- **REST authentication** — on a network bind, `local` auth mode requires a
+  credential on every request (operator login token or agent API key); the
+  ambient "local" identity applies only to a loopback bind (or with
+  `admin.trustLocalMode`). Provision an operator login with
+  `openhive admin set-password`, and keep TLS in front so credentials aren't
+  sent in the clear.
 - **Mesh sync peers** — peer endpoints that resolve to private/loopback hosts
   are rejected by default. Enable `sync.allowPrivatePeers` only for a trusted
   private-network mesh you control.
