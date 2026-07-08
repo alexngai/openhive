@@ -66,9 +66,10 @@ The wizard creates a data directory, writes a config file, initializes the datab
     Database:          /Users/you/.openhive/openhive.db
     Instance name:     OpenHive
     Port:              7836
-    Host:              127.0.0.1  (loopback only)
+    Host:              127.0.0.1 (loopback only)
+    Hub mode:          full
     Auth mode:         local
-    Registration:      admin
+    Trust model:       verified
     Admin key:         <generated-32-char-key>
 
   Setup complete!
@@ -164,20 +165,23 @@ A fresh hub ships hardened:
 |---|---|---|
 | `host` | `127.0.0.1` | Loopback only — not on the network until you opt in (step 6) |
 | `auth.registration` | `admin` | `POST /agents/register` requires the admin key — no anonymous self-registration |
+| `mapHub.trustModel` | `verified` (new hubs) | Agents must present an operator-issued token to join the mesh (step 4) |
 | Admin routes | admin key / admin agent | Config, onboard tokens, sync peers, and event routing are admin-gated |
 | `sync.allowPrivatePeers` | `false` | Mesh peers can't point at loopback / internal / cloud-metadata addresses (SSRF guard) |
 
-**For a shared or multi-tenant hub, also require agents to prove their identity** — set the MAP trust model to `verified` in `openhive.config.js`:
+`init` prompts for the trust model and defaults to **verified**, so a swarm that connects without a `MAP_CREDENTIAL` is rejected at the door — mint tokens with `openhive admin onboard-token create` (step 4).
+
+To relax this for a single-operator hub on localhost, choose **Open** at init (or set it in `openhive.config.js`):
 
 ```js
 // openhive.config.js
 module.exports = {
   // …
-  mapHub: { trustModel: 'verified' }, // agents must present an operator-issued token to connect
+  mapHub: { trustModel: 'open' }, // agents connect with just an API key — localhost / single-operator only
 };
 ```
 
-With `verified`, a swarm that connects without a `MAP_CREDENTIAL` is rejected at the door — issue tokens with `openhive admin onboard-token create` (step 4). The default is `open` (identity is asserted, not proven), which is fine for a single-operator hub on localhost.
+> **Upgrading an existing hub?** If your config predates this setting, the hub keeps `open` so your already-connected agents aren't cut off, and logs how to switch. Set `mapHub.trustModel` explicitly to lock in your choice.
 
 ### 6. Exposing the hub beyond localhost
 

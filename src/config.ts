@@ -201,7 +201,13 @@ export const ConfigSchema = z.object({
       // Trust model for inbound WebSocket connections:
       //   'open'     — API key is sufficient, swarms can bring their own identity
       //   'verified' — MAP spec map/connect auth flow with agent-iam tokens
-      trustModel: z.enum(["open", "verified"]).default("open"),
+      // OPTIONAL (no hard default) so the server can distinguish an explicit
+      // operator choice from "unset" and apply the migration guard at boot
+      // (see the trust-model resolution in server.ts): a fresh hub defaults to
+      // 'verified' (agents must present a signed token), while a hub that
+      // already has agents is grandfathered to 'open' so existing tokenless
+      // agents keep connecting. An explicit value here always wins.
+      trustModel: z.enum(["open", "verified"]).optional(),
       // HMAC secret for agent-iam token signing/verification (verified mode).
       // Auto-generated and persisted to <dataDir>/data/iam-secret.key if not set.
       iamSecret: z.string().optional(),

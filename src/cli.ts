@@ -100,7 +100,7 @@ interface InitOverrides {
   name?: string;
   port?: number;
   authMode?: string;
-  verification?: string;
+  trustModel?: string;
   mode?: string;
   trustLocalMode?: boolean;
 }
@@ -110,7 +110,7 @@ interface InitOverrides {
 // ============================================================================
 
 async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides = {}): Promise<void> {
-  const nonInteractive = !!(overrides.name && overrides.port != null && overrides.authMode && overrides.verification);
+  const nonInteractive = !!(overrides.name && overrides.port != null && overrides.authMode);
 
   if (!nonInteractive) {
     console.log(BANNER);
@@ -140,21 +140,22 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
     const instanceName = overrides.name ?? await prompt!.ask('  Instance name', 'OpenHive');
     const portNum = overrides.port ?? (parseInt(await prompt!.ask('  Port', '7836'), 10) || 7836);
 
-    // Step 3: Registration mode
-    let verificationStrategy: string;
-    if (overrides.verification) {
-      verificationStrategy = overrides.verification;
+    // Step 3: Agent trust model (how agents authenticate over the MAP WebSocket)
+    let trustModel: 'open' | 'verified';
+    if (overrides.trustModel === 'open' || overrides.trustModel === 'verified') {
+      trustModel = overrides.trustModel;
+    } else if (nonInteractive) {
+      trustModel = 'verified';
     } else {
-      const verificationIndex = await prompt!.choose(
-        '  Registration mode:',
+      const trustIndex = await prompt!.choose(
+        '  Agent trust model:',
         [
-          'Open - anyone can register (default)',
-          'Invite - require an invite code',
-          'Manual - admin approves each registration',
+          'Verified - agents must present an operator-issued token (recommended)',
+          'Open - any agent connects with an API key (localhost / single-operator only)',
         ],
         0,
       );
-      verificationStrategy = ['open', 'invite', 'manual'][verificationIndex];
+      trustModel = (['verified', 'open'] as const)[trustIndex];
     }
 
     // Step 4: Auth mode
@@ -219,12 +220,13 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
     console.log(`    Config:            ${paths.config}`);
     console.log(`    Instance name:     ${instanceName}`);
     console.log(`    Port:              ${portNum}`);
+    console.log(`    Host:              127.0.0.1 (loopback only)`);
     console.log(`    Hub mode:          ${hubMode}${hubMode === 'server' ? ' (headless)' : ''}`);
     console.log(`    Auth mode:         ${authMode}`);
     if (trustLocalMode) {
       console.log(`    Trust local:       yes (admin auth bypassed in local mode)`);
     }
-    console.log(`    Registration:      ${verificationStrategy}`);
+    console.log(`    Trust model:       ${trustModel}`);
     console.log(`    Admin key:         ${adminKey}`);
     console.log('');
 
@@ -261,8 +263,8 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
       auth: {
         mode: authMode,
       },
-      verification: {
-        strategy: verificationStrategy,
+      mapHub: {
+        trustModel,
       },
       storage: {
         type: 'local',
@@ -300,6 +302,14 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
   Then open http://localhost:${portNum} -- the app will walk you through
   connecting your first agent.
 `);
+
+    if (trustModel === 'verified') {
+      console.log(`  Trust model is "verified" -- agents must present an operator-issued token.
+  Mint one for your first swarm with:
+
+    openhive admin onboard-token create --scopes map:agents:spawn --ttl-hours 24
+`);
+    }
 
     // Ask if they want to start now
     if (nonInteractive) {
@@ -522,7 +532,7 @@ program
   .option('--name <name>', 'Instance name (non-interactive)')
   .option('--port <port>', 'Port number (non-interactive)')
   .option('--auth-mode <mode>', 'Auth mode: local or token (non-interactive)')
-  .option('--verification <strategy>', 'Registration: open, invite, or manual (non-interactive)')
+  .option('--trust-model <model>', 'MAP trust model: verified or open (non-interactive; default verified)')
   .option('--mode <mode>', 'Hub mode: full or server (non-interactive)')
   .option('--trust-local-mode', 'Enable admin.trustLocalMode (bypass admin auth in local mode — see docs)')
   .action(async (options: any) => {
@@ -544,7 +554,7 @@ program
       name: options.name,
       port: options.port ? parseInt(options.port, 10) : undefined,
       authMode: options.authMode,
-      verification: options.verification,
+      trustModel: options.trustModel,
       mode: options.mode,
       trustLocalMode: options.trustLocalMode,
     });

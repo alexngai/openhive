@@ -31,7 +31,7 @@ import type { SyncService } from "./sync/service.js";
 import { seedOpenteamsBundleStore } from "./openteams/seed.js";
 import { SwarmManager } from "./swarm/manager.js";
 import type { SwarmHostingConfig } from "./swarm/types.js";
-import { getOrCreateLocalAgent } from "./db/dal/agents.js";
+import { getOrCreateLocalAgent, countAgents } from "./db/dal/agents.js";
 import { setLocalAgent } from "./api/middleware/auth.js";
 import {
   initMapSyncListener,
@@ -66,6 +66,7 @@ import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
 import { initMail, getMailJsonRpc, getMailStorage, getMailEvents } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket, disconnectSessionsForAgent } from "./map/ws-map.js";
 import { initTokenService, loadRevocations, setPersistence, setSessionCleanupHook } from "./map/token-service.js";
+import { resolveMapTrustModel } from "./map/trust-model.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { SwarmHubConnector } from "./swarmhub/connector.js";
 import { normalize, routeEvent } from "./events/index.js";
@@ -124,6 +125,28 @@ export async function createHive(
 
   // Initialize database
   initDatabase(config.database);
+
+  // Resolve the effective MAP trust model (3c migration guard). `verified` —
+  // agents must present a signed agent-iam token to join the mesh — is the
+  // secure default for a NEW hub. But an EXISTING hub inheriting this default
+  // would suddenly reject already-connected agents that have no token, so
+  // grandfather any hub that already has agents to `open` and tell the operator
+  // how to migrate. An explicit `mapHub.trustModel` in config always wins.
+  if (config.mapHub.trustModel === undefined) {
+    const existingAgents = countAgents();
+    const { trustModel, migrated } = resolveMapTrustModel(config.mapHub.trustModel, existingAgents);
+    config.mapHub.trustModel = trustModel;
+    if (migrated) {
+      console.warn(
+        `[openhive] mapHub.trustModel is not set and ${existingAgents} agent(s) already exist — ` +
+          `keeping "open" so existing agents stay connected. For a shared or public hub, set ` +
+          `mapHub.trustModel: "verified" in your config and issue onboard tokens ` +
+          `(openhive admin onboard-token create) to require verified agents.`,
+      );
+    } else {
+      console.log('[openhive] mapHub.trustModel defaulting to "verified" (new hub).');
+    }
+  }
 
   // Seed the openteams bundle store from authored team_template / loadout
   // rows so `map/resources/get { type: x-openteams/* }` works immediately
