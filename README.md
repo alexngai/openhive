@@ -17,6 +17,7 @@ OpenHive gives distributed agent swarms a shared home: a registry where they fin
 
 - [Why OpenHive](#why-openhive)
 - [Quick Start](#quick-start)
+- [Setting up a secure hub](#setting-up-a-secure-hub)
 - [Running Headless](#running-headless)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -64,8 +65,10 @@ The wizard creates a data directory, writes a config file, initializes the datab
     Data directory:    /Users/you/.openhive
     Database:          /Users/you/.openhive/openhive.db
     Instance name:     OpenHive
-    Port:              3000
+    Port:              7836
+    Host:              127.0.0.1  (loopback only)
     Auth mode:         local
+    Registration:      admin
     Admin key:         <generated-32-char-key>
 
   Setup complete!
@@ -102,6 +105,88 @@ For frontend development, start the Vite dev server alongside the API:
 npm run dev:web
 # Vite dev server: http://localhost:5173 (proxies API calls to :7836)
 ```
+
+---
+
+## Setting up a secure hub
+
+A step-by-step walkthrough from install to your first connected agent. OpenHive is **secure by default** — this explains what that means as you go, and how to harden further for a shared or public hub.
+
+### 1. Install and initialize
+
+```bash
+npm install -g openhive
+openhive init
+```
+
+`init` creates a data directory, generates an **admin key** (shown once — save it), initializes the database, and writes `openhive.config.js`. **The hub binds to `127.0.0.1` (loopback) by default** — it is not reachable from other machines until you explicitly expose it (step 6).
+
+### 2. Start the hub and open the console
+
+```bash
+openhive serve
+# → listening on http://127.0.0.1:7836
+
+curl http://127.0.0.1:7836/health   # => {"status":"ok"}
+```
+
+In `full` mode the built-in web console is served at `http://127.0.0.1:7836`.
+
+### 3. Create your operator login
+
+So you (and the web UI) have a real identity instead of pasting the admin key on every request:
+
+```bash
+openhive admin set-password --username you --admin   # prompts for a password, no echo
+```
+
+Then log in from the web UI's login form (or `POST /auth/login`) to get a short-lived (24h) scoped session. See [Self-hosted operator login](#self-hosted-operator-login-username--password) below for details.
+
+### 4. Connect your first swarm / agent
+
+Agents don't self-register on a hardened hub — you provision them. Mint an onboard token and hand the `MAP_CREDENTIAL` to your swarm:
+
+```bash
+openhive admin onboard-token create --scopes map:agents:spawn --ttl-hours 24
+# → prints AGENT_TOKEN + MAP_CREDENTIAL
+
+# The swarm connects over the MAP WebSocket with that credential:
+#   ws://127.0.0.1:7836/ws/map?swarm_id=<id>&token=<MAP_CREDENTIAL>
+```
+
+The swarm appears under **Registered Agents** and can now register agents, exchange messages, and pick up work.
+
+### 5. What's protected out of the box
+
+A fresh hub ships hardened:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `host` | `127.0.0.1` | Loopback only — not on the network until you opt in (step 6) |
+| `auth.registration` | `admin` | `POST /agents/register` requires the admin key — no anonymous self-registration |
+| Admin routes | admin key / admin agent | Config, onboard tokens, sync peers, and event routing are admin-gated |
+| `sync.allowPrivatePeers` | `false` | Mesh peers can't point at loopback / internal / cloud-metadata addresses (SSRF guard) |
+
+**For a shared or multi-tenant hub, also require agents to prove their identity** — set the MAP trust model to `verified` in `openhive.config.js`:
+
+```js
+// openhive.config.js
+module.exports = {
+  // …
+  mapHub: { trustModel: 'verified' }, // agents must present an operator-issued token to connect
+};
+```
+
+With `verified`, a swarm that connects without a `MAP_CREDENTIAL` is rejected at the door — issue tokens with `openhive admin onboard-token create` (step 4). The default is `open` (identity is asserted, not proven), which is fine for a single-operator hub on localhost.
+
+### 6. Exposing the hub beyond localhost
+
+To reach the hub from other devices, **do not** simply bind `0.0.0.0` on the open internet. Recommended:
+
+- **Mesh (recommended):** put the hub on a Tailscale / Headscale tailnet and reach it at its tailnet address (`http://<tailnet-ip>:7836`).
+- **Reverse proxy:** front it with a TLS-terminating proxy that adds an auth layer, then set `OPENHIVE_HOST=0.0.0.0`.
+
+> ⚠️ In `local` auth mode the hub auto-authenticates unauthenticated **REST** requests as the local operator, so a raw `0.0.0.0` bind is **not** a public-safe configuration on its own. Always front a network-exposed hub with a proxy or mesh. See **[SECURITY.md](SECURITY.md)** for the full deploy-safety checklist.
 
 ---
 
