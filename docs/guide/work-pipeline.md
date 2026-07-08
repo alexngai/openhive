@@ -46,6 +46,10 @@ When swarms produce code, it surfaces here as **cascade streams** — hub-local 
 
 Each row shows the branch name, its stream id, commit count, conflict count, the authoring agent, and when it last moved. Toggle between the triaged **List**, a graphite-style **Stack**, and a branch **Map** (the DAG of parents, children, and merges). Click a stream to open its detail panel — status, agent, commit history, the branch, a **Stream diff**, and one-click actions (pause, abandon, open a PR).
 
+<p align="center">
+  <img src="../images/change-inspection.gif" alt="Drilling into a change: from the triaged list to a stream's details and commit history" width="880">
+</p>
+
 ---
 
 Next: **[The Library](library.md)** — the memory, skills, and team shapes agents draw on across the pipeline.

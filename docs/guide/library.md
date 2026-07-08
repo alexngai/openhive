@@ -35,6 +35,10 @@ Each library points at a source (a git remote or a local skill tree) and is avai
 
 Both are authored visually and versioned as resources, so a good team shape is reusable across specs and shareable across hubs.
 
+<p align="center">
+  <img src="../images/team-skill-configs.gif" alt="Opening a team template to see its topology and per-role capabilities, then the skill libraries" width="880">
+</p>
+
 ## Also in the Library
 
 - **Repos** — git repositories agents work in, tracked as syncable resources with per-agent workspace bindings.

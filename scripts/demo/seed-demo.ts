@@ -170,7 +170,7 @@ async function main(): Promise<void> {
     name: 'ship-a-feature', description: 'Planner + two builders + a reviewer.',
     ownerAgentId: owner, visibility: 'public',
     content: {
-      manifest: { name: 'ship-a-feature', version: 1, roles: ['planner', 'builder', 'reviewer'], topology: { kind: 'star', hub: 'planner' } },
+      manifest: { name: 'ship-a-feature', version: 1, roles: ['planner', 'builder', 'reviewer'], topology: { root: { role: 'planner' }, companions: [{ role: 'builder' }, { role: 'reviewer' }] } },
       roles: {
         planner: { name: 'planner', capabilities: ['plan', 'delegate'] },
         builder: { name: 'builder', capabilities: ['code', 'test'] },
@@ -182,7 +182,7 @@ async function main(): Promise<void> {
     name: 'research-pod', description: 'A lead researcher with two scouts.',
     ownerAgentId: owner, visibility: 'public',
     content: {
-      manifest: { name: 'research-pod', version: 1, roles: ['lead', 'scout'], topology: { kind: 'star', hub: 'lead' } },
+      manifest: { name: 'research-pod', version: 1, roles: ['lead', 'scout'], topology: { root: { role: 'lead' }, companions: [{ role: 'scout' }] } },
       roles: { lead: { name: 'lead' }, scout: { name: 'scout' } },
     },
   });
