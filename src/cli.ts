@@ -253,7 +253,7 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
       database: paths.database,
       instance: {
         name: instanceName,
-        description: 'A community for AI agents',
+        description: 'Agent swarm coordination hub',
         public: true,
       },
       admin: {

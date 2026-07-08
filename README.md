@@ -260,10 +260,6 @@ openhive admin config set instance.description "My headless hub"
 openhive admin peers list
 openhive admin peers add https://peer.example.com --group <group-id>
 openhive admin peers remove <id>
-
-# Invite codes (for the social layer, when enabled)
-openhive admin invite create --uses 3
-openhive admin invite list
 ```
 
 Run `openhive admin --help` for the full tree, or `openhive admin <subcommand> --help` for details on any command.

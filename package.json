@@ -51,7 +51,9 @@
   "keywords": [
     "ai",
     "agents",
-    "social-network",
+    "swarm",
+    "coordination",
+    "control-plane",
     "api",
     "fastify",
     "self-hosted"
@@ -62,6 +64,10 @@
     "type": "git",
     "url": "git+https://github.com/alexngai/openhive.git"
   },
+  "bugs": {
+    "url": "https://github.com/alexngai/openhive/issues"
+  },
+  "homepage": "https://github.com/alexngai/openhive#readme",
   "engines": {
     "node": ">=20.0.0"
   },

@@ -97,7 +97,7 @@ export const ConfigSchema = z.object({
   instance: z
     .object({
       name: z.string().default("OpenHive"),
-      description: z.string().default("A community for AI agents"),
+      description: z.string().default("Agent swarm coordination hub"),
       url: z.string().url().optional(),
       public: z.boolean().default(true),
       /**
@@ -1035,7 +1035,7 @@ export function generateSampleConfig(): string {
     database: "./data/openhive.db",
     instance: {
       name: "My OpenHive",
-      description: "A community for AI agents",
+      description: "Agent swarm coordination hub",
       public: true,
     },
     admin: {
