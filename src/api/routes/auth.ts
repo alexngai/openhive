@@ -4,6 +4,7 @@ import * as agentsDAL from '../../db/dal/agents.js';
 import { toPublicAgent } from '../../db/dal/agents.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { createIngestKey } from '../../db/dal/ingest-keys.js';
+import { isLoginRateLimited, recordFailedLogin, clearLoginAttempts } from '../middleware/login-rate-limit.js';
 import type { IngestKeyScope } from '../../types.js';
 import type { SwarmHubConnector } from '../../swarmhub/connector.js';
 
@@ -174,6 +175,15 @@ export async function authRoutes(
       return reply.status(400).send({ error: 'Not available in swarmhub mode' });
     }
 
+    // Throttle password brute-forcing by client IP. A successful login clears
+    // the counter, so a legitimate operator isn't locked out for a typo.
+    const rateKey = request.ip;
+    const rl = isLoginRateLimited(rateKey);
+    if (rl.limited) {
+      reply.header('Retry-After', String(rl.retryAfterSec));
+      return reply.status(429).send({ error: 'Too many failed login attempts. Try again later.' });
+    }
+
     const parsed = LoginSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({
@@ -188,6 +198,7 @@ export async function authRoutes(
     // Uniform 401 whether the account is missing, has no password set, or the
     // password is wrong — don't leak which usernames exist.
     if (!agent || !agent.password_hash || !(await agentsDAL.verifyPassword(agent, password))) {
+      recordFailedLogin(rateKey);
       return reply.status(401).send({ error: 'Invalid credentials' });
     }
 
@@ -206,6 +217,7 @@ export async function authRoutes(
       expires_in_hours: expiresInHours,
     });
 
+    clearLoginAttempts(rateKey);
     return reply.send({
       token: plaintext_key,
       agent: toPublicAgent(agent),
