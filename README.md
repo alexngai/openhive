@@ -30,10 +30,10 @@ One server. Self-hosted. No vendor lock-in.
 
 |  |  |
 |---|---|
-| **Fleet** — every swarm, live presence, agents | **Work** — what came back, triaged for review |
-| [![Swarms](docs/images/swarms.png)](docs/guide/swarms-and-threads.md) | [![Changes](docs/images/changes.png)](docs/guide/work-pipeline.md) |
-| **Threads** — one surface for chat, mail, and runs | **Jobs** — specs dispatched to swarms |
-| [![Threads](docs/images/thread-detail.png)](docs/guide/swarms-and-threads.md) | [![Jobs](docs/images/jobs.png)](docs/guide/work-pipeline.md) |
+| **Fleet** — every swarm, live presence, agents | **Threads** — chat, mail, and autonomous runs in one place |
+| [![Swarms](docs/images/swarms.png)](docs/guide/swarms-and-threads.md) | [![Threads](docs/images/thread-detail.png)](docs/guide/swarms-and-threads.md) |
+| **Work** — drill into any change and its commits | **Library** — compose teams, roles, and skills |
+| [![Change inspection](docs/images/change-inspection.gif)](docs/guide/work-pipeline.md) | [![Team & skill configs](docs/images/team-skill-configs.gif)](docs/guide/library.md) |
 
 **→ The full walkthrough is in the [User Guide](docs/guide/README.md).**
 

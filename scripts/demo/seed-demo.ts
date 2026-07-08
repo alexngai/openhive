@@ -9,8 +9,18 @@
  *   OPENHIVE_DATABASE=/tmp/demo/demo.db OPENHIVE_ADMIN_TRUST_LOCAL_MODE=1 \
  *     npx tsx src/cli.ts serve
  */
-import { initDatabase, closeDatabase } from '../../src/db/index.js';
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
+import { initDatabase, closeDatabase, getDatabase } from '../../src/db/index.js';
 import { createAgent } from '../../src/db/dal/agents.js';
+import { ensureHubDefaultTaskGraph } from '../../src/map/hub-task-graph.js';
+import {
+  resolveDaemonSocket,
+  daemonCreateSpec,
+  daemonCreateTask,
+  daemonCreateLink,
+} from '../../src/map/task-daemon-client.js';
+import { resolveLocalPath } from '../../src/api/routes/_resource-helpers.js';
 import { createResource } from '../../src/db/dal/syncable-resources.js';
 import { createSwarm } from '../../src/db/dal/map.js';
 import { createDispatch, updateDispatchStatus } from '../../src/db/dal/dispatches.js';
@@ -28,6 +38,66 @@ const dbPath = process.env.OPENHIVE_DATABASE;
 if (!dbPath) {
   console.error('Refusing to run: set OPENHIVE_DATABASE to an isolated demo DB path first.');
   process.exit(1);
+}
+
+/**
+ * Seed an ISOLATED opentasks graph (specs + tasks) under the demo data dir.
+ * The daemon writes graph.jsonl synchronously. Two subtleties:
+ *  - We rename the resource off `hub/default` so the server's own startup
+ *    bootstrap can't match-and-overwrite this isolated graph's path (the
+ *    upsert keys on owner+name).
+ *  - main() must process.exit() afterward — the spawned daemon child keeps the
+ *    event loop alive, so closeDatabase() alone won't let the script exit.
+ */
+async function seedTaskGraph(dataDir: string): Promise<void> {
+  const graph = ensureHubDefaultTaskGraph(dataDir);
+  if (!graph) { console.warn('task graph skipped (no owner agent)'); return; }
+  const localPath = resolveLocalPath(graph);
+  if (!localPath) { console.warn('task graph skipped (no local path)'); return; }
+  const sock = resolveDaemonSocket(localPath);
+
+  const oauthSpec = (await daemonCreateSpec(sock, {
+    title: 'Add OAuth login to the dashboard',
+    content: '## Goal\nLet operators sign in with GitHub OAuth.\n\n## Acceptance\n- Login button\n- Callback route\n- Session cookie',
+    priority: 2,
+  }, localPath)) as { id: string };
+  await daemonCreateSpec(sock, {
+    title: 'Federate memory banks across instances',
+    content: 'Pull-based mesh sync for memory_bank resources between two hubs.',
+    priority: 1,
+  }, localPath);
+
+  const tasks: Array<[string, string, boolean]> = [
+    ['Scaffold auth routes', 'completed', true],
+    ['Wire the OAuth callback route', 'completed', true],
+    ['Add session-cookie middleware', 'in_progress', true],
+    ['Rate-limit the token endpoint', 'in_progress', true],
+    ['Write the e2e login test', 'open', true],
+    ['Decide refresh-token strategy', 'blocked', true],
+  ];
+  for (const [title, status, linkToOauth] of tasks) {
+    const t = (await daemonCreateTask(sock, { title, status }, localPath)) as { id: string };
+    if (linkToOauth) {
+      try { await daemonCreateLink(sock, { fromId: t.id, toId: oauthSpec.id, type: 'implements' }, localPath); }
+      catch { /* link is best-effort */ }
+    }
+  }
+
+  // The daemon flushes graph.jsonl on a debounce; wait for our nodes to land on
+  // disk before the process exits (a later server-spawned daemon loads from it).
+  const graphFile = path.join(localPath, 'graph.jsonl');
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const n = readFileSync(graphFile, 'utf8').trim().split('\n').filter(Boolean).length;
+      if (n >= 8) break; // 2 specs + 6 tasks
+    } catch { /* not flushed yet */ }
+  }
+
+  // Rename off hub/default (see doc comment above).
+  getDatabase().prepare('UPDATE syncable_resources SET name = ? WHERE id = ?').run('acme/dashboard', graph.id);
+  const finalCount = (() => { try { return readFileSync(graphFile, 'utf8').trim().split('\n').filter(Boolean).length; } catch { return 0; } })();
+  console.log(`Task graph seeded (isolated) → acme/dashboard (${finalCount} nodes on disk)`);
 }
 
 async function main(): Promise<void> {
@@ -200,8 +270,20 @@ async function main(): Promise<void> {
     content: { name: 'reviewer-lite', capabilities: ['review'], permissions: { deny: ['Write', 'Bash'] } },
   });
 
+  // Task graph last — it spawns the opentasks daemon (async). Best-effort:
+  // the daemon can be finicky to auto-start from a one-shot script, so a
+  // failure here must not abort the rest of the (already-committed) seed.
+  try {
+    await seedTaskGraph(path.dirname(dbPath!));
+  } catch (err) {
+    console.warn('[seed] task graph skipped — opentasks daemon unavailable:', (err as Error).message);
+    try { getDatabase().prepare("DELETE FROM syncable_resources WHERE resource_type = 'task'").run(); } catch { /* ignore */ }
+  }
+
   console.log('Demo seed complete.');
   closeDatabase();
+  // The opentasks daemon child keeps the event loop alive; force a clean exit.
+  process.exit(0);
 }
 
 main().catch((err) => {
