@@ -48,6 +48,7 @@ import { setHubBaseUrl as setExperimentHubBaseUrl } from "./experiments/launcher
 import { isAutonomousDispatchPaused } from "./map/dispatch-policy.js";
 import { startTaskBinder, stopTaskBinder } from "./cascade/task-binder.js";
 import { installAsResolverFetcher as installCascadeDiffFetcher } from "./map/cascade-diff-protocol.js";
+import { configureFederationSsrf } from "./federation/service.js";
 import { startThreadLifecycle, stopThreadLifecycle } from "./dispatch/thread-lifecycle.js";
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
 import { findResourceById as findResourceForSchedule } from "./db/dal/syncable-resources.js";
@@ -435,6 +436,11 @@ export async function createHive(
   if (config.sync.enabled) {
     syncService = initSyncService(config.sync);
   }
+
+  // Federation dials arbitrary remote instances on request (discovery, remote
+  // agent/resource fetches), so it carries the same SSRF exposure as sync peers.
+  // Apply the shared private-network policy (config.sync.allowPrivatePeers).
+  configureFederationSsrf(config.sync.allowPrivatePeers);
 
   // Initialize SwarmCraft plugin (MAP client for agent monitoring)
   if (config.swarmcraft.enabled) {

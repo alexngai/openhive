@@ -18,6 +18,7 @@
 import type { Config } from '../config.js';
 import type { AtlasService } from './atlas-service.js';
 import { type LearningLogger, defaultLogger } from './types.js';
+import { isSafeHttpUrl } from '../utils/safe-url.js';
 
 export type DistributedMode = 'local' | 'centralized' | 'domain-partitioned';
 
@@ -119,6 +120,14 @@ export class DistributedLearningCoordinator {
     trajectoryData: Record<string, unknown>,
     targetUrl: string,
   ): Promise<boolean> {
+    // SSRF guard: the learning-hive URL is operator/peer-supplied and we dial it
+    // directly. Refuse non-http(s) schemes and — unless a private mesh is opted
+    // into — loopback / link-local / metadata / RFC1918 targets.
+    if (!isSafeHttpUrl(targetUrl, { blockPrivateNetworks: !this.config.sync.allowPrivatePeers })) {
+      this.lastForwardError = `Refusing to forward to unsafe target URL: ${targetUrl}`;
+      this.log.warn(this.lastForwardError);
+      return false;
+    }
     try {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -156,6 +165,9 @@ export class DistributedLearningCoordinator {
    * Check if the remote learning hive is reachable.
    */
   async checkRemoteHealth(targetUrl: string): Promise<boolean> {
+    if (!isSafeHttpUrl(targetUrl, { blockPrivateNetworks: !this.config.sync.allowPrivatePeers })) {
+      return false;
+    }
     try {
       const headers: Record<string, string> = {};
       const apiKey = this.config.learning.distributed.learningHiveApiKey;

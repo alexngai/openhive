@@ -4,6 +4,7 @@
  */
 
 import * as instancesDAL from '../db/dal/instances.js';
+import { isSafeHttpUrl, UnsafeUrlError } from '../utils/safe-url.js';
 
 // ============================================================================
 // Error Types and Logging
@@ -50,6 +51,16 @@ const federationLogger = {
  * Categorize an error into a FederationErrorType
  */
 function categorizeError(error: unknown, statusCode?: number): FederationError {
+  // A blocked outbound target (SSRF guard) is a policy rejection, not a
+  // transient network fault — surface it as a validation error so callers never
+  // retry it as if the peer were merely unreachable.
+  if (error instanceof UnsafeUrlError) {
+    return {
+      type: FederationErrorType.VALIDATION_ERROR,
+      message: error.message,
+      originalError: error.message,
+    };
+  }
   if (error instanceof Error) {
     // Timeout errors
     if (error.name === 'AbortError' || error.message.includes('timeout')) {
@@ -114,6 +125,39 @@ function categorizeError(error: unknown, statusCode?: number): FederationError {
     message: error instanceof Error ? error.message : 'Unknown error',
     originalError: error instanceof Error ? error.message : String(error),
   };
+}
+
+// ============================================================================
+// SSRF policy for outbound federation dials
+// ============================================================================
+
+/**
+ * Whether the hub may federate with private / loopback / link-local instances.
+ * Mirrors the sync/gossip peer policy (`config.sync.allowPrivatePeers`) and is
+ * wired once at server boot via {@link configureFederationSsrf}. Default false:
+ * federation URLs are fully attacker-influenced (anyone can ask the hub to
+ * "discover" an instance), so 169.254.169.254 / RFC1918 / localhost must be
+ * refused unless an operator opts into a trusted private-network mesh.
+ */
+let allowPrivateFederationPeers = false;
+
+/** Set the federation SSRF policy from resolved config. Called at server boot. */
+export function configureFederationSsrf(allowPrivatePeers: boolean): void {
+  allowPrivateFederationPeers = allowPrivatePeers;
+}
+
+/**
+ * The single outbound chokepoint for federation: validate the target is a safe
+ * HTTP(S) endpoint the hub is allowed to dial, then fetch. Throws
+ * {@link UnsafeUrlError} (categorized as a VALIDATION_ERROR by the callers'
+ * existing try/catch) for non-http schemes, inline credentials, or — unless
+ * `allowPrivateFederationPeers` — private/loopback/metadata hosts.
+ */
+async function federatedFetch(targetUrl: string, init?: RequestInit): Promise<Response> {
+  if (!isSafeHttpUrl(targetUrl, { blockPrivateNetworks: !allowPrivateFederationPeers })) {
+    throw new UnsafeUrlError('Refusing to dial an unsafe or private federation endpoint');
+  }
+  return fetch(targetUrl, init);
 }
 
 // ============================================================================
@@ -193,7 +237,7 @@ export async function discoverInstanceWithError(url: string): Promise<DiscoveryR
   const discoveryUrl = `${normalizedUrl}/.well-known/openhive.json`;
 
   try {
-    const response = await fetch(discoveryUrl, {
+    const response = await federatedFetch(discoveryUrl, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'OpenHive/0.2.0 Federation',
@@ -372,7 +416,7 @@ export async function fetchRemoteAgentsWithError(
   const fetchUrl = `${normalizedUrl}/api/v1/agents?${params}`;
 
   try {
-    const response = await fetch(fetchUrl, {
+    const response = await federatedFetch(fetchUrl, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'OpenHive/0.2.0 Federation',
@@ -449,7 +493,7 @@ export async function fetchRemotePostsWithError(
   const fetchUrl = `${normalizedUrl}/api/v1/feed/all?${params}`;
 
   try {
-    const response = await fetch(fetchUrl, {
+    const response = await federatedFetch(fetchUrl, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'OpenHive/0.2.0 Federation',
@@ -531,7 +575,7 @@ export async function fetchRemotePostWithError(
   const fetchUrl = `${normalizedUrl}/api/v1/posts/${postId}`;
 
   try {
-    const response = await fetch(fetchUrl, {
+    const response = await federatedFetch(fetchUrl, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'OpenHive/0.2.0 Federation',
@@ -630,7 +674,7 @@ export async function fetchRemoteResourcesWithError(
   const fetchUrl = `${normalizedUrl}/api/v1/resources/discover?${params}`;
 
   try {
-    const response = await fetch(fetchUrl, {
+    const response = await federatedFetch(fetchUrl, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'OpenHive/0.2.0 Federation',
@@ -725,7 +769,7 @@ export async function fetchRemoteHivesWithError(
   const fetchUrl = `${normalizedUrl}/api/v1/hives?${params}`;
 
   try {
-    const response = await fetch(fetchUrl, {
+    const response = await federatedFetch(fetchUrl, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'OpenHive/0.2.0 Federation',
