@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { execSync } from 'child_process';
 import { resolveDaemonSocket } from '../../map/task-daemon-client.js';
 import { resolveOpentasksCliPath, reapStaleDaemonLock } from '../../map/task-daemon-lifecycle.js';
 import { testRoot, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
@@ -98,6 +99,26 @@ describe('resolveDaemonSocket', () => {
     fs.writeFileSync(path.join(dir, 'config.json'), 'not json');
 
     expect(resolveDaemonSocket(dir)).toBe(path.join(dir, 'daemon.sock'));
+  });
+
+  it('resolves the multi-location socket for a task graph inside a git repo', () => {
+    // Regression: inside a git repo the opentasks daemon runs multi-location and
+    // binds `<git-common-dir>/opentasks/daemon.sock`. resolveDaemonSocket must
+    // resolve there deterministically — even before the daemon has created the
+    // socket — otherwise probes hit the plain `.opentasks` path and miss the
+    // running daemon ("daemon not ready" though it is listening).
+    const repo = mkTestDir(TEST_ROOT, 'git-repo');
+    execSync('git init -q', { cwd: repo });
+    const graphDir = path.join(repo, 'task-graph', '.opentasks');
+    fs.mkdirSync(graphDir, { recursive: true });
+
+    const gitCommonDir = execSync('git rev-parse --git-common-dir', {
+      cwd: graphDir,
+      encoding: 'utf-8',
+    }).trim();
+    const expected = path.join(path.resolve(graphDir, gitCommonDir), 'opentasks', 'daemon.sock');
+
+    expect(resolveDaemonSocket(graphDir)).toBe(expected);
   });
 });
 
