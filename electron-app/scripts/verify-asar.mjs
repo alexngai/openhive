@@ -170,13 +170,60 @@ const SPEC_RE =
 const PKG_SPEC_RE =
   /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(\/[^\s"']+)*$/i;
 
+// Blank out `//` line comments and `/* */` block comments before scanning.
+// tsup emits the bundle UNMINIFIED (so stack traces stay readable), which
+// means source comments survive verbatim — and a comment like
+// `…distinguish an explicit operator choice from "unset" and apply…` reads
+// as `from "unset"` to SPEC_RE, a phantom import of a package that doesn't
+// exist. The pass is string-aware so `//` inside a "https://…" literal (or
+// any '…' / "…" / `…` string) is left intact; only real comments are
+// blanked. Comment bytes become spaces (newlines preserved) so offsets and
+// the rest of the scan are unchanged. Regex literals aren't special-cased:
+// esbuild output never starts one with `//` or `/*`, so none can be misread
+// as a comment. (Template `${…}` interiors are treated as string content;
+// the bundle has no `import()` embedded inside a template literal.)
+function stripComments(src) {
+  let out = '';
+  let state = 'code'; // code | line | block | sq | dq | tpl
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    const c2 = src[i + 1];
+    if (state === 'code') {
+      if (c === '/' && c2 === '/') { state = 'line'; out += '  '; i++; continue; }
+      if (c === '/' && c2 === '*') { state = 'block'; out += '  '; i++; continue; }
+      if (c === "'") state = 'sq';
+      else if (c === '"') state = 'dq';
+      else if (c === '`') state = 'tpl';
+      out += c;
+      continue;
+    }
+    if (state === 'line') {
+      if (c === '\n') { state = 'code'; out += c; continue; }
+      out += c === '\t' ? c : ' ';
+      continue;
+    }
+    if (state === 'block') {
+      if (c === '*' && c2 === '/') { state = 'code'; out += '  '; i++; continue; }
+      out += c === '\n' || c === '\t' ? c : ' ';
+      continue;
+    }
+    // String states (sq | dq | tpl): copy verbatim, honor `\` escapes, exit
+    // on the matching unescaped quote.
+    const quote = state === 'sq' ? "'" : state === 'dq' ? '"' : '`';
+    if (c === '\\') { out += c + (c2 ?? ''); i++; continue; }
+    if (c === quote) state = 'code';
+    out += c;
+  }
+  return out;
+}
+
 const importedPackages = new Set();
 let scannedBundles = 0;
 
 for (const bundle of BUNDLES) {
   let src;
   try {
-    src = extractFile(asarPath, bundle).toString('utf8');
+    src = stripComments(extractFile(asarPath, bundle).toString('utf8'));
   } catch {
     continue; // map.js may not exist on every build; index/cli always do
   }
@@ -202,7 +249,41 @@ if (scannedBundles === 0) {
   process.exit(1);
 }
 
-const unresolved = [...importedPackages].filter((pkg) => !packagePresent(pkg));
+// Optional peer dependencies are declared-optional and INTENTIONALLY absent
+// from the asar. The code that imports them guards the absence at runtime and
+// degrades gracefully (e.g. the experiment worker's dynamic
+// `import("autonomation/…")` → "install autonomation to manage experiments").
+// electron-builder walks `dependencies` / `optionalDependencies` only, never
+// `peerDependencies`, so an optional peer can't land in the asar by design —
+// flagging it is a false negative. stage-openhive.mjs rewrites the dependency
+// lists but leaves `peerDependenciesMeta` untouched, so it stays a trustworthy
+// signal here even though the header rightly distrusts the dependency list.
+let optionalPeers = new Set();
+try {
+  const stagedPkg = JSON.parse(
+    extractFile(asarPath, 'node_modules/openhive/package.json').toString('utf8'),
+  );
+  const meta = stagedPkg.peerDependenciesMeta ?? {};
+  optionalPeers = new Set(
+    Object.keys(meta).filter((k) => meta[k] && meta[k].optional),
+  );
+} catch {
+  // No staged package.json readable — fall back to checking every specifier.
+}
+
+const skippedOptionalPeers = [...importedPackages].filter((pkg) =>
+  optionalPeers.has(pkg),
+);
+if (skippedOptionalPeers.length) {
+  console.log(
+    `[verify-asar] skipping ${skippedOptionalPeers.length} optional peer ` +
+      `dep(s) (allowed absent): ${skippedOptionalPeers.sort().join(', ')}`,
+  );
+}
+
+const unresolved = [...importedPackages].filter(
+  (pkg) => !optionalPeers.has(pkg) && !packagePresent(pkg),
+);
 
 if (unresolved.length) {
   console.error(
