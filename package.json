@@ -46,7 +46,11 @@
     "deps:check": "syncpack lint",
     "deps:check:all": "syncpack lint --source package.json --source 'electron-app/package.json' --source 'packages/*/package.json' --source 'references/*/package.json'",
     "deps:fix": "syncpack fix",
-    "prepublishOnly": "npm run build && publint"
+    "prepublishOnly": "npm run build && publint",
+    "version:patch": "npm version patch && git push && git push --tags",
+    "version:minor": "npm version minor && git push && git push --tags",
+    "version:major": "npm version major && git push && git push --tags",
+    "publish:npm": "npm run build && npm publish"
   },
   "keywords": [
     "ai",
