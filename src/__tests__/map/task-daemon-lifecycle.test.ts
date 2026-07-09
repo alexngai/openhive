@@ -11,7 +11,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { resolveDaemonSocket } from '../../map/task-daemon-client.js';
-import { resolveOpentasksCliPath, reapStaleDaemonLock } from '../../map/task-daemon-lifecycle.js';
+import {
+  resolveOpentasksCliPath,
+  reapStaleDaemonLock,
+  maxUnixSocketPathBytes,
+  diagnoseSocketPathLength,
+} from '../../map/task-daemon-lifecycle.js';
 import { testRoot, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
 
 const TEST_ROOT = testRoot('task-daemon-lifecycle');
@@ -119,6 +124,43 @@ describe('resolveDaemonSocket', () => {
     const expected = path.join(path.resolve(graphDir, gitCommonDir), 'opentasks', 'daemon.sock');
 
     expect(resolveDaemonSocket(graphDir)).toBe(expected);
+  });
+});
+
+describe('socket path length guard', () => {
+  // A path longer than the platform's sun_path buffer is truncated by the
+  // kernel on bind() — the root cause behind phantom EADDRINUSE / "daemon never
+  // ready" failures on deeply-nested macOS checkouts. These guard against a
+  // regression that would let that fail silently again.
+  it('maxUnixSocketPathBytes reflects per-platform sun_path limits', () => {
+    expect(maxUnixSocketPathBytes('darwin')).toBe(103);
+    expect(maxUnixSocketPathBytes('linux')).toBe(107);
+    expect(maxUnixSocketPathBytes('win32')).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('passes a comfortably short socket path', () => {
+    expect(diagnoseSocketPathLength('/tmp/oh/daemon.sock', 'darwin')).toBeNull();
+  });
+
+  it('flags an over-long macOS path with an actionable message', () => {
+    const longPath = '/' + 'a'.repeat(120) + '/daemon.sock'; // > 103 bytes
+    const msg = diagnoseSocketPathLength(longPath, 'darwin');
+    expect(msg).toBeTruthy();
+    expect(msg).toContain(longPath);
+    expect(msg).toContain('bind()');
+    expect(msg).toMatch(/Fix:/);
+  });
+
+  it('applies the higher Linux limit at the boundary', () => {
+    const path105 = '/' + 'a'.repeat(92) + '/daemon.sock';
+    expect(Buffer.byteLength(path105)).toBe(105); // 105 > 103 (darwin), <= 107 (linux)
+    expect(diagnoseSocketPathLength(path105, 'darwin')).toBeTruthy();
+    expect(diagnoseSocketPathLength(path105, 'linux')).toBeNull();
+  });
+
+  it('never flags on Windows (named pipes, not sun_path)', () => {
+    const longPipe = '\\\\.\\pipe\\' + 'a'.repeat(300);
+    expect(diagnoseSocketPathLength(longPipe, 'win32')).toBeNull();
   });
 });
 

@@ -91,6 +91,56 @@ export function resolveDaemonSocket(opentasksDir: string): string {
 }
 
 /**
+ * Maximum usable byte length of a Unix-domain socket path on this platform.
+ *
+ * The kernel's `sockaddr_un.sun_path` is a fixed-size buffer and the path must
+ * be NUL-terminated, so the usable length is one byte less than the buffer:
+ *   - macOS / *BSD: `sun_path` is 104 bytes → 103 usable
+ *   - Linux:        `sun_path` is 108 bytes → 107 usable
+ *   - Windows:      named pipes, not `sun_path` → no comparable limit
+ *
+ * Over the limit the kernel silently truncates the path on `bind()`, which
+ * collides otherwise-distinct daemons onto a single socket file and surfaces as
+ * a bogus `EADDRINUSE` — or an unreachable daemon that "never becomes ready".
+ * This is the most common "daemon won't start" gotcha for deeply-nested
+ * checkouts, and the raw failure gives no hint why.
+ */
+export function maxUnixSocketPathBytes(platform: NodeJS.Platform = process.platform): number {
+  if (platform === 'win32') return Number.POSITIVE_INFINITY; // named pipes, not sun_path
+  if (platform === 'linux') return 107;
+  return 103; // darwin, *bsd, and a conservative default for unknown unix
+}
+
+/**
+ * Returns a clear, actionable message if `socketPath` is too long to bind on
+ * this platform, or `null` if it fits. Applied before we probe or spawn the
+ * daemon so an unbindable path fails fast with a diagnosis instead of the
+ * cryptic `EADDRINUSE` / readiness-timeout the OS truncation would otherwise
+ * produce.
+ *
+ * Note the offending path is fixed by *where the checkout lives*, not something
+ * OpenHive can rewrite: inside a git repo opentasks binds
+ * `<git-common-dir>/opentasks/daemon.sock` (multi-location) and ignores any
+ * configured socket filename, so the only remedy is a shorter path on disk.
+ */
+export function diagnoseSocketPathLength(
+  socketPath: string,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const limit = maxUnixSocketPathBytes(platform);
+  const len = Buffer.byteLength(socketPath, 'utf8');
+  if (len <= limit) return null;
+  return [
+    `[task-daemon] socket path is ${len} bytes but ${platform} allows at most ${limit} — ` +
+      `the OS truncates longer paths on bind(), which surfaces as a bogus EADDRINUSE or a ` +
+      `daemon that never becomes ready.`,
+    `  path: ${socketPath}`,
+    `  Fix: point the hub's data dir / task graph at a shorter absolute path (e.g. a short ` +
+      `root like ~/oh or /tmp/oh), or run the hub from a less deeply-nested checkout.`,
+  ].join('\n');
+}
+
+/**
  * Resolve the project root (cwd for daemon start) from an opentasks directory.
  * The daemon expects to run from the project root (parent of .opentasks/).
  */
@@ -318,6 +368,16 @@ export async function ensureDaemon(opentasksDir: string): Promise<boolean> {
 
   const projectRoot = resolveProjectRoot(otDir);
   let socketPath = resolveDaemonSocket(otDir);
+
+  // Fail fast on an unbindable socket path. A path longer than the platform's
+  // `sun_path` limit is truncated by the kernel on bind(), so the daemon can
+  // never be reached — probing and spawning would just burn the 5s readiness
+  // window and report a cryptic timeout. Surface the real cause instead.
+  const pathProblem = diagnoseSocketPathLength(socketPath);
+  if (pathProblem) {
+    console.error(pathProblem);
+    return false;
+  }
 
   // Already alive? `socketPath` now resolves via daemonHomeFor, so it already
   // points at the multi-location `<git-common-dir>/opentasks` socket in a git
