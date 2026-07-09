@@ -3,7 +3,7 @@
 The OpenHive console is one screen with a single, opinionated sidebar. Rather than mirroring internal route names, the navigation is grouped the way an operator thinks about the work — **Fleet**, **Work**, and **Library** — with an **Overview** at the top.
 
 <p align="center">
-  <img src="../images/swarmcraft-viz.gif" alt="The OpenHive Overview — hub stats and a live, zoomable graph of the fleet and codebase" width="880">
+  <img src="../images/overview-graph.jpg" alt="The OpenHive Overview — hub stats and a live, zoomable graph of the fleet and codebase (5,551 nodes, 16,518 edges)" width="880">
 </p>
 
 ## Overview
