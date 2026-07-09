@@ -5,10 +5,13 @@
  * Supports GitHub, GitLab, and generic git remotes via git ls-remote.
  */
 
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { isSafeRemoteUrl } from './safe-url.js';
 
-const execAsync = promisify(exec);
+// execFile (not exec) — arguments are passed directly to git without a shell,
+// so URL contents can never be interpreted as shell syntax.
+const execFileAsync = promisify(execFile);
 
 export interface RemoteRefInfo {
   commitHash: string;
@@ -212,12 +215,24 @@ async function checkGitLsRemote(
   url: string,
   branch: string = 'main'
 ): Promise<CheckRemoteResult> {
+  // Defense in depth: never spawn against an unvalidated remote. The primary
+  // gate is checkRemoteForUpdates, but guard here too so no future caller can
+  // reach the subprocess with an attacker-controlled string.
+  if (!isSafeRemoteUrl(url)) {
+    return {
+      success: false,
+      error: 'Unsafe or unsupported git remote URL',
+      source: 'git-ls-remote',
+    };
+  }
+
   const branches = branch === 'main' ? ['main', 'master'] : [branch];
 
   for (const branchName of branches) {
     try {
-      const { stdout } = await execAsync(
-        `git ls-remote --refs ${url} refs/heads/${branchName}`,
+      const { stdout } = await execFileAsync(
+        'git',
+        ['ls-remote', '--refs', url, `refs/heads/${branchName}`],
         { timeout: 15000 }
       );
 
@@ -271,6 +286,17 @@ export async function checkRemoteForUpdates(
   gitRemoteUrl: string,
   branch: string = 'main'
 ): Promise<CheckRemoteResult> {
+  // Reject unsafe / unsupported remotes before touching them. This closes the
+  // command-injection path where a malformed URL used to fall straight through
+  // to a shell via `git ls-remote`.
+  if (!isSafeRemoteUrl(gitRemoteUrl)) {
+    return {
+      success: false,
+      error: 'Unsafe or unsupported git remote URL',
+      source: 'unknown',
+    };
+  }
+
   const parsed = parseGitUrl(gitRemoteUrl);
 
   if (!parsed) {

@@ -2,7 +2,7 @@ import { useMemo, useCallback, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ExternalLink, MessageSquare, Users } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useMailConversation, useSessionsList } from '../../hooks/useApi';
+import { useMailConversation, useSessionsList, useAgentLookup } from '../../hooks/useApi';
 import { useEnrichedUserTurns } from '../../hooks/useEnrichedUserTurns';
 import { useSubscribe, useWSEvent } from '../../hooks/useWebSocket';
 import { TimeAgo } from '../common/TimeAgo';
@@ -109,6 +109,24 @@ export function MailThreadView({
     return map;
   }, [sessionsData, conversationId]);
 
+  // Fallback name resolution: any participant/sender agent id → its registry
+  // name, so mail threads read as agent names even when no linked session
+  // exists (the common case for pure mail-mode swarms). A linked session
+  // still wins (it also carries the drill-in), this only fills the gap.
+  const participantAgentIds = useMemo(
+    () => (data?.conversation?.participants ?? []).map((p) => p.agent_id),
+    [data?.conversation?.participants],
+  );
+  const { data: agentLookupData } = useAgentLookup(participantAgentIds);
+  // useAgentLookup's queryFn already unwraps to the agent-id → Agent map.
+  const agentLookup = agentLookupData ?? {};
+  const nameForAgent = useCallback(
+    (agentId: string | undefined): string | undefined =>
+      (agentId ? participantSessionMap.get(agentId)?.agentName : undefined) ??
+      (agentId ? agentLookup[agentId]?.name : undefined),
+    [participantSessionMap, agentLookup],
+  );
+
   // Enrich agent-authored messages with the resolved session-agent name
   // (ChatBubble uses `agentIdentity.name` to seed its BoringAvatar palette).
   // User/supervisor turns are decorated by `useEnrichedUserTurns` below.
@@ -130,19 +148,19 @@ export function MailThreadView({
           },
         };
       }
-      const link = m.sender ? participantSessionMap.get(m.sender) : undefined;
-      if (!link) return m;
+      const resolvedName = nameForAgent(m.sender);
+      if (!resolvedName) return m;
       return {
         ...m,
-        senderName: link.agentName,
+        senderName: resolvedName,
         agentIdentity: {
           ...(m.agentIdentity ?? {}),
           id: m.sender,
-          name: link.agentName,
+          name: resolvedName,
         },
       };
     });
-  }, [channel.messages, participantSessionMap]);
+  }, [channel.messages, nameForAgent]);
 
   // Second pass: decorate user/supervisor turns with openhive Agent
   // identity. Unified across surfaces so the same viewer sees the same
@@ -278,7 +296,7 @@ export function MailThreadView({
           <div className="flex -space-x-1.5">
             {conversation.participants.slice(0, 5).map((p) => {
               const link = participantSessionMap.get(p.agent_id);
-              const displayName = link?.agentName ?? p.agent_id;
+              const displayName = nameForAgent(p.agent_id) ?? p.agent_id;
               const label = `${displayName}${p.role ? ` (${p.role})` : ''}`;
               const avatar = (
                 <AgentAvatar
@@ -339,7 +357,7 @@ export function MailThreadView({
           </span>
           {conversation.participants.map((p) => {
             const link = participantSessionMap.get(p.agent_id);
-            const displayName = link?.agentName ?? p.agent_id;
+            const displayName = nameForAgent(p.agent_id) ?? p.agent_id;
             const roleSuffix = p.role ? ` · ${p.role}` : '';
             const avatar = <AgentAvatar name={displayName} size={16} />;
             return link ? (
@@ -375,12 +393,19 @@ export function MailThreadView({
 
       {/* Chat surface. `messages` prop overrides channel.messages so we can
           inject resolved agent names/avatars per bubble; the rest of the
-          channel (status, permissions, reply callbacks) flows through. */}
-      <div className="flex-1 min-h-0 flex flex-col">
+          channel (status, permissions, reply callbacks) flows through.
+          `overflow-y-auto` makes this wrapper the scroll container: the
+          non-compact ChatMessageList flows at full height and relies on a
+          scrolling ancestor, otherwise a long thread spills over the composer. */}
+      <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
         <ChatMessageList
           channel={channel}
           messages={enrichedMessages}
-          continuationHeaders
+          // Group threads have many distinct agent speakers; swarmcraft's
+          // continuation dedup buckets them all as one "assistant" author and
+          // hides per-turn headers. Disable it for groups so every turn keeps
+          // its sender name + avatar; keep the tidy dedup for 1:1 threads.
+          continuationHeaders={!isGroup}
           emptyMessage="No messages in this conversation yet."
         />
       </div>

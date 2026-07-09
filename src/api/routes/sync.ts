@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { authMiddleware, createAdminAuth, createAuthOrAdminKey } from '../middleware/auth.js';
 import { CreateSyncGroupSchema, CreatePeerConfigSchema, UpdatePeerConfigSchema } from '../schemas/sync.js';
+import { isSafeHttpUrl } from '../../utils/safe-url.js';
 import * as syncGroupsDAL from '../../db/dal/sync-groups.js';
 import * as syncEventsDAL from '../../db/dal/sync-events.js';
 import * as syncPeersDAL from '../../db/dal/sync-peers.js';
@@ -166,6 +167,10 @@ export async function syncRoutes(fastify: FastifyInstance, opts: { config: Confi
       return reply.status(400).send({ error: 'Validation Error', details: parseResult.error.issues });
     }
 
+    if (!isSafeHttpUrl(parseResult.data.sync_endpoint)) {
+      return reply.status(400).send({ error: 'Validation Error', message: 'sync_endpoint must be a valid http(s) URL' });
+    }
+
     const peer = syncPeerConfigsDAL.createPeerConfig({
       ...parseResult.data,
       is_manual: true,
@@ -185,6 +190,10 @@ export async function syncRoutes(fastify: FastifyInstance, opts: { config: Confi
     const parseResult = UpdatePeerConfigSchema.safeParse(request.body);
     if (!parseResult.success) {
       return reply.status(400).send({ error: 'Validation Error', details: parseResult.error.issues });
+    }
+
+    if (parseResult.data.sync_endpoint !== undefined && !isSafeHttpUrl(parseResult.data.sync_endpoint)) {
+      return reply.status(400).send({ error: 'Validation Error', message: 'sync_endpoint must be a valid http(s) URL' });
     }
 
     const updated = syncPeerConfigsDAL.updatePeerConfig(existing.id, parseResult.data);
@@ -236,6 +245,10 @@ export async function syncRoutes(fastify: FastifyInstance, opts: { config: Confi
     const peerConfig = syncPeerConfigsDAL.findPeerConfigById(request.params.id);
     if (!peerConfig) {
       return reply.status(404).send({ error: 'Not Found', message: 'Peer not found' });
+    }
+
+    if (!isSafeHttpUrl(peerConfig.sync_endpoint)) {
+      return reply.status(400).send({ error: 'Validation Error', message: 'Stored sync_endpoint is not a valid http(s) URL' });
     }
 
     try {

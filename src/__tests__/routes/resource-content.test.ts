@@ -11,10 +11,11 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createRequire } from 'node:module';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as resourcesDAL from '../../db/dal/syncable-resources.js';
-import { resourceContentRoutes } from '../../api/routes/resource-content.js';
+import { resourceContentRoutes, evictMinimem } from '../../api/routes/resource-content.js';
 import { ConfigSchema, type Config } from '../../config.js';
 import { testRoot, testDbPath, cleanTestRoot, mkTestDir } from '../helpers/test-dirs.js';
 
@@ -1529,6 +1530,78 @@ describe('Resource Content Routes', () => {
         headers: { Authorization: `Bearer ${testAgent.apiKey}` },
       });
       expect(res.statusCode).toBe(400);
+    });
+  });
+
+  // ========================================================================
+  // Knowledge Search Endpoint — path containment guard (regression)
+  // ========================================================================
+
+  describe('GET /resources/:id/content/knowledge — path containment', () => {
+    it('skips knowledgeSearch results whose path escapes the resource dir', async () => {
+      const bankDir = mkTestDir(TEST_ROOT, 'knowledge-guard-bank');
+
+      // An out-of-bounds file that a crafted "../" relative path resolves to.
+      // If the guard were missing, its frontmatter (k-EVIL) would leak.
+      const evilPath = path.join(bankDir, '..', 'knowledge-guard-evil.md');
+      fs.writeFileSync(evilPath, buildMemoryFile({
+        id: 'k-EVIL', type: 'observation',
+        domain: ['secret'], entities: ['secret'],
+        confidence: 0.99, source: { origin: 'extracted' },
+      }, '# Escaped Secret\n\nShould never be read via this endpoint.\n'));
+
+      // An in-bounds file — proves the batch keeps returning good results.
+      fs.writeFileSync(path.join(bankDir, 'good.md'), buildMemoryFile({
+        id: 'k-good', type: 'observation',
+        domain: ['ok'], entities: ['ok'],
+        confidence: 0.5, source: { origin: 'extracted' },
+      }, '# Good Note\n\nIn-bounds content.\n'));
+
+      const r = resourcesDAL.createResource({
+        resource_type: 'memory_bank',
+        name: 'Knowledge Guard Bank',
+        git_remote_url: bankDir,
+        visibility: 'private',
+        owner_agent_id: testAgent.id,
+      });
+
+      // Simulate a federated/synced memory bank whose minimem index was seeded
+      // with an adversarial relative path (crafted filename/frontmatter).
+      const esmRequire = createRequire(import.meta.url);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const minimemMod: any = esmRequire('minimem');
+      const originalCreate = minimemMod.Minimem.create;
+      minimemMod.Minimem.create = async () => ({
+        knowledgeSearch: async () => [
+          { path: '../knowledge-guard-evil.md', snippet: 'secret', score: 0.99 },
+          { path: 'good.md', snippet: 'in-bounds', score: 0.5 },
+        ],
+        sync: async () => {},
+        close: async () => {},
+      });
+
+      try {
+        const res = await app.inject({
+          method: 'GET',
+          url: `/api/v1/resources/${r.id}/content/knowledge`,
+          query: { q: 'note' },
+          headers: { Authorization: `Bearer ${testAgent.apiKey}` },
+        });
+
+        expect(res.statusCode).toBe(200);
+        const body = JSON.parse(res.body);
+        // engine === 'minimem' confirms the injected search ran (not the fallback scan)
+        expect(body.engine).toBe('minimem');
+        // Escaping result dropped; in-bounds result preserved.
+        expect(body.results.map((x: { path: string }) => x.path)).toEqual(['good.md']);
+        // The escaped file's content/frontmatter must never appear.
+        expect(res.body).not.toContain('k-EVIL');
+        expect(res.body).not.toContain('Escaped Secret');
+      } finally {
+        minimemMod.Minimem.create = originalCreate;
+        evictMinimem(path.resolve(bankDir));
+        fs.rmSync(evilPath, { force: true });
+      }
     });
   });
 

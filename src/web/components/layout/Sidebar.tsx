@@ -327,11 +327,8 @@ export function Sidebar() {
         >
           {!collapsed ? (
             <div className="flex items-center gap-1.5 px-1">
-              <Link to="/login" className="btn btn-ghost text-xs py-1.5 flex-1 text-center">
+              <Link to="/login" className="btn btn-primary text-xs py-1.5 flex-1 text-center">
                 Log In
-              </Link>
-              <Link to="/register" className="btn btn-primary text-xs py-1.5 flex-1 text-center">
-                Sign Up
               </Link>
             </div>
           ) : (

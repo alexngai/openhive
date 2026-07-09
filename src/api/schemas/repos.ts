@@ -6,6 +6,7 @@
  */
 
 import { z } from 'zod';
+import { isSafeRemoteUrl } from '../../utils/safe-url.js';
 
 const RepoVisibilitySchema = z.enum(['private', 'hub_local', 'federated']);
 const RepoStatusSchema = z.enum(['active', 'redacted_remote', 'archived', 'merged_into']);
@@ -21,7 +22,9 @@ export const ListReposQuerySchema = z.object({
 
 export const CreateRepoSchema = z.object({
   /** Raw remote URL — will be canonicalized via the package's canonicalizeRepoUrl. */
-  remote_url: z.string().min(1),
+  remote_url: z.string().min(1).refine(isSafeRemoteUrl, {
+    message: 'remote_url must be a safe, supported git remote URL (no file://, internal paths, or shell metacharacters)',
+  }),
   name: z.string().min(1).max(200).optional(),
   default_branch: z.string().min(1).max(200).optional(),
   description: z.string().max(2000).optional(),

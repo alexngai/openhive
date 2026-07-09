@@ -31,8 +31,8 @@ import type { SyncService } from "./sync/service.js";
 import { seedOpenteamsBundleStore } from "./openteams/seed.js";
 import { SwarmManager } from "./swarm/manager.js";
 import type { SwarmHostingConfig } from "./swarm/types.js";
-import { getOrCreateLocalAgent } from "./db/dal/agents.js";
-import { setLocalAgent } from "./api/middleware/auth.js";
+import { getOrCreateLocalAgent, countAgents } from "./db/dal/agents.js";
+import { setLocalAgent, shouldAutoAuthLocalAgent } from "./api/middleware/auth.js";
 import {
   initMapSyncListener,
   stopMapSyncListener,
@@ -48,6 +48,7 @@ import { setHubBaseUrl as setExperimentHubBaseUrl } from "./experiments/launcher
 import { isAutonomousDispatchPaused } from "./map/dispatch-policy.js";
 import { startTaskBinder, stopTaskBinder } from "./cascade/task-binder.js";
 import { installAsResolverFetcher as installCascadeDiffFetcher } from "./map/cascade-diff-protocol.js";
+import { configureFederationSsrf } from "./federation/service.js";
 import { startThreadLifecycle, stopThreadLifecycle } from "./dispatch/thread-lifecycle.js";
 import { fetchSpecForDispatch } from "./api/routes/specs.js";
 import { findResourceById as findResourceForSchedule } from "./db/dal/syncable-resources.js";
@@ -66,6 +67,7 @@ import { startAutoPull, stopAutoPull } from "./sync/auto-pull.js";
 import { initMail, getMailJsonRpc, getMailStorage, getMailEvents } from "./mail/index.js";
 import { setupMapWebSocket, stopMapWebSocket, disconnectSessionsForAgent } from "./map/ws-map.js";
 import { initTokenService, loadRevocations, setPersistence, setSessionCleanupHook } from "./map/token-service.js";
+import { resolveMapTrustModel } from "./map/trust-model.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { SwarmHubConnector } from "./swarmhub/connector.js";
 import { normalize, routeEvent } from "./events/index.js";
@@ -125,6 +127,28 @@ export async function createHive(
   // Initialize database
   initDatabase(config.database);
 
+  // Resolve the effective MAP trust model (3c migration guard). `verified` —
+  // agents must present a signed agent-iam token to join the mesh — is the
+  // secure default for a NEW hub. But an EXISTING hub inheriting this default
+  // would suddenly reject already-connected agents that have no token, so
+  // grandfather any hub that already has agents to `open` and tell the operator
+  // how to migrate. An explicit `mapHub.trustModel` in config always wins.
+  if (config.mapHub.trustModel === undefined) {
+    const existingAgents = countAgents();
+    const { trustModel, migrated } = resolveMapTrustModel(config.mapHub.trustModel, existingAgents);
+    config.mapHub.trustModel = trustModel;
+    if (migrated) {
+      console.warn(
+        `[openhive] mapHub.trustModel is not set and ${existingAgents} agent(s) already exist — ` +
+          `keeping "open" so existing agents stay connected. For a shared or public hub, set ` +
+          `mapHub.trustModel: "verified" in your config and issue onboard tokens ` +
+          `(openhive admin onboard-token create) to require verified agents.`,
+      );
+    } else {
+      console.log('[openhive] mapHub.trustModel defaulting to "verified" (new hub).');
+    }
+  }
+
   // Seed the openteams bundle store from authored team_template / loadout
   // rows so `map/resources/get { type: x-openteams/* }` works immediately
   // after restart. The store is in-memory for this iteration; once promoted
@@ -148,20 +172,37 @@ export async function createHive(
 
   // Set up auth mode
   if (config.auth.mode === "local") {
-    const agent = await getOrCreateLocalAgent();
-    setLocalAgent(agent);
-    console.log(
-      '[openhive] Local auth mode — all requests auto-authenticated as "local"',
-    );
-    if (config.admin.trustLocalMode) {
-      console.warn(
-        '[openhive] ⚠  admin.trustLocalMode=true — admin routes accept NO credentials',
+    // Only install the ambient "local" agent (which auto-authenticates
+    // credential-less REST requests) in a TRUSTED LOCAL CONTEXT — a loopback
+    // bind, or an explicit admin.trustLocalMode opt-in. On a network bind
+    // without trustLocalMode we leave it UNSET, so the REST/human plane requires
+    // a real credential (operator login token or agent API key) — matching how
+    // admin routes are already gated by createAdminAuth.
+    if (shouldAutoAuthLocalAgent(config)) {
+      const agent = await getOrCreateLocalAgent();
+      setLocalAgent(agent);
+      console.log(
+        '[openhive] Local auth mode — credential-less requests from a trusted local context are auto-authenticated as "local"',
       );
+      if (config.admin.trustLocalMode) {
+        console.warn(
+          '[openhive] ⚠  admin.trustLocalMode=true — admin routes accept NO credentials',
+        );
+        console.warn(
+          '[openhive]    Any client that can reach this port can run admin commands.',
+        );
+        console.warn(
+          '[openhive]    Only safe on localhost-bound or otherwise-trusted networks.',
+        );
+      }
+    } else {
+      // Network-reachable local-auth hub without trustLocalMode: no ambient
+      // identity. Every REST request must present a credential.
       console.warn(
-        '[openhive]    Any client that can reach this port can run admin commands.',
-      );
-      console.warn(
-        '[openhive]    Only safe on localhost-bound or otherwise-trusted networks.',
+        `[openhive] ⚠  Local auth mode on a network bind (host=${config.host}) — REST requests now ` +
+          `require a credential (operator login token or agent API key). Provision an operator login ` +
+          `with 'openhive admin set-password', or set admin.trustLocalMode=true to restore ` +
+          `auto-authentication (only on trusted networks).`,
       );
     }
   } else if (config.auth.mode === "swarmhub") {
@@ -395,6 +436,11 @@ export async function createHive(
   if (config.sync.enabled) {
     syncService = initSyncService(config.sync);
   }
+
+  // Federation dials arbitrary remote instances on request (discovery, remote
+  // agent/resource fetches), so it carries the same SSRF exposure as sync peers.
+  // Apply the shared private-network policy (config.sync.allowPrivatePeers).
+  configureFederationSsrf(config.sync.allowPrivatePeers);
 
   // Initialize SwarmCraft plugin (MAP client for agent monitoring)
   if (config.swarmcraft.enabled) {

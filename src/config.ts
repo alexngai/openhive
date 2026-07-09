@@ -74,7 +74,10 @@ const DatabaseSchema = z
 // Configuration schema
 export const ConfigSchema = z.object({
   port: z.number().default(7836),
-  host: z.string().default("0.0.0.0"),
+  // Loopback by default — a fresh hub is NOT network-reachable until the
+  // operator explicitly binds a public address (e.g. OPENHIVE_HOST=0.0.0.0).
+  // Every container/PaaS deploy path already sets OPENHIVE_HOST=0.0.0.0.
+  host: z.string().default("127.0.0.1"),
 
   /**
    * Deployment mode.
@@ -94,7 +97,7 @@ export const ConfigSchema = z.object({
   instance: z
     .object({
       name: z.string().default("OpenHive"),
-      description: z.string().default("A community for AI agents"),
+      description: z.string().default("Agent swarm coordination hub"),
       url: z.string().url().optional(),
       public: z.boolean().default(true),
       /**
@@ -167,6 +170,17 @@ export const ConfigSchema = z.object({
   auth: z
     .object({
       mode: z.enum(["local", "swarmhub"]).default("local"),
+      /**
+       * Who may call `POST /agents/register`:
+       *   - 'admin'    (default): requires X-Admin-Key or an admin agent. On a
+       *                loopback + local-auth hub the auto-trusted local admin
+       *                still satisfies this, so `openhive init` keeps working.
+       *   - 'open':    unauthenticated self-registration; new agents start
+       *                UNVERIFIED (no operator has vouched for them).
+       *   - 'disabled': the registration endpoint always refuses.
+       * Defaults to 'admin' so a publicly-exposed hub is not open by default.
+       */
+      registration: z.enum(["open", "admin", "disabled"]).default("admin"),
     })
     .default({}),
 
@@ -187,7 +201,13 @@ export const ConfigSchema = z.object({
       // Trust model for inbound WebSocket connections:
       //   'open'     — API key is sufficient, swarms can bring their own identity
       //   'verified' — MAP spec map/connect auth flow with agent-iam tokens
-      trustModel: z.enum(["open", "verified"]).default("open"),
+      // OPTIONAL (no hard default) so the server can distinguish an explicit
+      // operator choice from "unset" and apply the migration guard at boot
+      // (see the trust-model resolution in server.ts): a fresh hub defaults to
+      // 'verified' (agents must present a signed token), while a hub that
+      // already has agents is grandfathered to 'open' so existing tokenless
+      // agents keep connecting. An explicit value here always wins.
+      trustModel: z.enum(["open", "verified"]).optional(),
       // HMAC secret for agent-iam token signing/verification (verified mode).
       // Auto-generated and persisted to <dataDir>/data/iam-secret.key if not set.
       iamSecret: z.string().optional(),
@@ -232,6 +252,13 @@ export const ConfigSchema = z.object({
       sync_endpoint: z.string().optional(),
       /** Optional pre-shared key required for handshake authentication (GAP-2) */
       handshake_secret: z.string().optional(),
+      /**
+       * Allow peer `sync_endpoint`s that point at private / loopback / link-local
+       * hosts. Default false — handshake + gossip reject such endpoints to prevent
+       * SSRF (cloud metadata at 169.254.169.254, internal services, RFC1918).
+       * Enable only for a trusted private-network mesh (LAN/VPN you control).
+       */
+      allowPrivatePeers: z.boolean().default(false),
       /** Maximum pending events per sync group before oldest are dropped (GAP-12) */
       max_pending_events: z.number().default(1000),
       /** Maximum concurrent pull/push operations to prevent resource exhaustion on large meshes */
@@ -1003,11 +1030,12 @@ export function loadConfig(configPath?: string): Config {
 export function generateSampleConfig(): string {
   const sample = {
     port: 7836,
-    host: "0.0.0.0",
+    // Loopback by default; set to "0.0.0.0" (or use OPENHIVE_HOST) to expose on the network.
+    host: "127.0.0.1",
     database: "./data/openhive.db",
     instance: {
       name: "My OpenHive",
-      description: "A community for AI agents",
+      description: "Agent swarm coordination hub",
       public: true,
     },
     admin: {

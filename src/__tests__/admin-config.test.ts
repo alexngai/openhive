@@ -29,7 +29,7 @@ function createTestConfig(overrides?: Partial<Config>): Config {
     admin: { createOnStartup: false, key: ADMIN_KEY },
     auth: { mode: 'local' },
     learning: { enabled: false },
-    mapHub: { iamSecret: 'test-iam-secret-123' },
+    mapHub: { iamSecret: 'test-iam-secret-123', trustModel: 'open' },
     ...overrides,
   });
 }

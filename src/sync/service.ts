@@ -16,6 +16,7 @@ import { signEvent, verifyEventSignature, verifyEventSignatureMultiKey, generate
 import { materializeBatch, processPendingQueue } from './materializer.js';
 import { buildGossipPayload, processGossipPeers, cleanupStaleGossipPeers } from './gossip.js';
 import { CompositePeerResolver, ManualPeerResolver, HubPeerResolver } from './peer-resolver.js';
+import { isSafeHttpUrl } from '../utils/safe-url.js';
 import type { Config } from '../config.js';
 import type {
   SyncGroup,
@@ -217,6 +218,13 @@ export class SyncService {
   // ── Inbound Handlers ──────────────────────────────────────────
 
   handleHandshake(input: HandshakeRequest): HandshakeResponse {
+    // Reject SSRF-shaped endpoints before we store or dial them. Peer handshakes
+    // are effectively untrusted (the shared secret is optional), so require a
+    // well-formed public http(s) URL unless the operator opted into private peers.
+    if (!isSafeHttpUrl(input.sync_endpoint, { blockPrivateNetworks: !this.config.allowPrivatePeers })) {
+      throw new Error('Invalid or disallowed sync_endpoint');
+    }
+
     // Protocol version compatibility check
     if (input.protocol_version && input.protocol_version > SYNC_PROTOCOL_VERSION) {
       throw new Error(
@@ -424,6 +432,7 @@ export class SyncService {
         input.known_peers,
         `heartbeat:${input.instance_id}`,
         this.config.gossip,
+        this.config.allowPrivatePeers,
       );
 
       // Build our gossip response
@@ -667,7 +676,7 @@ export class SyncService {
 
           // Process gossip from response
           if (response.known_peers && this.config.gossip.enabled) {
-            processGossipPeers(response.known_peers, peer.sync_endpoint, this.config.gossip);
+            processGossipPeers(response.known_peers, peer.sync_endpoint, this.config.gossip, this.config.allowPrivatePeers);
           }
 
           // Detect if peer is ahead — trigger pull

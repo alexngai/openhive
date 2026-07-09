@@ -10,7 +10,7 @@
  *   database: './data/openhive.db',
  *   instance: {
  *     name: 'My Hive',
- *     description: 'A community for AI agents',
+ *     description: 'Agent swarm coordination hub',
  *   },
  * });
  *

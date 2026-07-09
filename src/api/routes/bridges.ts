@@ -315,6 +315,17 @@ export async function bridgesRoutes(
           message: `direction must be one of: ${VALID_DIRECTIONS.join(', ')}`,
         });
       }
+      // Inbound delivery was removed with the social layer (see
+      // src/bridge/inbound.ts — it short-circuits to `skipped`). Reject
+      // pure-inbound mappings so operators don't silently configure a channel
+      // that never delivers. Outbound (and the outbound half of bidirectional)
+      // still works.
+      if (direction === 'inbound') {
+        return reply.status(400).send({
+          error: 'Not Implemented',
+          message: 'Inbound message delivery is not currently supported; use direction "outbound".',
+        });
+      }
 
       const thread_mode = (body.thread_mode as ThreadMode) || undefined;
       if (thread_mode && !VALID_THREAD_MODES.includes(thread_mode)) {

@@ -41,7 +41,7 @@ const TEST_ROOT = testRoot('headless-e2e');
 const TEST_DB_PATH = testDbPath(TEST_ROOT, 'headless.db');
 const ADMIN_KEY = 'test-admin-key-headless';
 
-function makeConfig(overrides?: Partial<Config>): Config {
+function makeConfig(overrides?: Record<string, unknown>): Config {
   return ConfigSchema.parse({
     database: TEST_DB_PATH,
     instance: { name: 'Headless Test', description: 'E2E test hub' },
@@ -405,7 +405,11 @@ describe('Headless-mode E2E', () => {
       // and requireAdmin passes.
       setLocalAgent({ id: adminAgent.id, name: 'local', is_admin: true } as Parameters<typeof setLocalAgent>[0]);
       try {
-        const app = await makeApp(makeConfig());
+        // Strict admin behavior only applies to a network-reachable bind. The
+        // default host is now loopback (127.0.0.1), which auto-trusts the local
+        // operator (see the "loopback host auto-trusts" block), so pin 0.0.0.0
+        // to exercise the network-reachable strict path.
+        const app = await makeApp(makeConfig({ host: '0.0.0.0' }));
         const res = await app.inject({
           method: 'POST',
           url: '/api/v1/admin/onboard-token',
@@ -439,7 +443,7 @@ describe('Headless-mode E2E', () => {
     it('PATCH /admin/config with no headers → 401 (strict — mutation requires admin)', async () => {
       setLocalAgent({ id: adminAgent.id, name: 'local', is_admin: true } as Parameters<typeof setLocalAgent>[0]);
       try {
-        const app = await makeApp(makeConfig());
+        const app = await makeApp(makeConfig({ host: '0.0.0.0' })); // strict path needs a network-reachable bind
         const res = await app.inject({
           method: 'PATCH',
           url: '/api/v1/admin/config',
@@ -455,7 +459,7 @@ describe('Headless-mode E2E', () => {
     it('GET /admin/agents with no headers → 401 even when local admin set', async () => {
       setLocalAgent({ id: adminAgent.id, name: 'local', is_admin: true } as Parameters<typeof setLocalAgent>[0]);
       try {
-        const app = await makeApp(makeConfig());
+        const app = await makeApp(makeConfig({ host: '0.0.0.0' })); // strict path needs a network-reachable bind
         const res = await app.inject({ method: 'GET', url: '/api/v1/admin/agents' });
         expect(res.statusCode).toBe(401);
         await app.close();

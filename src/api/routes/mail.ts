@@ -18,6 +18,36 @@ import { FastifyInstance } from 'fastify';
 import { authMiddleware } from '../middleware/auth.js';
 import { getMailStorage, getMailJsonRpc } from '../../mail/index.js';
 import type { Config } from '../../config.js';
+import type { Conversation } from 'agent-inbox';
+
+/**
+ * Conversation scopes that are hub-wide discussions — readable by any
+ * authenticated agent. There is no per-hive agent membership today, so the hub
+ * is the trust boundary: spec/dispatch discussion threads are shared, while
+ * everything else (session-linked chats, direct/manual conversations, unknown
+ * scopes) stays participant-only. Values mirror SPEC_THREAD_SCOPE /
+ * DISPATCH_THREAD_SCOPE / DISPATCH_TEAM_THREAD_SCOPE in src/specs + src/dispatch.
+ */
+const HUB_VISIBLE_CONVERSATION_SCOPES = new Set<string>([
+  'spec-thread',
+  'dispatch-thread',
+  'dispatch-team-thread',
+]);
+
+/**
+ * Whether `agent` may read `conv`. Admins see everything (human observability
+ * over all hub mail); shared discussion scopes are hub-visible; otherwise the
+ * agent must be a participant. Fails closed when there's no authenticated agent.
+ */
+function canReadConversation(
+  agent: { id: string; is_admin?: boolean } | undefined,
+  conv: Pick<Conversation, 'scope' | 'participants'>,
+): boolean {
+  if (!agent) return false;
+  if (agent.is_admin) return true;
+  if (HUB_VISIBLE_CONVERSATION_SCOPES.has(conv.scope)) return true;
+  return conv.participants.some((p) => p.agent_id === agent.id);
+}
 
 export async function mailRoutes(
   fastify: FastifyInstance,
@@ -40,6 +70,10 @@ export async function mailRoutes(
       conversations = conversations.filter((c) => c.status === status);
     }
 
+    // Tenant isolation: only surface conversations this agent may read
+    // (admin: all; shared discussion scopes: hub-wide; else participant-only).
+    conversations = conversations.filter((c) => canReadConversation(request.agent, c));
+
     // Sort by updated_at descending (most recent first)
     conversations.sort((a, b) =>
       new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
@@ -61,6 +95,13 @@ export async function mailRoutes(
       return reply.status(404).send({
         error: 'NOT_FOUND',
         message: `Conversation ${request.params.id} not found`,
+      });
+    }
+
+    if (!canReadConversation(request.agent, conv)) {
+      return reply.status(403).send({
+        error: 'FORBIDDEN',
+        message: 'You do not have access to this conversation',
       });
     }
 
@@ -92,6 +133,13 @@ export async function mailRoutes(
       });
     }
 
+    if (!canReadConversation(request.agent, conv)) {
+      return reply.status(403).send({
+        error: 'FORBIDDEN',
+        message: 'You do not have access to this conversation',
+      });
+    }
+
     let turns = storage.getTurns(conv.id);
     const { thread_id, content_type } = request.query;
 
@@ -118,6 +166,13 @@ export async function mailRoutes(
       return reply.status(404).send({
         error: 'NOT_FOUND',
         message: `Conversation ${request.params.id} not found`,
+      });
+    }
+
+    if (!canReadConversation(request.agent, conv)) {
+      return reply.status(403).send({
+        error: 'FORBIDDEN',
+        message: 'You do not have access to this conversation',
       });
     }
 

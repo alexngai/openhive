@@ -5,7 +5,7 @@
  * Uses an in-memory agent-inbox instance (no SQLite dependency).
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import { createAgent } from '../../db/dal/agents.js';
@@ -66,15 +66,24 @@ describe('Mail API Routes', () => {
   let app: FastifyInstance;
   let config: Config;
   let humanAgentId: string;
+  let adminAgent: Parameters<typeof setLocalAgent>[0];
+  let nonAdminAgent: Parameters<typeof setLocalAgent>[0];
 
   beforeAll(async () => {
     initDatabase(TEST_DB_PATH);
     config = createTestConfig();
 
-    // Create a real agent and set as local agent for auth bypass
-    const { agent } = await createAgent({ name: 'test-human', description: 'Test human user' });
+    // The human operator authenticates as an ADMIN — the mail routes exist for
+    // hub-wide human observability, which is the admin path. Per-agent access is
+    // exercised separately in the "conversation access control" block below.
+    const { agent } = await createAgent({ name: 'test-human', description: 'Test human user', is_admin: true });
     humanAgentId = agent.id;
-    setLocalAgent(agent);
+    adminAgent = { ...agent, is_admin: true };
+    setLocalAgent(adminAgent);
+
+    // A non-admin agent for the per-conversation access gate.
+    const { agent: member } = await createAgent({ name: 'test-agent', description: 'Non-admin agent' });
+    nonAdminAgent = { ...member, is_admin: false };
 
     app = await createTestApp(config);
   });
@@ -93,6 +102,58 @@ describe('Mail API Routes', () => {
     const router = new MessageRouter(mockStorage, mockEvents, 'default');
     new TraceabilityLayer(mockStorage, mockEvents);
     mockJsonRpc = new MailJsonRpcServer(mockStorage, router, mockEvents);
+  });
+
+  // ── Per-conversation access control (tenant isolation) ──
+  describe('conversation access control (non-admin agents)', () => {
+    beforeEach(() => setLocalAgent(nonAdminAgent));
+    afterEach(() => setLocalAgent(adminAgent));
+
+    async function makeConv(scope: string): Promise<string> {
+      const res = await mockJsonRpc.handleRequest({
+        jsonrpc: '2.0', id: 'mk', method: 'mail/create',
+        params: { subject: `conv-${scope}`, scope },
+      });
+      return (res.result as any).id;
+    }
+
+    it('403s a non-admin, non-participant on a private conversation', async () => {
+      const id = await makeConv('default');
+      for (const path of [
+        `/api/v1/mail/conversations/${id}`,
+        `/api/v1/mail/conversations/${id}/turns`,
+        `/api/v1/mail/conversations/${id}/threads`,
+      ]) {
+        const res = await app.inject({ method: 'GET', url: path });
+        expect(res.statusCode, path).toBe(403);
+      }
+    });
+
+    it('allows a non-admin to read a hub-visible discussion scope', async () => {
+      const id = await makeConv('spec-thread');
+      const res = await app.inject({ method: 'GET', url: `/api/v1/mail/conversations/${id}` });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('allows a non-admin participant to read a private conversation', async () => {
+      const id = await makeConv('default');
+      await mockJsonRpc.handleRequest({
+        jsonrpc: '2.0', id: 'j', method: 'mail/join',
+        params: { conversationId: id, agentId: nonAdminAgent!.id, role: 'participant' },
+      });
+      const res = await app.inject({ method: 'GET', url: `/api/v1/mail/conversations/${id}` });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('list hides private conversations from non-participants but shows shared ones', async () => {
+      await makeConv('default');
+      await makeConv('spec-thread');
+      const res = await app.inject({ method: 'GET', url: '/api/v1/mail/conversations' });
+      expect(res.statusCode).toBe(200);
+      const scopes = JSON.parse(res.body).conversations.map((c: any) => c.scope);
+      expect(scopes).toContain('spec-thread');
+      expect(scopes).not.toContain('default');
+    });
   });
 
   // ── GET /mail/conversations ──

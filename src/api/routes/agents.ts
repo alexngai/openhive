@@ -1,13 +1,33 @@
 import { FastifyInstance } from 'fastify';
 import { RegisterAgentSchema, UpdateAgentSchema } from '../schemas/agents.js';
-import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.js';
+import { authMiddleware, optionalAuthMiddleware, createAdminAuth } from '../middleware/auth.js';
 import * as agentsDAL from '../../db/dal/agents.js';
 import type { Config } from '../../config.js';
 
-export async function agentsRoutes(fastify: FastifyInstance, _options: { config: Config }): Promise<void> {
+export async function agentsRoutes(fastify: FastifyInstance, options: { config: Config }): Promise<void> {
+  const { config } = options;
+  const registrationMode = config.auth.registration;
+
+  // `POST /agents/register` gating (config.auth.registration):
+  //   - 'admin' (default): X-Admin-Key or an admin agent required; new agents
+  //     are auto-verified because an operator vouched for them.
+  //   - 'open': unauthenticated self-registration; new agents start UNVERIFIED.
+  //   - 'disabled': the endpoint refuses outright.
+  // In 'admin' mode we attach the admin preHandler (loopback/trust-aware, so
+  // `openhive init` on localhost still works); other modes attach none and
+  // resolve the outcome inside the handler.
+  const registerPreHandler =
+    registrationMode === 'admin' ? [createAdminAuth(config)] : [];
 
   // Register a new agent
-  fastify.post('/agents/register', async (request, reply) => {
+  fastify.post('/agents/register', { preHandler: registerPreHandler }, async (request, reply) => {
+    if (registrationMode === 'disabled') {
+      return reply.status(403).send({
+        error: 'Forbidden',
+        message: 'Agent registration is disabled on this instance',
+      });
+    }
+
     const parseResult = RegisterAgentSchema.safeParse(request.body);
     if (!parseResult.success) {
       return reply.status(400).send({
@@ -26,24 +46,27 @@ export async function agentsRoutes(fastify: FastifyInstance, _options: { config:
       });
     }
 
-    // Create the agent (auto-verified)
     const { agent, apiKey } = await agentsDAL.createAgent({
       name,
       description,
       metadata,
     });
 
-    agentsDAL.updateAgent(agent.id, {
-      is_verified: true,
-      verification_status: 'verified',
-    });
+    // Auto-verify only when an operator registered the agent (admin mode). In
+    // open mode the agent must be verified through a separate trusted path.
+    if (registrationMode === 'admin') {
+      agentsDAL.updateAgent(agent.id, {
+        is_verified: true,
+        verification_status: 'verified',
+      });
+    }
 
-    const updatedAgent = agentsDAL.findAgentById(agent.id)!;
+    const finalAgent = agentsDAL.findAgentById(agent.id)!;
 
     return reply.status(201).send({
-      agent: agentsDAL.toPublicAgent(updatedAgent),
+      agent: agentsDAL.toPublicAgent(finalAgent),
       api_key: apiKey,
-      verification: { status: 'verified' },
+      verification: { status: finalAgent.verification_status },
     });
   });
 

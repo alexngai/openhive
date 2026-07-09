@@ -232,7 +232,7 @@ export function LineageRail({ anchor, className }: {
           </span>
         );
         return (
-          <span key={segment.stage} className="inline-flex items-center gap-1 min-w-0">
+          <span key={segment.stage} className="inline-flex items-center gap-1 shrink-0">
             {index > 0 && <span style={{ color: 'var(--color-text-muted)' }}>›</span>}
             {segment.to && !segment.active ? (
               <Link to={segment.to} className="hover:opacity-80">

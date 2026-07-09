@@ -306,6 +306,26 @@ function isLoopbackHost(host: string | undefined): boolean {
 }
 
 /**
+ * Whether the ambient "local" agent should auto-authenticate credential-less
+ * requests. True only in a TRUSTED LOCAL CONTEXT — `auth.mode === 'local'` on a
+ * loopback bind, or with an explicit `admin.trustLocalMode` opt-in. On a
+ * network bind without `trustLocalMode`, requests must present a real credential
+ * (operator login token or agent API key).
+ *
+ * This is the single source of truth for BOTH the ambient REST identity (see
+ * `setLocalAgent` at server boot) and the admin-route local-trust fallthrough
+ * (`createAdminAuth`), so the two planes can never drift apart.
+ */
+export function shouldAutoAuthLocalAgent(config: {
+  auth: { mode: string };
+  admin: { trustLocalMode?: boolean };
+  host?: string;
+}): boolean {
+  if (config.auth.mode !== 'local') return false;
+  return isLoopbackHost(config.host) || !!config.admin.trustLocalMode;
+}
+
+/**
  * Create an auth preHandler that accepts either:
  *   1. An `X-Admin-Key` header matching `config.admin.key` (constant-time), OR
  *   2. An explicit Bearer token from an admin agent.
@@ -341,9 +361,7 @@ export function createAdminAuth(config: AdminAuthConfig) {
   // Either path falls through to `authMiddleware` + `requireAdmin`, so a
   // non-admin local agent still wouldn't pass — but the init wizard
   // stamps the local agent as admin.
-  const trustLocal =
-    config.auth.mode === 'local' &&
-    (!!config.admin.trustLocalMode || isLoopbackHost(config.host));
+  const trustLocal = shouldAutoAuthLocalAgent(config);
 
   return async function adminAuth(
     request: FastifyRequest,

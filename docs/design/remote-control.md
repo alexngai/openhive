@@ -39,10 +39,10 @@ protocol.
 
 ### 2.1 The hub already exposes a complete operator API
 
-- **Binding:** the server binds `host: "0.0.0.0"`, `port: 7836` by default
-  (`src/config.ts:76`), overridable via `OPENHIVE_HOST` / `OPENHIVE_PORT`
-  (`src/config.ts:851`). So it is reachable from other hosts on the network with no
-  extra config.
+- **Binding:** the server binds `host: "127.0.0.1"`, `port: 7836` by default
+  (`src/config.ts`), overridable via `OPENHIVE_HOST` / `OPENHIVE_PORT`. It is
+  **loopback-only until you explicitly bind a public address** (`OPENHIVE_HOST=0.0.0.0`)
+  or reach it over the mesh — remote access is opt-in, not the default.
 - **Web UI served by the server itself:** in `mode: "full"` (default) Fastify serves
   the built React SPA via `@fastify/static` with an SPA fallback
   (`src/server.ts:845`). Reaching `http://<host>:7836/` in a browser gives the full
@@ -134,7 +134,7 @@ to a remote terminal.
 
 | Tier | Setup | Off-LAN | Encrypted | Notes |
 |---|---|---|---|---|
-| **LAN** | none (already binds `0.0.0.0`) | ❌ | ❌ (plain HTTP) | fine on trusted WiFi; use `local` auth + set `OPENHIVE_ADMIN_KEY` |
+| **LAN** | set `OPENHIVE_HOST=0.0.0.0` (loopback-only by default) | ❌ | ❌ (plain HTTP) | fine on trusted WiFi; use `local` auth + set `OPENHIVE_ADMIN_KEY` |
 | **OS Tailscale** | install the app on both devices, same tailnet | ✅ anywhere | ✅ (WireGuard) | **recommended**; hit `http://<host-100.x>:7836`; `local` auth acceptable behind it |
 | **Public URL** | reverse proxy (Caddy/Cloudflare Tunnel) for TLS | ✅ | ✅ | the hub is HTTP-only; **requires real auth** (`swarmhub` or proxy-level), not `local` |
 

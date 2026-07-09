@@ -18,10 +18,45 @@ import { mkdirSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node
 // ============================================================================
 
 /**
+ * Resolve the git "common dir" for a directory — a faithful mirror of
+ * opentasks' `getGitCommonDir`. Uses `git rev-parse --git-common-dir` so it is
+ * correct across project structures: normal repos, linked worktrees (returns
+ * the shared common dir, not the per-worktree gitdir), submodules, and nested
+ * paths. Returns null outside a git repo. Keeping this identical to opentasks
+ * is what makes the socket resolution below match the daemon in every layout,
+ * not just the current checkout.
+ */
+function getGitCommonDir(cwd: string): string | null {
+  try {
+    const out = execSync('git rev-parse --git-common-dir', {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    return resolve(cwd, out);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where the opentasks daemon binds its socket for a given `.opentasks` dir —
+ * a mirror of opentasks' `daemonHomeFor`. Inside a git repo the daemon runs in
+ * multi-location mode under `<git-common-dir>/opentasks`; otherwise it runs
+ * single-location in the `.opentasks` dir itself. Kept in lockstep with
+ * opentasks so OpenHive probes exactly where the daemon listens.
+ */
+export function daemonHomeFor(opentasksDir: string): string {
+  const gitCommonDir = getGitCommonDir(dirname(opentasksDir));
+  return gitCommonDir ? join(gitCommonDir, 'opentasks') : opentasksDir;
+}
+
+/**
  * Resolve the daemon socket path for an .opentasks directory.
  * Inlined here to avoid circular import with task-daemon-client.
  */
 export function resolveDaemonSocket(opentasksDir: string): string {
+  // An explicit config override always wins.
   const configPath = join(opentasksDir, 'config.json');
   if (existsSync(configPath)) {
     try {
@@ -30,21 +65,79 @@ export function resolveDaemonSocket(opentasksDir: string): string {
     } catch { /* fall through */ }
   }
 
-  // Check standard location
+  // Callers pass either the `.opentasks` dir or the project root that contains
+  // it — normalize to the `.opentasks` dir for the home computation.
+  const resolved = resolve(opentasksDir);
+  const otDir = basename(resolved) === '.opentasks'
+    ? resolved
+    : existsSync(join(resolved, '.opentasks'))
+      ? join(resolved, '.opentasks')
+      : resolved;
+
+  // Inside a git repo the daemon runs multi-location under
+  // `<git-common-dir>/opentasks` (mirrors opentasks' daemonHomeFor). Resolve
+  // there *deterministically* — even before the daemon has started — otherwise
+  // we'd probe the plain `.opentasks/daemon.sock` and miss the running daemon,
+  // reporting "daemon not ready" though it is listening.
+  const home = daemonHomeFor(otDir);
+  if (home !== otDir) return join(home, 'daemon.sock');
+
+  // Single-location (non-git): prefer an already-existing socket, else default.
   const directSocket = join(opentasksDir, 'daemon.sock');
   if (existsSync(directSocket)) return directSocket;
-
-  // Check nested .opentasks/daemon.sock
   const nestedSocket = join(opentasksDir, '.opentasks', 'daemon.sock');
   if (existsSync(nestedSocket)) return nestedSocket;
-
-  // Check .git/opentasks/daemon.sock — multi-location daemon (opentasks >= 0.1.0)
-  // walks up from opentasksDir to find the git root
-  const projectRoot = resolveProjectRoot(opentasksDir);
-  const gitSocket = join(projectRoot, '.git', 'opentasks', 'daemon.sock');
-  if (existsSync(gitSocket)) return gitSocket;
-
   return directSocket;
+}
+
+/**
+ * Maximum usable byte length of a Unix-domain socket path on this platform.
+ *
+ * The kernel's `sockaddr_un.sun_path` is a fixed-size buffer and the path must
+ * be NUL-terminated, so the usable length is one byte less than the buffer:
+ *   - macOS / *BSD: `sun_path` is 104 bytes → 103 usable
+ *   - Linux:        `sun_path` is 108 bytes → 107 usable
+ *   - Windows:      named pipes, not `sun_path` → no comparable limit
+ *
+ * Over the limit the kernel silently truncates the path on `bind()`, which
+ * collides otherwise-distinct daemons onto a single socket file and surfaces as
+ * a bogus `EADDRINUSE` — or an unreachable daemon that "never becomes ready".
+ * This is the most common "daemon won't start" gotcha for deeply-nested
+ * checkouts, and the raw failure gives no hint why.
+ */
+export function maxUnixSocketPathBytes(platform: NodeJS.Platform = process.platform): number {
+  if (platform === 'win32') return Number.POSITIVE_INFINITY; // named pipes, not sun_path
+  if (platform === 'linux') return 107;
+  return 103; // darwin, *bsd, and a conservative default for unknown unix
+}
+
+/**
+ * Returns a clear, actionable message if `socketPath` is too long to bind on
+ * this platform, or `null` if it fits. Applied before we probe or spawn the
+ * daemon so an unbindable path fails fast with a diagnosis instead of the
+ * cryptic `EADDRINUSE` / readiness-timeout the OS truncation would otherwise
+ * produce.
+ *
+ * Note the offending path is fixed by *where the checkout lives*, not something
+ * OpenHive can rewrite: inside a git repo opentasks binds
+ * `<git-common-dir>/opentasks/daemon.sock` (multi-location) and ignores any
+ * configured socket filename, so the only remedy is a shorter path on disk.
+ */
+export function diagnoseSocketPathLength(
+  socketPath: string,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const limit = maxUnixSocketPathBytes(platform);
+  const len = Buffer.byteLength(socketPath, 'utf8');
+  if (len <= limit) return null;
+  return [
+    `[task-daemon] socket path is ${len} bytes but ${platform} allows at most ${limit} — ` +
+      `the OS truncates longer paths on bind(), which surfaces as a bogus EADDRINUSE or a ` +
+      `daemon that never becomes ready.`,
+    `  path: ${socketPath}`,
+    `  Fix: point the hub's data dir / task graph at a shorter absolute path (e.g. a short ` +
+      `root like ~/oh or /tmp/oh), or run the hub from a less deeply-nested checkout.`,
+  ].join('\n');
 }
 
 /**
@@ -276,14 +369,20 @@ export async function ensureDaemon(opentasksDir: string): Promise<boolean> {
   const projectRoot = resolveProjectRoot(otDir);
   let socketPath = resolveDaemonSocket(otDir);
 
-  // Already alive?
-  if (await isDaemonAlive(socketPath)) return true;
-
-  // Also check .git/opentasks/ — multi-location daemon may be running there
-  const gitSocket = join(projectRoot, '.git', 'opentasks', 'daemon.sock');
-  if (gitSocket !== socketPath && existsSync(gitSocket) && await isDaemonAlive(gitSocket)) {
-    return true;
+  // Fail fast on an unbindable socket path. A path longer than the platform's
+  // `sun_path` limit is truncated by the kernel on bind(), so the daemon can
+  // never be reached — probing and spawning would just burn the 5s readiness
+  // window and report a cryptic timeout. Surface the real cause instead.
+  const pathProblem = diagnoseSocketPathLength(socketPath);
+  if (pathProblem) {
+    console.error(pathProblem);
+    return false;
   }
+
+  // Already alive? `socketPath` now resolves via daemonHomeFor, so it already
+  // points at the multi-location `<git-common-dir>/opentasks` socket in a git
+  // repo — no separate git-socket probe needed.
+  if (await isDaemonAlive(socketPath)) return true;
 
   // Ensure the directory is initialized
   try {
@@ -297,10 +396,11 @@ export async function ensureDaemon(opentasksDir: string): Promise<boolean> {
   // orphaned (typically from a SIGKILLed container). Reap it now so the spawn
   // below doesn't hit proper-lockfile's ~10s ELOCKED window. Check every
   // candidate location dir; the Set dedups when they coincide.
+  // dirname(socketPath) is the resolved daemon home (git-common-dir or the
+  // .opentasks dir), so it already covers the multi-location case.
   for (const dir of new Set([
     otDir,
     dirname(socketPath),
-    join(projectRoot, '.git', 'opentasks'),
   ])) {
     reapStaleDaemonLock(dir);
   }
