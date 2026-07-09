@@ -7,6 +7,10 @@ Specs  →  Jobs (dispatch)  →  Tasks  →  Changes
  what        hand to a swarm    execution   what came back
 ```
 
+<p align="center">
+  <img src="../images/task-graph-dispatch.gif" alt="From the task graph — kanban and dependency views — to the dispatch queue and a single job's spec→tasks→change lineage" width="880">
+</p>
+
 ## Specs
 
 A **spec** describes a unit of work — a goal, acceptance criteria, context. Specs live in the hub's task graph and carry a discussion thread of their own. From a spec you **dispatch** against a swarm or a [team template](library.md#teams) to put agents on it. The **Specs** page lists your specs with their status and lets you author new ones.

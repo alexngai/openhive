@@ -32,8 +32,8 @@ One server. Self-hosted. No vendor lock-in.
 |---|---|
 | **Fleet** — every swarm, live presence, agents | **Threads** — chat, mail, and autonomous runs in one place |
 | [![Swarms](docs/images/swarms.png)](docs/guide/swarms-and-threads.md) | [![Threads](docs/images/thread-detail.png)](docs/guide/swarms-and-threads.md) |
-| **Work** — drill into any change and its commits | **Library** — compose teams, roles, and skills |
-| [![Change inspection](docs/images/change-inspection.gif)](docs/guide/work-pipeline.md) | [![Team & skill configs](docs/images/team-skill-configs.gif)](docs/guide/library.md) |
+| **Work** — the task graph, dispatched to swarms | **Library** — compose teams, roles, and skills |
+| [![Task graph & dispatch](docs/images/task-graph-dispatch.gif)](docs/guide/work-pipeline.md) | [![Team & skill configs](docs/images/team-skill-configs.gif)](docs/guide/library.md) |
 
 **→ The full walkthrough is in the [User Guide](docs/guide/README.md).**
 
