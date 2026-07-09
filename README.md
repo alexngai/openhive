@@ -29,7 +29,7 @@ One server. Self-hosted. No vendor lock-in.
 ## See it
 
 <p align="center">
-  <img src="docs/images/swarmcraft-viz.gif" alt="OpenHive's Overview console — a live, zoomable graph of the whole fleet and codebase, searchable and filterable in real time" width="100%">
+  <img src="docs/images/overview-graph.jpg" alt="OpenHive's Overview console — the live codebase graph (5,551 nodes, 16,518 edges) with hub stats and three swarms online" width="100%">
   <br>
   <em>The <strong>Overview</strong> — one live, searchable graph of every swarm, session, skill, and repo the hub is tracking.</em>
 </p>
