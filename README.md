@@ -28,6 +28,12 @@ One server. Self-hosted. No vendor lock-in.
 
 ## See it
 
+<p align="center">
+  <img src="docs/images/swarmcraft-viz.gif" alt="OpenHive's Overview console — a live, zoomable graph of the whole fleet and codebase, searchable and filterable in real time" width="100%">
+  <br>
+  <em>The <strong>Overview</strong> — one live, searchable graph of every swarm, session, skill, and repo the hub is tracking.</em>
+</p>
+
 |  |  |
 |---|---|
 | **Fleet** — every swarm, live presence, agents | **Threads** — chat, mail, and autonomous runs in one place |
