@@ -16,6 +16,7 @@
 import * as dispatchesDAL from '../db/dal/dispatches.js';
 import type { Dispatch, DispatchOutcome, DispatchStatus } from '../db/dal/dispatches.js';
 import { findCascadeStreamsByTaskRefs } from '../db/dal/cascade-streams.js';
+import { maybeRecordVerdictFromDispatch } from '../cascade/review-dispatch.js';
 
 type TerminalStatus = Extract<DispatchStatus, 'complete' | 'failed' | 'cancelled'>;
 
@@ -40,7 +41,16 @@ export function finalizeDispatch(
   // nobody's tempted to read meaning into {}.
   const outcome = Object.keys(merged).length > 0 ? merged : null;
 
-  return dispatchesDAL.updateDispatchStatus(id, status, outcome);
+  const updated = dispatchesDAL.updateDispatchStatus(id, status, outcome);
+
+  // QC station Q3: a completed review dispatch writes its parsed verdict
+  // back as an advisory agent verdict. No-op for every other dispatch;
+  // idempotent across the two finalize callers; never throws.
+  if (updated && status === 'complete') {
+    maybeRecordVerdictFromDispatch(updated);
+  }
+
+  return updated;
 }
 
 function computeCascadeArtifacts(dispatchId: string): Artifact[] {

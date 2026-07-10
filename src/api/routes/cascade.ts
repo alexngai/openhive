@@ -33,6 +33,7 @@ import {
 import { mapHubEvents } from '../../map/service.js';
 import { broadcastToChannel } from '../../realtime/index.js';
 import { resolveStreamReviewGate } from '../../cascade/review-monitor.js';
+import { requestReviewDispatch } from '../../cascade/review-dispatch.js';
 import { findResourcesByRepoUrl } from '../../db/dal/syncable-resources.js';
 import { generateChangelog, renderMarkdown } from '../../cascade/changelog.js';
 import { sendCascadeAction, type CascadeAction } from '../../map/cascade-actions.js';
@@ -679,6 +680,57 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
         offset: parseOffset(request.query.offset),
       });
       return reply.send({ data: verdicts, total });
+    }
+  );
+
+  // ── Request agent review (QC station Q3) ─────────────────────────────
+  //
+  //   POST /cascade/streams/:id/request-review   { target_swarm_id? }
+  //
+  //   Creates a reviewer dispatch (`role: 'reviewer'`) whose prompt embeds
+  //   the stream diff. The reviewing agent's completion report is parsed
+  //   into an ADVISORY agent verdict via the finalize hook — it never
+  //   satisfies a `required` policy ([D3]). Manual trigger in v1;
+  //   policy-driven triggering is future work.
+
+  fastify.post<{
+    Params: { id: string };
+    Body: { target_swarm_id?: string };
+  }>(
+    '/cascade/streams/:id/request-review',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const stream = getStreamByRowId(request.params.id);
+      if (!stream) {
+        return reply
+          .status(404)
+          .send({ error: 'Not Found', message: 'Cascade stream not found' });
+      }
+
+      const principal = request.agent;
+      const result = await requestReviewDispatch({
+        streamRowId: stream.id,
+        targetSwarmId: request.body?.target_swarm_id,
+        initiatorType:
+          principal?.account_type === 'human' || principal?.is_admin
+            ? 'user'
+            : 'agent',
+      });
+      if (!result) {
+        return reply
+          .status(404)
+          .send({ error: 'Not Found', message: 'Cascade stream not found' });
+      }
+
+      return reply.status(201).send({
+        data: {
+          dispatch_id: result.dispatch.id,
+          target_swarm_id: result.dispatch.target_swarm_id,
+          role: result.dispatch.role,
+          status: result.dispatch.status,
+          diff_inlined: result.diff_inlined,
+        },
+      });
     }
   );
 

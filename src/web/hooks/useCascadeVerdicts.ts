@@ -51,6 +51,40 @@ export function useStreamVerdicts(streamRowId: string | null) {
   });
 }
 
+/**
+ * Request an agent review (Q3): creates a reviewer dispatch whose completion
+ * writes back an advisory agent verdict. Returns the queued dispatch summary.
+ */
+export function useRequestReview() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      streamRowId,
+      target_swarm_id,
+    }: {
+      streamRowId: string;
+      target_swarm_id?: string;
+    }) => {
+      const res = await api.post<{
+        data: {
+          dispatch_id: string;
+          target_swarm_id: string;
+          role: string | null;
+          status: string;
+          diff_inlined: boolean;
+        };
+      }>(`/cascade/streams/${encodeURIComponent(streamRowId)}/request-review`, {
+        target_swarm_id,
+      });
+      return res.data;
+    },
+    onSuccess: () => {
+      // The reviewer job shows up in the Jobs list immediately.
+      queryClient.invalidateQueries({ queryKey: ['dispatches'] });
+    },
+  });
+}
+
 export function useRecordVerdict() {
   const queryClient = useQueryClient();
   return useMutation({

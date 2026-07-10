@@ -62,6 +62,7 @@ import { useCascadeStreamsRealtime } from '../hooks/useRealtimeInvalidation';
 import {
   useCurrentVerdict,
   useRecordVerdict,
+  useRequestReview,
   type ReviewVerdictValue,
 } from '../hooks/useCascadeVerdicts';
 import { StatusChip, type StatusTone } from '../components/common/StatusChip';
@@ -1401,6 +1402,7 @@ function StreamReviewSection({
 }) {
   const { data: currentResp } = useCurrentVerdict(streamRowId);
   const record = useRecordVerdict();
+  const requestReview = useRequestReview();
   const [notes, setNotes] = useState('');
 
   const current = currentResp?.data ?? null;
@@ -1489,10 +1491,32 @@ function StreamReviewSection({
               <AlertTriangle className="w-3 h-3" />
               Request changes
             </button>
+            <button
+              type="button"
+              className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+              onClick={() => requestReview.mutate({ streamRowId })}
+              disabled={requestReview.isPending}
+              title="Dispatch a reviewer agent — its verdict is advisory, human acceptance still verifies the merge"
+            >
+              <Users className="w-3 h-3" />
+              Agent review
+            </button>
           </div>
-          {record.isError && (
+          {requestReview.isSuccess && (
+            <div className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+              Review job queued —{' '}
+              <Link
+                to={`/dispatch/${requestReview.data.dispatch_id}`}
+                className="underline"
+              >
+                view job
+              </Link>
+              . Its verdict arrives as advisory.
+            </div>
+          )}
+          {(record.isError || requestReview.isError) && (
             <div className="text-2xs mt-1" style={{ color: 'var(--color-danger)' }}>
-              Couldn't record verdict — try again.
+              {record.isError ? "Couldn't record verdict — try again." : "Couldn't queue the review job — try again."}
             </div>
           )}
         </>
