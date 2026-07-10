@@ -52,6 +52,7 @@ export const CONFIG_SECTIONS: SectionMeta[] = [
   { key: 'sessions', label: 'Session Storage', description: 'Trajectory content caching backend', group: 'storage' },
   { key: 'sessionlog', label: 'Session Log', description: 'Local sessionlog transcript lookup paths', group: 'storage' },
   { key: 'resourceStorage', label: 'Resource Storage', description: 'Cloned resource data storage', group: 'storage' },
+  { key: 'gitStore', label: 'Git Store', description: 'Single git repo for git-backed hive state (tasks, sessions, memory, skills)', group: 'storage' },
 
   // Resources
   { key: 'autoPull', label: 'Auto-Pull', description: 'Automatic pulling of remote git-backed resources', group: 'resources' },
@@ -265,6 +266,14 @@ export const FIELD_META: Record<string, FieldMeta> = {
 
   // Session Log
   'sessionlog.sessionDirs': { label: 'Session Directories', description: 'Paths to sessionlog state directories' },
+
+  // Git Store
+  'gitStore.enabled': { label: 'Enabled', restartRequired: true },
+  'gitStore.path': { label: 'Store Path', description: 'Store directory; git init\'d at boot if missing (default: <dataDir>/hive-store)', restartRequired: true },
+  'gitStore.remote': { label: 'Remote URL', description: 'Optional push target — local-only when unset' },
+  'gitStore.autoCommit': { label: 'Auto-Commit', description: 'Hub-owned committer for memory/, skills/, sessionlog-sessions/', restartRequired: true },
+  'gitStore.commitIntervalMs': { label: 'Commit Interval (ms)', restartRequired: true },
+  'gitStore.autoPush': { label: 'Auto-Push', description: 'Push after auto-commit (requires remote)', restartRequired: true },
 
   // Resource Discovery
   'resourceDiscovery.globalEnabled': { label: 'Global Scanning' },

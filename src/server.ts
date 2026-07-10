@@ -443,6 +443,20 @@ export async function createHive(
   // Apply the shared private-network policy (config.sync.allowPrivatePeers).
   configureFederationSsrf(config.sync.allowPrivatePeers);
 
+  // Unified git store: initialize before anything consumes the derived
+  // paths (swarmcraft sessionlog watcher, resource discovery, task-graph
+  // bootstrap). Non-fatal — a git failure degrades to a plain directory.
+  if (config.gitStore.enabled) {
+    const { ensureGitStore, startGitStoreCommitter } = await import('./git-store.js');
+    await ensureGitStore(config);
+    if (config.gitStore.autoCommit) {
+      const stopCommitter = startGitStoreCommitter(config);
+      fastify.addHook('onClose', async () => {
+        stopCommitter();
+      });
+    }
+  }
+
   // Initialize SwarmCraft plugin (MAP client for agent monitoring)
   if (config.swarmcraft.enabled) {
     try {
@@ -1185,7 +1199,15 @@ export async function createHive(
       if (config.taskGraph.bootstrapDefault) {
         try {
           const { ensureHubDefaultTaskGraph } = await import('./map/hub-task-graph.js');
-          ensureHubDefaultTaskGraph(resolveDataDir());
+          if (config.gitStore.enabled) {
+            // Land the graph inside the unified git store; the existing
+            // hub/default resource (if any) is re-pointed by the upsert.
+            const { resolveGitStorePath } = await import('./git-store.js');
+            const storeDir = path.join(resolveGitStorePath(config), '.opentasks');
+            ensureHubDefaultTaskGraph(resolveDataDir(), { dir: storeDir });
+          } else {
+            ensureHubDefaultTaskGraph(resolveDataDir());
+          }
         } catch (err) {
           console.warn(
             `[openhive] Hub-default task graph bootstrap failed: ${(err as Error).message}`,

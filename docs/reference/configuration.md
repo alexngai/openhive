@@ -161,6 +161,23 @@ sessionlog: {
 
 Path(s) to sessionlog session-state directories for local Tier-3 transcript lookup. Falls back to `.git/sessionlog-sessions/` in the working directory when empty. Supports multiple paths for multi-project setups.
 
+### gitStore
+
+```js
+gitStore: {
+  enabled: false,
+  path: undefined,          // default: <dataDir>/hive-store; git init'd at boot if missing
+  remote: undefined,        // optional push target — local-only when unset
+  autoCommit: true,         // hub-owned committer for memory/, skills/, sessionlog-sessions/
+  commitIntervalMs: 30000,
+  autoPush: false,          // push after auto-commit (requires remote)
+}
+```
+
+Optional unified git store: one local git repo holding the hub's git-backed state — the hub-default task graph (`.opentasks/`), `sessionlog-sessions/`, `memory/` (minimem), and `skills/` (skill-tree). When enabled, path knobs you left unset are derived into the store: `sessionlog.sessionDirs`, `resourceDiscovery.globalMemoryPath`, `resourceDiscovery.globalSkillPaths`, and `resourceDiscovery.globalEnabled` flips on. Explicitly-set values always win. The hub-default task graph bootstraps at `<store>/.opentasks` instead of `<dataDir>/task-graph/.opentasks`.
+
+All writers into the store use pathspec-scoped commits (opentasks daemon, the hub committer) or git plumbing on their own refs (sessionlog), so independent committers coexist in the one repository. The hub committer never touches `.opentasks/` — enable git-sync on the `hub/default` task resource to have the opentasks daemon commit graph changes.
+
 ### cors
 
 ```js
@@ -449,6 +466,8 @@ Environment variables are applied last and override the config file. These are t
 | `OPENHIVE_AUTH_MODE` | `auth.mode` | `local` / `swarmhub`. |
 | `OPENHIVE_IAM_SECRET` | `mapHub.iamSecret` | |
 | `OPENHIVE_LEARNING_ENABLED` | `learning.enabled` | `true` enables. |
+| `OPENHIVE_GIT_STORE` | `gitStore.enabled` + `gitStore.path` | Path to the unified git store; presence enables it. |
+| `OPENHIVE_GIT_STORE_REMOTE` | `gitStore.remote` | Optional push target for the git store. |
 | `SWARMHUB_API_URL` + `SWARMHUB_HIVE_TOKEN` | `swarmhub.enabled` + `apiUrl`, and (unless `OPENHIVE_AUTH_MODE` is set) `auth.mode = 'swarmhub'` | Both must be present to auto-enable the connector. |
 | `SWARMHUB_OAUTH_CLIENT_ID` / `SWARMHUB_OAUTH_CLIENT_SECRET` | `swarmhub.oauth.clientId` / `clientSecret` | Legacy path. |
 | `GITHUB_APP_ID` / `GITHUB_APP_WEBHOOK_SECRET` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` | `githubApp.*` | Presence of `GITHUB_APP_ID` or `GITHUB_APP_WEBHOOK_SECRET` enables the GitHub App. |

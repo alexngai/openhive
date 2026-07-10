@@ -511,6 +511,30 @@ export const ConfigSchema = z.object({
     })
     .default({}),
 
+  // Unified git store: one local git repo holding git-backed hive state
+  // (hub task graph, sessionlog sessions, minimem memory, skill-tree skills).
+  // When enabled, unset path knobs (sessionlog.sessionDirs,
+  // resourceDiscovery.globalMemoryPath / globalSkillPaths) are derived from
+  // `path` — see applyGitStoreDerivations(). Explicit values always win.
+  gitStore: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Store directory; git init'd at boot if missing. Default: <dataDir>/hive-store */
+      path: z.string().optional(),
+      /** Optional push target. Separate opt-in from `path` — local-only by default. */
+      remote: z.string().optional(),
+      /**
+       * Hub-owned committer for the passive dirs (memory/, skills/,
+       * sessionlog-sessions/). Never touches .opentasks/ — the opentasks
+       * daemon owns those commits (pathspec-scoped, so the two coexist).
+       */
+      autoCommit: z.boolean().default(true),
+      commitIntervalMs: z.number().min(5_000).default(30_000),
+      /** Push after commit (requires `remote`) */
+      autoPush: z.boolean().default(false),
+    })
+    .default({}),
+
   // Task graph: hub-owned OpenTasks bootstrap
   taskGraph: z
     .object({
@@ -1040,8 +1064,63 @@ export function loadConfig(configPath?: string): Config {
     };
   }
 
+  // Unified git store from environment
+  if (process.env.OPENHIVE_GIT_STORE) {
+    rawConfig.gitStore = {
+      ...rawConfig.gitStore,
+      enabled: true,
+      path: process.env.OPENHIVE_GIT_STORE,
+    };
+  }
+  if (process.env.OPENHIVE_GIT_STORE_REMOTE) {
+    rawConfig.gitStore = {
+      ...rawConfig.gitStore,
+      remote: process.env.OPENHIVE_GIT_STORE_REMOTE,
+    };
+  }
+
+  applyGitStoreDerivations(rawConfig);
+
   // Let zod apply defaults and validate
   return ConfigSchema.parse(rawConfig);
+}
+
+/**
+ * When gitStore is enabled, derive the per-feature path knobs that the user
+ * left unset so they all point into the store. Runs on the raw (pre-parse)
+ * config so "user set it" is distinguishable from a zod default — explicit
+ * values always win over derivation.
+ *
+ * `resourceDiscovery.globalOpenTasksPath` is deliberately NOT derived: the
+ * hub/default task graph bootstrap already lives at `<store>/.opentasks`
+ * (see server.ts), and pointing global discovery at the same directory
+ * would register the same on-disk store twice under two resource names.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function applyGitStoreDerivations(rawConfig: any): void {
+  if (!rawConfig.gitStore?.enabled) return;
+
+  const storePath = path.resolve(
+    rawConfig.gitStore.path ?? path.join(resolveDataDir(), "hive-store"),
+  );
+  rawConfig.gitStore.path = storePath;
+
+  const sessionlog = (rawConfig.sessionlog ??= {});
+  if (sessionlog.sessionDirs === undefined) {
+    sessionlog.sessionDirs = [path.join(storePath, "sessionlog-sessions")];
+  }
+
+  const discovery = (rawConfig.resourceDiscovery ??= {});
+  if (discovery.globalMemoryPath === undefined) {
+    discovery.globalMemoryPath = path.join(storePath, "memory");
+  }
+  if (discovery.globalSkillPaths === undefined) {
+    discovery.globalSkillPaths = [path.join(storePath, "skills")];
+  }
+  // An explicitly configured store implies the operator wants it discovered.
+  if (discovery.globalEnabled === undefined) {
+    discovery.globalEnabled = true;
+  }
 }
 
 // Generate a sample config file (JSON format)

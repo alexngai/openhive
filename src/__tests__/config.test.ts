@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ConfigSchema, defaultConfig, loadConfig, getLoadedConfigPath, isConfigEditable } from '../config.js';
+import { ConfigSchema, defaultConfig, loadConfig, getLoadedConfigPath, isConfigEditable, applyGitStoreDerivations } from '../config.js';
 
 describe('Configuration', () => {
   describe('ConfigSchema', () => {
@@ -249,6 +249,66 @@ describe('Configuration', () => {
       // JS file should still exist (not renamed)
       expect(fs.existsSync(jsPath)).toBe(true);
       expect(fs.existsSync(jsPath + '.bak')).toBe(false);
+    });
+  });
+
+  describe('gitStore', () => {
+    it('defaults to disabled with no derivation', () => {
+      const config = ConfigSchema.parse({});
+      expect(config.gitStore.enabled).toBe(false);
+      expect(config.gitStore.autoCommit).toBe(true);
+      expect(config.gitStore.commitIntervalMs).toBe(30_000);
+      expect(config.gitStore.autoPush).toBe(false);
+    });
+
+    it('derives unset path knobs into the store when enabled', () => {
+      const raw: Record<string, any> = {
+        gitStore: { enabled: true, path: '/tmp/hive-store' },
+      };
+      applyGitStoreDerivations(raw);
+      const config = ConfigSchema.parse(raw);
+
+      expect(config.gitStore.path).toBe(path.resolve('/tmp/hive-store'));
+      expect(config.sessionlog.sessionDirs).toEqual([
+        path.join(path.resolve('/tmp/hive-store'), 'sessionlog-sessions'),
+      ]);
+      expect(config.resourceDiscovery.globalMemoryPath).toBe(
+        path.join(path.resolve('/tmp/hive-store'), 'memory'),
+      );
+      expect(config.resourceDiscovery.globalSkillPaths).toEqual([
+        path.join(path.resolve('/tmp/hive-store'), 'skills'),
+      ]);
+      expect(config.resourceDiscovery.globalEnabled).toBe(true);
+      // Deliberately NOT derived — hub/default bootstrap owns <store>/.opentasks.
+      expect(config.resourceDiscovery.globalOpenTasksPath).toBeUndefined();
+    });
+
+    it('never overrides explicitly-set knobs', () => {
+      const raw: Record<string, any> = {
+        gitStore: { enabled: true, path: '/tmp/hive-store' },
+        sessionlog: { sessionDirs: ['/elsewhere/sessions'] },
+        resourceDiscovery: {
+          globalEnabled: false,
+          globalMemoryPath: '/elsewhere/memory',
+          globalSkillPaths: ['/elsewhere/skills'],
+        },
+      };
+      applyGitStoreDerivations(raw);
+      const config = ConfigSchema.parse(raw);
+
+      expect(config.sessionlog.sessionDirs).toEqual(['/elsewhere/sessions']);
+      expect(config.resourceDiscovery.globalMemoryPath).toBe('/elsewhere/memory');
+      expect(config.resourceDiscovery.globalSkillPaths).toEqual(['/elsewhere/skills']);
+      expect(config.resourceDiscovery.globalEnabled).toBe(false);
+    });
+
+    it('is a no-op when disabled', () => {
+      const raw: Record<string, any> = {
+        gitStore: { enabled: false, path: '/tmp/hive-store' },
+      };
+      applyGitStoreDerivations(raw);
+      expect(raw.sessionlog).toBeUndefined();
+      expect(raw.resourceDiscovery).toBeUndefined();
     });
   });
 });
