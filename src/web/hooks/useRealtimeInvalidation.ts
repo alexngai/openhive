@@ -230,8 +230,17 @@ export function useCascadeStreamsRealtime() {
     queryClient.invalidateQueries({ queryKey: ['cascade-stream-timeline'] });
   }, [queryClient]);
 
+  // Review verdicts: refresh on new verdicts, and on new commits — a commit
+  // moves the stream head, which invalidates the "current" verdict
+  // server-side (docs/design/cascade-review-verdicts.md [D2]).
+  const invalidateVerdicts = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['cascade-verdict-current'] });
+    queryClient.invalidateQueries({ queryKey: ['cascade-verdicts'] });
+  }, [queryClient]);
+
   useWSEvent('cascade:stream_opened', invalidate);
   useWSEvent('cascade:stream_committed', invalidate);
+  useWSEvent('cascade:stream_committed', invalidateVerdicts);
   useWSEvent('cascade:stream_merged', invalidate);
   useWSEvent('cascade:stream_conflicted', invalidate);
   useWSEvent('cascade:stream_conflict_resolved', invalidate);
@@ -239,6 +248,7 @@ export function useCascadeStreamsRealtime() {
   useWSEvent('cascade:stream_paused', invalidate);
   useWSEvent('cascade:stream_resumed', invalidate);
   useWSEvent('cascade:stream_rolled_back', invalidate);
+  useWSEvent('cascade:review_verdict', invalidateVerdicts);
 }
 
 // ── Repos / Workspaces (slice 4) ──

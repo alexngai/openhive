@@ -38,6 +38,8 @@ import {
   Edit3,
   Search,
   Inbox,
+  CheckCircle2,
+  ShieldCheck,
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
@@ -57,6 +59,12 @@ import {
   type CascadePullRequest,
 } from '../hooks/useApi';
 import { useCascadeStreamsRealtime } from '../hooks/useRealtimeInvalidation';
+import {
+  useCurrentVerdict,
+  useRecordVerdict,
+  type ReviewVerdictValue,
+} from '../hooks/useCascadeVerdicts';
+import { StatusChip, type StatusTone } from '../components/common/StatusChip';
 import { useMapSwarms } from '../hooks/useApi';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
@@ -1217,6 +1225,8 @@ function SidebarDetailsTab({
 
       {node && <StreamActions streamRowId={streamRowId} node={node} />}
 
+      {node && <StreamReviewSection streamRowId={streamRowId} node={node} />}
+
       {node && (
         <div className="px-3 py-2 border-b flex items-center gap-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
           <button
@@ -1364,6 +1374,132 @@ function SidebarEvolutionTab({
 }
 
 // ─── Branch Management ────────────────────────────────────────────────
+
+// ─── Review section (QC station Q1) ───────────────────────────────────
+//
+// Human acceptance surface for the stream's current head
+// (docs/design/cascade-review-verdicts.md). The verdict badge reflects the
+// hub's current-head verdict; recording is append-only and a new commit
+// invalidates a prior approval server-side. Purely advisory in Q1 —
+// nothing is gated on it yet.
+
+const VERDICT_CHIP: Record<
+  ReviewVerdictValue,
+  { label: string; tone: StatusTone }
+> = {
+  approved: { label: 'Approved', tone: 'success' },
+  changes_requested: { label: 'Changes requested', tone: 'warning' },
+  rejected: { label: 'Rejected', tone: 'danger' },
+};
+
+function StreamReviewSection({
+  streamRowId,
+  node,
+}: {
+  streamRowId: string;
+  node: StreamDAGNode;
+}) {
+  const { data: currentResp } = useCurrentVerdict(streamRowId);
+  const record = useRecordVerdict();
+  const [notes, setNotes] = useState('');
+
+  const current = currentResp?.data ?? null;
+  const reviewable = node.status !== 'merged' && node.status !== 'abandoned';
+
+  const submit = useCallback(
+    (verdict: ReviewVerdictValue) => {
+      record.mutate(
+        { streamRowId, verdict, notes: notes.trim() || undefined },
+        { onSuccess: () => setNotes('') },
+      );
+    },
+    [record, streamRowId, notes],
+  );
+
+  return (
+    <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
+      <div className="flex items-center justify-between mb-1">
+        <span
+          className="text-2xs font-semibold flex items-center gap-1"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          <ShieldCheck className="w-3 h-3" />
+          Review
+        </span>
+        {current ? (
+          <StatusChip
+            label={VERDICT_CHIP[current.verdict].label}
+            tone={VERDICT_CHIP[current.verdict].tone}
+            title={
+              current.reviewer_kind === 'agent'
+                ? 'Advisory agent verdict — human acceptance is what verifies a merge'
+                : undefined
+            }
+          />
+        ) : (
+          <StatusChip label="Unreviewed" tone="neutral" title="No verdict at the current head" />
+        )}
+      </div>
+
+      {current && (
+        <div className="text-2xs space-y-0.5 mb-1.5" style={{ color: 'var(--color-text-muted)' }}>
+          <div className="flex justify-between">
+            <span>By</span>
+            <span>
+              {current.reviewer_id ?? 'unknown'}
+              {current.reviewer_kind === 'agent' ? ' (agent, advisory)' : ''}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span>When</span>
+            <TimeAgo date={current.created_at} />
+          </div>
+          {current.notes && <div className="italic break-words">“{current.notes}”</div>}
+        </div>
+      )}
+
+      {reviewable && (
+        <>
+          <input
+            className="input text-2xs py-0.5 w-full mb-1.5"
+            placeholder="Review note (optional)"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            disabled={record.isPending}
+          />
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+              style={{ color: 'var(--color-accent)' }}
+              onClick={() => submit('approved')}
+              disabled={record.isPending}
+              title="Approve the stream at its current head"
+            >
+              <CheckCircle2 className="w-3 h-3" />
+              Approve
+            </button>
+            <button
+              type="button"
+              className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+              onClick={() => submit('changes_requested')}
+              disabled={record.isPending}
+              title="Request changes at the current head"
+            >
+              <AlertTriangle className="w-3 h-3" />
+              Request changes
+            </button>
+          </div>
+          {record.isError && (
+            <div className="text-2xs mt-1" style={{ color: 'var(--color-danger)' }}>
+              Couldn't record verdict — try again.
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function StreamBranchSection({
   streamRowId,

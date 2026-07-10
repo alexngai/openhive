@@ -808,6 +808,24 @@ export const ConfigSchema = z.object({
        *   `cascade.autoCloseOnMerge` capability.
        */
       defaultClosePolicy: z.enum(["manual", "on_merge"]).default("manual"),
+      /**
+       * Hub-wide default review policy for cascade streams (the QC station,
+       * docs/design/cascade-review-verdicts.md).
+       *
+       * `none` (default) — verdicts are recordable and surfaced, nothing is
+       *   gated. Zero-cost, like the task binder's `manual`.
+       *
+       * `advisory` — verdicts surface on UI affordances (badges, PR-stack
+       *   annotations) but nothing is withheld.
+       *
+       * `required` — hub-initiated landing actions (request.merge, PR-stack
+       *   opening) require a current-head HUMAN `approved` verdict.
+       *   Overridable per-task via `task.metadata.review_policy` and
+       *   per-swarm via the `cascade.reviewPolicy` capability.
+       *
+       * Q1 ships the config surface only; no gate consults it until Q2.
+       */
+      defaultReviewPolicy: z.enum(["none", "advisory", "required"]).default("none"),
     })
     .default({}),
 });

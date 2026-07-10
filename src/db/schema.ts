@@ -1,6 +1,6 @@
 // SQLite schema definitions for OpenHive
 
-export const SCHEMA_VERSION = 65;
+export const SCHEMA_VERSION = 66;
 
 export const CREATE_TABLES = `
 -- Agents table (supports agents, human accounts, and SwarmHub-linked users)
@@ -638,6 +638,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_cascade_diff_cache_key
   ON cascade_diff_cache(stream_id, commit_hash, IFNULL(base_hash, ''), IFNULL(file_path, ''));
 CREATE INDEX IF NOT EXISTS idx_cascade_diff_cache_stream ON cascade_diff_cache(stream_id);
 CREATE INDEX IF NOT EXISTS idx_cascade_diff_cache_accessed ON cascade_diff_cache(last_accessed_at);
+
+-- Cascade review verdicts (V66) — hub-owned QC records over cascade streams.
+-- Append-only: the latest row per (stream_row_id, head_commit) is the current
+-- verdict; a new head invalidates prior approvals by construction. These are
+-- NOT cascade state (runtimes own that) — they join to the projections.
+-- See docs/design/cascade-review-verdicts.md.
+CREATE TABLE IF NOT EXISTS cascade_review_verdicts (
+  id              TEXT PRIMARY KEY,
+  stream_row_id   TEXT NOT NULL,
+  source_swarm_id TEXT NOT NULL,
+  stream_id       TEXT NOT NULL,
+  head_commit     TEXT,
+  verdict         TEXT NOT NULL
+    CHECK (verdict IN ('approved', 'changes_requested', 'rejected')),
+  reviewer_kind   TEXT NOT NULL
+    CHECK (reviewer_kind IN ('human', 'agent')),
+  reviewer_id     TEXT,
+  notes           TEXT,
+  dispatch_id     TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_crv_stream ON cascade_review_verdicts(stream_row_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_crv_stream_head
+  ON cascade_review_verdicts(stream_row_id, IFNULL(head_commit, ''));
 
 -- ============================================================================
 -- Dispatches (Stream 2 — D4)
@@ -2497,6 +2522,34 @@ ALTER TABLE dispatches ADD COLUMN team_template_resource_id TEXT;
 // default independent-dispatch flow leaves it null.
 export const MIGRATION_V65_DISPATCH_TEAM_CONVERSATION = `
 ALTER TABLE dispatches ADD COLUMN team_conversation_id TEXT;
+`;
+
+// Migration V66: cascade_review_verdicts — hub-owned QC records (the "verified"
+// fact of the factory's spec→verified-merge unit of production). Append-only;
+// latest row per (stream_row_id, head_commit) wins; head_commit is resolved
+// server-side at verdict time so a new push invalidates approval by
+// construction. Purely additive — no gate consults these rows yet (Q2).
+// See docs/design/cascade-review-verdicts.md.
+export const MIGRATION_V66_CASCADE_REVIEW_VERDICTS = `
+CREATE TABLE IF NOT EXISTS cascade_review_verdicts (
+  id              TEXT PRIMARY KEY,
+  stream_row_id   TEXT NOT NULL,
+  source_swarm_id TEXT NOT NULL,
+  stream_id       TEXT NOT NULL,
+  head_commit     TEXT,
+  verdict         TEXT NOT NULL
+    CHECK (verdict IN ('approved', 'changes_requested', 'rejected')),
+  reviewer_kind   TEXT NOT NULL
+    CHECK (reviewer_kind IN ('human', 'agent')),
+  reviewer_id     TEXT,
+  notes           TEXT,
+  dispatch_id     TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_crv_stream ON cascade_review_verdicts(stream_row_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_crv_stream_head
+  ON cascade_review_verdicts(stream_row_id, IFNULL(head_commit, ''));
 `;
 
 // Populate FTS tables from existing data

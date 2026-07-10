@@ -21,7 +21,17 @@ import {
   getCommitRangeForTask,
   getStreamDAG,
   getStreamTimeline,
+  getLatestCommitForStream,
 } from '../../db/dal/cascade-streams.js';
+import {
+  recordVerdict,
+  listVerdictsForStream,
+  getCurrentVerdict,
+  REVIEW_VERDICT_VALUES,
+  type ReviewVerdictValue,
+} from '../../db/dal/cascade-review-verdicts.js';
+import { mapHubEvents } from '../../map/service.js';
+import { broadcastToChannel } from '../../realtime/index.js';
 import { findResourcesByRepoUrl } from '../../db/dal/syncable-resources.js';
 import { generateChangelog, renderMarkdown } from '../../cascade/changelog.js';
 import { sendCascadeAction, type CascadeAction } from '../../map/cascade-actions.js';
@@ -532,6 +542,122 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       return reply.send({ sent: true, action, stream_id: stream.stream_id });
+    }
+  );
+
+  // ── Review verdicts (QC station, Q1) ──────────────────────────────────
+  //
+  //   POST /cascade/streams/:id/verdicts   { verdict, notes?, dispatch_id? }
+  //   GET  /cascade/streams/:id/verdicts   ?current=true | ?limit=&offset=
+  //
+  //   Hub-owned QC records over the stream projections
+  //   (docs/design/cascade-review-verdicts.md). Append-only; the head commit
+  //   is resolved server-side at verdict time so a new push invalidates
+  //   approval by construction. reviewer_kind is derived from the
+  //   authenticated principal — never client-declared — because "verified
+  //   merge" means HUMAN acceptance ([D3]). Purely additive in Q1: nothing
+  //   gates on these rows yet.
+
+  fastify.post<{
+    Params: { id: string };
+    Body: { verdict?: string; notes?: string; dispatch_id?: string };
+  }>(
+    '/cascade/streams/:id/verdicts',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const body = request.body ?? {};
+      if (
+        !body.verdict ||
+        !REVIEW_VERDICT_VALUES.includes(body.verdict as ReviewVerdictValue)
+      ) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: `verdict must be one of: ${REVIEW_VERDICT_VALUES.join(', ')}`,
+        });
+      }
+
+      const stream = getStreamByRowId(request.params.id);
+      if (!stream) {
+        return reply
+          .status(404)
+          .send({ error: 'Not Found', message: 'Cascade stream not found' });
+      }
+
+      // Principal → reviewer_kind. Human accounts (A3 password login) and
+      // admin-stamped operator credentials count as human acceptance; every
+      // other agent key records an advisory agent verdict.
+      const principal = request.agent;
+      const reviewer_kind =
+        principal?.account_type === 'human' || principal?.is_admin
+          ? 'human'
+          : 'agent';
+
+      // The reviewed head is whatever the projection knows right now — the
+      // reviewer looked at the hub's diff of this stream, which is derived
+      // from the same latest-commit row.
+      const head = getLatestCommitForStream(stream.id);
+
+      const verdict = recordVerdict({
+        stream_row_id: stream.id,
+        source_swarm_id: stream.source_swarm_id,
+        stream_id: stream.stream_id,
+        head_commit: head?.commit_hash ?? null,
+        verdict: body.verdict as ReviewVerdictValue,
+        reviewer_kind,
+        reviewer_id: principal?.id ?? null,
+        notes: body.notes ?? null,
+        dispatch_id: body.dispatch_id ?? null,
+      });
+
+      try {
+        mapHubEvents.emit('cascade_review_verdict_recorded', verdict);
+      } catch {
+        // Non-critical — listener failures shouldn't fail the write.
+      }
+      try {
+        const wsMessage = {
+          type: 'cascade:review_verdict' as const,
+          data: verdict,
+        };
+        broadcastToChannel(`cascade:stream:${stream.id}`, wsMessage);
+        broadcastToChannel(`cascade:swarm:${stream.source_swarm_id}`, wsMessage);
+        broadcastToChannel('global', wsMessage);
+      } catch {
+        // Non-critical
+      }
+
+      return reply.status(201).send({ data: verdict });
+    }
+  );
+
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { current?: string; limit?: string; offset?: string };
+  }>(
+    '/cascade/streams/:id/verdicts',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const stream = getStreamByRowId(request.params.id);
+      if (!stream) {
+        return reply
+          .status(404)
+          .send({ error: 'Not Found', message: 'Cascade stream not found' });
+      }
+
+      if (request.query.current === 'true') {
+        const head = getLatestCommitForStream(stream.id);
+        const current = getCurrentVerdict(stream.id, head?.commit_hash ?? null);
+        return reply.send({
+          data: current,
+          head_commit: head?.commit_hash ?? null,
+        });
+      }
+
+      const { verdicts, total } = listVerdictsForStream(stream.id, {
+        limit: parseLimit(request.query.limit, 50),
+        offset: parseOffset(request.query.offset),
+      });
+      return reply.send({ data: verdicts, total });
     }
   );
 
