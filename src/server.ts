@@ -47,6 +47,7 @@ import { setupScheduler } from "./scheduler/setup.js";
 import { setHubBaseUrl as setExperimentHubBaseUrl } from "./experiments/launcher.js";
 import { isAutonomousDispatchPaused } from "./map/dispatch-policy.js";
 import { startTaskBinder, stopTaskBinder } from "./cascade/task-binder.js";
+import { startReviewMonitor, stopReviewMonitor } from "./cascade/review-monitor.js";
 import { installAsResolverFetcher as installCascadeDiffFetcher } from "./map/cascade-diff-protocol.js";
 import { configureFederationSsrf } from "./federation/service.js";
 import { startThreadLifecycle, stopThreadLifecycle } from "./dispatch/thread-lifecycle.js";
@@ -441,6 +442,20 @@ export async function createHive(
   // agent/resource fetches), so it carries the same SSRF exposure as sync peers.
   // Apply the shared private-network policy (config.sync.allowPrivatePeers).
   configureFederationSsrf(config.sync.allowPrivatePeers);
+
+  // Unified git store: initialize before anything consumes the derived
+  // paths (swarmcraft sessionlog watcher, resource discovery, task-graph
+  // bootstrap). Non-fatal — a git failure degrades to a plain directory.
+  if (config.gitStore.enabled) {
+    const { ensureGitStore, startGitStoreCommitter } = await import('./git-store.js');
+    await ensureGitStore(config);
+    if (config.gitStore.autoCommit) {
+      const stopCommitter = startGitStoreCommitter(config);
+      fastify.addHook('onClose', async () => {
+        stopCommitter();
+      });
+    }
+  }
 
   // Initialize SwarmCraft plugin (MAP client for agent monitoring)
   if (config.swarmcraft.enabled) {
@@ -1184,7 +1199,15 @@ export async function createHive(
       if (config.taskGraph.bootstrapDefault) {
         try {
           const { ensureHubDefaultTaskGraph } = await import('./map/hub-task-graph.js');
-          ensureHubDefaultTaskGraph(resolveDataDir());
+          if (config.gitStore.enabled) {
+            // Land the graph inside the unified git store; the existing
+            // hub/default resource (if any) is re-pointed by the upsert.
+            const { resolveGitStorePath } = await import('./git-store.js');
+            const storeDir = path.join(resolveGitStorePath(config), '.opentasks');
+            ensureHubDefaultTaskGraph(resolveDataDir(), { dir: storeDir });
+          } else {
+            ensureHubDefaultTaskGraph(resolveDataDir());
+          }
         } catch (err) {
           console.warn(
             `[openhive] Hub-default task graph bootstrap failed: ${(err as Error).message}`,
@@ -1371,6 +1394,16 @@ export async function createHive(
         console.warn(`[openhive] Task binder failed to start: ${(err as Error).message}`);
       }
 
+      // Start the review monitor (QC station Q2). Supplies the hub-default
+      // review policy to the route gates and flags unreviewed merges as
+      // `cascade_unreviewed_merge`. Zero-cost with the fleet default
+      // (`defaultReviewPolicy: 'none'`) and no per-task/per-swarm opt-in.
+      try {
+        startReviewMonitor({ defaultReviewPolicy: config.cascade.defaultReviewPolicy });
+      } catch (err) {
+        console.warn(`[openhive] Review monitor failed to start: ${(err as Error).message}`);
+      }
+
       // Wire the cascade diff resolver's on-demand fetcher to the MAP
       // wire-protocol module. Idempotent on repeat boot.
       try {
@@ -1398,6 +1431,7 @@ export async function createHive(
       stopAutoPull();
       stopHeartbeat();
       stopTaskBinder();
+      stopReviewMonitor();
       stopThreadLifecycle();
       if (dispatchOrchestrator?.running) {
         try { await dispatchOrchestrator.stop(); } catch { /* best effort */ }

@@ -32,7 +32,7 @@
     "build:server": "tsup",
     "build:web": "node src/web/ensure-wasm.mjs && vite build --config src/web/vite.config.ts",
     "build:headless": "npm run build:server && npm -w openhive-headless run build",
-    "dev": "OPENHIVE_ADMIN_TRUST_LOCAL_MODE=1 tsx watch --exclude '.git/**' --exclude '.swarm/**' --exclude '.openhive/**' --exclude '.sessionlog/**' --exclude 'references/**' src/cli.ts serve",
+    "dev": "OPENHIVE_ADMIN_TRUST_LOCAL_MODE=1 tsx watch --exclude '.git/**' --exclude '.swarm/**' --exclude '.openhive/**' --exclude '.sessionlog/**' --exclude '.omc/**' --exclude '.claude/**' --exclude '.sudocode/**' --exclude 'references/**' src/cli.ts serve",
     "dev:web": "vite --config src/web/vite.config.ts",
     "start": "node dist/cli.js serve",
     "typecheck": "tsc --noEmit",

@@ -22,8 +22,14 @@ import { nanoid } from 'nanoid';
 import { registerNetworkCommands } from './cli/network.js';
 import { registerAdminHttpCommands } from './cli/admin/index.js';
 import {
+  registerSetupCommands,
+  collectAnswers,
+  printOutputs,
+} from './cli/setup.js';
+import { buildSetupContext, refreshContext, getSection } from './setup/registry.js';
+import { coreSection } from './setup/sections/core.js';
+import {
   resolveDataDir,
-  ensureDataDir,
   dataDirPaths,
   isInitialised,
   findConfigFile,
@@ -239,49 +245,22 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
       }
     }
 
-    // Step 7: Create everything
+    // Step 7: Create everything — delegated to the setup engine's core
+    // section (same write path as `openhive setup core` and the web
+    // onboarding page).
     console.log('\n  Setting up...');
-    ensureDataDir(dataDir);
-    console.log(`    Created ${dataDir}`);
-
-    // Write config file (JSON format — editable by UI)
-    const configObj: Record<string, unknown> = {
+    const setupCtx = await buildSetupContext(dataDir);
+    await coreSection.apply(setupCtx, {
+      name: instanceName,
       port: portNum,
-      // Loopback by default; set OPENHIVE_HOST=0.0.0.0 (or edit this) to expose on the network.
-      host: '127.0.0.1',
-      mode: hubMode,
-      database: paths.database,
-      instance: {
-        name: instanceName,
-        description: 'Agent swarm coordination hub',
-        public: true,
-      },
-      admin: {
-        key: adminKey,
-        ...(trustLocalMode ? { trustLocalMode: true } : {}),
-      },
-      auth: {
-        mode: authMode,
-      },
-      mapHub: {
-        trustModel,
-      },
-      storage: {
-        type: 'local',
-        path: paths.uploads,
-        publicUrl: '/uploads',
-      },
-      federation: {
-        enabled: false,
-        peers: [],
-      },
-    };
-    fs.writeFileSync(paths.config, JSON.stringify(configObj, null, 2) + '\n');
+      trustModel,
+      authMode,
+      hubMode,
+      trustLocalMode,
+      adminKey,
+    });
+    console.log(`    Created ${dataDir}`);
     console.log(`    Created ${paths.config}`);
-
-    // Initialize the database so it's ready immediately
-    initDatabase(paths.database);
-    closeDatabase();
     console.log(`    Initialised database at ${paths.database}`);
 
     console.log(`
@@ -309,6 +288,33 @@ async function runSetupWizard(explicitDataDir?: string, overrides: InitOverrides
 
     openhive admin onboard-token create --scopes map:agents:spawn --ttl-hours 24
 `);
+    }
+
+    // Offer the remaining setup sections (git store, swarm hosting,
+    // agent access) — same engine as `openhive setup <section>`.
+    if (!nonInteractive) {
+      const configureMore = await prompt!.confirm(
+        '  Configure git store, swarm hosting, and agent access now?',
+        true,
+      );
+      if (configureMore) {
+        for (const id of ['git-store', 'swarm-hosting', 'agent-access']) {
+          const section = getSection(id)!;
+          await refreshContext(setupCtx);
+          const status = await section.status(setupCtx);
+          console.log(`\n  ${section.title} — ${status.summary}`);
+          const answers = await collectAnswers(section, setupCtx, {
+            prompt: prompt!,
+            sets: {},
+          });
+          const result = await section.apply(setupCtx, answers);
+          console.log(`  ${result.ok ? '✓' : '✗'} ${result.message}`);
+          printOutputs(result.outputs);
+        }
+        // agent-access may have opened the DB for token minting
+        closeDatabase();
+        console.log('');
+      }
     }
 
     // Ask if they want to start now
@@ -354,6 +360,13 @@ async function startServer(opts: StartOptions): Promise<string> {
   const paths = dataDirPaths(dataDir);
 
   // Set env vars from resolved data dir (config.ts reads these)
+  // Pin the data dir itself so every later resolveDataDir() call in the
+  // process (admin/setup routes, task-graph bootstrap, learning) agrees
+  // with the serve-time resolution — otherwise a `--data-dir` flag with a
+  // different .openhive in the cwd makes them diverge.
+  if (!process.env.OPENHIVE_HOME) {
+    process.env.OPENHIVE_HOME = dataDir;
+  }
   if (!process.env.OPENHIVE_DATABASE) {
     process.env.OPENHIVE_DATABASE = paths.database;
   }
@@ -688,6 +701,9 @@ admin
 // These talk to a running hub via the admin API. DB-direct commands above
 // (create-key, create-invite, create-agent) remain for bootstrap / offline use.
 registerAdminHttpCommands(admin, program);
+
+// Setup engine commands: `openhive setup [section]` + `openhive doctor`
+registerSetupCommands(program, createPrompt);
 
 // Database commands
 const dbCmd = program.command('db').description('Database utilities');

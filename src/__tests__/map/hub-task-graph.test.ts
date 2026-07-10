@@ -93,4 +93,24 @@ describe('ensureHubDefaultTaskGraph', () => {
     const resource = ensureHubDefaultTaskGraph(DATA_DIR)!;
     expect(resourcesDAL.canAccessResource(other.id, resource)).toBe(true);
   });
+
+  it('honors a dir override and re-points an existing hub/default (git store)', () => {
+    const before = ensureHubDefaultTaskGraph(DATA_DIR)!;
+
+    const storeDir = path.join(TEST_ROOT, 'hive-store', '.opentasks');
+    const resource = ensureHubDefaultTaskGraph(DATA_DIR, { dir: storeDir })!;
+
+    // Same resource, re-pointed — not a duplicate row.
+    expect(resource.id).toBe(before.id);
+    expect(resource.local_path).toBe(storeDir);
+    expect(fs.existsSync(path.join(storeDir, 'config.json'))).toBe(true);
+    expect(fs.existsSync(path.join(storeDir, 'graph.jsonl'))).toBe(true);
+
+    const count = getDatabase()
+      .prepare(
+        `SELECT COUNT(*) as n FROM syncable_resources WHERE resource_type = 'task' AND name = ?`,
+      )
+      .get(HUB_DEFAULT_GRAPH_NAME) as { n: number };
+    expect(count.n).toBe(1);
+  });
 });

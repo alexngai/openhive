@@ -21,7 +21,23 @@ import {
   getCommitRangeForTask,
   getStreamDAG,
   getStreamTimeline,
+  getLatestCommitForStream,
 } from '../../db/dal/cascade-streams.js';
+import {
+  recordVerdict,
+  listVerdictsForStream,
+  getCurrentVerdict,
+  REVIEW_VERDICT_VALUES,
+  type ReviewVerdictValue,
+} from '../../db/dal/cascade-review-verdicts.js';
+import { mapHubEvents } from '../../map/service.js';
+import { broadcastToChannel } from '../../realtime/index.js';
+import {
+  resolveStreamReviewGate,
+  listStreamsAwaitingReview,
+} from '../../cascade/review-monitor.js';
+import { requestReviewDispatch } from '../../cascade/review-dispatch.js';
+import { postVerdictThreadTurn } from '../../cascade/review-thread.js';
 import { findResourcesByRepoUrl } from '../../db/dal/syncable-resources.js';
 import { generateChangelog, renderMarkdown } from '../../cascade/changelog.js';
 import { sendCascadeAction, type CascadeAction } from '../../map/cascade-actions.js';
@@ -482,6 +498,30 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
         });
       }
 
+      // QC gate (Q2): a hub-initiated merge is withheld when the stream's
+      // resolved review policy is `required` and there is no current-head
+      // HUMAN approval ([D3]/[D4] — docs/design/cascade-review-verdicts.md).
+      // Checked BEFORE the capability pre-check so an observe-only swarm's
+      // unapproved merge surfaces the actionable "review required" (go get it
+      // reviewed) rather than "capability unavailable" — policy before
+      // mechanism. Other actions (pause, abandon, resolve, …) are never
+      // review-gated.
+      if (action === 'merge') {
+        const gate = resolveStreamReviewGate(stream);
+        if (gate.blocked) {
+          return reply.status(409).send({
+            error: 'Review Required',
+            code: 'review_required',
+            message:
+              'This stream requires a human-approved review at its current head before the hub will request a merge.',
+            policy: gate.policy,
+            head_commit: gate.head_commit,
+            current_verdict: gate.current_verdict?.verdict ?? null,
+            sent: false,
+          });
+        }
+      }
+
       // Capability pre-check: the owning swarm must declare `cascade.canAct`
       // to receive action requests. Belt-and-suspenders behind the UI gate —
       // capabilities are advisory, but an observe-only swarm (e.g. cc-swarm,
@@ -532,6 +572,196 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       return reply.send({ sent: true, action, stream_id: stream.stream_id });
+    }
+  );
+
+  // ── Review verdicts (QC station, Q1) ──────────────────────────────────
+  //
+  //   POST /cascade/streams/:id/verdicts   { verdict, notes?, dispatch_id? }
+  //   GET  /cascade/streams/:id/verdicts   ?current=true | ?limit=&offset=
+  //
+  //   Hub-owned QC records over the stream projections
+  //   (docs/design/cascade-review-verdicts.md). Append-only; the head commit
+  //   is resolved server-side at verdict time so a new push invalidates
+  //   approval by construction. reviewer_kind is derived from the
+  //   authenticated principal — never client-declared — because "verified
+  //   merge" means HUMAN acceptance ([D3]). Purely additive in Q1: nothing
+  //   gates on these rows yet.
+
+  fastify.post<{
+    Params: { id: string };
+    Body: { verdict?: string; notes?: string; dispatch_id?: string };
+  }>(
+    '/cascade/streams/:id/verdicts',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const body = request.body ?? {};
+      if (
+        !body.verdict ||
+        !REVIEW_VERDICT_VALUES.includes(body.verdict as ReviewVerdictValue)
+      ) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: `verdict must be one of: ${REVIEW_VERDICT_VALUES.join(', ')}`,
+        });
+      }
+
+      const stream = getStreamByRowId(request.params.id);
+      if (!stream) {
+        return reply
+          .status(404)
+          .send({ error: 'Not Found', message: 'Cascade stream not found' });
+      }
+
+      // Principal → reviewer_kind. Human accounts (A3 password login) and
+      // admin-stamped operator credentials count as human acceptance; every
+      // other agent key records an advisory agent verdict.
+      const principal = request.agent;
+      const reviewer_kind =
+        principal?.account_type === 'human' || principal?.is_admin
+          ? 'human'
+          : 'agent';
+
+      // The reviewed head is whatever the projection knows right now — the
+      // reviewer looked at the hub's diff of this stream, which is derived
+      // from the same latest-commit row.
+      const head = getLatestCommitForStream(stream.id);
+
+      const verdict = recordVerdict({
+        stream_row_id: stream.id,
+        source_swarm_id: stream.source_swarm_id,
+        stream_id: stream.stream_id,
+        head_commit: head?.commit_hash ?? null,
+        verdict: body.verdict as ReviewVerdictValue,
+        reviewer_kind,
+        reviewer_id: principal?.id ?? null,
+        notes: body.notes ?? null,
+        dispatch_id: body.dispatch_id ?? null,
+      });
+
+      try {
+        mapHubEvents.emit('cascade_review_verdict_recorded', verdict);
+      } catch {
+        // Non-critical — listener failures shouldn't fail the write.
+      }
+      try {
+        const wsMessage = {
+          type: 'cascade:review_verdict' as const,
+          data: verdict,
+        };
+        broadcastToChannel(`cascade:stream:${stream.id}`, wsMessage);
+        broadcastToChannel(`cascade:swarm:${stream.source_swarm_id}`, wsMessage);
+        broadcastToChannel('global', wsMessage);
+      } catch {
+        // Non-critical
+      }
+
+      // Close the feedback loop: the verdict lands in the author's work
+      // thread (dispatch conversation, else spec discussion). Fire-and-
+      // forget; postVerdictThreadTurn never rejects.
+      void postVerdictThreadTurn(verdict, stream);
+
+      return reply.status(201).send({ data: verdict });
+    }
+  );
+
+  fastify.get<{
+    Params: { id: string };
+    Querystring: { current?: string; limit?: string; offset?: string };
+  }>(
+    '/cascade/streams/:id/verdicts',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const stream = getStreamByRowId(request.params.id);
+      if (!stream) {
+        return reply
+          .status(404)
+          .send({ error: 'Not Found', message: 'Cascade stream not found' });
+      }
+
+      if (request.query.current === 'true') {
+        const head = getLatestCommitForStream(stream.id);
+        const current = getCurrentVerdict(stream.id, head?.commit_hash ?? null);
+        return reply.send({
+          data: current,
+          head_commit: head?.commit_hash ?? null,
+        });
+      }
+
+      const { verdicts, total } = listVerdictsForStream(stream.id, {
+        limit: parseLimit(request.query.limit, 50),
+        offset: parseOffset(request.query.offset),
+      });
+      return reply.send({ data: verdicts, total });
+    }
+  );
+
+  // ── Review inbox ──────────────────────────────────────────────────────
+  //
+  //   GET /cascade/review-inbox
+  //
+  //   The DERIVED "awaiting review" set: active streams with commits under
+  //   a non-`none` policy and no HUMAN verdict at the current head. No
+  //   state machine — new commits move the head and streams re-enter
+  //   automatically. Feeds the Changes page bucket.
+
+  fastify.get(
+    '/cascade/review-inbox',
+    { preHandler: authMiddleware },
+    async (_request, reply) => {
+      const entries = listStreamsAwaitingReview();
+      return reply.send({ data: entries, total: entries.length });
+    }
+  );
+
+  // ── Request agent review (QC station Q3) ─────────────────────────────
+  //
+  //   POST /cascade/streams/:id/request-review   { target_swarm_id? }
+  //
+  //   Creates a reviewer dispatch (`role: 'reviewer'`) whose prompt embeds
+  //   the stream diff. The reviewing agent's completion report is parsed
+  //   into an ADVISORY agent verdict via the finalize hook — it never
+  //   satisfies a `required` policy ([D3]). Manual trigger in v1;
+  //   policy-driven triggering is future work.
+
+  fastify.post<{
+    Params: { id: string };
+    Body: { target_swarm_id?: string };
+  }>(
+    '/cascade/streams/:id/request-review',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const stream = getStreamByRowId(request.params.id);
+      if (!stream) {
+        return reply
+          .status(404)
+          .send({ error: 'Not Found', message: 'Cascade stream not found' });
+      }
+
+      const principal = request.agent;
+      const result = await requestReviewDispatch({
+        streamRowId: stream.id,
+        targetSwarmId: request.body?.target_swarm_id,
+        initiatorType:
+          principal?.account_type === 'human' || principal?.is_admin
+            ? 'user'
+            : 'agent',
+      });
+      if (!result) {
+        return reply
+          .status(404)
+          .send({ error: 'Not Found', message: 'Cascade stream not found' });
+      }
+
+      return reply.status(201).send({
+        data: {
+          dispatch_id: result.dispatch.id,
+          target_swarm_id: result.dispatch.target_swarm_id,
+          role: result.dispatch.role,
+          status: result.dispatch.status,
+          diff_inlined: result.diff_inlined,
+        },
+      });
     }
   );
 
@@ -969,6 +1199,7 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
           | 'existing'
           | 'push_required'
           | 'blocked_by_parent'
+          | 'blocked_by_review'
           | 'failed';
         pr_url?: string;
         pr_number?: number;
@@ -999,6 +1230,21 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
             continue;
           }
         } catch { /* fall through to fresh-create path */ }
+
+        // QC gate (Q2): opening a PR is a hub-initiated landing action, so
+        // a `required` review policy withholds it until the stream carries
+        // a current-head human approval. Blocks propagate to descendants
+        // like push_required (their base branch would be unreviewed work).
+        const entryStream = getStreamByRowId(entry.stream_row_id);
+        if (entryStream) {
+          const gate = resolveStreamReviewGate(entryStream);
+          if (gate.blocked) {
+            base.result_status = 'blocked_by_review';
+            blockedAncestors.add(entry.stream_row_id);
+            results.push(base);
+            continue;
+          }
+        }
 
         // D21: best-effort push hint. Fire-and-forget; offline-swarm
         // failures are silently ignored, the branch-exists check below

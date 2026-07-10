@@ -30,6 +30,7 @@ const About = lazy(() => import('./pages/About').then(m => ({ default: m.About }
 const Login = lazy(() => import('./pages/Login').then(m => ({ default: m.Login })));
 const AuthCallback = lazy(() => import('./pages/AuthCallback').then(m => ({ default: m.AuthCallback })));
 const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })));
+const Onboarding = lazy(() => import('./pages/Onboarding'));
 const Swarms = lazy(() => import('./pages/Swarms').then(m => ({ default: m.Swarms })));
 const SwarmDetail = lazy(() => import('./pages/SwarmDetail').then(m => ({ default: m.SwarmDetail })));
 const Terminal = lazy(() => import('./pages/Terminal').then(m => ({ default: m.Terminal })));
@@ -104,6 +105,7 @@ export default function App() {
               <Route index element={<Dashboard />} />
               <Route path="about" element={<About />} />
               <Route path="settings" element={<Settings />} />
+              <Route path="onboarding" element={<Onboarding />} />
               <Route path="swarms" element={<Swarms />} />
               <Route path="swarms/:id" element={<SwarmDetail />} />
               <Route path="threads" element={<Sessions />} />

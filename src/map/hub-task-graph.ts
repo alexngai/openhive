@@ -32,8 +32,13 @@ export const HUB_DEFAULT_GRAPH_NAME = 'hub/default';
  * POST /map/hub-task-graph route).
  *
  * @param dataDir absolute or cwd-relative openhive data dir
+ * @param opts.dir explicit `.opentasks` location (e.g. inside the unified
+ *   git store) — overrides the default `<dataDir>/task-graph/.opentasks`
  */
-export function ensureHubDefaultTaskGraph(dataDir: string): SyncableResource | null {
+export function ensureHubDefaultTaskGraph(
+  dataDir: string,
+  opts?: { dir?: string },
+): SyncableResource | null {
   const owner = findDefaultOwnerAgent();
   if (!owner) {
     console.warn('[hub-task-graph] No agents exist yet — skipping hub/default bootstrap');
@@ -42,7 +47,7 @@ export function ensureHubDefaultTaskGraph(dataDir: string): SyncableResource | n
 
   // Keep the layout shallow: deep paths risk hitting the Unix-socket
   // length cap on macOS when the daemon binds `<dir>/daemon.sock`.
-  const dir = path.join(dataDir, 'task-graph', '.opentasks');
+  const dir = opts?.dir ?? path.join(dataDir, 'task-graph', '.opentasks');
   ensureInitialized(dir);
 
   // location_hash anchors the resource to the on-disk store identity; the

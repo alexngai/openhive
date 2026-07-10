@@ -12,7 +12,13 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as dispatches from '../../db/dal/dispatches.js';
-import { setupMailCompletionObserver, classifyReplyContent } from '../../dispatch/mail-completion.js';
+import * as cascadeStreams from '../../db/dal/cascade-streams.js';
+import { listVerdictsForStream } from '../../db/dal/cascade-review-verdicts.js';
+import {
+  setupMailCompletionObserver,
+  classifyReplyContent,
+  buildOutcomeFromReply,
+} from '../../dispatch/mail-completion.js';
 import { DISPATCHER_PARTICIPANT_ID } from '../../dispatch/mail-transport.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
 
@@ -232,6 +238,58 @@ describe('mail-completion observer', () => {
 
     expect(dispatches.findDispatchById(d.id)!.status).toBe('running');
   });
+
+  it('threads a fenced-JSON verdict reply into an agent verdict (Q3 end-to-end)', () => {
+    // Seed a stream with a commit + a review dispatch bound to it via the
+    // `review:<streamRowId>` correlation.
+    const { stream } = cascadeStreams.upsertStream({
+      stream_id: 'st-mc-review',
+      source_swarm_id: 'swarm_test',
+      source_agent_id: 'agent-author',
+      name: 'mc review stream',
+      base_commit: '0'.repeat(40),
+    });
+    cascadeStreams.recordCommit({ stream_row_id: stream.id, commit_hash: 'a'.repeat(40) });
+
+    const conv = 'conv-review-e2e';
+    const d = dispatches.createDispatch({
+      spec_resource_id: 'ad_hoc',
+      spec_id: `review:${stream.id}`,
+      target_swarm_id: 'swarm_test',
+      initiator_type: 'user',
+      initiator_id: `review:${stream.id}`,
+      role: 'reviewer',
+    });
+    dispatches.claimDispatch(d.id, 'orch-1');
+    dispatches.setDispatchConversationId(d.id, conv);
+
+    const emitter = new EventEmitter();
+    const stop = setupMailCompletionObserver({ getMailEvents: () => emitter, log: () => {} });
+
+    emitter.emit('mail.turn.added', {
+      conversation_id: conv,
+      participant_id: 'worker_reviewer_1',
+      content_type: 'text/plain',
+      content:
+        'Reviewed the diff.\n```json\n{"verdict": "changes_requested", "notes": "off-by-one in the pager loop"}\n```',
+    });
+
+    const after = dispatches.findDispatchById(d.id)!;
+    expect(after.status).toBe('complete');
+    // The reply summary is preserved on the outcome (was null before the fix).
+    expect(after.outcome?.summary).toContain('off-by-one');
+
+    // …and the Q3 finalize hook parsed it into an advisory agent verdict.
+    const { verdicts } = listVerdictsForStream(stream.id);
+    expect(verdicts).toHaveLength(1);
+    expect(verdicts[0]).toMatchObject({
+      verdict: 'changes_requested',
+      reviewer_kind: 'agent',
+      dispatch_id: d.id,
+      notes: 'off-by-one in the pager loop',
+    });
+    stop();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -264,4 +322,41 @@ describe('classifyReplyContent', () => {
       expect(classifyReplyContent(c.input)).toBe(c.expected);
     });
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// buildOutcomeFromReply — preserves reply text + lifts structured fields
+// ─────────────────────────────────────────────────────────────────────
+describe('buildOutcomeFromReply', () => {
+  it('returns undefined for empty content', () => {
+    expect(buildOutcomeFromReply(null)).toBeUndefined();
+    expect(buildOutcomeFromReply(undefined)).toBeUndefined();
+    expect(buildOutcomeFromReply('')).toBeUndefined();
+    expect(buildOutcomeFromReply('  \n\t ')).toBeUndefined();
+  });
+
+  it('keeps a plain-text reply as the summary (fenced block intact)', () => {
+    const text = 'Reviewed.\n```json\n{"verdict": "approved"}\n```';
+    expect(buildOutcomeFromReply(text)).toEqual({ summary: text });
+  });
+
+  it('lifts fields from a JSON-string reply while preserving the raw text', () => {
+    const reply = JSON.stringify({ review_verdict: { verdict: 'rejected' }, status: 'complete' });
+    const outcome = buildOutcomeFromReply(reply);
+    expect(outcome?.summary).toBe(reply);
+    expect(outcome?.review_verdict).toEqual({ verdict: 'rejected' });
+  });
+
+  it('prefers an explicit summary field when the JSON reply carries one', () => {
+    const reply = JSON.stringify({ summary: 'all good', status: 'ok' });
+    expect(buildOutcomeFromReply(reply)?.summary).toBe('all good');
+  });
+
+  it('handles a pre-parsed object reply', () => {
+    expect(buildOutcomeFromReply({ summary: 'done', error: '' })).toMatchObject({
+      summary: 'done',
+    });
+    // No summary field → stringify the object so nothing is lost.
+    expect(buildOutcomeFromReply({ status: 'ok' })?.summary).toBe('{"status":"ok"}');
+  });
 });

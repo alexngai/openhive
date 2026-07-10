@@ -12,7 +12,7 @@
  */
 
 import { Link } from 'react-router-dom';
-import { FileText, Link2, Sparkles, Zap } from 'lucide-react';
+import { FileText, Link2, Settings2, Sparkles, Zap } from 'lucide-react';
 import { useHostedSwarms, useMapSwarms } from '../../hooks/useApi';
 
 interface FirstRunPanelProps {
@@ -100,7 +100,13 @@ export function FirstRunPanel({ onSpawn, onConnect }: FirstRunPanelProps) {
       <p className="text-xs mb-4" style={{ color: 'var(--color-text-muted)' }}>
         No agents are connected yet. Pick a starting point:
       </p>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+        <Card
+          icon={<Settings2 className="w-4 h-4 text-honey-500" />}
+          title="Finish setting up this hub"
+          body="Prerequisites, git store, swarm hosting, agent tokens — section by section, with a health check at the end."
+          to="/onboarding"
+        />
         <Card
           icon={<Zap className="w-4 h-4 text-honey-500" />}
           title="Spawn a hosted agent"

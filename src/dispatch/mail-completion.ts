@@ -22,6 +22,7 @@
  */
 
 import { findRunningDispatchByConversation } from '../db/dal/dispatches.js';
+import type { DispatchOutcome } from '../db/dal/dispatches.js';
 import { finalizeDispatch } from './finalize.js';
 import { DISPATCHER_PARTICIPANT_ID } from './mail-transport.js';
 
@@ -101,8 +102,17 @@ export function setupMailCompletionObserver(
     const terminal = classifyReplyContent(t.content);
     if (terminal === 'skip') return;
 
+    // Thread the reply content into the dispatch outcome. Classification
+    // alone (complete/failed) is not enough: downstream consumers need the
+    // actual summary — e.g. the review-verdict hook in finalizeDispatch
+    // parses a fenced ```json verdict block out of `outcome.summary`, and a
+    // structured reply may carry `review_verdict` directly. Without this the
+    // mail path always produced a null outcome, so agent verdicts never
+    // landed (QC station Q3).
+    const outcome = buildOutcomeFromReply(t.content);
+
     try {
-      finalizeDispatch(dispatch.id, terminal);
+      finalizeDispatch(dispatch.id, terminal, outcome);
       log(
         `dispatch ${dispatch.id} marked ${terminal} from mail reply ` +
           `(conv=${conversationId}, from=${participantId})`,
@@ -123,6 +133,48 @@ export function setupMailCompletionObserver(
       /* best-effort */
     }
   };
+}
+
+/**
+ * Build a `DispatchOutcome` from the reply turn content so the terminal
+ * dispatch row carries the agent's actual reply, not just a status.
+ *
+ * The raw text is ALWAYS preserved as `summary` (free-text replies carry
+ * fenced ```json verdict blocks there); when the reply is itself a JSON
+ * object, its fields are lifted onto the outcome too so a structured reply
+ * carrying `review_verdict` (or `summary`/`error`) is read via the
+ * structured path. Returns undefined for empty content so finalizeDispatch
+ * falls back to a cascade-artifacts-only outcome (or null).
+ *
+ * Exported for unit testing in isolation.
+ */
+export function buildOutcomeFromReply(content: unknown): DispatchOutcome | undefined {
+  if (content == null) return undefined;
+
+  if (typeof content === 'string') {
+    const text = content.trim();
+    if (text.length === 0) return undefined;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = undefined;
+    }
+    if (parsed && typeof parsed === 'object') {
+      // Structured reply delivered as a JSON string: keep the raw text as
+      // summary AND lift its fields (a `summary` field, if present, wins).
+      return { summary: text, ...(parsed as Record<string, unknown>) };
+    }
+    return { summary: text };
+  }
+
+  if (typeof content === 'object') {
+    const obj = content as Record<string, unknown>;
+    const summary = typeof obj.summary === 'string' ? obj.summary : JSON.stringify(obj);
+    return { summary, ...obj };
+  }
+
+  return { summary: String(content) };
 }
 
 /**

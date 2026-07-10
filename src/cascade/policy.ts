@@ -64,3 +64,53 @@ function extractSwarmPolicy(
   if (flag === false) return 'manual';
   return undefined;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Review policy (QC station Q2 — docs/design/cascade-review-verdicts.md §4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `none`     — verdicts recordable/surfaced, nothing gated (fleet default).
+ * `advisory` — verdicts surface on UI affordances, nothing withheld.
+ * `required` — hub-initiated landing actions need a current-head HUMAN
+ *              `approved` verdict ([D3]). Agent verdicts never satisfy it.
+ */
+export type ReviewPolicy = 'none' | 'advisory' | 'required';
+
+export interface ReviewPolicyInputs {
+  /** Task resource metadata blob (from syncable_resources.metadata). */
+  taskMetadata?: Record<string, unknown> | null;
+  /** Aggregate capabilities for the owning swarm (from connection registry). */
+  swarmCapabilities?: Record<string, unknown> | null;
+  /** Hub-wide default (from config.cascade.defaultReviewPolicy). */
+  hubConfig: { defaultReviewPolicy: ReviewPolicy };
+}
+
+const REVIEW_POLICY_VALUES: readonly ReviewPolicy[] = ['none', 'advisory', 'required'];
+
+function isReviewPolicy(raw: unknown): raw is ReviewPolicy {
+  return REVIEW_POLICY_VALUES.includes(raw as ReviewPolicy);
+}
+
+/**
+ * Resolve the effective review policy for a cascade stream. Same three-scope
+ * chain as `resolveClosePolicy`, most-specific first:
+ *
+ *   1. `taskMetadata.review_policy`
+ *   2. `swarmCapabilities.cascade.reviewPolicy`
+ *   3. `hubConfig.defaultReviewPolicy`
+ *
+ * Invalid values at any scope fall through to the next. Never throws.
+ */
+export function resolveReviewPolicy(inputs: ReviewPolicyInputs): ReviewPolicy {
+  const taskRaw = inputs.taskMetadata?.review_policy;
+  if (isReviewPolicy(taskRaw)) return taskRaw;
+
+  const cascade = inputs.swarmCapabilities?.cascade;
+  if (cascade && typeof cascade === 'object') {
+    const swarmRaw = (cascade as Record<string, unknown>).reviewPolicy;
+    if (isReviewPolicy(swarmRaw)) return swarmRaw;
+  }
+
+  return inputs.hubConfig.defaultReviewPolicy;
+}

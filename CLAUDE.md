@@ -110,6 +110,6 @@ SQLite by default (single file at configured path). PostgreSQL supported via con
 
 ## Configuration
 
-Primary config file: `openhive.config.js`. Key sections: port, host, database, instance identity, auth mode, admin key, rate limiting, sync (peers, discovery), swarm hosting (providers, credentials, sandbox), MAP hub, storage (local/S3), network provider, task graph (`taskGraph.bootstrapDefault` — hub-default OpenTasks graph at startup).
+Primary config file: `openhive.config.js`. Key sections: port, host, database, instance identity, auth mode, admin key, rate limiting, sync (peers, discovery), swarm hosting (providers, credentials, sandbox), MAP hub, storage (local/S3), network provider, task graph (`taskGraph.bootstrapDefault` — hub-default OpenTasks graph at startup), git store (`gitStore` — optional single git repo for git-backed hive state: task graph, sessionlog sessions, minimem memory, skill-tree skills; unset path knobs derive into it, see `src/git-store.ts`).
 
 Environment variables override config file values. See README for the full env var table.

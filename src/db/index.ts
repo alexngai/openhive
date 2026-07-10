@@ -58,6 +58,7 @@ import {
   MIGRATION_V63_EXPERIMENT_EVENTS,
   MIGRATION_V64_DISPATCH_LOADOUT_RESOURCE_REFS,
   MIGRATION_V65_DISPATCH_TEAM_CONVERSATION,
+  MIGRATION_V66_CASCADE_REVIEW_VERDICTS,
 } from "./schema.js";
 import type { DatabaseConfig } from "./adapters/types.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -396,6 +397,10 @@ ALTER TABLE ingest_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["map"]';
   // Version 65: team_conversation_id on dispatches — shared coordination
   // thread for coordinated-team dispatches (P4.2).
   65: MIGRATION_V65_DISPATCH_TEAM_CONVERSATION,
+  // Version 66: cascade_review_verdicts — hub-owned QC records over cascade
+  // streams (the "verified merge" fact). Append-only; latest per
+  // (stream_row_id, head_commit) wins. docs/design/cascade-review-verdicts.md.
+  66: MIGRATION_V66_CASCADE_REVIEW_VERDICTS,
 };
 
 /** Get the SQL for a specific migration version.

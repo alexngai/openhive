@@ -38,6 +38,8 @@ import {
   Edit3,
   Search,
   Inbox,
+  CheckCircle2,
+  ShieldCheck,
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
@@ -57,6 +59,14 @@ import {
   type CascadePullRequest,
 } from '../hooks/useApi';
 import { useCascadeStreamsRealtime } from '../hooks/useRealtimeInvalidation';
+import {
+  useCurrentVerdict,
+  useRecordVerdict,
+  useRequestReview,
+  useReviewInbox,
+  type ReviewVerdictValue,
+} from '../hooks/useCascadeVerdicts';
+import { StatusChip, type StatusTone } from '../components/common/StatusChip';
 import { useMapSwarms } from '../hooks/useApi';
 import { TimeAgo } from '../components/common/TimeAgo';
 import { PageLoader } from '../components/common/LoadingSpinner';
@@ -79,7 +89,7 @@ type ViewMode = 'list' | 'stack' | 'map';
 
 const RECENTLY_LANDED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-type TriageBucket = 'needs-attention' | 'in-progress' | 'recently-landed';
+type TriageBucket = 'needs-attention' | 'awaiting-review' | 'in-progress' | 'recently-landed';
 
 /**
  * Per-stream cascade capability gate. The "All swarms" view mixes streams
@@ -110,9 +120,15 @@ function useCascadeCapability(node: StreamDAGNode): {
   };
 }
 
-function bucketForNode(node: StreamDAGNode): TriageBucket | null {
+function bucketForNode(node: StreamDAGNode, awaitingReview: Set<string>): TriageBucket | null {
   if (node.status === 'conflicted' || node.open_conflict_count > 0) {
     return 'needs-attention';
+  }
+  // Derived review inbox (no state machine): the server computes the set
+  // from policy + current-head verdicts; a new commit re-enters the stream
+  // automatically. Conflicts outrank review — fix first, review after.
+  if (node.status === 'active' && awaitingReview.has(node.id)) {
+    return 'awaiting-review';
   }
   if (node.status === 'active' || node.status === 'paused') {
     return 'in-progress';
@@ -155,9 +171,14 @@ export function Changes() {
     source_swarm_id: selectedSwarmId,
   });
   const { data: swarmsResponse } = useMapSwarms();
+  const { data: inboxResponse } = useReviewInbox();
 
   useCascadeStreamsRealtime();
 
+  const awaitingReviewIds = useMemo(
+    () => new Set((inboxResponse?.data ?? []).map((e) => e.stream_row_id)),
+    [inboxResponse],
+  );
   const dag = dagResponse?.data;
   const swarms = swarmsResponse?.data ?? [];
   const streamParam = routeSearchParams.get('stream');
@@ -198,20 +219,22 @@ export function Changes() {
     });
     const groups: Record<TriageBucket, StreamDAGNode[]> = {
       'needs-attention': [],
+      'awaiting-review': [],
       'in-progress': [],
       'recently-landed': [],
     };
     for (const node of filtered) {
-      const bucket = bucketForNode(node);
+      const bucket = bucketForNode(node, awaitingReviewIds);
       if (bucket) groups[bucket].push(node);
     }
     const sortByActivity = (a: StreamDAGNode, b: StreamDAGNode) =>
       new Date(b.last_event_at).getTime() - new Date(a.last_event_at).getTime();
     groups['needs-attention'].sort(sortByActivity);
+    groups['awaiting-review'].sort(sortByActivity);
     groups['in-progress'].sort(sortByActivity);
     groups['recently-landed'].sort(sortByActivity);
     return { buckets: groups, filteredCount: filtered.length, totalCount: all.length };
-  }, [dag, conflictsOnly, search]);
+  }, [dag, conflictsOnly, search, awaitingReviewIds]);
 
   const stack = useMemo(() => {
     if (!dag || !stackRootId) return null;
@@ -591,6 +614,13 @@ const BUCKET_CONFIG: BucketConfig[] = [
     defaultCollapsed: false,
   },
   {
+    key: 'awaiting-review',
+    label: 'Awaiting review',
+    Icon: ShieldCheck,
+    accent: 'var(--color-accent)',
+    defaultCollapsed: false,
+  },
+  {
     key: 'in-progress',
     label: 'In progress',
     Icon: GitBranch,
@@ -667,9 +697,13 @@ function BucketSection({
 }) {
   const [collapsed, setCollapsed] = useState(cfg.defaultCollapsed);
 
-  // Hide "recently landed" when empty to reduce chrome; always show the other
+  // Hide "recently landed" when empty to reduce chrome, and "awaiting
+  // review" when empty because under the fleet-default review policy
+  // (`none`) it would be a permanently dead section. Always show the other
   // two so the user sees the expected triage shape.
-  if (nodes.length === 0 && cfg.key === 'recently-landed') return null;
+  if (nodes.length === 0 && (cfg.key === 'recently-landed' || cfg.key === 'awaiting-review')) {
+    return null;
+  }
 
   const { Icon } = cfg;
 
@@ -1217,6 +1251,8 @@ function SidebarDetailsTab({
 
       {node && <StreamActions streamRowId={streamRowId} node={node} />}
 
+      {node && <StreamReviewSection streamRowId={streamRowId} node={node} />}
+
       {node && (
         <div className="px-3 py-2 border-b flex items-center gap-2" style={{ borderColor: 'var(--color-border-subtle)' }}>
           <button
@@ -1364,6 +1400,155 @@ function SidebarEvolutionTab({
 }
 
 // ─── Branch Management ────────────────────────────────────────────────
+
+// ─── Review section (QC station Q1) ───────────────────────────────────
+//
+// Human acceptance surface for the stream's current head
+// (docs/design/cascade-review-verdicts.md). The verdict badge reflects the
+// hub's current-head verdict; recording is append-only and a new commit
+// invalidates a prior approval server-side. Purely advisory in Q1 —
+// nothing is gated on it yet.
+
+const VERDICT_CHIP: Record<
+  ReviewVerdictValue,
+  { label: string; tone: StatusTone }
+> = {
+  approved: { label: 'Approved', tone: 'success' },
+  changes_requested: { label: 'Changes requested', tone: 'warning' },
+  rejected: { label: 'Rejected', tone: 'danger' },
+};
+
+function StreamReviewSection({
+  streamRowId,
+  node,
+}: {
+  streamRowId: string;
+  node: StreamDAGNode;
+}) {
+  const { data: currentResp } = useCurrentVerdict(streamRowId);
+  const record = useRecordVerdict();
+  const requestReview = useRequestReview();
+  const [notes, setNotes] = useState('');
+
+  const current = currentResp?.data ?? null;
+  const reviewable = node.status !== 'merged' && node.status !== 'abandoned';
+
+  const submit = useCallback(
+    (verdict: ReviewVerdictValue) => {
+      record.mutate(
+        { streamRowId, verdict, notes: notes.trim() || undefined },
+        { onSuccess: () => setNotes('') },
+      );
+    },
+    [record, streamRowId, notes],
+  );
+
+  return (
+    <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--color-border-subtle)' }}>
+      <div className="flex items-center justify-between mb-1">
+        <span
+          className="text-2xs font-semibold flex items-center gap-1"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          <ShieldCheck className="w-3 h-3" />
+          Review
+        </span>
+        {current ? (
+          <StatusChip
+            label={VERDICT_CHIP[current.verdict].label}
+            tone={VERDICT_CHIP[current.verdict].tone}
+            title={
+              current.reviewer_kind === 'agent'
+                ? 'Advisory agent verdict — human acceptance is what verifies a merge'
+                : undefined
+            }
+          />
+        ) : (
+          <StatusChip label="Unreviewed" tone="neutral" title="No verdict at the current head" />
+        )}
+      </div>
+
+      {current && (
+        <div className="text-2xs space-y-0.5 mb-1.5" style={{ color: 'var(--color-text-muted)' }}>
+          <div className="flex justify-between">
+            <span>By</span>
+            <span>
+              {current.reviewer_id ?? 'unknown'}
+              {current.reviewer_kind === 'agent' ? ' (agent, advisory)' : ''}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span>When</span>
+            <TimeAgo date={current.created_at} />
+          </div>
+          {current.notes && <div className="italic break-words">“{current.notes}”</div>}
+        </div>
+      )}
+
+      {reviewable && (
+        <>
+          <input
+            className="input text-2xs py-0.5 w-full mb-1.5"
+            placeholder="Review note (optional)"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            disabled={record.isPending}
+          />
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+              style={{ color: 'var(--color-accent)' }}
+              onClick={() => submit('approved')}
+              disabled={record.isPending}
+              title="Approve the stream at its current head"
+            >
+              <CheckCircle2 className="w-3 h-3" />
+              Approve
+            </button>
+            <button
+              type="button"
+              className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+              onClick={() => submit('changes_requested')}
+              disabled={record.isPending}
+              title="Request changes at the current head"
+            >
+              <AlertTriangle className="w-3 h-3" />
+              Request changes
+            </button>
+            <button
+              type="button"
+              className="btn-ghost text-2xs flex items-center gap-1 px-2 py-1"
+              onClick={() => requestReview.mutate({ streamRowId })}
+              disabled={requestReview.isPending}
+              title="Dispatch a reviewer agent — its verdict is advisory, human acceptance still verifies the merge"
+            >
+              <Users className="w-3 h-3" />
+              Agent review
+            </button>
+          </div>
+          {requestReview.isSuccess && (
+            <div className="text-2xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+              Review job queued —{' '}
+              <Link
+                to={`/dispatch/${requestReview.data.dispatch_id}`}
+                className="underline"
+              >
+                view job
+              </Link>
+              . Its verdict arrives as advisory.
+            </div>
+          )}
+          {(record.isError || requestReview.isError) && (
+            <div className="text-2xs mt-1" style={{ color: 'var(--color-danger)' }}>
+              {record.isError ? "Couldn't record verdict — try again." : "Couldn't queue the review job — try again."}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function StreamBranchSection({
   streamRowId,
@@ -1761,6 +1946,14 @@ function StreamActions({
       {!canAct && (
         <span className="text-2xs w-full" style={{ color: 'var(--color-text-muted)' }}>
           {CASCADE_ACT_DISABLED_REASON}
+        </span>
+      )}
+
+      {/* Action rejections (e.g. 409 review_required from the QC gate) —
+          without this a withheld merge reads as a dead button. */}
+      {action.isError && (
+        <span className="text-2xs w-full" style={{ color: 'var(--color-danger)' }}>
+          {action.error instanceof Error ? action.error.message : 'Action failed.'}
         </span>
       )}
     </div>

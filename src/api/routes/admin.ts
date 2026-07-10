@@ -2,7 +2,8 @@ import { FastifyInstance } from 'fastify';
 import { authMiddleware, createAdminAuth, createAuthOrAdminKey } from '../middleware/auth.js';
 import { KNOWN_CAPABILITIES, isKnownCapability } from '../middleware/capabilities.js';
 import { revokeToken, isTokenServiceInitialized } from '../../map/token-service.js';
-import { delegateForSpawn, ScopeNotGrantedError } from '../../map/delegate-for-spawn.js';
+import { ScopeNotGrantedError } from '../../map/delegate-for-spawn.js';
+import { mintOnboardToken, AgentNotFoundError } from '../../map/onboard.js';
 import { z } from 'zod';
 import * as agentsDAL from '../../db/dal/agents.js';
 import * as hivesDAL from '../../db/dal/hives.js';
@@ -342,54 +343,24 @@ export async function adminRoutes(fastify: FastifyInstance, options: { config: C
     }
     const { scopes, ttl_hours, agent_name, agent_id } = parseResult.data;
 
-    // Resolve the child agent — either create a new one or reuse an
-    // existing id if the caller wants to re-issue for an existing agent.
-    let childAgentId: string;
-    if (agent_id) {
-      const existing = agentsDAL.findAgentById(agent_id);
-      if (!existing) {
+    // Shared with the setup engine's agent-access section — see
+    // src/map/onboard.ts. Reports the *effective* TTL so operators can
+    // see when clamping occurred (e.g. asked for 8760h=1yr, got 720h).
+    try {
+      const minted = await mintOnboardToken({
+        scopes,
+        ttlHours: ttl_hours,
+        agentName: agent_name,
+        agentId: agent_id,
+      });
+      return reply.send(minted);
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) {
         return reply.status(404).send({
           error: 'Not Found',
-          message: `Agent ${agent_id} does not exist`,
+          message: err.message,
         });
       }
-      childAgentId = existing.id;
-    } else {
-      const name = agent_name ?? `onboarded-${Date.now()}`;
-      const { agent } = await agentsDAL.createAgent({
-        name,
-        description: 'Onboarded via admin onboard-token',
-        metadata: { onboarded_via: 'admin-token', onboarded_at: new Date().toISOString() },
-      });
-      childAgentId = agent.id;
-    }
-
-    // Admin is the "parent" with implicit map:* scope. Delegation still
-    // runs scope-subset check (requestedScopes ⊆ ['map:*']) so typos in
-    // the scope list surface as 403. No parent token is supplied — the
-    // `delegateForSpawn` root-token path applies, capped at 30 days.
-    try {
-      const credentials = delegateForSpawn({
-        parentAgentId: 'admin-key',
-        parentScopes: ['map:*'],
-        childAgentId,
-        requestedScopes: scopes,
-        ttlMinutes: ttl_hours * 60,
-        childDelegatable: true,
-      });
-
-      // Report the *effective* TTL so operators can see when clamping
-      // occurred (e.g. if they asked for 8760h=1yr, we return 720h).
-      return reply.send({
-        agent_id: childAgentId,
-        token: credentials.credentials.token,
-        method: credentials.method,
-        env: credentials.env,
-        scopes,
-        ttl_hours: credentials.ttlMinutes / 60,
-        expires_at: credentials.expiresAt,
-      });
-    } catch (err) {
       if (err instanceof ScopeNotGrantedError) {
         return reply.status(403).send({
           error: 'Forbidden',
