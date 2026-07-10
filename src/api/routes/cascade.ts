@@ -498,6 +498,30 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
         });
       }
 
+      // QC gate (Q2): a hub-initiated merge is withheld when the stream's
+      // resolved review policy is `required` and there is no current-head
+      // HUMAN approval ([D3]/[D4] — docs/design/cascade-review-verdicts.md).
+      // Checked BEFORE the capability pre-check so an observe-only swarm's
+      // unapproved merge surfaces the actionable "review required" (go get it
+      // reviewed) rather than "capability unavailable" — policy before
+      // mechanism. Other actions (pause, abandon, resolve, …) are never
+      // review-gated.
+      if (action === 'merge') {
+        const gate = resolveStreamReviewGate(stream);
+        if (gate.blocked) {
+          return reply.status(409).send({
+            error: 'Review Required',
+            code: 'review_required',
+            message:
+              'This stream requires a human-approved review at its current head before the hub will request a merge.',
+            policy: gate.policy,
+            head_commit: gate.head_commit,
+            current_verdict: gate.current_verdict?.verdict ?? null,
+            sent: false,
+          });
+        }
+      }
+
       // Capability pre-check: the owning swarm must declare `cascade.canAct`
       // to receive action requests. Belt-and-suspenders behind the UI gate —
       // capabilities are advisory, but an observe-only swarm (e.g. cc-swarm,
@@ -520,26 +544,6 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
             "The swarm that owns this stream does not accept cascade actions (cascade.canAct not declared). It is observe-only.",
           sent: false,
         });
-      }
-
-      // QC gate (Q2): a hub-initiated merge is withheld when the stream's
-      // resolved review policy is `required` and there is no current-head
-      // HUMAN approval ([D3]/[D4] — docs/design/cascade-review-verdicts.md).
-      // Other actions (pause, abandon, resolve, …) are never review-gated.
-      if (action === 'merge') {
-        const gate = resolveStreamReviewGate(stream);
-        if (gate.blocked) {
-          return reply.status(409).send({
-            error: 'Review Required',
-            code: 'review_required',
-            message:
-              'This stream requires a human-approved review at its current head before the hub will request a merge.',
-            policy: gate.policy,
-            head_commit: gate.head_commit,
-            current_verdict: gate.current_verdict?.verdict ?? null,
-            sent: false,
-          });
-        }
       }
 
       const body = request.body ?? {};
