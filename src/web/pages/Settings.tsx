@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes, Globe, GitBranch, Bug, Bell, Network, ArrowUpRight } from 'lucide-react';
+import { User, Lock, Trash2, Sun, Moon, Monitor, Key, Plus, X, Copy, Eye, EyeOff, ShieldOff, Clock, Check, Server, Shield, Unlock, ChevronDown, ChevronRight, AlertTriangle, RefreshCw, Boxes, Globe, GitBranch, Bug, Bell, Network, ArrowUpRight, Settings2 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores/auth';
 import { useThemeStore } from '../stores/theme';
@@ -260,6 +260,23 @@ function ServerSettings({ isAdmin }: { isAdmin: boolean }) {
           </button>
         </div>
       )}
+
+      {/* Guided setup — same sections as `openhive setup`, plus hub doctor. */}
+      <Link
+        to="/onboarding"
+        className="card p-3 flex items-center gap-2.5 transition-colors hover:border-honey-500/50"
+      >
+        <Settings2 className="w-4 h-4 text-honey-500 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="text-xs font-medium" style={{ color: 'var(--color-text)' }}>
+            Hub setup
+          </div>
+          <div className="text-2xs" style={{ color: 'var(--color-text-muted)' }}>
+            Guided section-by-section setup (git store, swarm hosting, agent access) and health checks
+          </div>
+        </div>
+        <ArrowUpRight className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--color-text-muted)' }} />
+      </Link>
 
       {/* Connection info — top of the tab so agent operators see it first. */}
       <ConnectivityCard />
