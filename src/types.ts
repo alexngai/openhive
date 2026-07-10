@@ -194,6 +194,7 @@ export type WSEventType =
   | 'cascade:queue_cancelled'
   | 'cascade:queue_removed'
   | 'cascade:review_verdict'
+  | 'cascade:unreviewed_merge'
   // OpenTeams resource events (see api/routes/teams.ts, loadouts.ts).
   // Authored content lifecycle; the MAP `resource.added/updated/removed`
   // bus carries the content-addressed bundle counterpart at Layer 2.

@@ -6,6 +6,7 @@ export type PRStackEntryStatus =
   | 'existing'
   | 'push_required'
   | 'blocked_by_parent'
+  | 'blocked_by_review'
   | 'failed';
 
 export interface PRStackResultEntry {

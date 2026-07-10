@@ -1899,6 +1899,14 @@ function StreamActions({
           {CASCADE_ACT_DISABLED_REASON}
         </span>
       )}
+
+      {/* Action rejections (e.g. 409 review_required from the QC gate) —
+          without this a withheld merge reads as a dead button. */}
+      {action.isError && (
+        <span className="text-2xs w-full" style={{ color: 'var(--color-danger)' }}>
+          {action.error instanceof Error ? action.error.message : 'Action failed.'}
+        </span>
+      )}
     </div>
   );
 }

@@ -216,6 +216,13 @@ const STATUS_CONFIG: Record<PRStackEntryStatus, StatusConfig> = {
     borderColor: 'rgba(161, 161, 170, 0.25)',
     badgeClass: 'bg-zinc-500/15 text-zinc-300',
   },
+  blocked_by_review: {
+    label: 'Review required',
+    Icon: AlertTriangle,
+    iconColor: 'rgb(252, 211, 77)',
+    borderColor: 'rgba(252, 211, 77, 0.35)',
+    badgeClass: 'bg-amber-500/15 text-amber-300',
+  },
   failed: {
     label: 'Failed',
     Icon: XCircle,

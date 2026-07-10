@@ -32,6 +32,7 @@ import {
 } from '../../db/dal/cascade-review-verdicts.js';
 import { mapHubEvents } from '../../map/service.js';
 import { broadcastToChannel } from '../../realtime/index.js';
+import { resolveStreamReviewGate } from '../../cascade/review-monitor.js';
 import { findResourcesByRepoUrl } from '../../db/dal/syncable-resources.js';
 import { generateChangelog, renderMarkdown } from '../../cascade/changelog.js';
 import { sendCascadeAction, type CascadeAction } from '../../map/cascade-actions.js';
@@ -514,6 +515,26 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
             "The swarm that owns this stream does not accept cascade actions (cascade.canAct not declared). It is observe-only.",
           sent: false,
         });
+      }
+
+      // QC gate (Q2): a hub-initiated merge is withheld when the stream's
+      // resolved review policy is `required` and there is no current-head
+      // HUMAN approval ([D3]/[D4] — docs/design/cascade-review-verdicts.md).
+      // Other actions (pause, abandon, resolve, …) are never review-gated.
+      if (action === 'merge') {
+        const gate = resolveStreamReviewGate(stream);
+        if (gate.blocked) {
+          return reply.status(409).send({
+            error: 'Review Required',
+            code: 'review_required',
+            message:
+              'This stream requires a human-approved review at its current head before the hub will request a merge.',
+            policy: gate.policy,
+            head_commit: gate.head_commit,
+            current_verdict: gate.current_verdict?.verdict ?? null,
+            sent: false,
+          });
+        }
       }
 
       const body = request.body ?? {};
@@ -1095,6 +1116,7 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
           | 'existing'
           | 'push_required'
           | 'blocked_by_parent'
+          | 'blocked_by_review'
           | 'failed';
         pr_url?: string;
         pr_number?: number;
@@ -1125,6 +1147,21 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
             continue;
           }
         } catch { /* fall through to fresh-create path */ }
+
+        // QC gate (Q2): opening a PR is a hub-initiated landing action, so
+        // a `required` review policy withholds it until the stream carries
+        // a current-head human approval. Blocks propagate to descendants
+        // like push_required (their base branch would be unreviewed work).
+        const entryStream = getStreamByRowId(entry.stream_row_id);
+        if (entryStream) {
+          const gate = resolveStreamReviewGate(entryStream);
+          if (gate.blocked) {
+            base.result_status = 'blocked_by_review';
+            blockedAncestors.add(entry.stream_row_id);
+            results.push(base);
+            continue;
+          }
+        }
 
         // D21: best-effort push hint. Fire-and-forget; offline-swarm
         // failures are silently ignored, the branch-exists check below

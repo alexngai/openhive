@@ -1,6 +1,6 @@
 # QC station: cascade review verdicts and the verified-merge gate
 
-**Status:** Q1 implemented (V66 + DAL + REST + WS + console Approve/Request-changes; verified via route/DAL tests and a live console round-trip). Q2 (policy + gates) and Q3 (reviewer dispatch) not started.
+**Status:** Q1 + Q2 implemented. Q1: V66 + DAL + REST + WS + console Approve/Request-changes (verified via route/DAL tests and a live console round-trip). Q2: `resolveReviewPolicy` (three-scope chain), the merge-action gate (409 `review_required`), the PR-stack `blocked_by_review` gate with descendant propagation, and the review monitor emitting `cascade_unreviewed_merge`. Q3 (reviewer dispatch) not started.
 **Owner surface:** `src/cascade/` (hub-side QC), companion track in `git-cascade` (we own `~/GitHub/git-cascade`).
 **Program context:** the software-factory measurement program. The factory's **unit of production is `spec → verified merge`, where *verified* means human acceptance**. This doc designs the station that produces the "verified" fact: who accepted what code, at which head, and how that gates landing. It is downstream of the factory-metrics instrumentation (which gives lead-time/yield their denominators) and upstream of autonomation Stage B (which needs a trustworthy quality signal to optimize against).
 
@@ -101,7 +101,7 @@ Pure `resolveReviewPolicy(...)` added to `src/cascade/policy.ts` (no I/O, never 
 |---|---|
 | Hub-initiated merge (REST → `x-cascade/request.merge`) | 409 `review_required` unless `isApprovedAtHead` |
 | `POST /cascade/streams/:id/pr-stack` | per-stream check; unapproved streams marked `blocked_by_review` in the plan (same shape as `blocked_by_parent`) |
-| Merge-queue projection `queued → ready` surface | ready-marking via hub UI/API withheld; runtime-originated `queue.ready` events still project (runtime is authoritative) with an `unreviewed` annotation |
+| Merge-queue projection `queued → ready` surface | **vacuous today** — the hub has no queue-write API (queue entries are read-only projections of runtime events), so there is nothing to gate; revisit when a hub queue surface exists. Runtime-originated merges are covered by unreviewed-merge detection instead. |
 
 ### 5.3 Reviewer dispatch (agent QC, advisory)
 

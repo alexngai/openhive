@@ -249,6 +249,7 @@ export function useCascadeStreamsRealtime() {
   useWSEvent('cascade:stream_resumed', invalidate);
   useWSEvent('cascade:stream_rolled_back', invalidate);
   useWSEvent('cascade:review_verdict', invalidateVerdicts);
+  useWSEvent('cascade:unreviewed_merge', invalidateVerdicts);
 }
 
 // ── Repos / Workspaces (slice 4) ──

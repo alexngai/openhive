@@ -10,7 +10,7 @@
  *   - D21 push hint fires per entry (verified via sendCascadeAction mock)
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 import { initDatabase, closeDatabase, getDatabase } from '../../db/index.js';
 import * as agentsDAL from '../../db/dal/agents.js';
@@ -19,7 +19,10 @@ import {
   updatePublishBranch,
   updateStreamStatus,
   createPR,
+  recordCommit,
 } from '../../db/dal/cascade-streams.js';
+import { recordVerdict } from '../../db/dal/cascade-review-verdicts.js';
+import { startReviewMonitor, stopReviewMonitor } from '../../cascade/review-monitor.js';
 import { createSwarm } from '../../db/dal/map.js';
 import { createResource } from '../../db/dal/syncable-resources.js';
 import { testRoot, testDbPath, cleanTestRoot } from '../helpers/test-dirs.js';
@@ -401,5 +404,75 @@ describe('POST /cascade/streams/:id/pr-stack', () => {
     const res = await postStack(stream.id);
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toBe('bad_request');
+  });
+
+  // ── Review gate (QC station Q2) ───────────────────────────────────
+  describe('review gate', () => {
+    afterEach(() => {
+      stopReviewMonitor();
+    });
+
+    function approveStream(rowId: string, streamId: string): void {
+      const head = 'a'.repeat(40);
+      recordCommit({ stream_row_id: rowId, commit_hash: head });
+      recordVerdict({
+        stream_row_id: rowId,
+        source_swarm_id: SWARM,
+        stream_id: streamId,
+        head_commit: head,
+        verdict: 'approved',
+        reviewer_kind: 'human',
+        reviewer_id: 'alex',
+      });
+    }
+
+    it('required policy: unapproved root is blocked_by_review, descendants blocked_by_parent', async () => {
+      startReviewMonitor({ defaultReviewPolicy: 'required' });
+      const { rowByStream } = await setupStack(agentId, agentId, [
+        { stream_id: 'A', publish_branch: 'feat/a' },
+        { stream_id: 'B', parent: 'A', publish_branch: 'feat/b' },
+      ]);
+      driver.branchesOnOrigin.add('feat/a');
+      driver.branchesOnOrigin.add('feat/b');
+
+      const res = await postStack(rowByStream.get('A')!);
+      expect(res.statusCode).toBe(200);
+      const entries = res.body.data!.entries;
+      expect(entries.map((e) => e.result_status)).toEqual([
+        'blocked_by_review',
+        'blocked_by_parent',
+      ]);
+    });
+
+    it('required policy: approved root creates, unapproved child blocks', async () => {
+      startReviewMonitor({ defaultReviewPolicy: 'required' });
+      const { rowByStream } = await setupStack(agentId, agentId, [
+        { stream_id: 'A', publish_branch: 'feat/a' },
+        { stream_id: 'B', parent: 'A', publish_branch: 'feat/b' },
+      ]);
+      driver.branchesOnOrigin.add('feat/a');
+      driver.branchesOnOrigin.add('feat/b');
+      approveStream(rowByStream.get('A')!, 'A');
+
+      const res = await postStack(rowByStream.get('A')!);
+      expect(res.statusCode).toBe(200);
+      const entries = res.body.data!.entries;
+      expect(entries.map((e) => e.result_status)).toEqual([
+        'created',
+        'blocked_by_review',
+      ]);
+    });
+
+    it('advisory policy never blocks the stack', async () => {
+      startReviewMonitor({ defaultReviewPolicy: 'advisory' });
+      const { rowByStream } = await setupStack(agentId, agentId, [
+        { stream_id: 'A', publish_branch: 'feat/a' },
+      ]);
+      driver.branchesOnOrigin.add('feat/a');
+
+      const res = await postStack(rowByStream.get('A')!);
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data!.entries[0].result_status).toBe('created');
+    });
   });
 });
