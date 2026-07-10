@@ -30,6 +30,7 @@ import { getAggregateCapabilities } from '../map/connection-registry.js';
 import { findResourceById } from '../db/dal/syncable-resources.js';
 import {
   getLatestCommitForStream,
+  listStreams,
   type CascadeStream,
 } from '../db/dal/cascade-streams.js';
 import {
@@ -146,6 +147,58 @@ export function resolveStreamReviewGate(
     approved,
     blocked: policy === 'required' && !approved,
   };
+}
+
+export interface ReviewInboxEntry {
+  stream_row_id: string;
+  stream_id: string;
+  name: string;
+  source_swarm_id: string;
+  policy: ReviewPolicy;
+  head_commit: string;
+  /** Advisory agent verdict at the current head, when one exists. */
+  agent_verdict: {
+    verdict: CascadeReviewVerdict['verdict'];
+    reviewer_id: string | null;
+    notes: string | null;
+  } | null;
+}
+
+/**
+ * The review inbox — DERIVED, no state machine (design §11 discussion,
+ * 2026-07-09): a stream awaits review when its policy is not `none`, it is
+ * active with at least one commit, and no HUMAN verdict exists at the
+ * current head. A human verdict of any kind (approved, changes_requested,
+ * rejected) removes it — the ball is with the author or the landing path.
+ * New commits move the head, so streams re-enter automatically.
+ */
+export function listStreamsAwaitingReview(
+  defaultReviewPolicy: ReviewPolicy = getDefaultReviewPolicy(),
+): ReviewInboxEntry[] {
+  const { streams } = listStreams({ status: 'active', limit: 500 });
+  const entries: ReviewInboxEntry[] = [];
+  for (const stream of streams) {
+    const gate = resolveStreamReviewGate(stream, defaultReviewPolicy);
+    if (gate.policy === 'none') continue;
+    if (!gate.head_commit) continue; // nothing committed yet
+    if (gate.current_verdict?.reviewer_kind === 'human') continue;
+    entries.push({
+      stream_row_id: stream.id,
+      stream_id: stream.stream_id,
+      name: stream.name,
+      source_swarm_id: stream.source_swarm_id,
+      policy: gate.policy,
+      head_commit: gate.head_commit,
+      agent_verdict: gate.current_verdict
+        ? {
+            verdict: gate.current_verdict.verdict,
+            reviewer_id: gate.current_verdict.reviewer_id,
+            notes: gate.current_verdict.notes,
+          }
+        : null,
+    });
+  }
+  return entries;
 }
 
 /** Exported for tests — runs the detection path synchronously. */

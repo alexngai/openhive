@@ -37,6 +37,7 @@ import {
   type ReviewVerdictValue,
 } from '../db/dal/cascade-review-verdicts.js';
 import { resolveStreamDiff } from './diff-resolver.js';
+import { postVerdictThreadTurn } from './review-thread.js';
 import { mapHubEvents } from '../map/service.js';
 import { broadcastToChannel } from '../realtime/index.js';
 
@@ -233,6 +234,10 @@ export function maybeRecordVerdictFromDispatch(dispatch: Dispatch): void {
     } catch {
       // Non-critical.
     }
+
+    // Close the feedback loop: the verdict lands in the author's work
+    // thread (fire-and-forget; never rejects).
+    void postVerdictThreadTurn(verdict, stream);
   } catch {
     // Never propagate into the finalize path.
   }

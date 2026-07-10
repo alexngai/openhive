@@ -63,6 +63,7 @@ import {
   useCurrentVerdict,
   useRecordVerdict,
   useRequestReview,
+  useReviewInbox,
   type ReviewVerdictValue,
 } from '../hooks/useCascadeVerdicts';
 import { StatusChip, type StatusTone } from '../components/common/StatusChip';
@@ -88,7 +89,7 @@ type ViewMode = 'list' | 'stack' | 'map';
 
 const RECENTLY_LANDED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-type TriageBucket = 'needs-attention' | 'in-progress' | 'recently-landed';
+type TriageBucket = 'needs-attention' | 'awaiting-review' | 'in-progress' | 'recently-landed';
 
 /**
  * Per-stream cascade capability gate. The "All swarms" view mixes streams
@@ -119,9 +120,15 @@ function useCascadeCapability(node: StreamDAGNode): {
   };
 }
 
-function bucketForNode(node: StreamDAGNode): TriageBucket | null {
+function bucketForNode(node: StreamDAGNode, awaitingReview: Set<string>): TriageBucket | null {
   if (node.status === 'conflicted' || node.open_conflict_count > 0) {
     return 'needs-attention';
+  }
+  // Derived review inbox (no state machine): the server computes the set
+  // from policy + current-head verdicts; a new commit re-enters the stream
+  // automatically. Conflicts outrank review — fix first, review after.
+  if (node.status === 'active' && awaitingReview.has(node.id)) {
+    return 'awaiting-review';
   }
   if (node.status === 'active' || node.status === 'paused') {
     return 'in-progress';
@@ -164,9 +171,14 @@ export function Changes() {
     source_swarm_id: selectedSwarmId,
   });
   const { data: swarmsResponse } = useMapSwarms();
+  const { data: inboxResponse } = useReviewInbox();
 
   useCascadeStreamsRealtime();
 
+  const awaitingReviewIds = useMemo(
+    () => new Set((inboxResponse?.data ?? []).map((e) => e.stream_row_id)),
+    [inboxResponse],
+  );
   const dag = dagResponse?.data;
   const swarms = swarmsResponse?.data ?? [];
   const streamParam = routeSearchParams.get('stream');
@@ -207,20 +219,22 @@ export function Changes() {
     });
     const groups: Record<TriageBucket, StreamDAGNode[]> = {
       'needs-attention': [],
+      'awaiting-review': [],
       'in-progress': [],
       'recently-landed': [],
     };
     for (const node of filtered) {
-      const bucket = bucketForNode(node);
+      const bucket = bucketForNode(node, awaitingReviewIds);
       if (bucket) groups[bucket].push(node);
     }
     const sortByActivity = (a: StreamDAGNode, b: StreamDAGNode) =>
       new Date(b.last_event_at).getTime() - new Date(a.last_event_at).getTime();
     groups['needs-attention'].sort(sortByActivity);
+    groups['awaiting-review'].sort(sortByActivity);
     groups['in-progress'].sort(sortByActivity);
     groups['recently-landed'].sort(sortByActivity);
     return { buckets: groups, filteredCount: filtered.length, totalCount: all.length };
-  }, [dag, conflictsOnly, search]);
+  }, [dag, conflictsOnly, search, awaitingReviewIds]);
 
   const stack = useMemo(() => {
     if (!dag || !stackRootId) return null;
@@ -600,6 +614,13 @@ const BUCKET_CONFIG: BucketConfig[] = [
     defaultCollapsed: false,
   },
   {
+    key: 'awaiting-review',
+    label: 'Awaiting review',
+    Icon: ShieldCheck,
+    accent: 'var(--color-accent)',
+    defaultCollapsed: false,
+  },
+  {
     key: 'in-progress',
     label: 'In progress',
     Icon: GitBranch,
@@ -676,9 +697,13 @@ function BucketSection({
 }) {
   const [collapsed, setCollapsed] = useState(cfg.defaultCollapsed);
 
-  // Hide "recently landed" when empty to reduce chrome; always show the other
+  // Hide "recently landed" when empty to reduce chrome, and "awaiting
+  // review" when empty because under the fleet-default review policy
+  // (`none`) it would be a permanently dead section. Always show the other
   // two so the user sees the expected triage shape.
-  if (nodes.length === 0 && cfg.key === 'recently-landed') return null;
+  if (nodes.length === 0 && (cfg.key === 'recently-landed' || cfg.key === 'awaiting-review')) {
+    return null;
+  }
 
   const { Icon } = cfg;
 

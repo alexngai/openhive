@@ -51,6 +51,36 @@ export function useStreamVerdicts(streamRowId: string | null) {
   });
 }
 
+export interface ReviewInboxEntry {
+  stream_row_id: string;
+  stream_id: string;
+  name: string;
+  source_swarm_id: string;
+  policy: 'advisory' | 'required';
+  head_commit: string;
+  agent_verdict: {
+    verdict: ReviewVerdictValue;
+    reviewer_id: string | null;
+    notes: string | null;
+  } | null;
+}
+
+/**
+ * The derived "awaiting review" set — active streams with commits under a
+ * non-none policy and no human verdict at the current head. Feeds the
+ * Changes page bucket.
+ */
+export function useReviewInbox() {
+  return useQuery({
+    queryKey: ['cascade-review-inbox'],
+    queryFn: async () => {
+      return api.get<{ data: ReviewInboxEntry[]; total: number }>(
+        '/cascade/review-inbox',
+      );
+    },
+  });
+}
+
 /**
  * Request an agent review (Q3): creates a reviewer dispatch whose completion
  * writes back an advisory agent verdict. Returns the queued dispatch summary.

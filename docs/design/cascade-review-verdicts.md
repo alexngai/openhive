@@ -1,6 +1,6 @@
 # QC station: cascade review verdicts and the verified-merge gate
 
-**Status:** Q1 + Q2 + Q3 implemented. Q1: V66 + DAL + REST + WS + console Approve/Request-changes (verified via route/DAL tests and a live console round-trip). Q2: `resolveReviewPolicy` (three-scope chain), the merge-action gate (409 `review_required`), the PR-stack `blocked_by_review` gate with descendant propagation, and the review monitor emitting `cascade_unreviewed_merge`. Q3: reviewer dispatch (`src/cascade/review-dispatch.ts`) — `POST /cascade/streams/:id/request-review` creates a `role: 'reviewer'` prompt dispatch with the diff inlined (five-tier resolver, local-inspection fallback), correlated via `initiator_id = 'review:<stream_row_id>'` (the scheduler's overload pattern); the `finalizeDispatch` hook parses the completion summary's fenced-JSON verdict into an advisory agent verdict carrying `dispatch_id`, idempotent across both finalize callers. Manual trigger + console "Agent review" button in v1; policy-driven triggering and a live-agent e2e remain future work.
+**Status:** Q1 + Q2 + Q3 implemented. Q1: V66 + DAL + REST + WS + console Approve/Request-changes (verified via route/DAL tests and a live console round-trip). Q2: `resolveReviewPolicy` (three-scope chain), the merge-action gate (409 `review_required`), the PR-stack `blocked_by_review` gate with descendant propagation, and the review monitor emitting `cascade_unreviewed_merge`. Q3: reviewer dispatch (`src/cascade/review-dispatch.ts`) — `POST /cascade/streams/:id/request-review` creates a `role: 'reviewer'` prompt dispatch with the diff inlined (five-tier resolver, local-inspection fallback), correlated via `initiator_id = 'review:<stream_row_id>'` (the scheduler's overload pattern); the `finalizeDispatch` hook parses the completion summary's fenced-JSON verdict into an advisory agent verdict carrying `dispatch_id`, idempotent across both finalize callers. Manual trigger + console "Agent review" button in v1; policy-driven triggering and a live-agent e2e remain future work. **Review flow (§10) also implemented:** the derived inbox (`/cascade/review-inbox` + Changes bucket, verified live incl. re-entry-on-push) and the verdict→thread feedback turn (`src/cascade/review-thread.ts`).
 **Owner surface:** `src/cascade/` (hub-side QC), companion track in `git-cascade` (we own `~/GitHub/git-cascade`).
 **Program context:** the software-factory measurement program. The factory's **unit of production is `spec → verified merge`, where *verified* means human acceptance**. This doc designs the station that produces the "verified" fact: who accepted what code, at which head, and how that gates landing. It is downstream of the factory-metrics instrumentation (which gives lead-time/yield their denominators) and upstream of autonomation Stage B (which needs a trustworthy quality signal to optimize against).
 
@@ -142,7 +142,34 @@ Layer 1 (§3–§6) has **no dependency on G1–G3**; G2 landing later only upgr
 - Hub-blocking of runtime-local merges (physically impossible; see [D4]).
 - Retroactive verdicts on already-merged streams.
 
-## 10. Staged plan
+## 10. The review flow (2026-07-09, deliberately minimal)
+
+The flow is **derived state + one feedback link**, not a state machine:
+
+1. **Review inbox** — `GET /cascade/review-inbox` + the "Awaiting review"
+   bucket on Changes. A stream awaits review when its resolved policy is not
+   `none`, it is active with commits, and no HUMAN verdict exists at the
+   current head. Agent (advisory) verdicts keep it in the inbox and surface
+   on the entry; any human verdict removes it; a new commit moves the head
+   and re-enters it automatically. No schema, no events, no ready-signal —
+   the set is a query (`listStreamsAwaitingReview`), so it can never drift.
+   The bucket hides when empty (the fleet default policy is `none`).
+2. **Verdict → thread turn** — every recorded verdict posts a
+   `system:dispatch-orchestrator` turn into the author's work thread,
+   resolved stream → task_ref → linked dispatch's `conversation_id`, falling
+   back to the spec discussion thread when one already exists (never
+   creates one). This closes the loop that mattered: `changes_requested`
+   notes reach the author's conversation instead of dying in a table.
+
+**Deliberately not built** (compose from existing primitives instead; add
+knobs only when usage demands): a ready-for-review signal/event, a `review`
+attention-bell kind (the bucket count suffices), policy-driven auto-prepass
+(a `dispatch_prompt` schedule or any agent can call `request-review` today),
+auto-dispatch of changes_requested feedback to the author (human checkpoint
+stays), and auto-land on approval (blocked on git-cascade G1 observability
+anyway).
+
+## 11. Staged plan
 
 | Stage | Scope | Proof |
 |---|---|---|

@@ -236,6 +236,7 @@ export function useCascadeStreamsRealtime() {
   const invalidateVerdicts = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['cascade-verdict-current'] });
     queryClient.invalidateQueries({ queryKey: ['cascade-verdicts'] });
+    queryClient.invalidateQueries({ queryKey: ['cascade-review-inbox'] });
   }, [queryClient]);
 
   useWSEvent('cascade:stream_opened', invalidate);

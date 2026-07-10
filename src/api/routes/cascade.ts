@@ -32,8 +32,12 @@ import {
 } from '../../db/dal/cascade-review-verdicts.js';
 import { mapHubEvents } from '../../map/service.js';
 import { broadcastToChannel } from '../../realtime/index.js';
-import { resolveStreamReviewGate } from '../../cascade/review-monitor.js';
+import {
+  resolveStreamReviewGate,
+  listStreamsAwaitingReview,
+} from '../../cascade/review-monitor.js';
 import { requestReviewDispatch } from '../../cascade/review-dispatch.js';
+import { postVerdictThreadTurn } from '../../cascade/review-thread.js';
 import { findResourcesByRepoUrl } from '../../db/dal/syncable-resources.js';
 import { generateChangelog, renderMarkdown } from '../../cascade/changelog.js';
 import { sendCascadeAction, type CascadeAction } from '../../map/cascade-actions.js';
@@ -648,6 +652,11 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
         // Non-critical
       }
 
+      // Close the feedback loop: the verdict lands in the author's work
+      // thread (dispatch conversation, else spec discussion). Fire-and-
+      // forget; postVerdictThreadTurn never rejects.
+      void postVerdictThreadTurn(verdict, stream);
+
       return reply.status(201).send({ data: verdict });
     }
   );
@@ -680,6 +689,24 @@ export async function cascadeRoutes(fastify: FastifyInstance): Promise<void> {
         offset: parseOffset(request.query.offset),
       });
       return reply.send({ data: verdicts, total });
+    }
+  );
+
+  // ── Review inbox ──────────────────────────────────────────────────────
+  //
+  //   GET /cascade/review-inbox
+  //
+  //   The DERIVED "awaiting review" set: active streams with commits under
+  //   a non-`none` policy and no HUMAN verdict at the current head. No
+  //   state machine — new commits move the head and streams re-enter
+  //   automatically. Feeds the Changes page bucket.
+
+  fastify.get(
+    '/cascade/review-inbox',
+    { preHandler: authMiddleware },
+    async (_request, reply) => {
+      const entries = listStreamsAwaitingReview();
+      return reply.send({ data: entries, total: entries.length });
     }
   );
 
