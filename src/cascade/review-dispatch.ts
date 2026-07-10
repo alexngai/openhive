@@ -104,6 +104,17 @@ export async function requestReviewDispatch(
       ? `Task: ${stream.task_resource_id}/${stream.task_node_id}\n`
       : '';
 
+  // Scope instruction. When the diff is inlined (the common case) the review
+  // is diff-only and read-only: the repository is NOT checked out for the
+  // reviewer, so any attempt to "check fit with surrounding code" just makes
+  // the agent flail hunting for files that aren't there and burn the stall
+  // timeout. Constrain it hard — this is the runtime-agnostic lever that
+  // keeps a generic worker from wandering. When the diff is NOT inlined, the
+  // agent genuinely must inspect the branch locally, so allow exploration.
+  const reviewScope = diffInlined
+    ? `Review ONLY the diff below. The repository is NOT checked out for you and its other files are not available — do not read, open, list, or edit files, and do not explore with tools. Base your verdict solely on the diff, judging it for correctness and safety. This is a read-only review: produce a verdict and stop.`
+    : `Review the change for correctness and safety. The diff is not available from the hub, so check out the branch locally and review the changes there. This is a read-only review: do not modify the change.`;
+
   const prompt = `You are acting as a code reviewer for a cascade stream on this hub.
 
 Stream: ${stream.name} (${stream.stream_id})
@@ -111,7 +122,7 @@ Branch: ${stream.publish_branch ?? stream.branch_name ?? `stream/${stream.stream
 Base commit: ${stream.base_commit ?? 'unknown'}
 Head commit: ${head?.commit_hash ?? 'unknown'}
 ${taskLine}
-Review the change for correctness, safety, and fit with the surrounding code.
+${reviewScope}
 
 ${diffSection}
 
@@ -125,8 +136,9 @@ JSON block in your final summary, of the form:
 where "verdict" is one of: "approved", "changes_requested", "rejected".
 
 Your verdict is recorded as an ADVISORY agent verdict on the stream — a human
-reviews it before acceptance. Be specific in the notes: name files and the
-concrete defect or the concrete reason it is sound.`;
+reviews it before acceptance. Keep it focused: cite the concrete defect (quote
+the offending line) or the concrete reason the change is sound, then finish
+promptly without doing any other work.`;
 
   const dispatch = createDispatch({
     spec_resource_id: 'ad_hoc',
