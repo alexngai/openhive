@@ -82,7 +82,7 @@
     "skill-tree": "^0.2.0",
     "skill-tree-indexer": "^0.2.2",
     "swarm-dispatch": "^0.3.5",
-    "swarmcraft": "^0.1.13",
+    "swarmcraft": "^0.1.15",
     "swarmkit": "^0.1.0",
     "turndown": "^7.2.4",
     "unique-names-generator": "^4.7.1",

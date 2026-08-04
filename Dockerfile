@@ -23,7 +23,9 @@ COPY package*.json ./
 
 # Install all dependencies (including devDependencies for build)
 # Delete lockfile to force fresh resolution of platform-specific optional deps
-# (macOS-generated lockfile omits @rollup/rollup-linux-x64-gnu)
+# (macOS-generated lockfile omits @rollup/rollup-linux-x64-gnu).
+# `package-lock.json` is also in .dockerignore so the `COPY . .` below cannot
+# put the host's copy back over the one this step generates.
 RUN rm -f package-lock.json && npm install
 
 # Copy source code
@@ -32,18 +34,36 @@ COPY . .
 # Build the application
 RUN npm run build
 
-# Remove devDependencies
-RUN npm prune --omit=dev && npm cache clean --force
+# Remove devDependencies.
+#
+# --ignore-scripts is required, not cosmetic. The install above ran before
+# `COPY . .`, so only the root package.json existed and npm never saw the
+# electron-app workspace; better-sqlite3 built normally into build/Release/. By
+# this point the workspace is on disk, so prune re-resolves the tree and fires
+# electron-app's postinstall (fix-better-sqlite3.mjs). That patches
+# better-sqlite3's lib/database.js into a dual-runtime selector looking for
+# build/Release-node/, and stages only the Electron prebuild in this image —
+# leaving the server unable to load sqlite at all:
+#   Cannot find module '.../build/Release-node/better_sqlite3.node'
+# Nothing here needs a lifecycle script, and the Electron app has no business
+# in a server image.
+RUN npm prune --omit=dev --ignore-scripts && npm cache clean --force
 
 # Sharp v0.34+ distributes native bindings as platform-specific optional packages
 # (@img/sharp-linux-x64, @img/sharp-libvips-linux-x64) that npm prune removes.
 # Reinstall sharp after pruning so npm re-resolves the correct matched versions.
-RUN npm install --no-save sharp \
+#
+# --ignore-scripts for the same reason as the prune above: any npm install run
+# from here on re-resolves the tree with the electron-app workspace present and
+# would fire its postinstall, breaking better-sqlite3. Both packages ship
+# prebuilt platform binaries and need no build step of their own — the require
+# checks below prove the bindings still load.
+RUN npm install --no-save --ignore-scripts sharp \
     && node -e "require('sharp'); console.log('[build] sharp native bindings verified')"
 
 # node-pty distributes platform-specific native bindings as optional packages
 # (@lydell/node-pty-linux-x64) that npm prune removes. Reinstall after pruning.
-RUN npm install --no-save @lydell/node-pty \
+RUN npm install --no-save --ignore-scripts @lydell/node-pty \
     && node -e "require('@lydell/node-pty'); console.log('[build] node-pty native bindings verified')"
 
 # =============================================================================

@@ -2,6 +2,14 @@
 node_modules
 src/web/node_modules
 
+# Lockfile — the image regenerates it so platform-specific optional deps
+# resolve for linux (see the npm install step in the Dockerfile). It has to be
+# excluded here too, or the later `COPY . .` puts the host's copy back over the
+# freshly generated one; the restored lockfile then disagrees with the
+# installed tree and `npm prune` dies resolving the workspace links with
+# "Cannot read properties of undefined (reading 'extraneous')".
+package-lock.json
+
 # Build output (will be rebuilt in container)
 dist
 
