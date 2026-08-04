@@ -23,7 +23,9 @@ COPY package*.json ./
 
 # Install all dependencies (including devDependencies for build)
 # Delete lockfile to force fresh resolution of platform-specific optional deps
-# (macOS-generated lockfile omits @rollup/rollup-linux-x64-gnu)
+# (macOS-generated lockfile omits @rollup/rollup-linux-x64-gnu).
+# `package-lock.json` is also in .dockerignore so the `COPY . .` below cannot
+# put the host's copy back over the one this step generates.
 RUN rm -f package-lock.json && npm install
 
 # Copy source code
